@@ -1,0 +1,261 @@
+================================================================================================
+Parquet Reader
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+Parquet reader benchmark for BooleanType:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+ParquetReader Spark                                  39             40           1        398.2           2.5       1.0X
+ParquetReader Comet                                  43             45           1        364.0           2.7       0.9X
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+Parquet reader benchmark for ByteType:    Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+ParquetReader Spark                                  64             66           1        244.6           4.1       1.0X
+ParquetReader Comet                                  78             79           0        201.6           5.0       0.8X
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+Parquet reader benchmark for ShortType:   Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+ParquetReader Spark                                  75             76           1        210.8           4.7       1.0X
+ParquetReader Comet                                  81             83           1        194.3           5.1       0.9X
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+Parquet reader benchmark for IntegerType:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+ParquetReader Spark                                  71             73           1        222.0           4.5       1.0X
+ParquetReader Comet                                  93             99           3        168.9           5.9       0.8X
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+Parquet reader benchmark for LongType:    Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+ParquetReader Spark                                  91             97          10        172.8           5.8       1.0X
+ParquetReader Comet                                 118            121           2        133.1           7.5       0.8X
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+Parquet reader benchmark for FloatType:   Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+ParquetReader Spark                                  78             79           1        201.9           5.0       1.0X
+ParquetReader Comet                                  88             90           1        178.4           5.6       0.9X
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+Parquet reader benchmark for DoubleType:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+ParquetReader Spark                                  97            100           3        161.4           6.2       1.0X
+ParquetReader Comet                                 109            112           4        143.8           7.0       0.9X
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+Parquet reader benchmark for StringType:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+ParquetReader Spark                                 805            808           3         19.5          51.2       1.0X
+ParquetReader Comet                                1145           1152          10         13.7          72.8       0.7X
+
+
+================================================================================================
+SQL Single Numeric Column Scan
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+SQL Single BOOLEAN Column Scan:           Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                  31             55          21        508.7           2.0       1.0X
+SQL Parquet - Comet                                  40             62          22        388.5           2.6       0.8X
+SQL Parquet - Comet Native Scan                      39             59          21        402.1           2.5       0.8X
+SQL Parquet - Comet Native Arrow Scan                17             50          17        911.1           1.1       1.8X
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+SQL Single TINYINT Column Scan:           Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                  44             66          24        361.4           2.8       1.0X
+SQL Parquet - Comet                                  60             78          20        264.3           3.8       0.7X
+SQL Parquet - Comet Native Scan                      60             89          21        264.0           3.8       0.7X
+SQL Parquet - Comet Native Arrow Scan                13             26          19       1236.8           0.8       3.4X
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+SQL Single SMALLINT Column Scan:          Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                  51             67          21        306.0           3.3       1.0X
+SQL Parquet - Comet                                  61             93          21        258.5           3.9       0.8X
+SQL Parquet - Comet Native Scan                      62             92          27        255.3           3.9       0.8X
+SQL Parquet - Comet Native Arrow Scan                12             33          20       1326.9           0.8       4.3X
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+SQL Single INT Column Scan:               Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                  47             71          25        331.7           3.0       1.0X
+SQL Parquet - Comet                                  64            102          18        244.8           4.1       0.7X
+SQL Parquet - Comet Native Scan                      58             84          27        271.9           3.7       0.8X
+SQL Parquet - Comet Native Arrow Scan                12             41          15       1261.5           0.8       3.8X
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+SQL Single BIGINT Column Scan:            Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                  66            114          17        237.7           4.2       1.0X
+SQL Parquet - Comet                                  81            111          28        193.9           5.2       0.8X
+SQL Parquet - Comet Native Scan                      93            128          20        168.8           5.9       0.7X
+SQL Parquet - Comet Native Arrow Scan                12             40          23       1364.0           0.7       5.7X
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+SQL Single FLOAT Column Scan:             Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                  48             80          25        328.3           3.0       1.0X
+SQL Parquet - Comet                                  60             88          25        260.7           3.8       0.8X
+SQL Parquet - Comet Native Scan                      96            110          14        164.6           6.1       0.5X
+SQL Parquet - Comet Native Arrow Scan                11             29          23       1383.5           0.7       4.2X
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+SQL Single DOUBLE Column Scan:            Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                  68             92          23        229.7           4.4       1.0X
+SQL Parquet - Comet                                  81            102          20        195.4           5.1       0.9X
+SQL Parquet - Comet Native Scan                      93            127          21        169.1           5.9       0.7X
+SQL Parquet - Comet Native Arrow Scan                11             37          29       1457.2           0.7       6.3X
+
+
+================================================================================================
+SQL Decimal Column Scan
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+SQL Single Decimal(precision: 5, scale: 2) Column Scan:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                                47             68          25        333.8           3.0       1.0X
+SQL Parquet - Comet                                                70            110          31        226.1           4.4       0.7X
+SQL Parquet - Comet Native Scan                                    69            103          23        227.8           4.4       0.7X
+SQL Parquet - Comet Native Arrow Scan                              11             40          27       1465.8           0.7       4.4X
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+SQL Single Decimal(precision: 18, scale: 4) Column Scan:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                                269            288          21         58.5          17.1       1.0X
+SQL Parquet - Comet                                                324            332           7         48.5          20.6       0.8X
+SQL Parquet - Comet Native Scan                                    287            332          23         54.9          18.2       0.9X
+SQL Parquet - Comet Native Arrow Scan                               12             46          20       1280.9           0.8      21.9X
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+SQL Single Decimal(precision: 20, scale: 8) Column Scan:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                                891            892           1         17.6          56.7       1.0X
+SQL Parquet - Comet                                                849            867          31         18.5          54.0       1.0X
+SQL Parquet - Comet Native Scan                                    856            884          25         18.4          54.4       1.0X
+SQL Parquet - Comet Native Arrow Scan                               12             44          27       1297.6           0.8      73.5X
+
+
+================================================================================================
+String Scan with Dictionary
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+String Scan with Dictionary Encoding:     Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                 253            299          31         62.1          16.1       1.0X
+SQL Parquet - Comet                                 163            186          26         96.2          10.4       1.6X
+SQL Parquet - Comet Native Scan                     161            170          14         97.9          10.2       1.6X
+SQL Parquet - Comet Native Arrow Scan                11             34          22       1374.9           0.7      22.2X
+
+
+================================================================================================
+Numeric Filter Scan
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+Numeric Filter Scan (0.0% zeros):         Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                 131            148          19         79.7          12.5       1.0X
+SQL Parquet - Comet                                 135            177          37         77.8          12.9       1.0X
+SQL Parquet - Comet Native Scan                     135            168          26         77.7          12.9       1.0X
+SQL Parquet - Comet Native Arrow Scan                15             35          24        694.8           1.4       8.7X
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+Numeric Filter Scan (50.0% zeros):        Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                 125            158          29         84.2          11.9       1.0X
+SQL Parquet - Comet                                 132            166          27         79.5          12.6       0.9X
+SQL Parquet - Comet Native Scan                     135            164          29         77.4          12.9       0.9X
+SQL Parquet - Comet Native Arrow Scan                14             35          25        725.2           1.4       8.6X
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+Numeric Filter Scan (95.0% zeros):        Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                  80            118          23        131.0           7.6       1.0X
+SQL Parquet - Comet                                  85            127          29        122.9           8.1       0.9X
+SQL Parquet - Comet Native Scan                      87            134          26        120.6           8.3       0.9X
+SQL Parquet - Comet Native Arrow Scan                13             48          27        783.4           1.3       6.0X
+
+
+================================================================================================
+String with Nulls Scan
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+String with Nulls Scan (0.0%):            Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                1283           1285           4          8.2         122.3       1.0X
+SQL Parquet - Comet                                1266           1269           4          8.3         120.8       1.0X
+SQL Parquet - Comet Native Scan                    1342           1345           5          7.8         128.0       1.0X
+SQL Parquet - Comet Native Arrow Scan                17             53          29        612.1           1.6      74.9X
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+String with Nulls Scan (50.0%):           Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                 676            677           1         15.5          64.5       1.0X
+SQL Parquet - Comet                                 694            737          37         15.1          66.2       1.0X
+SQL Parquet - Comet Native Scan                     693            716          25         15.1          66.1       1.0X
+SQL Parquet - Comet Native Arrow Scan                20             40          20        528.1           1.9      34.1X
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+String with Nulls Scan (95.0%):           Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                 124            148          21         84.8          11.8       1.0X
+SQL Parquet - Comet                                 132            171          45         79.6          12.6       0.9X
+SQL Parquet - Comet Native Scan                     128            182          28         81.7          12.2       1.0X
+SQL Parquet - Comet Native Arrow Scan                13             44          27        784.5           1.3       9.3X
+
+
+================================================================================================
+Single Column Scan From Wide Columns
+================================================================================================
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+Single Column Scan from 10 columns:       Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                  17             67          24         60.2          16.6       1.0X
+SQL Parquet - Comet                                  16             48          31         64.1          15.6       1.1X
+SQL Parquet - Comet Native Scan                      18             55          32         59.3          16.9       1.0X
+SQL Parquet - Comet Native Arrow Scan                11             40          28         96.1          10.4       1.6X
+
+OpenJDK 64-Bit Server VM 11.0.25+9-LTS on Mac OS X 15.2
+Apple M3 Max
+Single Column Scan from 50 columns:       Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                  22             48          28         47.9          20.9       1.0X
+SQL Parquet - Comet                                  24             71          28         44.3          22.6       0.9X
+SQL Parquet - Comet Native Scan                      24             62          26         43.9          22.8       0.9X
+SQL Parquet - Comet Native Arrow Scan                18             36          25         59.5          16.8       1.2X
+
