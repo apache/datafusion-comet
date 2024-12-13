@@ -290,6 +290,8 @@ mod test {
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
+    use arrow_schema::SchemaRef;
+    use datafusion::datasource::listing::PartitionedFile;
     use datafusion::datasource::physical_plan::{FileScanConfig, ParquetExec};
     use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::execution::TaskContext;
@@ -300,12 +302,30 @@ mod test {
     use std::fs::File;
     use std::sync::Arc;
 
+    // TODO add tests that demonstrate ANSI overflow errors
+
     #[tokio::test]
     async fn parquet() -> Result<(), DataFusionError> {
+        let filename = "/tmp/output.parquet";
+        write_parquet_file(filename)?;
+
+        let required_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        let batch = read_batch(filename, &required_schema).await?;
+
+        println!("{:?}", batch);
+
+        Ok(())
+    }
+
+    fn write_parquet_file(filename: &str) -> Result<(), DataFusionError> {
         // TODO test complex types: structs, maps, arrays
         // TODO test edge cases such as unsigned ints
 
-        let schema = Arc::new(Schema::new(vec![
+        let file_schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
             Field::new("name", DataType::Utf8, false),
         ]));
@@ -313,17 +333,26 @@ mod test {
         let ids = Arc::new(Int32Array::from(vec![1, 2, 3])) as Arc<dyn arrow::array::Array>;
         let names = Arc::new(StringArray::from(vec!["Alice", "Bob", "Charlie"]))
             as Arc<dyn arrow::array::Array>;
-        let batch = RecordBatch::try_new(schema.clone(), vec![ids, names])?;
+        let batch = RecordBatch::try_new(file_schema.clone(), vec![ids, names])?;
+        let file = File::create(&filename)?;
 
-        let file = File::create("output.parquet")?;
-        let mut writer = ArrowWriter::try_new(file, schema.clone(), None)?;
+        let mut writer = ArrowWriter::try_new(file, file_schema.clone(), None)?;
         writer.write(&batch)?;
         writer.close()?;
 
-        let file_scan_config = FileScanConfig::new(
-            ObjectStoreUrl::parse("file://output.parquet").unwrap(),
-            schema,
-        );
+        Ok(())
+    }
+
+    async fn read_batch(
+        filename: &str,
+        required_schema: &SchemaRef,
+    ) -> Result<RecordBatch, DataFusionError> {
+        let object_store_url = ObjectStoreUrl::local_filesystem();
+        let file_scan_config = FileScanConfig::new(object_store_url, Arc::clone(&required_schema))
+            .with_file_groups(vec![vec![PartitionedFile::from_path(
+                filename.to_string(),
+            )?]]);
+
         let spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
         let parquet_exec = ParquetExec::builder(file_scan_config)
             .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
@@ -334,9 +363,6 @@ mod test {
         let mut stream = parquet_exec
             .execute(0, Arc::new(TaskContext::default()))
             .unwrap();
-        let x = stream.next().await.unwrap().unwrap();
-        println!("{:?}", x);
-
-        Ok(())
+        stream.next().await.unwrap()
     }
 }
