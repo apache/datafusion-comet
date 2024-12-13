@@ -279,19 +279,19 @@ object CometReadBenchmark extends CometBenchmarkBase {
         prepareTable(
           dir,
           spark.sql(s"""
-                       |WITH tmp
-                       |  AS (SELECT RAND() r FROM $tbl)
-                       |SELECT
-                       |  CASE
-                       |    WHEN r < 0.2 THEN 'aaa'
-                       |    WHEN r < 0.4 THEN 'bbb'
-                       |    WHEN r < 0.6 THEN 'ccc'
-                       |    WHEN r < 0.8 THEN 'ddd'
-                       |    ELSE 'eee'
-                       |  END
-                       |AS id
-                       |FROM tmp
-                       |""".stripMargin))
+             |WITH tmp
+             |  AS (SELECT RAND() r FROM $tbl)
+             |SELECT
+             |  CASE
+             |    WHEN r < 0.2 THEN 'aaa'
+             |    WHEN r < 0.4 THEN 'bbb'
+             |    WHEN r < 0.6 THEN 'ccc'
+             |    WHEN r < 0.8 THEN 'ddd'
+             |    ELSE 'eee'
+             |  END
+             |AS id
+             |FROM tmp
+             |""".stripMargin))
 
         sqlBenchmark.addCase("SQL Parquet - Spark") { _ =>
           spark.sql("select sum(length(id)) from parquetV1Table").noop()
