@@ -272,7 +272,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
       requestedSchema =
           CometParquetReadSupport.clipParquetSchema(
               requestedSchema, sparkSchema, isCaseSensitive, useFieldId, ignoreMissingIds);
-      if (requestedSchema.getColumns().size() != sparkSchema.size()) {
+      if (requestedSchema.getFieldCount() != sparkSchema.size()) {
         throw new IllegalArgumentException(
             String.format(
                 "Spark schema has %d columns while " + "Parquet schema has %d columns",

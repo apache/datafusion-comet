@@ -245,7 +245,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
         requestedSchema =
             CometParquetReadSupport.clipParquetSchema(
                 requestedSchema, sparkSchema, isCaseSensitive, useFieldId, ignoreMissingIds);
-        if (requestedSchema.getColumns().size() != sparkSchema.size()) {
+        if (requestedSchema.getFieldCount() != sparkSchema.size()) {
           throw new IllegalArgumentException(
               String.format(
                   "Spark schema has %d columns while " + "Parquet schema has %d columns",
@@ -267,9 +267,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     //    ShimFileFormat.findRowIndexColumnIndexInSchema(sparkSchema);
     for (int i = 0; i < requestedSchema.getFieldCount(); i++) {
       Type t = requestedSchema.getFields().get(i);
-      Preconditions.checkState(
-          t.isPrimitive() && !t.isRepetition(Type.Repetition.REPEATED),
-          "Complex type is not supported");
+      //      Preconditions.checkState(
+      //          t.isPrimitive() && !t.isRepetition(Type.Repetition.REPEATED),
+      //          "Complex type is not supported");
       String[] colPath = paths.get(i);
       if (nonPartitionFields[i].name().equals(ShimFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME())) {
         // Values of ROW_INDEX_TEMPORARY_COLUMN_NAME column are always populated with
