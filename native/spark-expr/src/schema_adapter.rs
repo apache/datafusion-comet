@@ -20,7 +20,7 @@
 use crate::{spark_cast, SparkCastOptions};
 use arrow::compute::can_cast_types;
 use arrow_array::{new_null_array, Array, RecordBatch, RecordBatchOptions};
-use arrow_schema::{DataType, Schema, SchemaRef, TimeUnit};
+use arrow_schema::{DataType, Schema, SchemaRef};
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
 use datafusion_common::plan_err;
 use datafusion_expr::ColumnarValue;
@@ -128,7 +128,7 @@ impl SchemaAdapter for SparkSchemaAdapter {
                 required_schema: Arc::<Schema>::clone(&self.required_schema),
                 field_mappings,
                 table_schema: Arc::<Schema>::clone(&self.table_schema),
-                cast_options,
+                cast_options: self.cast_options.clone(),
             }),
             projection,
         ))
