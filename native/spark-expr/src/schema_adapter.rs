@@ -17,10 +17,10 @@
 
 //! Custom schema adapter that uses Spark-compatible casts
 
+use crate::cast::cast_supported;
 use crate::{spark_cast, SparkCastOptions};
-use arrow::compute::can_cast_types;
 use arrow_array::{new_null_array, Array, RecordBatch, RecordBatchOptions};
-use arrow_schema::{DataType, Schema, SchemaRef};
+use arrow_schema::{Schema, SchemaRef};
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
 use datafusion_common::plan_err;
 use datafusion_expr::ColumnarValue;
@@ -109,7 +109,11 @@ impl SchemaAdapter for SparkSchemaAdapter {
             if let Some((table_idx, table_field)) =
                 self.required_schema.fields().find(file_field.name())
             {
-                if spark_can_cast_types(file_field.data_type(), table_field.data_type()) {
+                if cast_supported(
+                    file_field.data_type(),
+                    table_field.data_type(),
+                    &self.cast_options,
+                ) {
                     field_mappings[table_idx] = Some(projection.len());
                     projection.push(file_idx);
                 } else {
@@ -278,10 +282,4 @@ impl SchemaMapper for SchemaMapping {
         let record_batch = RecordBatch::try_new_with_options(schema, cols, &options)?;
         Ok(record_batch)
     }
-}
-
-fn spark_can_cast_types(from_type: &DataType, to_type: &DataType) -> bool {
-    // TODO: implement Spark's logic for determining which casts are supported but for now
-    // just delegate to Arrow's rules
-    can_cast_types(from_type, to_type)
 }
