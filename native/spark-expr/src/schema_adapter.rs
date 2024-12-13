@@ -286,6 +286,7 @@ impl SchemaMapper for SchemaMapping {
 
 #[cfg(test)]
 mod test {
+    use crate::test_common::file_util::get_temp_filename;
     use crate::{EvalMode, SparkCastOptions, SparkSchemaAdapterFactory};
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
@@ -302,19 +303,19 @@ mod test {
     use std::fs::File;
     use std::sync::Arc;
 
-    // TODO add tests that demonstrate ANSI overflow errors
-
     #[tokio::test]
     async fn parquet() -> Result<(), DataFusionError> {
-        let filename = "/tmp/output.parquet";
-        write_parquet_file(filename)?;
+        let filename = get_temp_filename();
+        let filename = filename.as_path().as_os_str().to_str().unwrap().to_string();
+
+        write_parquet_file(&filename)?;
 
         let required_schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Utf8, false),
             Field::new("name", DataType::Utf8, false),
         ]));
 
-        let batch = read_batch(filename, &required_schema).await?;
+        let batch = read_batch(&filename, &required_schema).await?;
 
         println!("{:?}", batch);
 
@@ -322,9 +323,6 @@ mod test {
     }
 
     fn write_parquet_file(filename: &str) -> Result<(), DataFusionError> {
-        // TODO test complex types: structs, maps, arrays
-        // TODO test edge cases such as unsigned ints
-
         let file_schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
             Field::new("name", DataType::Utf8, false),

@@ -140,18 +140,13 @@ pub struct Cast {
     pub cast_options: SparkCastOptions,
 }
 
+/// Determine if Comet supports a cast, taking options such as EvalMode and Timezone into account.
 pub fn cast_supported(
     from_type: &DataType,
     to_type: &DataType,
     options: &SparkCastOptions,
 ) -> bool {
     use DataType::*;
-
-    // TODO this duplicates logic in the Scala code (perhaps we can have Scala call
-    // into JNI and re-use this version?)
-    // TODO review use of Date32 vs Date64
-    // TODO add special case of converting Parquet types to Spark types (such
-    // as unsigned ints, which are not supported in Spark)
 
     let from_type = if let Dictionary(_, dt) = from_type {
         dt
@@ -180,24 +175,12 @@ pub fn cast_supported(
         (Decimal128(_, _), _) => can_cast_from_decimal(from_type, options),
         (Timestamp(_, None), _) => can_cast_from_timestamp_ntz(from_type, options),
         (Timestamp(_, Some(_)), _) => can_cast_from_timestamp(from_type, options),
-        // TODO Utf8View
         (Utf8 | LargeUtf8, _) => can_cast_from_string(to_type, options),
         (_, Utf8 | LargeUtf8) => can_cast_to_string(from_type, options),
-        // TODO struct support
-        //(Struct(_), Struct(_)) => {
-        /*
-        case (from_struct: StructType, to_struct: StructType) =>
-        from_struct.fields.zip(to_struct.fields).foreach { case (a, b) =>
-            isSupported(a.dataType, b.dataType, timeZoneId, evalMode) match {
-                case Compatible(_) =>
-                // all good
-                case other =>
-                return other
-            }
-        }
-        Compatible()
-         */
-        //}
+        (Struct(from_fields), Struct(to_fields)) => from_fields
+            .iter()
+            .zip(to_fields.iter())
+            .all(|(a, b)| cast_supported(a.data_type(), b.data_type(), options)),
         _ => false,
     }
 }
