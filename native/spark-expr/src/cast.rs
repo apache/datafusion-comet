@@ -35,11 +35,18 @@ use arrow::{
 use arrow_array::builder::StringBuilder;
 use arrow_array::{DictionaryArray, StringArray, StructArray};
 use arrow_schema::{DataType, Field, Schema};
+use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
+use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion_common::{
     cast::as_generic_string_array, internal_err, Result as DataFusionResult, ScalarValue,
 };
 use datafusion_expr::ColumnarValue;
 use datafusion_physical_expr::PhysicalExpr;
+use num::{
+    cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
+    ToPrimitive,
+};
+use regex::Regex;
 use std::str::FromStr;
 use std::{
     any::Any,
@@ -48,14 +55,6 @@ use std::{
     num::Wrapping,
     sync::Arc,
 };
-
-use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
-use num::{
-    cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
-    ToPrimitive,
-};
-use regex::Regex;
 
 use crate::timezone;
 use crate::utils::array_with_timezone;
@@ -146,252 +145,250 @@ pub fn cast_supported(
     to_type: &DataType,
     options: &SparkCastOptions,
 ) -> bool {
-    true
+    use DataType::*;
 
-    // TODO:
-    // convert the following scala code to Rust
-    // have the plugin Scala code call this logic via JNI so that we do not duplicate it
+    // TODO this duplicates logic in the Scala code
 
-    /*
-          def isSupported(
-          fromType: DataType,
-          toType: DataType,
-          timeZoneId: Option[String],
-          evalMode: CometEvalMode.Value): SupportLevel = {
+    let from_type = if let Dictionary(_, dt) = from_type {
+        dt
+    } else {
+        from_type
+    };
 
-        if (fromType == toType) {
-          return Compatible()
-        }
+    let to_type = if let Dictionary(_, dt) = to_type {
+        dt
+    } else {
+        to_type
+    };
 
-        (fromType, toType) match {
-          case (dt: DataType, _) if dt.typeName == "timestamp_ntz" =>
-            // https://github.com/apache/datafusion-comet/issues/378
-            toType match {
-              case DataTypes.TimestampType | DataTypes.DateType | DataTypes.StringType =>
-                Incompatible()
-              case _ =>
-                Unsupported
-            }
-          case (from: DecimalType, to: DecimalType) =>
-            if (to.precision < from.precision) {
-              // https://github.com/apache/datafusion/issues/13492
-              Incompatible(Some("Casting to smaller precision is not supported"))
-            } else {
-              Compatible()
-            }
-          case (DataTypes.StringType, _) =>
-            canCastFromString(toType, timeZoneId, evalMode)
-          case (_, DataTypes.StringType) =>
-            canCastToString(fromType, timeZoneId, evalMode)
-          case (DataTypes.TimestampType, _) =>
-            canCastFromTimestamp(toType)
-          case (_: DecimalType, _) =>
-            canCastFromDecimal(toType)
-          case (DataTypes.BooleanType, _) =>
-            canCastFromBoolean(toType)
-          case (DataTypes.ByteType, _) =>
-            canCastFromByte(toType)
-          case (DataTypes.ShortType, _) =>
-            canCastFromShort(toType)
-          case (DataTypes.IntegerType, _) =>
-            canCastFromInt(toType)
-          case (DataTypes.LongType, _) =>
-            canCastFromLong(toType)
-          case (DataTypes.FloatType, _) =>
-            canCastFromFloat(toType)
-          case (DataTypes.DoubleType, _) =>
-            canCastFromDouble(toType)
-          case (from_struct: StructType, to_struct: StructType) =>
-            from_struct.fields.zip(to_struct.fields).foreach { case (a, b) =>
-              isSupported(a.dataType, b.dataType, timeZoneId, evalMode) match {
-                case Compatible(_) =>
-                // all good
-                case other =>
-                  return other
-              }
-            }
-            Compatible()
-          case _ => Unsupported
-        }
-      }
-
-      private def canCastFromString(
-          toType: DataType,
-          timeZoneId: Option[String],
-          evalMode: CometEvalMode.Value): SupportLevel = {
-        toType match {
-          case DataTypes.BooleanType =>
-            Compatible()
-          case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType |
-              DataTypes.LongType =>
-            Compatible()
-          case DataTypes.BinaryType =>
-            Compatible()
-          case DataTypes.FloatType | DataTypes.DoubleType =>
-            // https://github.com/apache/datafusion-comet/issues/326
-            Incompatible(
-              Some(
-                "Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. " +
-                  "Does not support ANSI mode."))
-          case _: DecimalType =>
-            // https://github.com/apache/datafusion-comet/issues/325
-            Incompatible(
-              Some("Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. " +
-                "Does not support ANSI mode. Returns 0.0 instead of null if input contains no digits"))
-          case DataTypes.DateType =>
-            // https://github.com/apache/datafusion-comet/issues/327
-            Compatible(Some("Only supports years between 262143 BC and 262142 AD"))
-          case DataTypes.TimestampType if timeZoneId.exists(tz => tz != "UTC") =>
-            Incompatible(Some(s"Cast will use UTC instead of $timeZoneId"))
-          case DataTypes.TimestampType if evalMode == "ANSI" =>
-            Incompatible(Some("ANSI mode not supported"))
-          case DataTypes.TimestampType =>
-            // https://github.com/apache/datafusion-comet/issues/328
-            Incompatible(Some("Not all valid formats are supported"))
-          case _ =>
-            Unsupported
-        }
-      }
-
-      private def canCastToString(
-          fromType: DataType,
-          timeZoneId: Option[String],
-          evalMode: CometEvalMode.Value): SupportLevel = {
-        fromType match {
-          case DataTypes.BooleanType => Compatible()
-          case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType |
-              DataTypes.LongType =>
-            Compatible()
-          case DataTypes.DateType => Compatible()
-          case DataTypes.TimestampType => Compatible()
-          case DataTypes.FloatType | DataTypes.DoubleType =>
-            Compatible(
-              Some(
-                "There can be differences in precision. " +
-                  "For example, the input \"1.4E-45\" will produce 1.0E-45 " +
-                  "instead of 1.4E-45"))
-          case _: DecimalType =>
-            // https://github.com/apache/datafusion-comet/issues/1068
-            Compatible(
-              Some(
-                "There can be formatting differences in some case due to Spark using " +
-                  "scientific notation where Comet does not"))
-          case DataTypes.BinaryType =>
-            // https://github.com/apache/datafusion-comet/issues/377
-            Incompatible(Some("Only works for binary data representing valid UTF-8 strings"))
-          case StructType(fields) =>
-            for (field <- fields) {
-              isSupported(field.dataType, DataTypes.StringType, timeZoneId, evalMode) match {
-                case s: Incompatible =>
-                  return s
-                case Unsupported =>
-                  return Unsupported
-                case _ =>
-              }
-            }
-            Compatible()
-          case _ => Unsupported
-        }
-      }
-
-      private def canCastFromTimestamp(toType: DataType): SupportLevel = {
-        toType match {
-          case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
-              DataTypes.IntegerType =>
-            // https://github.com/apache/datafusion-comet/issues/352
-            // this seems like an edge case that isn't important for us to support
-            Unsupported
-          case DataTypes.LongType =>
-            // https://github.com/apache/datafusion-comet/issues/352
-            Compatible()
-          case DataTypes.StringType => Compatible()
-          case DataTypes.DateType => Compatible()
-          case _: DecimalType => Compatible()
-          case _ => Unsupported
-        }
-      }
-
-      private def canCastFromBoolean(toType: DataType): SupportLevel = toType match {
-        case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType |
-            DataTypes.FloatType | DataTypes.DoubleType =>
-          Compatible()
-        case _ => Unsupported
-      }
-
-      private def canCastFromByte(toType: DataType): SupportLevel = toType match {
-        case DataTypes.BooleanType =>
-          Compatible()
-        case DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType =>
-          Compatible()
-        case DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
-          Compatible()
-        case _ =>
-          Unsupported
-      }
-
-      private def canCastFromShort(toType: DataType): SupportLevel = toType match {
-        case DataTypes.BooleanType =>
-          Compatible()
-        case DataTypes.ByteType | DataTypes.IntegerType | DataTypes.LongType =>
-          Compatible()
-        case DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
-          Compatible()
-        case _ =>
-          Unsupported
-      }
-
-      private def canCastFromInt(toType: DataType): SupportLevel = toType match {
-        case DataTypes.BooleanType =>
-          Compatible()
-        case DataTypes.ByteType | DataTypes.ShortType | DataTypes.LongType =>
-          Compatible()
-        case DataTypes.FloatType | DataTypes.DoubleType =>
-          Compatible()
-        case _: DecimalType =>
-          Incompatible(Some("No overflow check"))
-        case _ =>
-          Unsupported
-      }
-
-      private def canCastFromLong(toType: DataType): SupportLevel = toType match {
-        case DataTypes.BooleanType =>
-          Compatible()
-        case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType =>
-          Compatible()
-        case DataTypes.FloatType | DataTypes.DoubleType =>
-          Compatible()
-        case _: DecimalType =>
-          Incompatible(Some("No overflow check"))
-        case _ =>
-          Unsupported
-      }
-
-      private def canCastFromFloat(toType: DataType): SupportLevel = toType match {
-        case DataTypes.BooleanType | DataTypes.DoubleType | DataTypes.ByteType | DataTypes.ShortType |
-            DataTypes.IntegerType | DataTypes.LongType =>
-          Compatible()
-        case _: DecimalType => Compatible()
-        case _ => Unsupported
-      }
-
-      private def canCastFromDouble(toType: DataType): SupportLevel = toType match {
-        case DataTypes.BooleanType | DataTypes.FloatType | DataTypes.ByteType | DataTypes.ShortType |
-            DataTypes.IntegerType | DataTypes.LongType =>
-          Compatible()
-        case _: DecimalType => Compatible()
-        case _ => Unsupported
-      }
-
-      private def canCastFromDecimal(toType: DataType): SupportLevel = toType match {
-        case DataTypes.FloatType | DataTypes.DoubleType | DataTypes.ByteType | DataTypes.ShortType |
-            DataTypes.IntegerType | DataTypes.LongType =>
-          Compatible()
-        case _ => Unsupported
-      }
-
+    if from_type == to_type {
+        return true;
     }
 
-         */
+    match (from_type, to_type) {
+        (Boolean, _) => can_cast_from_boolean(from_type, options),
+        (Int8, _) => can_cast_from_byte(from_type, options),
+        (Int16, _) => can_cast_from_short(from_type, options),
+        (Int32, _) => can_cast_from_int(from_type, options),
+        (Int64, _) => can_cast_from_long(from_type, options),
+        (Float32, _) => can_cast_from_float(from_type, options),
+        (Float64, _) => can_cast_from_double(from_type, options),
+        (Decimal128(_, _), _) => can_cast_from_decimal(from_type, options),
+        (Timestamp(_, None), _) => can_cast_from_timestamp_ntz(from_type, options),
+        (Timestamp(_, Some(_)), _) => can_cast_from_timestamp(from_type, options),
+        // TODO Utf8View
+        (Utf8 | LargeUtf8, _) => can_cast_from_string(to_type, options),
+        (_, Utf8 | LargeUtf8) => can_cast_to_string(from_type, options),
+        (Struct(_), Struct(_)) => {
+            /*
+            case (from_struct: StructType, to_struct: StructType) =>
+            from_struct.fields.zip(to_struct.fields).foreach { case (a, b) =>
+                isSupported(a.dataType, b.dataType, timeZoneId, evalMode) match {
+                    case Compatible(_) =>
+                    // all good
+                    case other =>
+                    return other
+                }
+            }
+            Compatible()
+             */
+            todo!()
+        }
+        _ => false,
+    }
+}
+
+fn can_cast_from_string(to_type: &DataType, options: &SparkCastOptions) -> bool {
+    use DataType::*;
+    match to_type {
+        Boolean | Int8 | Int16 | Int32 | Int64 | Binary => true,
+        Float32 | Float64 => {
+            // https://github.com/apache/datafusion-comet/issues/326
+            // Does not support inputs ending with 'd' or 'f'. Does not support 'inf'.
+            // Does not support ANSI mode.
+            options.allow_incompat
+        }
+        Decimal128(_, _) => {
+            // https://github.com/apache/datafusion-comet/issues/325
+            //     Some("Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. " +
+            //         "Does not support ANSI mode. Returns 0.0 instead of null if input contains no digits"))
+
+            options.allow_incompat
+        }
+        Date32 | Date64 => {
+            // https://github.com/apache/datafusion-comet/issues/327
+            // Only supports years between 262143 BC and 262142 AD
+            options.allow_incompat
+        }
+        Timestamp(_, _) if options.eval_mode == EvalMode::Ansi => {
+            // ANSI mode not supported
+            false
+        }
+        Timestamp(_, Some(tz)) if tz.as_ref() != "UTC" => {
+            // Cast will use UTC instead of $timeZoneId
+            options.allow_incompat
+        }
+        Timestamp(_, _) => {
+            // https://github.com/apache/datafusion-comet/issues/328
+            // Not all valid formats are supported
+            options.allow_incompat
+        }
+        _ => false,
+    }
+}
+
+fn can_cast_to_string(from_type: &DataType, options: &SparkCastOptions) -> bool {
+    /*
+           fromType match {
+         case DataTypes.BooleanType => Compatible()
+         case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType |
+             DataTypes.LongType =>
+           Compatible()
+         case DataTypes.DateType => Compatible()
+         case DataTypes.TimestampType => Compatible()
+         case DataTypes.FloatType | DataTypes.DoubleType =>
+           Compatible(
+             Some(
+               "There can be differences in precision. " +
+                 "For example, the input \"1.4E-45\" will produce 1.0E-45 " +
+                 "instead of 1.4E-45"))
+         case _: DecimalType =>
+           // https://github.com/apache/datafusion-comet/issues/1068
+           Compatible(
+             Some(
+               "There can be formatting differences in some case due to Spark using " +
+                 "scientific notation where Comet does not"))
+         case DataTypes.BinaryType =>
+           // https://github.com/apache/datafusion-comet/issues/377
+           Incompatible(Some("Only works for binary data representing valid UTF-8 strings"))
+         case StructType(fields) =>
+           for (field <- fields) {
+             isSupported(field.dataType, DataTypes.StringType, timeZoneId, evalMode) match {
+               case s: Incompatible =>
+                 return s
+               case Unsupported =>
+                 return Unsupported
+               case _ =>
+             }
+           }
+           Compatible()
+         case _ => Unsupported
+       }
+
+    */
+    todo!()
+}
+
+fn can_cast_from_timestamp_ntz(to_type: &DataType, options: &SparkCastOptions) -> bool {
+    use DataType::*;
+    match to_type {
+        Timestamp(_, _) | Date32 | Date64 | Utf8 => {
+            // incompatible
+            options.allow_incompat
+        }
+        _ => {
+            // unsupported
+            false
+        }
+    }
+}
+
+fn can_cast_from_timestamp(to_type: &DataType, options: &SparkCastOptions) -> bool {
+    use DataType::*;
+    match to_type {
+        Boolean | Int8 | Int16 => {
+            // https://github.com/apache/datafusion-comet/issues/352
+            // this seems like an edge case that isn't important for us to support
+            false
+        }
+        Int64 => {
+            // https://github.com/apache/datafusion-comet/issues/352
+            true
+        }
+        Date32 | Date64 | Utf8 | Decimal128(_, _) => true,
+        _ => {
+            // unsupported
+            false
+        }
+    }
+}
+
+fn can_cast_from_boolean(to_type: &DataType, _: &SparkCastOptions) -> bool {
+    use DataType::*;
+    matches!(to_type, Int8 | Int16 | Int32 | Int64 | Float32 | Float64)
+}
+
+fn can_cast_from_byte(to_type: &DataType, _: &SparkCastOptions) -> bool {
+    use DataType::*;
+    matches!(
+        to_type,
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Decimal128(_, _)
+    )
+}
+
+fn can_cast_from_short(to_type: &DataType, _: &SparkCastOptions) -> bool {
+    use DataType::*;
+    matches!(
+        to_type,
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Decimal128(_, _)
+    )
+}
+
+fn can_cast_from_int(to_type: &DataType, options: &SparkCastOptions) -> bool {
+    use DataType::*;
+    match to_type {
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 => true,
+        Decimal128(_, _) => {
+            // incompatible: no overflow check
+            options.allow_incompat
+        }
+        _ => false,
+    }
+}
+
+fn can_cast_from_long(to_type: &DataType, options: &SparkCastOptions) -> bool {
+    use DataType::*;
+    match to_type {
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 => true,
+        Decimal128(_, _) => {
+            // incompatible: no overflow check
+            options.allow_incompat
+        }
+        _ => false,
+    }
+}
+
+fn can_cast_from_float(to_type: &DataType, _: &SparkCastOptions) -> bool {
+    use DataType::*;
+    matches!(
+        to_type,
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float64 | Decimal128(_, _)
+    )
+}
+
+fn can_cast_from_double(to_type: &DataType, _: &SparkCastOptions) -> bool {
+    use DataType::*;
+    matches!(
+        to_type,
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Decimal128(_, _)
+    )
+}
+
+fn can_cast_from_decimal(to_type: &DataType, _: &SparkCastOptions) -> bool {
+    use DataType::*;
+    matches!(to_type, Int8 | Int16 | Int32 | Int64 | Float32 | Float64)
+    /*
+           (Decimal128(p1, _), Decimal128(p2, _)) => {
+           if p2 < p1 {
+               // https://github.com/apache/datafusion/issues/13492
+               // Incompatible(Some("Casting to smaller precision is not supported"))
+               options.allow_incompat
+           } else {
+               true
+           }
+       }
+
+    */
 }
 
 macro_rules! cast_utf8_to_int {

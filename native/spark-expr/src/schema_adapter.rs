@@ -283,3 +283,12 @@ impl SchemaMapper for SchemaMapping {
         Ok(record_batch)
     }
 }
+
+#[cfg(test)]
+mod test {
+
+    #[test]
+    fn parquet() {
+        // TODO write Parquet file with all types then read with schema adapter
+    }
+}
