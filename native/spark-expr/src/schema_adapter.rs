@@ -291,6 +291,7 @@ mod test {
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
+    use arrow_array::UInt32Array;
     use arrow_schema::SchemaRef;
     use datafusion::datasource::listing::PartitionedFile;
     use datafusion::datasource::physical_plan::{FileScanConfig, ParquetExec};
@@ -304,7 +305,7 @@ mod test {
     use std::sync::Arc;
 
     #[tokio::test]
-    async fn parquet_roundtrip() -> Result<(), DataFusionError> {
+    async fn parquet_roundtrip_int_as_string() -> Result<(), DataFusionError> {
         let file_schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
             Field::new("name", DataType::Utf8, false),
@@ -319,6 +320,20 @@ mod test {
             Field::new("id", DataType::Utf8, false),
             Field::new("name", DataType::Utf8, false),
         ]));
+
+        let _ = roundtrip(&batch, required_schema).await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn parquet_roundtrip_unsigned_int() -> Result<(), DataFusionError> {
+        let file_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::UInt32, false)]));
+
+        let ids = Arc::new(UInt32Array::from(vec![1, 2, 3])) as Arc<dyn arrow::array::Array>;
+        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![ids])?;
+
+        let required_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
 
         let _ = roundtrip(&batch, required_schema).await?;
 
@@ -344,7 +359,9 @@ mod test {
                 filename.to_string(),
             )?]]);
 
-        let spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+        spark_cast_options.allow_cast_unsigned_ints = true;
+
         let parquet_exec = ParquetExec::builder(file_scan_config)
             .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
                 spark_cast_options,
