@@ -30,6 +30,7 @@ use std::sync::Arc;
 /// `cast` implementation.
 #[derive(Clone, Debug)]
 pub struct SparkSchemaAdapterFactory {
+    /// Spark cast options
     cast_options: SparkCastOptions,
 }
 
@@ -74,6 +75,7 @@ pub struct SparkSchemaAdapter {
     /// which may refer to columns that are not referred to anywhere
     /// else in the plan.
     table_schema: SchemaRef,
+    /// Spark cast options
     cast_options: SparkCastOptions,
 }
 
@@ -107,7 +109,7 @@ impl SchemaAdapter for SparkSchemaAdapter {
             if let Some((table_idx, table_field)) =
                 self.required_schema.fields().find(file_field.name())
             {
-                if comet_can_cast_types(file_field.data_type(), table_field.data_type()) {
+                if spark_can_cast_types(file_field.data_type(), table_field.data_type()) {
                     field_mappings[table_idx] = Some(projection.len());
                     projection.push(file_idx);
                 } else {
@@ -278,15 +280,8 @@ impl SchemaMapper for SchemaMapping {
     }
 }
 
-fn comet_can_cast_types(from_type: &DataType, to_type: &DataType) -> bool {
-    // TODO this is just a quick hack to get tests passing
-    match (from_type, to_type) {
-        (DataType::Struct(_), DataType::Struct(_)) => {
-            // workaround for struct casting
-            true
-        }
-        // TODO this is maybe no longer needed
-        (_, DataType::Timestamp(TimeUnit::Nanosecond, _)) => false,
-        _ => can_cast_types(from_type, to_type),
-    }
+fn spark_can_cast_types(from_type: &DataType, to_type: &DataType) -> bool {
+    // TODO: implement Spark's logic for determining which casts are supported but for now
+    // just delegate to Arrow's rules
+    can_cast_types(from_type, to_type)
 }
