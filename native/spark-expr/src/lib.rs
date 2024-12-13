@@ -41,6 +41,9 @@ mod kernels;
 mod list;
 mod regexp;
 pub mod scalar_funcs;
+mod schema_adapter;
+pub use schema_adapter::SparkSchemaAdapterFactory;
+
 pub mod spark_hash;
 mod stddev;
 pub use stddev::Stddev;
