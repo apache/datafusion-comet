@@ -148,6 +148,9 @@ pub fn cast_supported(
     use DataType::*;
 
     // TODO this duplicates logic in the Scala code
+    // TODO review use of Date32 vs Date64
+    // TODO add special case of converting Parquet types to Spark types (such
+    // as unsigned ints, which are not supported in Spark)
 
     let from_type = if let Dictionary(_, dt) = from_type {
         dt
@@ -179,21 +182,21 @@ pub fn cast_supported(
         // TODO Utf8View
         (Utf8 | LargeUtf8, _) => can_cast_from_string(to_type, options),
         (_, Utf8 | LargeUtf8) => can_cast_to_string(from_type, options),
-        (Struct(_), Struct(_)) => {
-            /*
-            case (from_struct: StructType, to_struct: StructType) =>
-            from_struct.fields.zip(to_struct.fields).foreach { case (a, b) =>
-                isSupported(a.dataType, b.dataType, timeZoneId, evalMode) match {
-                    case Compatible(_) =>
-                    // all good
-                    case other =>
-                    return other
-                }
+        // TODO struct support
+        //(Struct(_), Struct(_)) => {
+        /*
+        case (from_struct: StructType, to_struct: StructType) =>
+        from_struct.fields.zip(to_struct.fields).foreach { case (a, b) =>
+            isSupported(a.dataType, b.dataType, timeZoneId, evalMode) match {
+                case Compatible(_) =>
+                // all good
+                case other =>
+                return other
             }
-            Compatible()
-             */
-            todo!()
         }
+        Compatible()
+         */
+        //}
         _ => false,
     }
 }
@@ -210,8 +213,8 @@ fn can_cast_from_string(to_type: &DataType, options: &SparkCastOptions) -> bool 
         }
         Decimal128(_, _) => {
             // https://github.com/apache/datafusion-comet/issues/325
-            //     Some("Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. " +
-            //         "Does not support ANSI mode. Returns 0.0 instead of null if input contains no digits"))
+            // Does not support inputs ending with 'd' or 'f'. Does not support 'inf'.
+            // Does not support ANSI mode. Returns 0.0 instead of null if input contains no digits
 
             options.allow_incompat
         }
@@ -238,45 +241,31 @@ fn can_cast_from_string(to_type: &DataType, options: &SparkCastOptions) -> bool 
 }
 
 fn can_cast_to_string(from_type: &DataType, options: &SparkCastOptions) -> bool {
-    /*
-           fromType match {
-         case DataTypes.BooleanType => Compatible()
-         case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType |
-             DataTypes.LongType =>
-           Compatible()
-         case DataTypes.DateType => Compatible()
-         case DataTypes.TimestampType => Compatible()
-         case DataTypes.FloatType | DataTypes.DoubleType =>
-           Compatible(
-             Some(
-               "There can be differences in precision. " +
-                 "For example, the input \"1.4E-45\" will produce 1.0E-45 " +
-                 "instead of 1.4E-45"))
-         case _: DecimalType =>
-           // https://github.com/apache/datafusion-comet/issues/1068
-           Compatible(
-             Some(
-               "There can be formatting differences in some case due to Spark using " +
-                 "scientific notation where Comet does not"))
-         case DataTypes.BinaryType =>
-           // https://github.com/apache/datafusion-comet/issues/377
-           Incompatible(Some("Only works for binary data representing valid UTF-8 strings"))
-         case StructType(fields) =>
-           for (field <- fields) {
-             isSupported(field.dataType, DataTypes.StringType, timeZoneId, evalMode) match {
-               case s: Incompatible =>
-                 return s
-               case Unsupported =>
-                 return Unsupported
-               case _ =>
-             }
-           }
-           Compatible()
-         case _ => Unsupported
-       }
-
-    */
-    todo!()
+    use DataType::*;
+    match from_type {
+        Boolean | Int8 | Int16 | Int32 | Int64 | Date32 | Date64 | Timestamp(_, _) => true,
+        Float32 | Float64 => {
+            // There can be differences in precision.
+            // For example, the input \"1.4E-45\" will produce 1.0E-45 " +
+            // instead of 1.4E-45"))
+            true
+        }
+        Decimal128(_, _) => {
+            // https://github.com/apache/datafusion-comet/issues/1068
+            // There can be formatting differences in some case due to Spark using
+            // scientific notation where Comet does not
+            true
+        }
+        Binary => {
+            // https://github.com/apache/datafusion-comet/issues/377
+            // Only works for binary data representing valid UTF-8 strings
+            options.allow_incompat
+        }
+        Struct(fields) => fields
+            .iter()
+            .all(|f| can_cast_to_string(f.data_type(), options)),
+        _ => false,
+    }
 }
 
 fn can_cast_from_timestamp_ntz(to_type: &DataType, options: &SparkCastOptions) -> bool {
@@ -293,7 +282,7 @@ fn can_cast_from_timestamp_ntz(to_type: &DataType, options: &SparkCastOptions) -
     }
 }
 
-fn can_cast_from_timestamp(to_type: &DataType, options: &SparkCastOptions) -> bool {
+fn can_cast_from_timestamp(to_type: &DataType, _options: &SparkCastOptions) -> bool {
     use DataType::*;
     match to_type {
         Boolean | Int8 | Int16 => {
