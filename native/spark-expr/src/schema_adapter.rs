@@ -304,25 +304,7 @@ mod test {
     use std::sync::Arc;
 
     #[tokio::test]
-    async fn parquet() -> Result<(), DataFusionError> {
-        let filename = get_temp_filename();
-        let filename = filename.as_path().as_os_str().to_str().unwrap().to_string();
-
-        write_parquet_file(&filename)?;
-
-        let required_schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("name", DataType::Utf8, false),
-        ]));
-
-        let batch = read_batch(&filename, &required_schema).await?;
-
-        println!("{:?}", batch);
-
-        Ok(())
-    }
-
-    fn write_parquet_file(filename: &str) -> Result<(), DataFusionError> {
+    async fn parquet_roundtrip() -> Result<(), DataFusionError> {
         let file_schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
             Field::new("name", DataType::Utf8, false),
@@ -331,22 +313,33 @@ mod test {
         let ids = Arc::new(Int32Array::from(vec![1, 2, 3])) as Arc<dyn arrow::array::Array>;
         let names = Arc::new(StringArray::from(vec!["Alice", "Bob", "Charlie"]))
             as Arc<dyn arrow::array::Array>;
-        let batch = RecordBatch::try_new(file_schema.clone(), vec![ids, names])?;
-        let file = File::create(&filename)?;
+        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![ids, names])?;
 
-        let mut writer = ArrowWriter::try_new(file, file_schema.clone(), None)?;
-        writer.write(&batch)?;
-        writer.close()?;
+        let required_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        let _ = roundtrip(&batch, required_schema).await?;
 
         Ok(())
     }
 
-    async fn read_batch(
-        filename: &str,
-        required_schema: &SchemaRef,
+    /// Create a Parquet file containing a single batch and then read the batch back using
+    /// the specified required_schema. This will cause the SchemaAdapter code to be used.
+    async fn roundtrip(
+        batch: &RecordBatch,
+        required_schema: SchemaRef,
     ) -> Result<RecordBatch, DataFusionError> {
+        let filename = get_temp_filename();
+        let filename = filename.as_path().as_os_str().to_str().unwrap().to_string();
+        let file = File::create(&filename)?;
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&batch.schema()), None)?;
+        writer.write(&batch)?;
+        writer.close()?;
+
         let object_store_url = ObjectStoreUrl::local_filesystem();
-        let file_scan_config = FileScanConfig::new(object_store_url, Arc::clone(&required_schema))
+        let file_scan_config = FileScanConfig::new(object_store_url, required_schema)
             .with_file_groups(vec![vec![PartitionedFile::from_path(
                 filename.to_string(),
             )?]]);
