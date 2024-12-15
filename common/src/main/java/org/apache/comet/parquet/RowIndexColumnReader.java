@@ -33,7 +33,7 @@ public class RowIndexColumnReader extends MetadataColumnReader {
   private long offset;
 
   public RowIndexColumnReader(StructField field, int batchSize, long[] indices) {
-    super(field.dataType(), TypeUtil.convertToParquet(field), false);
+    super(field.dataType(), TypeUtil.convertToParquet(field), false, false);
     this.indices = indices;
     setBatchSize(batchSize);
   }

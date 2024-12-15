@@ -34,6 +34,8 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.util.Utils
 
+import org.apache.comet.vector.CometPlainVector
+
 /**
  * Copied from Spark `ColumnarToRowExec`. Comet needs the fix for SPARK-50235 but cannot wait for
  * the fix to be released in Spark versions. We copy the implementation here to apply the fix.
@@ -158,6 +160,7 @@ case class CometColumnarToRowExec(child: SparkPlan)
 
     val writableColumnVectorClz = classOf[WritableColumnVector].getName
     val constantColumnVectorClz = classOf[ConstantColumnVector].getName
+    val cometPlainColumnVectorClz = classOf[CometPlainVector].getName
 
     // scalastyle:off line.size.limit
     s"""
@@ -176,8 +179,13 @@ case class CometColumnarToRowExec(child: SparkPlan)
        |
        |  // Comet fix for SPARK-50235
        |  for (int i = 0; i < ${colVars.length}; i++) {
-       |    if (!($batch.column(i) instanceof $writableColumnVectorClz || $batch.column(i) instanceof $constantColumnVectorClz)) {
+       |    if (!($batch.column(i) instanceof $writableColumnVectorClz || $batch.column(i) instanceof $constantColumnVectorClz || $batch.column(i) instanceof $cometPlainColumnVectorClz)) {
        |      $batch.column(i).close();
+       |    } else if ($batch.column(i) instanceof $cometPlainColumnVectorClz) {
+       |      $cometPlainColumnVectorClz cometPlainColumnVector = ($cometPlainColumnVectorClz) $batch.column(i);
+       |      if (!cometPlainColumnVector.isReused()) {
+       |        cometPlainColumnVector.close();
+       |      }
        |    }
        |  }
        |
