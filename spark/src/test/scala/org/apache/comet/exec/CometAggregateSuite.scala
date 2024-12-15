@@ -38,6 +38,38 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
+  test("stddev_pop should return NaN") {
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_EXPR_STDDEV_ENABLED.key -> "true") {
+      Seq("native", "jvm").foreach { cometShuffleMode =>
+        withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> cometShuffleMode) {
+          Seq(true, false).foreach { dictionary =>
+            withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+              Seq(true, false).foreach { nullOnDivideByZero =>
+                withSQLConf(
+                  "spark.sql.legacy.statisticalAggregate" -> nullOnDivideByZero.toString) {
+
+                  val data: Seq[(Float, Int)] = Seq(
+                    (Float.NaN, 1),
+                    (-0.0.asInstanceOf[Float], 2),
+                    (0.0.asInstanceOf[Float], 3),
+                    (Float.NaN, 4))
+                  withParquetTable(data, "tbl", dictionary) {
+                    val df = sql("SELECT stddev_pop(_1), stddev_pop(_2) FROM tbl")
+                    df.explain()
+                    df.show()
+                    checkSparkAnswer(df)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("count with aggregation filter") {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",

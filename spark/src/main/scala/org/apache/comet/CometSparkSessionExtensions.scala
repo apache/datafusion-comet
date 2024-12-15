@@ -958,6 +958,9 @@ class CometSparkSessionExtensions
           normalizePlan(plan)
         }
 
+        // scalastyle:off println
+        // println("isCometShuffleEnabled: " + isCometShuffleEnabled(conf))
+
         var newPlan = transform(normalizedPlan)
 
         // if the plan cannot be run fully natively then explain why (when appropriate
@@ -1186,9 +1189,15 @@ object CometSparkSessionExtensions extends Logging {
   // 1. `COMET_EXEC_SHUFFLE_ENABLED` is true
   // 2. `spark.shuffle.manager` is set to `CometShuffleManager`
   // 3. Off-heap memory is enabled || Spark/Comet unit testing
-  private[comet] def isCometShuffleEnabled(conf: SQLConf): Boolean =
+  private[comet] def isCometShuffleEnabled(conf: SQLConf): Boolean = {
+    // scalastyle:off println
+    // println("COMET_EXEC_SHUFFLE_ENABLED: " + COMET_EXEC_SHUFFLE_ENABLED.get(conf))
+    // println("isCometShuffleManagerEnabled: " + isCometShuffleManagerEnabled(conf))
+    // println("isOffHeapEnabled: " + isOffHeapEnabled(conf))
+    // println("isTesting: " + isTesting)
     COMET_EXEC_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf) &&
-      (isOffHeapEnabled(conf) || isTesting)
+    (isOffHeapEnabled(conf) || isTesting)
+  }
 
   private[comet] def getCometShuffleNotEnabledReason(conf: SQLConf): Option[String] = {
     if (!COMET_EXEC_SHUFFLE_ENABLED.get(conf)) {
