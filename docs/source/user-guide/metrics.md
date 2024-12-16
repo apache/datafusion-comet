@@ -33,10 +33,11 @@ between Spark and Comet.
 
 Comet adds some additional metrics:
 
-| Metric            | Description                                                                                 |
-|-------------------|---------------------------------------------------------------------------------------------|
-| `nativeWallTime`  | Total time spent in native shuffle writer, exluding the execution time of the input plan |
-
+| Metric                          | Description                                                                               |
+| ------------------------------- | ----------------------------------------------------------------------------------------- |
+| `native shuffle time`           | Total time spent in native shuffle writer, excluding the execution time of the input plan |
+| `native shuffle input time`     | Time spend executing the shuffle input plan and fetching batches.                         |
+| `shuffle wall time (inclusive)` | Total time executing the shuffle write, inclusive of executing the input plan.            |
 
 ## Native Metrics
 
@@ -56,7 +57,7 @@ Here is a guide to some of the native metrics.
 ### ShuffleWriterExec
 
 | Metric            | Description                                           |
-|-------------------|-------------------------------------------------------|
+| ----------------- | ----------------------------------------------------- |
 | `elapsed_compute` | Total time excluding any child operators.             |
 | `input_time`      | Time spent executing input plan and fetching batches. |
 | `write_time`      | Time spent writing bytes to disk.                     |
