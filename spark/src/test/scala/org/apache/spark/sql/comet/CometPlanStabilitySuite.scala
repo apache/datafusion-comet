@@ -265,7 +265,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
       CometConf.COMET_FULL_NATIVE_SCAN_ENABLED.key -> "false",
-      CometConf.COMET_NATIVE_COLUMN_READER_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_RECORDBATCH_READER_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "false",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
@@ -297,7 +297,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
     conf.set(CometConf.COMET_FULL_NATIVE_SCAN_ENABLED.key, "false")
-    conf.set(CometConf.COMET_NATIVE_COLUMN_READER_ENABLED.key, "true")
+    conf.set(CometConf.COMET_NATIVE_RECORDBATCH_READER_ENABLED.key, "true")
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "1g")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
 
