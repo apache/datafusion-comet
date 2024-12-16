@@ -40,6 +40,7 @@ use arrow_array::{
     Array, ArrayRef, RecordBatch, RecordBatchOptions,
 };
 use arrow_schema::{ArrowError, DataType, Field, Schema, TimeUnit};
+use datafusion::physical_plan::metrics::Time;
 use jni::sys::{jint, jlong};
 use std::{
     fs::OpenOptions,
@@ -3295,6 +3296,7 @@ pub fn process_sorted_row_partition(
     // this is the initial checksum for this method, as it also gets updated iteratively
     // inside the loop within the method across batches.
     initial_checksum: Option<u32>,
+    ipc_time: &Time,
 ) -> Result<(i64, Option<u32>), CometError> {
     // TODO: We can tune this parameter automatically based on row size and cache size.
     let row_step = 10;
@@ -3354,7 +3356,7 @@ pub fn process_sorted_row_partition(
         let mut frozen: Vec<u8> = vec![];
         let mut cursor = Cursor::new(&mut frozen);
         cursor.seek(SeekFrom::End(0))?;
-        written += write_ipc_compressed(&batch, &mut cursor)?;
+        written += write_ipc_compressed(&batch, &mut cursor, ipc_time)?;
 
         if let Some(checksum) = &mut current_checksum {
             checksum.update(&mut cursor)?;

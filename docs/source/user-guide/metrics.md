@@ -34,7 +34,8 @@ between Spark and Comet.
 Comet adds some additional metrics:
 
 | Metric                          | Description                                                                               |
-| ------------------------------- | ----------------------------------------------------------------------------------------- |
+|---------------------------------|-------------------------------------------------------------------------------------------|
+| `ipc time`                      | Time to encode batches in IPC format                                                      |
 | `native shuffle time`           | Total time spent in native shuffle writer, excluding the execution time of the input plan |
 | `native shuffle input time`     | Time spend executing the shuffle input plan and fetching batches.                         |
 | `shuffle wall time (inclusive)` | Total time executing the shuffle write, inclusive of executing the input plan.            |

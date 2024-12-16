@@ -285,6 +285,7 @@ impl PartitionBuffer {
         indices: &[usize],
         start_index: usize,
         write_time: &Time,
+        ipc_time: &Time,
     ) -> AppendRowStatus {
         let mut mem_diff = 0;
         let mut start = start_index;
@@ -307,7 +308,7 @@ impl PartitionBuffer {
             self.num_active_rows += end - start;
             if self.num_active_rows >= self.batch_size {
                 let mut timer = write_time.timer();
-                let flush = self.flush();
+                let flush = self.flush(ipc_time);
                 if let Err(e) = flush {
                     return AppendRowStatus::MemDiff(Err(e));
                 }
@@ -326,7 +327,7 @@ impl PartitionBuffer {
     }
 
     /// flush active data into frozen bytes
-    fn flush(&mut self) -> Result<isize> {
+    fn flush(&mut self, ipc_time: &Time) -> Result<isize> {
         if self.num_active_rows == 0 {
             return Ok(0);
         }
@@ -343,7 +344,7 @@ impl PartitionBuffer {
         let frozen_capacity_old = self.frozen.capacity();
         let mut cursor = Cursor::new(&mut self.frozen);
         cursor.seek(SeekFrom::End(0))?;
-        write_ipc_compressed(&frozen_batch, &mut cursor)?;
+        write_ipc_compressed(&frozen_batch, &mut cursor, ipc_time)?;
 
         mem_diff += (self.frozen.capacity() - frozen_capacity_old) as isize;
         Ok(mem_diff)
@@ -647,6 +648,9 @@ struct ShuffleRepartitionerMetrics {
     /// Time spent writing to disk. Maps to "shuffleWriteTime" in Spark SQL Metrics.
     write_time: Time,
 
+    /// Time encoding batches to IPC format
+    ipc_time: Time,
+
     //other_time: Time,
     /// count of spills during the execution of the operator
     spill_count: Count,
@@ -662,10 +666,12 @@ impl ShuffleRepartitionerMetrics {
     fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
         let input_time = MetricBuilder::new(metrics).subset_time("input_time", partition);
         let write_time = MetricBuilder::new(metrics).subset_time("write_time", partition);
+        let ipc_time = MetricBuilder::new(metrics).subset_time("ipc_time", partition);
         Self {
             baseline: BaselineMetrics::new(metrics, partition),
             input_time,
             write_time,
+            ipc_time,
             spill_count: MetricBuilder::new(metrics).spill_count(partition),
             spilled_bytes: MetricBuilder::new(metrics).spilled_bytes(partition),
             data_size: MetricBuilder::new(metrics).counter("data_size", partition),
@@ -883,7 +889,7 @@ impl ShuffleRepartitioner {
         let mut output_batches: Vec<Vec<u8>> = vec![vec![]; num_output_partitions];
 
         for i in 0..num_output_partitions {
-            buffered_partitions[i].flush()?;
+            buffered_partitions[i].flush(&self.metrics.ipc_time)?;
             output_batches[i] = std::mem::take(&mut buffered_partitions[i].frozen);
         }
 
@@ -1001,6 +1007,7 @@ impl ShuffleRepartitioner {
             &mut self.buffered_partitions,
             spillfile.path(),
             self.num_output_partitions,
+            &self.metrics.ipc_time,
         )?;
 
         timer.stop();
@@ -1030,8 +1037,13 @@ impl ShuffleRepartitioner {
         // If the range of indices is not big enough, just appending the rows into
         // active array builders instead of directly adding them as a record batch.
         let mut start_index: usize = 0;
-        let mut output_ret =
-            output.append_rows(columns, indices, start_index, &self.metrics.write_time);
+        let mut output_ret = output.append_rows(
+            columns,
+            indices,
+            start_index,
+            &self.metrics.write_time,
+            &self.metrics.ipc_time,
+        );
 
         loop {
             match output_ret {
@@ -1049,8 +1061,13 @@ impl ShuffleRepartitioner {
                     output.reservation.free();
 
                     start_index = new_start;
-                    output_ret =
-                        output.append_rows(columns, indices, start_index, &self.metrics.write_time);
+                    output_ret = output.append_rows(
+                        columns,
+                        indices,
+                        start_index,
+                        &self.metrics.write_time,
+                        &self.metrics.ipc_time,
+                    );
 
                     if let AppendRowStatus::StartIndex(new_start) = output_ret {
                         if new_start == start_index {
@@ -1075,11 +1092,12 @@ fn spill_into(
     buffered_partitions: &mut [PartitionBuffer],
     path: &Path,
     num_output_partitions: usize,
+    ipc_time: &Time,
 ) -> Result<Vec<u64>> {
     let mut output_batches: Vec<Vec<u8>> = vec![vec![]; num_output_partitions];
 
     for i in 0..num_output_partitions {
-        buffered_partitions[i].flush()?;
+        buffered_partitions[i].flush(ipc_time)?;
         output_batches[i] = std::mem::take(&mut buffered_partitions[i].frozen);
     }
     let path = path.to_owned();
@@ -1525,10 +1543,12 @@ impl Checksum {
 pub(crate) fn write_ipc_compressed<W: Write + Seek>(
     batch: &RecordBatch,
     output: &mut W,
+    time: &Time,
 ) -> Result<usize> {
     if batch.num_rows() == 0 {
         return Ok(0);
     }
+    let mut timer = time.timer();
     let start_pos = output.stream_position()?;
 
     // write ipc_length placeholder
@@ -1548,6 +1568,8 @@ pub(crate) fn write_ipc_compressed<W: Write + Seek>(
     // fill ipc length
     output.seek(SeekFrom::Start(start_pos))?;
     output.write_all(&ipc_length.to_le_bytes()[..])?;
+
+    timer.stop();
 
     output.seek(SeekFrom::Start(end_pos))?;
     Ok((end_pos - start_pos) as usize)

@@ -136,6 +136,7 @@ object CometMetricNode {
     if (CometConf.COMET_ENABLE_DETAILED_METRICS.get()) {
       Map(
         "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(sc, "native shuffle time"),
+        "ipc_time" -> SQLMetrics.createNanoTimingMetric(sc, "IPC encoding time"),
         "input_time" -> SQLMetrics.createNanoTimingMetric(sc, "native shuffle input time"),
         "shuffleWallTime" -> SQLMetrics.createNanoTimingMetric(
           sc,

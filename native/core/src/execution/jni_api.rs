@@ -17,8 +17,10 @@
 
 //! Define JNI APIs which can be called from Java/Scala.
 
+use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 use arrow::datatypes::DataType as ArrowDataType;
 use arrow_array::RecordBatch;
+use datafusion::physical_plan::metrics::Time;
 use datafusion::{
     execution::{
         disk_manager::DiskManagerConfig,
@@ -39,8 +41,6 @@ use jni::{
 };
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc, task::Poll};
-
-use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 
 use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
@@ -455,6 +455,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
     checksum_enabled: jboolean,
     checksum_algo: jint,
     current_checksum: jlong,
+    ipc_time: &Time,
 ) -> jlongArray {
     try_unwrap_or_throw(&e, |mut env| unsafe {
         let data_types = convert_datatype_arrays(&mut env, serialized_datatypes)?;
@@ -493,6 +494,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
             checksum_enabled,
             checksum_algo,
             current_checksum,
+            ipc_time,
         )?;
 
         let checksum = if let Some(checksum) = checksum {
