@@ -21,7 +21,7 @@ under the License.
 
 ## Spark SQL Metrics
 
-Some Comet metrics are not directly comparable to Spark metrics in some cases:
+Set `spark.comet.metrics.detailed=true` to see all available Comet metrics.
 
 ### CometScanExec
 

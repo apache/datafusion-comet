@@ -73,7 +73,6 @@ pub fn update_comet_metric(
                 comet_metric_node(metric_node).get_child_node(i as i32) -> JObject
             )?;
             if child_metric_node.is_null() {
-                println!("Missing JVM metric node for {}", child_plan.plan_id);
                 continue;
             }
             update_comet_metric(env, &child_metric_node, child_plan, metrics_jstrings)?;

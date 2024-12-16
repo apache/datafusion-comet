@@ -24,6 +24,8 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 
+import org.apache.comet.CometConf
+
 /**
  * A node carrying SQL metrics from SparkPlan, and metrics of its children. Native code will call
  * [[getChildNode]] and [[set]] to update the metrics.
@@ -131,12 +133,16 @@ object CometMetricNode {
   }
 
   def shuffleMetrics(sc: SparkContext): Map[String, SQLMetric] = {
-    Map(
-      "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(
-        sc,
-        "native shuffle time"),
-      "input_time" -> SQLMetrics.createNanoTimingMetric(sc, "native shuffle input time"),
-      "shuffleWallTime" -> SQLMetrics.createNanoTimingMetric(sc, "shuffle wall time (inclusive)"))
+    if (CometConf.COMET_ENABLE_DETAILED_METRICS.get()) {
+      Map(
+        "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(sc, "native shuffle time"),
+        "input_time" -> SQLMetrics.createNanoTimingMetric(sc, "native shuffle input time"),
+        "shuffleWallTime" -> SQLMetrics.createNanoTimingMetric(
+          sc,
+          "shuffle wall time (inclusive)"))
+    } else {
+      Map("elapsed_compute" -> SQLMetrics.createNanoTimingMetric(sc, "native shuffle time"))
+    }
   }
 
   /**

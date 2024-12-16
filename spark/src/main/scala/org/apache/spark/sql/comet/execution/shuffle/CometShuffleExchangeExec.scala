@@ -483,11 +483,10 @@ class CometShuffleWriteProcessor(
 
     // Maps native metrics to SQL metrics
     val nativeSQLMetrics = Map(
-      "output_rows" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_RECORDS_WRITTEN),
       "data_size" -> metrics("dataSize"),
-      "elapsed_compute" -> metrics("elapsed_compute"),
-      "input_time" -> metrics("input_time"),
-      "write_time" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_WRITE_TIME))
+      "output_rows" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_RECORDS_WRITTEN),
+      "write_time" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_WRITE_TIME)) ++
+      metrics.filterKeys(Seq("elapsed_compute", "input_time").contains)
     val nativeMetrics = CometMetricNode(nativeSQLMetrics)
 
     // Getting rid of the fake partitionId
@@ -532,7 +531,8 @@ class CometShuffleWriteProcessor(
       Array.empty, // TODO: add checksums
       tempDataFilePath.toFile)
 
-    metrics("shuffleWallTime").add(System.nanoTime() - startTime)
+    // update wall time metric if available
+    metrics.get("shuffleWallTime").foreach(_.add(System.nanoTime() - startTime))
 
     MapStatus.apply(SparkEnv.get.blockManager.shuffleServerId, partitionLengths, mapId)
   }

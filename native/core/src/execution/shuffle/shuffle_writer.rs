@@ -60,6 +60,7 @@ use std::{
     task::{Context, Poll},
 };
 
+use crate::execution::operators::ScanExec;
 use crate::{
     common::bit::ceil,
     errors::{CometError, CometResult},
@@ -138,6 +139,14 @@ impl ExecutionPlan for ShuffleWriterExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let metrics = ShuffleRepartitionerMetrics::new(&self.metrics, 0);
+
+        if let Some(scan) = self.input.as_any().downcast_ref::<ScanExec>() {
+            // ScanExec starts executing and fetching data during query planning time so we
+            // need to capture that time here to ensure that we have accurate metrics
+            metrics
+                .input_time
+                .add(scan.baseline_metrics.elapsed_compute());
+        }
 
         // execute the child plan
         let start_time = Instant::now();

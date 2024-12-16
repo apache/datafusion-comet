@@ -75,7 +75,7 @@ pub struct ScanExec {
     /// Metrics collector
     metrics: ExecutionPlanMetricsSet,
     /// Baseline metrics
-    baseline_metrics: BaselineMetrics,
+    pub(crate) baseline_metrics: BaselineMetrics,
     /// Time waiting for JVM input plan to execute and return batches
     jvm_fetch_time: Time,
     /// Time spent in FFI

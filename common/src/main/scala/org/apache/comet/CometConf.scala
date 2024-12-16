@@ -45,6 +45,9 @@ import org.apache.comet.shims.ShimCometConf
  */
 object CometConf extends ShimCometConf {
 
+  private val METRICS_GUIDE = "For more information, refer to the Comet Metrics " +
+    "Guide (https://datafusion.apache.org/comet/user-guide/metrics.html)"
+
   private val TUNING_GUIDE = "For more information, refer to the Comet Tuning " +
     "Guide (https://datafusion.apache.org/comet/user-guide/tuning.html)"
 
@@ -411,6 +414,12 @@ object CometConf extends ShimCometConf {
         "When this setting is enabled, Comet will provide a tree representation of " +
           "the native query plan before execution and again after execution, with " +
           "metrics.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_ENABLE_DETAILED_METRICS: ConfigEntry[Boolean] =
+    conf("spark.comet.metrics.detailed")
+      .doc(s"Enable this option to see additional SQL metrics. $METRICS_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 
