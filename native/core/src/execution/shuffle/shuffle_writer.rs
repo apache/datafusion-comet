@@ -17,17 +17,6 @@
 
 //! Defines the External shuffle repartition plan.
 
-use std::{
-    any::Any,
-    fmt,
-    fmt::{Debug, Formatter},
-    fs::{File, OpenOptions},
-    io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write},
-    path::Path,
-    sync::Arc,
-    task::{Context, Poll},
-};
-
 use arrow::{datatypes::*, ipc::writer::StreamWriter};
 use async_trait::async_trait;
 use bytes::Buf;
@@ -59,6 +48,17 @@ use futures::executor::block_on;
 use futures::{lock::Mutex, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
 use simd_adler32::Adler32;
+use std::time::Instant;
+use std::{
+    any::Any,
+    fmt,
+    fmt::{Debug, Formatter},
+    fs::{File, OpenOptions},
+    io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write},
+    path::Path,
+    sync::Arc,
+    task::{Context, Poll},
+};
 
 use crate::{
     common::bit::ceil,
@@ -630,7 +630,7 @@ struct ShuffleRepartitionerMetrics {
 
     /// Time spent writing to disk. Maps to "shuffleWriteTime" in Spark SQL Metrics.
     write_time: Time,
-
+    //other_time: Time,
     /// count of spills during the execution of the operator
     spill_count: Count,
 
@@ -706,6 +706,7 @@ impl ShuffleRepartitioner {
     /// This function will slice input batch according to configured batch size and then
     /// shuffle rows into corresponding partition buffer.
     async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()> {
+        let start_time = Instant::now();
         let mut start = 0;
         while start < batch.num_rows() {
             let end = (start + self.batch_size).min(batch.num_rows());
@@ -713,6 +714,10 @@ impl ShuffleRepartitioner {
             self.partitioning_batch(batch).await?;
             start = end;
         }
+        self.metrics
+            .baseline
+            .elapsed_compute()
+            .add_duration(start_time.elapsed());
         Ok(())
     }
 
@@ -853,6 +858,7 @@ impl ShuffleRepartitioner {
 
     /// Writes buffered shuffled record batches into Arrow IPC bytes.
     async fn shuffle_write(&mut self) -> Result<SendableRecordBatchStream> {
+        let mut elapsed_compute = self.metrics.baseline.elapsed_compute().timer();
         let num_output_partitions = self.num_output_partitions;
         let buffered_partitions = &mut self.buffered_partitions;
         let mut output_batches: Vec<Vec<u8>> = vec![vec![]; num_output_partitions];
@@ -931,6 +937,8 @@ impl ShuffleRepartitioner {
 
         let used = self.reservation.size();
         self.reservation.shrink(used);
+
+        elapsed_compute.stop();
 
         // shuffle writer always has empty output
         Ok(Box::pin(EmptyStream::try_new(Arc::clone(&self.schema))?))
