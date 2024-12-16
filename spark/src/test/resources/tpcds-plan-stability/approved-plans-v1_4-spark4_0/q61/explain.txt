@@ -4,7 +4,7 @@
    :- * HashAggregate (41)
    :  +- Exchange (40)
    :     +- * HashAggregate (39)
-   :        +- * ColumnarToRow (38)
+   :        +- * CometColumnarToRow (38)
    :           +- CometProject (37)
    :              +- CometBroadcastHashJoin (36)
    :                 :- CometProject (31)
@@ -46,7 +46,7 @@
       +- * HashAggregate (62)
          +- Exchange (61)
             +- * HashAggregate (60)
-               +- * ColumnarToRow (59)
+               +- * CometColumnarToRow (59)
                   +- CometProject (58)
                      +- CometBroadcastHashJoin (57)
                         :- CometProject (55)
@@ -242,7 +242,7 @@ Arguments: [ss_item_sk#1], [i_item_sk#21], Inner, BuildRight
 Input [3]: [ss_item_sk#1, ss_ext_sales_price#5, i_item_sk#21]
 Arguments: [ss_ext_sales_price#5], [ss_ext_sales_price#5]
 
-(38) ColumnarToRow [codegen id : 1]
+(38) CometColumnarToRow [codegen id : 1]
 Input [1]: [ss_ext_sales_price#5]
 
 (39) HashAggregate [codegen id : 1]
@@ -335,7 +335,7 @@ Arguments: [ss_item_sk#27], [i_item_sk#38], Inner, BuildRight
 Input [3]: [ss_item_sk#27, ss_ext_sales_price#30, i_item_sk#38]
 Arguments: [ss_ext_sales_price#30], [ss_ext_sales_price#30]
 
-(59) ColumnarToRow [codegen id : 2]
+(59) CometColumnarToRow [codegen id : 2]
 Input [1]: [ss_ext_sales_price#30]
 
 (60) HashAggregate [codegen id : 2]
@@ -372,7 +372,7 @@ Input [2]: [promotions#26, total#42]
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#6 IN dynamicpruning#7
 BroadcastExchange (70)
-+- * ColumnarToRow (69)
++- * CometColumnarToRow (69)
    +- CometProject (68)
       +- CometFilter (67)
          +- CometScan parquet spark_catalog.default.date_dim (66)
@@ -393,7 +393,7 @@ Condition : ((((isnotnull(d_year#15) AND isnotnull(d_moy#16)) AND (d_year#15 = 1
 Input [3]: [d_date_sk#14, d_year#15, d_moy#16]
 Arguments: [d_date_sk#14], [d_date_sk#14]
 
-(69) ColumnarToRow [codegen id : 1]
+(69) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#14]
 
 (70) BroadcastExchange

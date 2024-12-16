@@ -6,7 +6,7 @@ TakeOrderedAndProject (42)
       :  +- * BroadcastHashJoin Inner BuildRight (24)
       :     :- * Project (19)
       :     :  +- * BroadcastHashJoin Inner BuildRight (18)
-      :     :     :- * ColumnarToRow (3)
+      :     :     :- * CometColumnarToRow (3)
       :     :     :  +- CometFilter (2)
       :     :     :     +- CometScan parquet spark_catalog.default.store (1)
       :     :     +- BroadcastExchange (17)
@@ -14,7 +14,7 @@ TakeOrderedAndProject (42)
       :     :           +- * HashAggregate (15)
       :     :              +- Exchange (14)
       :     :                 +- * HashAggregate (13)
-      :     :                    +- * ColumnarToRow (12)
+      :     :                    +- * CometColumnarToRow (12)
       :     :                       +- CometProject (11)
       :     :                          +- CometBroadcastHashJoin (10)
       :     :                             :- CometFilter (5)
@@ -24,7 +24,7 @@ TakeOrderedAndProject (42)
       :     :                                   +- CometFilter (7)
       :     :                                      +- CometScan parquet spark_catalog.default.date_dim (6)
       :     +- BroadcastExchange (23)
-      :        +- * ColumnarToRow (22)
+      :        +- * CometColumnarToRow (22)
       :           +- CometFilter (21)
       :              +- CometScan parquet spark_catalog.default.item (20)
       +- BroadcastExchange (39)
@@ -35,7 +35,7 @@ TakeOrderedAndProject (42)
                      +- * HashAggregate (34)
                         +- Exchange (33)
                            +- * HashAggregate (32)
-                              +- * ColumnarToRow (31)
+                              +- * CometColumnarToRow (31)
                                  +- CometProject (30)
                                     +- CometBroadcastHashJoin (29)
                                        :- CometFilter (27)
@@ -54,7 +54,7 @@ ReadSchema: struct<s_store_sk:int,s_store_name:string>
 Input [2]: [s_store_sk#1, s_store_name#2]
 Condition : isnotnull(s_store_sk#1)
 
-(3) ColumnarToRow [codegen id : 7]
+(3) CometColumnarToRow [codegen id : 7]
 Input [2]: [s_store_sk#1, s_store_name#2]
 
 (4) CometScan parquet spark_catalog.default.store_sales
@@ -97,7 +97,7 @@ Arguments: [ss_sold_date_sk#6], [d_date_sk#8], Inner, BuildRight
 Input [5]: [ss_item_sk#3, ss_store_sk#4, ss_sales_price#5, ss_sold_date_sk#6, d_date_sk#8]
 Arguments: [ss_item_sk#3, ss_store_sk#4, ss_sales_price#5], [ss_item_sk#3, ss_store_sk#4, ss_sales_price#5]
 
-(12) ColumnarToRow [codegen id : 1]
+(12) CometColumnarToRow [codegen id : 1]
 Input [3]: [ss_item_sk#3, ss_store_sk#4, ss_sales_price#5]
 
 (13) HashAggregate [codegen id : 1]
@@ -147,7 +147,7 @@ ReadSchema: struct<i_item_sk:int,i_item_desc:string,i_current_price:decimal(7,2)
 Input [5]: [i_item_sk#14, i_item_desc#15, i_current_price#16, i_wholesale_cost#17, i_brand#18]
 Condition : isnotnull(i_item_sk#14)
 
-(22) ColumnarToRow [codegen id : 3]
+(22) CometColumnarToRow [codegen id : 3]
 Input [5]: [i_item_sk#14, i_item_desc#15, i_current_price#16, i_wholesale_cost#17, i_brand#18]
 
 (23) BroadcastExchange
@@ -188,7 +188,7 @@ Arguments: [ss_sold_date_sk#22], [d_date_sk#24], Inner, BuildRight
 Input [5]: [ss_item_sk#19, ss_store_sk#20, ss_sales_price#21, ss_sold_date_sk#22, d_date_sk#24]
 Arguments: [ss_item_sk#19, ss_store_sk#20, ss_sales_price#21], [ss_item_sk#19, ss_store_sk#20, ss_sales_price#21]
 
-(31) ColumnarToRow [codegen id : 4]
+(31) CometColumnarToRow [codegen id : 4]
 Input [3]: [ss_item_sk#19, ss_store_sk#20, ss_sales_price#21]
 
 (32) HashAggregate [codegen id : 4]
@@ -253,7 +253,7 @@ Arguments: 100, [s_store_name#2 ASC NULLS FIRST, i_item_desc#15 ASC NULLS FIRST]
 
 Subquery:1 Hosting operator id = 4 Hosting Expression = ss_sold_date_sk#6 IN dynamicpruning#7
 BroadcastExchange (47)
-+- * ColumnarToRow (46)
++- * CometColumnarToRow (46)
    +- CometProject (45)
       +- CometFilter (44)
          +- CometScan parquet spark_catalog.default.date_dim (43)
@@ -274,7 +274,7 @@ Condition : (((isnotnull(d_month_seq#9) AND (d_month_seq#9 >= 1176)) AND (d_mont
 Input [2]: [d_date_sk#8, d_month_seq#9]
 Arguments: [d_date_sk#8], [d_date_sk#8]
 
-(46) ColumnarToRow [codegen id : 1]
+(46) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#8]
 
 (47) BroadcastExchange

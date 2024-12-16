@@ -9,7 +9,7 @@ TakeOrderedAndProject (83)
             :     +- * HashAggregate (66)
             :        +- Union (65)
             :           :- * HashAggregate (22)
-            :           :  +- * ColumnarToRow (21)
+            :           :  +- * CometColumnarToRow (21)
             :           :     +- CometExchange (20)
             :           :        +- CometHashAggregate (19)
             :           :           +- CometProject (18)
@@ -31,7 +31,7 @@ TakeOrderedAndProject (83)
             :           :                    +- CometFilter (15)
             :           :                       +- CometScan parquet spark_catalog.default.store (14)
             :           :- * HashAggregate (41)
-            :           :  +- * ColumnarToRow (40)
+            :           :  +- * CometColumnarToRow (40)
             :           :     +- CometExchange (39)
             :           :        +- CometHashAggregate (38)
             :           :           +- CometProject (37)
@@ -50,7 +50,7 @@ TakeOrderedAndProject (83)
             :           :                    +- CometFilter (34)
             :           :                       +- CometScan parquet spark_catalog.default.catalog_page (33)
             :           +- * HashAggregate (64)
-            :              +- * ColumnarToRow (63)
+            :              +- * CometColumnarToRow (63)
             :                 +- CometExchange (62)
             :                    +- CometHashAggregate (61)
             :                       +- CometProject (60)
@@ -181,7 +181,7 @@ Functions [4]: [partial_sum(UnscaledValue(sales_price#8)), partial_sum(UnscaledV
 Input [5]: [s_store_id#25, sum#26, sum#27, sum#28, sum#29]
 Arguments: hashpartitioning(s_store_id#25, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(21) ColumnarToRow [codegen id : 1]
+(21) CometColumnarToRow [codegen id : 1]
 Input [5]: [s_store_id#25, sum#26, sum#27, sum#28, sum#29]
 
 (22) HashAggregate [codegen id : 1]
@@ -272,7 +272,7 @@ Functions [4]: [partial_sum(UnscaledValue(sales_price#46)), partial_sum(Unscaled
 Input [5]: [cp_catalog_page_id#62, sum#63, sum#64, sum#65, sum#66]
 Arguments: hashpartitioning(cp_catalog_page_id#62, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
-(40) ColumnarToRow [codegen id : 2]
+(40) CometColumnarToRow [codegen id : 2]
 Input [5]: [cp_catalog_page_id#62, sum#63, sum#64, sum#65, sum#66]
 
 (41) HashAggregate [codegen id : 2]
@@ -382,7 +382,7 @@ Functions [4]: [partial_sum(UnscaledValue(sales_price#83)), partial_sum(Unscaled
 Input [5]: [web_site_id#104, sum#105, sum#106, sum#107, sum#108]
 Arguments: hashpartitioning(web_site_id#104, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
 
-(63) ColumnarToRow [codegen id : 3]
+(63) CometColumnarToRow [codegen id : 3]
 Input [5]: [web_site_id#104, sum#105, sum#106, sum#107, sum#108]
 
 (64) HashAggregate [codegen id : 3]
@@ -496,7 +496,7 @@ Arguments: 100, [channel#34 ASC NULLS FIRST, id#35 ASC NULLS FIRST], [channel#34
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#4 IN dynamicpruning#5
 BroadcastExchange (88)
-+- * ColumnarToRow (87)
++- * CometColumnarToRow (87)
    +- CometProject (86)
       +- CometFilter (85)
          +- CometScan parquet spark_catalog.default.date_dim (84)
@@ -517,7 +517,7 @@ Condition : (((isnotnull(d_date#23) AND (d_date#23 >= 1998-08-04)) AND (d_date#2
 Input [2]: [d_date_sk#22, d_date#23]
 Arguments: [d_date_sk#22], [d_date_sk#22]
 
-(87) ColumnarToRow [codegen id : 1]
+(87) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#22]
 
 (88) BroadcastExchange

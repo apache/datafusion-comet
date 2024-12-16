@@ -10,7 +10,7 @@ TakeOrderedAndProject (33)
       :     :     :  +- * Project (13)
       :     :     :     +- * Filter (12)
       :     :     :        +- Window (11)
-      :     :     :           +- * ColumnarToRow (10)
+      :     :     :           +- * CometColumnarToRow (10)
       :     :     :              +- CometSort (9)
       :     :     :                 +- CometExchange (8)
       :     :     :                    +- CometFilter (7)
@@ -24,11 +24,11 @@ TakeOrderedAndProject (33)
       :     :        +- * Project (20)
       :     :           +- * Filter (19)
       :     :              +- Window (18)
-      :     :                 +- * ColumnarToRow (17)
+      :     :                 +- * CometColumnarToRow (17)
       :     :                    +- CometSort (16)
       :     :                       +- ReusedExchange (15)
       :     +- BroadcastExchange (27)
-      :        +- * ColumnarToRow (26)
+      :        +- * CometColumnarToRow (26)
       :           +- CometFilter (25)
       :              +- CometScan parquet spark_catalog.default.item (24)
       +- ReusedExchange (30)
@@ -75,7 +75,7 @@ Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 Input [2]: [item_sk#7, rank_col#8]
 Arguments: [item_sk#7, rank_col#8], [rank_col#8 ASC NULLS FIRST]
 
-(10) ColumnarToRow [codegen id : 1]
+(10) CometColumnarToRow [codegen id : 1]
 Input [2]: [item_sk#7, rank_col#8]
 
 (11) Window
@@ -101,7 +101,7 @@ Output [2]: [item_sk#12, rank_col#13]
 Input [2]: [item_sk#12, rank_col#13]
 Arguments: [item_sk#12, rank_col#13], [rank_col#13 DESC NULLS LAST]
 
-(17) ColumnarToRow [codegen id : 3]
+(17) CometColumnarToRow [codegen id : 3]
 Input [2]: [item_sk#12, rank_col#13]
 
 (18) Window
@@ -141,7 +141,7 @@ ReadSchema: struct<i_item_sk:int,i_product_name:string>
 Input [2]: [i_item_sk#15, i_product_name#16]
 Condition : isnotnull(i_item_sk#15)
 
-(26) ColumnarToRow [codegen id : 5]
+(26) CometColumnarToRow [codegen id : 5]
 Input [2]: [i_item_sk#15, i_product_name#16]
 
 (27) BroadcastExchange
@@ -178,7 +178,7 @@ Arguments: 100, [rnk#11 ASC NULLS FIRST], [rnk#11, best_performing#19, worst_per
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 7 Hosting Expression = Subquery scalar-subquery#9, [id=#10]
-* ColumnarToRow (40)
+* CometColumnarToRow (40)
 +- CometHashAggregate (39)
    +- CometExchange (38)
       +- CometHashAggregate (37)
@@ -216,7 +216,7 @@ Input [3]: [ss_store_sk#22, sum#25, count#26]
 Keys [1]: [ss_store_sk#22]
 Functions [1]: [avg(UnscaledValue(ss_net_profit#23))]
 
-(40) ColumnarToRow [codegen id : 1]
+(40) CometColumnarToRow [codegen id : 1]
 Input [1]: [rank_col#27]
 
 

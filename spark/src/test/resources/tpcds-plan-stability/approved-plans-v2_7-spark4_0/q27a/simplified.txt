@@ -6,7 +6,7 @@ TakeOrderedAndProject [i_item_id,s_state,g_state,agg1,agg2,agg3,agg4]
           Exchange [i_item_id,s_state] #1
             WholeStageCodegen (1)
               HashAggregate [i_item_id,s_state,agg1,agg2,agg3,agg4] [sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count]
-                ColumnarToRow
+                CometColumnarToRow
                   InputAdapter
                     CometProject [ss_quantity,ss_list_price,ss_coupon_amt,ss_sales_price] [i_item_id,s_state,agg1,agg2,agg3,agg4]
                       CometBroadcastHashJoin [ss_item_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,s_state,i_item_sk,i_item_id]
@@ -21,7 +21,7 @@ TakeOrderedAndProject [i_item_id,s_state,g_state,agg1,agg2,agg3,agg4]
                                         SubqueryBroadcast [d_date_sk] #1
                                           BroadcastExchange #2
                                             WholeStageCodegen (1)
-                                              ColumnarToRow
+                                              CometColumnarToRow
                                                 InputAdapter
                                                   CometProject [d_date_sk]
                                                     CometFilter [d_date_sk,d_year]
@@ -46,7 +46,7 @@ TakeOrderedAndProject [i_item_id,s_state,g_state,agg1,agg2,agg3,agg4]
           Exchange [i_item_id] #7
             WholeStageCodegen (3)
               HashAggregate [i_item_id,agg1,agg2,agg3,agg4] [sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count]
-                ColumnarToRow
+                CometColumnarToRow
                   InputAdapter
                     CometProject [ss_quantity,ss_list_price,ss_coupon_amt,ss_sales_price] [i_item_id,agg1,agg2,agg3,agg4]
                       CometBroadcastHashJoin [ss_item_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,i_item_sk,i_item_id]
@@ -72,7 +72,7 @@ TakeOrderedAndProject [i_item_id,s_state,g_state,agg1,agg2,agg3,agg4]
           Exchange #9
             WholeStageCodegen (5)
               HashAggregate [agg1,agg2,agg3,agg4] [sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count]
-                ColumnarToRow
+                CometColumnarToRow
                   InputAdapter
                     CometProject [ss_quantity,ss_list_price,ss_coupon_amt,ss_sales_price] [agg1,agg2,agg3,agg4]
                       CometBroadcastHashJoin [ss_item_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,i_item_sk]

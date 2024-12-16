@@ -1,7 +1,7 @@
 == Physical Plan ==
 * Project (47)
 +- * BroadcastNestedLoopJoin Inner BuildRight (46)
-   :- * ColumnarToRow (25)
+   :- * CometColumnarToRow (25)
    :  +- CometHashAggregate (24)
    :     +- CometExchange (23)
    :        +- CometHashAggregate (22)
@@ -27,7 +27,7 @@
    :                       +- CometFilter (17)
    :                          +- CometScan parquet spark_catalog.default.web_page (16)
    +- BroadcastExchange (45)
-      +- * ColumnarToRow (44)
+      +- * CometColumnarToRow (44)
          +- CometHashAggregate (43)
             +- CometExchange (42)
                +- CometHashAggregate (41)
@@ -160,7 +160,7 @@ Input [1]: [count#11]
 Keys: []
 Functions [1]: [count(1)]
 
-(25) ColumnarToRow [codegen id : 2]
+(25) CometColumnarToRow [codegen id : 2]
 Input [1]: [amc#12]
 
 (26) CometScan parquet spark_catalog.default.web_sales
@@ -243,7 +243,7 @@ Input [1]: [count#21]
 Keys: []
 Functions [1]: [count(1)]
 
-(44) ColumnarToRow [codegen id : 1]
+(44) CometColumnarToRow [codegen id : 1]
 Input [1]: [pmc#22]
 
 (45) BroadcastExchange

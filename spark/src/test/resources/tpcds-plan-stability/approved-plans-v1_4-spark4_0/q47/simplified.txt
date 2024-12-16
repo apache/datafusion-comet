@@ -22,7 +22,7 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,s_store_name,i_category,i_bra
                                           Exchange [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy] #2
                                             WholeStageCodegen (1)
                                               HashAggregate [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,ss_sales_price] [sum,sum]
-                                                ColumnarToRow
+                                                CometColumnarToRow
                                                   InputAdapter
                                                     CometProject [i_brand,i_category,ss_sales_price,d_year,d_moy,s_store_name,s_company_name]
                                                       CometBroadcastHashJoin [i_brand,i_category,ss_store_sk,ss_sales_price,d_year,d_moy,s_store_sk,s_store_name,s_company_name]
@@ -38,7 +38,7 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,s_store_name,i_category,i_bra
                                                                       SubqueryBroadcast [d_date_sk] #1
                                                                         BroadcastExchange #4
                                                                           WholeStageCodegen (1)
-                                                                            ColumnarToRow
+                                                                            CometColumnarToRow
                                                                               InputAdapter
                                                                                 CometFilter [d_date_sk,d_year,d_moy]
                                                                                   CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]

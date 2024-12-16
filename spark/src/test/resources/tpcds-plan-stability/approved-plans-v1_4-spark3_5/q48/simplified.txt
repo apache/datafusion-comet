@@ -1,5 +1,5 @@
 WholeStageCodegen (1)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometHashAggregate [sum(ss_quantity),sum,sum(ss_quantity)]
         CometExchange #1
@@ -17,7 +17,7 @@ WholeStageCodegen (1)
                                 SubqueryBroadcast [d_date_sk] #1
                                   BroadcastExchange #2
                                     WholeStageCodegen (1)
-                                      ColumnarToRow
+                                      CometColumnarToRow
                                         InputAdapter
                                           CometProject [d_date_sk]
                                             CometFilter [d_date_sk,d_year]

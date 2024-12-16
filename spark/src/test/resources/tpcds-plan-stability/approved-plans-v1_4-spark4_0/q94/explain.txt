@@ -4,7 +4,7 @@
    +- * HashAggregate (38)
       +- * HashAggregate (37)
          +- * HashAggregate (36)
-            +- * ColumnarToRow (35)
+            +- * CometColumnarToRow (35)
                +- CometProject (34)
                   +- CometBroadcastHashJoin (33)
                      :- CometProject (28)
@@ -198,7 +198,7 @@ Arguments: [ws_web_site_sk#3], [web_site_sk#18], Inner, BuildRight
 Input [5]: [ws_web_site_sk#3, ws_order_number#5, ws_ext_ship_cost#6, ws_net_profit#7, web_site_sk#18]
 Arguments: [ws_order_number#5, ws_ext_ship_cost#6, ws_net_profit#7], [ws_order_number#5, ws_ext_ship_cost#6, ws_net_profit#7]
 
-(35) ColumnarToRow [codegen id : 1]
+(35) CometColumnarToRow [codegen id : 1]
 Input [3]: [ws_order_number#5, ws_ext_ship_cost#6, ws_net_profit#7]
 
 (36) HashAggregate [codegen id : 1]

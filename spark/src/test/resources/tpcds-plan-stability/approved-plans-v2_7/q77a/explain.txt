@@ -8,7 +8,7 @@ TakeOrderedAndProject (97)
             :  +- Exchange (81)
             :     +- * HashAggregate (80)
             :        +- Union (79)
-            :           :- * ColumnarToRow (31)
+            :           :- * CometColumnarToRow (31)
             :           :  +- CometProject (30)
             :           :     +- CometBroadcastHashJoin (29)
             :           :        :- CometHashAggregate (16)
@@ -42,7 +42,7 @@ TakeOrderedAndProject (97)
             :           :- * Project (50)
             :           :  +- * BroadcastNestedLoopJoin Inner BuildLeft (49)
             :           :     :- BroadcastExchange (40)
-            :           :     :  +- * ColumnarToRow (39)
+            :           :     :  +- * CometColumnarToRow (39)
             :           :     :     +- CometHashAggregate (38)
             :           :     :        +- CometExchange (37)
             :           :     :           +- CometHashAggregate (36)
@@ -50,7 +50,7 @@ TakeOrderedAndProject (97)
             :           :     :                 +- CometBroadcastHashJoin (34)
             :           :     :                    :- CometScan parquet spark_catalog.default.catalog_sales (32)
             :           :     :                    +- ReusedExchange (33)
-            :           :     +- * ColumnarToRow (48)
+            :           :     +- * CometColumnarToRow (48)
             :           :        +- CometHashAggregate (47)
             :           :           +- CometExchange (46)
             :           :              +- CometHashAggregate (45)
@@ -58,7 +58,7 @@ TakeOrderedAndProject (97)
             :           :                    +- CometBroadcastHashJoin (43)
             :           :                       :- CometScan parquet spark_catalog.default.catalog_returns (41)
             :           :                       +- ReusedExchange (42)
-            :           +- * ColumnarToRow (78)
+            :           +- * CometColumnarToRow (78)
             :              +- CometProject (77)
             :                 +- CometBroadcastHashJoin (76)
             :                    :- CometHashAggregate (63)
@@ -239,7 +239,7 @@ Arguments: [s_store_sk#8], [s_store_sk#17], LeftOuter, BuildRight
 Input [6]: [s_store_sk#8, sales#22, profit#23, s_store_sk#17, returns#20, profit_loss#21]
 Arguments: [channel#24, id#25, sales#22, returns#26, profit#27], [store channel AS channel#24, s_store_sk#8 AS id#25, sales#22, coalesce(returns#20, 0.00) AS returns#26, (profit#23 - coalesce(profit_loss#21, 0.00)) AS profit#27]
 
-(31) ColumnarToRow [codegen id : 1]
+(31) CometColumnarToRow [codegen id : 1]
 Input [5]: [channel#24, id#25, sales#22, returns#26, profit#27]
 
 (32) CometScan parquet spark_catalog.default.catalog_sales
@@ -275,7 +275,7 @@ Input [3]: [cs_call_center_sk#28, sum#34, sum#35]
 Keys [1]: [cs_call_center_sk#28]
 Functions [2]: [sum(UnscaledValue(cs_ext_sales_price#29)), sum(UnscaledValue(cs_net_profit#30))]
 
-(39) ColumnarToRow [codegen id : 2]
+(39) CometColumnarToRow [codegen id : 2]
 Input [3]: [cs_call_center_sk#28, sales#36, profit#37]
 
 (40) BroadcastExchange
@@ -315,7 +315,7 @@ Input [2]: [sum#43, sum#44]
 Keys: []
 Functions [2]: [sum(UnscaledValue(cr_return_amount#38)), sum(UnscaledValue(cr_net_loss#39))]
 
-(48) ColumnarToRow
+(48) CometColumnarToRow
 Input [2]: [returns#45, profit_loss#46]
 
 (49) BroadcastNestedLoopJoin [codegen id : 3]
@@ -451,7 +451,7 @@ Arguments: [wp_web_page_sk#56], [wp_web_page_sk#65], LeftOuter, BuildRight
 Input [6]: [wp_web_page_sk#56, sales#70, profit#71, wp_web_page_sk#65, returns#68, profit_loss#69]
 Arguments: [channel#72, id#73, sales#70, returns#74, profit#75], [web channel AS channel#72, wp_web_page_sk#56 AS id#73, sales#70, coalesce(returns#68, 0.00) AS returns#74, (profit#71 - coalesce(profit_loss#69, 0.00)) AS profit#75]
 
-(78) ColumnarToRow [codegen id : 4]
+(78) CometColumnarToRow [codegen id : 4]
 Input [5]: [channel#72, id#73, sales#70, returns#74, profit#75]
 
 (79) Union
@@ -558,7 +558,7 @@ Arguments: 100, [channel#24 ASC NULLS FIRST, id#25 ASC NULLS FIRST], [channel#24
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#4 IN dynamicpruning#5
 BroadcastExchange (102)
-+- * ColumnarToRow (101)
++- * CometColumnarToRow (101)
    +- CometProject (100)
       +- CometFilter (99)
          +- CometScan parquet spark_catalog.default.date_dim (98)
@@ -579,7 +579,7 @@ Condition : (((isnotnull(d_date#7) AND (d_date#7 >= 1998-08-04)) AND (d_date#7 <
 Input [2]: [d_date_sk#6, d_date#7]
 Arguments: [d_date_sk#6], [d_date_sk#6]
 
-(101) ColumnarToRow [codegen id : 1]
+(101) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#6]
 
 (102) BroadcastExchange

@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (25)
+* CometColumnarToRow (25)
 +- CometHashAggregate (24)
    +- CometExchange (23)
       +- CometHashAggregate (22)
@@ -139,14 +139,14 @@ Input [3]: [sum#16, sum#17, sum#18]
 Keys: []
 Functions [3]: [sum(CASE WHEN (isnotnull(customer_sk#7) AND isnull(customer_sk#14)) THEN 1 ELSE 0 END), sum(CASE WHEN (isnull(customer_sk#7) AND isnotnull(customer_sk#14)) THEN 1 ELSE 0 END), sum(CASE WHEN (isnotnull(customer_sk#7) AND isnotnull(customer_sk#14)) THEN 1 ELSE 0 END)]
 
-(25) ColumnarToRow [codegen id : 1]
+(25) CometColumnarToRow [codegen id : 1]
 Input [3]: [store_only#19, catalog_only#20, store_and_catalog#21]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (30)
-+- * ColumnarToRow (29)
++- * CometColumnarToRow (29)
    +- CometProject (28)
       +- CometFilter (27)
          +- CometScan parquet spark_catalog.default.date_dim (26)
@@ -167,7 +167,7 @@ Condition : (((isnotnull(d_month_seq#6) AND (d_month_seq#6 >= 1200)) AND (d_mont
 Input [2]: [d_date_sk#5, d_month_seq#6]
 Arguments: [d_date_sk#5], [d_date_sk#5]
 
-(29) ColumnarToRow [codegen id : 1]
+(29) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#5]
 
 (30) BroadcastExchange

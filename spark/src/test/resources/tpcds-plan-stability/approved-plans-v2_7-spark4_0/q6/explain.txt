@@ -6,7 +6,7 @@ TakeOrderedAndProject (40)
          +- * HashAggregate (36)
             +- * Project (35)
                +- * BroadcastHashJoin Inner BuildRight (34)
-                  :- * ColumnarToRow (19)
+                  :- * CometColumnarToRow (19)
                   :  +- CometProject (18)
                   :     +- CometBroadcastHashJoin (17)
                   :        :- CometProject (12)
@@ -28,7 +28,7 @@ TakeOrderedAndProject (40)
                   +- BroadcastExchange (33)
                      +- * Project (32)
                         +- * BroadcastHashJoin Inner BuildRight (31)
-                           :- * ColumnarToRow (22)
+                           :- * CometColumnarToRow (22)
                            :  +- CometFilter (21)
                            :     +- CometScan parquet spark_catalog.default.item (20)
                            +- BroadcastExchange (30)
@@ -36,7 +36,7 @@ TakeOrderedAndProject (40)
                                  +- * HashAggregate (28)
                                     +- Exchange (27)
                                        +- * HashAggregate (26)
-                                          +- * ColumnarToRow (25)
+                                          +- * CometColumnarToRow (25)
                                              +- CometFilter (24)
                                                 +- CometScan parquet spark_catalog.default.item (23)
 
@@ -129,7 +129,7 @@ Arguments: [ss_sold_date_sk#7], [d_date_sk#9], Inner, BuildRight
 Input [4]: [ca_state#2, ss_item_sk#5, ss_sold_date_sk#7, d_date_sk#9]
 Arguments: [ca_state#2, ss_item_sk#5], [ca_state#2, ss_item_sk#5]
 
-(19) ColumnarToRow [codegen id : 4]
+(19) CometColumnarToRow [codegen id : 4]
 Input [2]: [ca_state#2, ss_item_sk#5]
 
 (20) CometScan parquet spark_catalog.default.item
@@ -143,7 +143,7 @@ ReadSchema: struct<i_item_sk:int,i_current_price:decimal(7,2),i_category:string>
 Input [3]: [i_item_sk#13, i_current_price#14, i_category#15]
 Condition : ((isnotnull(i_current_price#14) AND isnotnull(i_category#15)) AND isnotnull(i_item_sk#13))
 
-(22) ColumnarToRow [codegen id : 3]
+(22) CometColumnarToRow [codegen id : 3]
 Input [3]: [i_item_sk#13, i_current_price#14, i_category#15]
 
 (23) CometScan parquet spark_catalog.default.item
@@ -157,7 +157,7 @@ ReadSchema: struct<i_current_price:decimal(7,2),i_category:string>
 Input [2]: [i_current_price#16, i_category#17]
 Condition : isnotnull(i_category#17)
 
-(25) ColumnarToRow [codegen id : 1]
+(25) CometColumnarToRow [codegen id : 1]
 Input [2]: [i_current_price#16, i_category#17]
 
 (26) HashAggregate [codegen id : 1]
@@ -240,7 +240,7 @@ Arguments: 100, [cnt#28 ASC NULLS FIRST, state#27 ASC NULLS FIRST], [state#27, c
 
 Subquery:1 Hosting operator id = 8 Hosting Expression = ss_sold_date_sk#7 IN dynamicpruning#8
 BroadcastExchange (45)
-+- * ColumnarToRow (44)
++- * CometColumnarToRow (44)
    +- CometProject (43)
       +- CometFilter (42)
          +- CometScan parquet spark_catalog.default.date_dim (41)
@@ -261,7 +261,7 @@ Condition : ((isnotnull(d_month_seq#10) AND (d_month_seq#10 = ReusedSubquery Sub
 Input [2]: [d_date_sk#9, d_month_seq#10]
 Arguments: [d_date_sk#9], [d_date_sk#9]
 
-(44) ColumnarToRow [codegen id : 1]
+(44) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#9]
 
 (45) BroadcastExchange
@@ -271,7 +271,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint))
 Subquery:2 Hosting operator id = 42 Hosting Expression = ReusedSubquery Subquery scalar-subquery#11, [id=#12]
 
 Subquery:3 Hosting operator id = 41 Hosting Expression = Subquery scalar-subquery#11, [id=#12]
-* ColumnarToRow (52)
+* CometColumnarToRow (52)
 +- CometHashAggregate (51)
    +- CometExchange (50)
       +- CometHashAggregate (49)
@@ -309,7 +309,7 @@ Input [1]: [d_month_seq#29]
 Keys [1]: [d_month_seq#29]
 Functions: []
 
-(52) ColumnarToRow [codegen id : 1]
+(52) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_month_seq#29]
 
 Subquery:4 Hosting operator id = 14 Hosting Expression = ReusedSubquery Subquery scalar-subquery#11, [id=#12]

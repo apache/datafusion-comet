@@ -4,7 +4,7 @@ TakeOrderedAndProject (147)
    :- * HashAggregate (39)
    :  +- Exchange (38)
    :     +- * HashAggregate (37)
-   :        +- * ColumnarToRow (36)
+   :        +- * CometColumnarToRow (36)
    :           +- CometProject (35)
    :              +- CometBroadcastHashJoin (34)
    :                 :- CometProject (30)
@@ -43,7 +43,7 @@ TakeOrderedAndProject (147)
    :- * HashAggregate (65)
    :  +- Exchange (64)
    :     +- * HashAggregate (63)
-   :        +- * ColumnarToRow (62)
+   :        +- * CometColumnarToRow (62)
    :           +- CometProject (61)
    :              +- CometBroadcastHashJoin (60)
    :                 :- CometProject (58)
@@ -69,7 +69,7 @@ TakeOrderedAndProject (147)
    :- * HashAggregate (92)
    :  +- Exchange (91)
    :     +- * HashAggregate (90)
-   :        +- * ColumnarToRow (89)
+   :        +- * CometColumnarToRow (89)
    :           +- CometProject (88)
    :              +- CometBroadcastHashJoin (87)
    :                 :- CometProject (85)
@@ -96,7 +96,7 @@ TakeOrderedAndProject (147)
    :- * HashAggregate (119)
    :  +- Exchange (118)
    :     +- * HashAggregate (117)
-   :        +- * ColumnarToRow (116)
+   :        +- * CometColumnarToRow (116)
    :           +- CometProject (115)
    :              +- CometBroadcastHashJoin (114)
    :                 :- CometProject (112)
@@ -123,7 +123,7 @@ TakeOrderedAndProject (147)
    +- * HashAggregate (145)
       +- Exchange (144)
          +- * HashAggregate (143)
-            +- * ColumnarToRow (142)
+            +- * CometColumnarToRow (142)
                +- CometProject (141)
                   +- CometBroadcastHashJoin (140)
                      :- CometProject (136)
@@ -316,7 +316,7 @@ Arguments: [cs_item_sk#3], [i_item_sk#27], Inner, BuildRight
 Input [13]: [cs_item_sk#3, cs_quantity#4, cs_list_price#5, cs_sales_price#6, cs_coupon_amt#7, cs_net_profit#8, cd_dep_count#14, c_birth_year#19, ca_county#22, ca_state#23, ca_country#24, i_item_sk#27, i_item_id#28]
 Arguments: [i_item_id#28, ca_country#24, ca_state#23, ca_county#22, agg1#29, agg2#30, agg3#31, agg4#32, agg5#33, agg6#34, agg7#35], [i_item_id#28, ca_country#24, ca_state#23, ca_county#22, cast(cs_quantity#4 as decimal(12,2)) AS agg1#29, cast(cs_list_price#5 as decimal(12,2)) AS agg2#30, cast(cs_coupon_amt#7 as decimal(12,2)) AS agg3#31, cast(cs_sales_price#6 as decimal(12,2)) AS agg4#32, cast(cs_net_profit#8 as decimal(12,2)) AS agg5#33, cast(c_birth_year#19 as decimal(12,2)) AS agg6#34, cast(cd_dep_count#14 as decimal(12,2)) AS agg7#35]
 
-(36) ColumnarToRow [codegen id : 1]
+(36) CometColumnarToRow [codegen id : 1]
 Input [11]: [i_item_id#28, ca_country#24, ca_state#23, ca_county#22, agg1#29, agg2#30, agg3#31, agg4#32, agg5#33, agg6#34, agg7#35]
 
 (37) HashAggregate [codegen id : 1]
@@ -433,7 +433,7 @@ Arguments: [cs_item_sk#80], [i_item_sk#99], Inner, BuildRight
 Input [12]: [cs_item_sk#80, cs_quantity#81, cs_list_price#82, cs_sales_price#83, cs_coupon_amt#84, cs_net_profit#85, cd_dep_count#89, c_birth_year#93, ca_state#96, ca_country#97, i_item_sk#99, i_item_id#100]
 Arguments: [i_item_id#100, ca_country#97, ca_state#96, agg1#101, agg2#102, agg3#103, agg4#104, agg5#105, agg6#106, agg7#107], [i_item_id#100, ca_country#97, ca_state#96, cast(cs_quantity#81 as decimal(12,2)) AS agg1#101, cast(cs_list_price#82 as decimal(12,2)) AS agg2#102, cast(cs_coupon_amt#84 as decimal(12,2)) AS agg3#103, cast(cs_sales_price#83 as decimal(12,2)) AS agg4#104, cast(cs_net_profit#85 as decimal(12,2)) AS agg5#105, cast(c_birth_year#93 as decimal(12,2)) AS agg6#106, cast(cd_dep_count#89 as decimal(12,2)) AS agg7#107]
 
-(62) ColumnarToRow [codegen id : 3]
+(62) CometColumnarToRow [codegen id : 3]
 Input [10]: [i_item_id#100, ca_country#97, ca_state#96, agg1#101, agg2#102, agg3#103, agg4#104, agg5#105, agg6#106, agg7#107]
 
 (63) HashAggregate [codegen id : 3]
@@ -554,7 +554,7 @@ Arguments: [cs_item_sk#153], [i_item_sk#172], Inner, BuildRight
 Input [11]: [cs_item_sk#153, cs_quantity#154, cs_list_price#155, cs_sales_price#156, cs_coupon_amt#157, cs_net_profit#158, cd_dep_count#162, c_birth_year#166, ca_country#170, i_item_sk#172, i_item_id#173]
 Arguments: [i_item_id#173, ca_country#170, agg1#174, agg2#175, agg3#176, agg4#177, agg5#178, agg6#179, agg7#180], [i_item_id#173, ca_country#170, cast(cs_quantity#154 as decimal(12,2)) AS agg1#174, cast(cs_list_price#155 as decimal(12,2)) AS agg2#175, cast(cs_coupon_amt#157 as decimal(12,2)) AS agg3#176, cast(cs_sales_price#156 as decimal(12,2)) AS agg4#177, cast(cs_net_profit#158 as decimal(12,2)) AS agg5#178, cast(c_birth_year#166 as decimal(12,2)) AS agg6#179, cast(cd_dep_count#162 as decimal(12,2)) AS agg7#180]
 
-(89) ColumnarToRow [codegen id : 5]
+(89) CometColumnarToRow [codegen id : 5]
 Input [9]: [i_item_id#173, ca_country#170, agg1#174, agg2#175, agg3#176, agg4#177, agg5#178, agg6#179, agg7#180]
 
 (90) HashAggregate [codegen id : 5]
@@ -675,7 +675,7 @@ Arguments: [cs_item_sk#227], [i_item_sk#245], Inner, BuildRight
 Input [10]: [cs_item_sk#227, cs_quantity#228, cs_list_price#229, cs_sales_price#230, cs_coupon_amt#231, cs_net_profit#232, cd_dep_count#236, c_birth_year#240, i_item_sk#245, i_item_id#246]
 Arguments: [i_item_id#246, agg1#247, agg2#248, agg3#249, agg4#250, agg5#251, agg6#252, agg7#253], [i_item_id#246, cast(cs_quantity#228 as decimal(12,2)) AS agg1#247, cast(cs_list_price#229 as decimal(12,2)) AS agg2#248, cast(cs_coupon_amt#231 as decimal(12,2)) AS agg3#249, cast(cs_sales_price#230 as decimal(12,2)) AS agg4#250, cast(cs_net_profit#232 as decimal(12,2)) AS agg5#251, cast(c_birth_year#240 as decimal(12,2)) AS agg6#252, cast(cd_dep_count#236 as decimal(12,2)) AS agg7#253]
 
-(116) ColumnarToRow [codegen id : 7]
+(116) CometColumnarToRow [codegen id : 7]
 Input [8]: [i_item_id#246, agg1#247, agg2#248, agg3#249, agg4#250, agg5#251, agg6#252, agg7#253]
 
 (117) HashAggregate [codegen id : 7]
@@ -792,7 +792,7 @@ Arguments: [cs_item_sk#301], [i_item_sk#318], Inner, BuildRight
 Input [9]: [cs_item_sk#301, cs_quantity#302, cs_list_price#303, cs_sales_price#304, cs_coupon_amt#305, cs_net_profit#306, cd_dep_count#310, c_birth_year#314, i_item_sk#318]
 Arguments: [agg1#319, agg2#320, agg3#321, agg4#322, agg5#323, agg6#324, agg7#325], [cast(cs_quantity#302 as decimal(12,2)) AS agg1#319, cast(cs_list_price#303 as decimal(12,2)) AS agg2#320, cast(cs_coupon_amt#305 as decimal(12,2)) AS agg3#321, cast(cs_sales_price#304 as decimal(12,2)) AS agg4#322, cast(cs_net_profit#306 as decimal(12,2)) AS agg5#323, cast(c_birth_year#314 as decimal(12,2)) AS agg6#324, cast(cd_dep_count#310 as decimal(12,2)) AS agg7#325]
 
-(142) ColumnarToRow [codegen id : 9]
+(142) CometColumnarToRow [codegen id : 9]
 Input [7]: [agg1#319, agg2#320, agg3#321, agg4#322, agg5#323, agg6#324, agg7#325]
 
 (143) HashAggregate [codegen id : 9]
@@ -823,7 +823,7 @@ Arguments: 100, [ca_country#24 ASC NULLS FIRST, ca_state#23 ASC NULLS FIRST, ca_
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = cs_sold_date_sk#9 IN dynamicpruning#10
 BroadcastExchange (152)
-+- * ColumnarToRow (151)
++- * CometColumnarToRow (151)
    +- CometProject (150)
       +- CometFilter (149)
          +- CometScan parquet spark_catalog.default.date_dim (148)
@@ -844,7 +844,7 @@ Condition : ((isnotnull(d_year#26) AND (d_year#26 = 2001)) AND isnotnull(d_date_
 Input [2]: [d_date_sk#25, d_year#26]
 Arguments: [d_date_sk#25], [d_date_sk#25]
 
-(151) ColumnarToRow [codegen id : 1]
+(151) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#25]
 
 (152) BroadcastExchange

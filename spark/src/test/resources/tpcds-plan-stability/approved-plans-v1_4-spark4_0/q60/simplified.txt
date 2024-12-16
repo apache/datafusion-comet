@@ -13,7 +13,7 @@ TakeOrderedAndProject [i_item_id,total_sales]
                         Exchange [i_item_id] #2
                           WholeStageCodegen (1)
                             HashAggregate [i_item_id,ss_ext_sales_price] [sum,sum]
-                              ColumnarToRow
+                              CometColumnarToRow
                                 InputAdapter
                                   CometProject [ss_ext_sales_price,i_item_id]
                                     CometBroadcastHashJoin [ss_item_sk,ss_ext_sales_price,i_item_sk,i_item_id]
@@ -26,7 +26,7 @@ TakeOrderedAndProject [i_item_id,total_sales]
                                                   SubqueryBroadcast [d_date_sk] #1
                                                     BroadcastExchange #3
                                                       WholeStageCodegen (1)
-                                                        ColumnarToRow
+                                                        CometColumnarToRow
                                                           InputAdapter
                                                             CometProject [d_date_sk]
                                                               CometFilter [d_date_sk,d_year,d_moy]
@@ -53,7 +53,7 @@ TakeOrderedAndProject [i_item_id,total_sales]
                         Exchange [i_item_id] #8
                           WholeStageCodegen (3)
                             HashAggregate [i_item_id,cs_ext_sales_price] [sum,sum]
-                              ColumnarToRow
+                              CometColumnarToRow
                                 InputAdapter
                                   CometProject [cs_ext_sales_price,i_item_id]
                                     CometBroadcastHashJoin [cs_item_sk,cs_ext_sales_price,i_item_sk,i_item_id]
@@ -73,7 +73,7 @@ TakeOrderedAndProject [i_item_id,total_sales]
                         Exchange [i_item_id] #9
                           WholeStageCodegen (5)
                             HashAggregate [i_item_id,ws_ext_sales_price] [sum,sum]
-                              ColumnarToRow
+                              CometColumnarToRow
                                 InputAdapter
                                   CometProject [ws_ext_sales_price,i_item_id]
                                     CometBroadcastHashJoin [ws_item_sk,ws_ext_sales_price,i_item_sk,i_item_id]

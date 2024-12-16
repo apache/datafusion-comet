@@ -2,7 +2,7 @@
 TakeOrderedAndProject (36)
 +- * Project (35)
    +- Window (34)
-      +- * ColumnarToRow (33)
+      +- * CometColumnarToRow (33)
          +- CometSort (32)
             +- CometExchange (31)
                +- CometHashAggregate (30)
@@ -186,7 +186,7 @@ Arguments: hashpartitioning(lochierarchy#28, _w0#40, 5), ENSURE_REQUIREMENTS, Co
 Input [5]: [total_sum#25, i_category#9, i_class#8, lochierarchy#28, _w0#40]
 Arguments: [total_sum#25, i_category#9, i_class#8, lochierarchy#28, _w0#40], [lochierarchy#28 ASC NULLS FIRST, _w0#40 ASC NULLS FIRST, total_sum#25 DESC NULLS LAST]
 
-(33) ColumnarToRow [codegen id : 1]
+(33) CometColumnarToRow [codegen id : 1]
 Input [5]: [total_sum#25, i_category#9, i_class#8, lochierarchy#28, _w0#40]
 
 (34) Window
@@ -205,7 +205,7 @@ Arguments: 100, [lochierarchy#28 DESC NULLS LAST, CASE WHEN (lochierarchy#28 = 0
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ws_sold_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (41)
-+- * ColumnarToRow (40)
++- * CometColumnarToRow (40)
    +- CometProject (39)
       +- CometFilter (38)
          +- CometScan parquet spark_catalog.default.date_dim (37)
@@ -226,7 +226,7 @@ Condition : (((isnotnull(d_month_seq#6) AND (d_month_seq#6 >= 1212)) AND (d_mont
 Input [2]: [d_date_sk#5, d_month_seq#6]
 Arguments: [d_date_sk#5], [d_date_sk#5]
 
-(40) ColumnarToRow [codegen id : 1]
+(40) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#5]
 
 (41) BroadcastExchange

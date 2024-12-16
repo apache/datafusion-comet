@@ -1,7 +1,7 @@
 TakeOrderedAndProject [c_customer_id,customer_id,customername]
   WholeStageCodegen (1)
     Project [c_customer_id,c_last_name,c_first_name]
-      ColumnarToRow
+      CometColumnarToRow
         InputAdapter
           CometBroadcastHashJoin [c_customer_id,c_first_name,c_last_name,cd_demo_sk,sr_cdemo_sk]
             CometBroadcastExchange [c_customer_id,c_first_name,c_last_name,cd_demo_sk] #1

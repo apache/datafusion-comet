@@ -17,7 +17,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                 Union
                                   WholeStageCodegen (1)
                                     HashAggregate [s_store_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),channel,id,sales,returns,profit,sum,sum,sum,sum]
-                                      ColumnarToRow
+                                      CometColumnarToRow
                                         InputAdapter
                                           CometExchange [s_store_id] #3
                                             CometHashAggregate [s_store_id,sum,sum,sum,sum,sales_price,return_amt,profit,net_loss]
@@ -32,7 +32,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                               SubqueryBroadcast [d_date_sk] #1
                                                                 BroadcastExchange #4
                                                                   WholeStageCodegen (1)
-                                                                    ColumnarToRow
+                                                                    CometColumnarToRow
                                                                       InputAdapter
                                                                         CometProject [d_date_sk]
                                                                           CometFilter [d_date_sk,d_date]
@@ -50,7 +50,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                       CometScan parquet spark_catalog.default.store [s_store_sk,s_store_id]
                                   WholeStageCodegen (2)
                                     HashAggregate [cp_catalog_page_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),channel,id,sales,returns,profit,sum,sum,sum,sum]
-                                      ColumnarToRow
+                                      CometColumnarToRow
                                         InputAdapter
                                           CometExchange [cp_catalog_page_id] #7
                                             CometHashAggregate [cp_catalog_page_id,sum,sum,sum,sum,sales_price,return_amt,profit,net_loss]
@@ -73,7 +73,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                       CometScan parquet spark_catalog.default.catalog_page [cp_catalog_page_sk,cp_catalog_page_id]
                                   WholeStageCodegen (3)
                                     HashAggregate [web_site_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),channel,id,sales,returns,profit,sum,sum,sum,sum]
-                                      ColumnarToRow
+                                      CometColumnarToRow
                                         InputAdapter
                                           CometExchange [web_site_id] #9
                                             CometHashAggregate [web_site_id,sum,sum,sum,sum,sales_price,return_amt,profit,net_loss]

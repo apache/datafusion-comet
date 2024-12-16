@@ -1,7 +1,7 @@
 == Physical Plan ==
 * Project (65)
 +- * BroadcastNestedLoopJoin Inner BuildRight (64)
-   :- * ColumnarToRow (41)
+   :- * CometColumnarToRow (41)
    :  +- CometHashAggregate (40)
    :     +- CometExchange (39)
    :        +- CometHashAggregate (38)
@@ -43,7 +43,7 @@
    :                       +- CometFilter (33)
    :                          +- CometScan parquet spark_catalog.default.item (32)
    +- BroadcastExchange (63)
-      +- * ColumnarToRow (62)
+      +- * CometColumnarToRow (62)
          +- CometHashAggregate (61)
             +- CometExchange (60)
                +- CometHashAggregate (59)
@@ -256,7 +256,7 @@ Input [1]: [sum#23]
 Keys: []
 Functions [1]: [sum(UnscaledValue(ss_ext_sales_price#5))]
 
-(41) ColumnarToRow [codegen id : 2]
+(41) CometColumnarToRow [codegen id : 2]
 Input [1]: [promotions#24]
 
 (42) CometScan parquet spark_catalog.default.store_sales
@@ -345,7 +345,7 @@ Input [1]: [sum#37]
 Keys: []
 Functions [1]: [sum(UnscaledValue(ss_ext_sales_price#28))]
 
-(62) ColumnarToRow [codegen id : 1]
+(62) CometColumnarToRow [codegen id : 1]
 Input [1]: [total#38]
 
 (63) BroadcastExchange
@@ -364,7 +364,7 @@ Input [2]: [promotions#24, total#38]
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#6 IN dynamicpruning#7
 BroadcastExchange (70)
-+- * ColumnarToRow (69)
++- * CometColumnarToRow (69)
    +- CometProject (68)
       +- CometFilter (67)
          +- CometScan parquet spark_catalog.default.date_dim (66)
@@ -385,7 +385,7 @@ Condition : ((((isnotnull(d_year#15) AND isnotnull(d_moy#16)) AND (d_year#15 = 1
 Input [3]: [d_date_sk#14, d_year#15, d_moy#16]
 Arguments: [d_date_sk#14], [d_date_sk#14]
 
-(69) ColumnarToRow [codegen id : 1]
+(69) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#14]
 
 (70) BroadcastExchange

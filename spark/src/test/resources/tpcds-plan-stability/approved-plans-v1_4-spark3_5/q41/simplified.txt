@@ -1,5 +1,5 @@
 WholeStageCodegen (1)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [i_product_name]
         CometHashAggregate [i_product_name]

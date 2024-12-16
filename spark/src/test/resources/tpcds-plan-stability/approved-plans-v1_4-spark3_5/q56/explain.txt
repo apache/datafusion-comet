@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (61)
+* CometColumnarToRow (61)
 +- CometTakeOrderedAndProject (60)
    +- CometHashAggregate (59)
       +- CometExchange (58)
@@ -339,14 +339,14 @@ Functions [1]: [sum(total_sales#36)]
 Input [2]: [i_item_id#12, total_sales#41]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[total_sales#41 ASC NULLS FIRST], output=[i_item_id#12,total_sales#41]), [i_item_id#12, total_sales#41], 100, [total_sales#41 ASC NULLS FIRST], [i_item_id#12, total_sales#41]
 
-(61) ColumnarToRow [codegen id : 1]
+(61) CometColumnarToRow [codegen id : 1]
 Input [2]: [i_item_id#12, total_sales#41]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#4 IN dynamicpruning#5
 BroadcastExchange (66)
-+- * ColumnarToRow (65)
++- * CometColumnarToRow (65)
    +- CometProject (64)
       +- CometFilter (63)
          +- CometScan parquet spark_catalog.default.date_dim (62)
@@ -367,7 +367,7 @@ Condition : ((((isnotnull(d_year#7) AND isnotnull(d_moy#8)) AND (d_year#7 = 2001
 Input [3]: [d_date_sk#6, d_year#7, d_moy#8]
 Arguments: [d_date_sk#6], [d_date_sk#6]
 
-(65) ColumnarToRow [codegen id : 1]
+(65) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#6]
 
 (66) BroadcastExchange

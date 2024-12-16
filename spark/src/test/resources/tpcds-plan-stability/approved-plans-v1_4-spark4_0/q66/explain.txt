@@ -7,7 +7,7 @@ TakeOrderedAndProject (51)
             :- * HashAggregate (28)
             :  +- Exchange (27)
             :     +- * HashAggregate (26)
-            :        +- * ColumnarToRow (25)
+            :        +- * CometColumnarToRow (25)
             :           +- CometProject (24)
             :              +- CometBroadcastHashJoin (23)
             :                 :- CometProject (18)
@@ -35,7 +35,7 @@ TakeOrderedAndProject (51)
             +- * HashAggregate (46)
                +- Exchange (45)
                   +- * HashAggregate (44)
-                     +- * ColumnarToRow (43)
+                     +- * CometColumnarToRow (43)
                         +- CometProject (42)
                            +- CometBroadcastHashJoin (41)
                               :- CometProject (39)
@@ -168,7 +168,7 @@ Arguments: [ws_ship_mode_sk#2], [sm_ship_mode_sk#21], Inner, BuildRight
 Input [13]: [ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#14, w_country#15, d_year#17, d_moy#18, sm_ship_mode_sk#21]
 Arguments: [ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#14, w_country#15, d_year#17, d_moy#18], [ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#14, w_country#15, d_year#17, d_moy#18]
 
-(25) ColumnarToRow [codegen id : 1]
+(25) CometColumnarToRow [codegen id : 1]
 Input [11]: [ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#14, w_country#15, d_year#17, d_moy#18]
 
 (26) HashAggregate [codegen id : 1]
@@ -249,7 +249,7 @@ Arguments: [cs_ship_mode_sk#170], [sm_ship_mode_sk#188], Inner, BuildRight
 Input [13]: [cs_ship_mode_sk#170, cs_quantity#172, cs_sales_price#173, cs_net_paid_inc_tax#174, w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county#181, w_state#182, w_country#183, d_year#185, d_moy#186, sm_ship_mode_sk#188]
 Arguments: [cs_quantity#172, cs_sales_price#173, cs_net_paid_inc_tax#174, w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county#181, w_state#182, w_country#183, d_year#185, d_moy#186], [cs_quantity#172, cs_sales_price#173, cs_net_paid_inc_tax#174, w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county#181, w_state#182, w_country#183, d_year#185, d_moy#186]
 
-(43) ColumnarToRow [codegen id : 3]
+(43) CometColumnarToRow [codegen id : 3]
 Input [11]: [cs_quantity#172, cs_sales_price#173, cs_net_paid_inc_tax#174, w_warehouse_name#178, w_warehouse_sq_ft#179, w_city#180, w_county#181, w_state#182, w_country#183, d_year#185, d_moy#186]
 
 (44) HashAggregate [codegen id : 3]
@@ -298,7 +298,7 @@ Arguments: 100, [w_warehouse_name#10 ASC NULLS FIRST], [w_warehouse_name#10, w_w
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ws_sold_date_sk#7 IN dynamicpruning#8
 BroadcastExchange (55)
-+- * ColumnarToRow (54)
++- * CometColumnarToRow (54)
    +- CometFilter (53)
       +- CometScan parquet spark_catalog.default.date_dim (52)
 
@@ -314,7 +314,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 Input [3]: [d_date_sk#16, d_year#17, d_moy#18]
 Condition : ((isnotnull(d_year#17) AND (d_year#17 = 2001)) AND isnotnull(d_date_sk#16))
 
-(54) ColumnarToRow [codegen id : 1]
+(54) CometColumnarToRow [codegen id : 1]
 Input [3]: [d_date_sk#16, d_year#17, d_moy#18]
 
 (55) BroadcastExchange

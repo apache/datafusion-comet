@@ -4,7 +4,7 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
       InputAdapter
         Window [total_sum,lochierarchy,_w0]
           WholeStageCodegen (1)
-            ColumnarToRow
+            CometColumnarToRow
               InputAdapter
                 CometSort [total_sum,i_category,i_class,lochierarchy,_w0]
                   CometExchange [lochierarchy,_w0] #1
@@ -24,7 +24,7 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
                                               SubqueryBroadcast [d_date_sk] #1
                                                 BroadcastExchange #4
                                                   WholeStageCodegen (1)
-                                                    ColumnarToRow
+                                                    CometColumnarToRow
                                                       InputAdapter
                                                         CometProject [d_date_sk]
                                                           CometFilter [d_date_sk,d_month_seq]

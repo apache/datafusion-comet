@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (32)
+* CometColumnarToRow (32)
 +- CometSort (31)
    +- CometColumnarExchange (30)
       +- CometProject (29)
@@ -179,14 +179,14 @@ Arguments: rangepartitioning(c_last_name#21 ASC NULLS FIRST, c_first_name#20 ASC
 Input [6]: [c_last_name#21, c_first_name#20, c_salutation#19, c_preferred_cust_flag#22, ss_ticket_number#4, cnt#17]
 Arguments: [c_last_name#21, c_first_name#20, c_salutation#19, c_preferred_cust_flag#22, ss_ticket_number#4, cnt#17], [c_last_name#21 ASC NULLS FIRST, c_first_name#20 ASC NULLS FIRST, c_salutation#19 ASC NULLS FIRST, c_preferred_cust_flag#22 DESC NULLS LAST]
 
-(32) ColumnarToRow [codegen id : 1]
+(32) CometColumnarToRow [codegen id : 1]
 Input [6]: [c_last_name#21, c_first_name#20, c_salutation#19, c_preferred_cust_flag#22, ss_ticket_number#4, cnt#17]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#5 IN dynamicpruning#6
 BroadcastExchange (37)
-+- * ColumnarToRow (36)
++- * CometColumnarToRow (36)
    +- CometProject (35)
       +- CometFilter (34)
          +- CometScan parquet spark_catalog.default.date_dim (33)
@@ -207,7 +207,7 @@ Condition : (((((d_dom#9 >= 1) AND (d_dom#9 <= 3)) OR ((d_dom#9 >= 25) AND (d_do
 Input [3]: [d_date_sk#7, d_year#8, d_dom#9]
 Arguments: [d_date_sk#7], [d_date_sk#7]
 
-(36) ColumnarToRow [codegen id : 1]
+(36) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#7]
 
 (37) BroadcastExchange

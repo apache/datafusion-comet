@@ -8,7 +8,7 @@ TakeOrderedAndProject [ca_zip,ca_city,sum(ws_sales_price)]
               Project [ws_sales_price,ca_city,ca_zip]
                 Filter [ca_zip,exists]
                   BroadcastHashJoin [i_item_id,i_item_id]
-                    ColumnarToRow
+                    CometColumnarToRow
                       InputAdapter
                         CometProject [ws_sales_price,ca_city,ca_zip,i_item_id]
                           CometBroadcastHashJoin [ws_item_sk,ws_sales_price,ca_city,ca_zip,i_item_sk,i_item_id]
@@ -23,7 +23,7 @@ TakeOrderedAndProject [ca_zip,ca_city,sum(ws_sales_price)]
                                             SubqueryBroadcast [d_date_sk] #1
                                               BroadcastExchange #2
                                                 WholeStageCodegen (1)
-                                                  ColumnarToRow
+                                                  CometColumnarToRow
                                                     InputAdapter
                                                       CometProject [d_date_sk]
                                                         CometFilter [d_date_sk,d_year,d_qoy]
@@ -44,7 +44,7 @@ TakeOrderedAndProject [ca_zip,ca_city,sum(ws_sales_price)]
                     InputAdapter
                       BroadcastExchange #7
                         WholeStageCodegen (1)
-                          ColumnarToRow
+                          CometColumnarToRow
                             InputAdapter
                               CometProject [i_item_id]
                                 CometFilter [i_item_sk,i_item_id]

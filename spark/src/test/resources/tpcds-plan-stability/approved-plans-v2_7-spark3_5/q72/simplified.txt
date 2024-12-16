@@ -1,5 +1,5 @@
 WholeStageCodegen (1)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [i_item_desc,w_warehouse_name,d_week_seq,no_promo,promo,total_cnt]
         CometHashAggregate [i_item_desc,w_warehouse_name,d_week_seq,no_promo,promo,total_cnt,count,count(1)]
@@ -32,7 +32,7 @@ WholeStageCodegen (1)
                                                               SubqueryBroadcast [d_date_sk] #1
                                                                 BroadcastExchange #3
                                                                   WholeStageCodegen (1)
-                                                                    ColumnarToRow
+                                                                    CometColumnarToRow
                                                                       InputAdapter
                                                                         CometProject [d_date_sk,d_date,d_week_seq]
                                                                           CometFilter [d_date_sk,d_date,d_week_seq,d_year]

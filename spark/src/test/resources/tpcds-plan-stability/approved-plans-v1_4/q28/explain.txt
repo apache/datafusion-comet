@@ -8,7 +8,7 @@
 :  :  :  :  :  +- Exchange (9)
 :  :  :  :  :     +- * HashAggregate (8)
 :  :  :  :  :        +- * HashAggregate (7)
-:  :  :  :  :           +- * ColumnarToRow (6)
+:  :  :  :  :           +- * CometColumnarToRow (6)
 :  :  :  :  :              +- CometExchange (5)
 :  :  :  :  :                 +- CometHashAggregate (4)
 :  :  :  :  :                    +- CometProject (3)
@@ -19,7 +19,7 @@
 :  :  :  :        +- Exchange (19)
 :  :  :  :           +- * HashAggregate (18)
 :  :  :  :              +- * HashAggregate (17)
-:  :  :  :                 +- * ColumnarToRow (16)
+:  :  :  :                 +- * CometColumnarToRow (16)
 :  :  :  :                    +- CometExchange (15)
 :  :  :  :                       +- CometHashAggregate (14)
 :  :  :  :                          +- CometProject (13)
@@ -30,7 +30,7 @@
 :  :  :        +- Exchange (31)
 :  :  :           +- * HashAggregate (30)
 :  :  :              +- * HashAggregate (29)
-:  :  :                 +- * ColumnarToRow (28)
+:  :  :                 +- * CometColumnarToRow (28)
 :  :  :                    +- CometExchange (27)
 :  :  :                       +- CometHashAggregate (26)
 :  :  :                          +- CometProject (25)
@@ -41,7 +41,7 @@
 :  :        +- Exchange (43)
 :  :           +- * HashAggregate (42)
 :  :              +- * HashAggregate (41)
-:  :                 +- * ColumnarToRow (40)
+:  :                 +- * CometColumnarToRow (40)
 :  :                    +- CometExchange (39)
 :  :                       +- CometHashAggregate (38)
 :  :                          +- CometProject (37)
@@ -52,7 +52,7 @@
 :        +- Exchange (55)
 :           +- * HashAggregate (54)
 :              +- * HashAggregate (53)
-:                 +- * ColumnarToRow (52)
+:                 +- * CometColumnarToRow (52)
 :                    +- CometExchange (51)
 :                       +- CometHashAggregate (50)
 :                          +- CometProject (49)
@@ -63,7 +63,7 @@
       +- Exchange (67)
          +- * HashAggregate (66)
             +- * HashAggregate (65)
-               +- * ColumnarToRow (64)
+               +- * CometColumnarToRow (64)
                   +- CometExchange (63)
                      +- CometHashAggregate (62)
                         +- CometProject (61)
@@ -95,7 +95,7 @@ Functions [2]: [partial_avg(UnscaledValue(ss_list_price#3)), partial_count(ss_li
 Input [4]: [ss_list_price#3, sum#6, count#7, count#8]
 Arguments: hashpartitioning(ss_list_price#3, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(6) ColumnarToRow [codegen id : 1]
+(6) CometColumnarToRow [codegen id : 1]
 Input [4]: [ss_list_price#3, sum#6, count#7, count#8]
 
 (7) HashAggregate [codegen id : 1]
@@ -147,7 +147,7 @@ Functions [2]: [partial_avg(UnscaledValue(ss_list_price#18)), partial_count(ss_l
 Input [4]: [ss_list_price#18, sum#21, count#22, count#23]
 Arguments: hashpartitioning(ss_list_price#18, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
 
-(16) ColumnarToRow [codegen id : 2]
+(16) CometColumnarToRow [codegen id : 2]
 Input [4]: [ss_list_price#18, sum#21, count#22, count#23]
 
 (17) HashAggregate [codegen id : 2]
@@ -207,7 +207,7 @@ Functions [2]: [partial_avg(UnscaledValue(ss_list_price#33)), partial_count(ss_l
 Input [4]: [ss_list_price#33, sum#36, count#37, count#38]
 Arguments: hashpartitioning(ss_list_price#33, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=6]
 
-(28) ColumnarToRow [codegen id : 4]
+(28) CometColumnarToRow [codegen id : 4]
 Input [4]: [ss_list_price#33, sum#36, count#37, count#38]
 
 (29) HashAggregate [codegen id : 4]
@@ -267,7 +267,7 @@ Functions [2]: [partial_avg(UnscaledValue(ss_list_price#48)), partial_count(ss_l
 Input [4]: [ss_list_price#48, sum#51, count#52, count#53]
 Arguments: hashpartitioning(ss_list_price#48, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=9]
 
-(40) ColumnarToRow [codegen id : 6]
+(40) CometColumnarToRow [codegen id : 6]
 Input [4]: [ss_list_price#48, sum#51, count#52, count#53]
 
 (41) HashAggregate [codegen id : 6]
@@ -327,7 +327,7 @@ Functions [2]: [partial_avg(UnscaledValue(ss_list_price#63)), partial_count(ss_l
 Input [4]: [ss_list_price#63, sum#66, count#67, count#68]
 Arguments: hashpartitioning(ss_list_price#63, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=12]
 
-(52) ColumnarToRow [codegen id : 8]
+(52) CometColumnarToRow [codegen id : 8]
 Input [4]: [ss_list_price#63, sum#66, count#67, count#68]
 
 (53) HashAggregate [codegen id : 8]
@@ -387,7 +387,7 @@ Functions [2]: [partial_avg(UnscaledValue(ss_list_price#78)), partial_count(ss_l
 Input [4]: [ss_list_price#78, sum#81, count#82, count#83]
 Arguments: hashpartitioning(ss_list_price#78, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=15]
 
-(64) ColumnarToRow [codegen id : 10]
+(64) CometColumnarToRow [codegen id : 10]
 Input [4]: [ss_list_price#78, sum#81, count#82, count#83]
 
 (65) HashAggregate [codegen id : 10]

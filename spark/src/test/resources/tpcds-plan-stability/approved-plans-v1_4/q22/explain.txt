@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (24)
+* CometColumnarToRow (24)
 +- CometTakeOrderedAndProject (23)
    +- CometHashAggregate (22)
       +- CometExchange (21)
@@ -135,14 +135,14 @@ Functions [1]: [avg(inv_quantity_on_hand#3)]
 Input [5]: [i_product_name#14, i_brand#15, i_class#16, i_category#17, qoh#21]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[qoh#21 ASC NULLS FIRST,i_product_name#14 ASC NULLS FIRST,i_brand#15 ASC NULLS FIRST,i_class#16 ASC NULLS FIRST,i_category#17 ASC NULLS FIRST], output=[i_product_name#14,i_brand#15,i_class#16,i_category#17,qoh#21]), [i_product_name#14, i_brand#15, i_class#16, i_category#17, qoh#21], 100, [qoh#21 ASC NULLS FIRST, i_product_name#14 ASC NULLS FIRST, i_brand#15 ASC NULLS FIRST, i_class#16 ASC NULLS FIRST, i_category#17 ASC NULLS FIRST], [i_product_name#14, i_brand#15, i_class#16, i_category#17, qoh#21]
 
-(24) ColumnarToRow [codegen id : 1]
+(24) CometColumnarToRow [codegen id : 1]
 Input [5]: [i_product_name#14, i_brand#15, i_class#16, i_category#17, qoh#21]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = inv_date_sk#4 IN dynamicpruning#5
 BroadcastExchange (29)
-+- * ColumnarToRow (28)
++- * CometColumnarToRow (28)
    +- CometProject (27)
       +- CometFilter (26)
          +- CometScan parquet spark_catalog.default.date_dim (25)
@@ -163,7 +163,7 @@ Condition : (((isnotnull(d_month_seq#7) AND (d_month_seq#7 >= 1200)) AND (d_mont
 Input [2]: [d_date_sk#6, d_month_seq#7]
 Arguments: [d_date_sk#6], [d_date_sk#6]
 
-(28) ColumnarToRow [codegen id : 1]
+(28) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#6]
 
 (29) BroadcastExchange

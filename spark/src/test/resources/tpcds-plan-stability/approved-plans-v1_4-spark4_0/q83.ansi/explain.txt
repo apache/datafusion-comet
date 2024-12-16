@@ -7,7 +7,7 @@ TakeOrderedAndProject (50)
       :     :- * HashAggregate (19)
       :     :  +- Exchange (18)
       :     :     +- * HashAggregate (17)
-      :     :        +- * ColumnarToRow (16)
+      :     :        +- * CometColumnarToRow (16)
       :     :           +- CometProject (15)
       :     :              +- CometBroadcastHashJoin (14)
       :     :                 :- CometProject (7)
@@ -27,7 +27,7 @@ TakeOrderedAndProject (50)
       :        +- * HashAggregate (31)
       :           +- Exchange (30)
       :              +- * HashAggregate (29)
-      :                 +- * ColumnarToRow (28)
+      :                 +- * CometColumnarToRow (28)
       :                    +- CometProject (27)
       :                       +- CometBroadcastHashJoin (26)
       :                          :- CometProject (24)
@@ -40,7 +40,7 @@ TakeOrderedAndProject (50)
          +- * HashAggregate (46)
             +- Exchange (45)
                +- * HashAggregate (44)
-                  +- * ColumnarToRow (43)
+                  +- * CometColumnarToRow (43)
                      +- CometProject (42)
                         +- CometBroadcastHashJoin (41)
                            :- CometProject (39)
@@ -123,7 +123,7 @@ Arguments: [sr_returned_date_sk#3], [d_date_sk#7], Inner, BuildRight
 Input [4]: [sr_return_quantity#2, sr_returned_date_sk#3, i_item_id#6, d_date_sk#7]
 Arguments: [sr_return_quantity#2, i_item_id#6], [sr_return_quantity#2, i_item_id#6]
 
-(16) ColumnarToRow [codegen id : 1]
+(16) CometColumnarToRow [codegen id : 1]
 Input [2]: [sr_return_quantity#2, i_item_id#6]
 
 (17) HashAggregate [codegen id : 1]
@@ -180,7 +180,7 @@ Arguments: [cr_returned_date_sk#17], [d_date_sk#21], Inner, BuildRight
 Input [4]: [cr_return_quantity#16, cr_returned_date_sk#17, i_item_id#20, d_date_sk#21]
 Arguments: [cr_return_quantity#16, i_item_id#20], [cr_return_quantity#16, i_item_id#20]
 
-(28) ColumnarToRow [codegen id : 2]
+(28) CometColumnarToRow [codegen id : 2]
 Input [2]: [cr_return_quantity#16, i_item_id#20]
 
 (29) HashAggregate [codegen id : 2]
@@ -251,7 +251,7 @@ Arguments: [wr_returned_date_sk#29], [d_date_sk#33], Inner, BuildRight
 Input [4]: [wr_return_quantity#28, wr_returned_date_sk#29, i_item_id#32, d_date_sk#33]
 Arguments: [wr_return_quantity#28, i_item_id#32], [wr_return_quantity#28, i_item_id#32]
 
-(43) ColumnarToRow [codegen id : 4]
+(43) CometColumnarToRow [codegen id : 4]
 Input [2]: [wr_return_quantity#28, i_item_id#32]
 
 (44) HashAggregate [codegen id : 4]
@@ -294,7 +294,7 @@ Arguments: 100, [item_id#13 ASC NULLS FIRST, sr_item_qty#14 ASC NULLS FIRST], [i
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = sr_returned_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (64)
-+- * ColumnarToRow (63)
++- * CometColumnarToRow (63)
    +- CometProject (62)
       +- CometBroadcastHashJoin (61)
          :- CometFilter (52)
@@ -367,7 +367,7 @@ Arguments: [d_date#8], [d_date#9], LeftSemi, BuildRight
 Input [2]: [d_date_sk#7, d_date#8]
 Arguments: [d_date_sk#7], [d_date_sk#7]
 
-(63) ColumnarToRow [codegen id : 1]
+(63) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#7]
 
 (64) BroadcastExchange

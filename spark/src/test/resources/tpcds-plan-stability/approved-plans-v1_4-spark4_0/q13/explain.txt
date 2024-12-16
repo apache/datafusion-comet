@@ -2,7 +2,7 @@
 * HashAggregate (33)
 +- Exchange (32)
    +- * HashAggregate (31)
-      +- * ColumnarToRow (30)
+      +- * CometColumnarToRow (30)
          +- CometProject (29)
             +- CometBroadcastHashJoin (28)
                :- CometProject (24)
@@ -174,7 +174,7 @@ Arguments: [ss_hdemo_sk#2], [hd_demo_sk#21], Inner, (((((((cd_marital_status#19 
 Input [9]: [ss_hdemo_sk#2, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, cd_marital_status#19, cd_education_status#20, hd_demo_sk#21, hd_dep_count#22]
 Arguments: [ss_quantity#5, ss_ext_sales_price#7, ss_ext_wholesale_cost#8], [ss_quantity#5, ss_ext_sales_price#7, ss_ext_wholesale_cost#8]
 
-(30) ColumnarToRow [codegen id : 1]
+(30) CometColumnarToRow [codegen id : 1]
 Input [3]: [ss_quantity#5, ss_ext_sales_price#7, ss_ext_wholesale_cost#8]
 
 (31) HashAggregate [codegen id : 1]
@@ -199,7 +199,7 @@ Results [4]: [avg(ss_quantity#5)#37 AS avg(ss_quantity)#41, cast((avg(UnscaledVa
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#10 IN dynamicpruning#11
 BroadcastExchange (38)
-+- * ColumnarToRow (37)
++- * CometColumnarToRow (37)
    +- CometProject (36)
       +- CometFilter (35)
          +- CometScan parquet spark_catalog.default.date_dim (34)
@@ -220,7 +220,7 @@ Condition : ((isnotnull(d_year#17) AND (d_year#17 = 2001)) AND isnotnull(d_date_
 Input [2]: [d_date_sk#16, d_year#17]
 Arguments: [d_date_sk#16], [d_date_sk#16]
 
-(37) ColumnarToRow [codegen id : 1]
+(37) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#16]
 
 (38) BroadcastExchange

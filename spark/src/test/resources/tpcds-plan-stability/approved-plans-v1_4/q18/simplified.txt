@@ -1,5 +1,5 @@
 WholeStageCodegen (1)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [i_item_id,ca_country,ca_state,ca_county,agg1,agg2,agg3,agg4,agg5,agg6,agg7]
         CometHashAggregate [i_item_id,ca_country,ca_state,ca_county,agg1,agg2,agg3,agg4,agg5,agg6,agg7,spark_grouping_id,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,avg(cast(cs_quantity as decimal(12,2))),avg(cast(cs_list_price as decimal(12,2))),avg(cast(cs_coupon_amt as decimal(12,2))),avg(cast(cs_sales_price as decimal(12,2))),avg(cast(cs_net_profit as decimal(12,2))),avg(cast(c_birth_year as decimal(12,2))),avg(cast(cd_dep_count as decimal(12,2)))]
@@ -23,7 +23,7 @@ WholeStageCodegen (1)
                                             SubqueryBroadcast [d_date_sk] #1
                                               BroadcastExchange #2
                                                 WholeStageCodegen (1)
-                                                  ColumnarToRow
+                                                  CometColumnarToRow
                                                     InputAdapter
                                                       CometProject [d_date_sk]
                                                         CometFilter [d_date_sk,d_year]

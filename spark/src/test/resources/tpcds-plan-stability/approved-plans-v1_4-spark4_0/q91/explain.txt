@@ -1,11 +1,11 @@
 == Physical Plan ==
-* ColumnarToRow (42)
+* CometColumnarToRow (42)
 +- CometSort (41)
    +- CometColumnarExchange (40)
       +- * HashAggregate (39)
          +- Exchange (38)
             +- * HashAggregate (37)
-               +- * ColumnarToRow (36)
+               +- * CometColumnarToRow (36)
                   +- CometProject (35)
                      +- CometBroadcastHashJoin (34)
                         :- CometProject (29)
@@ -211,7 +211,7 @@ Arguments: [c_current_hdemo_sk#15], [hd_demo_sk#22], Inner, BuildRight
 Input [8]: [cc_call_center_id#2, cc_name#3, cc_manager#4, cr_net_loss#7, c_current_hdemo_sk#15, cd_marital_status#20, cd_education_status#21, hd_demo_sk#22]
 Arguments: [cc_call_center_id#2, cc_name#3, cc_manager#4, cr_net_loss#7, cd_marital_status#20, cd_education_status#21], [cc_call_center_id#2, cc_name#3, cc_manager#4, cr_net_loss#7, cd_marital_status#20, cd_education_status#21]
 
-(36) ColumnarToRow [codegen id : 1]
+(36) CometColumnarToRow [codegen id : 1]
 Input [6]: [cc_call_center_id#2, cc_name#3, cc_manager#4, cr_net_loss#7, cd_marital_status#20, cd_education_status#21]
 
 (37) HashAggregate [codegen id : 1]
@@ -240,14 +240,14 @@ Arguments: rangepartitioning(Returns_Loss#30 DESC NULLS LAST, 5), ENSURE_REQUIRE
 Input [4]: [Call_Center#27, Call_Center_Name#28, Manager#29, Returns_Loss#30]
 Arguments: [Call_Center#27, Call_Center_Name#28, Manager#29, Returns_Loss#30], [Returns_Loss#30 DESC NULLS LAST]
 
-(42) ColumnarToRow [codegen id : 3]
+(42) CometColumnarToRow [codegen id : 3]
 Input [4]: [Call_Center#27, Call_Center_Name#28, Manager#29, Returns_Loss#30]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 3 Hosting Expression = cr_returned_date_sk#8 IN dynamicpruning#9
 BroadcastExchange (47)
-+- * ColumnarToRow (46)
++- * CometColumnarToRow (46)
    +- CometProject (45)
       +- CometFilter (44)
          +- CometScan parquet spark_catalog.default.date_dim (43)
@@ -268,7 +268,7 @@ Condition : ((((isnotnull(d_year#11) AND isnotnull(d_moy#12)) AND (d_year#11 = 1
 Input [3]: [d_date_sk#10, d_year#11, d_moy#12]
 Arguments: [d_date_sk#10], [d_date_sk#10]
 
-(46) ColumnarToRow [codegen id : 1]
+(46) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#10]
 
 (47) BroadcastExchange

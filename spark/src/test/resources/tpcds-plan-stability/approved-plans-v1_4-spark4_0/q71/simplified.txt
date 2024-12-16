@@ -1,5 +1,5 @@
 WholeStageCodegen (3)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometSort [brand_id,brand,t_hour,t_minute,ext_price]
         CometColumnarExchange [ext_price,brand_id] #1
@@ -9,7 +9,7 @@ WholeStageCodegen (3)
                 Exchange [i_brand,i_brand_id,t_hour,t_minute] #2
                   WholeStageCodegen (1)
                     HashAggregate [i_brand,i_brand_id,t_hour,t_minute,ext_price] [sum,sum]
-                      ColumnarToRow
+                      CometColumnarToRow
                         InputAdapter
                           CometProject [i_brand_id,i_brand,ext_price,t_hour,t_minute]
                             CometBroadcastHashJoin [i_brand_id,i_brand,ext_price,time_sk,t_time_sk,t_hour,t_minute]
@@ -27,7 +27,7 @@ WholeStageCodegen (3)
                                             SubqueryBroadcast [d_date_sk] #1
                                               BroadcastExchange #4
                                                 WholeStageCodegen (1)
-                                                  ColumnarToRow
+                                                  CometColumnarToRow
                                                     InputAdapter
                                                       CometProject [d_date_sk]
                                                         CometFilter [d_date_sk,d_year,d_moy]

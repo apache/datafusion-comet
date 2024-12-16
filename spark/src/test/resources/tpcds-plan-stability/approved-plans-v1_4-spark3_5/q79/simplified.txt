@@ -1,5 +1,5 @@
 WholeStageCodegen (1)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [c_last_name,c_first_name,substr(s_city, 1, 30),ss_ticket_number,amt,profit,s_city]
         CometProject [c_last_name,c_first_name,substr(s_city, 1, 30),ss_ticket_number,amt,profit,s_city]
@@ -18,7 +18,7 @@ WholeStageCodegen (1)
                                   SubqueryBroadcast [d_date_sk] #1
                                     BroadcastExchange #2
                                       WholeStageCodegen (1)
-                                        ColumnarToRow
+                                        CometColumnarToRow
                                           InputAdapter
                                             CometProject [d_date_sk]
                                               CometFilter [d_date_sk,d_year,d_dow]

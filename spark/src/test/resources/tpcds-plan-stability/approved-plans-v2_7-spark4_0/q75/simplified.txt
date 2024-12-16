@@ -14,7 +14,7 @@ TakeOrderedAndProject [sales_cnt_diff,sales_amt_diff,prev_year,year,i_brand_id,i
                           Exchange [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id] #2
                             WholeStageCodegen (1)
                               HashAggregate [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt] [sum,sum,sum,sum]
-                                ColumnarToRow
+                                CometColumnarToRow
                                   InputAdapter
                                     CometHashAggregate [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt]
                                       CometExchange [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt] #3
@@ -33,7 +33,7 @@ TakeOrderedAndProject [sales_cnt_diff,sales_amt_diff,prev_year,year,i_brand_id,i
                                                                 SubqueryBroadcast [d_date_sk] #1
                                                                   BroadcastExchange #5
                                                                     WholeStageCodegen (1)
-                                                                      ColumnarToRow
+                                                                      CometColumnarToRow
                                                                         InputAdapter
                                                                           CometFilter [d_date_sk,d_year]
                                                                             CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
@@ -97,7 +97,7 @@ TakeOrderedAndProject [sales_cnt_diff,sales_amt_diff,prev_year,year,i_brand_id,i
                           Exchange [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id] #14
                             WholeStageCodegen (4)
                               HashAggregate [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt] [sum,sum,sum,sum]
-                                ColumnarToRow
+                                CometColumnarToRow
                                   InputAdapter
                                     CometHashAggregate [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt]
                                       CometExchange [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt] #15
@@ -116,7 +116,7 @@ TakeOrderedAndProject [sales_cnt_diff,sales_amt_diff,prev_year,year,i_brand_id,i
                                                                 SubqueryBroadcast [d_date_sk] #2
                                                                   BroadcastExchange #17
                                                                     WholeStageCodegen (1)
-                                                                      ColumnarToRow
+                                                                      CometColumnarToRow
                                                                         InputAdapter
                                                                           CometFilter [d_date_sk,d_year]
                                                                             CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]

@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (19)
+* CometColumnarToRow (19)
 +- CometTakeOrderedAndProject (18)
    +- CometHashAggregate (17)
       +- CometExchange (16)
@@ -106,6 +106,6 @@ Functions [7]: [sum(UnscaledValue(CASE WHEN (d_day_name#3 = Sunday   ) THEN ss_s
 Input [9]: [s_store_name#9, s_store_id#8, sun_sales#18, mon_sales#19, tue_sales#20, wed_sales#21, thu_sales#22, fri_sales#23, sat_sales#24]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[s_store_name#9 ASC NULLS FIRST,s_store_id#8 ASC NULLS FIRST,sun_sales#18 ASC NULLS FIRST,mon_sales#19 ASC NULLS FIRST,tue_sales#20 ASC NULLS FIRST,wed_sales#21 ASC NULLS FIRST,thu_sales#22 ASC NULLS FIRST,fri_sales#23 ASC NULLS FIRST,sat_sales#24 ASC NULLS FIRST], output=[s_store_name#9,s_store_id#8,sun_sales#18,mon_sales#19,tue_sales#20,wed_sales#21,thu_sales#22,fri_sales#23,sat_sales#24]), [s_store_name#9, s_store_id#8, sun_sales#18, mon_sales#19, tue_sales#20, wed_sales#21, thu_sales#22, fri_sales#23, sat_sales#24], 100, [s_store_name#9 ASC NULLS FIRST, s_store_id#8 ASC NULLS FIRST, sun_sales#18 ASC NULLS FIRST, mon_sales#19 ASC NULLS FIRST, tue_sales#20 ASC NULLS FIRST, wed_sales#21 ASC NULLS FIRST, thu_sales#22 ASC NULLS FIRST, fri_sales#23 ASC NULLS FIRST, sat_sales#24 ASC NULLS FIRST], [s_store_name#9, s_store_id#8, sun_sales#18, mon_sales#19, tue_sales#20, wed_sales#21, thu_sales#22, fri_sales#23, sat_sales#24]
 
-(19) ColumnarToRow [codegen id : 1]
+(19) CometColumnarToRow [codegen id : 1]
 Input [9]: [s_store_name#9, s_store_id#8, sun_sales#18, mon_sales#19, tue_sales#20, wed_sales#21, thu_sales#22, fri_sales#23, sat_sales#24]
 

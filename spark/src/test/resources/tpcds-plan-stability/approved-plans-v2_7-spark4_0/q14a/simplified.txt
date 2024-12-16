@@ -24,7 +24,7 @@ TakeOrderedAndProject [channel,i_brand_id,i_class_id,i_category_id,sum_sales,num
                                               Exchange #16
                                                 WholeStageCodegen (1)
                                                   HashAggregate [quantity,list_price] [sum,count,sum,count]
-                                                    ColumnarToRow
+                                                    CometColumnarToRow
                                                       InputAdapter
                                                         CometUnion [quantity,list_price]
                                                           CometProject [ss_quantity,ss_list_price] [quantity,list_price]
@@ -38,7 +38,7 @@ TakeOrderedAndProject [channel,i_brand_id,i_class_id,i_category_id,sum_sales,num
                                                                 SubqueryBroadcast [d_date_sk] #4
                                                                   BroadcastExchange #17
                                                                     WholeStageCodegen (1)
-                                                                      ColumnarToRow
+                                                                      CometColumnarToRow
                                                                         InputAdapter
                                                                           CometProject [d_date_sk]
                                                                             CometFilter [d_date_sk,d_year]
@@ -57,7 +57,7 @@ TakeOrderedAndProject [channel,i_brand_id,i_class_id,i_category_id,sum_sales,num
                                           Exchange [i_brand_id,i_class_id,i_category_id] #3
                                             WholeStageCodegen (1)
                                               HashAggregate [i_brand_id,i_class_id,i_category_id,ss_quantity,ss_list_price] [sum,isEmpty,count,sum,isEmpty,count]
-                                                ColumnarToRow
+                                                CometColumnarToRow
                                                   InputAdapter
                                                     CometProject [ss_quantity,ss_list_price,i_brand_id,i_class_id,i_category_id]
                                                       CometBroadcastHashJoin [ss_quantity,ss_list_price,ss_sold_date_sk,i_brand_id,i_class_id,i_category_id,d_date_sk]
@@ -69,7 +69,7 @@ TakeOrderedAndProject [channel,i_brand_id,i_class_id,i_category_id,sum_sales,num
                                                                   SubqueryBroadcast [d_date_sk] #1
                                                                     BroadcastExchange #4
                                                                       WholeStageCodegen (1)
-                                                                        ColumnarToRow
+                                                                        CometColumnarToRow
                                                                           InputAdapter
                                                                             CometProject [d_date_sk]
                                                                               CometFilter [d_date_sk,d_year,d_moy]
@@ -93,7 +93,7 @@ TakeOrderedAndProject [channel,i_brand_id,i_class_id,i_category_id,sum_sales,num
                                                                                           SubqueryBroadcast [d_date_sk] #2
                                                                                             BroadcastExchange #8
                                                                                               WholeStageCodegen (1)
-                                                                                                ColumnarToRow
+                                                                                                CometColumnarToRow
                                                                                                   InputAdapter
                                                                                                     CometProject [d_date_sk]
                                                                                                       CometFilter [d_date_sk,d_year]
@@ -145,7 +145,7 @@ TakeOrderedAndProject [channel,i_brand_id,i_class_id,i_category_id,sum_sales,num
                                           Exchange [i_brand_id,i_class_id,i_category_id] #19
                                             WholeStageCodegen (3)
                                               HashAggregate [i_brand_id,i_class_id,i_category_id,cs_quantity,cs_list_price] [sum,isEmpty,count,sum,isEmpty,count]
-                                                ColumnarToRow
+                                                CometColumnarToRow
                                                   InputAdapter
                                                     CometProject [cs_quantity,cs_list_price,i_brand_id,i_class_id,i_category_id]
                                                       CometBroadcastHashJoin [cs_quantity,cs_list_price,cs_sold_date_sk,i_brand_id,i_class_id,i_category_id,d_date_sk]
@@ -166,7 +166,7 @@ TakeOrderedAndProject [channel,i_brand_id,i_class_id,i_category_id,sum_sales,num
                                           Exchange [i_brand_id,i_class_id,i_category_id] #20
                                             WholeStageCodegen (5)
                                               HashAggregate [i_brand_id,i_class_id,i_category_id,ws_quantity,ws_list_price] [sum,isEmpty,count,sum,isEmpty,count]
-                                                ColumnarToRow
+                                                CometColumnarToRow
                                                   InputAdapter
                                                     CometProject [ws_quantity,ws_list_price,i_brand_id,i_class_id,i_category_id]
                                                       CometBroadcastHashJoin [ws_quantity,ws_list_price,ws_sold_date_sk,i_brand_id,i_class_id,i_category_id,d_date_sk]

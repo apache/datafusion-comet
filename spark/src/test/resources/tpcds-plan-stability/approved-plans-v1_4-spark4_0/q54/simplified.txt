@@ -10,7 +10,7 @@ TakeOrderedAndProject [segment,num_customers,segment_base]
                   Exchange [c_customer_sk] #2
                     WholeStageCodegen (1)
                       HashAggregate [c_customer_sk,ss_ext_sales_price] [sum,sum]
-                        ColumnarToRow
+                        CometColumnarToRow
                           InputAdapter
                             CometProject [c_customer_sk,ss_ext_sales_price]
                               CometBroadcastHashJoin [c_customer_sk,ss_ext_sales_price,ss_sold_date_sk,d_date_sk]
@@ -36,7 +36,7 @@ TakeOrderedAndProject [segment,num_customers,segment_base]
                                                                       SubqueryBroadcast [d_date_sk] #1
                                                                         BroadcastExchange #4
                                                                           WholeStageCodegen (1)
-                                                                            ColumnarToRow
+                                                                            CometColumnarToRow
                                                                               InputAdapter
                                                                                 CometProject [d_date_sk]
                                                                                   CometFilter [d_date_sk,d_year,d_moy]
@@ -62,7 +62,7 @@ TakeOrderedAndProject [segment,num_customers,segment_base]
                                                   SubqueryBroadcast [d_date_sk] #2
                                                     BroadcastExchange #9
                                                       WholeStageCodegen (1)
-                                                        ColumnarToRow
+                                                        CometColumnarToRow
                                                           InputAdapter
                                                             CometProject [d_date_sk]
                                                               CometFilter [d_date_sk,d_month_seq]
@@ -71,7 +71,7 @@ TakeOrderedAndProject [segment,num_customers,segment_base]
                                                                 CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
                                                                   Subquery #3
                                                                     WholeStageCodegen (1)
-                                                                      ColumnarToRow
+                                                                      CometColumnarToRow
                                                                         InputAdapter
                                                                           CometHashAggregate [(d_month_seq + 1)]
                                                                             CometExchange [(d_month_seq + 1)] #10
@@ -81,7 +81,7 @@ TakeOrderedAndProject [segment,num_customers,segment_base]
                                                                                     CometScan parquet spark_catalog.default.date_dim [d_month_seq,d_year,d_moy]
                                                                   Subquery #4
                                                                     WholeStageCodegen (1)
-                                                                      ColumnarToRow
+                                                                      CometColumnarToRow
                                                                         InputAdapter
                                                                           CometHashAggregate [(d_month_seq + 3)]
                                                                             CometExchange [(d_month_seq + 3)] #11

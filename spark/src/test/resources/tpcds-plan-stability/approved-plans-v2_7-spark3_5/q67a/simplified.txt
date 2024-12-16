@@ -10,7 +10,7 @@ TakeOrderedAndProject [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_
                   Exchange [i_category] #1
                     WindowGroupLimit [i_category,sumsales]
                       WholeStageCodegen (1)
-                        ColumnarToRow
+                        CometColumnarToRow
                           InputAdapter
                             CometSort [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sumsales]
                               CometUnion [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,s_store_id,sumsales]
@@ -28,7 +28,7 @@ TakeOrderedAndProject [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_
                                                       SubqueryBroadcast [d_date_sk] #1
                                                         BroadcastExchange #3
                                                           WholeStageCodegen (1)
-                                                            ColumnarToRow
+                                                            CometColumnarToRow
                                                               InputAdapter
                                                                 CometProject [d_date_sk,d_year,d_moy,d_qoy]
                                                                   CometFilter [d_date_sk,d_month_seq,d_year,d_moy,d_qoy]

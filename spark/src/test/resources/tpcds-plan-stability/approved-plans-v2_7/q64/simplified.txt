@@ -1,5 +1,5 @@
 WholeStageCodegen (1)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometSort [product_name,store_name,store_zip,b_street_number,b_streen_name,b_city,b_zip,c_street_number,c_street_name,c_city,c_zip,syear,cnt,s1,s2,s3,s1,s2,s3,syear,cnt]
         CometColumnarExchange [product_name,store_name,cnt,s1,s1] #1
@@ -51,7 +51,7 @@ WholeStageCodegen (1)
                                                                                                     SubqueryBroadcast [d_date_sk] #1
                                                                                                       BroadcastExchange #5
                                                                                                         WholeStageCodegen (1)
-                                                                                                          ColumnarToRow
+                                                                                                          CometColumnarToRow
                                                                                                             InputAdapter
                                                                                                               CometFilter [d_date_sk,d_year]
                                                                                                                 CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
@@ -158,7 +158,7 @@ WholeStageCodegen (1)
                                                                                                     SubqueryBroadcast [d_date_sk] #2
                                                                                                       BroadcastExchange #22
                                                                                                         WholeStageCodegen (1)
-                                                                                                          ColumnarToRow
+                                                                                                          CometColumnarToRow
                                                                                                             InputAdapter
                                                                                                               CometFilter [d_date_sk,d_year]
                                                                                                                 CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]

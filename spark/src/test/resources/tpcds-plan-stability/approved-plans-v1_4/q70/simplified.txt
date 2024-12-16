@@ -16,7 +16,7 @@ TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_count
                               Expand [ss_net_profit,s_state,s_county]
                                 Project [ss_net_profit,s_state,s_county]
                                   BroadcastHashJoin [ss_store_sk,s_store_sk]
-                                    ColumnarToRow
+                                    CometColumnarToRow
                                       InputAdapter
                                         CometProject [ss_store_sk,ss_net_profit]
                                           CometBroadcastHashJoin [ss_store_sk,ss_net_profit,ss_sold_date_sk,d_date_sk]
@@ -25,7 +25,7 @@ TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_count
                                                 SubqueryBroadcast [d_date_sk] #1
                                                   BroadcastExchange #3
                                                     WholeStageCodegen (1)
-                                                      ColumnarToRow
+                                                      CometColumnarToRow
                                                         InputAdapter
                                                           CometProject [d_date_sk]
                                                             CometFilter [d_date_sk,d_month_seq]
@@ -38,7 +38,7 @@ TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_count
                                       BroadcastExchange #5
                                         WholeStageCodegen (3)
                                           BroadcastHashJoin [s_state,s_state]
-                                            ColumnarToRow
+                                            CometColumnarToRow
                                               InputAdapter
                                                 CometFilter [s_store_sk,s_county,s_state]
                                                   CometScan parquet spark_catalog.default.store [s_store_sk,s_county,s_state]
@@ -50,7 +50,7 @@ TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_count
                                                       InputAdapter
                                                         Window [_w0,s_state]
                                                           WholeStageCodegen (1)
-                                                            ColumnarToRow
+                                                            CometColumnarToRow
                                                               InputAdapter
                                                                 CometSort [s_state,_w0]
                                                                   CometHashAggregate [s_state,_w0,sum,sum(UnscaledValue(ss_net_profit))]
