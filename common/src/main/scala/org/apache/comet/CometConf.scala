@@ -87,13 +87,13 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(false)
 
-  val COMET_NATIVE_ARROW_SCAN_ENABLED: ConfigEntry[Boolean] = conf(
+  val COMET_NATIVE_COLUMN_READER_ENABLED: ConfigEntry[Boolean] = conf(
     "spark.comet.native.arrow.scan.enabled")
     .internal()
     .doc(
-      "Whether to enable the fully native arrow based scan. When this is turned on, Spark will " +
-        "use Comet to read Parquet files natively via the Arrow based Parquet reader." +
-        " By default, this config is false.")
+      "Whether to enable the fully native datafusion based column reader. When this is turned on," +
+        " Spark will use Comet to read Parquet files natively via the Datafusion based Parquet" +
+        " reader. By default, this config is false.")
     .booleanConf
     .createWithDefault(false)
 

@@ -24,6 +24,7 @@ use jni::{
     JNIEnv,
 };
 
+use crate::execution::sort::RdxSort;
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
 use datafusion_execution::object_store::ObjectStoreUrl;
@@ -211,11 +212,10 @@ pub fn deserialize_schema(ipc_bytes: &[u8]) -> Result<arrow::datatypes::Schema, 
 }
 
 // parses the url and returns a tuple of the scheme and object store path
-pub fn get_file_path(url: String) -> Result<(ObjectStoreUrl, Path), ParseError> {
+pub fn get_file_path(url_: String) -> Result<(ObjectStoreUrl, Path), ParseError> {
     // we define origin of a url as scheme + "://" + authority + ["/" + bucket]
-    let url = Url::parse(url.as_ref()).unwrap();
+    let url = Url::parse(url_.as_ref()).unwrap();
     let mut object_store_origin = url.scheme().to_owned();
-    // let mut object_store_path = url.to_file_path().unwrap().to_str().unwrap().to_string();
     let mut object_store_path = Path::from_url_path(url.path()).unwrap();
     if object_store_origin == "s3a" {
         object_store_origin = "s3".to_string();
@@ -236,4 +236,20 @@ pub fn get_file_path(url: String) -> Result<(ObjectStoreUrl, Path), ParseError> 
         ObjectStoreUrl::parse(object_store_origin).unwrap(),
         object_store_path,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_file_path() {
+        let inp = "file:///comet/spark-warehouse/t1/part1=2019-01-01%2011%253A11%253A11/part-00000-84d7ed74-8f28-456c-9270-f45376eea144.c000.snappy.parquet";
+        let expected = "comet/spark-warehouse/t1/part1=2019-01-01 11%3A11%3A11/part-00000-84d7ed74-8f28-456c-9270-f45376eea144.c000.snappy.parquet";
+
+        if let Ok((_obj_store_url, path)) = get_file_path(inp.to_string()) {
+            let actual = path.to_string();
+            assert_eq!(actual, expected);
+        }
+    }
 }

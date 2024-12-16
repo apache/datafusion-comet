@@ -104,9 +104,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   private InternalRow partitionValues;
   private PartitionedFile file;
   private final Map<String, SQLMetric> metrics;
-  private final boolean useDataFusionReader;
 
-  private long rowsRead;
   private StructType sparkSchema;
   private MessageType requestedSchema;
   private CometVector[] vectors;
@@ -117,9 +115,6 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   private boolean[] missingColumns;
   private boolean isInitialized;
   private ParquetMetadata footer;
-
-  /** The total number of rows across all row groups of the input split. */
-  //  private long totalRowCount;
 
   /**
    * Whether the native scan should always return decimal represented by 128 bits, regardless of its
@@ -172,7 +167,6 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
 
     this.file = ShimBatchReader.newPartitionedFile(partitionValues, file);
     this.metrics = new HashMap<>();
-    this.useDataFusionReader = false;
 
     this.taskContext = TaskContext$.MODULE$.get();
   }
@@ -188,7 +182,6 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     isInitialized = true;
     this.taskContext = TaskContext$.MODULE$.get();
     this.metrics = new HashMap<>();
-    this.useDataFusionReader = false;
   }
 
   NativeBatchReader(
@@ -203,8 +196,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       boolean useLegacyDateTimestamp,
       StructType partitionSchema,
       InternalRow partitionValues,
-      Map<String, SQLMetric> metrics,
-      boolean useDataFusionReader) {
+      Map<String, SQLMetric> metrics) {
     this.conf = conf;
     this.capacity = capacity;
     this.sparkSchema = sparkSchema;
@@ -217,7 +209,6 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     this.file = inputSplit;
     this.footer = footer;
     this.metrics = metrics;
-    this.useDataFusionReader = useDataFusionReader;
     this.taskContext = TaskContext$.MODULE$.get();
   }
 
@@ -353,21 +344,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       }
     }
 
-    // TODO: (ARROW NATIVE) Use a ProjectionMask here ?
-    ArrayList<String> requiredColumns = new ArrayList<>();
-    for (Type col : requestedSchema.asGroupType().getFields()) {
-      requiredColumns.add(col.getName());
-    }
     this.handle =
         Native.initRecordBatchReader(
-            filePath,
-            fileSize,
-            start,
-            length,
-            requiredColumns.toArray(),
-            serializedRequestedArrowSchema,
-            useDataFusionReader);
-    //    totalRowCount = Native.numTotalRows(handle);
+            filePath, fileSize, start, length, serializedRequestedArrowSchema);
     isInitialized = true;
   }
 
@@ -403,7 +382,6 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   @Override
   public float getProgress() {
     return 0;
-    //    return (float) rowsRead / totalRowCount;
   }
 
   /**
@@ -460,7 +438,6 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     }
 
     currentBatch.setNumRows(batchSize);
-    rowsRead += batchSize;
     return true;
   }
 
