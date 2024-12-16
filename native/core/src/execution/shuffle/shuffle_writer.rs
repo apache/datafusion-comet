@@ -271,7 +271,7 @@ impl PartitionBuffer {
         columns: &[ArrayRef],
         indices: &[usize],
         start_index: usize,
-        time_metric: &Time,
+        write_time: &Time,
     ) -> AppendRowStatus {
         let mut mem_diff = 0;
         let mut start = start_index;
@@ -293,7 +293,7 @@ impl PartitionBuffer {
                 });
             self.num_active_rows += end - start;
             if self.num_active_rows >= self.batch_size {
-                let mut timer = time_metric.timer();
+                let mut timer = write_time.timer();
                 let flush = self.flush();
                 if let Err(e) = flush {
                     return AppendRowStatus::MemDiff(Err(e));
@@ -1000,12 +1000,11 @@ impl ShuffleRepartitioner {
 
         let output = &mut self.buffered_partitions[partition_id];
 
-        let time_metric = self.metrics.baseline.elapsed_compute();
-
         // If the range of indices is not big enough, just appending the rows into
         // active array builders instead of directly adding them as a record batch.
         let mut start_index: usize = 0;
-        let mut output_ret = output.append_rows(columns, indices, start_index, time_metric);
+        let mut output_ret =
+            output.append_rows(columns, indices, start_index, &self.metrics.write_time);
 
         loop {
             match output_ret {
@@ -1022,10 +1021,9 @@ impl ShuffleRepartitioner {
                     let output = &mut self.buffered_partitions[partition_id];
                     output.reservation.free();
 
-                    let time_metric = self.metrics.baseline.elapsed_compute();
-
                     start_index = new_start;
-                    output_ret = output.append_rows(columns, indices, start_index, time_metric);
+                    output_ret =
+                        output.append_rows(columns, indices, start_index, &self.metrics.write_time);
 
                     if let AppendRowStatus::StartIndex(new_start) = output_ret {
                         if new_start == start_index {
