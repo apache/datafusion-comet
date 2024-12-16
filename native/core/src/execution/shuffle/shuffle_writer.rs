@@ -628,6 +628,9 @@ struct ShuffleRepartitionerMetrics {
     /// metrics
     baseline: BaselineMetrics,
 
+    /// Time spent writing to disk. Maps to "shuffleWriteTime" in Spark SQL Metrics.
+    write_time: Time,
+
     /// count of spills during the execution of the operator
     spill_count: Count,
 
@@ -640,8 +643,10 @@ struct ShuffleRepartitionerMetrics {
 
 impl ShuffleRepartitionerMetrics {
     fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
+        let write_time = MetricBuilder::new(metrics).subset_time("write_time", partition);
         Self {
             baseline: BaselineMetrics::new(metrics, partition),
+            write_time,
             spill_count: MetricBuilder::new(metrics).spill_count(partition),
             spilled_bytes: MetricBuilder::new(metrics).spilled_bytes(partition),
             data_size: MetricBuilder::new(metrics).counter("data_size", partition),
@@ -872,7 +877,7 @@ impl ShuffleRepartitioner {
             .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
 
         for i in 0..num_output_partitions {
-            let mut timer = self.metrics.baseline.elapsed_compute().timer();
+            let mut timer = self.metrics.write_time.timer();
 
             offsets[i] = output_data.stream_position()?;
             output_data.write_all(&output_batches[i])?;
@@ -885,7 +890,7 @@ impl ShuffleRepartitioner {
             for spill in &output_spills {
                 let length = spill.offsets[i + 1] - spill.offsets[i];
                 if length > 0 {
-                    let mut timer = self.metrics.baseline.elapsed_compute().timer();
+                    let mut timer = self.metrics.write_time.timer();
 
                     let mut spill_file =
                         BufReader::new(File::open(spill.file.path()).map_err(|e| {
@@ -900,7 +905,7 @@ impl ShuffleRepartitioner {
                 }
             }
         }
-        let mut timer = self.metrics.baseline.elapsed_compute().timer();
+        let mut timer = self.metrics.write_time.timer();
         output_data.flush()?;
         timer.stop();
 
@@ -909,7 +914,7 @@ impl ShuffleRepartitioner {
             .stream_position()
             .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
 
-        let mut timer = self.metrics.baseline.elapsed_compute().timer();
+        let mut timer = self.metrics.write_time.timer();
 
         let mut output_index =
             BufWriter::new(File::create(index_file).map_err(|e| {
@@ -959,7 +964,7 @@ impl ShuffleRepartitioner {
             return Ok(0);
         }
 
-        let mut timer = self.metrics.baseline.elapsed_compute().timer();
+        let mut timer = self.metrics.write_time.timer();
 
         let spillfile = self
             .runtime

@@ -79,7 +79,8 @@ case class CometShuffleExchangeExec(
     "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
     "numPartitions" -> SQLMetrics.createMetric(
       sparkContext,
-      "number of partitions")) ++ readMetrics ++ writeMetrics
+      "number of partitions")) ++ readMetrics ++ writeMetrics ++ CometMetricNode.shuffleMetrics(
+    sparkContext)
 
   override def nodeName: String = if (shuffleType == CometNativeShuffle) {
     "CometExchange"
@@ -464,6 +465,9 @@ class CometShuffleWriteProcessor(
       mapId: Long,
       mapIndex: Int,
       context: TaskContext): MapStatus = {
+
+    val startTime = System.nanoTime()
+
     val metricsReporter = createMetricsReporter(context)
     val shuffleBlockResolver =
       SparkEnv.get.shuffleManager.shuffleBlockResolver.asInstanceOf[IndexShuffleBlockResolver]
@@ -481,7 +485,7 @@ class CometShuffleWriteProcessor(
     val nativeSQLMetrics = Map(
       "output_rows" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_RECORDS_WRITTEN),
       "data_size" -> metrics("dataSize"),
-      "elapsed_compute" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_WRITE_TIME))
+      "write_time" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_WRITE_TIME))
     val nativeMetrics = CometMetricNode(nativeSQLMetrics)
 
     // Getting rid of the fake partitionId
@@ -524,6 +528,9 @@ class CometShuffleWriteProcessor(
       partitionLengths,
       Array.empty, // TODO: add checksums
       tempDataFilePath.toFile)
+
+    metrics("shuffleWallTime").add(System.nanoTime() - startTime)
+
     MapStatus.apply(SparkEnv.get.blockManager.shuffleServerId, partitionLengths, mapId)
   }
 
