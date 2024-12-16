@@ -137,8 +137,12 @@ impl ExecutionPlan for ShuffleWriterExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let input = self.input.execute(partition, Arc::clone(&context))?;
         let metrics = ShuffleRepartitionerMetrics::new(&self.metrics, 0);
+
+        // execute the child plan
+        let start_time = Instant::now();
+        let input = self.input.execute(partition, Arc::clone(&context))?;
+        metrics.input_time.add_duration(start_time.elapsed());
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
@@ -628,8 +632,12 @@ struct ShuffleRepartitionerMetrics {
     /// metrics
     baseline: BaselineMetrics,
 
+    /// Time executing child plan and fetching batches
+    input_time: Time,
+
     /// Time spent writing to disk. Maps to "shuffleWriteTime" in Spark SQL Metrics.
     write_time: Time,
+
     //other_time: Time,
     /// count of spills during the execution of the operator
     spill_count: Count,
@@ -643,9 +651,11 @@ struct ShuffleRepartitionerMetrics {
 
 impl ShuffleRepartitionerMetrics {
     fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
+        let input_time = MetricBuilder::new(metrics).subset_time("input_time", partition);
         let write_time = MetricBuilder::new(metrics).subset_time("write_time", partition);
         Self {
             baseline: BaselineMetrics::new(metrics, partition),
+            input_time,
             write_time,
             spill_count: MetricBuilder::new(metrics).spill_count(partition),
             spilled_bytes: MetricBuilder::new(metrics).spilled_bytes(partition),
@@ -1115,7 +1125,7 @@ async fn external_shuffle(
         context.session_config().batch_size(),
     );
 
-    while let Some(batch) = input.next().await {
+    while let Some(batch) = fetch_next_batch(&mut input, &repartitioner.metrics.input_time).await {
         // Block on the repartitioner to insert the batch and shuffle the rows
         // into the corresponding partition buffer.
         // Otherwise, pull the next batch from the input stream might overwrite the
@@ -1123,6 +1133,16 @@ async fn external_shuffle(
         block_on(repartitioner.insert_batch(batch?))?;
     }
     repartitioner.shuffle_write().await
+}
+
+async fn fetch_next_batch(
+    input: &mut SendableRecordBatchStream,
+    input_time: &Time,
+) -> Option<Result<RecordBatch>> {
+    let mut input_time = input_time.timer();
+    let next_batch = input.next().await;
+    input_time.stop();
+    next_batch
 }
 
 fn new_array_builders(schema: &SchemaRef, batch_size: usize) -> Vec<Box<dyn ArrayBuilder>> {

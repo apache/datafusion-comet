@@ -486,6 +486,7 @@ class CometShuffleWriteProcessor(
       "output_rows" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_RECORDS_WRITTEN),
       "data_size" -> metrics("dataSize"),
       "elapsed_compute" -> metrics("elapsed_compute"),
+      "input_time" -> metrics("input_time"),
       "write_time" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_WRITE_TIME))
     val nativeMetrics = CometMetricNode(nativeSQLMetrics)
 

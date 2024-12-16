@@ -55,7 +55,8 @@ Here is a guide to some of the native metrics.
 
 ### ShuffleWriterExec
 
-| Metric            | Description                               |
-|-------------------|-------------------------------------------|
-| `elapsed_compute` | Total time excluding any child operators. |
-| `srite_time`      | Time spent writing bytes to disk.         |
+| Metric            | Description                                           |
+|-------------------|-------------------------------------------------------|
+| `elapsed_compute` | Total time excluding any child operators.             |
+| `input_time`      | Time spent executing input plan and fetching batches. |
+| `write_time`      | Time spent writing bytes to disk.                     |

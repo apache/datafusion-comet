@@ -134,7 +134,8 @@ object CometMetricNode {
     Map(
       "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(
         sc,
-        "total native shuffle write time"),
+        "native shuffle writer wall time"),
+      "input_time" -> SQLMetrics.createNanoTimingMetric(sc, "native shuffle writer input time"),
       "shuffleWallTime" -> SQLMetrics.createNanoTimingMetric(sc, "shuffle wall time"))
   }
 
