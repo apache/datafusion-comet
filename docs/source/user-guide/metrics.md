@@ -25,16 +25,16 @@ Set `spark.comet.metrics.detailed=true` to see all available Comet metrics.
 
 ### CometScanExec
 
-`CometScanExec` uses nanoseconds for total scan time. Spark also measures scan time in nanoseconds but converts to
-milliseconds _per batch_ which can result in a large loss of precision, making it difficult to compare scan times
-between Spark and Comet.
+| Metric      | Description                                                                                                                                                                               |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scan time` | Total time to scan a Parquet file. This is not comparable to the same metric in Spark because Comet's scan metric is more accurate (records time in nanoseconds rather than milliseconds) |
 
 ### Exchange
 
 Comet adds some additional metrics:
 
 | Metric                          | Description                                                                               |
-|---------------------------------|-------------------------------------------------------------------------------------------|
+| ------------------------------- | ----------------------------------------------------------------------------------------- |
 | `ipc time`                      | Time to encode batches in IPC format                                                      |
 | `native shuffle time`           | Total time spent in native shuffle writer, excluding the execution time of the input plan |
 | `native shuffle input time`     | Time spend executing the shuffle input plan and fetching batches.                         |
