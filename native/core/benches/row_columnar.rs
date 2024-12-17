@@ -20,6 +20,7 @@ use comet::execution::shuffle::row::{
     process_sorted_row_partition, SparkUnsafeObject, SparkUnsafeRow,
 };
 use criterion::{criterion_group, criterion_main, Criterion};
+use datafusion::physical_plan::metrics::Time;
 use tempfile::Builder;
 
 const NUM_ROWS: usize = 10000;
@@ -63,6 +64,8 @@ fn benchmark(c: &mut Criterion) {
         let row_size_ptr = row_sizes.as_mut_ptr();
         let schema = vec![ArrowDataType::Int64; NUM_COLS];
 
+        let ipc_time = Time::default();
+
         b.iter(|| {
             let tempfile = Builder::new().tempfile().unwrap();
 
@@ -77,6 +80,7 @@ fn benchmark(c: &mut Criterion) {
                 false,
                 0,
                 None,
+                &ipc_time,
             )
             .unwrap();
         });
