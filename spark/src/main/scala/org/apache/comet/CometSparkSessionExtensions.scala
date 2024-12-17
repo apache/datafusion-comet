@@ -1084,7 +1084,15 @@ class CometSparkSessionExtensions
     override def apply(plan: SparkPlan): SparkPlan = {
       val eliminatedPlan = plan transformUp {
         case ColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) => sparkToColumnar.child
-        case ColumnarToRowExec(child) => CometColumnarToRowExec(child)
+        case c @ ColumnarToRowExec(child) =>
+          val op = CometColumnarToRowExec(child)
+          if (c.logicalLink.isEmpty) {
+            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
+          } else {
+            c.logicalLink.foreach(op.setLogicalLink)
+          }
+          op
         case CometColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
           sparkToColumnar.child
         case CometSparkToColumnarExec(child: CometSparkToColumnarExec) => child
