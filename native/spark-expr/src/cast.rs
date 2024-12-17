@@ -313,7 +313,7 @@ fn can_cast_from_short(to_type: &DataType, _: &SparkCastOptions) -> bool {
 fn can_cast_from_int(to_type: &DataType, options: &SparkCastOptions) -> bool {
     use DataType::*;
     match to_type {
-        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 => true,
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Utf8 => true,
         Decimal128(_, _) => {
             // incompatible: no overflow check
             options.allow_incompat
