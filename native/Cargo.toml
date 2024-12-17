@@ -39,8 +39,8 @@ arrow-buffer = { version = "53.2.0" }
 arrow-data = { version = "53.2.0" }
 arrow-schema = { version = "53.2.0" }
 parquet = { version = "53.2.0", default-features = false, features = ["experimental"] }
-datafusion-common = { version = "43.0.0" }
 datafusion = { version = "43.0.0", default-features = false, features = ["unicode_expressions", "crypto_expressions"] }
+datafusion-common = { version = "43.0.0" }
 datafusion-functions = { version = "43.0.0", features = ["crypto_expressions"] }
 datafusion-functions-nested = { version = "43.0.0", default-features = false }
 datafusion-expr = { version = "43.0.0", default-features = false }
