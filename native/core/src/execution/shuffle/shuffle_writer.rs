@@ -17,17 +17,10 @@
 
 //! Defines the External shuffle repartition plan.
 
-use std::{
-    any::Any,
-    fmt,
-    fmt::{Debug, Formatter},
-    fs::{File, OpenOptions},
-    io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write},
-    path::Path,
-    sync::Arc,
-    task::{Context, Poll},
+use crate::{
+    common::bit::ceil,
+    errors::{CometError, CometResult},
 };
-
 use arrow::{datatypes::*, ipc::writer::StreamWriter};
 use async_trait::async_trait;
 use bytes::Buf;
@@ -54,17 +47,24 @@ use datafusion::{
         RecordBatchStream, SendableRecordBatchStream, Statistics,
     },
 };
+use datafusion_comet_spark_expr::spark_hash::create_murmur3_hashes;
 use datafusion_physical_expr::EquivalenceProperties;
 use futures::executor::block_on;
 use futures::{lock::Mutex, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
 use simd_adler32::Adler32;
-
-use crate::{
-    common::bit::ceil,
-    errors::{CometError, CometResult},
+use std::io::Error;
+use std::{
+    any::Any,
+    fmt,
+    fmt::{Debug, Formatter},
+    fs::{File, OpenOptions},
+    io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write},
+    path::Path,
+    sync::Arc,
+    task::{Context, Poll},
 };
-use datafusion_comet_spark_expr::spark_hash::create_murmur3_hashes;
+use tokio::time::Instant;
 
 /// The status of appending rows to a partition buffer.
 enum AppendRowStatus {
@@ -271,7 +271,7 @@ impl PartitionBuffer {
         columns: &[ArrayRef],
         indices: &[usize],
         start_index: usize,
-        time_metric: &Time,
+        ipc_time: &Time,
     ) -> AppendRowStatus {
         let mut mem_diff = 0;
         let mut start = start_index;
@@ -293,13 +293,11 @@ impl PartitionBuffer {
                 });
             self.num_active_rows += end - start;
             if self.num_active_rows >= self.batch_size {
-                let mut timer = time_metric.timer();
-                let flush = self.flush();
+                let flush = self.flush(ipc_time);
                 if let Err(e) = flush {
                     return AppendRowStatus::MemDiff(Err(e));
                 }
                 mem_diff += flush.unwrap();
-                timer.stop();
 
                 let init = self.init_active_if_necessary();
                 if init.is_err() {
@@ -313,7 +311,7 @@ impl PartitionBuffer {
     }
 
     /// flush active data into frozen bytes
-    fn flush(&mut self) -> Result<isize> {
+    fn flush(&mut self, ipc_time: &Time) -> Result<isize> {
         if self.num_active_rows == 0 {
             return Ok(0);
         }
@@ -330,7 +328,7 @@ impl PartitionBuffer {
         let frozen_capacity_old = self.frozen.capacity();
         let mut cursor = Cursor::new(&mut self.frozen);
         cursor.seek(SeekFrom::End(0))?;
-        write_ipc_compressed(&frozen_batch, &mut cursor)?;
+        write_ipc_compressed(&frozen_batch, &mut cursor, ipc_time)?;
 
         mem_diff += (self.frozen.capacity() - frozen_capacity_old) as isize;
         Ok(mem_diff)
@@ -628,6 +626,15 @@ struct ShuffleRepartitionerMetrics {
     /// metrics
     baseline: BaselineMetrics,
 
+    /// Time spent writing to disk. Maps to "shuffleWriteTime" in Spark SQL Metrics.
+    write_time: Time,
+
+    /// Time encoding batches to IPC format
+    ipc_time: Time,
+
+    /// Number of input batches
+    input_batches: Count,
+
     /// count of spills during the execution of the operator
     spill_count: Count,
 
@@ -642,6 +649,9 @@ impl ShuffleRepartitionerMetrics {
     fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
         Self {
             baseline: BaselineMetrics::new(metrics, partition),
+            write_time: MetricBuilder::new(metrics).subset_time("write_time", partition),
+            ipc_time: MetricBuilder::new(metrics).subset_time("ipc_time", partition),
+            input_batches: MetricBuilder::new(metrics).counter("input_batches", partition),
             spill_count: MetricBuilder::new(metrics).spill_count(partition),
             spilled_bytes: MetricBuilder::new(metrics).spilled_bytes(partition),
             data_size: MetricBuilder::new(metrics).counter("data_size", partition),
@@ -701,6 +711,7 @@ impl ShuffleRepartitioner {
     /// This function will slice input batch according to configured batch size and then
     /// shuffle rows into corresponding partition buffer.
     async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()> {
+        let start_time = Instant::now();
         let mut start = 0;
         while start < batch.num_rows() {
             let end = (start + self.batch_size).min(batch.num_rows());
@@ -708,6 +719,11 @@ impl ShuffleRepartitioner {
             self.partitioning_batch(batch).await?;
             start = end;
         }
+        self.metrics.input_batches.add(1);
+        self.metrics
+            .baseline
+            .elapsed_compute()
+            .add_duration(start_time.elapsed());
         Ok(())
     }
 
@@ -848,12 +864,13 @@ impl ShuffleRepartitioner {
 
     /// Writes buffered shuffled record batches into Arrow IPC bytes.
     async fn shuffle_write(&mut self) -> Result<SendableRecordBatchStream> {
+        let mut elapsed_compute = self.metrics.baseline.elapsed_compute().timer();
         let num_output_partitions = self.num_output_partitions;
         let buffered_partitions = &mut self.buffered_partitions;
         let mut output_batches: Vec<Vec<u8>> = vec![vec![]; num_output_partitions];
 
         for i in 0..num_output_partitions {
-            buffered_partitions[i].flush()?;
+            buffered_partitions[i].flush(&self.metrics.ipc_time)?;
             output_batches[i] = std::mem::take(&mut buffered_partitions[i].frozen);
         }
 
@@ -864,52 +881,37 @@ impl ShuffleRepartitioner {
         let index_file = self.output_index_file.clone();
 
         let mut offsets = vec![0; num_output_partitions + 1];
-        let mut output_data = OpenOptions::new()
+        let output_data = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .open(data_file)
             .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
 
-        for i in 0..num_output_partitions {
-            let mut timer = self.metrics.baseline.elapsed_compute().timer();
+        let mut output_data = BufWriter::new(output_data);
 
+        let mut write_time = self.metrics.write_time.timer();
+        for i in 0..num_output_partitions {
             offsets[i] = output_data.stream_position()?;
             output_data.write_all(&output_batches[i])?;
-
-            timer.stop();
-
             output_batches[i].clear();
 
             // append partition in each spills
             for spill in &output_spills {
                 let length = spill.offsets[i + 1] - spill.offsets[i];
                 if length > 0 {
-                    let mut timer = self.metrics.baseline.elapsed_compute().timer();
-
                     let mut spill_file =
-                        BufReader::new(File::open(spill.file.path()).map_err(|e| {
-                            DataFusionError::Execution(format!("shuffle write error: {:?}", e))
-                        })?);
+                        BufReader::new(File::open(spill.file.path()).map_err(Self::to_df_err)?);
                     spill_file.seek(SeekFrom::Start(spill.offsets[i]))?;
-                    std::io::copy(&mut spill_file.take(length), &mut output_data).map_err(|e| {
-                        DataFusionError::Execution(format!("shuffle write error: {:?}", e))
-                    })?;
-
-                    timer.stop();
+                    std::io::copy(&mut spill_file.take(length), &mut output_data)
+                        .map_err(Self::to_df_err)?;
                 }
             }
         }
-        let mut timer = self.metrics.baseline.elapsed_compute().timer();
         output_data.flush()?;
-        timer.stop();
 
         // add one extra offset at last to ease partition length computation
-        offsets[num_output_partitions] = output_data
-            .stream_position()
-            .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
-
-        let mut timer = self.metrics.baseline.elapsed_compute().timer();
+        offsets[num_output_partitions] = output_data.stream_position().map_err(Self::to_df_err)?;
 
         let mut output_index =
             BufWriter::new(File::create(index_file).map_err(|e| {
@@ -918,17 +920,23 @@ impl ShuffleRepartitioner {
         for offset in offsets {
             output_index
                 .write_all(&(offset as i64).to_le_bytes()[..])
-                .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
+                .map_err(Self::to_df_err)?;
         }
         output_index.flush()?;
 
-        timer.stop();
+        write_time.stop();
 
         let used = self.reservation.size();
         self.reservation.shrink(used);
 
+        elapsed_compute.stop();
+
         // shuffle writer always has empty output
         Ok(Box::pin(EmptyStream::try_new(Arc::clone(&self.schema))?))
+    }
+
+    fn to_df_err(e: Error) -> DataFusionError {
+        DataFusionError::Execution(format!("shuffle write error: {:?}", e))
     }
 
     fn used(&self) -> usize {
@@ -959,7 +967,7 @@ impl ShuffleRepartitioner {
             return Ok(0);
         }
 
-        let mut timer = self.metrics.baseline.elapsed_compute().timer();
+        let mut timer = self.metrics.write_time.timer();
 
         let spillfile = self
             .runtime
@@ -969,6 +977,7 @@ impl ShuffleRepartitioner {
             &mut self.buffered_partitions,
             spillfile.path(),
             self.num_output_partitions,
+            &self.metrics.ipc_time,
         )?;
 
         timer.stop();
@@ -995,12 +1004,11 @@ impl ShuffleRepartitioner {
 
         let output = &mut self.buffered_partitions[partition_id];
 
-        let time_metric = self.metrics.baseline.elapsed_compute();
-
         // If the range of indices is not big enough, just appending the rows into
         // active array builders instead of directly adding them as a record batch.
         let mut start_index: usize = 0;
-        let mut output_ret = output.append_rows(columns, indices, start_index, time_metric);
+        let mut output_ret =
+            output.append_rows(columns, indices, start_index, &self.metrics.ipc_time);
 
         loop {
             match output_ret {
@@ -1017,10 +1025,9 @@ impl ShuffleRepartitioner {
                     let output = &mut self.buffered_partitions[partition_id];
                     output.reservation.free();
 
-                    let time_metric = self.metrics.baseline.elapsed_compute();
-
                     start_index = new_start;
-                    output_ret = output.append_rows(columns, indices, start_index, time_metric);
+                    output_ret =
+                        output.append_rows(columns, indices, start_index, &self.metrics.ipc_time);
 
                     if let AppendRowStatus::StartIndex(new_start) = output_ret {
                         if new_start == start_index {
@@ -1045,11 +1052,12 @@ fn spill_into(
     buffered_partitions: &mut [PartitionBuffer],
     path: &Path,
     num_output_partitions: usize,
+    ipc_time: &Time,
 ) -> Result<Vec<u64>> {
     let mut output_batches: Vec<Vec<u8>> = vec![vec![]; num_output_partitions];
 
     for i in 0..num_output_partitions {
-        buffered_partitions[i].flush()?;
+        buffered_partitions[i].flush(ipc_time)?;
         output_batches[i] = std::mem::take(&mut buffered_partitions[i].frozen);
     }
     let path = path.to_owned();
@@ -1485,10 +1493,13 @@ impl Checksum {
 pub(crate) fn write_ipc_compressed<W: Write + Seek>(
     batch: &RecordBatch,
     output: &mut W,
+    ipc_time: &Time,
 ) -> Result<usize> {
     if batch.num_rows() == 0 {
         return Ok(0);
     }
+
+    let mut timer = ipc_time.timer();
     let start_pos = output.stream_position()?;
 
     // write ipc_length placeholder
@@ -1508,8 +1519,10 @@ pub(crate) fn write_ipc_compressed<W: Write + Seek>(
     // fill ipc length
     output.seek(SeekFrom::Start(start_pos))?;
     output.write_all(&ipc_length.to_le_bytes()[..])?;
-
     output.seek(SeekFrom::Start(end_pos))?;
+
+    timer.stop();
+
     Ok((end_pos - start_pos) as usize)
 }
 

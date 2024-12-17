@@ -130,6 +130,13 @@ object CometMetricNode {
       "spilled_rows" -> SQLMetrics.createMetric(sc, "Total spilled rows"))
   }
 
+  def shuffleMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+    Map(
+      "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(sc, "native shuffle time"),
+      "ipc_time" -> SQLMetrics.createNanoTimingMetric(sc, "Encoding and compression time"),
+      "input_batches" -> SQLMetrics.createMetric(sc, "number of input batches"))
+  }
+
   /**
    * Creates a [[CometMetricNode]] from a [[CometPlan]].
    */
