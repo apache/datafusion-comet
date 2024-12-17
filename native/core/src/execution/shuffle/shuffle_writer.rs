@@ -25,7 +25,6 @@ use arrow::{datatypes::*, ipc::writer::StreamWriter};
 use async_trait::async_trait;
 use bytes::Buf;
 use crc32fast::Hasher;
-use datafusion::physical_plan::metrics::Time;
 use datafusion::{
     arrow::{
         array::*,
@@ -41,7 +40,9 @@ use datafusion::{
         runtime_env::RuntimeEnv,
     },
     physical_plan::{
-        metrics::{BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet},
+        metrics::{
+            BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, Time,
+        },
         stream::RecordBatchStreamAdapter,
         DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, Partitioning, PlanProperties,
         RecordBatchStream, SendableRecordBatchStream, Statistics,
@@ -242,7 +243,11 @@ impl PartitionBuffer {
 
     /// Initializes active builders if necessary.
     /// Returns error if memory reservation fails.
-    fn init_active_if_necessary(&mut self) -> Result<isize> {
+    fn init_active_if_necessary(
+        &mut self,
+        mempool_time: &Time,
+        repart_time: &Time,
+    ) -> Result<isize> {
         let mut mem_diff = 0;
 
         if self.active.is_empty() {
@@ -256,9 +261,13 @@ impl PartitionBuffer {
                     .sum::<usize>();
             }
 
+            let mut mempool_timer = mempool_time.timer();
             self.reservation.try_grow(self.active_slots_mem_size)?;
+            mempool_timer.stop();
 
+            let mut repart_timer = repart_time.timer();
             self.active = new_array_builders(&self.schema, self.batch_size);
+            repart_timer.stop();
 
             mem_diff += self.active_slots_mem_size as isize;
         }
@@ -271,13 +280,15 @@ impl PartitionBuffer {
         columns: &[ArrayRef],
         indices: &[usize],
         start_index: usize,
+        mempool_time: &Time,
+        repart_time: &Time,
         ipc_time: &Time,
     ) -> AppendRowStatus {
         let mut mem_diff = 0;
         let mut start = start_index;
 
         // lazy init because some partition may be empty
-        let init = self.init_active_if_necessary();
+        let init = self.init_active_if_necessary(mempool_time, repart_time);
         if init.is_err() {
             return AppendRowStatus::StartIndex(start);
         }
@@ -285,6 +296,8 @@ impl PartitionBuffer {
 
         while start < indices.len() {
             let end = (start + self.batch_size).min(indices.len());
+
+            let mut repart_timer = repart_time.timer();
             self.active
                 .iter_mut()
                 .zip(columns)
@@ -292,6 +305,8 @@ impl PartitionBuffer {
                     append_columns(builder, column, &indices[start..end], column.data_type());
                 });
             self.num_active_rows += end - start;
+            repart_timer.stop();
+
             if self.num_active_rows >= self.batch_size {
                 let flush = self.flush(ipc_time);
                 if let Err(e) = flush {
@@ -299,7 +314,7 @@ impl PartitionBuffer {
                 }
                 mem_diff += flush.unwrap();
 
-                let init = self.init_active_if_necessary();
+                let init = self.init_active_if_necessary(mempool_time, repart_time);
                 if init.is_err() {
                     return AppendRowStatus::StartIndex(end);
                 }
@@ -626,11 +641,17 @@ struct ShuffleRepartitionerMetrics {
     /// metrics
     baseline: BaselineMetrics,
 
-    /// Time spent writing to disk. Maps to "shuffleWriteTime" in Spark SQL Metrics.
-    write_time: Time,
+    /// Time to perform repartitioning
+    repart_time: Time,
+
+    /// Time interacting with memory pool
+    mempool_time: Time,
 
     /// Time encoding batches to IPC format
     ipc_time: Time,
+
+    /// Time spent writing to disk. Maps to "shuffleWriteTime" in Spark SQL Metrics.
+    write_time: Time,
 
     /// Number of input batches
     input_batches: Count,
@@ -649,8 +670,10 @@ impl ShuffleRepartitionerMetrics {
     fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
         Self {
             baseline: BaselineMetrics::new(metrics, partition),
-            write_time: MetricBuilder::new(metrics).subset_time("write_time", partition),
+            repart_time: MetricBuilder::new(metrics).subset_time("repart_time", partition),
+            mempool_time: MetricBuilder::new(metrics).subset_time("mempool_time", partition),
             ipc_time: MetricBuilder::new(metrics).subset_time("ipc_time", partition),
+            write_time: MetricBuilder::new(metrics).subset_time("write_time", partition),
             input_batches: MetricBuilder::new(metrics).counter("input_batches", partition),
             spill_count: MetricBuilder::new(metrics).spill_count(partition),
             spilled_bytes: MetricBuilder::new(metrics).spilled_bytes(partition),
@@ -754,53 +777,61 @@ impl ShuffleRepartitioner {
         let num_output_partitions = self.num_output_partitions;
         match &self.partitioning {
             Partitioning::Hash(exprs, _) => {
-                let arrays = exprs
-                    .iter()
-                    .map(|expr| expr.evaluate(&input)?.into_array(input.num_rows()))
-                    .collect::<Result<Vec<_>>>()?;
+                let (partition_starts, shuffled_partition_ids): (Vec<usize>, Vec<usize>) = {
+                    let mut timer = self.metrics.repart_time.timer();
+                    let arrays = exprs
+                        .iter()
+                        .map(|expr| expr.evaluate(&input)?.into_array(input.num_rows()))
+                        .collect::<Result<Vec<_>>>()?;
 
-                // use identical seed as spark hash partition
-                let hashes_buf = &mut self.hashes_buf[..arrays[0].len()];
-                hashes_buf.fill(42_u32);
+                    // use identical seed as spark hash partition
+                    let hashes_buf = &mut self.hashes_buf[..arrays[0].len()];
+                    hashes_buf.fill(42_u32);
 
-                // Hash arrays and compute buckets based on number of partitions
-                let partition_ids = &mut self.partition_ids[..arrays[0].len()];
-                create_murmur3_hashes(&arrays, hashes_buf)?
-                    .iter()
-                    .enumerate()
-                    .for_each(|(idx, hash)| {
-                        partition_ids[idx] = pmod(*hash, num_output_partitions) as u64
+                    // Hash arrays and compute buckets based on number of partitions
+                    let partition_ids = &mut self.partition_ids[..arrays[0].len()];
+                    create_murmur3_hashes(&arrays, hashes_buf)?
+                        .iter()
+                        .enumerate()
+                        .for_each(|(idx, hash)| {
+                            partition_ids[idx] = pmod(*hash, num_output_partitions) as u64
+                        });
+
+                    // count each partition size
+                    let mut partition_counters = vec![0usize; num_output_partitions];
+                    partition_ids
+                        .iter()
+                        .for_each(|partition_id| partition_counters[*partition_id as usize] += 1);
+
+                    // accumulate partition counters into partition ends
+                    // e.g. partition counter: [1, 3, 2, 1] => [1, 4, 6, 7]
+                    let mut partition_ends = partition_counters;
+                    let mut accum = 0;
+                    partition_ends.iter_mut().for_each(|v| {
+                        *v += accum;
+                        accum = *v;
                     });
 
-                // count each partition size
-                let mut partition_counters = vec![0usize; num_output_partitions];
-                partition_ids
-                    .iter()
-                    .for_each(|partition_id| partition_counters[*partition_id as usize] += 1);
+                    // calculate shuffled partition ids
+                    // e.g. partition ids: [3, 1, 1, 1, 2, 2, 0] => [6, 1, 2, 3, 4, 5, 0] which is the
+                    // row indices for rows ordered by their partition id. For example, first partition
+                    // 0 has one row index [6], partition 1 has row indices [1, 2, 3], etc.
+                    let mut shuffled_partition_ids = vec![0usize; input.num_rows()];
+                    for (index, partition_id) in partition_ids.iter().enumerate().rev() {
+                        partition_ends[*partition_id as usize] -= 1;
+                        let end = partition_ends[*partition_id as usize];
+                        shuffled_partition_ids[end] = index;
+                    }
 
-                // accumulate partition counters into partition ends
-                // e.g. partition counter: [1, 3, 2, 1] => [1, 4, 6, 7]
-                let mut partition_ends = partition_counters;
-                let mut accum = 0;
-                partition_ends.iter_mut().for_each(|v| {
-                    *v += accum;
-                    accum = *v;
-                });
-
-                // calculate shuffled partition ids
-                // e.g. partition ids: [3, 1, 1, 1, 2, 2, 0] => [6, 1, 2, 3, 4, 5, 0] which is the
-                // row indices for rows ordered by their partition id. For example, first partition
-                // 0 has one row index [6], partition 1 has row indices [1, 2, 3], etc.
-                let mut shuffled_partition_ids = vec![0usize; input.num_rows()];
-                for (index, partition_id) in partition_ids.iter().enumerate().rev() {
-                    partition_ends[*partition_id as usize] -= 1;
-                    let end = partition_ends[*partition_id as usize];
-                    shuffled_partition_ids[end] = index;
-                }
-
-                // after calculating, partition ends become partition starts
-                let mut partition_starts = partition_ends;
-                partition_starts.push(input.num_rows());
+                    // after calculating, partition ends become partition starts
+                    let mut partition_starts = partition_ends;
+                    partition_starts.push(input.num_rows());
+                    timer.stop();
+                    Ok::<(Vec<usize>, Vec<usize>), DataFusionError>((
+                        partition_starts,
+                        shuffled_partition_ids,
+                    ))
+                }?;
 
                 // For each interval of row indices of partition, taking rows from input batch and
                 // appending into output buffer.
@@ -820,11 +851,20 @@ impl ShuffleRepartitioner {
 
                     if mem_diff > 0 {
                         let mem_increase = mem_diff as usize;
-                        if self.reservation.try_grow(mem_increase).is_err() {
+
+                        let try_grow = {
+                            let mut mempool_timer = self.metrics.mempool_time.timer();
+                            let result = self.reservation.try_grow(mem_increase);
+                            mempool_timer.stop();
+                            result
+                        };
+
+                        if try_grow.is_err() {
                             self.spill().await?;
+                            let mut mempool_timer = self.metrics.mempool_time.timer();
                             self.reservation.free();
                             self.reservation.try_grow(mem_increase)?;
-
+                            mempool_timer.stop();
                             mem_diff = 0;
                         }
                     }
@@ -832,7 +872,9 @@ impl ShuffleRepartitioner {
                     if mem_diff < 0 {
                         let mem_used = self.reservation.size();
                         let mem_decrease = mem_used.min(-mem_diff as usize);
+                        let mut mempool_timer = self.metrics.mempool_time.timer();
                         self.reservation.shrink(mem_decrease);
+                        mempool_timer.stop();
                     }
                 }
             }
@@ -868,7 +910,7 @@ impl ShuffleRepartitioner {
         let num_output_partitions = self.num_output_partitions;
         let buffered_partitions = &mut self.buffered_partitions;
         let mut output_batches: Vec<Vec<u8>> = vec![vec![]; num_output_partitions];
-
+        let mut offsets = vec![0; num_output_partitions + 1];
         for i in 0..num_output_partitions {
             buffered_partitions[i].flush(&self.metrics.ipc_time)?;
             output_batches[i] = std::mem::take(&mut buffered_partitions[i].frozen);
@@ -880,7 +922,8 @@ impl ShuffleRepartitioner {
         let data_file = self.output_data_file.clone();
         let index_file = self.output_index_file.clone();
 
-        let mut offsets = vec![0; num_output_partitions + 1];
+        let mut write_time = self.metrics.write_time.timer();
+
         let output_data = OpenOptions::new()
             .write(true)
             .create(true)
@@ -890,7 +933,6 @@ impl ShuffleRepartitioner {
 
         let mut output_data = BufWriter::new(output_data);
 
-        let mut write_time = self.metrics.write_time.timer();
         for i in 0..num_output_partitions {
             offsets[i] = output_data.stream_position()?;
             output_data.write_all(&output_batches[i])?;
@@ -926,8 +968,10 @@ impl ShuffleRepartitioner {
 
         write_time.stop();
 
+        let mut mempool_timer = self.metrics.mempool_time.timer();
         let used = self.reservation.size();
         self.reservation.shrink(used);
+        mempool_timer.stop();
 
         elapsed_compute.stop();
 
@@ -1007,8 +1051,14 @@ impl ShuffleRepartitioner {
         // If the range of indices is not big enough, just appending the rows into
         // active array builders instead of directly adding them as a record batch.
         let mut start_index: usize = 0;
-        let mut output_ret =
-            output.append_rows(columns, indices, start_index, &self.metrics.ipc_time);
+        let mut output_ret = output.append_rows(
+            columns,
+            indices,
+            start_index,
+            &self.metrics.mempool_time,
+            &self.metrics.repart_time,
+            &self.metrics.ipc_time,
+        );
 
         loop {
             match output_ret {
@@ -1020,14 +1070,22 @@ impl ShuffleRepartitioner {
                     // Cannot allocate enough memory for the array builders in the partition,
                     // spill partitions and retry.
                     self.spill().await?;
-                    self.reservation.free();
 
+                    let mut mempool_timer = self.metrics.mempool_time.timer();
+                    self.reservation.free();
                     let output = &mut self.buffered_partitions[partition_id];
                     output.reservation.free();
+                    mempool_timer.stop();
 
                     start_index = new_start;
-                    output_ret =
-                        output.append_rows(columns, indices, start_index, &self.metrics.ipc_time);
+                    output_ret = output.append_rows(
+                        columns,
+                        indices,
+                        start_index,
+                        &self.metrics.mempool_time,
+                        &self.metrics.repart_time,
+                        &self.metrics.ipc_time,
+                    );
 
                     if let AppendRowStatus::StartIndex(new_start) = output_ret {
                         if new_start == start_index {
