@@ -19,11 +19,13 @@
 
 package org.apache.comet.parquet;
 
+import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URISyntaxException;
+import java.nio.channels.Channels;
 import java.util.*;
 
 import scala.Option;
@@ -36,6 +38,9 @@ import org.slf4j.LoggerFactory;
 import org.apache.arrow.c.CometSchemaImporter;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.ipc.WriteChannel;
+import org.apache.arrow.vector.ipc.message.MessageSerializer;
+import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapreduce.InputSplit;
@@ -52,6 +57,7 @@ import org.apache.spark.TaskContext;
 import org.apache.spark.TaskContext$;
 import org.apache.spark.executor.TaskMetrics;
 import org.apache.spark.sql.catalyst.InternalRow;
+import org.apache.spark.sql.comet.CometArrowUtils;
 import org.apache.spark.sql.comet.parquet.CometParquetReadSupport;
 import org.apache.spark.sql.execution.datasources.PartitionedFile;
 import org.apache.spark.sql.execution.datasources.parquet.ParquetToSparkSchemaConverter;
@@ -99,7 +105,6 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   private PartitionedFile file;
   private final Map<String, SQLMetric> metrics;
 
-  private long rowsRead;
   private StructType sparkSchema;
   private MessageType requestedSchema;
   private CometVector[] vectors;
@@ -110,9 +115,6 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   private boolean[] missingColumns;
   private boolean isInitialized;
   private ParquetMetadata footer;
-
-  /** The total number of rows across all row groups of the input split. */
-  private long totalRowCount;
 
   /**
    * Whether the native scan should always return decimal represented by 128 bits, regardless of its
@@ -224,6 +226,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     long start = file.start();
     long length = file.length();
     String filePath = file.filePath().toString();
+    long fileSize = file.fileSize();
 
     requestedSchema = footer.getFileMetaData().getSchema();
     MessageType fileSchema = requestedSchema;
@@ -253,6 +256,13 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
         }
       }
     } ////// End get requested schema
+
+    String timeZoneId = conf.get("spark.sql.session.timeZone");
+    Schema arrowSchema = CometArrowUtils.toArrowSchema(sparkSchema, timeZoneId);
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    WriteChannel writeChannel = new WriteChannel(Channels.newChannel(out));
+    MessageSerializer.serialize(writeChannel, arrowSchema);
+    byte[] serializedRequestedArrowSchema = out.toByteArray();
 
     //// Create Column readers
     List<ColumnDescriptor> columns = requestedSchema.getColumns();
@@ -334,13 +344,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       }
     }
 
-    // TODO: (ARROW NATIVE) Use a ProjectionMask here ?
-    ArrayList<String> requiredColumns = new ArrayList<>();
-    for (Type col : requestedSchema.asGroupType().getFields()) {
-      requiredColumns.add(col.getName());
-    }
-    this.handle = Native.initRecordBatchReader(filePath, start, length, requiredColumns.toArray());
-    totalRowCount = Native.numRowGroups(handle);
+    this.handle =
+        Native.initRecordBatchReader(
+            filePath, fileSize, start, length, serializedRequestedArrowSchema);
     isInitialized = true;
   }
 
@@ -375,7 +381,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
 
   @Override
   public float getProgress() {
-    return (float) rowsRead / totalRowCount;
+    return 0;
   }
 
   /**
@@ -395,7 +401,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   public boolean nextBatch() throws IOException {
     Preconditions.checkState(isInitialized, "init() should be called first!");
 
-    if (rowsRead >= totalRowCount) return false;
+    //    if (rowsRead >= totalRowCount) return false;
     int batchSize;
 
     try {
@@ -432,7 +438,6 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     }
 
     currentBatch.setNumRows(batchSize);
-    rowsRead += batchSize;
     return true;
   }
 
@@ -457,6 +462,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     long startNs = System.nanoTime();
 
     int batchSize = Native.readNextRecordBatch(this.handle);
+    if (batchSize == 0) {
+      return batchSize;
+    }
     if (importer != null) importer.close();
     importer = new CometSchemaImporter(ALLOCATOR);
 

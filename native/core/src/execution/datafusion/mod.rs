@@ -20,6 +20,6 @@
 pub mod expressions;
 mod operators;
 pub mod planner;
-mod schema_adapter;
+pub(crate) mod schema_adapter;
 pub mod shuffle_writer;
 mod util;

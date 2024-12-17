@@ -40,6 +40,8 @@ arrow-array = { workspace = true }
 arrow-buffer = { workspace = true }
 arrow-data = { workspace = true }
 arrow-schema = { workspace = true }
+arrow-ipc = { workspace = true }
+flatbuffers = { workspace = true }
 parquet = { workspace = true, default-features = false, features = ["experimental"] }
 half = { version = "2.4.1", default-features = false }
 futures = "0.3.28"

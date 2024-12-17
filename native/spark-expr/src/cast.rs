@@ -571,7 +571,7 @@ impl SparkCastOptions {
             eval_mode,
             timezone: timezone.to_string(),
             allow_incompat,
-            is_adapting_schema: false
+            is_adapting_schema: false,
         }
     }
 
@@ -583,7 +583,6 @@ impl SparkCastOptions {
             is_adapting_schema: false,
         }
     }
-
 }
 
 /// Spark-compatible cast implementation. Defers to DataFusion's cast where that is known
@@ -2309,8 +2308,7 @@ mod tests {
     #[test]
     fn test_cast_invalid_timezone() {
         let timestamps: PrimitiveArray<TimestampMicrosecondType> = vec![i64::MAX].into();
-        let cast_options =
-            SparkCastOptions::new(EvalMode::Legacy, "Not a valid timezone", false);
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "Not a valid timezone", false);
         let result = cast_array(
             Arc::new(timestamps.with_timezone("Europe/Copenhagen")),
             &DataType::Date32,
@@ -2401,9 +2399,7 @@ mod tests {
         let cast_array = spark_cast(
             ColumnarValue::Array(c),
             &DataType::Struct(fields),
-            &SparkCastOptions::new(EvalMode::Legacy,
-            "UTC",
-            false)
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
         )
         .unwrap();
         if let ColumnarValue::Array(cast_array) = cast_array {

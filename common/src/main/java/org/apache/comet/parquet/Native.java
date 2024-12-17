@@ -246,15 +246,10 @@ public final class Native extends NativeBase {
    * @param filePath
    * @param start
    * @param length
-   * @param required_columns array of names of fields to read
    * @return a handle to the record batch reader, used in subsequent calls.
    */
   public static native long initRecordBatchReader(
-      String filePath, long start, long length, Object[] required_columns);
-
-  public static native int numRowGroups(long handle);
-
-  public static native long numTotalRows(long handle);
+      String filePath, long fileSize, long start, long length, byte[] requiredSchema);
 
   // arrow native version of read batch
   /**
