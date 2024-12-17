@@ -163,21 +163,21 @@ pub fn cast_supported(
     }
 
     match (from_type, to_type) {
-        (Boolean, _) => can_cast_from_boolean(from_type, options),
+        (Boolean, _) => can_cast_from_boolean(to_type, options),
         (UInt8 | UInt16 | UInt32 | UInt64, Int8 | Int16 | Int32 | Int64)
             if options.allow_cast_unsigned_ints =>
         {
             true
         }
-        (Int8, _) => can_cast_from_byte(from_type, options),
-        (Int16, _) => can_cast_from_short(from_type, options),
-        (Int32, _) => can_cast_from_int(from_type, options),
-        (Int64, _) => can_cast_from_long(from_type, options),
-        (Float32, _) => can_cast_from_float(from_type, options),
-        (Float64, _) => can_cast_from_double(from_type, options),
-        (Decimal128(_, _), _) => can_cast_from_decimal(from_type, options),
-        (Timestamp(_, None), _) => can_cast_from_timestamp_ntz(from_type, options),
-        (Timestamp(_, Some(_)), _) => can_cast_from_timestamp(from_type, options),
+        (Int8, _) => can_cast_from_byte(to_type, options),
+        (Int16, _) => can_cast_from_short(to_type, options),
+        (Int32, _) => can_cast_from_int(to_type, options),
+        (Int64, _) => can_cast_from_long(to_type, options),
+        (Float32, _) => can_cast_from_float(to_type, options),
+        (Float64, _) => can_cast_from_double(to_type, options),
+        (Decimal128(p, s), _) => can_cast_from_decimal(p, s, to_type, options),
+        (Timestamp(_, None), _) => can_cast_from_timestamp_ntz(to_type, options),
+        (Timestamp(_, Some(_)), _) => can_cast_from_timestamp(to_type, options),
         (Utf8 | LargeUtf8, _) => can_cast_from_string(to_type, options),
         (_, Utf8 | LargeUtf8) => can_cast_to_string(from_type, options),
         (Struct(from_fields), Struct(to_fields)) => from_fields
@@ -350,21 +350,26 @@ fn can_cast_from_double(to_type: &DataType, _: &SparkCastOptions) -> bool {
     )
 }
 
-fn can_cast_from_decimal(to_type: &DataType, _: &SparkCastOptions) -> bool {
+fn can_cast_from_decimal(
+    p1: &u8,
+    _s1: &i8,
+    to_type: &DataType,
+    options: &SparkCastOptions,
+) -> bool {
     use DataType::*;
-    matches!(to_type, Int8 | Int16 | Int32 | Int64 | Float32 | Float64)
-    /*
-           (Decimal128(p1, _), Decimal128(p2, _)) => {
-           if p2 < p1 {
-               // https://github.com/apache/datafusion/issues/13492
-               // Incompatible(Some("Casting to smaller precision is not supported"))
-               options.allow_incompat
-           } else {
-               true
-           }
-       }
-
-    */
+    match to_type {
+        Int8 | Int16 | Int32 | Int64 | Float32 | Float64 => true,
+        Decimal128(p2, _) => {
+            if p2 < p1 {
+                // https://github.com/apache/datafusion/issues/13492
+                // Incompatible(Some("Casting to smaller precision is not supported"))
+                options.allow_incompat
+            } else {
+                true
+            }
+        }
+        _ => false,
+    }
 }
 
 macro_rules! cast_utf8_to_int {
