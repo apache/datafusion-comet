@@ -138,6 +138,7 @@ object CometMetricNode {
         "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(sc, "native shuffle time"),
         "ipc_time" -> SQLMetrics.createNanoTimingMetric(sc, "IPC encoding time"),
         "input_time" -> SQLMetrics.createNanoTimingMetric(sc, "native shuffle input time"),
+        "input_batches" -> SQLMetrics.createMetric(sc, "number of input batches"),
         "shuffleWallTime" -> SQLMetrics.createNanoTimingMetric(
           sc,
           "shuffle wall time (inclusive)"))

@@ -651,7 +651,9 @@ struct ShuffleRepartitionerMetrics {
     /// Time encoding batches to IPC format
     ipc_time: Time,
 
-    //other_time: Time,
+    /// Number of input batches
+    input_batches: Count,
+
     /// count of spills during the execution of the operator
     spill_count: Count,
 
@@ -664,14 +666,12 @@ struct ShuffleRepartitionerMetrics {
 
 impl ShuffleRepartitionerMetrics {
     fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
-        let input_time = MetricBuilder::new(metrics).subset_time("input_time", partition);
-        let write_time = MetricBuilder::new(metrics).subset_time("write_time", partition);
-        let ipc_time = MetricBuilder::new(metrics).subset_time("ipc_time", partition);
         Self {
             baseline: BaselineMetrics::new(metrics, partition),
-            input_time,
-            write_time,
-            ipc_time,
+            input_time: MetricBuilder::new(metrics).subset_time("input_time", partition),
+            write_time: MetricBuilder::new(metrics).subset_time("write_time", partition),
+            ipc_time: MetricBuilder::new(metrics).subset_time("ipc_time", partition),
+            input_batches: MetricBuilder::new(metrics).counter("input_batches", partition),
             spill_count: MetricBuilder::new(metrics).spill_count(partition),
             spilled_bytes: MetricBuilder::new(metrics).spilled_bytes(partition),
             data_size: MetricBuilder::new(metrics).counter("data_size", partition),
@@ -739,6 +739,7 @@ impl ShuffleRepartitioner {
             self.partitioning_batch(batch).await?;
             start = end;
         }
+        self.metrics.input_batches.add(1);
         self.metrics
             .baseline
             .elapsed_compute()

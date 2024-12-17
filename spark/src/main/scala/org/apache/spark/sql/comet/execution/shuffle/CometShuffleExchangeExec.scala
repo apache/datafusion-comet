@@ -482,12 +482,12 @@ class CometShuffleWriteProcessor(
     val nativePlan = getNativePlan(tempDataFilename, tempIndexFilename)
 
     // these metrics are only reported when detailed metrics are enabled via config
-    val detailedMetrics = Seq("elapsed_compute", "input_time", "ipc_time")
+    val detailedMetrics = Seq("elapsed_compute", "input_time", "ipc_time", "input_batches")
 
     // Maps native metrics to SQL metrics
     val nativeSQLMetrics = Map(
-      "data_size" -> metrics("dataSize"),
       "output_rows" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_RECORDS_WRITTEN),
+      "data_size" -> metrics("dataSize"),
       "write_time" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_WRITE_TIME)) ++
       metrics.filterKeys(detailedMetrics.contains)
     val nativeMetrics = CometMetricNode(nativeSQLMetrics)
