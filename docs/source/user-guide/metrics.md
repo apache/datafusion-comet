@@ -25,16 +25,16 @@ Set `spark.comet.metrics.detailed=true` to see all available Comet metrics.
 
 ### CometScanExec
 
-| Metric      | Description                                                                                                                                                                               |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `scan time` | Total time to scan a Parquet file. This is not comparable to the same metric in Spark because Comet's scan metric is more accurate (records time in nanoseconds rather than milliseconds) |
+| Metric      | Description                                                                                                                                                                                                                                                                        |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scan time` | Total time to scan a Parquet file. This is not comparable to the same metric in Spark because Comet's scan metric is more accurate. Although both Comet and Spark measure the time in nanoseconds, Spark rounds this time to the nearest millisecond per batch and Comet does not. |
 
 ### Exchange
 
 Comet adds some additional metrics:
 
 | Metric                          | Description                                                                               |
-| ------------------------------- |-------------------------------------------------------------------------------------------|
+| ------------------------------- | ----------------------------------------------------------------------------------------- |
 | `ipc time`                      | Time to encode batches in IPC format. Includes compression time.                          |
 | `native shuffle time`           | Total time spent in native shuffle writer, excluding the execution time of the input plan |
 | `native shuffle input time`     | Time spend executing the shuffle input plan and fetching batches.                         |
