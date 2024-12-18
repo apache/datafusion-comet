@@ -3,7 +3,7 @@ TakeOrderedAndProject (34)
 +- * HashAggregate (33)
    +- Exchange (32)
       +- * HashAggregate (31)
-         +- * ColumnarToRow (30)
+         +- * CometColumnarToRow (30)
             +- CometUnion (29)
                :- CometProject (12)
                :  +- CometBroadcastHashJoin (11)
@@ -172,7 +172,7 @@ Child 0 Input [6]: [channel#10, col_name#11, d_year#8, d_qoy#9, i_category#6, ex
 Child 1 Input [6]: [channel#22, col_name#23, d_year#20, d_qoy#21, i_category#18, ext_sales_price#24]
 Child 2 Input [6]: [channel#34, col_name#35, d_year#32, d_qoy#33, i_category#30, ext_sales_price#36]
 
-(30) ColumnarToRow [codegen id : 1]
+(30) CometColumnarToRow [codegen id : 1]
 Input [6]: [channel#10, col_name#11, d_year#8, d_qoy#9, i_category#6, ext_sales_price#12]
 
 (31) HashAggregate [codegen id : 1]

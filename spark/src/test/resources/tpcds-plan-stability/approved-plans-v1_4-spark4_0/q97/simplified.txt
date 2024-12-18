@@ -4,7 +4,7 @@ WholeStageCodegen (2)
       Exchange #1
         WholeStageCodegen (1)
           HashAggregate [customer_sk,customer_sk] [sum,sum,sum,sum,sum,sum]
-            ColumnarToRow
+            CometColumnarToRow
               InputAdapter
                 CometProject [customer_sk,customer_sk]
                   CometSortMergeJoin [customer_sk,item_sk,customer_sk,item_sk]
@@ -18,7 +18,7 @@ WholeStageCodegen (2)
                                   SubqueryBroadcast [d_date_sk] #1
                                     BroadcastExchange #3
                                       WholeStageCodegen (1)
-                                        ColumnarToRow
+                                        CometColumnarToRow
                                           InputAdapter
                                             CometProject [d_date_sk]
                                               CometFilter [d_date_sk,d_month_seq]

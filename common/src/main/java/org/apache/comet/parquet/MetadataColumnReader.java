@@ -40,9 +40,14 @@ public class MetadataColumnReader extends AbstractColumnReader {
   private ArrowArray array = null;
   private ArrowSchema schema = null;
 
-  public MetadataColumnReader(DataType type, ColumnDescriptor descriptor, boolean useDecimal128) {
+  private boolean isConstant;
+
+  public MetadataColumnReader(
+      DataType type, ColumnDescriptor descriptor, boolean useDecimal128, boolean isConstant) {
     // TODO: should we handle legacy dates & timestamps for metadata columns?
     super(type, descriptor, useDecimal128, false);
+
+    this.isConstant = isConstant;
   }
 
   @Override
@@ -62,7 +67,7 @@ public class MetadataColumnReader extends AbstractColumnReader {
 
       Native.currentBatch(nativeHandle, arrayAddr, schemaAddr);
       FieldVector fieldVector = Data.importVector(allocator, array, schema, null);
-      vector = new CometPlainVector(fieldVector, useDecimal128);
+      vector = new CometPlainVector(fieldVector, useDecimal128, false, isConstant);
     }
 
     vector.setNumValues(total);

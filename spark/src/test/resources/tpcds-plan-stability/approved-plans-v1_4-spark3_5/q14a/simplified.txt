@@ -1,5 +1,5 @@
 WholeStageCodegen (1)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [channel,i_brand_id,i_class_id,i_category_id,sum(sales),sum(number_sales)]
         CometHashAggregate [channel,i_brand_id,i_class_id,i_category_id,sum(sales),sum(number_sales),spark_grouping_id,sum,isEmpty,sum,sum(sales),sum(number_salesL)]
@@ -11,7 +11,7 @@ WholeStageCodegen (1)
                     CometFilter [i_brand_id,i_class_id,i_category_id,sales,number_sales]
                       Subquery #3
                         WholeStageCodegen (1)
-                          ColumnarToRow
+                          CometColumnarToRow
                             InputAdapter
                               CometHashAggregate [average_sales,sum,count,avg((cast(quantity as decimal(10,0)) * list_price))]
                                 CometExchange #15
@@ -45,7 +45,7 @@ WholeStageCodegen (1)
                                           SubqueryBroadcast [d_date_sk] #1
                                             BroadcastExchange #3
                                               WholeStageCodegen (1)
-                                                ColumnarToRow
+                                                CometColumnarToRow
                                                   InputAdapter
                                                     CometProject [d_date_sk]
                                                       CometFilter [d_date_sk,d_year,d_moy]
@@ -69,7 +69,7 @@ WholeStageCodegen (1)
                                                                   SubqueryBroadcast [d_date_sk] #2
                                                                     BroadcastExchange #7
                                                                       WholeStageCodegen (1)
-                                                                        ColumnarToRow
+                                                                        CometColumnarToRow
                                                                           InputAdapter
                                                                             CometProject [d_date_sk]
                                                                               CometFilter [d_date_sk,d_year]

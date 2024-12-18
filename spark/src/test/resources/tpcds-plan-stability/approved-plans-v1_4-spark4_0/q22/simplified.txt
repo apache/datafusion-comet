@@ -5,7 +5,7 @@ TakeOrderedAndProject [qoh,i_product_name,i_brand,i_class,i_category]
         Exchange [i_product_name,i_brand,i_class,i_category,spark_grouping_id] #1
           WholeStageCodegen (1)
             HashAggregate [i_product_name,i_brand,i_class,i_category,spark_grouping_id,inv_quantity_on_hand] [sum,count,sum,count]
-              ColumnarToRow
+              CometColumnarToRow
                 InputAdapter
                   CometExpand [i_product_name,i_brand,i_class,i_category] [inv_quantity_on_hand,i_product_name,i_brand,i_class,i_category,spark_grouping_id]
                     CometProject [inv_quantity_on_hand,i_product_name,i_brand,i_class,i_category]
@@ -19,7 +19,7 @@ TakeOrderedAndProject [qoh,i_product_name,i_brand,i_class,i_category]
                                     SubqueryBroadcast [d_date_sk] #1
                                       BroadcastExchange #2
                                         WholeStageCodegen (1)
-                                          ColumnarToRow
+                                          CometColumnarToRow
                                             InputAdapter
                                               CometProject [d_date_sk]
                                                 CometFilter [d_date_sk,d_month_seq]

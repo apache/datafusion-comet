@@ -17,7 +17,7 @@ TakeOrderedAndProject [channel,return_rank,currency_rank,item,return_ratio]
                                 InputAdapter
                                   Window [return_ratio]
                                     WholeStageCodegen (1)
-                                      ColumnarToRow
+                                      CometColumnarToRow
                                         InputAdapter
                                           CometSort [item,return_ratio,currency_ratio]
                                             CometExchange #2
@@ -35,7 +35,7 @@ TakeOrderedAndProject [channel,return_rank,currency_rank,item,return_ratio]
                                                                     SubqueryBroadcast [d_date_sk] #1
                                                                       BroadcastExchange #5
                                                                         WholeStageCodegen (1)
-                                                                          ColumnarToRow
+                                                                          CometColumnarToRow
                                                                             InputAdapter
                                                                               CometProject [d_date_sk]
                                                                                 CometFilter [d_date_sk,d_year,d_moy]
@@ -57,7 +57,7 @@ TakeOrderedAndProject [channel,return_rank,currency_rank,item,return_ratio]
                                 InputAdapter
                                   Window [return_ratio]
                                     WholeStageCodegen (4)
-                                      ColumnarToRow
+                                      CometColumnarToRow
                                         InputAdapter
                                           CometSort [item,return_ratio,currency_ratio]
                                             CometExchange #7
@@ -87,7 +87,7 @@ TakeOrderedAndProject [channel,return_rank,currency_rank,item,return_ratio]
                                 InputAdapter
                                   Window [return_ratio]
                                     WholeStageCodegen (7)
-                                      ColumnarToRow
+                                      CometColumnarToRow
                                         InputAdapter
                                           CometSort [item,return_ratio,currency_ratio]
                                             CometExchange #10

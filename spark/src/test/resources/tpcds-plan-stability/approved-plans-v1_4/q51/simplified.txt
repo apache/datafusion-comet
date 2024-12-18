@@ -20,7 +20,7 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                       InputAdapter
                                         Window [_w0,ws_item_sk,d_date]
                                           WholeStageCodegen (1)
-                                            ColumnarToRow
+                                            CometColumnarToRow
                                               InputAdapter
                                                 CometSort [item_sk,d_date,_w0,ws_item_sk]
                                                   CometExchange [ws_item_sk] #3
@@ -34,7 +34,7 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                                   SubqueryBroadcast [d_date_sk] #1
                                                                     BroadcastExchange #5
                                                                       WholeStageCodegen (1)
-                                                                        ColumnarToRow
+                                                                        CometColumnarToRow
                                                                           InputAdapter
                                                                             CometProject [d_date_sk,d_date]
                                                                               CometFilter [d_date_sk,d_date,d_month_seq]
@@ -53,7 +53,7 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                       InputAdapter
                                         Window [_w0,ss_item_sk,d_date]
                                           WholeStageCodegen (4)
-                                            ColumnarToRow
+                                            CometColumnarToRow
                                               InputAdapter
                                                 CometSort [item_sk,d_date,_w0,ss_item_sk]
                                                   CometExchange [ss_item_sk] #8

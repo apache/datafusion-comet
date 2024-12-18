@@ -16,7 +16,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                               InputAdapter
                                 Union
                                   WholeStageCodegen (1)
-                                    ColumnarToRow
+                                    CometColumnarToRow
                                       InputAdapter
                                         CometProject [s_store_sk,returns,profit,profit_loss] [channel,id,sales,returns,profit]
                                           CometBroadcastHashJoin [s_store_sk,sales,profit,s_store_sk,returns,profit_loss]
@@ -32,7 +32,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                               SubqueryBroadcast [d_date_sk] #1
                                                                 BroadcastExchange #4
                                                                   WholeStageCodegen (1)
-                                                                    ColumnarToRow
+                                                                    CometColumnarToRow
                                                                       InputAdapter
                                                                         CometProject [d_date_sk]
                                                                           CometFilter [d_date_sk,d_date]
@@ -63,7 +63,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                         InputAdapter
                                           BroadcastExchange #9
                                             WholeStageCodegen (2)
-                                              ColumnarToRow
+                                              CometColumnarToRow
                                                 InputAdapter
                                                   CometHashAggregate [cs_call_center_sk,sales,profit,sum,sum,sum(UnscaledValue(cs_ext_sales_price)),sum(UnscaledValue(cs_net_profit))]
                                                     CometExchange [cs_call_center_sk] #10
@@ -73,7 +73,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                             CometScan parquet spark_catalog.default.catalog_sales [cs_call_center_sk,cs_ext_sales_price,cs_net_profit,cs_sold_date_sk]
                                                               ReusedSubquery [d_date_sk] #1
                                                             ReusedExchange [d_date_sk] #5
-                                        ColumnarToRow
+                                        CometColumnarToRow
                                           InputAdapter
                                             CometHashAggregate [returns,profit_loss,sum,sum,sum(UnscaledValue(cr_return_amount)),sum(UnscaledValue(cr_net_loss))]
                                               CometExchange #11
@@ -84,7 +84,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                         ReusedSubquery [d_date_sk] #1
                                                       ReusedExchange [d_date_sk] #5
                                   WholeStageCodegen (4)
-                                    ColumnarToRow
+                                    CometColumnarToRow
                                       InputAdapter
                                         CometProject [wp_web_page_sk,returns,profit,profit_loss] [channel,id,sales,returns,profit]
                                           CometBroadcastHashJoin [wp_web_page_sk,sales,profit,wp_web_page_sk,returns,profit_loss]

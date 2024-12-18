@@ -8,7 +8,7 @@ TakeOrderedAndProject (125)
       :        +- * HashAggregate (64)
       :           +- Exchange (63)
       :              +- * HashAggregate (62)
-      :                 +- * ColumnarToRow (61)
+      :                 +- * CometColumnarToRow (61)
       :                    +- CometHashAggregate (60)
       :                       +- CometExchange (59)
       :                          +- CometHashAggregate (58)
@@ -75,7 +75,7 @@ TakeOrderedAndProject (125)
                +- * HashAggregate (119)
                   +- Exchange (118)
                      +- * HashAggregate (117)
-                        +- * ColumnarToRow (116)
+                        +- * CometColumnarToRow (116)
                            +- CometHashAggregate (115)
                               +- CometExchange (114)
                                  +- CometHashAggregate (113)
@@ -401,7 +401,7 @@ Input [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_
 Keys [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#20, sales_amt#21]
 Functions: []
 
-(61) ColumnarToRow [codegen id : 1]
+(61) CometColumnarToRow [codegen id : 1]
 Input [7]: [d_year#14, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, sales_cnt#20, sales_amt#21]
 
 (62) HashAggregate [codegen id : 1]
@@ -645,7 +645,7 @@ Input [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufac
 Keys [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#87, sales_amt#88]
 Functions: []
 
-(116) ColumnarToRow [codegen id : 4]
+(116) CometColumnarToRow [codegen id : 4]
 Input [7]: [d_year#82, i_brand_id#77, i_class_id#78, i_category_id#79, i_manufact_id#80, sales_cnt#87, sales_amt#88]
 
 (117) HashAggregate [codegen id : 4]
@@ -696,7 +696,7 @@ Arguments: 100, [sales_cnt_diff#137 ASC NULLS FIRST], [prev_year#133, year#134, 
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = cs_sold_date_sk#5 IN dynamicpruning#6
 BroadcastExchange (129)
-+- * ColumnarToRow (128)
++- * CometColumnarToRow (128)
    +- CometFilter (127)
       +- CometScan parquet spark_catalog.default.date_dim (126)
 
@@ -712,7 +712,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int>
 Input [2]: [d_date_sk#13, d_year#14]
 Condition : ((isnotnull(d_year#14) AND (d_year#14 = 2002)) AND isnotnull(d_date_sk#13))
 
-(128) ColumnarToRow [codegen id : 1]
+(128) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#13, d_year#14]
 
 (129) BroadcastExchange
@@ -725,7 +725,7 @@ Subquery:3 Hosting operator id = 40 Hosting Expression = ws_sold_date_sk#46 IN d
 
 Subquery:4 Hosting operator id = 68 Hosting Expression = cs_sold_date_sk#74 IN dynamicpruning#75
 BroadcastExchange (133)
-+- * ColumnarToRow (132)
++- * CometColumnarToRow (132)
    +- CometFilter (131)
       +- CometScan parquet spark_catalog.default.date_dim (130)
 
@@ -741,7 +741,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int>
 Input [2]: [d_date_sk#81, d_year#82]
 Condition : ((isnotnull(d_year#82) AND (d_year#82 = 2001)) AND isnotnull(d_date_sk#81))
 
-(132) ColumnarToRow [codegen id : 1]
+(132) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#81, d_year#82]
 
 (133) BroadcastExchange

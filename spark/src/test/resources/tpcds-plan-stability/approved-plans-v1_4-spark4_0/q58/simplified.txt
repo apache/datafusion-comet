@@ -10,7 +10,7 @@ TakeOrderedAndProject [item_id,ss_item_rev,ss_dev,cs_item_rev,cs_dev,ws_item_rev
                   Exchange [i_item_id] #1
                     WholeStageCodegen (1)
                       HashAggregate [i_item_id,ss_ext_sales_price] [sum,sum]
-                        ColumnarToRow
+                        CometColumnarToRow
                           InputAdapter
                             CometProject [ss_ext_sales_price,i_item_id]
                               CometBroadcastHashJoin [ss_ext_sales_price,ss_sold_date_sk,i_item_id,d_date_sk]
@@ -21,7 +21,7 @@ TakeOrderedAndProject [item_id,ss_item_rev,ss_dev,cs_item_rev,cs_dev,ws_item_rev
                                         SubqueryBroadcast [d_date_sk] #1
                                           BroadcastExchange #2
                                             WholeStageCodegen (1)
-                                              ColumnarToRow
+                                              CometColumnarToRow
                                                 InputAdapter
                                                   CometProject [d_date_sk]
                                                     CometBroadcastHashJoin [d_date_sk,d_date,d_date]
@@ -34,7 +34,7 @@ TakeOrderedAndProject [item_id,ss_item_rev,ss_dev,cs_item_rev,cs_dev,ws_item_rev
                                                             CometScan parquet spark_catalog.default.date_dim [d_date,d_week_seq]
                                                               Subquery #2
                                                                 WholeStageCodegen (1)
-                                                                  ColumnarToRow
+                                                                  CometColumnarToRow
                                                                     InputAdapter
                                                                       CometProject [d_week_seq]
                                                                         CometFilter [d_date,d_week_seq]
@@ -57,7 +57,7 @@ TakeOrderedAndProject [item_id,ss_item_rev,ss_dev,cs_item_rev,cs_dev,ws_item_rev
                         Exchange [i_item_id] #7
                           WholeStageCodegen (2)
                             HashAggregate [i_item_id,cs_ext_sales_price] [sum,sum]
-                              ColumnarToRow
+                              CometColumnarToRow
                                 InputAdapter
                                   CometProject [cs_ext_sales_price,i_item_id]
                                     CometBroadcastHashJoin [cs_ext_sales_price,cs_sold_date_sk,i_item_id,d_date_sk]
@@ -77,7 +77,7 @@ TakeOrderedAndProject [item_id,ss_item_rev,ss_dev,cs_item_rev,cs_dev,ws_item_rev
                     Exchange [i_item_id] #9
                       WholeStageCodegen (4)
                         HashAggregate [i_item_id,ws_ext_sales_price] [sum,sum]
-                          ColumnarToRow
+                          CometColumnarToRow
                             InputAdapter
                               CometProject [ws_ext_sales_price,i_item_id]
                                 CometBroadcastHashJoin [ws_ext_sales_price,ws_sold_date_sk,i_item_id,d_date_sk]

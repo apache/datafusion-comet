@@ -81,6 +81,7 @@ class CometExecIterator(
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
+  private var prevBatch: ColumnarBatch = null
   private var currentBatch: ColumnarBatch = null
   private var closed: Boolean = false
 
@@ -100,6 +101,14 @@ class CometExecIterator(
 
     if (nextBatch.isDefined) {
       return true
+    }
+
+    // Close previous batch if any.
+    // This is to guarantee safety at the native side before we overwrite the buffer memory
+    // shared across batches in the native side.
+    if (prevBatch != null) {
+      prevBatch.close()
+      prevBatch = null
     }
 
     nextBatch = getNextBatch()
@@ -124,6 +133,7 @@ class CometExecIterator(
     }
 
     currentBatch = nextBatch.get
+    prevBatch = currentBatch
     nextBatch = None
     currentBatch
   }

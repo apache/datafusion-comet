@@ -3,7 +3,7 @@ TakeOrderedAndProject (28)
 +- * HashAggregate (27)
    +- Exchange (26)
       +- * HashAggregate (25)
-         +- * ColumnarToRow (24)
+         +- * CometColumnarToRow (24)
             +- CometProject (23)
                +- CometBroadcastHashJoin (22)
                   :- CometProject (17)
@@ -140,7 +140,7 @@ Arguments: [ws_ship_date_sk#1], [d_date_sk#12], Inner, BuildRight
 Input [6]: [ws_ship_date_sk#1, ws_sold_date_sk#5, w_warehouse_name#7, sm_type#9, web_name#11, d_date_sk#12]
 Arguments: [ws_ship_date_sk#1, ws_sold_date_sk#5, sm_type#9, web_name#11, _groupingexpression#14], [ws_ship_date_sk#1, ws_sold_date_sk#5, sm_type#9, web_name#11, substr(w_warehouse_name#7, 1, 20) AS _groupingexpression#14]
 
-(24) ColumnarToRow [codegen id : 1]
+(24) CometColumnarToRow [codegen id : 1]
 Input [5]: [ws_ship_date_sk#1, ws_sold_date_sk#5, sm_type#9, web_name#11, _groupingexpression#14]
 
 (25) HashAggregate [codegen id : 1]

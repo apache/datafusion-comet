@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (50)
+* CometColumnarToRow (50)
 +- CometTakeOrderedAndProject (49)
    +- CometHashAggregate (48)
       +- CometExchange (47)
@@ -277,14 +277,14 @@ Functions [36]: [sum(jan_sales#141), sum(feb_sales#142), sum(mar_sales#143), sum
 Input [44]: [w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#14, w_country#15, ship_carriers#139, year#140, jan_sales#263, feb_sales#264, mar_sales#265, apr_sales#266, may_sales#267, jun_sales#268, jul_sales#269, aug_sales#270, sep_sales#271, oct_sales#272, nov_sales#273, dec_sales#274, jan_sales_per_sq_foot#275, feb_sales_per_sq_foot#276, mar_sales_per_sq_foot#277, apr_sales_per_sq_foot#278, may_sales_per_sq_foot#279, jun_sales_per_sq_foot#280, jul_sales_per_sq_foot#281, aug_sales_per_sq_foot#282, sep_sales_per_sq_foot#283, oct_sales_per_sq_foot#284, nov_sales_per_sq_foot#285, dec_sales_per_sq_foot#286, jan_net#287, feb_net#288, mar_net#289, apr_net#290, may_net#291, jun_net#292, jul_net#293, aug_net#294, sep_net#295, oct_net#296, nov_net#297, dec_net#298]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[w_warehouse_name#10 ASC NULLS FIRST], output=[w_warehouse_name#10,w_warehouse_sq_ft#11,w_city#12,w_county#13,w_state#14,w_country#15,ship_carriers#139,year#140,jan_sales#263,feb_sales#264,mar_sales#265,apr_sales#266,may_sales#267,jun_sales#268,jul_sales#269,aug_sales#270,sep_sales#271,oct_sales#272,nov_sales#273,dec_sales#274,jan_sales_per_sq_foot#275,feb_sales_per_sq_foot#276,mar_sales_per_sq_foot#277,apr_sales_per_sq_foot#278,may_sales_per_sq_foot#279,jun_sales_per_sq_foot#280,jul_sales_per_sq_foot#281,aug_sales_per_sq_foot#282,sep_sales_per_sq_foot#283,oct_sales_per_sq_foot#284,nov_sales_per_sq_foot#285,dec_sales_per_sq_foot#286,jan_net#287,feb_net#288,mar_net#289,apr_net#290,may_net#291,jun_net#292,jul_net#293,aug_net#294,sep_net#295,oct_net#296,nov_net#297,dec_net#298]), [w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#14, w_country#15, ship_carriers#139, year#140, jan_sales#263, feb_sales#264, mar_sales#265, apr_sales#266, may_sales#267, jun_sales#268, jul_sales#269, aug_sales#270, sep_sales#271, oct_sales#272, nov_sales#273, dec_sales#274, jan_sales_per_sq_foot#275, feb_sales_per_sq_foot#276, mar_sales_per_sq_foot#277, apr_sales_per_sq_foot#278, may_sales_per_sq_foot#279, jun_sales_per_sq_foot#280, jul_sales_per_sq_foot#281, aug_sales_per_sq_foot#282, sep_sales_per_sq_foot#283, oct_sales_per_sq_foot#284, nov_sales_per_sq_foot#285, dec_sales_per_sq_foot#286, jan_net#287, feb_net#288, mar_net#289, apr_net#290, may_net#291, jun_net#292, jul_net#293, aug_net#294, sep_net#295, oct_net#296, nov_net#297, dec_net#298], 100, [w_warehouse_name#10 ASC NULLS FIRST], [w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#14, w_country#15, ship_carriers#139, year#140, jan_sales#263, feb_sales#264, mar_sales#265, apr_sales#266, may_sales#267, jun_sales#268, jul_sales#269, aug_sales#270, sep_sales#271, oct_sales#272, nov_sales#273, dec_sales#274, jan_sales_per_sq_foot#275, feb_sales_per_sq_foot#276, mar_sales_per_sq_foot#277, apr_sales_per_sq_foot#278, may_sales_per_sq_foot#279, jun_sales_per_sq_foot#280, jul_sales_per_sq_foot#281, aug_sales_per_sq_foot#282, sep_sales_per_sq_foot#283, oct_sales_per_sq_foot#284, nov_sales_per_sq_foot#285, dec_sales_per_sq_foot#286, jan_net#287, feb_net#288, mar_net#289, apr_net#290, may_net#291, jun_net#292, jul_net#293, aug_net#294, sep_net#295, oct_net#296, nov_net#297, dec_net#298]
 
-(50) ColumnarToRow [codegen id : 1]
+(50) CometColumnarToRow [codegen id : 1]
 Input [44]: [w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#14, w_country#15, ship_carriers#139, year#140, jan_sales#263, feb_sales#264, mar_sales#265, apr_sales#266, may_sales#267, jun_sales#268, jul_sales#269, aug_sales#270, sep_sales#271, oct_sales#272, nov_sales#273, dec_sales#274, jan_sales_per_sq_foot#275, feb_sales_per_sq_foot#276, mar_sales_per_sq_foot#277, apr_sales_per_sq_foot#278, may_sales_per_sq_foot#279, jun_sales_per_sq_foot#280, jul_sales_per_sq_foot#281, aug_sales_per_sq_foot#282, sep_sales_per_sq_foot#283, oct_sales_per_sq_foot#284, nov_sales_per_sq_foot#285, dec_sales_per_sq_foot#286, jan_net#287, feb_net#288, mar_net#289, apr_net#290, may_net#291, jun_net#292, jul_net#293, aug_net#294, sep_net#295, oct_net#296, nov_net#297, dec_net#298]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ws_sold_date_sk#7 IN dynamicpruning#8
 BroadcastExchange (54)
-+- * ColumnarToRow (53)
++- * CometColumnarToRow (53)
    +- CometFilter (52)
       +- CometScan parquet spark_catalog.default.date_dim (51)
 
@@ -300,7 +300,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 Input [3]: [d_date_sk#16, d_year#17, d_moy#18]
 Condition : ((isnotnull(d_year#17) AND (d_year#17 = 2001)) AND isnotnull(d_date_sk#16))
 
-(53) ColumnarToRow [codegen id : 1]
+(53) CometColumnarToRow [codegen id : 1]
 Input [3]: [d_date_sk#16, d_year#17, d_moy#18]
 
 (54) BroadcastExchange

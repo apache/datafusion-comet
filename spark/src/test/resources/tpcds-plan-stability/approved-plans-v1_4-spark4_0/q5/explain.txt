@@ -8,7 +8,7 @@ TakeOrderedAndProject (70)
                :- * HashAggregate (22)
                :  +- Exchange (21)
                :     +- * HashAggregate (20)
-               :        +- * ColumnarToRow (19)
+               :        +- * CometColumnarToRow (19)
                :           +- CometProject (18)
                :              +- CometBroadcastHashJoin (17)
                :                 :- CometProject (13)
@@ -30,7 +30,7 @@ TakeOrderedAndProject (70)
                :- * HashAggregate (41)
                :  +- Exchange (40)
                :     +- * HashAggregate (39)
-               :        +- * ColumnarToRow (38)
+               :        +- * CometColumnarToRow (38)
                :           +- CometProject (37)
                :              +- CometBroadcastHashJoin (36)
                :                 :- CometProject (32)
@@ -49,7 +49,7 @@ TakeOrderedAndProject (70)
                +- * HashAggregate (64)
                   +- Exchange (63)
                      +- * HashAggregate (62)
-                        +- * ColumnarToRow (61)
+                        +- * CometColumnarToRow (61)
                            +- CometProject (60)
                               +- CometBroadcastHashJoin (59)
                                  :- CometProject (55)
@@ -159,7 +159,7 @@ Arguments: [store_sk#6], [s_store_sk#24], Inner, BuildRight
 Input [7]: [store_sk#6, sales_price#8, profit#9, return_amt#10, net_loss#11, s_store_sk#24, s_store_id#25]
 Arguments: [sales_price#8, profit#9, return_amt#10, net_loss#11, s_store_id#25], [sales_price#8, profit#9, return_amt#10, net_loss#11, s_store_id#25]
 
-(19) ColumnarToRow [codegen id : 1]
+(19) CometColumnarToRow [codegen id : 1]
 Input [5]: [sales_price#8, profit#9, return_amt#10, net_loss#11, s_store_id#25]
 
 (20) HashAggregate [codegen id : 1]
@@ -252,7 +252,7 @@ Arguments: [page_sk#48], [cp_catalog_page_sk#65], Inner, BuildRight
 Input [7]: [page_sk#48, sales_price#50, profit#51, return_amt#52, net_loss#53, cp_catalog_page_sk#65, cp_catalog_page_id#66]
 Arguments: [sales_price#50, profit#51, return_amt#52, net_loss#53, cp_catalog_page_id#66], [sales_price#50, profit#51, return_amt#52, net_loss#53, cp_catalog_page_id#66]
 
-(38) ColumnarToRow [codegen id : 3]
+(38) CometColumnarToRow [codegen id : 3]
 Input [5]: [sales_price#50, profit#51, return_amt#52, net_loss#53, cp_catalog_page_id#66]
 
 (39) HashAggregate [codegen id : 3]
@@ -364,7 +364,7 @@ Arguments: [wsr_web_site_sk#89], [web_site_sk#111], Inner, BuildRight
 Input [7]: [wsr_web_site_sk#89, sales_price#91, profit#92, return_amt#93, net_loss#94, web_site_sk#111, web_site_id#112]
 Arguments: [sales_price#91, profit#92, return_amt#93, net_loss#94, web_site_id#112], [sales_price#91, profit#92, return_amt#93, net_loss#94, web_site_id#112]
 
-(61) ColumnarToRow [codegen id : 5]
+(61) CometColumnarToRow [codegen id : 5]
 Input [5]: [sales_price#91, profit#92, return_amt#93, net_loss#94, web_site_id#112]
 
 (62) HashAggregate [codegen id : 5]
@@ -417,7 +417,7 @@ Arguments: 100, [channel#130 ASC NULLS FIRST, id#131 ASC NULLS FIRST], [channel#
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#4 IN dynamicpruning#5
 BroadcastExchange (75)
-+- * ColumnarToRow (74)
++- * CometColumnarToRow (74)
    +- CometProject (73)
       +- CometFilter (72)
          +- CometScan parquet spark_catalog.default.date_dim (71)
@@ -438,7 +438,7 @@ Condition : (((isnotnull(d_date#23) AND (d_date#23 >= 2000-08-23)) AND (d_date#2
 Input [2]: [d_date_sk#22, d_date#23]
 Arguments: [d_date_sk#22], [d_date_sk#22]
 
-(74) ColumnarToRow [codegen id : 1]
+(74) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#22]
 
 (75) BroadcastExchange

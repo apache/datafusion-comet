@@ -11,7 +11,7 @@ TakeOrderedAndProject [s_store_name1,s_store_id1,d_week_seq1,(sun_sales1 / sun_s
                     Exchange [d_week_seq,ss_store_sk] #1
                       WholeStageCodegen (1)
                         HashAggregate [d_week_seq,ss_store_sk,d_day_name,ss_sales_price] [sum,sum,sum,sum,sum,sum,sum,sum,sum,sum,sum,sum,sum,sum]
-                          ColumnarToRow
+                          CometColumnarToRow
                             InputAdapter
                               CometProject [ss_store_sk,ss_sales_price,d_week_seq,d_day_name]
                                 CometBroadcastHashJoin [ss_store_sk,ss_sales_price,ss_sold_date_sk,d_date_sk,d_week_seq,d_day_name]
@@ -23,14 +23,14 @@ TakeOrderedAndProject [s_store_name1,s_store_id1,d_week_seq1,(sun_sales1 / sun_s
                 InputAdapter
                   BroadcastExchange #3
                     WholeStageCodegen (2)
-                      ColumnarToRow
+                      CometColumnarToRow
                         InputAdapter
                           CometFilter [s_store_sk,s_store_id,s_store_name]
                             CometScan parquet spark_catalog.default.store [s_store_sk,s_store_id,s_store_name]
             InputAdapter
               BroadcastExchange #4
                 WholeStageCodegen (3)
-                  ColumnarToRow
+                  CometColumnarToRow
                     InputAdapter
                       CometProject [d_week_seq]
                         CometFilter [d_month_seq,d_week_seq]
@@ -48,14 +48,14 @@ TakeOrderedAndProject [s_store_name1,s_store_id1,d_week_seq1,(sun_sales1 / sun_s
                       InputAdapter
                         BroadcastExchange #6
                           WholeStageCodegen (5)
-                            ColumnarToRow
+                            CometColumnarToRow
                               InputAdapter
                                 CometFilter [s_store_sk,s_store_id]
                                   CometScan parquet spark_catalog.default.store [s_store_sk,s_store_id]
                   InputAdapter
                     BroadcastExchange #7
                       WholeStageCodegen (6)
-                        ColumnarToRow
+                        CometColumnarToRow
                           InputAdapter
                             CometProject [d_week_seq]
                               CometFilter [d_month_seq,d_week_seq]

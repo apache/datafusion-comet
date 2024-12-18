@@ -3,7 +3,7 @@ TakeOrderedAndProject (45)
 +- * HashAggregate (44)
    +- Exchange (43)
       +- * HashAggregate (42)
-         +- * ColumnarToRow (41)
+         +- * CometColumnarToRow (41)
             +- CometProject (40)
                +- CometBroadcastHashJoin (39)
                   :- CometProject (35)
@@ -238,7 +238,7 @@ Arguments: [wr_reason_sk#13], [r_reason_sk#30], Inner, BuildRight
 Input [6]: [ws_quantity#4, wr_reason_sk#13, wr_fee#15, wr_refunded_cash#16, r_reason_sk#30, r_reason_desc#31]
 Arguments: [ws_quantity#4, wr_fee#15, wr_refunded_cash#16, r_reason_desc#31], [ws_quantity#4, wr_fee#15, wr_refunded_cash#16, r_reason_desc#31]
 
-(41) ColumnarToRow [codegen id : 1]
+(41) CometColumnarToRow [codegen id : 1]
 Input [4]: [ws_quantity#4, wr_fee#15, wr_refunded_cash#16, r_reason_desc#31]
 
 (42) HashAggregate [codegen id : 1]
@@ -267,7 +267,7 @@ Arguments: 100, [substr(r_reason_desc, 1, 20)#47 ASC NULLS FIRST, avg(ws_quantit
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ws_sold_date_sk#7 IN dynamicpruning#8
 BroadcastExchange (50)
-+- * ColumnarToRow (49)
++- * CometColumnarToRow (49)
    +- CometProject (48)
       +- CometFilter (47)
          +- CometScan parquet spark_catalog.default.date_dim (46)
@@ -288,7 +288,7 @@ Condition : ((isnotnull(d_year#29) AND (d_year#29 = 2000)) AND isnotnull(d_date_
 Input [2]: [d_date_sk#28, d_year#29]
 Arguments: [d_date_sk#28], [d_date_sk#28]
 
-(49) ColumnarToRow [codegen id : 1]
+(49) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#28]
 
 (50) BroadcastExchange

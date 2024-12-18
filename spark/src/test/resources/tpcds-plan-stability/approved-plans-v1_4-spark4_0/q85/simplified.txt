@@ -5,7 +5,7 @@ TakeOrderedAndProject [substr(r_reason_desc, 1, 20),avg(ws_quantity),avg(wr_refu
         Exchange [r_reason_desc] #1
           WholeStageCodegen (1)
             HashAggregate [r_reason_desc,ws_quantity,wr_refunded_cash,wr_fee] [sum,count,sum,count,sum,count,sum,count,sum,count,sum,count]
-              ColumnarToRow
+              CometColumnarToRow
                 InputAdapter
                   CometProject [ws_quantity,wr_fee,wr_refunded_cash,r_reason_desc]
                     CometBroadcastHashJoin [ws_quantity,wr_reason_sk,wr_fee,wr_refunded_cash,r_reason_sk,r_reason_desc]
@@ -27,7 +27,7 @@ TakeOrderedAndProject [substr(r_reason_desc, 1, 20),avg(ws_quantity),avg(wr_refu
                                                     SubqueryBroadcast [d_date_sk] #1
                                                       BroadcastExchange #3
                                                         WholeStageCodegen (1)
-                                                          ColumnarToRow
+                                                          CometColumnarToRow
                                                             InputAdapter
                                                               CometProject [d_date_sk]
                                                                 CometFilter [d_date_sk,d_year]

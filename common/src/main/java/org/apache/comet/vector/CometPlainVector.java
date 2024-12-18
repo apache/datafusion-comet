@@ -38,11 +38,18 @@ public class CometPlainVector extends CometDecodedVector {
   private byte booleanByteCache;
   private int booleanByteCacheIndex = -1;
 
+  private boolean isReused;
+
   public CometPlainVector(ValueVector vector, boolean useDecimal128) {
     this(vector, useDecimal128, false);
   }
 
   public CometPlainVector(ValueVector vector, boolean useDecimal128, boolean isUuid) {
+    this(vector, useDecimal128, isUuid, false);
+  }
+
+  public CometPlainVector(
+      ValueVector vector, boolean useDecimal128, boolean isUuid, boolean isReused) {
     super(vector, vector.getField(), useDecimal128, isUuid);
     // NullType doesn't have data buffer.
     if (vector instanceof NullVector) {
@@ -52,6 +59,15 @@ public class CometPlainVector extends CometDecodedVector {
     }
 
     isBaseFixedWidthVector = valueVector instanceof BaseFixedWidthVector;
+    this.isReused = isReused;
+  }
+
+  public boolean isReused() {
+    return isReused;
+  }
+
+  public void setReused(boolean isReused) {
+    this.isReused = isReused;
   }
 
   @Override

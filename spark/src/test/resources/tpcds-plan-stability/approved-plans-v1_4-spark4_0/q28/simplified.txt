@@ -14,7 +14,7 @@ WholeStageCodegen (18)
                           Exchange [ss_list_price] #2
                             WholeStageCodegen (1)
                               HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),sum,count,count,sum,count,count]
-                                ColumnarToRow
+                                CometColumnarToRow
                                   InputAdapter
                                     CometProject [ss_list_price]
                                       CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
@@ -32,7 +32,7 @@ WholeStageCodegen (18)
                                 Exchange [ss_list_price] #5
                                   WholeStageCodegen (3)
                                     HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),sum,count,count,sum,count,count]
-                                      ColumnarToRow
+                                      CometColumnarToRow
                                         InputAdapter
                                           CometProject [ss_list_price]
                                             CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
@@ -50,7 +50,7 @@ WholeStageCodegen (18)
                               Exchange [ss_list_price] #8
                                 WholeStageCodegen (6)
                                   HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),sum,count,count,sum,count,count]
-                                    ColumnarToRow
+                                    CometColumnarToRow
                                       InputAdapter
                                         CometProject [ss_list_price]
                                           CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
@@ -68,7 +68,7 @@ WholeStageCodegen (18)
                             Exchange [ss_list_price] #11
                               WholeStageCodegen (9)
                                 HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),sum,count,count,sum,count,count]
-                                  ColumnarToRow
+                                  CometColumnarToRow
                                     InputAdapter
                                       CometProject [ss_list_price]
                                         CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
@@ -86,7 +86,7 @@ WholeStageCodegen (18)
                           Exchange [ss_list_price] #14
                             WholeStageCodegen (12)
                               HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),sum,count,count,sum,count,count]
-                                ColumnarToRow
+                                CometColumnarToRow
                                   InputAdapter
                                     CometProject [ss_list_price]
                                       CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
@@ -104,7 +104,7 @@ WholeStageCodegen (18)
                         Exchange [ss_list_price] #17
                           WholeStageCodegen (15)
                             HashAggregate [ss_list_price] [avg(UnscaledValue(ss_list_price)),count(ss_list_price),sum,count,count,sum,count,count]
-                              ColumnarToRow
+                              CometColumnarToRow
                                 InputAdapter
                                   CometProject [ss_list_price]
                                     CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]

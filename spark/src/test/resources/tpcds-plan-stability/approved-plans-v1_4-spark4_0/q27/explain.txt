@@ -3,7 +3,7 @@ TakeOrderedAndProject (30)
 +- * HashAggregate (29)
    +- Exchange (28)
       +- * HashAggregate (27)
-         +- * ColumnarToRow (26)
+         +- * CometColumnarToRow (26)
             +- CometExpand (25)
                +- CometProject (24)
                   +- CometBroadcastHashJoin (23)
@@ -151,7 +151,7 @@ Arguments: [ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, i
 Input [6]: [ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, i_item_id#19, s_state#17]
 Arguments: [[ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, i_item_id#19, s_state#17, 0], [ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, i_item_id#19, null, 1], [ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, null, null, 3]], [ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, i_item_id#20, s_state#21, spark_grouping_id#22]
 
-(26) ColumnarToRow [codegen id : 1]
+(26) CometColumnarToRow [codegen id : 1]
 Input [7]: [ss_quantity#4, ss_list_price#5, ss_sales_price#6, ss_coupon_amt#7, i_item_id#20, s_state#21, spark_grouping_id#22]
 
 (27) HashAggregate [codegen id : 1]
@@ -180,7 +180,7 @@ Arguments: 100, [i_item_id#20 ASC NULLS FIRST, s_state#21 ASC NULLS FIRST], [i_i
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#8 IN dynamicpruning#9
 BroadcastExchange (35)
-+- * ColumnarToRow (34)
++- * CometColumnarToRow (34)
    +- CometProject (33)
       +- CometFilter (32)
          +- CometScan parquet spark_catalog.default.date_dim (31)
@@ -201,7 +201,7 @@ Condition : ((isnotnull(d_year#15) AND (d_year#15 = 2002)) AND isnotnull(d_date_
 Input [2]: [d_date_sk#14, d_year#15]
 Arguments: [d_date_sk#14], [d_date_sk#14]
 
-(34) ColumnarToRow [codegen id : 1]
+(34) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#14]
 
 (35) BroadcastExchange

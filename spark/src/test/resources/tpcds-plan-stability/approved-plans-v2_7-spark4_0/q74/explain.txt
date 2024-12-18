@@ -9,7 +9,7 @@ TakeOrderedAndProject (71)
       :     :  :  +- * HashAggregate (16)
       :     :  :     +- Exchange (15)
       :     :  :        +- * HashAggregate (14)
-      :     :  :           +- * ColumnarToRow (13)
+      :     :  :           +- * CometColumnarToRow (13)
       :     :  :              +- CometProject (12)
       :     :  :                 +- CometBroadcastHashJoin (11)
       :     :  :                    :- CometProject (7)
@@ -26,7 +26,7 @@ TakeOrderedAndProject (71)
       :     :     +- * HashAggregate (33)
       :     :        +- Exchange (32)
       :     :           +- * HashAggregate (31)
-      :     :              +- * ColumnarToRow (30)
+      :     :              +- * CometColumnarToRow (30)
       :     :                 +- CometProject (29)
       :     :                    +- CometBroadcastHashJoin (28)
       :     :                       :- CometProject (24)
@@ -44,7 +44,7 @@ TakeOrderedAndProject (71)
       :           +- * HashAggregate (49)
       :              +- Exchange (48)
       :                 +- * HashAggregate (47)
-      :                    +- * ColumnarToRow (46)
+      :                    +- * CometColumnarToRow (46)
       :                       +- CometProject (45)
       :                          +- CometBroadcastHashJoin (44)
       :                             :- CometProject (42)
@@ -59,7 +59,7 @@ TakeOrderedAndProject (71)
          +- * HashAggregate (67)
             +- Exchange (66)
                +- * HashAggregate (65)
-                  +- * ColumnarToRow (64)
+                  +- * CometColumnarToRow (64)
                      +- CometProject (63)
                         +- CometBroadcastHashJoin (62)
                            :- CometProject (60)
@@ -132,7 +132,7 @@ Arguments: [ss_sold_date_sk#7], [d_date_sk#9], Inner, BuildRight
 Input [7]: [c_customer_id#2, c_first_name#3, c_last_name#4, ss_net_paid#6, ss_sold_date_sk#7, d_date_sk#9, d_year#10]
 Arguments: [c_customer_id#2, c_first_name#3, c_last_name#4, ss_net_paid#6, d_year#10], [c_customer_id#2, c_first_name#3, c_last_name#4, ss_net_paid#6, d_year#10]
 
-(13) ColumnarToRow [codegen id : 1]
+(13) CometColumnarToRow [codegen id : 1]
 Input [5]: [c_customer_id#2, c_first_name#3, c_last_name#4, ss_net_paid#6, d_year#10]
 
 (14) HashAggregate [codegen id : 1]
@@ -217,7 +217,7 @@ Arguments: [ss_sold_date_sk#22], [d_date_sk#24], Inner, BuildRight
 Input [7]: [c_customer_id#17, c_first_name#18, c_last_name#19, ss_net_paid#21, ss_sold_date_sk#22, d_date_sk#24, d_year#25]
 Arguments: [c_customer_id#17, c_first_name#18, c_last_name#19, ss_net_paid#21, d_year#25], [c_customer_id#17, c_first_name#18, c_last_name#19, ss_net_paid#21, d_year#25]
 
-(30) ColumnarToRow [codegen id : 2]
+(30) CometColumnarToRow [codegen id : 2]
 Input [5]: [c_customer_id#17, c_first_name#18, c_last_name#19, ss_net_paid#21, d_year#25]
 
 (31) HashAggregate [codegen id : 2]
@@ -296,7 +296,7 @@ Arguments: [ws_sold_date_sk#38], [d_date_sk#40], Inner, BuildRight
 Input [7]: [c_customer_id#33, c_first_name#34, c_last_name#35, ws_net_paid#37, ws_sold_date_sk#38, d_date_sk#40, d_year#41]
 Arguments: [c_customer_id#33, c_first_name#34, c_last_name#35, ws_net_paid#37, d_year#41], [c_customer_id#33, c_first_name#34, c_last_name#35, ws_net_paid#37, d_year#41]
 
-(46) ColumnarToRow [codegen id : 4]
+(46) CometColumnarToRow [codegen id : 4]
 Input [5]: [c_customer_id#33, c_first_name#34, c_last_name#35, ws_net_paid#37, d_year#41]
 
 (47) HashAggregate [codegen id : 4]
@@ -383,7 +383,7 @@ Arguments: [ws_sold_date_sk#53], [d_date_sk#55], Inner, BuildRight
 Input [7]: [c_customer_id#48, c_first_name#49, c_last_name#50, ws_net_paid#52, ws_sold_date_sk#53, d_date_sk#55, d_year#56]
 Arguments: [c_customer_id#48, c_first_name#49, c_last_name#50, ws_net_paid#52, d_year#56], [c_customer_id#48, c_first_name#49, c_last_name#50, ws_net_paid#52, d_year#56]
 
-(64) ColumnarToRow [codegen id : 6]
+(64) CometColumnarToRow [codegen id : 6]
 Input [5]: [c_customer_id#48, c_first_name#49, c_last_name#50, ws_net_paid#52, d_year#56]
 
 (65) HashAggregate [codegen id : 6]
@@ -426,7 +426,7 @@ Arguments: 100, [customer_first_name#29 ASC NULLS FIRST, customer_id#28 ASC NULL
 
 Subquery:1 Hosting operator id = 3 Hosting Expression = ss_sold_date_sk#7 IN dynamicpruning#8
 BroadcastExchange (75)
-+- * ColumnarToRow (74)
++- * CometColumnarToRow (74)
    +- CometFilter (73)
       +- CometScan parquet spark_catalog.default.date_dim (72)
 
@@ -442,7 +442,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int>
 Input [2]: [d_date_sk#9, d_year#10]
 Condition : (((isnotnull(d_year#10) AND (d_year#10 = 2001)) AND d_year#10 IN (2001,2002)) AND isnotnull(d_date_sk#9))
 
-(74) ColumnarToRow [codegen id : 1]
+(74) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#9, d_year#10]
 
 (75) BroadcastExchange
@@ -451,7 +451,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)
 
 Subquery:2 Hosting operator id = 20 Hosting Expression = ss_sold_date_sk#22 IN dynamicpruning#23
 BroadcastExchange (79)
-+- * ColumnarToRow (78)
++- * CometColumnarToRow (78)
    +- CometFilter (77)
       +- CometScan parquet spark_catalog.default.date_dim (76)
 
@@ -467,7 +467,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int>
 Input [2]: [d_date_sk#24, d_year#25]
 Condition : (((isnotnull(d_year#25) AND (d_year#25 = 2002)) AND d_year#25 IN (2001,2002)) AND isnotnull(d_date_sk#24))
 
-(78) ColumnarToRow [codegen id : 1]
+(78) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#24, d_year#25]
 
 (79) BroadcastExchange

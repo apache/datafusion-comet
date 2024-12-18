@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (90)
+* CometColumnarToRow (90)
 +- CometSort (89)
    +- CometColumnarExchange (88)
       +- CometProject (87)
@@ -504,14 +504,14 @@ Arguments: rangepartitioning(ca_county#9 ASC NULLS FIRST, 5), ENSURE_REQUIREMENT
 Input [6]: [ca_county#9, d_year#6, web_q1_q2_increase#67, store_q1_q2_increase#68, web_q2_q3_increase#69, store_q2_q3_increase#70]
 Arguments: [ca_county#9, d_year#6, web_q1_q2_increase#67, store_q1_q2_increase#68, web_q2_q3_increase#69, store_q2_q3_increase#70], [ca_county#9 ASC NULLS FIRST]
 
-(90) ColumnarToRow [codegen id : 1]
+(90) CometColumnarToRow [codegen id : 1]
 Input [6]: [ca_county#9, d_year#6, web_q1_q2_increase#67, store_q1_q2_increase#68, web_q2_q3_increase#69, store_q2_q3_increase#70]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (94)
-+- * ColumnarToRow (93)
++- * CometColumnarToRow (93)
    +- CometFilter (92)
       +- CometScan parquet spark_catalog.default.date_dim (91)
 
@@ -527,7 +527,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int,d_qoy:int>
 Input [3]: [d_date_sk#5, d_year#6, d_qoy#7]
 Condition : ((((isnotnull(d_qoy#7) AND isnotnull(d_year#6)) AND (d_qoy#7 = 1)) AND (d_year#6 = 2000)) AND isnotnull(d_date_sk#5))
 
-(93) ColumnarToRow [codegen id : 1]
+(93) CometColumnarToRow [codegen id : 1]
 Input [3]: [d_date_sk#5, d_year#6, d_qoy#7]
 
 (94) BroadcastExchange
@@ -536,7 +536,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)
 
 Subquery:2 Hosting operator id = 16 Hosting Expression = ss_sold_date_sk#13 IN dynamicpruning#14
 BroadcastExchange (98)
-+- * ColumnarToRow (97)
++- * CometColumnarToRow (97)
    +- CometFilter (96)
       +- CometScan parquet spark_catalog.default.date_dim (95)
 
@@ -552,7 +552,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int,d_qoy:int>
 Input [3]: [d_date_sk#15, d_year#16, d_qoy#17]
 Condition : ((((isnotnull(d_qoy#17) AND isnotnull(d_year#16)) AND (d_qoy#17 = 2)) AND (d_year#16 = 2000)) AND isnotnull(d_date_sk#15))
 
-(97) ColumnarToRow [codegen id : 1]
+(97) CometColumnarToRow [codegen id : 1]
 Input [3]: [d_date_sk#15, d_year#16, d_qoy#17]
 
 (98) BroadcastExchange
@@ -561,7 +561,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)
 
 Subquery:3 Hosting operator id = 31 Hosting Expression = ss_sold_date_sk#25 IN dynamicpruning#26
 BroadcastExchange (102)
-+- * ColumnarToRow (101)
++- * CometColumnarToRow (101)
    +- CometFilter (100)
       +- CometScan parquet spark_catalog.default.date_dim (99)
 
@@ -577,7 +577,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int,d_qoy:int>
 Input [3]: [d_date_sk#27, d_year#28, d_qoy#29]
 Condition : ((((isnotnull(d_qoy#29) AND isnotnull(d_year#28)) AND (d_qoy#29 = 3)) AND (d_year#28 = 2000)) AND isnotnull(d_date_sk#27))
 
-(101) ColumnarToRow [codegen id : 1]
+(101) CometColumnarToRow [codegen id : 1]
 Input [3]: [d_date_sk#27, d_year#28, d_qoy#29]
 
 (102) BroadcastExchange
