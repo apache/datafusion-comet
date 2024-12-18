@@ -65,6 +65,8 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
+use lz4::{BlockSize, ContentChecksum};
+use lz4::liblz4::BlockChecksum;
 use tokio::time::Instant;
 
 /// The status of appending rows to a partition buffer.
@@ -1568,6 +1570,28 @@ pub(crate) fn write_ipc_compressed<W: Write + Seek>(
     output.write_all(&[0u8; 8])?;
 
     let output = match codec {
+        CompressionCodec::Lz4 => {
+
+            // write IPC first without compression
+            let mut buffer = vec![];
+            let mut arrow_writer = StreamWriter::try_new(&mut buffer, &batch.schema())?;
+            arrow_writer.write(batch)?;
+            arrow_writer.finish()?;
+            let encoded = arrow_writer.into_inner()?;
+
+            let encoder = lz4::EncoderBuilder::new()
+                .content_size(encoded.len() as u64)
+                .checksum(ContentChecksum::ChecksumEnabled)
+                .block_checksum(BlockChecksum::BlockChecksumEnabled)
+                .level(4)
+                .block_size(BlockSize::Default)
+                .auto_flush(true)
+                .build(output)?;
+
+            let (output, result) = encoder.finish();
+            result?;
+            output
+        }
         CompressionCodec::Zstd(level) => {
             let encoder = zstd::Encoder::new(output, *level)?;
             let mut arrow_writer = StreamWriter::try_new(encoder, &batch.schema())?;
@@ -1575,21 +1599,6 @@ pub(crate) fn write_ipc_compressed<W: Write + Seek>(
             arrow_writer.finish()?;
             let zstd_encoder = arrow_writer.into_inner()?;
             zstd_encoder.finish()?
-        }
-        CompressionCodec::Lz4 => {
-            let encoder = lz4::EncoderBuilder::new()
-                // .block_size(BlockSize::Default)
-                // .checksum(ContentChecksum::ChecksumEnabled)
-                // .block_checksum(BlockChecksum::BlockChecksumEnabled)
-                // .favor_dec_speed(true)
-                .build(output)?;
-            let mut arrow_writer = StreamWriter::try_new(encoder, &batch.schema())?;
-            arrow_writer.write(batch)?;
-            arrow_writer.finish()?;
-            let lz4_encoder = arrow_writer.into_inner()?;
-            let (output, result) = lz4_encoder.finish();
-            result?;
-            output
         }
     };
 
