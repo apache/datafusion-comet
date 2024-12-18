@@ -40,6 +40,7 @@ use arrow_array::{
     Array, ArrayRef, RecordBatch, RecordBatchOptions,
 };
 use arrow_schema::{ArrowError, DataType, Field, Schema, TimeUnit};
+use datafusion::physical_plan::metrics::Time;
 use jni::sys::{jint, jlong};
 use std::{
     fs::OpenOptions,
@@ -3354,7 +3355,10 @@ pub fn process_sorted_row_partition(
         let mut frozen: Vec<u8> = vec![];
         let mut cursor = Cursor::new(&mut frozen);
         cursor.seek(SeekFrom::End(0))?;
-        written += write_ipc_compressed(&batch, &mut cursor)?;
+
+        // we do not collect metrics in Native_writeSortedFileNative
+        let ipc_time = Time::default();
+        written += write_ipc_compressed(&batch, &mut cursor, &ipc_time)?;
 
         if let Some(checksum) = &mut current_checksum {
             checksum.update(&mut cursor)?;
