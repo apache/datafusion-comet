@@ -53,8 +53,6 @@ use datafusion_physical_expr::EquivalenceProperties;
 use futures::executor::block_on;
 use futures::{lock::Mutex, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
-use lz4::liblz4::BlockChecksum;
-use lz4::{BlockSize, ContentChecksum};
 use simd_adler32::Adler32;
 use std::io::Error;
 use std::{
@@ -1547,7 +1545,8 @@ impl Checksum {
 
 #[derive(Debug, Clone)]
 pub enum CompressionCodec {
-    Lz4,
+    Lz4Block,
+    //Lz4Frame
     Zstd(i32),
 }
 
@@ -1566,11 +1565,8 @@ pub(crate) fn write_ipc_compressed<W: Write + Seek>(
     let mut timer = ipc_time.timer();
     let start_pos = output.stream_position()?;
 
-    // write ipc_length placeholder
-    output.write_all(&[0u8; 8])?;
-
-    let output = match codec {
-        CompressionCodec::Lz4 => {
+    match codec {
+        CompressionCodec::Lz4Block => {
             // write IPC first without compression
             let mut buffer = vec![];
             let mut arrow_writer = StreamWriter::try_new(&mut buffer, &batch.schema())?;
@@ -1578,39 +1574,75 @@ pub(crate) fn write_ipc_compressed<W: Write + Seek>(
             arrow_writer.finish()?;
             let ipc_encoded = arrow_writer.into_inner()?;
 
-            let mut encoder = lz4::EncoderBuilder::new()
-                .content_size(ipc_encoded.len() as u64)
-                .block_mode(lz4::BlockMode::Independent)
-                .block_size(BlockSize::Default)
-                .checksum(ContentChecksum::NoChecksum)
-                .block_checksum(BlockChecksum::BlockChecksumEnabled)
-                .level(0) // TODO make configurable
-                .build(&mut *output)?;
-            encoder.write_all(ipc_encoded.as_slice())?;
-            let (output, result) = encoder.finish();
-            result?;
-            output
+            // TODO refactor to compress directly to output buffer and avoid a copy
+            let compressed = lz4::block::compress(ipc_encoded, None, true)?;
+            output.write_all(&compressed)?;
+
+            let end_pos = output.stream_position()?;
+            output.seek(SeekFrom::Start(end_pos))?;
+
+            timer.stop();
+
+            Ok((end_pos - start_pos) as usize)
         }
+
+        // CompressionCodec::Lz4Frame => {
+        //     // write ipc_length placeholder
+        //     output.write_all(&[0u8; 8])?;
+        //
+        //     // write IPC first without compression
+        //     let mut buffer = vec![];
+        //     let mut arrow_writer = StreamWriter::try_new(&mut buffer, &batch.schema())?;
+        //     arrow_writer.write(batch)?;
+        //     arrow_writer.finish()?;
+        //     let ipc_encoded = arrow_writer.into_inner()?;
+        //
+        //     let mut encoder = lz4::EncoderBuilder::new()
+        //         .content_size(ipc_encoded.len() as u64)
+        //         .block_mode(lz4::BlockMode::Independent)
+        //         .block_size(BlockSize::Default)
+        //         .checksum(ContentChecksum::NoChecksum)
+        //         .block_checksum(BlockChecksum::BlockChecksumEnabled)
+        //         .level(0) // TODO make configurable
+        //         .build(&mut *output)?;
+        //     encoder.write_all(ipc_encoded.as_slice())?;
+        //     let (_, result) = encoder.finish();
+        //     result?;
+        //
+        //     // fill ipc length
+        //     let end_pos = output.stream_position()?;
+        //     // let ipc_length = end_pos - start_pos - 8;
+        //     // output.seek(SeekFrom::Start(start_pos))?;
+        //     // output.write_all(&ipc_length.to_le_bytes()[..])?;
+        //     // output.seek(SeekFrom::Start(end_pos))?;
+        //
+        //     timer.stop();
+        //
+        //     Ok((end_pos - start_pos) as usize)
+        // }
         CompressionCodec::Zstd(level) => {
+            // write ipc_length placeholder
+            output.write_all(&[0u8; 8])?;
+
             let encoder = zstd::Encoder::new(output, *level)?;
             let mut arrow_writer = StreamWriter::try_new(encoder, &batch.schema())?;
             arrow_writer.write(batch)?;
             arrow_writer.finish()?;
             let zstd_encoder = arrow_writer.into_inner()?;
-            zstd_encoder.finish()?
+            let output = zstd_encoder.finish()?;
+
+            // fill ipc length
+            let end_pos = output.stream_position()?;
+            let ipc_length = end_pos - start_pos - 8;
+            output.seek(SeekFrom::Start(start_pos))?;
+            output.write_all(&ipc_length.to_le_bytes()[..])?;
+            output.seek(SeekFrom::Start(end_pos))?;
+
+            timer.stop();
+
+            Ok((end_pos - start_pos) as usize)
         }
-    };
-
-    // fill ipc length
-    let end_pos = output.stream_position()?;
-    let ipc_length = end_pos - start_pos - 8;
-    output.seek(SeekFrom::Start(start_pos))?;
-    output.write_all(&ipc_length.to_le_bytes()[..])?;
-    output.seek(SeekFrom::Start(end_pos))?;
-
-    timer.stop();
-
-    Ok((end_pos - start_pos) as usize)
+    }
 }
 
 /// A stream that yields no record batches which represent end of output.
@@ -1672,8 +1704,7 @@ mod test {
             &Time::default(),
         )
         .unwrap();
-        let ipc_length = output.len() as i32;
-        assert_eq!(40218, ipc_length);
+        assert_eq!(40218, output.len());
 
         // TODO remove this temp debugging code
         write_ipc_file("/tmp/shuffle.zstd", &output);
@@ -1687,12 +1718,11 @@ mod test {
         write_ipc_compressed(
             &batch,
             &mut cursor,
-            &CompressionCodec::Lz4,
+            &CompressionCodec::Lz4Block,
             &Time::default(),
         )
         .unwrap();
-        let ipc_length = output.len() as i32;
-        assert_eq!(58199, ipc_length);
+        assert_eq!(61398, output.len());
 
         // TODO remove this temp debugging code
         write_ipc_file("/tmp/shuffle.lz4", &output);
