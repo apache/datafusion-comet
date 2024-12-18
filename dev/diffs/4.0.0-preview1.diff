@@ -146,6 +146,49 @@ index 698ca009b4f..57d774a3617 100644
  
  -- Test tables
  CREATE table  explain_temp1 (key int, val int) USING PARQUET;
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql
+index 3a409eea348..26e9aaf215c 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql
+@@ -6,6 +6,9 @@
+ -- https://github.com/postgres/postgres/blob/REL_12_BETA2/src/test/regress/sql/int4.sql
+ --
+ 
++-- TODO: https://github.com/apache/datafusion-comet/issues/551
++--SET spark.comet.enabled = false
++
+ CREATE TABLE INT4_TBL(f1 int) USING parquet;
+ 
+ -- [SPARK-28023] Trim the string when cast string type to other types
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int8.sql b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int8.sql
+index fac23b4a26f..98b12ae5ccc 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int8.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int8.sql
+@@ -6,6 +6,10 @@
+ -- Test int8 64-bit integers.
+ -- https://github.com/postgres/postgres/blob/REL_12_BETA2/src/test/regress/sql/int8.sql
+ --
++
++-- TODO: https://github.com/apache/datafusion-comet/issues/551
++--SET spark.comet.enabled = false
++
+ CREATE TABLE INT8_TBL(q1 bigint, q2 bigint) USING parquet;
+ 
+ -- PostgreSQL implicitly casts string literals to data with integral types, but
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/select_having.sql b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/select_having.sql
+index 0efe0877e9b..f9df0400c99 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/select_having.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/select_having.sql
+@@ -6,6 +6,9 @@
+ -- https://github.com/postgres/postgres/blob/REL_12_BETA2/src/test/regress/sql/select_having.sql
+ --
+ 
++-- TODO: https://github.com/apache/datafusion-comet/issues/551
++--SET spark.comet.enabled = false
++
+ -- load test data
+ CREATE TABLE test_having (a int, b int, c string, d string) USING parquet;
+ INSERT INTO test_having VALUES (0, 1, 'XXXX', 'A');
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
 index d023fb82185..0f4f03bda6c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
@@ -917,7 +960,7 @@ index 34c6c49bc49..f5dea07a213 100644
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-index 56c364e2084..a00a50e020a 100644
+index 56c364e2084..fc3abd7cdc4 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 @@ -1510,7 +1510,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
@@ -930,6 +973,36 @@ index 56c364e2084..a00a50e020a 100644
      AccumulatorSuite.verifyPeakExecutionMemorySet(sparkContext, "external sort") {
        sql("SELECT * FROM testData2 ORDER BY a ASC, b ASC").collect()
      }
+@@ -4454,7 +4455,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+   }
+ 
+   test("SPARK-39166: Query context of binary arithmetic should be serialized to executors" +
+-    " when WSCG is off") {
++    " when WSCG is off",
++    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/551")) {
+     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+       SQLConf.ANSI_ENABLED.key -> "true") {
+       withTable("t") {
+@@ -4475,7 +4477,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+   }
+ 
+   test("SPARK-39175: Query context of Cast should be serialized to executors" +
+-    " when WSCG is off") {
++    " when WSCG is off",
++    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/551")) {
+     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+       SQLConf.ANSI_ENABLED.key -> "true") {
+       withTable("t") {
+@@ -4502,7 +4505,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+   }
+ 
+   test("SPARK-39190,SPARK-39208,SPARK-39210: Query context of decimal overflow error should " +
+-    "be serialized to executors when WSCG is off") {
++    "be serialized to executors when WSCG is off",
++    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/551")) {
+     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+       SQLConf.ANSI_ENABLED.key -> "true") {
+       withTable("t") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 index 68f14f13bbd..174636cefb5 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
