@@ -1580,11 +1580,10 @@ pub(crate) fn write_ipc_compressed<W: Write + Seek>(
 
             let mut encoder = lz4::EncoderBuilder::new()
                 .content_size(ipc_encoded.len() as u64)
+                .block_size(BlockSize::Default)
                 .checksum(ContentChecksum::ChecksumEnabled)
                 .block_checksum(BlockChecksum::BlockChecksumEnabled)
-                .level(4)
-                .block_size(BlockSize::Default)
-                .auto_flush(true)
+                .level(0)
                 .build(&mut *output)?;
             encoder.write_all(ipc_encoded.as_slice())?;
             let (output, result) = encoder.finish();
