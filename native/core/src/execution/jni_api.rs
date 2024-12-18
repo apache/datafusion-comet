@@ -329,7 +329,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 
             let plan = exec_context.root_op.as_ref().unwrap();
 
-            let stream = plan.execute(partition_id as usize, task_ctx)?;
+            let stream = plan.native_plan.execute(partition_id as usize, task_ctx)?;
             exec_context.stream = Some(stream);
         } else {
             // Pull input batches

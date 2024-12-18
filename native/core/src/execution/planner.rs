@@ -18,7 +18,6 @@
 //! Converts Spark physical plan to DataFusion physical plan
 
 use super::expressions::EvalMode;
-use crate::execution::datafusion::expressions::comet_scalar_funcs::create_comet_physical_fun;
 use crate::execution::operators::{CopyMode, FilterExec as CometFilterExec};
 use crate::{
     errors::ExpressionError,
@@ -66,11 +65,12 @@ use datafusion::{
     },
     prelude::SessionContext,
 };
-use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr};
+use datafusion_comet_spark_expr::{
+    create_comet_physical_fun, create_negate_expr, SparkSchemaAdapterFactory,
+};
 use datafusion_functions_nested::concat::ArrayAppend;
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
-use crate::execution::datafusion::schema_adapter::CometSchemaAdapterFactory;
 use crate::execution::spark_plan::SparkPlan;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
@@ -862,7 +862,7 @@ impl PhysicalPlanner {
         spark_plan: &'a Operator,
         inputs: &mut Vec<Arc<GlobalRef>>,
         partition_count: usize,
-    ) -> Result<(Vec<ScanExec>, Arc<dyn SparkPlan>), ExecutionError> {
+    ) -> Result<(Vec<ScanExec>, Arc<SparkPlan>), ExecutionError> {
         let children = &spark_plan.children;
         match spark_plan.op_struct.as_ref().unwrap() {
             OpStruct::Projection(project) => {
@@ -892,17 +892,21 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                let filter = if can_reuse_input_batch(&child) {
-                    Arc::new(CometFilterExec::try_new(
+                if can_reuse_input_batch(&child.native_plan) {
+                    let filter = Arc::new(CometFilterExec::try_new(
                         predicate,
                         Arc::clone(&child.native_plan),
-                    )?)
-                } else {
-                    Arc::new(FilterExec::try_new(
-                        predicate,
-                        Arc::clone(&child.native_plan),
-                    )?)
-                };
+                    )?);
+
+                    return Ok((
+                        scans,
+                        Arc::new(SparkPlan::new(spark_plan.plan_id, filter, vec![child])),
+                    ));
+                }
+                let filter = Arc::new(FilterExec::try_new(
+                    predicate,
+                    Arc::clone(&child.native_plan),
+                )?);
 
                 Ok((
                     scans,
@@ -1152,16 +1156,24 @@ impl PhysicalPlanner {
                 table_parquet_options.global.pushdown_filters = true;
                 table_parquet_options.global.reorder_filters = true;
 
+                let mut spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+                spark_cast_options.allow_cast_unsigned_ints = true;
+
                 let mut builder = ParquetExecBuilder::new(file_scan_config)
                     .with_table_parquet_options(table_parquet_options)
-                    .with_schema_adapter_factory(Arc::new(CometSchemaAdapterFactory::default()));
+                    .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
+                        spark_cast_options,
+                    )));
 
                 if let Some(filter) = cnf_data_filters {
                     builder = builder.with_predicate(filter);
                 }
 
                 let scan = builder.build();
-                Ok((vec![], Arc::new(scan)))
+                Ok((
+                    vec![],
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, Arc::new(scan), vec![])),
+                ))
             }
             OpStruct::Scan(scan) => {
                 let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
