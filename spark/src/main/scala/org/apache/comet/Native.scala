@@ -24,6 +24,7 @@ import org.apache.spark.sql.comet.CometMetricNode
 
 class Native extends NativeBase {
 
+  // scalastyle:off
   /**
    * Create a native query plan from execution SparkPlan serialized in bytes.
    * @param id
@@ -55,6 +56,7 @@ class Native extends NativeBase {
       explain: Boolean,
       workerThreads: Int,
       blockingThreads: Int): Long
+  // scalastyle:on
 
   /**
    * Execute a native query plan based on given input Arrow arrays.
