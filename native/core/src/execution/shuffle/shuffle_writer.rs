@@ -1700,10 +1700,10 @@ mod test {
 
     fn write_ipc_file(filename: &str, output: &[u8]) {
         let mut file = File::create(filename).unwrap();
-        let ipc_length = output.len() as i32;
-        let little_endian_bytes = ipc_length.to_le_bytes();
-        println!("little_endian_bytes = {:?}", little_endian_bytes);
-        file.write_all(&little_endian_bytes[..]).unwrap();
+        // let ipc_length = output.len() as i32;
+        // let little_endian_bytes = ipc_length.to_le_bytes();
+        // println!("little_endian_bytes = {:?}", little_endian_bytes);
+        // file.write_all(&little_endian_bytes[..]).unwrap();
         file.write_all(&output).unwrap()
     }
 

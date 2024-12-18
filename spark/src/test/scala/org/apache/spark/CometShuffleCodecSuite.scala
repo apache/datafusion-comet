@@ -19,6 +19,9 @@ class CometShuffleCodecSuite extends CometTestBase {
       assert(ins.hasNext)
       val channel = ins.next()
       val it = new ArrowReaderIterator(channel, "test")
+      assert(it.hasNext)
+      val batch = it.next()
+      assert(8192 == batch.numRows())
     }
   }
 
