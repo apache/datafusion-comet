@@ -18,13 +18,15 @@
 use arrow_array::builder::Int32Builder;
 use arrow_array::{builder::StringBuilder, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use comet::execution::shuffle::{calculate_partition_ids, ShuffleWriterExec};
+use comet::execution::shuffle::{calculate_partition_ids, write_ipc_compressed, ShuffleWriterExec};
 use criterion::{criterion_group, criterion_main, Criterion};
+use datafusion::physical_plan::metrics::Time;
 use datafusion::{
     physical_plan::{common::collect, memory::MemoryExec, ExecutionPlan},
     prelude::SessionContext,
 };
 use datafusion_physical_expr::{expressions::Column, Partitioning};
+use std::io::Cursor;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 
@@ -52,6 +54,13 @@ fn criterion_benchmark(c: &mut Criterion) {
         b.iter(|| {
             calculate_partition_ids(&arrays, 200, &mut hashes_buf, &mut partition_ids).unwrap();
         });
+    });
+    group.bench_function("shuffle_writer: encode and compress", |b| {
+        let batch = create_batch(8192, true);
+        let mut buffer = vec![];
+        let mut cursor = Cursor::new(&mut buffer);
+        let ipc_time = Time::default();
+        b.iter(|| write_ipc_compressed(&batch, &mut cursor, &ipc_time));
     });
     group.bench_function("shuffle_writer: end to end", |b| {
         let ctx = SessionContext::new();

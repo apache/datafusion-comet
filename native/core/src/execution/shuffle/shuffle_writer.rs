@@ -1544,7 +1544,7 @@ impl Checksum {
 
 /// Writes given record batch as Arrow IPC bytes into given writer.
 /// Returns number of bytes written.
-pub(crate) fn write_ipc_compressed<W: Write + Seek>(
+pub fn write_ipc_compressed<W: Write + Seek>(
     batch: &RecordBatch,
     output: &mut W,
     ipc_time: &Time,
