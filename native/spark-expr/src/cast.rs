@@ -888,7 +888,6 @@ fn cast_array(
         (Utf8, Timestamp(_, _)) => {
             cast_string_to_timestamp(&array, to_type, eval_mode, &cast_options.timezone)
         }
-        (Utf8, Timestamp(_, _)) => cast_string_to_timestamp(&array, to_type, eval_mode, &cast_options.timezone),
         (Utf8, Date32) => cast_string_to_date(&array, to_type, eval_mode),
         (Int64, Int32)
         | (Int64, Int16)

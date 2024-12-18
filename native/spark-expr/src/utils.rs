@@ -19,7 +19,7 @@ use arrow_array::{
     cast::as_primitive_array,
     types::{Int32Type, TimestampMicrosecondType},
 };
-use arrow_schema::{ArrowError, DataType, DECIMAL128_MAX_PRECISION, TimeUnit};
+use arrow_schema::{ArrowError, DataType, TimeUnit, DECIMAL128_MAX_PRECISION};
 use std::sync::Arc;
 
 use crate::timezone::Tz;

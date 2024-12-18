@@ -71,10 +71,10 @@ use datafusion_functions_nested::concat::ArrayAppend;
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
 use crate::execution::datafusion::schema_adapter::CometSchemaAdapterFactory;
+use crate::execution::spark_plan::SparkPlan;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
 use datafusion::datasource::physical_plan::FileScanConfig;
-use crate::execution::spark_plan::SparkPlan;
 use datafusion_comet_proto::{
     spark_expression::{
         self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
@@ -892,10 +892,17 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                let filter = if can_reuse_input_batch(&child)
-                    {Arc::new(CometFilterExec::try_new(predicate, Arc::clone(&child.native_plan))?)}
-                    else
-                    {Arc::new(FilterExec::try_new(predicate, Arc::clone(&child.native_plan))?)};
+                let filter = if can_reuse_input_batch(&child) {
+                    Arc::new(CometFilterExec::try_new(
+                        predicate,
+                        Arc::clone(&child.native_plan),
+                    )?)
+                } else {
+                    Arc::new(FilterExec::try_new(
+                        predicate,
+                        Arc::clone(&child.native_plan),
+                    )?)
+                };
 
                 Ok((
                     scans,
