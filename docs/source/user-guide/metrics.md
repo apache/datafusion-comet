@@ -33,10 +33,12 @@ Set `spark.comet.metrics.detailed=true` to see all available Comet metrics.
 
 Comet adds some additional metrics:
 
-| Metric                          | Description                                                                               |
-| ------------------------------- | ----------------------------------------------------------------------------------------- |
-| `encoding and compression time` | Time to encode batches in IPC format and compress using ZSTD.                             |
-| `native shuffle time`           | Total time spent in native shuffle writer, excluding the execution time of the input plan |
+| Metric                          | Description                                                   |
+| ------------------------------- | ------------------------------------------------------------- |
+| `native shuffle time`           | Total time in native code excluding any child operators.      |
+| `repartition time`              | Time to repartition batches.                                  |
+| `memory pool time`              | Time interacting with memory pool.                            |
+| `encoding and compression time` | Time to encode batches in IPC format and compress using ZSTD. |
 
 ## Native Metrics
 
@@ -58,5 +60,7 @@ Here is a guide to some of the native metrics.
 | Metric            | Description                                                   |
 | ----------------- | ------------------------------------------------------------- |
 | `elapsed_compute` | Total time excluding any child operators.                     |
+| `repart_time`     | Time to repartition batches.                                  |
 | `ipc_time`        | Time to encode batches in IPC format and compress using ZSTD. |
+| `mempool_time`    | Time interacting with memory pool.                            |
 | `write_time`      | Time spent writing bytes to disk.                             |
