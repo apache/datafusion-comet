@@ -56,7 +56,11 @@ impl Stddev {
         Self {
             name: name.into(),
             signature: Signature::coercible(
-                vec![Arc::new(NativeType::Float64)],
+                vec![
+                    datafusion_expr_common::signature::TypeSignatureClass::Native(Arc::new(
+                        NativeType::Float64,
+                    )),
+                ],
                 Volatility::Immutable,
             ),
             stats_type,
