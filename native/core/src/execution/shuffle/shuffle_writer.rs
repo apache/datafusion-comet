@@ -1086,6 +1086,7 @@ impl ShuffleRepartitioner {
 }
 
 /// Calculate the partition ID for each row in a batch
+#[inline]
 pub fn calculate_partition_ids(
     arrays: &[ArrayRef],
     num_output_partitions: usize,
