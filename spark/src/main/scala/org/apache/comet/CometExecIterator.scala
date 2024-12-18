@@ -23,7 +23,7 @@ import org.apache.spark._
 import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
 
-import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_BLOCKING_THREADS, COMET_DEBUG_ENABLED, COMET_EXPLAIN_NATIVE_ENABLED, COMET_WORKER_THREADS}
+import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_BLOCKING_THREADS, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_FRACTION, COMET_EXPLAIN_NATIVE_ENABLED, COMET_WORKER_THREADS}
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -60,6 +60,10 @@ class CometExecIterator(
     new CometBatchIterator(iterator, nativeUtil)
   }.toArray
   private val plan = {
+    val conf = SparkEnv.get.conf
+    // Only enable unified memory manager when off-heap mode is enabled. Otherwise,
+    // we'll use the built-in memory pool from DF, and initializes with `memory_limit`
+    // and `memory_fraction` below.
     nativeLib.createPlan(
       id,
       cometBatchIterators,
@@ -67,6 +71,9 @@ class CometExecIterator(
       nativeMetrics,
       new CometTaskMemoryManager(id),
       batchSize = COMET_BATCH_SIZE.get(),
+      use_unified_memory_manager = conf.getBoolean("spark.memory.offHeap.enabled", false),
+      memory_limit = CometSparkSessionExtensions.getCometMemoryOverhead(conf),
+      memory_fraction = COMET_EXEC_MEMORY_FRACTION.get(),
       debug = COMET_DEBUG_ENABLED.get(),
       explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
       workerThreads = COMET_WORKER_THREADS.get(),
