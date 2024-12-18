@@ -60,8 +60,6 @@ use util::jni::{convert_column_descriptor, convert_encoding, deserialize_schema,
 
 use self::util::jni::TypePromotionInfo;
 
-const STR_CLASS_NAME: &str = "java/lang/String";
-
 /// Parquet read context maintained across multiple JNI calls.
 struct Context {
     pub column_reader: ColumnReader,

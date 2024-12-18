@@ -40,6 +40,7 @@ import org.apache.comet.CometConf
 abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   protected val adaptiveExecutionEnabled: Boolean
   protected val numElementsForceSpillThreshold: Int = 10
+  protected val useUnifiedMemoryAllocator: Boolean = true
 
   override protected def sparkConf: SparkConf = {
     val conf = super.sparkConf
@@ -57,6 +58,8 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
         CometConf.COMET_COLUMNAR_SHUFFLE_SPILL_THRESHOLD.key -> numElementsForceSpillThreshold.toString,
         CometConf.COMET_EXEC_ENABLED.key -> "false",
         CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+        CometConf.COMET_COLUMNAR_SHUFFLE_UNIFIED_MEMORY_ALLOCATOR_IN_TEST.key ->
+          useUnifiedMemoryAllocator.toString,
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
         CometConf.COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE.key -> "1536m") {
         testFun
@@ -747,6 +750,10 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
           $"_6",
           $"_7",
           $"_8",
+          $"_9",
+          $"_10",
+          $"_11",
+          $"_12",
           $"_13",
           $"_14",
           $"_15",
@@ -966,6 +973,13 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     checkCometExchange(df, expectedNum, false)
     checkSparkAnswer(df)
   }
+}
+
+class CometTestMemoryAllocatorShuffleSuite extends CometColumnarShuffleSuite {
+  override protected val asyncShuffleEnable: Boolean = false
+  override protected val adaptiveExecutionEnabled: Boolean = true
+  // Explicitly test with `CometTestShuffleMemoryAllocator`
+  override protected val useUnifiedMemoryAllocator: Boolean = false
 }
 
 class CometAsyncShuffleSuite extends CometColumnarShuffleSuite {

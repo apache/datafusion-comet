@@ -44,9 +44,6 @@ pub struct PlainDecoderInner {
     /// The current offset in `data`, in bytes.
     offset: usize,
 
-    /// The number of total values in `data`
-    value_count: usize,
-
     /// Reads `data` bit by bit, used if `T` is [`BoolType`].
     bit_reader: BitReader,
 

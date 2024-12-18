@@ -25,26 +25,27 @@ use datafusion::{
         disk_manager::DiskManagerConfig,
         runtime_env::{RuntimeConfig, RuntimeEnv},
     },
-    physical_plan::{display::DisplayableExecutionPlan, ExecutionPlan, SendableRecordBatchStream},
+    physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
 use futures::poll;
 use jni::{
     errors::Result as JNIResult,
     objects::{
-        JByteArray, JClass, JIntArray, JLongArray, JMap, JObject, JObjectArray, JPrimitiveArray,
-        JString, ReleaseMode,
+        JByteArray, JClass, JIntArray, JLongArray, JObject, JObjectArray, JPrimitiveArray, JString,
+        ReleaseMode,
     },
     sys::{jbyteArray, jint, jlong, jlongArray},
     JNIEnv,
 };
+use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc, task::Poll};
 
 use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
     execution::{
-        datafusion::planner::PhysicalPlanner, metrics::utils::update_comet_metric,
-        serde::to_arrow_datatype, shuffle::row::process_sorted_row_partition, sort::RdxSort,
+        metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
+        shuffle::row::process_sorted_row_partition, sort::RdxSort,
     },
     jvm_bridge::{jni_new_global_ref, JVMClasses},
 };
@@ -58,6 +59,7 @@ use jni::{
 use tokio::runtime::Runtime;
 
 use crate::execution::operators::ScanExec;
+use crate::execution::spark_plan::SparkPlan;
 use log::info;
 
 /// Comet native execution context. Kept alive across JNI calls.
@@ -69,19 +71,19 @@ struct ExecutionContext {
     /// The number of partitions
     pub partition_count: usize,
     /// The DataFusion root operator converted from the `spark_plan`
-    pub root_op: Option<Arc<dyn ExecutionPlan>>,
+    pub root_op: Option<Arc<SparkPlan>>,
     /// The input sources for the DataFusion plan
     pub scans: Vec<ScanExec>,
     /// The global reference of input sources for the DataFusion plan
     pub input_sources: Vec<Arc<GlobalRef>>,
     /// The record batch stream to pull results from
     pub stream: Option<SendableRecordBatchStream>,
-    /// Configurations for DF execution
-    pub conf: HashMap<String, String>,
     /// The Tokio runtime used for async.
     pub runtime: Runtime,
     /// Native metrics
     pub metrics: Arc<GlobalRef>,
+    /// The time it took to create the native plan and configure the context
+    pub plan_creation_time: Duration,
     /// DataFusion SessionContext
     pub session_ctx: Arc<SessionContext>,
     /// Whether to enable additional debugging checks & messages
@@ -100,16 +102,22 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     e: JNIEnv,
     _class: JClass,
     id: jlong,
-    config_object: JObject,
     iterators: jobjectArray,
     serialized_query: jbyteArray,
     partition_count: jint,
     metrics_node: JObject,
     comet_task_memory_manager_obj: JObject,
+    batch_size: jint,
+    debug_native: jboolean,
+    explain_native: jboolean,
+    worker_threads: jint,
+    blocking_threads: jint,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         // Init JVM classes
         JVMClasses::init(&mut env);
+
+        let start = Instant::now();
 
         let array = unsafe { JPrimitiveArray::from_raw(serialized_query) };
         let bytes = env.convert_byte_array(array)?;
@@ -117,36 +125,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         // Deserialize query plan
         let spark_plan = serde::deserialize_op(bytes.as_slice())?;
 
-        // Sets up context
-        let mut configs = HashMap::new();
-
-        let config_map = JMap::from_env(&mut env, &config_object)?;
-        let mut map_iter = config_map.iter(&mut env)?;
-        while let Some((key, value)) = map_iter.next(&mut env)? {
-            let key: String = env.get_string(&JString::from(key)).unwrap().into();
-            let value: String = env.get_string(&JString::from(value)).unwrap().into();
-            configs.insert(key, value);
-        }
-
-        // Whether we've enabled additional debugging on the native side
-        let debug_native = parse_bool(&configs, "debug_native")?;
-        let explain_native = parse_bool(&configs, "explain_native")?;
-
-        let worker_threads = configs
-            .get("worker_threads")
-            .map(String::as_str)
-            .unwrap_or("4")
-            .parse::<usize>()?;
-        let blocking_threads = configs
-            .get("blocking_threads")
-            .map(String::as_str)
-            .unwrap_or("10")
-            .parse::<usize>()?;
-
         // Use multi-threaded tokio runtime to prevent blocking spawned tasks if any
         let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(worker_threads)
-            .max_blocking_threads(blocking_threads)
+            .worker_threads(worker_threads as usize)
+            .max_blocking_threads(blocking_threads as usize)
             .enable_all()
             .build()?;
 
@@ -167,7 +149,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         // We need to keep the session context alive. Some session state like temporary
         // dictionaries are stored in session context. If it is dropped, the temporary
         // dictionaries will be dropped as well.
-        let session = prepare_datafusion_session_context(&configs, task_memory_manager)?;
+        let session = prepare_datafusion_session_context(batch_size as usize, task_memory_manager)?;
+
+        let plan_creation_time = start.elapsed();
 
         let exec_context = Box::new(ExecutionContext {
             id,
@@ -177,12 +161,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             scans: vec![],
             input_sources,
             stream: None,
-            conf: configs,
             runtime,
             metrics,
+            plan_creation_time,
             session_ctx: Arc::new(session),
-            debug_native,
-            explain_native,
+            debug_native: debug_native == 1,
+            explain_native: explain_native == 1,
             metrics_jstrings: HashMap::new(),
         });
 
@@ -190,47 +174,21 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     })
 }
 
-/// Parse Comet configs and configure DataFusion session context.
+/// Configure DataFusion session context.
 fn prepare_datafusion_session_context(
-    conf: &HashMap<String, String>,
+    batch_size: usize,
     comet_task_memory_manager: Arc<GlobalRef>,
 ) -> CometResult<SessionContext> {
-    // Get the batch size from Comet JVM side
-    let batch_size = conf
-        .get("batch_size")
-        .ok_or(CometError::Internal(
-            "Config 'batch_size' is not specified from Comet JVM side".to_string(),
-        ))?
-        .parse::<usize>()?;
-
     let mut rt_config = RuntimeConfig::new().with_disk_manager(DiskManagerConfig::NewOs);
 
-    // Check if we are using unified memory manager integrated with Spark. Default to false if not
-    // set.
-    let use_unified_memory_manager = parse_bool(conf, "use_unified_memory_manager")?;
-
-    if use_unified_memory_manager {
-        // Set Comet memory pool for native
-        let memory_pool = CometMemoryPool::new(comet_task_memory_manager);
-        rt_config = rt_config.with_memory_pool(Arc::new(memory_pool));
-    } else {
-        // Use the memory pool from DF
-        if conf.contains_key("memory_limit") {
-            let memory_limit = conf.get("memory_limit").unwrap().parse::<usize>()?;
-            let memory_fraction = conf
-                .get("memory_fraction")
-                .ok_or(CometError::Internal(
-                    "Config 'memory_fraction' is not specified from Comet JVM side".to_string(),
-                ))?
-                .parse::<f64>()?;
-            rt_config = rt_config.with_memory_limit(memory_limit, memory_fraction)
-        }
-    }
+    // Set Comet memory pool for native
+    let memory_pool = CometMemoryPool::new(comet_task_memory_manager);
+    rt_config = rt_config.with_memory_pool(Arc::new(memory_pool));
 
     // Get Datafusion configuration from Spark Execution context
     // can be configured in Comet Spark JVM using Spark --conf parameters
     // e.g: spark-shell --conf spark.datafusion.sql_parser.parse_float_as_decimal=true
-    let mut session_config = SessionConfig::new()
+    let session_config = SessionConfig::new()
         .with_batch_size(batch_size)
         // DataFusion partial aggregates can emit duplicate rows so we disable the
         // skip partial aggregation feature because this is not compatible with Spark's
@@ -243,25 +201,13 @@ fn prepare_datafusion_session_context(
             &ScalarValue::Float64(Some(1.1)),
         );
 
-    for (key, value) in conf.iter().filter(|(k, _)| k.starts_with("datafusion.")) {
-        session_config = session_config.set_str(key, value);
-    }
-
-    let runtime = RuntimeEnv::try_new(rt_config).unwrap();
+    let runtime = RuntimeEnv::try_new(rt_config)?;
 
     let mut session_ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime));
 
     datafusion_functions_nested::register_all(&mut session_ctx)?;
 
     Ok(session_ctx)
-}
-
-fn parse_bool(conf: &HashMap<String, String>, name: &str) -> CometResult<bool> {
-    conf.get(name)
-        .map(String::as_str)
-        .unwrap_or("false")
-        .parse::<bool>()
-        .map_err(|e| CometError::Config(format!("Failed to parse boolean config {name}: {e}")))
 }
 
 /// Prepares arrow arrays for output.
@@ -342,6 +288,8 @@ fn pull_input_batches(exec_context: &mut ExecutionContext) -> Result<(), CometEr
 pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     e: JNIEnv,
     _class: JClass,
+    stage_id: jint,
+    partition: jint,
     exec_context: jlong,
     partition_id: jint,
     array_addrs: jlongArray,
@@ -357,6 +305,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         // Because we don't know if input arrays are dictionary-encoded when we create
         // query plan, we need to defer stream initialization to first time execution.
         if exec_context.root_op.is_none() {
+            let start = Instant::now();
             let planner = PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx))
                 .with_exec_id(exec_context_id);
             let (scans, root_op) = planner.create_plan(
@@ -364,14 +313,16 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 &mut exec_context.input_sources.clone(),
                 exec_context.partition_count,
             )?;
+            let physical_plan_time = start.elapsed();
 
+            exec_context.plan_creation_time += physical_plan_time;
             exec_context.root_op = Some(Arc::clone(&root_op));
             exec_context.scans = scans;
 
             if exec_context.explain_native {
                 let formatted_plan_str =
-                    DisplayableExecutionPlan::new(root_op.as_ref()).indent(true);
-                info!("Comet native query plan:\n {formatted_plan_str:}");
+                    DisplayableExecutionPlan::new(root_op.native_plan.as_ref()).indent(true);
+                info!("Comet native query plan:\n{formatted_plan_str:}");
             }
 
             let task_ctx = exec_context.session_ctx.task_ctx();
@@ -409,8 +360,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     if exec_context.explain_native {
                         if let Some(plan) = &exec_context.root_op {
                             let formatted_plan_str =
-                                DisplayableExecutionPlan::with_metrics(plan.as_ref()).indent(true);
-                            info!("Comet native query plan with metrics:\n{formatted_plan_str:}");
+                                DisplayableExecutionPlan::with_metrics(plan.native_plan.as_ref())
+                                    .indent(true);
+                            info!(
+                                "Comet native query plan with metrics (Plan #{} Stage {} Partition {}):\
+                            \n plan creation (including CometScans fetching first batches) took {:?}:\
+                            \n{formatted_plan_str:}",
+                                plan.plan_id, stage_id, partition, exec_context.plan_creation_time
+                            );
                         }
                     }
 
