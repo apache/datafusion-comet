@@ -1567,6 +1567,9 @@ pub(crate) fn write_ipc_compressed<W: Write + Seek>(
 
     match codec {
         CompressionCodec::Lz4Block => {
+            // write ipc_length placeholder
+            output.write_all(&[0u8; 8])?;
+
             // write IPC first without compression
             let mut buffer = vec![];
             let mut arrow_writer = StreamWriter::try_new(&mut buffer, &batch.schema())?;
@@ -1578,7 +1581,11 @@ pub(crate) fn write_ipc_compressed<W: Write + Seek>(
             let compressed = lz4::block::compress(ipc_encoded, None, true)?;
             output.write_all(&compressed)?;
 
+            // fill ipc length
             let end_pos = output.stream_position()?;
+            let ipc_length = end_pos - start_pos - 8;
+            output.seek(SeekFrom::Start(start_pos))?;
+            output.write_all(&ipc_length.to_le_bytes()[..])?;
             output.seek(SeekFrom::Start(end_pos))?;
 
             timer.stop();
@@ -1722,7 +1729,7 @@ mod test {
             &Time::default(),
         )
         .unwrap();
-        assert_eq!(61398, output.len());
+        assert_eq!(61406, output.len());
 
         // TODO remove this temp debugging code
         write_ipc_file("/tmp/shuffle.lz4", &output);

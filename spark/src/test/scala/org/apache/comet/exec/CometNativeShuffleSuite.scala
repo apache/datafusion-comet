@@ -19,15 +19,17 @@
 
 package org.apache.comet.exec
 
-import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
+import org.scalactic.source.Position
+import org.scalatest.Tag
+
 import org.apache.hadoop.fs.Path
+import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
-import org.apache.spark.sql.{CometTestBase, DataFrame}
-import org.scalactic.source.Position
-import org.scalatest.Tag
+
+import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 
 class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
