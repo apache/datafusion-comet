@@ -773,6 +773,8 @@ impl ShuffleRepartitioner {
             Partitioning::Hash(exprs, _) => {
                 let (partition_starts, shuffled_partition_ids): (Vec<usize>, Vec<usize>) = {
                     let mut timer = self.metrics.repart_time.timer();
+
+                    // evaluate partition expressions
                     let arrays = exprs
                         .iter()
                         .map(|expr| expr.evaluate(&input)?.into_array(input.num_rows()))
@@ -1085,7 +1087,7 @@ impl ShuffleRepartitioner {
 
 /// Calculate the partition ID for each row in a batch
 pub fn calculate_partition_ids(
-    arrays: &Vec<ArrayRef>,
+    arrays: &[ArrayRef],
     num_output_partitions: usize,
     hashes_buf: &mut [u32],
     partition_ids: &mut [u64],
@@ -1094,7 +1096,7 @@ pub fn calculate_partition_ids(
     hashes_buf.fill(42_u32);
 
     // Hash arrays and compute buckets based on number of partitions
-    create_murmur3_hashes(&arrays, hashes_buf)?
+    create_murmur3_hashes(arrays, hashes_buf)?
         .iter()
         .enumerate()
         .for_each(|(idx, hash)| partition_ids[idx] = pmod(*hash, num_output_partitions) as u64);
