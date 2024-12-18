@@ -19,4 +19,4 @@ mod list;
 mod map;
 pub mod row;
 mod shuffle_writer;
-pub use shuffle_writer::ShuffleWriterExec;
+pub use shuffle_writer::{calculate_partition_ids, ShuffleWriterExec};

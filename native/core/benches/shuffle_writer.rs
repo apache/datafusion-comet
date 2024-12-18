@@ -15,9 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow_array::builder::Int32Builder;
 use arrow_array::{builder::StringBuilder, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use comet::execution::shuffle::ShuffleWriterExec;
+use comet::execution::shuffle::{calculate_partition_ids, ShuffleWriterExec};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::{
     physical_plan::{common::collect, memory::MemoryExec, ExecutionPlan},
@@ -28,7 +29,7 @@ use std::sync::Arc;
 use tokio::runtime::Runtime;
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let batch = create_batch();
+    let batch = create_batch(8192, true);
     let mut batches = Vec::new();
     for _ in 0..10 {
         batches.push(batch.clone());
@@ -43,7 +44,16 @@ fn criterion_benchmark(c: &mut Criterion) {
     .unwrap();
 
     let mut group = c.benchmark_group("shuffle_writer");
-    group.bench_function("shuffle_writer", |b| {
+    group.bench_function("shuffle_writer: calculate partition ids", |b| {
+        let batch = create_batch(8192, true);
+        let arrays = batch.columns().to_vec();
+        let mut hashes_buf = vec![0; batch.num_rows()];
+        let mut partition_ids = vec![0; batch.num_rows()];
+        b.iter(|| {
+            calculate_partition_ids(&arrays, 200, &mut hashes_buf, &mut partition_ids).unwrap();
+        });
+    });
+    group.bench_function("shuffle_writer: end to end", |b| {
         let ctx = SessionContext::new();
         b.iter(|| {
             let task_ctx = ctx.task_ctx();
@@ -54,19 +64,24 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
 }
 
-fn create_batch() -> RecordBatch {
-    let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
+fn create_batch(num_rows: usize, allow_nulls: bool) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("c0", DataType::Int32, true),
+        Field::new("c1", DataType::Utf8, true),
+    ]));
+    let mut a = Int32Builder::new();
     let mut b = StringBuilder::new();
-    for i in 0..8192 {
-        if i % 10 == 0 {
+    for i in 0..num_rows {
+        a.append_value(i as i32);
+        if allow_nulls && i % 10 == 0 {
             b.append_null();
         } else {
-            b.append_value(format!("{i}"));
+            b.append_value(format!("this is string number {i}"));
         }
     }
-    let array = b.finish();
-
-    RecordBatch::try_new(schema.clone(), vec![Arc::new(array)]).unwrap()
+    let a = a.finish();
+    let b = b.finish();
+    RecordBatch::try_new(schema.clone(), vec![Arc::new(a), Arc::new(b)]).unwrap()
 }
 
 fn config() -> Criterion {
