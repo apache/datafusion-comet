@@ -53,7 +53,7 @@ under the License.
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Contributing to Apache DataFusion Comet" href="../contributor-guide/contributing.html" />
+    <link rel="next" title="Comet Metrics" href="metrics.html" />
     <link rel="prev" title="Compatibility Guide" href="compatibility.html" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="docsearch:language" content="en">
@@ -161,6 +161,11 @@ under the License.
  <li class="toctree-l1 current active">
   <a class="current reference internal" href="#">
    Tuning Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="metrics.html">
+   Metrics Guide
   </a>
  </li>
 </ul>
@@ -333,28 +338,6 @@ under the License.
   </ul>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#metrics">
-   Metrics
-  </a>
-  <ul class="nav section-nav flex-column">
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#spark-sql-metrics">
-     Spark SQL Metrics
-    </a>
-   </li>
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#native-metrics">
-     Native Metrics
-    </a>
-   </li>
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#scanexec">
-     ScanExec
-    </a>
-   </li>
-  </ul>
- </li>
- <li class="toc-h2 nav-item toc-entry">
   <a class="reference internal nav-link" href="#explain-plan">
    Explain Plan
   </a>
@@ -485,45 +468,6 @@ then any shuffle operations that cannot be supported in this mode will fall back
 </section>
 </section>
 </section>
-<section id="metrics">
-<h2>Metrics<a class="headerlink" href="#metrics" title="Link to this heading">¶</a></h2>
-<section id="spark-sql-metrics">
-<h3>Spark SQL Metrics<a class="headerlink" href="#spark-sql-metrics" title="Link to this heading">¶</a></h3>
-<p>Some Comet metrics are not directly comparable to Spark metrics in some cases:</p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">CometScanExec</span></code> uses nanoseconds for total scan time. Spark also measures scan time in nanoseconds but converts to
-milliseconds <em>per batch</em> which can result in a large loss of precision, making it difficult to compare scan times
-between Spark and Comet.</p></li>
-</ul>
-</section>
-<section id="native-metrics">
-<h3>Native Metrics<a class="headerlink" href="#native-metrics" title="Link to this heading">¶</a></h3>
-<p>Setting <code class="docutils literal notranslate"><span class="pre">spark.comet.explain.native.enabled=true</span></code> will cause native plans to be logged in each executor. Metrics are
-logged for each native plan (and there is one plan per task, so this is very verbose).</p>
-<p>Here is a guide to some of the native metrics.</p>
-</section>
-<section id="scanexec">
-<h3>ScanExec<a class="headerlink" href="#scanexec" title="Link to this heading">¶</a></h3>
-<table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Metric</p></th>
-<th class="head"><p>Description</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">elapsed_compute</span></code></p></td>
-<td><p>Total time spent in this operator, fetching batches from a JVM iterator.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">jvm_fetch_time</span></code></p></td>
-<td><p>Time spent in the JVM fetching input batches to be read by this <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> instance.</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">arrow_ffi_time</span></code></p></td>
-<td><p>Time spent using Arrow FFI to create Arrow batches from the memory addresses returned from the JVM.</p></td>
-</tr>
-</tbody>
-</table>
-</section>
-</section>
 <section id="explain-plan">
 <h2>Explain Plan<a class="headerlink" href="#explain-plan" title="Link to this heading">¶</a></h2>
 <section id="extended-explain">
@@ -552,10 +496,10 @@ To enable this, in the Spark configuration, set the following:</p>
             <p class="prev-next-title">Compatibility Guide</p>
         </div>
     </a>
-    <a class='right-next' id="next-link" href="../contributor-guide/contributing.html" title="next page">
+    <a class='right-next' id="next-link" href="metrics.html" title="next page">
     <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Contributing to Apache DataFusion Comet</p>
+        <p class="prev-next-title">Comet Metrics</p>
     </div>
     <i class="fas fa-angle-right"></i>
     </a>
