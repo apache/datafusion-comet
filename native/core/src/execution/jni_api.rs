@@ -154,7 +154,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             batch_size as usize,
             use_unified_memory_manager == 1,
             memory_limit as usize,
-            memory_fraction as f64,
+            memory_fraction,
             task_memory_manager,
         )?;
 
