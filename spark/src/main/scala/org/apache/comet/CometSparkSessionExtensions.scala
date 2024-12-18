@@ -922,7 +922,8 @@ class CometSparkSessionExtensions
 
       // Comet required off-heap memory to be enabled
       if (!isOffHeapEnabled(conf) && !isTesting) {
-        logWarning("Comet extension disabled because spark.memory.offHeap.enabled=false")
+        logWarning("Comet native exec disabled because spark.memory.offHeap.enabled=false")
+        withInfo(plan, "Comet native exec disabled because spark.memory.offHeap.enabled=false")
         return plan
       }
 
