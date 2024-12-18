@@ -1580,10 +1580,11 @@ pub(crate) fn write_ipc_compressed<W: Write + Seek>(
 
             let mut encoder = lz4::EncoderBuilder::new()
                 .content_size(ipc_encoded.len() as u64)
+                .block_mode(lz4::BlockMode::Independent)
                 .block_size(BlockSize::Default)
-                .checksum(ContentChecksum::ChecksumEnabled)
+                .checksum(ContentChecksum::NoChecksum)
                 .block_checksum(BlockChecksum::BlockChecksumEnabled)
-                .level(0)
+                .level(0) // TODO make configurable
                 .build(&mut *output)?;
             encoder.write_all(ipc_encoded.as_slice())?;
             let (output, result) = encoder.finish();
@@ -1600,10 +1601,9 @@ pub(crate) fn write_ipc_compressed<W: Write + Seek>(
         }
     };
 
+    // fill ipc length
     let end_pos = output.stream_position()?;
     let ipc_length = end_pos - start_pos - 8;
-
-    // fill ipc length
     output.seek(SeekFrom::Start(start_pos))?;
     output.write_all(&ipc_length.to_le_bytes()[..])?;
     output.seek(SeekFrom::Start(end_pos))?;
@@ -1659,6 +1659,53 @@ mod test {
     use datafusion_execution::runtime_env::RuntimeEnvBuilder;
     use datafusion_physical_expr::expressions::Column;
     use tokio::runtime::Runtime;
+
+    #[test]
+    fn write_ipc_zstd() {
+        let batch = create_batch(8192);
+        let mut output = vec![];
+        let mut cursor = Cursor::new(&mut output);
+        write_ipc_compressed(
+            &batch,
+            &mut cursor,
+            &CompressionCodec::Zstd(1),
+            &Time::default(),
+        )
+        .unwrap();
+        let ipc_length = output.len() as i32;
+        assert_eq!(40218, ipc_length);
+
+        // TODO remove this temp debugging code
+        write_ipc_file("/tmp/shuffle.zstd", &output);
+    }
+
+    #[test]
+    fn write_ipc_lz4() {
+        let batch = create_batch(8192);
+        let mut output = vec![];
+        let mut cursor = Cursor::new(&mut output);
+        write_ipc_compressed(
+            &batch,
+            &mut cursor,
+            &CompressionCodec::Lz4,
+            &Time::default(),
+        )
+        .unwrap();
+        let ipc_length = output.len() as i32;
+        assert_eq!(58199, ipc_length);
+
+        // TODO remove this temp debugging code
+        write_ipc_file("/tmp/shuffle.lz4", &output);
+    }
+
+    fn write_ipc_file(filename: &str, output: &[u8]) {
+        let mut file = File::create(filename).unwrap();
+        let ipc_length = output.len() as i32;
+        let little_endian_bytes = ipc_length.to_le_bytes();
+        println!("little_endian_bytes = {:?}", little_endian_bytes);
+        file.write_all(&little_endian_bytes[..]).unwrap();
+        file.write_all(&output).unwrap()
+    }
 
     #[test]
     fn test_slot_size() {
@@ -1722,13 +1769,7 @@ mod test {
         num_partitions: usize,
         memory_limit: Option<usize>,
     ) {
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
-        let mut b = StringBuilder::new();
-        for i in 0..batch_size {
-            b.append_value(format!("{i}"));
-        }
-        let array = b.finish();
-        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).unwrap();
+        let batch = create_batch(batch_size);
 
         let batches = (0..num_batches).map(|_| batch.clone()).collect::<Vec<_>>();
 
@@ -1755,6 +1796,17 @@ mod test {
         let stream = exec.execute(0, task_ctx).unwrap();
         let rt = Runtime::new().unwrap();
         rt.block_on(collect(stream)).unwrap();
+    }
+
+    fn create_batch(batch_size: usize) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
+        let mut b = StringBuilder::new();
+        for i in 0..batch_size {
+            b.append_value(format!("{i}"));
+        }
+        let array = b.finish();
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).unwrap();
+        batch
     }
 
     #[test]
