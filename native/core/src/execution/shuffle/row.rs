@@ -3359,7 +3359,8 @@ pub fn process_sorted_row_partition(
 
         // we do not collect metrics in Native_writeSortedFileNative
         let ipc_time = Time::default();
-        let codec = CompressionCodec::Zstd(1); // TODO config
+        // compression codec is not configurable for CometBypassMergeSortShuffleWriter
+        let codec = CompressionCodec::Zstd(1);
         written += write_ipc_compressed(&batch, &mut cursor, &codec, &ipc_time)?;
 
         if let Some(checksum) = &mut current_checksum {
