@@ -45,14 +45,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Seq(true, false).foreach { nullOnDivideByZero =>
         withSQLConf("spark.sql.legacy.statisticalAggregate" -> nullOnDivideByZero.toString) {
 
-          spark.read
-            .parquet("src/test/resources/test-data/test1")
-            .createOrReplaceTempView("tbl")
-          withTempView("tbl") {
-            val df =
-              sql(
-                "SELECT c79, c54, stddev_pop(c73) FROM tbl GROUP BY " +
-                  "c79,c54 ORDER BY c79, c54")
+          val data: Seq[(Float, Int)] = Seq((Float.PositiveInfinity, 1))
+          withParquetTable(data, "tbl", false) {
+            val df = sql("SELECT stddev_pop(_1), stddev_pop(_2) FROM tbl")
             checkSparkAnswer(df)
           }
         }
