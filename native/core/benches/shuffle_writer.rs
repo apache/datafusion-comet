@@ -69,15 +69,14 @@ fn create_shuffle_writer_exec(compression_codec: CompressionCodec) -> ShuffleWri
     let batches = create_batches(8192, 10);
     let schema = batches[0].schema();
     let partitions = &[batches];
-    let exec = ShuffleWriterExec::try_new(
+    ShuffleWriterExec::try_new(
         Arc::new(MemoryExec::try_new(partitions, schema, None).unwrap()),
         Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
         compression_codec,
         "/tmp/data.out".to_string(),
         "/tmp/index.out".to_string(),
     )
-    .unwrap();
-    exec
+    .unwrap()
 }
 
 fn create_batches(size: usize, count: usize) -> Vec<RecordBatch> {

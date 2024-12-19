@@ -1759,8 +1759,7 @@ mod test {
             b.append_value(format!("{i}"));
         }
         let array = b.finish();
-        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).unwrap();
-        batch
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).unwrap();
     }
 
     #[test]
