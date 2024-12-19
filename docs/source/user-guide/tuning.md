@@ -103,6 +103,12 @@ native shuffle currently only supports `HashPartitioning` and `SinglePartitionin
 To enable native shuffle, set `spark.comet.exec.shuffle.mode` to `native`. If this mode is explicitly set,
 then any shuffle operations that cannot be supported in this mode will fall back to Spark.
 
+### Shuffle Compression
+
+By default, Spark compresses shuffle files using LZ4 compression. Comet overrides this behavior with ZSTD compression.
+Compression can be disabled by setting `spark.shuffle.compress=false`, which may result in faster shuffle times in 
+certain environments, such as single-node setups with fast NVMe drives, at the expense of increased disk space usage.
+
 ## Explain Plan
 ### Extended Explain
 With Spark 4.0.0 and newer, Comet can provide extended explain plan information in the Spark UI. Currently this lists

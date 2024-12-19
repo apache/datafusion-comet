@@ -243,7 +243,7 @@ object CometShuffleManager extends Logging {
 
   lazy val compressionCodecForShuffling: CompressionCodec = {
     val sparkConf = SparkEnv.get.conf
-    val codecName = CometConf.COMET_EXEC_SHUFFLE_CODEC.get(SQLConf.get)
+    val codecName = CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_CODEC.get(SQLConf.get)
 
     // only zstd compression is supported at the moment
     if (codecName != "zstd") {

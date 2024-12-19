@@ -82,10 +82,18 @@ message Limit {
   int32 offset = 2;
 }
 
+enum CompressionCodec {
+  None = 0;
+  Zstd = 1;
+  Lz4 = 2;
+}
+
 message ShuffleWriter {
   spark.spark_partitioning.Partitioning partitioning = 1;
   string output_data_file = 3;
   string output_index_file = 4;
+  CompressionCodec codec = 5;
+  int32 compression_level = 6;
 }
 
 enum AggregateMode {
