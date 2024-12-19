@@ -20,10 +20,10 @@
 use crate::{
     errors::CometError,
     execution::{
-        datafusion::shuffle_writer::{write_ipc_compressed, Checksum},
         shuffle::{
             list::{append_list_element, SparkUnsafeArray},
             map::{append_map_elements, get_map_key_value_dt, SparkUnsafeMap},
+            shuffle_writer::{write_ipc_compressed, Checksum},
         },
         utils::bytes_to_i128,
     },
@@ -48,7 +48,6 @@ use std::{
     sync::Arc,
 };
 
-const WORD_SIZE: i64 = 8;
 const MAX_LONG_DIGITS: u8 = 18;
 const NESTED_TYPE_BUILDER_CAPACITY: usize = 100;
 
@@ -170,8 +169,8 @@ pub trait SparkUnsafeObject {
 
     /// Returns array value at the given index of the object.
     fn get_array(&self, index: usize) -> SparkUnsafeArray {
-        let (offset, len) = self.get_offset_and_len(index);
-        SparkUnsafeArray::new(self.get_row_addr() + offset as i64, len)
+        let (offset, _) = self.get_offset_and_len(index);
+        SparkUnsafeArray::new(self.get_row_addr() + offset as i64)
     }
 
     fn get_map(&self, index: usize) -> SparkUnsafeMap {

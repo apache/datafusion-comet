@@ -207,7 +207,7 @@ class CometSparkSessionExtensions
 
           // data source V1
           case scanExec @ FileSourceScanExec(
-                HadoopFsRelation(_, partitionSchema, _, _, _: ParquetFileFormat, _),
+                HadoopFsRelation(_, partitionSchema, _, _, fileFormat, _),
                 _: Seq[_],
                 requiredSchema,
                 _,
@@ -216,14 +216,15 @@ class CometSparkSessionExtensions
                 _,
                 _,
                 _)
-              if CometScanExec.isSchemaSupported(requiredSchema)
+              if CometScanExec.isFileFormatSupported(fileFormat)
+                && CometScanExec.isSchemaSupported(requiredSchema)
                 && CometScanExec.isSchemaSupported(partitionSchema) =>
             logInfo("Comet extension enabled for v1 Scan")
             CometScanExec(scanExec, session)
 
           // data source v1 not supported case
           case scanExec @ FileSourceScanExec(
-                HadoopFsRelation(_, partitionSchema, _, _, _: ParquetFileFormat, _),
+                HadoopFsRelation(_, partitionSchema, _, _, fileFormat, _),
                 _: Seq[_],
                 requiredSchema,
                 _,
@@ -233,12 +234,15 @@ class CometSparkSessionExtensions
                 _,
                 _) =>
             val info1 = createMessage(
+              !CometScanExec.isFileFormatSupported(fileFormat),
+              s"File format $fileFormat is not supported")
+            val info2 = createMessage(
               !CometScanExec.isSchemaSupported(requiredSchema),
               s"Schema $requiredSchema is not supported")
-            val info2 = createMessage(
+            val info3 = createMessage(
               !CometScanExec.isSchemaSupported(partitionSchema),
               s"Partition schema $partitionSchema is not supported")
-            withInfo(scanExec, Seq(info1, info2).flatten.mkString(","))
+            withInfo(scanExec, Seq(info1, info2, info3).flatten.mkString(","))
             scanExec
         }
       }
@@ -938,6 +942,13 @@ class CometSparkSessionExtensions
     }
 
     override def apply(plan: SparkPlan): SparkPlan = {
+
+      // Comet required off-heap memory to be enabled
+      if ("true" != conf.getConfString("spark.memory.offHeap.enabled", "false")) {
+        logInfo("Comet extension disabled because spark.memory.offHeap.enabled=false")
+        return plan
+      }
+
       // DataFusion doesn't have ANSI mode. For now we just disable CometExec if ANSI mode is
       // enabled.
       if (isANSIEnabled(conf)) {
@@ -1194,8 +1205,22 @@ object CometSparkSessionExtensions extends Logging {
     }
   }
 
+  private[comet] def isOffHeapEnabled(conf: SQLConf): Boolean =
+    conf.contains("spark.memory.offHeap.enabled") &&
+      conf.getConfString("spark.memory.offHeap.enabled").toBoolean
+
+  // Copied from org.apache.spark.util.Utils which is private to Spark.
+  private[comet] def isTesting: Boolean = {
+    System.getenv("SPARK_TESTING") != null || System.getProperty("spark.testing") != null
+  }
+
+  // Check whether Comet shuffle is enabled:
+  // 1. `COMET_EXEC_SHUFFLE_ENABLED` is true
+  // 2. `spark.shuffle.manager` is set to `CometShuffleManager`
+  // 3. Off-heap memory is enabled || Spark/Comet unit testing
   private[comet] def isCometShuffleEnabled(conf: SQLConf): Boolean =
-    COMET_EXEC_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf)
+    COMET_EXEC_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf) &&
+      (isOffHeapEnabled(conf) || isTesting)
 
   private[comet] def getCometShuffleNotEnabledReason(conf: SQLConf): Option[String] = {
     if (!COMET_EXEC_SHUFFLE_ENABLED.get(conf)) {

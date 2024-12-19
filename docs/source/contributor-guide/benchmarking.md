@@ -22,7 +22,7 @@ under the License.
 To track progress on performance, we regularly run benchmarks derived from TPC-H and TPC-DS. Data generation and 
 benchmarking documentation and scripts are available in the [DataFusion Benchmarks](https://github.com/apache/datafusion-benchmarks) GitHub repository.
 
-We also have many micro benchmarks that can be run from an IDE located [here]()https://github.com/apache/datafusion-comet/tree/main/spark/src/test/scala/org/apache/spark/sql/benchmark). 
+We also have many micro benchmarks that can be run from an IDE located [here](https://github.com/apache/datafusion-comet/tree/main/spark/src/test/scala/org/apache/spark/sql/benchmark). 
 
 Here are example commands for running the benchmarks against a Spark cluster. This command will need to be 
 adapted based on the Spark environment and location of data files.
@@ -54,11 +54,11 @@ $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
     --conf spark.driver.memory=8G \
     --conf spark.executor.instances=1 \
-    --conf spark.executor.memory=32G \
+    --conf spark.executor.memory=16G \
     --conf spark.executor.cores=8 \
     --conf spark.cores.max=8 \
     --conf spark.memory.offHeap.enabled=true \
-    --conf spark.memory.offHeap.size=10g \
+    --conf spark.memory.offHeap.size=32g \
     --jars $COMET_JAR \
     --conf spark.driver.extraClassPath=$COMET_JAR \
     --conf spark.executor.extraClassPath=$COMET_JAR \

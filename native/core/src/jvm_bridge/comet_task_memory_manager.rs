@@ -25,6 +25,7 @@ use jni::{
 /// A wrapper which delegate acquire/release memory calls to the
 /// JVM side `CometTaskMemoryManager`.
 #[derive(Debug)]
+#[allow(dead_code)] // we need to keep references to Java items to prevent GC
 pub struct CometTaskMemoryManager<'a> {
     pub class: JClass<'a>,
     pub method_acquire_memory: JMethodID,

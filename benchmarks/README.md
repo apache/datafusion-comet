@@ -62,7 +62,7 @@ docker push localhost:32000/apache/datafusion-comet-tpcbench:latest
 export SPARK_MASTER=k8s://https://127.0.0.1:16443
 export COMET_DOCKER_IMAGE=localhost:32000/apache/datafusion-comet-tpcbench:latest
 # Location of Comet JAR within the Docker image
-export COMET_JAR=/opt/spark/jars/comet-spark-spark3.4_2.12-0.2.0-SNAPSHOT.jar
+export COMET_JAR=/opt/spark/jars/comet-spark-spark3.4_2.12-0.5.0-SNAPSHOT.jar
 
 $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
