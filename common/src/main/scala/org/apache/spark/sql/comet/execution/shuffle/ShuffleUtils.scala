@@ -19,9 +19,12 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
+import java.io.{InputStream, OutputStream}
+
+import org.apache.commons.compress.compressors.lz4.BlockLZ4CompressorInputStream
+import org.apache.commons.compress.compressors.lz4.FramedLZ4CompressorInputStream
 import org.apache.spark.SparkEnv
 import org.apache.spark.internal.Logging
-import org.apache.spark.internal.config.IO_COMPRESSION_CODEC
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.sql.internal.SQLConf
 
@@ -31,12 +34,22 @@ private[spark] object ShuffleUtils extends Logging {
   lazy val compressionCodecForShuffling: CompressionCodec = {
     val sparkConf = SparkEnv.get.conf
     val codecName = CometConf.COMET_EXEC_SHUFFLE_CODEC.get(SQLConf.get)
-
-    // only zstd compression is supported at the moment
-    if (codecName != "zstd") {
-      logWarning(
-        s"Overriding config ${IO_COMPRESSION_CODEC}=${codecName} in shuffling, force using zstd")
+    codecName match {
+      case "zstd" => CompressionCodec.createCodec(sparkConf, "zstd")
+      case "lz4" => ArrowLz4Codec
+      case other =>
+        throw new IllegalStateException(s"Unsupported shuffle compression codec: $other")
     }
-    CompressionCodec.createCodec(sparkConf, "zstd")
   }
+}
+
+object ArrowLz4Codec extends CompressionCodec {
+
+  override def compressedOutputStream(s: OutputStream): OutputStream = {
+    throw new UnsupportedOperationException()
+  }
+
+  override def compressedInputStream(s: InputStream): InputStream =
+    new FramedLZ4CompressorInputStream(s)
+//    new BlockLZ4CompressorInputStream(s)
 }

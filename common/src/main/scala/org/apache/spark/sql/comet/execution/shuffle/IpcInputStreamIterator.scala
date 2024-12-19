@@ -54,9 +54,11 @@ case class IpcInputStreamIterator(
   private var currentIpcLength = 0L
   private var currentLimitedInputStream: LimitedInputStream = _
 
-  taskContext.addTaskCompletionListener[Unit](_ => {
-    closeInputStream()
-  })
+  if (taskContext != null) {
+    taskContext.addTaskCompletionListener[Unit](_ => {
+      closeInputStream()
+    })
+  }
 
   override def hasNext: Boolean = {
     if (in == null || finished) {
