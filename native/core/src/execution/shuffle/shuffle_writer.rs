@@ -1647,6 +1647,7 @@ mod test {
     use tokio::runtime::Runtime;
 
     #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     fn write_ipc_zstd() {
         let batch = create_batch(8192);
         let mut output = vec![];
