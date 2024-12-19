@@ -83,8 +83,9 @@ message Limit {
 }
 
 enum CompressionCodec {
-  Lz4 = 0;
+  None = 0;
   Zstd = 1;
+  Lz4 = 2;
 }
 
 message ShuffleWriter {
@@ -92,6 +93,7 @@ message ShuffleWriter {
   string output_data_file = 3;
   string output_index_file = 4;
   CompressionCodec codec = 5;
+  int32 compression_level = 6;
 }
 
 enum AggregateMode {

@@ -554,11 +554,15 @@ class CometShuffleWriteProcessor(
       shuffleWriterBuilder.setOutputDataFile(dataFile)
       shuffleWriterBuilder.setOutputIndexFile(indexFile)
 
-      val codec = CometConf.COMET_EXEC_SHUFFLE_CODEC.get() match {
-        case "lz4" => CompressionCodec.Lz4
-        case "zstd" => CompressionCodec.Zstd
+      // TODO remove hard-coded compression levels
+      val (codec, level) = CometConf.COMET_EXEC_SHUFFLE_CODEC.get() match {
+        case "none" => (CompressionCodec.None, 0)
+        case "lz4" => (CompressionCodec.Lz4, 0)
+        case "zstd" => (CompressionCodec.Zstd, 1)
+        case other => throw new UnsupportedOperationException(s"invalid codec: $other")
       }
       shuffleWriterBuilder.setCodec(codec)
+      shuffleWriterBuilder.setCompressionLevel(level)
 
       outputPartitioning match {
         case _: HashPartitioning =>

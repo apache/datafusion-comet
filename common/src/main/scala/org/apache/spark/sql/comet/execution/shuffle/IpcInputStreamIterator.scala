@@ -112,8 +112,12 @@ case class IpcInputStreamIterator(
     currentLimitedInputStream = is
 
     if (decompressingNeeded) {
-      val zs = ShuffleUtils.compressionCodecForShuffling.compressedInputStream(is)
-      Channels.newChannel(zs)
+      ShuffleUtils.compressionCodecForShuffling match {
+        case Some(codec) =>
+          Channels.newChannel(codec.compressedInputStream(is))
+        case None =>
+          Channels.newChannel(is)
+      }
     } else {
       Channels.newChannel(is)
     }

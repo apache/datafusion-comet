@@ -1566,7 +1566,7 @@ impl Checksum {
 pub enum CompressionCodec {
     None,
     Lz4Block,
-    Lz4Frame,
+    Lz4Frame(i32),
     Zstd(i32),
 }
 
@@ -1609,7 +1609,7 @@ pub fn write_ipc_compressed<W: Write + Seek>(
 
             output
         }
-        CompressionCodec::Lz4Frame => {
+        CompressionCodec::Lz4Frame(level) => {
             // write IPC first without compression
             let mut buffer = vec![];
             let mut arrow_writer = StreamWriter::try_new(&mut buffer, &batch.schema())?;
@@ -1623,7 +1623,7 @@ pub fn write_ipc_compressed<W: Write + Seek>(
                 // .block_size(BlockSize::Default)
                 // .checksum(ContentChecksum::NoChecksum)
                 // .block_checksum(BlockChecksum::BlockChecksumEnabled)
-                .level(0) // TODO make configurable
+                .level(*level as u32)
                 .build(&mut *output)?;
             encoder.write_all(ipc_encoded.as_slice())?;
             let (output, result) = encoder.finish();
@@ -1743,7 +1743,7 @@ mod test {
         write_ipc_compressed(
             &batch,
             &mut cursor,
-            &CompressionCodec::Lz4Frame,
+            &CompressionCodec::Lz4Frame(0),
             &Time::default(),
         )
         .unwrap();
