@@ -2705,7 +2705,6 @@ mod tests {
 
         let (mut _scans, filter_exec) = planner.create_plan(&op, &mut vec![], 1).unwrap();
 
-        println!("{:?}", filter_exec);
         assert_eq!("CometFilterExec", filter_exec.native_plan.name());
         assert_eq!(1, filter_exec.children.len());
         assert_eq!(0, filter_exec.additional_native_plans.len());
