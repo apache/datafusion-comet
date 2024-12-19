@@ -19,16 +19,16 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
+import java.io.{InputStream, OutputStream}
+
+// TODO maybe we need the one from arrow-compression instead?
+import org.apache.commons.compress.compressors.lz4.FramedLZ4CompressorInputStream
 import org.apache.spark.SparkEnv
 import org.apache.spark.internal.Logging
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.sql.internal.SQLConf
+
 import org.apache.comet.CometConf
-
-// TODO maybe we need the one from arrow-compression instead?
-import org.apache.commons.compress.compressors.lz4.FramedLZ4CompressorInputStream
-
-import java.io.{InputStream, OutputStream}
 
 private[spark] object ShuffleUtils extends Logging {
   lazy val compressionCodecForShuffling: CompressionCodec = {
@@ -49,5 +49,6 @@ object ArrowLz4Codec extends CompressionCodec {
     throw new UnsupportedOperationException()
   }
 
-  override def compressedInputStream(s: InputStream): InputStream = new FramedLZ4CompressorInputStream(s)
+  override def compressedInputStream(s: InputStream): InputStream =
+    new FramedLZ4CompressorInputStream(s)
 }

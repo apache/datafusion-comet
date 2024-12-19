@@ -1051,7 +1051,7 @@ impl PhysicalPlanner {
                     .create_partitioning(writer.partitioning.as_ref().unwrap(), child.schema())?;
 
                 let codec = match writer.codec.try_into() {
-                    Ok(SparkCompressionCodec::Lz4) => CompressionCodec::Lz4Block,
+                    Ok(SparkCompressionCodec::Lz4) => CompressionCodec::Lz4,
                     Ok(SparkCompressionCodec::Zstd) => CompressionCodec::Zstd(1), // TODO make level configurable
                     _ => todo!(),
                 };

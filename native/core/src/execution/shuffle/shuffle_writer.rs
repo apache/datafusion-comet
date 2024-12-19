@@ -1545,8 +1545,7 @@ impl Checksum {
 
 #[derive(Debug, Clone)]
 pub enum CompressionCodec {
-    Lz4Block,
-    //Lz4Frame
+    Lz4,
     Zstd(i32),
 }
 
@@ -1566,7 +1565,7 @@ pub(crate) fn write_ipc_compressed<W: Write + Seek>(
     let start_pos = output.stream_position()?;
 
     match codec {
-        CompressionCodec::Lz4Block => {
+        CompressionCodec::Lz4 => {
             // write ipc_length placeholder
             output.write_all(&[0u8; 8])?;
 
@@ -1725,7 +1724,7 @@ mod test {
         write_ipc_compressed(
             &batch,
             &mut cursor,
-            &CompressionCodec::Lz4Block,
+            &CompressionCodec::Lz4,
             &Time::default(),
         )
         .unwrap();
@@ -1737,10 +1736,6 @@ mod test {
 
     fn write_ipc_file(filename: &str, output: &[u8]) {
         let mut file = File::create(filename).unwrap();
-        // let ipc_length = output.len() as i32;
-        // let little_endian_bytes = ipc_length.to_le_bytes();
-        // println!("little_endian_bytes = {:?}", little_endian_bytes);
-        // file.write_all(&little_endian_bytes[..]).unwrap();
         file.write_all(&output).unwrap()
     }
 
