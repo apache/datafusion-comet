@@ -45,10 +45,10 @@ class CometShuffleCodecSuite extends CometTestBase {
     }
   }
 
-  ignore("decode shuffle batch with lz4 compression") {
+  test("decode shuffle batch with lz4 compression") {
     withSQLConf(CometConf.COMET_EXEC_SHUFFLE_CODEC.key -> "lz4") {
       // test file is created by shuffle_writer.rs test `write_ipc_lz4`
-      val is = new FileInputStream("/tmp/shuffle.lz4")
+      val is = new FileInputStream("/tmp/shuffle.lz4_frame")
       val ins = IpcInputStreamIterator(is, decompressingNeeded = true, TaskContext.get())
       assert(ins.hasNext)
       val channel = ins.next()

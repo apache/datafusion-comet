@@ -50,6 +50,6 @@ object ArrowLz4Codec extends CompressionCodec {
   }
 
   override def compressedInputStream(s: InputStream): InputStream =
-//    new FramedLZ4CompressorInputStream(s)
-    new BlockLZ4CompressorInputStream(s)
+    new FramedLZ4CompressorInputStream(s)
+//    new BlockLZ4CompressorInputStream(s)
 }

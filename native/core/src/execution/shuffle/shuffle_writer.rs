@@ -1707,11 +1707,10 @@ mod test {
         assert_eq!(61406, output.len());
 
         // generate file that can be tested on JVM side in org.apache.spark.CometShuffleCodecSuite
-        write_ipc_file("/tmp/shuffle.lz4", &output);
+        write_ipc_file("/tmp/shuffle.lz4_block", &output);
     }
 
     #[test]
-    #[ignore]
     fn write_ipc_lz4_frame() {
         let batch = create_batch(8192);
         let mut output = vec![];
@@ -1726,7 +1725,7 @@ mod test {
         assert_eq!(61445, output.len());
 
         // generate file that can be tested on JVM side in org.apache.spark.CometShuffleCodecSuite
-        write_ipc_file("/tmp/shuffle.lz4", &output);
+        write_ipc_file("/tmp/shuffle.lz4_frame", &output);
     }
 
     fn write_ipc_file(filename: &str, output: &[u8]) {
