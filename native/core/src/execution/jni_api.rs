@@ -104,6 +104,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     metrics_node: JObject,
     comet_task_memory_manager_obj: JObject,
     batch_size: jint,
+    use_unified_memory_manager: jboolean,
+    memory_limit: jlong,
+    memory_fraction: jdouble,
     debug_native: jboolean,
     explain_native: jboolean,
     worker_threads: jint,
@@ -145,7 +148,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         // We need to keep the session context alive. Some session state like temporary
         // dictionaries are stored in session context. If it is dropped, the temporary
         // dictionaries will be dropped as well.
-        let session = prepare_datafusion_session_context(batch_size as usize, task_memory_manager)?;
+        let session = prepare_datafusion_session_context(
+            batch_size as usize,
+            use_unified_memory_manager == 1,
+            memory_limit as usize,
+            memory_fraction,
+            task_memory_manager,
+        )?;
 
         let plan_creation_time = start.elapsed();
 
@@ -172,13 +181,22 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 /// Configure DataFusion session context.
 fn prepare_datafusion_session_context(
     batch_size: usize,
+    use_unified_memory_manager: bool,
+    memory_limit: usize,
+    memory_fraction: f64,
     comet_task_memory_manager: Arc<GlobalRef>,
 ) -> CometResult<SessionContext> {
     let mut rt_config = RuntimeEnvBuilder::new().with_disk_manager(DiskManagerConfig::NewOs);
 
-    // Set Comet memory pool for native
-    let memory_pool = CometMemoryPool::new(comet_task_memory_manager);
-    rt_config = rt_config.with_memory_pool(Arc::new(memory_pool));
+    // Check if we are using unified memory manager integrated with Spark.
+    if use_unified_memory_manager {
+        // Set Comet memory pool for native
+        let memory_pool = CometMemoryPool::new(comet_task_memory_manager);
+        rt_config = rt_config.with_memory_pool(Arc::new(memory_pool));
+    } else {
+        // Use the memory pool from DF
+        rt_config = rt_config.with_memory_limit(memory_limit, memory_fraction)
+    }
 
     // Get Datafusion configuration from Spark Execution context
     // can be configured in Comet Spark JVM using Spark --conf parameters
