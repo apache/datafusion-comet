@@ -90,6 +90,7 @@ pub struct ShuffleWriterExec {
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
     cache: PlanProperties,
+    codec: CompressionCodec,
 }
 
 impl DisplayAs for ShuffleWriterExec {
@@ -126,6 +127,7 @@ impl ExecutionPlan for ShuffleWriterExec {
             1 => Ok(Arc::new(ShuffleWriterExec::try_new(
                 Arc::clone(&children[0]),
                 self.partitioning.clone(),
+                self.codec.clone(),
                 self.output_data_file.clone(),
                 self.output_index_file.clone(),
             )?)),
@@ -152,6 +154,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                     self.partitioning.clone(),
                     metrics,
                     context,
+                    self.codec.clone(),
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
@@ -181,6 +184,7 @@ impl ShuffleWriterExec {
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         partitioning: Partitioning,
+        codec: CompressionCodec,
         output_data_file: String,
         output_index_file: String,
     ) -> Result<Self> {
@@ -197,6 +201,7 @@ impl ShuffleWriterExec {
             output_data_file,
             output_index_file,
             cache,
+            codec,
         })
     }
 }
@@ -217,6 +222,7 @@ struct PartitionBuffer {
     batch_size: usize,
     /// Memory reservation for this partition buffer.
     reservation: MemoryReservation,
+    codec: CompressionCodec,
 }
 
 impl PartitionBuffer {
@@ -225,6 +231,7 @@ impl PartitionBuffer {
         batch_size: usize,
         partition_id: usize,
         runtime: &Arc<RuntimeEnv>,
+        codec: CompressionCodec,
     ) -> Self {
         let reservation = MemoryConsumer::new(format!("PartitionBuffer[{}]", partition_id))
             .with_can_spill(true)
@@ -238,6 +245,7 @@ impl PartitionBuffer {
             num_active_rows: 0,
             batch_size,
             reservation,
+            codec,
         }
     }
 
@@ -337,7 +345,7 @@ impl PartitionBuffer {
         let frozen_capacity_old = self.frozen.capacity();
         let mut cursor = Cursor::new(&mut self.frozen);
         cursor.seek(SeekFrom::End(0))?;
-        write_ipc_compressed(&frozen_batch, &mut cursor, ipc_time)?;
+        write_ipc_compressed(&frozen_batch, &mut cursor, &self.codec, ipc_time)?;
 
         mem_diff += (self.frozen.capacity() - frozen_capacity_old) as isize;
         Ok(mem_diff)
@@ -687,6 +695,7 @@ impl ShuffleRepartitioner {
         metrics: ShuffleRepartitionerMetrics,
         runtime: Arc<RuntimeEnv>,
         batch_size: usize,
+        codec: CompressionCodec,
     ) -> Self {
         let num_output_partitions = partitioning.partition_count();
         let reservation = MemoryConsumer::new(format!("ShuffleRepartitioner[{}]", partition_id))
@@ -709,7 +718,13 @@ impl ShuffleRepartitioner {
             schema: Arc::clone(&schema),
             buffered_partitions: (0..num_output_partitions)
                 .map(|partition_id| {
-                    PartitionBuffer::new(Arc::clone(&schema), batch_size, partition_id, &runtime)
+                    PartitionBuffer::new(
+                        Arc::clone(&schema),
+                        batch_size,
+                        partition_id,
+                        &runtime,
+                        codec.clone(),
+                    )
                 })
                 .collect::<Vec<_>>(),
             spills: Mutex::new(vec![]),
@@ -1137,6 +1152,7 @@ async fn external_shuffle(
     partitioning: Partitioning,
     metrics: ShuffleRepartitionerMetrics,
     context: Arc<TaskContext>,
+    codec: CompressionCodec,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
     let mut repartitioner = ShuffleRepartitioner::new(
@@ -1148,6 +1164,7 @@ async fn external_shuffle(
         metrics,
         context.runtime_env(),
         context.session_config().batch_size(),
+        codec,
     );
 
     while let Some(batch) = input.next().await {
@@ -1526,11 +1543,20 @@ impl Checksum {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum CompressionCodec {
+    None,
+    Lz4Block,
+    Lz4Frame(i32),
+    Zstd(i32),
+}
+
 /// Writes given record batch as Arrow IPC bytes into given writer.
 /// Returns number of bytes written.
-pub(crate) fn write_ipc_compressed<W: Write + Seek>(
+pub fn write_ipc_compressed<W: Write + Seek>(
     batch: &RecordBatch,
     output: &mut W,
+    codec: &CompressionCodec,
     ipc_time: &Time,
 ) -> Result<usize> {
     if batch.num_rows() == 0 {
@@ -1543,14 +1569,59 @@ pub(crate) fn write_ipc_compressed<W: Write + Seek>(
     // write ipc_length placeholder
     output.write_all(&[0u8; 8])?;
 
-    // write ipc data
-    // TODO: make compression level configurable
-    let mut arrow_writer = StreamWriter::try_new(zstd::Encoder::new(output, 1)?, &batch.schema())?;
-    arrow_writer.write(batch)?;
-    arrow_writer.finish()?;
+    let output = match codec {
+        CompressionCodec::None => {
+            let mut arrow_writer = StreamWriter::try_new(output, &batch.schema())?;
+            arrow_writer.write(batch)?;
+            arrow_writer.finish()?;
+            arrow_writer.into_inner()?
+        }
+        CompressionCodec::Lz4Block => {
+            // write IPC first without compression
+            let mut buffer = vec![];
+            let mut arrow_writer = StreamWriter::try_new(&mut buffer, &batch.schema())?;
+            arrow_writer.write(batch)?;
+            arrow_writer.finish()?;
+            let ipc_encoded = arrow_writer.into_inner()?;
 
-    let zwriter = arrow_writer.into_inner()?;
-    let output = zwriter.finish()?;
+            // TODO refactor to compress directly to output buffer and avoid a copy
+            let compressed = lz4::block::compress(ipc_encoded, None, true)?;
+            output.write_all(&compressed)?;
+
+            output
+        }
+        CompressionCodec::Lz4Frame(level) => {
+            // write IPC first without compression
+            let mut buffer = vec![];
+            let mut arrow_writer = StreamWriter::try_new(&mut buffer, &batch.schema())?;
+            arrow_writer.write(batch)?;
+            arrow_writer.finish()?;
+            let ipc_encoded = arrow_writer.into_inner()?;
+
+            let mut encoder = lz4::EncoderBuilder::new()
+                .content_size(ipc_encoded.len() as u64)
+                // .block_mode(lz4::BlockMode::Independent)
+                // .block_size(BlockSize::Default)
+                // .checksum(ContentChecksum::NoChecksum)
+                // .block_checksum(BlockChecksum::BlockChecksumEnabled)
+                .level(*level as u32)
+                .build(&mut *output)?;
+            encoder.write_all(ipc_encoded.as_slice())?;
+            let (output, result) = encoder.finish();
+            result?;
+            output
+        }
+        CompressionCodec::Zstd(level) => {
+            let encoder = zstd::Encoder::new(output, *level)?;
+            let mut arrow_writer = StreamWriter::try_new(encoder, &batch.schema())?;
+            arrow_writer.write(batch)?;
+            arrow_writer.finish()?;
+            let zstd_encoder = arrow_writer.into_inner()?;
+            zstd_encoder.finish()?
+        }
+    };
+
+    // fill ipc length
     let end_pos = output.stream_position()?;
     let ipc_length = end_pos - start_pos - 8;
 
@@ -1610,6 +1681,65 @@ mod test {
     use datafusion_execution::runtime_env::RuntimeEnvBuilder;
     use datafusion_physical_expr::expressions::Column;
     use tokio::runtime::Runtime;
+
+    #[test]
+    fn write_ipc_zstd() {
+        let batch = create_batch(8192);
+        let mut output = vec![];
+        let mut cursor = Cursor::new(&mut output);
+        write_ipc_compressed(
+            &batch,
+            &mut cursor,
+            &CompressionCodec::Zstd(1),
+            &Time::default(),
+        )
+        .unwrap();
+        assert_eq!(40218, output.len());
+
+        // generate file that can be tested on JVM side in org.apache.spark.CometShuffleCodecSuite
+        write_ipc_file("/tmp/shuffle.zstd", &output);
+    }
+
+    #[test]
+    fn write_ipc_lz4_block() {
+        let batch = create_batch(8192);
+        let mut output = vec![];
+        let mut cursor = Cursor::new(&mut output);
+        write_ipc_compressed(
+            &batch,
+            &mut cursor,
+            &CompressionCodec::Lz4Block,
+            &Time::default(),
+        )
+        .unwrap();
+        assert_eq!(61406, output.len());
+
+        // generate file that can be tested on JVM side in org.apache.spark.CometShuffleCodecSuite
+        write_ipc_file("/tmp/shuffle.lz4_block", &output);
+    }
+
+    #[test]
+    fn write_ipc_lz4_frame() {
+        let batch = create_batch(8192);
+        let mut output = vec![];
+        let mut cursor = Cursor::new(&mut output);
+        write_ipc_compressed(
+            &batch,
+            &mut cursor,
+            &CompressionCodec::Lz4Frame(0),
+            &Time::default(),
+        )
+        .unwrap();
+        assert_eq!(61445, output.len());
+
+        // generate file that can be tested on JVM side in org.apache.spark.CometShuffleCodecSuite
+        write_ipc_file("/tmp/shuffle.lz4_frame", &output);
+    }
+
+    fn write_ipc_file(filename: &str, output: &[u8]) {
+        let mut file = File::create(filename).unwrap();
+        file.write_all(&output).unwrap()
+    }
 
     #[test]
     fn test_slot_size() {
@@ -1673,13 +1803,7 @@ mod test {
         num_partitions: usize,
         memory_limit: Option<usize>,
     ) {
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
-        let mut b = StringBuilder::new();
-        for i in 0..batch_size {
-            b.append_value(format!("{i}"));
-        }
-        let array = b.finish();
-        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).unwrap();
+        let batch = create_batch(batch_size);
 
         let batches = (0..num_batches).map(|_| batch.clone()).collect::<Vec<_>>();
 
@@ -1687,6 +1811,7 @@ mod test {
         let exec = ShuffleWriterExec::try_new(
             Arc::new(MemoryExec::try_new(partitions, batch.schema(), None).unwrap()),
             Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+            CompressionCodec::Zstd(1),
             "/tmp/data.out".to_string(),
             "/tmp/index.out".to_string(),
         )
@@ -1705,6 +1830,17 @@ mod test {
         let stream = exec.execute(0, task_ctx).unwrap();
         let rt = Runtime::new().unwrap();
         rt.block_on(collect(stream)).unwrap();
+    }
+
+    fn create_batch(batch_size: usize) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
+        let mut b = StringBuilder::new();
+        for i in 0..batch_size {
+            b.append_value(format!("{i}"));
+        }
+        let array = b.finish();
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).unwrap();
+        batch
     }
 
     #[test]
