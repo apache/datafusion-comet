@@ -27,6 +27,8 @@ pub use filter::FilterExec;
 pub use scan::*;
 
 mod copy;
+mod expand;
+pub use expand::ExpandExec;
 mod filter;
 mod scan;
 

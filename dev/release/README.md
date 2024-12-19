@@ -172,6 +172,8 @@ Set up your development environment from here: https://infra.apache.org/publishi
 The script `publish-to-maven.sh` will publish the artifacts created by the `build-release-comet.sh` script.
 The artifacts will be signed using the gpg key of the release manager and uploaded to the maven staging repository.
 
+Note that installed GPG keys can be listed with `gpg --list-keys`. The gpg key is a 40 character hex string.
+
 Note: This script needs `xmllint` to be installed. On MacOS xmllint is available by default.
 
 On Ubuntu `apt-get install -y libxml2-utils`

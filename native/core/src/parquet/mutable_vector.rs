@@ -40,12 +40,6 @@ pub struct ParquetMutableVector {
     /// The number of null elements in this vector, must <= `num_values`.
     pub(crate) num_nulls: usize,
 
-    /// The capacity of the vector
-    pub(crate) capacity: usize,
-
-    /// How many bits are required to store a single value
-    pub(crate) bit_width: usize,
-
     /// The validity buffer of this Arrow vector. A bit set at position `i` indicates the `i`th
     /// element is not null. Otherwise, an unset bit at position `i` indicates the `i`th element is
     /// null.
@@ -109,8 +103,6 @@ impl ParquetMutableVector {
             arrow_type,
             num_values: 0,
             num_nulls: 0,
-            capacity,
-            bit_width,
             validity_buffer,
             value_buffer,
             children,

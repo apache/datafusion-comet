@@ -31,7 +31,7 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.spark.memory.SparkOutOfMemoryError;
 import org.apache.spark.shuffle.ShuffleWriteMetricsReporter;
-import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator;
+import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocatorTrait;
 import org.apache.spark.shuffle.sort.RowPartition;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.unsafe.memory.MemoryBlock;
@@ -62,7 +62,7 @@ public abstract class SpillWriter {
   // The memory allocator for this sorter. It is used to allocate/free memory pages for this sorter.
   // Because we need to allocate off-heap memory regardless of configured Spark memory mode
   // (on-heap/off-heap), we need a separate memory allocator.
-  protected CometShuffleMemoryAllocator allocator;
+  protected CometShuffleMemoryAllocatorTrait allocator;
 
   protected Native nativeLib;
 
@@ -134,7 +134,7 @@ public abstract class SpillWriter {
         || pageCursor + required > currentPage.getBaseOffset() + currentPage.size()) {
       // TODO: try to find space in previous pages
       try {
-        currentPage = allocator.allocatePage(required);
+        currentPage = allocator.allocate(required);
       } catch (SparkOutOfMemoryError error) {
         try {
           // Cannot allocate enough memory, spill
@@ -155,7 +155,7 @@ public abstract class SpillWriter {
   public void initialCurrentPage(int required) {
     assert (currentPage == null);
     try {
-      currentPage = allocator.allocatePage(required);
+      currentPage = allocator.allocate(required);
     } catch (SparkOutOfMemoryError e) {
       logger.error("Unable to acquire {} bytes of memory", required);
       throw e;

@@ -28,26 +28,22 @@ use crate::write_val_or_null;
 use crate::{
     common::bit::{self, BitReader},
     parquet::{data_type::*, ParquetMutableVector},
-    unlikely,
 };
 use arrow::datatypes::DataType as ArrowDataType;
+use datafusion_comet_spark_expr::utils::unlikely;
 
 pub fn get_decoder<T: DataType>(
     value_data: Buffer,
-    num_values: usize,
     encoding: Encoding,
     desc: ColumnDescPtr,
     read_options: ReadOptions,
 ) -> Box<dyn Decoder> {
     let decoder: Box<dyn Decoder> = match encoding {
-        Encoding::PLAIN | Encoding::PLAIN_DICTIONARY => Box::new(PlainDecoder::<T>::new(
-            value_data,
-            num_values,
-            desc,
-            read_options,
-        )),
+        Encoding::PLAIN | Encoding::PLAIN_DICTIONARY => {
+            Box::new(PlainDecoder::<T>::new(value_data, desc, read_options))
+        }
         // This is for dictionary indices
-        Encoding::RLE_DICTIONARY => Box::new(DictDecoder::new(value_data, num_values)),
+        Encoding::RLE_DICTIONARY => Box::new(DictDecoder::new(value_data)),
         _ => panic!("Unsupported encoding: {}", encoding),
     };
     decoder
@@ -108,17 +104,11 @@ pub struct PlainDecoder<T: DataType> {
 }
 
 impl<T: DataType> PlainDecoder<T> {
-    pub fn new(
-        value_data: Buffer,
-        num_values: usize,
-        desc: ColumnDescPtr,
-        read_options: ReadOptions,
-    ) -> Self {
+    pub fn new(value_data: Buffer, desc: ColumnDescPtr, read_options: ReadOptions) -> Self {
         let len = value_data.len();
         let inner = PlainDecoderInner {
             data: value_data.clone(),
             offset: 0,
-            value_count: num_values,
             bit_reader: BitReader::new(value_data, len),
             read_options,
             desc,
@@ -476,7 +466,7 @@ make_int_variant_impl!(Int32ToDoubleType, copy_i32_to_f64, 8);
 make_int_variant_impl!(FloatToDoubleType, copy_f32_to_f64, 8);
 
 // unsigned type require double the width and zeroes are written for the second half
-// perhaps because they are implemented as the next size up signed type?
+// because they are implemented as the next size up signed type
 make_int_variant_impl!(UInt8Type, copy_i32_to_u8, 2);
 make_int_variant_impl!(UInt16Type, copy_i32_to_u16, 4);
 make_int_variant_impl!(UInt32Type, copy_i32_to_u32, 8);
@@ -586,8 +576,6 @@ macro_rules! generate_cast_to_unsigned {
     };
 }
 
-generate_cast_to_unsigned!(copy_i32_to_u8, i32, u8, 0_u8);
-generate_cast_to_unsigned!(copy_i32_to_u16, i32, u16, 0_u16);
 generate_cast_to_unsigned!(copy_i32_to_u32, i32, u32, 0_u32);
 
 macro_rules! generate_cast_to_signed {
@@ -624,6 +612,9 @@ generate_cast_to_signed!(copy_i64_to_i64, i64, i64);
 generate_cast_to_signed!(copy_i64_to_i128, i64, i128);
 generate_cast_to_signed!(copy_u64_to_u128, u64, u128);
 generate_cast_to_signed!(copy_f32_to_f64, f32, f64);
+// even for u8/u16, need to copy full i16/i32 width for Spark compatibility
+generate_cast_to_signed!(copy_i32_to_u8, i32, i16);
+generate_cast_to_signed!(copy_i32_to_u16, i32, i32);
 
 // Shared implementation for variants of Binary type
 macro_rules! make_plain_binary_impl {
@@ -937,9 +928,6 @@ pub struct DictDecoder {
     /// Number of bits used to represent dictionary indices. Must be between `[0, 64]`.
     bit_width: usize,
 
-    /// The number of total values in `data`
-    value_count: usize,
-
     /// Bit reader
     bit_reader: BitReader,
 
@@ -954,12 +942,11 @@ pub struct DictDecoder {
 }
 
 impl DictDecoder {
-    pub fn new(buf: Buffer, num_values: usize) -> Self {
+    pub fn new(buf: Buffer) -> Self {
         let bit_width = buf.as_bytes()[0] as usize;
 
         Self {
             bit_width,
-            value_count: num_values,
             bit_reader: BitReader::new_all(buf.slice(1)),
             rle_left: 0,
             bit_packed_left: 0,
@@ -1096,7 +1083,7 @@ mod test {
         let source =
             hex::decode("8a000000dbffffff1800000034ffffff300000001d000000abffffff37fffffff1000000")
                 .unwrap();
-        let expected = hex::decode("8a00db001800340030001d00ab003700f100").unwrap();
+        let expected = hex::decode("8a00dbff180034ff30001d00abff37fff100").unwrap();
         let num = source.len() / 4;
         let mut dest: Vec<u8> = vec![b' '; num * 2];
         copy_i32_to_u8(source.as_bytes(), dest.as_mut_slice(), num);

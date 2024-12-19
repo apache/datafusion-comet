@@ -31,6 +31,9 @@ message Operator {
   // The child operators of this
   repeated Operator children = 1;
 
+  // Spark plan ID
+  uint32 plan_id = 2;
+
   oneof op_struct {
     Scan scan = 100;
     Projection projection = 101;

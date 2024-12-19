@@ -19,13 +19,12 @@
 
 package org.apache.comet
 
-import java.util.Map
-
 import org.apache.spark.CometTaskMemoryManager
 import org.apache.spark.sql.comet.CometMetricNode
 
 class Native extends NativeBase {
 
+  // scalastyle:off
   /**
    * Create a native query plan from execution SparkPlan serialized in bytes.
    * @param id
@@ -45,18 +44,31 @@ class Native extends NativeBase {
    * @return
    *   the address to native query plan.
    */
+  // scalastyle:off
   @native def createPlan(
       id: Long,
-      configMap: Map[String, String],
       iterators: Array[CometBatchIterator],
       plan: Array[Byte],
       partitionCount: Int,
       metrics: CometMetricNode,
-      taskMemoryManager: CometTaskMemoryManager): Long
+      taskMemoryManager: CometTaskMemoryManager,
+      batchSize: Int,
+      use_unified_memory_manager: Boolean,
+      memory_limit: Long,
+      memory_fraction: Double,
+      debug: Boolean,
+      explain: Boolean,
+      workerThreads: Int,
+      blockingThreads: Int): Long
+  // scalastyle:on
 
   /**
    * Execute a native query plan based on given input Arrow arrays.
    *
+   * @param stage
+   *   the stage ID, for informational purposes
+   * @param partition
+   *   the partition ID, for informational purposes
    * @param plan
    *   the address to native query plan.
    * @param arrayAddrs
@@ -67,8 +79,9 @@ class Native extends NativeBase {
    *   the number of rows, if -1, it means end of the output.
    */
   @native def executePlan(
+      stage: Int,
+      partition: Int,
       plan: Long,
-      partitionId: Int,
       arrayAddrs: Array[Long],
       schemaAddrs: Array[Long]): Long
 

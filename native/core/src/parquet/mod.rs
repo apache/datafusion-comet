@@ -49,6 +49,7 @@ use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
 use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion_comet_spark_expr::{EvalMode, SparkCastOptions, SparkSchemaAdapterFactory};
 use datafusion_common::config::TableParquetOptions;
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use futures::{poll, StreamExt};
@@ -59,8 +60,6 @@ use read::ColumnReader;
 use util::jni::{convert_column_descriptor, convert_encoding, deserialize_schema, get_file_path};
 
 use self::util::jni::TypePromotionInfo;
-
-const STR_CLASS_NAME: &str = "java/lang/String";
 
 /// Parquet read context maintained across multiple JNI calls.
 struct Context {
@@ -680,11 +679,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         table_parquet_options.global.pushdown_filters = true;
         table_parquet_options.global.reorder_filters = true;
 
+        let mut spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+        spark_cast_options.allow_cast_unsigned_ints = true;
+
         let builder2 = ParquetExecBuilder::new(file_scan_config)
             .with_table_parquet_options(table_parquet_options)
-            .with_schema_adapter_factory(Arc::new(
-                crate::execution::datafusion::schema_adapter::CometSchemaAdapterFactory::default(),
-            ));
+            .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
+                spark_cast_options,
+            )));
 
         //TODO: (ARROW NATIVE) - predicate pushdown??
         // builder = builder.with_predicate(filter);

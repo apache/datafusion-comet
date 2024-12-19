@@ -51,6 +51,7 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    Configuration Settings <user-guide/configs>
    Compatibility Guide <user-guide/compatibility>
    Tuning Guide <user-guide/tuning>
+   Metrics Guide <user-guide/metrics>
 
 .. _toc.contributor-guide-links:
 .. toctree::

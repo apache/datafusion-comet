@@ -38,6 +38,7 @@ import org.apache.spark.memory.TaskMemoryManager;
 import org.apache.spark.shuffle.ShuffleWriteMetricsReporter;
 import org.apache.spark.shuffle.comet.CometShuffleChecksumSupport;
 import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator;
+import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocatorTrait;
 import org.apache.spark.shuffle.comet.TooLargePageException;
 import org.apache.spark.sql.comet.execution.shuffle.CometUnsafeShuffleWriter;
 import org.apache.spark.sql.comet.execution.shuffle.ShuffleThreadPool;
@@ -110,7 +111,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
   // The memory allocator for this sorter. It is used to allocate/free memory pages for this sorter.
   // Because we need to allocate off-heap memory regardless of configured Spark memory mode
   // (on-heap/off-heap), we need a separate memory allocator.
-  private final CometShuffleMemoryAllocator allocator;
+  private final CometShuffleMemoryAllocatorTrait allocator;
 
   /** Whether to write shuffle spilling file in async mode */
   private final boolean isAsync;

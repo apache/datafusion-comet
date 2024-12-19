@@ -17,15 +17,14 @@
 
 use std::mem;
 
-use arrow::buffer::Buffer;
-use parquet::schema::types::ColumnDescPtr;
-
 use super::values::Decoder;
 use crate::{
     common::bit::{self, read_u32, BitReader},
     parquet::ParquetMutableVector,
-    unlikely,
 };
+use arrow::buffer::Buffer;
+use datafusion_comet_spark_expr::utils::unlikely;
+use parquet::schema::types::ColumnDescPtr;
 
 const INITIAL_BUF_LEN: usize = 16;
 
