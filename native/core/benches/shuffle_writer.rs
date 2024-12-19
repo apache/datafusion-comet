@@ -18,9 +18,7 @@
 use arrow_array::builder::Int32Builder;
 use arrow_array::{builder::StringBuilder, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use comet::execution::shuffle::{
-    calculate_partition_ids, write_ipc_compressed, CompressionCodec, ShuffleWriterExec,
-};
+use comet::execution::shuffle::{write_ipc_compressed, CompressionCodec, ShuffleWriterExec};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::physical_plan::metrics::Time;
 use datafusion::{
@@ -57,7 +55,6 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
     group.bench_function("shuffle_writer: end to end", |b| {
         let ctx = SessionContext::new();
-        let batch = create_batch(8192, true);
         let exec = create_shuffle_writer_exec(CompressionCodec::Zstd(1));
         b.iter(|| {
             let task_ctx = ctx.task_ctx();
@@ -70,9 +67,10 @@ fn criterion_benchmark(c: &mut Criterion) {
 
 fn create_shuffle_writer_exec(compression_codec: CompressionCodec) -> ShuffleWriterExec {
     let batches = create_batches(8192, 10);
+    let schema = batches[0].schema();
     let partitions = &[batches];
     let exec = ShuffleWriterExec::try_new(
-        Arc::new(MemoryExec::try_new(partitions, batches[0].schema(), None).unwrap()),
+        Arc::new(MemoryExec::try_new(partitions, schema, None).unwrap()),
         Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
         compression_codec,
         "/tmp/data.out".to_string(),
