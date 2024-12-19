@@ -53,7 +53,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               sql(
                 "SELECT c79, c54, stddev_pop(c73) FROM tbl GROUP BY " +
                   "c79,c54 ORDER BY c79, c54")
-            df.explain()
             checkSparkAnswer(df)
           }
         }
