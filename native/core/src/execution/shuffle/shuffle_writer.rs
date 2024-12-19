@@ -1144,6 +1144,7 @@ impl Debug for ShuffleRepartitioner {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn external_shuffle(
     mut input: SendableRecordBatchStream,
     partition_id: usize,
