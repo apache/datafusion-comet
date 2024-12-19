@@ -53,7 +53,7 @@ import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark34Plus, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isOffHeapEnabled, isSpark34Plus, isSpark40Plus, isTesting, shouldApplySparkToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.rules.RewriteJoin
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -944,8 +944,9 @@ class CometSparkSessionExtensions
     override def apply(plan: SparkPlan): SparkPlan = {
 
       // Comet required off-heap memory to be enabled
-      if ("true" != conf.getConfString("spark.memory.offHeap.enabled", "false")) {
-        logInfo("Comet extension disabled because spark.memory.offHeap.enabled=false")
+      if (!isOffHeapEnabled(conf) && !isTesting) {
+        logWarning("Comet native exec disabled because spark.memory.offHeap.enabled=false")
+        withInfo(plan, "Comet native exec disabled because spark.memory.offHeap.enabled=false")
         return plan
       }
 
@@ -1206,8 +1207,7 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   private[comet] def isOffHeapEnabled(conf: SQLConf): Boolean =
-    conf.contains("spark.memory.offHeap.enabled") &&
-      conf.getConfString("spark.memory.offHeap.enabled").toBoolean
+    conf.getConfString("spark.memory.offHeap.enabled", "false").toBoolean
 
   // Copied from org.apache.spark.util.Utils which is private to Spark.
   private[comet] def isTesting: Boolean = {
