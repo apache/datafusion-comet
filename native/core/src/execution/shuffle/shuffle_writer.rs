@@ -1712,7 +1712,7 @@ mod test {
         .unwrap();
         assert_eq!(40218, output.len());
 
-        // TODO remove this temp debugging code
+        // generate file that can be tested on JVM side in org.apache.spark.CometShuffleCodecSuite
         write_ipc_file("/tmp/shuffle.zstd", &output);
     }
 
@@ -1730,7 +1730,7 @@ mod test {
         .unwrap();
         assert_eq!(61406, output.len());
 
-        // TODO remove this temp debugging code
+        // generate file that can be tested on JVM side in org.apache.spark.CometShuffleCodecSuite
         write_ipc_file("/tmp/shuffle.lz4", &output);
     }
 

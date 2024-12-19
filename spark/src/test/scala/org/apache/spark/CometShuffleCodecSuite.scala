@@ -28,8 +28,9 @@ import org.apache.comet.CometConf
 
 class CometShuffleCodecSuite extends CometTestBase {
 
-  test("decode shuffle batch with zstd compression") {
+  ignore("decode shuffle batch with zstd compression") {
     withSQLConf(CometConf.COMET_EXEC_SHUFFLE_CODEC.key -> "zstd") {
+      // test file is created by shuffle_writer.rs test `write_ipc_zstd`
       val is = new FileInputStream("/tmp/shuffle.zstd")
       val ins = IpcInputStreamIterator(is, decompressingNeeded = true, TaskContext.get())
       assert(ins.hasNext)
@@ -41,8 +42,9 @@ class CometShuffleCodecSuite extends CometTestBase {
     }
   }
 
-  test("decode shuffle batch with lz4 compression") {
+  ignore("decode shuffle batch with lz4 compression") {
     withSQLConf(CometConf.COMET_EXEC_SHUFFLE_CODEC.key -> "lz4") {
+      // test file is created by shuffle_writer.rs test `write_ipc_lz4`
       val is = new FileInputStream("/tmp/shuffle.lz4")
       val ins = IpcInputStreamIterator(is, decompressingNeeded = true, TaskContext.get())
       assert(ins.hasNext)
