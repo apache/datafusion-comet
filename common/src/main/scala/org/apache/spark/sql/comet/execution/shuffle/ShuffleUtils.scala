@@ -36,7 +36,8 @@ private[spark] object ShuffleUtils extends Logging {
     if (shuffleCompressionEnabled) {
       if (sparkShuffleCodec != cometShuffleCodec) {
         logWarning(
-          s"Overriding config $IO_COMPRESSION_CODEC=$sparkShuffleCodec in shuffling, force using $cometShuffleCodec")
+          s"Overriding config $IO_COMPRESSION_CODEC=$sparkShuffleCodec in shuffling, " +
+            s"force using $cometShuffleCodec")
       }
       cometShuffleCodec match {
         case "zstd" =>

@@ -105,9 +105,9 @@ then any shuffle operations that cannot be supported in this mode will fall back
 
 ### Shuffle Compression
 
-By default, Spark compresses shuffle files using lz4 compression. Comet overrides this with zstd compression. 
-Compression can be disabled by setting `spark.shuffle.compress=false` and this can result in faster shuffle time
-in some environments with fast shuffle storage. (such as local NVMe drives).
+By default, Spark compresses shuffle files using LZ4 compression. Comet overrides this behavior with ZSTD compression.
+Compression can be disabled by setting `spark.shuffle.compress=false`, which may result in faster shuffle times in 
+certain environments, such as single-node setups with fast NVMe drives, at the expense of increased disk space usage.
 
 ## Explain Plan
 ### Extended Explain
