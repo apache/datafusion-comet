@@ -52,8 +52,9 @@ import org.apache.spark.util.random.XORShiftRandom
 
 import com.google.common.base.Objects
 
+import org.apache.comet.CometConf
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass, QueryPlanSerde}
-import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.serde.OperatorOuterClass.{CompressionCodec, Operator}
 import org.apache.comet.serde.QueryPlanSerde.serializeDataType
 import org.apache.comet.shims.ShimCometShuffleExchangeExec
 
@@ -552,6 +553,16 @@ class CometShuffleWriteProcessor(
       val shuffleWriterBuilder = OperatorOuterClass.ShuffleWriter.newBuilder()
       shuffleWriterBuilder.setOutputDataFile(dataFile)
       shuffleWriterBuilder.setOutputIndexFile(indexFile)
+
+      // TODO remove hard-coded compression levels
+      val (codec, level) = CometConf.COMET_EXEC_SHUFFLE_CODEC.get() match {
+        case "none" => (CompressionCodec.None, 0)
+        case "lz4" => (CompressionCodec.Lz4, 0)
+        case "zstd" => (CompressionCodec.Zstd, 1)
+        case other => throw new UnsupportedOperationException(s"invalid codec: $other")
+      }
+      shuffleWriterBuilder.setCodec(codec)
+      shuffleWriterBuilder.setCompressionLevel(level)
 
       outputPartitioning match {
         case _: HashPartitioning =>

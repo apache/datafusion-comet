@@ -54,9 +54,11 @@ case class IpcInputStreamIterator(
   private var currentIpcLength = 0L
   private var currentLimitedInputStream: LimitedInputStream = _
 
-  taskContext.addTaskCompletionListener[Unit](_ => {
-    closeInputStream()
-  })
+  if (taskContext != null) {
+    taskContext.addTaskCompletionListener[Unit](_ => {
+      closeInputStream()
+    })
+  }
 
   override def hasNext: Boolean = {
     if (in == null || finished) {
@@ -110,8 +112,12 @@ case class IpcInputStreamIterator(
     currentLimitedInputStream = is
 
     if (decompressingNeeded) {
-      val zs = ShuffleUtils.compressionCodecForShuffling.compressedInputStream(is)
-      Channels.newChannel(zs)
+      ShuffleUtils.compressionCodecForShuffling match {
+        case Some(codec) =>
+          Channels.newChannel(codec.compressedInputStream(is))
+        case None =>
+          Channels.newChannel(is)
+      }
     } else {
       Channels.newChannel(is)
     }

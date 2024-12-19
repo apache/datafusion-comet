@@ -272,12 +272,14 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_EXEC_SHUFFLE_CODEC: ConfigEntry[String] = conf(
-    s"$COMET_EXEC_CONFIG_PREFIX.shuffle.codec")
-    .doc(
-      "The codec of Comet native shuffle used to compress shuffle data. Only zstd is supported.")
-    .stringConf
-    .createWithDefault("zstd")
+  val COMET_EXEC_SHUFFLE_CODEC: ConfigEntry[String] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.codec")
+      .doc("The codec of Comet native shuffle used to compress shuffle data. " +
+        "Only lz4 and zstd are supported.")
+      .stringConf
+      // TODO use separate config to disable compression, using "none" for now while experimenting
+      .checkValues(Set("lz4_block", "lz4_frame", "zstd", "none"))
+      .createWithDefault("zstd")
 
   val COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.columnar.shuffle.async.enabled")
