@@ -1051,15 +1051,15 @@ impl PhysicalPlanner {
                     .create_partitioning(writer.partitioning.as_ref().unwrap(), child.schema())?;
 
                 let codec = match writer.codec.try_into() {
-                    Ok(SparkCompressionCodec::None) => CompressionCodec::None,
-                    Ok(SparkCompressionCodec::Lz4) => {
-                        CompressionCodec::Lz4Frame(writer.compression_level as i32)
-                    }
+                    Ok(SparkCompressionCodec::None) => Ok(CompressionCodec::None),
                     Ok(SparkCompressionCodec::Zstd) => {
-                        CompressionCodec::Zstd(writer.compression_level as i32)
+                        Ok(CompressionCodec::Zstd(writer.compression_level))
                     }
-                    _ => todo!(),
-                };
+                    _ => Err(ExecutionError::GeneralError(format!(
+                        "Unsupported shuffle compression codec: {:?}",
+                        writer.codec
+                    ))),
+                }?;
 
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
                     Arc::clone(&child.native_plan),
