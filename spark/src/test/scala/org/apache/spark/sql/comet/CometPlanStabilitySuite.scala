@@ -90,9 +90,13 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       actualSimplifiedPlan: String,
       actualExplain: String): Boolean = {
     val simplifiedFile = new File(dir, "simplified.txt")
-    val expectedSimplified = FileUtils.readFileToString(simplifiedFile, StandardCharsets.UTF_8)
-    lazy val explainFile = new File(dir, "explain.txt")
-    lazy val expectedExplain = FileUtils.readFileToString(explainFile, StandardCharsets.UTF_8)
+    var expectedSimplified = FileUtils.readFileToString(simplifiedFile, StandardCharsets.UTF_8)
+    val explainFile = new File(dir, "explain.txt")
+    var expectedExplain = FileUtils.readFileToString(explainFile, StandardCharsets.UTF_8)
+    if (!CometConf.COMET_FULL_NATIVE_SCAN_ENABLED.get()) {
+      expectedExplain = expectedExplain.replace("CometNativeScan", "CometScan")
+      expectedSimplified = expectedSimplified.replace("CometNativeScan", "CometScan")
+    }
     expectedSimplified == actualSimplifiedPlan && expectedExplain == actualExplain
   }
 
@@ -260,6 +264,9 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     // Disable char/varchar read-side handling for better performance.
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_FULL_NATIVE_SCAN_ENABLED.key -> "false",
+      CometConf.COMET_NATIVE_RECORDBATCH_READER_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "false",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
@@ -291,6 +298,9 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     conf.set(MEMORY_OFFHEAP_SIZE.key, "2g")
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
+    conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
+    conf.set(CometConf.COMET_FULL_NATIVE_SCAN_ENABLED.key, "false")
+    conf.set(CometConf.COMET_NATIVE_RECORDBATCH_READER_ENABLED.key, "true")
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "1g")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
 
