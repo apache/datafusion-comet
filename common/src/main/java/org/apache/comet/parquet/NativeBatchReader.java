@@ -19,20 +19,14 @@
 
 package org.apache.comet.parquet;
 
+import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.net.URI;
 import java.net.URISyntaxException;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.nio.channels.Channels;
+import java.util.*;
 
 import scala.Option;
 import scala.collection.Seq;
@@ -44,9 +38,10 @@ import org.slf4j.LoggerFactory;
 import org.apache.arrow.c.CometSchemaImporter;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
-import org.apache.commons.lang3.tuple.Pair;
+import org.apache.arrow.vector.ipc.WriteChannel;
+import org.apache.arrow.vector.ipc.message.MessageSerializer;
+import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.RecordReader;
@@ -55,7 +50,6 @@ import org.apache.parquet.HadoopReadOptions;
 import org.apache.parquet.ParquetReadOptions;
 import org.apache.parquet.Preconditions;
 import org.apache.parquet.column.ColumnDescriptor;
-import org.apache.parquet.column.page.PageReadStore;
 import org.apache.parquet.hadoop.metadata.ParquetMetadata;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.Type;
@@ -63,11 +57,14 @@ import org.apache.spark.TaskContext;
 import org.apache.spark.TaskContext$;
 import org.apache.spark.executor.TaskMetrics;
 import org.apache.spark.sql.catalyst.InternalRow;
+import org.apache.spark.sql.comet.CometArrowUtils;
 import org.apache.spark.sql.comet.parquet.CometParquetReadSupport;
 import org.apache.spark.sql.execution.datasources.PartitionedFile;
 import org.apache.spark.sql.execution.datasources.parquet.ParquetToSparkSchemaConverter;
 import org.apache.spark.sql.execution.metric.SQLMetric;
-import org.apache.spark.sql.types.*;
+import org.apache.spark.sql.types.DataType;
+import org.apache.spark.sql.types.StructField;
+import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 import org.apache.spark.util.AccumulatorV2;
 
@@ -94,8 +91,8 @@ import org.apache.comet.vector.CometVector;
  *   }
  * </pre>
  */
-public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Closeable {
-  private static final Logger LOG = LoggerFactory.getLogger(FileReader.class);
+public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> implements Closeable {
+  private static final Logger LOG = LoggerFactory.getLogger(NativeBatchReader.class);
   protected static final BufferAllocator ALLOCATOR = new RootAllocator();
 
   private Configuration conf;
@@ -108,38 +105,24 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
   private PartitionedFile file;
   private final Map<String, SQLMetric> metrics;
 
-  private long rowsRead;
   private StructType sparkSchema;
   private MessageType requestedSchema;
   private CometVector[] vectors;
   private AbstractColumnReader[] columnReaders;
   private CometSchemaImporter importer;
   private ColumnarBatch currentBatch;
-  private Future<Option<Throwable>> prefetchTask;
-  private LinkedBlockingQueue<Pair<PageReadStore, Long>> prefetchQueue;
-  private FileReader fileReader;
+  //  private FileReader fileReader;
   private boolean[] missingColumns;
   private boolean isInitialized;
   private ParquetMetadata footer;
-
-  /** The total number of rows across all row groups of the input split. */
-  private long totalRowCount;
-
-  /**
-   * The total number of rows loaded so far, including all the rows from row groups that we've
-   * processed and the current row group.
-   */
-  private long totalRowsLoaded;
 
   /**
    * Whether the native scan should always return decimal represented by 128 bits, regardless of its
    * precision. Normally, this should be true if native execution is enabled, since Arrow compute
    * kernels doesn't support 32 and 64 bit decimals yet.
    */
+  // TODO: (ARROW NATIVE)
   private boolean useDecimal128;
-
-  /** Whether to use the lazy materialization reader for reading columns. */
-  private boolean useLazyMaterialization;
 
   /**
    * Whether to return dates/timestamps that were written with legacy hybrid (Julian + Gregorian)
@@ -147,34 +130,32 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
    * to the new Proleptic Gregorian calendar. If this is false, Comet will throw exceptions when
    * seeing these dates/timestamps.
    */
+  // TODO: (ARROW NATIVE)
   private boolean useLegacyDateTimestamp;
 
   /** The TaskContext object for executing this task. */
   private final TaskContext taskContext;
 
+  private long handle;
+
   // Only for testing
-  public BatchReader(String file, int capacity) {
+  public NativeBatchReader(String file, int capacity) {
     this(file, capacity, null, null);
   }
 
   // Only for testing
-  public BatchReader(
+  public NativeBatchReader(
       String file, int capacity, StructType partitionSchema, InternalRow partitionValues) {
     this(new Configuration(), file, capacity, partitionSchema, partitionValues);
   }
 
   // Only for testing
-  public BatchReader(
+  public NativeBatchReader(
       Configuration conf,
       String file,
       int capacity,
       StructType partitionSchema,
       InternalRow partitionValues) {
-    conf.set("spark.sql.parquet.binaryAsString", "false");
-    conf.set("spark.sql.parquet.int96AsTimestamp", "false");
-    conf.set("spark.sql.caseSensitive", "false");
-    conf.set("spark.sql.parquet.inferTimestampNTZ.enabled", "true");
-    conf.set("spark.sql.legacy.parquet.nanosAsLong", "false");
 
     this.conf = conf;
     this.capacity = capacity;
@@ -190,7 +171,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     this.taskContext = TaskContext$.MODULE$.get();
   }
 
-  public BatchReader(AbstractColumnReader[] columnReaders) {
+  public NativeBatchReader(AbstractColumnReader[] columnReaders) {
     // Todo: set useDecimal128 and useLazyMaterialization
     int numColumns = columnReaders.length;
     this.columnReaders = new AbstractColumnReader[numColumns];
@@ -203,7 +184,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     this.metrics = new HashMap<>();
   }
 
-  BatchReader(
+  NativeBatchReader(
       Configuration conf,
       PartitionedFile inputSplit,
       ParquetMetadata footer,
@@ -236,51 +217,54 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
    * any resource hold by this reader when error happens during the initialization.
    */
   public void init() throws URISyntaxException, IOException {
+
     useDecimal128 =
         conf.getBoolean(
             CometConf.COMET_USE_DECIMAL_128().key(),
             (Boolean) CometConf.COMET_USE_DECIMAL_128().defaultValue().get());
-    useLazyMaterialization =
-        conf.getBoolean(
-            CometConf.COMET_USE_LAZY_MATERIALIZATION().key(),
-            (Boolean) CometConf.COMET_USE_LAZY_MATERIALIZATION().defaultValue().get());
 
     long start = file.start();
     long length = file.length();
     String filePath = file.filePath().toString();
+    long fileSize = file.fileSize();
 
-    ParquetReadOptions.Builder builder = HadoopReadOptions.builder(conf, new Path(filePath));
-
-    if (start >= 0 && length >= 0) {
-      builder = builder.withRange(start, start + length);
-    }
-    ParquetReadOptions readOptions = builder.build();
-
-    // TODO: enable off-heap buffer when they are ready
-    ReadOptions cometReadOptions = ReadOptions.builder(conf).build();
-
-    Path path = new Path(new URI(filePath));
-    fileReader =
-        new FileReader(
-            CometInputFile.fromPath(path, conf), footer, readOptions, cometReadOptions, metrics);
-    requestedSchema = fileReader.getFileMetaData().getSchema();
+    requestedSchema = footer.getFileMetaData().getSchema();
     MessageType fileSchema = requestedSchema;
+    // TODO: (ARROW NATIVE) Get requested schema - Convert the Spark schema (from catalyst) into  a
+    // list of fields to project (?). Fields must be matched by field id first  and then by name
+    { //////// Get requested Schema -  replace this block of code native (avoid reading the footer
+      ParquetReadOptions.Builder builder = HadoopReadOptions.builder(conf, new Path(filePath));
 
-    if (sparkSchema == null) {
-      sparkSchema = new ParquetToSparkSchemaConverter(conf).convert(requestedSchema);
-    } else {
-      requestedSchema =
-          CometParquetReadSupport.clipParquetSchema(
-              requestedSchema, sparkSchema, isCaseSensitive, useFieldId, ignoreMissingIds);
-      if (requestedSchema.getFieldCount() != sparkSchema.size()) {
-        throw new IllegalArgumentException(
-            String.format(
-                "Spark schema has %d columns while " + "Parquet schema has %d columns",
-                sparkSchema.size(), requestedSchema.getColumns().size()));
+      if (start >= 0 && length >= 0) {
+        builder = builder.withRange(start, start + length);
       }
-    }
+      ParquetReadOptions readOptions = builder.build();
 
-    totalRowCount = fileReader.getRecordCount();
+      ReadOptions cometReadOptions = ReadOptions.builder(conf).build();
+
+      if (sparkSchema == null) {
+        sparkSchema = new ParquetToSparkSchemaConverter(conf).convert(requestedSchema);
+      } else {
+        requestedSchema =
+            CometParquetReadSupport.clipParquetSchema(
+                requestedSchema, sparkSchema, isCaseSensitive, useFieldId, ignoreMissingIds);
+        if (requestedSchema.getFieldCount() != sparkSchema.size()) {
+          throw new IllegalArgumentException(
+              String.format(
+                  "Spark schema has %d columns while " + "Parquet schema has %d columns",
+                  sparkSchema.size(), requestedSchema.getColumns().size()));
+        }
+      }
+    } ////// End get requested schema
+
+    String timeZoneId = conf.get("spark.sql.session.timeZone");
+    Schema arrowSchema = CometArrowUtils.toArrowSchema(sparkSchema, timeZoneId);
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    WriteChannel writeChannel = new WriteChannel(Channels.newChannel(out));
+    MessageSerializer.serialize(writeChannel, arrowSchema);
+    byte[] serializedRequestedArrowSchema = out.toByteArray();
+
+    //// Create Column readers
     List<ColumnDescriptor> columns = requestedSchema.getColumns();
     int numColumns = columns.size();
     if (partitionSchema != null) numColumns += partitionSchema.size();
@@ -290,20 +274,22 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     missingColumns = new boolean[columns.size()];
     List<String[]> paths = requestedSchema.getPaths();
     StructField[] nonPartitionFields = sparkSchema.fields();
-    ShimFileFormat.findRowIndexColumnIndexInSchema(sparkSchema);
+    //    ShimFileFormat.findRowIndexColumnIndexInSchema(sparkSchema);
     for (int i = 0; i < requestedSchema.getFieldCount(); i++) {
       Type t = requestedSchema.getFields().get(i);
-      Preconditions.checkState(
-          t.isPrimitive() && !t.isRepetition(Type.Repetition.REPEATED),
-          "Complex type is not supported");
+      //      Preconditions.checkState(
+      //          t.isPrimitive() && !t.isRepetition(Type.Repetition.REPEATED),
+      //          "Complex type is not supported");
       String[] colPath = paths.get(i);
       if (nonPartitionFields[i].name().equals(ShimFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME())) {
         // Values of ROW_INDEX_TEMPORARY_COLUMN_NAME column are always populated with
         // generated row indexes, rather than read from the file.
         // TODO(SPARK-40059): Allow users to include columns named
         //                    FileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME in their schemas.
-        long[] rowIndices = fileReader.getRowIndices();
-        columnReaders[i] = new RowIndexColumnReader(nonPartitionFields[i], capacity, rowIndices);
+        // TODO: (ARROW NATIVE) Support row indices ...
+        //        long[] rowIndices = fileReader.getRowIndices();
+        //        columnReaders[i] = new RowIndexColumnReader(nonPartitionFields[i], capacity,
+        // rowIndices);
         missingColumns[i] = true;
       } else if (fileSchema.containsPath(colPath)) {
         ColumnDescriptor fd = fileSchema.getColumnDescription(colPath);
@@ -341,7 +327,6 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
 
     vectors = new CometVector[numColumns];
     currentBatch = new ColumnarBatch(vectors);
-    fileReader.setRequestedSchema(requestedSchema.getColumns());
 
     // For test purpose only
     // If the last external accumulator is `NumRowGroupsAccumulator`, the row group number to read
@@ -354,30 +339,15 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
       if (accu.isDefined() && accu.get().getClass().getSimpleName().equals("NumRowGroupsAcc")) {
         @SuppressWarnings("unchecked")
         AccumulatorV2<Integer, Integer> intAccum = (AccumulatorV2<Integer, Integer>) accu.get();
-        intAccum.add(fileReader.getRowGroups().size());
+        // TODO: Get num_row_groups from native
+        // intAccum.add(fileReader.getRowGroups().size());
       }
     }
 
-    // Pre-fetching
-    boolean preFetchEnabled =
-        conf.getBoolean(
-            CometConf.COMET_SCAN_PREFETCH_ENABLED().key(),
-            (boolean) CometConf.COMET_SCAN_PREFETCH_ENABLED().defaultValue().get());
-
-    if (preFetchEnabled) {
-      LOG.info("Prefetch enabled for BatchReader.");
-      this.prefetchQueue = new LinkedBlockingQueue<>();
-    }
-
+    this.handle =
+        Native.initRecordBatchReader(
+            filePath, fileSize, start, length, serializedRequestedArrowSchema);
     isInitialized = true;
-    synchronized (this) {
-      // if prefetch is enabled, `init()` is called in separate thread. When
-      // `BatchReader.nextBatch()` is called asynchronously, it is possibly that
-      // `init()` is not called or finished. We need to hold on `nextBatch` until
-      // initialization of `BatchReader` is done. Once we are close to finish
-      // initialization, we notify the waiting thread of `nextBatch` to continue.
-      notifyAll();
-    }
   }
 
   public void setSparkSchema(StructType schema) {
@@ -411,69 +381,31 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
 
   @Override
   public float getProgress() {
-    return (float) rowsRead / totalRowCount;
+    return 0;
   }
 
   /**
    * Returns the current columnar batch being read.
    *
-   * <p>Note that this must be called AFTER {@link BatchReader#nextBatch()}.
+   * <p>Note that this must be called AFTER {@link NativeBatchReader#nextBatch()}.
    */
   public ColumnarBatch currentBatch() {
     return currentBatch;
   }
 
-  // Only for testing
-  public Future<Option<Throwable>> getPrefetchTask() {
-    return this.prefetchTask;
-  }
-
-  // Only for testing
-  public LinkedBlockingQueue<Pair<PageReadStore, Long>> getPrefetchQueue() {
-    return this.prefetchQueue;
-  }
-
   /**
-   * Loads the next batch of rows.
+   * Loads the next batch of rows. This is called by Spark _and_ Iceberg
    *
    * @return true if there are no more rows to read, false otherwise.
    */
   public boolean nextBatch() throws IOException {
-    if (this.prefetchTask == null) {
-      Preconditions.checkState(isInitialized, "init() should be called first!");
-    } else {
-      // If prefetch is enabled, this reader will be initialized asynchronously from a
-      // different thread. Wait until it is initialized
-      while (!isInitialized) {
-        synchronized (this) {
-          try {
-            // Wait until initialization of current `BatchReader` is finished (i.e., `init()`),
-            // is done. It is possibly that `init()` is done after entering this while loop,
-            // so a short timeout is given.
-            wait(100);
+    Preconditions.checkState(isInitialized, "init() should be called first!");
 
-            // Checks if prefetch task is finished. If so, tries to get exception if any.
-            if (prefetchTask.isDone()) {
-              Option<Throwable> exception = prefetchTask.get();
-              if (exception.isDefined()) {
-                throw exception.get();
-              }
-            }
-          } catch (RuntimeException e) {
-            // Spark will check certain exception e.g. `SchemaColumnConvertNotSupportedException`.
-            throw e;
-          } catch (Throwable e) {
-            throw new IOException(e);
-          }
-        }
-      }
-    }
-
-    if (rowsRead >= totalRowCount) return false;
-    boolean hasMore;
+    //    if (rowsRead >= totalRowCount) return false;
+    int batchSize;
 
     try {
-      hasMore = loadNextRowGroupIfNecessary();
+      batchSize = loadNextBatch();
     } catch (RuntimeException e) {
       // Spark will check certain exception e.g. `SchemaColumnConvertNotSupportedException`.
       throw e;
@@ -481,35 +413,31 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
       throw new IOException(e);
     }
 
-    if (!hasMore) return false;
-    int batchSize = (int) Math.min(capacity, totalRowsLoaded - rowsRead);
+    if (batchSize == 0) return false;
 
-    return nextBatch(batchSize);
-  }
-
-  public boolean nextBatch(int batchSize) {
     long totalDecodeTime = 0, totalLoadTime = 0;
     for (int i = 0; i < columnReaders.length; i++) {
       AbstractColumnReader reader = columnReaders[i];
       long startNs = System.nanoTime();
+      // TODO: read from native reader
       reader.readBatch(batchSize);
-      totalDecodeTime += System.nanoTime() - startNs;
-      startNs = System.nanoTime();
+      //      totalDecodeTime += System.nanoTime() - startNs;
+      //      startNs = System.nanoTime();
       vectors[i] = reader.currentBatch();
       totalLoadTime += System.nanoTime() - startNs;
     }
 
-    SQLMetric decodeMetric = metrics.get("ParquetNativeDecodeTime");
-    if (decodeMetric != null) {
-      decodeMetric.add(totalDecodeTime);
-    }
+    // TODO: (ARROW NATIVE) Add Metrics
+    //    SQLMetric decodeMetric = metrics.get("ParquetNativeDecodeTime");
+    //    if (decodeMetric != null) {
+    //      decodeMetric.add(totalDecodeTime);
+    //    }
     SQLMetric loadMetric = metrics.get("ParquetNativeLoadTime");
     if (loadMetric != null) {
       loadMetric.add(totalLoadTime);
     }
 
     currentBatch.setNumRows(batchSize);
-    rowsRead += batchSize;
     return true;
   }
 
@@ -522,120 +450,44 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
         }
       }
     }
-    if (fileReader != null) {
-      fileReader.close();
-      fileReader = null;
-    }
     if (importer != null) {
       importer.close();
       importer = null;
     }
+    Native.closeRecordBatchReader(this.handle);
   }
 
   @SuppressWarnings("deprecation")
-  private boolean loadNextRowGroupIfNecessary() throws Throwable {
-    // More rows can be read from loaded row group. No need to load next one.
-    if (rowsRead != totalRowsLoaded) return true;
-
-    SQLMetric rowGroupTimeMetric = metrics.get("ParquetLoadRowGroupTime");
-    SQLMetric numRowGroupsMetric = metrics.get("ParquetRowGroups");
+  private int loadNextBatch() throws Throwable {
     long startNs = System.nanoTime();
 
-    PageReadStore rowGroupReader = null;
-    if (prefetchTask != null && prefetchQueue != null) {
-      // Wait for pre-fetch task to finish.
-      Pair<PageReadStore, Long> rowGroupReaderPair = prefetchQueue.take();
-      rowGroupReader = rowGroupReaderPair.getLeft();
-
-      // Update incremental byte read metric. Because this metric in Spark is maintained
-      // by thread local variable, we need to manually update it.
-      // TODO: We may expose metrics from `FileReader` and get from it directly.
-      long incBytesRead = rowGroupReaderPair.getRight();
-      FileSystem.getAllStatistics().stream()
-          .forEach(statistic -> statistic.incrementBytesRead(incBytesRead));
-    } else {
-      rowGroupReader = fileReader.readNextRowGroup();
+    int batchSize = Native.readNextRecordBatch(this.handle);
+    if (batchSize == 0) {
+      return batchSize;
     }
-
-    if (rowGroupTimeMetric != null) {
-      rowGroupTimeMetric.add(System.nanoTime() - startNs);
-    }
-    if (rowGroupReader == null) {
-      return false;
-    }
-    if (numRowGroupsMetric != null) {
-      numRowGroupsMetric.add(1);
-    }
-
     if (importer != null) importer.close();
     importer = new CometSchemaImporter(ALLOCATOR);
 
     List<ColumnDescriptor> columns = requestedSchema.getColumns();
     for (int i = 0; i < columns.size(); i++) {
+      // TODO: (ARROW NATIVE) check this. Currently not handling missing columns correctly?
       if (missingColumns[i]) continue;
       if (columnReaders[i] != null) columnReaders[i].close();
-      // TODO: handle tz, datetime & int96 rebase
-      // TODO: consider passing page reader via ctor - however we need to fix the shading issue
-      //   from Iceberg side.
+      // TODO: (ARROW NATIVE) handle tz, datetime & int96 rebase
       DataType dataType = sparkSchema.fields()[i].dataType();
-      ColumnReader reader =
-          Utils.getColumnReader(
+      NativeColumnReader reader =
+          new NativeColumnReader(
+              this.handle,
+              i,
               dataType,
               columns.get(i),
               importer,
               capacity,
               useDecimal128,
-              useLazyMaterialization,
               useLegacyDateTimestamp);
-      reader.setPageReader(rowGroupReader.getPageReader(columns.get(i)));
       columnReaders[i] = reader;
     }
-    totalRowsLoaded += rowGroupReader.getRowCount();
-    return true;
-  }
-
-  // Submits a prefetch task for this reader.
-  public void submitPrefetchTask(ExecutorService threadPool) {
-    this.prefetchTask = threadPool.submit(new PrefetchTask());
-  }
-
-  // A task for prefetching parquet row groups.
-  private class PrefetchTask implements Callable<Option<Throwable>> {
-    private long getBytesRead() {
-      return FileSystem.getAllStatistics().stream()
-          .mapToLong(s -> s.getThreadStatistics().getBytesRead())
-          .sum();
-    }
-
-    @Override
-    public Option<Throwable> call() throws Exception {
-      // Gets the bytes read so far.
-      long baseline = getBytesRead();
-
-      try {
-        init();
-
-        while (true) {
-          PageReadStore rowGroupReader = fileReader.readNextRowGroup();
-
-          if (rowGroupReader == null) {
-            // Reaches the end of row groups.
-            return Option.empty();
-          } else {
-            long incBytesRead = getBytesRead() - baseline;
-
-            prefetchQueue.add(Pair.of(rowGroupReader, incBytesRead));
-          }
-        }
-      } catch (Throwable e) {
-        // Returns exception thrown from the reader. The reader will re-throw it.
-        return Option.apply(e);
-      } finally {
-        if (fileReader != null) {
-          fileReader.closeStream();
-        }
-      }
-    }
+    return batchSize;
   }
 
   // Signature of externalAccums changed from returning a Buffer to returning a Seq. If comet is

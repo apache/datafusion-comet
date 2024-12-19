@@ -75,7 +75,27 @@ object CometConf extends ShimCometConf {
         "that to enable native vectorized execution, both this config and " +
         "'spark.comet.exec.enabled' need to be enabled.")
     .booleanConf
+    .createWithDefault(false)
+
+  val COMET_FULL_NATIVE_SCAN_ENABLED: ConfigEntry[Boolean] = conf(
+    "spark.comet.native.scan.enabled")
+    .internal()
+    .doc(
+      "Whether to enable the fully native scan. When this is turned on, Spark will use Comet to " +
+        "read supported data sources (currently only Parquet is supported natively)." +
+        " By default, this config is true.")
+    .booleanConf
     .createWithDefault(true)
+
+  val COMET_NATIVE_RECORDBATCH_READER_ENABLED: ConfigEntry[Boolean] = conf(
+    "spark.comet.native.arrow.scan.enabled")
+    .internal()
+    .doc(
+      "Whether to enable the fully native datafusion based column reader. When this is turned on," +
+        " Spark will use Comet to read Parquet files natively via the Datafusion based Parquet" +
+        " reader. By default, this config is false.")
+    .booleanConf
+    .createWithDefault(false)
 
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.parallel.io.enabled")

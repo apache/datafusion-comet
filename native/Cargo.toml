@@ -37,9 +37,11 @@ arrow = { version = "53.2.0", features = ["prettyprint", "ffi", "chrono-tz"] }
 arrow-array = { version = "53.2.0" }
 arrow-buffer = { version = "53.2.0" }
 arrow-data = { version = "53.2.0" }
+arrow-ipc = { version = "53.2.0" }
 arrow-schema = { version = "53.2.0" }
+flatbuffers = { version = "24.3.25" }
 parquet = { version = "53.2.0", default-features = false, features = ["experimental"] }
-datafusion = { version = "43.0.0", default-features = false, features = ["unicode_expressions", "crypto_expressions"] }
+datafusion = { version = "43.0.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "parquet"] }
 datafusion-common = { version = "43.0.0" }
 datafusion-functions = { version = "43.0.0", features = ["crypto_expressions"] }
 datafusion-functions-nested = { version = "43.0.0", default-features = false }
@@ -56,6 +58,8 @@ num = "0.4"
 rand = "0.8"
 regex = "1.9.6"
 thiserror = "1"
+object_store = "0.11.0"
+url = "2.2"
 
 [profile.release]
 debug = true

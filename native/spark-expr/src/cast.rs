@@ -788,11 +788,15 @@ pub struct SparkCastOptions {
     pub eval_mode: EvalMode,
     /// When cast from/to timezone related types, we need timezone, which will be resolved with
     /// session local timezone by an analyzer in Spark.
+    // TODO we should change timezone to Tz to avoid repeated parsing
     pub timezone: String,
     /// Allow casts that are supported but not guaranteed to be 100% compatible
     pub allow_incompat: bool,
     /// Support casting unsigned ints to signed ints (used by Parquet SchemaAdapter)
     pub allow_cast_unsigned_ints: bool,
+    /// We also use the cast logic for adapting Parquet schemas, so this flag is used
+    /// for that use case
+    pub is_adapting_schema: bool,
 }
 
 impl SparkCastOptions {
@@ -802,6 +806,7 @@ impl SparkCastOptions {
             timezone: timezone.to_string(),
             allow_incompat,
             allow_cast_unsigned_ints: false,
+            is_adapting_schema: false,
         }
     }
 
@@ -811,6 +816,7 @@ impl SparkCastOptions {
             timezone: "".to_string(),
             allow_incompat,
             allow_cast_unsigned_ints: false,
+            is_adapting_schema: false,
         }
     }
 }
@@ -937,7 +943,9 @@ fn cast_array(
         {
             Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
         }
-        _ if is_datafusion_spark_compatible(from_type, to_type, cast_options.allow_incompat) => {
+        _ if cast_options.is_adapting_schema
+            || is_datafusion_spark_compatible(from_type, to_type, cast_options.allow_incompat) =>
+        {
             // use DataFusion cast only when we know that it is compatible with Spark
             Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
         }
