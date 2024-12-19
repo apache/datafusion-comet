@@ -26,6 +26,9 @@ import org.apache.spark.sql.comet.execution.shuffle.{ArrowReaderIterator, IpcInp
 
 import org.apache.comet.CometConf
 
+/**
+ * Manual tests for testing compatibility of shuffle files generated from native tests.
+ */
 class CometShuffleCodecSuite extends CometTestBase {
 
   ignore("decode shuffle batch with zstd compression") {

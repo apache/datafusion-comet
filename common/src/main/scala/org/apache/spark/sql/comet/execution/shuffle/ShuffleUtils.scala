@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import java.io.{InputStream, OutputStream}
 
-// TODO maybe we need the one from arrow-compression instead?
+import org.apache.commons.compress.compressors.lz4.BlockLZ4CompressorInputStream
 import org.apache.commons.compress.compressors.lz4.FramedLZ4CompressorInputStream
 import org.apache.spark.SparkEnv
 import org.apache.spark.internal.Logging
@@ -50,5 +50,6 @@ object ArrowLz4Codec extends CompressionCodec {
   }
 
   override def compressedInputStream(s: InputStream): InputStream =
-    new FramedLZ4CompressorInputStream(s)
+//    new FramedLZ4CompressorInputStream(s)
+    new BlockLZ4CompressorInputStream(s)
 }

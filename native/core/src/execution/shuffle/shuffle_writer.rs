@@ -1545,7 +1545,8 @@ impl Checksum {
 
 #[derive(Debug, Clone)]
 pub enum CompressionCodec {
-    Lz4,
+    Lz4Block,
+    Lz4Frame,
     Zstd(i32),
 }
 
@@ -1564,11 +1565,11 @@ pub(crate) fn write_ipc_compressed<W: Write + Seek>(
     let mut timer = ipc_time.timer();
     let start_pos = output.stream_position()?;
 
-    match codec {
-        CompressionCodec::Lz4 => {
-            // write ipc_length placeholder
-            output.write_all(&[0u8; 8])?;
+    // write ipc_length placeholder
+    output.write_all(&[0u8; 8])?;
 
+    let output = match codec {
+        CompressionCodec::Lz4Block => {
             // write IPC first without compression
             let mut buffer = vec![];
             let mut arrow_writer = StreamWriter::try_new(&mut buffer, &batch.schema())?;
@@ -1580,75 +1581,50 @@ pub(crate) fn write_ipc_compressed<W: Write + Seek>(
             let compressed = lz4::block::compress(ipc_encoded, None, true)?;
             output.write_all(&compressed)?;
 
-            // fill ipc length
-            let end_pos = output.stream_position()?;
-            let ipc_length = end_pos - start_pos - 8;
-            output.seek(SeekFrom::Start(start_pos))?;
-            output.write_all(&ipc_length.to_le_bytes()[..])?;
-            output.seek(SeekFrom::Start(end_pos))?;
-
-            timer.stop();
-
-            Ok((end_pos - start_pos) as usize)
+            output
         }
+        CompressionCodec::Lz4Frame => {
+            // write IPC first without compression
+            let mut buffer = vec![];
+            let mut arrow_writer = StreamWriter::try_new(&mut buffer, &batch.schema())?;
+            arrow_writer.write(batch)?;
+            arrow_writer.finish()?;
+            let ipc_encoded = arrow_writer.into_inner()?;
 
-        // CompressionCodec::Lz4Frame => {
-        //     // write ipc_length placeholder
-        //     output.write_all(&[0u8; 8])?;
-        //
-        //     // write IPC first without compression
-        //     let mut buffer = vec![];
-        //     let mut arrow_writer = StreamWriter::try_new(&mut buffer, &batch.schema())?;
-        //     arrow_writer.write(batch)?;
-        //     arrow_writer.finish()?;
-        //     let ipc_encoded = arrow_writer.into_inner()?;
-        //
-        //     let mut encoder = lz4::EncoderBuilder::new()
-        //         .content_size(ipc_encoded.len() as u64)
-        //         .block_mode(lz4::BlockMode::Independent)
-        //         .block_size(BlockSize::Default)
-        //         .checksum(ContentChecksum::NoChecksum)
-        //         .block_checksum(BlockChecksum::BlockChecksumEnabled)
-        //         .level(0) // TODO make configurable
-        //         .build(&mut *output)?;
-        //     encoder.write_all(ipc_encoded.as_slice())?;
-        //     let (_, result) = encoder.finish();
-        //     result?;
-        //
-        //     // fill ipc length
-        //     let end_pos = output.stream_position()?;
-        //     // let ipc_length = end_pos - start_pos - 8;
-        //     // output.seek(SeekFrom::Start(start_pos))?;
-        //     // output.write_all(&ipc_length.to_le_bytes()[..])?;
-        //     // output.seek(SeekFrom::Start(end_pos))?;
-        //
-        //     timer.stop();
-        //
-        //     Ok((end_pos - start_pos) as usize)
-        // }
+            let mut encoder = lz4::EncoderBuilder::new()
+                .content_size(ipc_encoded.len() as u64)
+                // .block_mode(lz4::BlockMode::Independent)
+                // .block_size(BlockSize::Default)
+                // .checksum(ContentChecksum::NoChecksum)
+                // .block_checksum(BlockChecksum::BlockChecksumEnabled)
+                .level(0) // TODO make configurable
+                .build(&mut *output)?;
+            encoder.write_all(ipc_encoded.as_slice())?;
+            let (output, result) = encoder.finish();
+            result?;
+            output
+
+        }
         CompressionCodec::Zstd(level) => {
-            // write ipc_length placeholder
-            output.write_all(&[0u8; 8])?;
-
             let encoder = zstd::Encoder::new(output, *level)?;
             let mut arrow_writer = StreamWriter::try_new(encoder, &batch.schema())?;
             arrow_writer.write(batch)?;
             arrow_writer.finish()?;
             let zstd_encoder = arrow_writer.into_inner()?;
-            let output = zstd_encoder.finish()?;
-
-            // fill ipc length
-            let end_pos = output.stream_position()?;
-            let ipc_length = end_pos - start_pos - 8;
-            output.seek(SeekFrom::Start(start_pos))?;
-            output.write_all(&ipc_length.to_le_bytes()[..])?;
-            output.seek(SeekFrom::Start(end_pos))?;
-
-            timer.stop();
-
-            Ok((end_pos - start_pos) as usize)
+            zstd_encoder.finish()?
         }
-    }
+    };
+
+    // fill ipc length
+    let end_pos = output.stream_position()?;
+    let ipc_length = end_pos - start_pos - 8;
+    output.seek(SeekFrom::Start(start_pos))?;
+    output.write_all(&ipc_length.to_le_bytes()[..])?;
+    output.seek(SeekFrom::Start(end_pos))?;
+
+    timer.stop();
+
+    Ok((end_pos - start_pos) as usize)
 }
 
 /// A stream that yields no record batches which represent end of output.
@@ -1717,18 +1693,37 @@ mod test {
     }
 
     #[test]
-    fn write_ipc_lz4() {
+    fn write_ipc_lz4_block() {
         let batch = create_batch(8192);
         let mut output = vec![];
         let mut cursor = Cursor::new(&mut output);
         write_ipc_compressed(
             &batch,
             &mut cursor,
-            &CompressionCodec::Lz4,
+            &CompressionCodec::Lz4Block,
             &Time::default(),
         )
         .unwrap();
         assert_eq!(61406, output.len());
+
+        // generate file that can be tested on JVM side in org.apache.spark.CometShuffleCodecSuite
+        write_ipc_file("/tmp/shuffle.lz4", &output);
+    }
+
+    #[test]
+    #[ignore]
+    fn write_ipc_lz4_frame() {
+        let batch = create_batch(8192);
+        let mut output = vec![];
+        let mut cursor = Cursor::new(&mut output);
+        write_ipc_compressed(
+            &batch,
+            &mut cursor,
+            &CompressionCodec::Lz4Frame,
+            &Time::default(),
+        )
+            .unwrap();
+        assert_eq!(61445, output.len());
 
         // generate file that can be tested on JVM side in org.apache.spark.CometShuffleCodecSuite
         write_ipc_file("/tmp/shuffle.lz4", &output);
