@@ -788,23 +788,23 @@ impl ShuffleRepartitioner {
             Partitioning::Hash(exprs, _) => {
                 let (partition_starts, shuffled_partition_ids): (Vec<usize>, Vec<usize>) = {
                     let mut timer = self.metrics.repart_time.timer();
+
+                    // evaluate partition expressions
                     let arrays = exprs
                         .iter()
                         .map(|expr| expr.evaluate(&input)?.into_array(input.num_rows()))
                         .collect::<Result<Vec<_>>>()?;
 
-                    // use identical seed as spark hash partition
-                    let hashes_buf = &mut self.hashes_buf[..arrays[0].len()];
-                    hashes_buf.fill(42_u32);
-
-                    // Hash arrays and compute buckets based on number of partitions
-                    let partition_ids = &mut self.partition_ids[..arrays[0].len()];
-                    create_murmur3_hashes(&arrays, hashes_buf)?
-                        .iter()
-                        .enumerate()
-                        .for_each(|(idx, hash)| {
-                            partition_ids[idx] = pmod(*hash, num_output_partitions) as u64
-                        });
+                    // calculate partition ids
+                    let num_rows = input.num_rows();
+                    let hashes_buf = &mut self.hashes_buf[..num_rows];
+                    let partition_ids = &mut self.partition_ids[..num_rows];
+                    calculate_partition_ids(
+                        &arrays,
+                        num_output_partitions,
+                        hashes_buf,
+                        partition_ids,
+                    )?;
 
                     // count each partition size
                     let mut partition_counters = vec![0usize; num_output_partitions];
@@ -1098,6 +1098,25 @@ impl ShuffleRepartitioner {
 
         Ok(mem_diff)
     }
+}
+
+/// Calculate the partition ID for each row in a batch
+#[inline]
+pub fn calculate_partition_ids(
+    arrays: &[ArrayRef],
+    num_output_partitions: usize,
+    hashes_buf: &mut [u32],
+    partition_ids: &mut [u64],
+) -> Result<(), DataFusionError> {
+    // use identical seed as spark hash partition
+    hashes_buf.fill(42_u32);
+
+    // Hash arrays and compute buckets based on number of partitions
+    create_murmur3_hashes(arrays, hashes_buf)?
+        .iter()
+        .enumerate()
+        .for_each(|(idx, hash)| partition_ids[idx] = pmod(*hash, num_output_partitions) as u64);
+    Ok(())
 }
 
 /// consume the `buffered_partitions` and do spill into a single temp shuffle output file
@@ -1545,6 +1564,7 @@ impl Checksum {
 
 #[derive(Debug, Clone)]
 pub enum CompressionCodec {
+    None,
     Lz4Block,
     Lz4Frame,
     Zstd(i32),
@@ -1552,7 +1572,7 @@ pub enum CompressionCodec {
 
 /// Writes given record batch as Arrow IPC bytes into given writer.
 /// Returns number of bytes written.
-pub(crate) fn write_ipc_compressed<W: Write + Seek>(
+pub fn write_ipc_compressed<W: Write + Seek>(
     batch: &RecordBatch,
     output: &mut W,
     codec: &CompressionCodec,
@@ -1569,6 +1589,12 @@ pub(crate) fn write_ipc_compressed<W: Write + Seek>(
     output.write_all(&[0u8; 8])?;
 
     let output = match codec {
+        CompressionCodec::None => {
+            let mut arrow_writer = StreamWriter::try_new(output, &batch.schema())?;
+            arrow_writer.write(batch)?;
+            arrow_writer.finish()?;
+            arrow_writer.into_inner()?
+        }
         CompressionCodec::Lz4Block => {
             // write IPC first without compression
             let mut buffer = vec![];
@@ -1603,7 +1629,6 @@ pub(crate) fn write_ipc_compressed<W: Write + Seek>(
             let (output, result) = encoder.finish();
             result?;
             output
-
         }
         CompressionCodec::Zstd(level) => {
             let encoder = zstd::Encoder::new(output, *level)?;
@@ -1721,7 +1746,7 @@ mod test {
             &CompressionCodec::Lz4Frame,
             &Time::default(),
         )
-            .unwrap();
+        .unwrap();
         assert_eq!(61445, output.len());
 
         // generate file that can be tested on JVM side in org.apache.spark.CometShuffleCodecSuite
