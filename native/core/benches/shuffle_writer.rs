@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::ipc::writer::StreamWriter;
 use arrow_array::builder::Int32Builder;
 use arrow_array::{builder::StringBuilder, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
@@ -31,20 +32,6 @@ use std::sync::Arc;
 use tokio::runtime::Runtime;
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let batch = create_batch(8192, true);
-    let mut batches = Vec::new();
-    for _ in 0..10 {
-        batches.push(batch.clone());
-    }
-    let partitions = &[batches];
-    let exec = ShuffleWriterExec::try_new(
-        Arc::new(MemoryExec::try_new(partitions, batch.schema(), None).unwrap()),
-        Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
-        "/tmp/data.out".to_string(),
-        "/tmp/index.out".to_string(),
-    )
-    .unwrap();
-
     let mut group = c.benchmark_group("shuffle_writer");
     group.bench_function("shuffle_writer: calculate partition ids", |b| {
         let batch = create_batch(8192, true);
@@ -53,6 +40,36 @@ fn criterion_benchmark(c: &mut Criterion) {
         let mut partition_ids = vec![0; batch.num_rows()];
         b.iter(|| {
             calculate_partition_ids(&arrays, 200, &mut hashes_buf, &mut partition_ids).unwrap();
+        });
+    });
+    group.bench_function("shuffle_writer: encode with new writer each time", |b| {
+        let batches = create_batches();
+        let schema = batches[0].schema();
+        let mut output = vec![];
+        b.iter(|| {
+            output.clear();
+            for batch in &batches {
+                let cursor = Cursor::new(&mut output);
+                let mut arrow_writer =
+                    StreamWriter::try_new(zstd::Encoder::new(cursor, 1).unwrap(), &schema).unwrap();
+                arrow_writer.write(batch).unwrap();
+                arrow_writer.finish().unwrap();
+            }
+        });
+    });
+    group.bench_function("shuffle_writer: encode with single writer", |b| {
+        let batches = create_batches();
+        let schema = batches[0].schema();
+        let mut output = vec![];
+        b.iter(|| {
+            output.clear();
+            let cursor = Cursor::new(&mut output);
+            let mut arrow_writer =
+                StreamWriter::try_new(zstd::Encoder::new(cursor, 1).unwrap(), &schema).unwrap();
+            for batch in &batches {
+                arrow_writer.write(batch).unwrap();
+            }
+            arrow_writer.finish().unwrap();
         });
     });
     group.bench_function("shuffle_writer: encode and compress", |b| {
@@ -64,6 +81,16 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
     group.bench_function("shuffle_writer: end to end", |b| {
         let ctx = SessionContext::new();
+        let batches = create_batches();
+        let schema = batches[0].schema();
+        let partitions = &[batches];
+        let exec = ShuffleWriterExec::try_new(
+            Arc::new(MemoryExec::try_new(partitions, schema, None).unwrap()),
+            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
+            "/tmp/data.out".to_string(),
+            "/tmp/index.out".to_string(),
+        )
+        .unwrap();
         b.iter(|| {
             let task_ctx = ctx.task_ctx();
             let stream = exec.execute(0, task_ctx).unwrap();
@@ -71,6 +98,15 @@ fn criterion_benchmark(c: &mut Criterion) {
             criterion::black_box(rt.block_on(collect(stream)).unwrap());
         });
     });
+}
+
+fn create_batches() -> Vec<RecordBatch> {
+    let batch = create_batch(8192, true);
+    let mut batches = Vec::new();
+    for _ in 0..10 {
+        batches.push(batch.clone());
+    }
+    batches
 }
 
 fn create_batch(num_rows: usize, allow_nulls: bool) -> RecordBatch {
