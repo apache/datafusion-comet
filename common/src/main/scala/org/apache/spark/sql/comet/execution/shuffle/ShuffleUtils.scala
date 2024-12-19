@@ -23,8 +23,12 @@ import org.apache.spark.SparkEnv
 import org.apache.spark.internal.Logging
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.sql.internal.SQLConf
-
 import org.apache.comet.CometConf
+
+// TODO maybe we need the one from arrow-compression instead?
+import org.apache.commons.compress.compressors.lz4.FramedLZ4CompressorInputStream
+
+import java.io.{InputStream, OutputStream}
 
 private[spark] object ShuffleUtils extends Logging {
   lazy val compressionCodecForShuffling: CompressionCodec = {
@@ -32,9 +36,18 @@ private[spark] object ShuffleUtils extends Logging {
     val codecName = CometConf.COMET_EXEC_SHUFFLE_CODEC.get(SQLConf.get)
     codecName match {
       case "zstd" => CompressionCodec.createCodec(sparkConf, "zstd")
-      case "lz4" => CompressionCodec.createCodec(sparkConf, "lz4")
+      case "lz4" => ArrowLz4Codec
       case other =>
         throw new IllegalStateException(s"Unsupported shuffle compression codec: $other")
     }
   }
+}
+
+object ArrowLz4Codec extends CompressionCodec {
+
+  override def compressedOutputStream(s: OutputStream): OutputStream = {
+    throw new UnsupportedOperationException()
+  }
+
+  override def compressedInputStream(s: InputStream): InputStream = new FramedLZ4CompressorInputStream(s)
 }
