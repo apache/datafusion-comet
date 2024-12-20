@@ -16,7 +16,7 @@
 // under the License.
 
 use arrow::ipc::reader::StreamReader;
-use arrow::ipc::writer::StreamWriter;
+use arrow::ipc::writer::{DictionaryTracker, IpcDataGenerator, IpcWriteOptions, StreamWriter};
 use arrow_array::{Array, ArrayRef, RecordBatch, StringArray};
 use arrow_buffer::{Buffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
@@ -160,6 +160,27 @@ pub fn write_batch_ipc(batch: &RecordBatch, output: &mut Vec<u8>) -> Result<(), 
 pub fn read_batch_ipc(input: &[u8]) -> Result<RecordBatch, DataFusionError> {
     let mut arrow_reader = StreamReader::try_new(input, None).unwrap();
     Ok(arrow_reader.next().unwrap().unwrap())
+}
+
+pub fn write_batch_ipc_data_only(batch: &RecordBatch, output: &mut Vec<u8>) -> Result<(), DataFusionError> {
+    // Error of dictionary ids are replaced.
+    let error_on_replacement = true;
+    let options = IpcWriteOptions::default();
+    let mut dictionary_tracker = DictionaryTracker::new(error_on_replacement);
+
+    // encode the batch into zero or more encoded dictionaries
+    // and the data for the actual array.
+    let data_gen = IpcDataGenerator::default();
+    let (encoded_dictionaries, encoded_message) = data_gen
+        .encoded_batch(&batch, &mut dictionary_tracker, &options)
+        .unwrap();
+    for dict in &encoded_dictionaries {
+        output.write_all(&dict.ipc_message)?;
+        output.write_all(&dict.arrow_data)?;
+    }
+    output.write_all(&encoded_message.ipc_message)?;
+    output.write_all(&encoded_message.arrow_data)?;
+    Ok(())
 }
 
 #[cfg(test)]

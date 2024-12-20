@@ -67,6 +67,14 @@ fn criterion_benchmark(c: &mut Criterion) {
         write_batch_ipc(&batch, &mut buffer).unwrap();
         b.iter(|| criterion::black_box(read_batch_ipc(&buffer).unwrap()));
     });
+    group.bench_function("batch_serde: arrow ipc data only", |b| {
+        let batch = create_batch();
+        let mut buffer = vec![];
+        b.iter(|| {
+            buffer.clear();
+            criterion::black_box(write_batch_ipc(&batch, &mut buffer).unwrap())
+        });
+    });
 }
 
 fn create_batch() -> RecordBatch {
