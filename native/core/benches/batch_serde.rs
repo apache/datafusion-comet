@@ -71,7 +71,11 @@ fn create_batch() -> RecordBatch {
     }
     let array: ArrayRef = Arc::new(array.finish());
     let array = Arc::new(array);
-    RecordBatch::try_new(schema.clone(), vec![array.clone(), array.clone(), array]).unwrap()
+    RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::clone(&array), Arc::clone(&array), array],
+    )
+    .unwrap()
 }
 
 fn config() -> Criterion {

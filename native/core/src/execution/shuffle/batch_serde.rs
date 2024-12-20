@@ -16,7 +16,7 @@ pub fn write_batch_fast(batch: &RecordBatch, output: &mut Vec<u8>) -> Result<(),
         let field_name = field.name();
         let field_name_len = field_name.len();
         output.write_all(&field_name_len.to_le_bytes()[..])?;
-        output.write(field_name.as_str().as_bytes())?;
+        output.write_all(field_name.as_str().as_bytes())?;
 
         // TODO write field type using FFI_ArrowSchema encoding, assume string for now
     }
@@ -38,7 +38,7 @@ pub fn write_batch_fast(batch: &RecordBatch, output: &mut Vec<u8>) -> Result<(),
 
                 // write data buffer
                 // println!("writing data buffer with {buffer_len} bytes");
-                output.write(buffer)?;
+                output.write_all(buffer)?;
 
                 // write offset buffer length
                 let offsets = string_array.offsets();
@@ -50,7 +50,7 @@ pub fn write_batch_fast(batch: &RecordBatch, output: &mut Vec<u8>) -> Result<(),
                 // write offset buffer
                 let offset_buffer = scalar_buffer.inner().as_slice();
                 // println!("writing offset buffer with {offset_buffer_len} bytes");
-                output.write(offset_buffer)?;
+                output.write_all(offset_buffer)?;
             }
             _ => todo!(),
         }
@@ -203,7 +203,11 @@ mod test {
         for i in 0..8192 {
             b.append_value(format!("{i}"));
         }
-        let array = Arc::new(b.finish());
-        RecordBatch::try_new(schema.clone(), vec![array.clone(), array.clone(), array]).unwrap()
+        let array: ArrayRef = Arc::new(b.finish());
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::clone(&array), Arc::clone(&array), array],
+        )
+        .unwrap()
     }
 }
