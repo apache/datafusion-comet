@@ -39,6 +39,7 @@ import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHas
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
+import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.reuse.ReuseExchangeAndSubquery
@@ -129,7 +130,7 @@ class CometExecSuite extends CometTestBase {
           sql(
             "CREATE VIEW lv_noalias AS SELECT myTab.* FROM src " +
               "LATERAL VIEW explode(map('key1', 100, 'key2', 200)) myTab LIMIT 2")
-          val df = sql("SELECT * FROM lv_noalias a JOIN lv_noalias b ON a.key=b.key")
+          val df = sql("SELECT * FROM lv_noalias a JOIN lv_noalias b ON a.key=b.key");
           checkSparkAnswer(df)
         }
       }
@@ -1888,6 +1889,14 @@ class CometExecSuite extends CometTestBase {
         checkSparkAnswerAndOperator("SELECT a, b.c, b.d FROM tbl")
       }
     }
+  }
+
+  test("Supported file formats for CometScanExec") {
+    assert(CometScanExec.isFileFormatSupported(new ParquetFileFormat()))
+
+    class CustomParquetFileFormat extends ParquetFileFormat {}
+
+    assert(!CometScanExec.isFileFormatSupported(new CustomParquetFileFormat()))
   }
 }
 

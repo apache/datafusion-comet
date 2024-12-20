@@ -23,6 +23,7 @@ use jni::{
 };
 
 /// A struct that holds all the JNI methods and fields for JVM CometMetricNode class.
+#[allow(dead_code)] // we need to keep references to Java items to prevent GC
 pub struct CometMetricNode<'a> {
     pub class: JClass<'a>,
     pub method_get_child_node: JMethodID,

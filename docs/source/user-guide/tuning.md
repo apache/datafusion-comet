@@ -23,39 +23,11 @@ Comet provides some tuning options to help you get the best performance from you
 
 ## Memory Tuning
 
-Comet provides two options for memory management:
-
-- **Unified Memory Management** shares an off-heap memory pool between Spark and Comet. This is the recommended option.
-- **Native Memory Management** leverages DataFusion's memory management for the native plans and allocates memory independently of Spark.
-
-### Unified Memory Management
-
-This option is automatically enabled when `spark.memory.offHeap.enabled=true`.
+Comet shares an off-heap memory pool between Spark and Comet. This requires setting `spark.memory.offHeap.enabled=true`.
+If this setting is not enabled, Comet will not accelerate queries and will fall back to Spark.
 
 Each executor will have a single memory pool which will be shared by all native plans being executed within that
 process, and by Spark itself. The size of the pool is specified by `spark.memory.offHeap.size`.
-
-### Native Memory Management
-
-This option is automatically enabled when `spark.memory.offHeap.enabled=false`.
-
-Each native plan has a dedicated memory pool.
-
-By default, the size of each pool is `spark.comet.memory.overhead.factor * spark.executor.memory`. The default value
-for `spark.comet.memory.overhead.factor` is `0.2`.
-
-It is important to take executor concurrency into account. The maximum number of concurrent plans in an executor can
-be calculated with `spark.executor.cores / spark.task.cpus`.
-
-For example, if the executor can execute 4 plans concurrently, then the total amount of memory allocated will be
-`4 * spark.comet.memory.overhead.factor * spark.executor.memory`.
-
-It is also possible to set `spark.comet.memoryOverhead` to the desired size for each pool, rather than calculating
-it based on `spark.comet.memory.overhead.factor`.
-
-If both `spark.comet.memoryOverhead` and `spark.comet.memory.overhead.factor` are set, the former will be used.
-
-Comet will allocate at least `spark.comet.memory.overhead.min` memory per pool.
 
 ### Determining How Much Memory to Allocate
 
@@ -131,10 +103,12 @@ native shuffle currently only supports `HashPartitioning` and `SinglePartitionin
 To enable native shuffle, set `spark.comet.exec.shuffle.mode` to `native`. If this mode is explicitly set,
 then any shuffle operations that cannot be supported in this mode will fall back to Spark.
 
-## Metrics
-
-Comet metrics are not directly comparable to Spark metrics in some cases.
-
-`CometScanExec` uses nanoseconds for total scan time. Spark also measures scan time in nanoseconds but converts to
-milliseconds _per batch_ which can result in a large loss of precision. In one case we saw total scan time
-of 41 seconds reported as 23 seconds for example.
+## Explain Plan
+### Extended Explain
+With Spark 4.0.0 and newer, Comet can provide extended explain plan information in the Spark UI. Currently this lists
+reasons why Comet may not have been enabled for specific operations.
+To enable this, in the Spark configuration, set the following:
+```shell
+-c spark.sql.extendedExplainProviders=org.apache.comet.ExtendedExplainInfo
+```
+This will add a section to the detailed plan displayed in the Spark SQL UI page.
