@@ -4,7 +4,7 @@ WholeStageCodegen (2)
       Exchange #1
         WholeStageCodegen (1)
           HashAggregate [ss_quantity,ss_ext_sales_price,ss_ext_wholesale_cost] [sum,count,sum,count,sum,count,sum,sum,count,sum,count,sum,count,sum]
-            ColumnarToRow
+            CometColumnarToRow
               InputAdapter
                 CometProject [ss_quantity,ss_ext_sales_price,ss_ext_wholesale_cost]
                   CometBroadcastHashJoin [ss_hdemo_sk,ss_quantity,ss_sales_price,ss_ext_sales_price,ss_ext_wholesale_cost,cd_marital_status,cd_education_status,hd_demo_sk,hd_dep_count]
@@ -21,7 +21,7 @@ WholeStageCodegen (2)
                                         SubqueryBroadcast [d_date_sk] #1
                                           BroadcastExchange #2
                                             WholeStageCodegen (1)
-                                              ColumnarToRow
+                                              CometColumnarToRow
                                                 InputAdapter
                                                   CometProject [d_date_sk]
                                                     CometFilter [d_date_sk,d_year]

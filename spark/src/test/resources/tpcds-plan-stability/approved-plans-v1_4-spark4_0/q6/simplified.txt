@@ -8,7 +8,7 @@ TakeOrderedAndProject [cnt,state]
               HashAggregate [ca_state] [count,count]
                 Project [ca_state]
                   BroadcastHashJoin [ss_item_sk,i_item_sk]
-                    ColumnarToRow
+                    CometColumnarToRow
                       InputAdapter
                         CometProject [ca_state,ss_item_sk]
                           CometBroadcastHashJoin [ca_state,ss_item_sk,ss_sold_date_sk,d_date_sk]
@@ -27,7 +27,7 @@ TakeOrderedAndProject [cnt,state]
                                       SubqueryBroadcast [d_date_sk] #1
                                         BroadcastExchange #4
                                           WholeStageCodegen (1)
-                                            ColumnarToRow
+                                            CometColumnarToRow
                                               InputAdapter
                                                 CometProject [d_date_sk]
                                                   CometFilter [d_date_sk,d_month_seq]
@@ -35,7 +35,7 @@ TakeOrderedAndProject [cnt,state]
                                                     CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
                                                       Subquery #2
                                                         WholeStageCodegen (1)
-                                                          ColumnarToRow
+                                                          CometColumnarToRow
                                                             InputAdapter
                                                               CometHashAggregate [d_month_seq]
                                                                 CometExchange [d_month_seq] #5
@@ -54,7 +54,7 @@ TakeOrderedAndProject [cnt,state]
                         WholeStageCodegen (3)
                           Project [i_item_sk]
                             BroadcastHashJoin [i_category,i_category,i_current_price,avg(i_current_price)]
-                              ColumnarToRow
+                              CometColumnarToRow
                                 InputAdapter
                                   CometFilter [i_item_sk,i_current_price,i_category]
                                     CometScan parquet spark_catalog.default.item [i_item_sk,i_current_price,i_category]
@@ -67,7 +67,7 @@ TakeOrderedAndProject [cnt,state]
                                           Exchange [i_category] #9
                                             WholeStageCodegen (1)
                                               HashAggregate [i_category,i_current_price] [sum,count,sum,count]
-                                                ColumnarToRow
+                                                CometColumnarToRow
                                                   InputAdapter
                                                     CometFilter [i_current_price,i_category]
                                                       CometScan parquet spark_catalog.default.item [i_current_price,i_category]

@@ -10,7 +10,7 @@ TakeOrderedAndProject (51)
       :     :     :  +- * HashAggregate (17)
       :     :     :     +- Exchange (16)
       :     :     :        +- * HashAggregate (15)
-      :     :     :           +- * ColumnarToRow (14)
+      :     :     :           +- * CometColumnarToRow (14)
       :     :     :              +- CometProject (13)
       :     :     :                 +- CometBroadcastHashJoin (12)
       :     :     :                    :- CometProject (8)
@@ -32,7 +32,7 @@ TakeOrderedAndProject (51)
       :     :                    +- * HashAggregate (30)
       :     :                       +- Exchange (29)
       :     :                          +- * HashAggregate (28)
-      :     :                             +- * ColumnarToRow (27)
+      :     :                             +- * CometColumnarToRow (27)
       :     :                                +- CometProject (26)
       :     :                                   +- CometBroadcastHashJoin (25)
       :     :                                      :- CometProject (23)
@@ -42,11 +42,11 @@ TakeOrderedAndProject (51)
       :     :                                      :     +- ReusedExchange (21)
       :     :                                      +- ReusedExchange (24)
       :     +- BroadcastExchange (41)
-      :        +- * ColumnarToRow (40)
+      :        +- * CometColumnarToRow (40)
       :           +- CometFilter (39)
       :              +- CometScan parquet spark_catalog.default.customer (38)
       +- BroadcastExchange (48)
-         +- * ColumnarToRow (47)
+         +- * CometColumnarToRow (47)
             +- CometProject (46)
                +- CometFilter (45)
                   +- CometScan parquet spark_catalog.default.customer_address (44)
@@ -116,7 +116,7 @@ Arguments: [wr_returning_addr_sk#2], [ca_address_sk#8], Inner, BuildRight
 Input [5]: [wr_returning_customer_sk#1, wr_returning_addr_sk#2, wr_return_amt#3, ca_address_sk#8, ca_state#9]
 Arguments: [wr_returning_customer_sk#1, wr_return_amt#3, ca_state#9], [wr_returning_customer_sk#1, wr_return_amt#3, ca_state#9]
 
-(14) ColumnarToRow [codegen id : 1]
+(14) CometColumnarToRow [codegen id : 1]
 Input [3]: [wr_returning_customer_sk#1, wr_return_amt#3, ca_state#9]
 
 (15) HashAggregate [codegen id : 1]
@@ -177,7 +177,7 @@ Arguments: [wr_returning_addr_sk#17], [ca_address_sk#22], Inner, BuildRight
 Input [5]: [wr_returning_customer_sk#16, wr_returning_addr_sk#17, wr_return_amt#18, ca_address_sk#22, ca_state#23]
 Arguments: [wr_returning_customer_sk#16, wr_return_amt#18, ca_state#23], [wr_returning_customer_sk#16, wr_return_amt#18, ca_state#23]
 
-(27) ColumnarToRow [codegen id : 2]
+(27) CometColumnarToRow [codegen id : 2]
 Input [3]: [wr_returning_customer_sk#16, wr_return_amt#18, ca_state#23]
 
 (28) HashAggregate [codegen id : 2]
@@ -245,7 +245,7 @@ ReadSchema: struct<c_customer_sk:int,c_customer_id:string,c_current_addr_sk:int,
 Input [14]: [c_customer_sk#34, c_customer_id#35, c_current_addr_sk#36, c_salutation#37, c_first_name#38, c_last_name#39, c_preferred_cust_flag#40, c_birth_day#41, c_birth_month#42, c_birth_year#43, c_birth_country#44, c_login#45, c_email_address#46, c_last_review_date#47]
 Condition : (isnotnull(c_customer_sk#34) AND isnotnull(c_current_addr_sk#36))
 
-(40) ColumnarToRow [codegen id : 5]
+(40) CometColumnarToRow [codegen id : 5]
 Input [14]: [c_customer_sk#34, c_customer_id#35, c_current_addr_sk#36, c_salutation#37, c_first_name#38, c_last_name#39, c_preferred_cust_flag#40, c_birth_day#41, c_birth_month#42, c_birth_year#43, c_birth_country#44, c_login#45, c_email_address#46, c_last_review_date#47]
 
 (41) BroadcastExchange
@@ -277,7 +277,7 @@ Condition : ((isnotnull(ca_state#49) AND (ca_state#49 = GA)) AND isnotnull(ca_ad
 Input [2]: [ca_address_sk#48, ca_state#49]
 Arguments: [ca_address_sk#48], [ca_address_sk#48]
 
-(47) ColumnarToRow [codegen id : 6]
+(47) CometColumnarToRow [codegen id : 6]
 Input [1]: [ca_address_sk#48]
 
 (48) BroadcastExchange
@@ -302,7 +302,7 @@ Arguments: 100, [c_customer_id#35 ASC NULLS FIRST, c_salutation#37 ASC NULLS FIR
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = wr_returned_date_sk#4 IN dynamicpruning#5
 BroadcastExchange (56)
-+- * ColumnarToRow (55)
++- * CometColumnarToRow (55)
    +- CometProject (54)
       +- CometFilter (53)
          +- CometScan parquet spark_catalog.default.date_dim (52)
@@ -323,7 +323,7 @@ Condition : ((isnotnull(d_year#7) AND (d_year#7 = 2002)) AND isnotnull(d_date_sk
 Input [2]: [d_date_sk#6, d_year#7]
 Arguments: [d_date_sk#6], [d_date_sk#6]
 
-(55) ColumnarToRow [codegen id : 1]
+(55) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#6]
 
 (56) BroadcastExchange

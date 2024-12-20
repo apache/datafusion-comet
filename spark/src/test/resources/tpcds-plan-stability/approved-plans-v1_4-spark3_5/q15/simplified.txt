@@ -1,5 +1,5 @@
 WholeStageCodegen (1)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [ca_zip,sum(cs_sales_price)]
         CometHashAggregate [ca_zip,sum(cs_sales_price),sum,sum(UnscaledValue(cs_sales_price))]
@@ -16,7 +16,7 @@ WholeStageCodegen (1)
                               SubqueryBroadcast [d_date_sk] #1
                                 BroadcastExchange #2
                                   WholeStageCodegen (1)
-                                    ColumnarToRow
+                                    CometColumnarToRow
                                       InputAdapter
                                         CometProject [d_date_sk]
                                           CometFilter [d_date_sk,d_year,d_qoy]

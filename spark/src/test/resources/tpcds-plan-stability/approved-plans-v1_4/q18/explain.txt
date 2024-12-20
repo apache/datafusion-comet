@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (41)
+* CometColumnarToRow (41)
 +- CometTakeOrderedAndProject (40)
    +- CometHashAggregate (39)
       +- CometExchange (38)
@@ -232,14 +232,14 @@ Functions [7]: [avg(cast(cs_quantity#4 as decimal(12,2))), avg(cast(cs_list_pric
 Input [11]: [i_item_id#29, ca_country#30, ca_state#31, ca_county#32, agg1#48, agg2#49, agg3#50, agg4#51, agg5#52, agg6#53, agg7#54]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[ca_country#30 ASC NULLS FIRST,ca_state#31 ASC NULLS FIRST,ca_county#32 ASC NULLS FIRST,i_item_id#29 ASC NULLS FIRST], output=[i_item_id#29,ca_country#30,ca_state#31,ca_county#32,agg1#48,agg2#49,agg3#50,agg4#51,agg5#52,agg6#53,agg7#54]), [i_item_id#29, ca_country#30, ca_state#31, ca_county#32, agg1#48, agg2#49, agg3#50, agg4#51, agg5#52, agg6#53, agg7#54], 100, [ca_country#30 ASC NULLS FIRST, ca_state#31 ASC NULLS FIRST, ca_county#32 ASC NULLS FIRST, i_item_id#29 ASC NULLS FIRST], [i_item_id#29, ca_country#30, ca_state#31, ca_county#32, agg1#48, agg2#49, agg3#50, agg4#51, agg5#52, agg6#53, agg7#54]
 
-(41) ColumnarToRow [codegen id : 1]
+(41) CometColumnarToRow [codegen id : 1]
 Input [11]: [i_item_id#29, ca_country#30, ca_state#31, ca_county#32, agg1#48, agg2#49, agg3#50, agg4#51, agg5#52, agg6#53, agg7#54]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = cs_sold_date_sk#9 IN dynamicpruning#10
 BroadcastExchange (46)
-+- * ColumnarToRow (45)
++- * CometColumnarToRow (45)
    +- CometProject (44)
       +- CometFilter (43)
          +- CometScan parquet spark_catalog.default.date_dim (42)
@@ -260,7 +260,7 @@ Condition : ((isnotnull(d_year#26) AND (d_year#26 = 1998)) AND isnotnull(d_date_
 Input [2]: [d_date_sk#25, d_year#26]
 Arguments: [d_date_sk#25], [d_date_sk#25]
 
-(45) ColumnarToRow [codegen id : 1]
+(45) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#25]
 
 (46) BroadcastExchange

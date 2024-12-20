@@ -20,7 +20,7 @@ TakeOrderedAndProject (43)
       :     :     :                                +- * HashAggregate (7)
       :     :     :                                   +- Exchange (6)
       :     :     :                                      +- * HashAggregate (5)
-      :     :     :                                         +- * ColumnarToRow (4)
+      :     :     :                                         +- * CometColumnarToRow (4)
       :     :     :                                            +- CometProject (3)
       :     :     :                                               +- CometFilter (2)
       :     :     :                                                  +- CometScan parquet spark_catalog.default.store_sales (1)
@@ -38,7 +38,7 @@ TakeOrderedAndProject (43)
       :     :                                      +- * HashAggregate (20)
       :     :                                         +- ReusedExchange (19)
       :     +- BroadcastExchange (37)
-      :        +- * ColumnarToRow (36)
+      :        +- * CometColumnarToRow (36)
       :           +- CometFilter (35)
       :              +- CometScan parquet spark_catalog.default.item (34)
       +- ReusedExchange (40)
@@ -59,7 +59,7 @@ Condition : (isnotnull(ss_store_sk#2) AND (ss_store_sk#2 = 4))
 Input [4]: [ss_item_sk#1, ss_store_sk#2, ss_net_profit#3, ss_sold_date_sk#4]
 Arguments: [ss_item_sk#1, ss_net_profit#3], [ss_item_sk#1, ss_net_profit#3]
 
-(4) ColumnarToRow [codegen id : 1]
+(4) CometColumnarToRow [codegen id : 1]
 Input [2]: [ss_item_sk#1, ss_net_profit#3]
 
 (5) HashAggregate [codegen id : 1]
@@ -199,7 +199,7 @@ ReadSchema: struct<i_item_sk:int,i_product_name:string>
 Input [2]: [i_item_sk#23, i_product_name#24]
 Condition : isnotnull(i_item_sk#23)
 
-(36) ColumnarToRow [codegen id : 11]
+(36) CometColumnarToRow [codegen id : 11]
 Input [2]: [i_item_sk#23, i_product_name#24]
 
 (37) BroadcastExchange
@@ -239,7 +239,7 @@ Subquery:1 Hosting operator id = 8 Hosting Expression = Subquery scalar-subquery
 * HashAggregate (50)
 +- Exchange (49)
    +- * HashAggregate (48)
-      +- * ColumnarToRow (47)
+      +- * CometColumnarToRow (47)
          +- CometProject (46)
             +- CometFilter (45)
                +- CometScan parquet spark_catalog.default.store_sales (44)
@@ -260,7 +260,7 @@ Condition : ((isnotnull(ss_store_sk#30) AND (ss_store_sk#30 = 4)) AND isnull(ss_
 Input [4]: [ss_addr_sk#29, ss_store_sk#30, ss_net_profit#31, ss_sold_date_sk#32]
 Arguments: [ss_store_sk#30, ss_net_profit#31], [ss_store_sk#30, ss_net_profit#31]
 
-(47) ColumnarToRow [codegen id : 1]
+(47) CometColumnarToRow [codegen id : 1]
 Input [2]: [ss_store_sk#30, ss_net_profit#31]
 
 (48) HashAggregate [codegen id : 1]

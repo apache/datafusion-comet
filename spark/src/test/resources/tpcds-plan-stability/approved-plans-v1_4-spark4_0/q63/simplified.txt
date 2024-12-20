@@ -14,7 +14,7 @@ TakeOrderedAndProject [i_manager_id,avg_monthly_sales,sum_sales]
                           Exchange [i_manager_id,d_moy] #2
                             WholeStageCodegen (1)
                               HashAggregate [i_manager_id,d_moy,ss_sales_price] [sum,sum]
-                                ColumnarToRow
+                                CometColumnarToRow
                                   InputAdapter
                                     CometProject [i_manager_id,ss_sales_price,d_moy]
                                       CometBroadcastHashJoin [i_manager_id,ss_store_sk,ss_sales_price,d_moy,s_store_sk]
@@ -31,7 +31,7 @@ TakeOrderedAndProject [i_manager_id,avg_monthly_sales,sum_sales]
                                                       SubqueryBroadcast [d_date_sk] #1
                                                         BroadcastExchange #4
                                                           WholeStageCodegen (1)
-                                                            ColumnarToRow
+                                                            CometColumnarToRow
                                                               InputAdapter
                                                                 CometProject [d_date_sk,d_moy]
                                                                   CometFilter [d_date_sk,d_month_seq,d_moy]

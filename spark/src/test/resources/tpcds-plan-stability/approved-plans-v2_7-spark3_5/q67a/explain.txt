@@ -6,7 +6,7 @@ TakeOrderedAndProject (71)
          +- * Sort (67)
             +- Exchange (66)
                +- WindowGroupLimit (65)
-                  +- * ColumnarToRow (64)
+                  +- * CometColumnarToRow (64)
                      +- CometSort (63)
                         +- CometUnion (62)
                            :- CometHashAggregate (21)
@@ -365,7 +365,7 @@ Child 8 Input [9]: [i_category#177, i_class#178, i_brand#179, i_product_name#180
 Input [9]: [i_category#17, i_class#16, i_brand#15, i_product_name#18, d_year#9, d_qoy#11, d_moy#10, s_store_id#13, sumsales#141]
 Arguments: [i_category#17, i_class#16, i_brand#15, i_product_name#18, d_year#9, d_qoy#11, d_moy#10, s_store_id#13, sumsales#141], [i_category#17 ASC NULLS FIRST, sumsales#141 DESC NULLS LAST]
 
-(64) ColumnarToRow [codegen id : 1]
+(64) CometColumnarToRow [codegen id : 1]
 Input [9]: [i_category#17, i_class#16, i_brand#15, i_product_name#18, d_year#9, d_qoy#11, d_moy#10, s_store_id#13, sumsales#141]
 
 (65) WindowGroupLimit
@@ -400,7 +400,7 @@ Arguments: 100, [i_category#17 ASC NULLS FIRST, i_class#16 ASC NULLS FIRST, i_br
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#5 IN dynamicpruning#6
 BroadcastExchange (76)
-+- * ColumnarToRow (75)
++- * CometColumnarToRow (75)
    +- CometProject (74)
       +- CometFilter (73)
          +- CometScan parquet spark_catalog.default.date_dim (72)
@@ -421,7 +421,7 @@ Condition : (((isnotnull(d_month_seq#8) AND (d_month_seq#8 >= 1212)) AND (d_mont
 Input [5]: [d_date_sk#7, d_month_seq#8, d_year#9, d_moy#10, d_qoy#11]
 Arguments: [d_date_sk#7, d_year#9, d_moy#10, d_qoy#11], [d_date_sk#7, d_year#9, d_moy#10, d_qoy#11]
 
-(75) ColumnarToRow [codegen id : 1]
+(75) CometColumnarToRow [codegen id : 1]
 Input [4]: [d_date_sk#7, d_year#9, d_moy#10, d_qoy#11]
 
 (76) BroadcastExchange

@@ -5,7 +5,7 @@ TakeOrderedAndProject (86)
    :  +- * HashAggregate (64)
    :     +- Exchange (63)
    :        +- * HashAggregate (62)
-   :           +- * ColumnarToRow (61)
+   :           +- * CometColumnarToRow (61)
    :              +- CometProject (60)
    :                 +- CometBroadcastHashJoin (59)
    :                    :- CometProject (54)
@@ -71,7 +71,7 @@ TakeOrderedAndProject (86)
          +- * HashAggregate (82)
             +- Exchange (81)
                +- * HashAggregate (80)
-                  +- * ColumnarToRow (79)
+                  +- * CometColumnarToRow (79)
                      +- CometProject (78)
                         +- CometBroadcastHashJoin (77)
                            :- CometProject (72)
@@ -372,7 +372,7 @@ Arguments: [ss_sold_date_sk#4], [d_date_sk#43], Inner, BuildRight
 Input [7]: [ss_quantity#2, ss_list_price#3, ss_sold_date_sk#4, i_brand_id#40, i_class_id#41, i_category_id#42, d_date_sk#43]
 Arguments: [ss_quantity#2, ss_list_price#3, i_brand_id#40, i_class_id#41, i_category_id#42], [ss_quantity#2, ss_list_price#3, i_brand_id#40, i_class_id#41, i_category_id#42]
 
-(61) ColumnarToRow [codegen id : 1]
+(61) CometColumnarToRow [codegen id : 1]
 Input [5]: [ss_quantity#2, ss_list_price#3, i_brand_id#40, i_class_id#41, i_category_id#42]
 
 (62) HashAggregate [codegen id : 1]
@@ -457,7 +457,7 @@ Arguments: [ss_sold_date_sk#63], [d_date_sk#70], Inner, BuildRight
 Input [7]: [ss_quantity#61, ss_list_price#62, ss_sold_date_sk#63, i_brand_id#67, i_class_id#68, i_category_id#69, d_date_sk#70]
 Arguments: [ss_quantity#61, ss_list_price#62, i_brand_id#67, i_class_id#68, i_category_id#69], [ss_quantity#61, ss_list_price#62, i_brand_id#67, i_class_id#68, i_category_id#69]
 
-(79) ColumnarToRow [codegen id : 2]
+(79) CometColumnarToRow [codegen id : 2]
 Input [5]: [ss_quantity#61, ss_list_price#62, i_brand_id#67, i_class_id#68, i_category_id#69]
 
 (80) HashAggregate [codegen id : 2]
@@ -502,7 +502,7 @@ Subquery:1 Hosting operator id = 65 Hosting Expression = Subquery scalar-subquer
 * HashAggregate (103)
 +- Exchange (102)
    +- * HashAggregate (101)
-      +- * ColumnarToRow (100)
+      +- * CometColumnarToRow (100)
          +- CometUnion (99)
             :- CometProject (90)
             :  +- CometBroadcastHashJoin (89)
@@ -580,7 +580,7 @@ Child 0 Input [2]: [quantity#90, list_price#91]
 Child 1 Input [2]: [quantity#97, list_price#98]
 Child 2 Input [2]: [quantity#104, list_price#105]
 
-(100) ColumnarToRow [codegen id : 1]
+(100) CometColumnarToRow [codegen id : 1]
 Input [2]: [quantity#90, list_price#91]
 
 (101) HashAggregate [codegen id : 1]
@@ -609,7 +609,7 @@ Subquery:4 Hosting operator id = 95 Hosting Expression = ws_sold_date_sk#101 IN 
 
 Subquery:5 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#4 IN dynamicpruning#5
 BroadcastExchange (108)
-+- * ColumnarToRow (107)
++- * CometColumnarToRow (107)
    +- CometProject (106)
       +- CometFilter (105)
          +- CometScan parquet spark_catalog.default.date_dim (104)
@@ -630,7 +630,7 @@ Condition : ((isnotnull(d_week_seq#44) AND (d_week_seq#44 = ReusedSubquery Subqu
 Input [2]: [d_date_sk#43, d_week_seq#44]
 Arguments: [d_date_sk#43], [d_date_sk#43]
 
-(107) ColumnarToRow [codegen id : 1]
+(107) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#43]
 
 (108) BroadcastExchange
@@ -640,7 +640,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint))
 Subquery:6 Hosting operator id = 105 Hosting Expression = ReusedSubquery Subquery scalar-subquery#45, [id=#46]
 
 Subquery:7 Hosting operator id = 104 Hosting Expression = Subquery scalar-subquery#45, [id=#46]
-* ColumnarToRow (112)
+* CometColumnarToRow (112)
 +- CometProject (111)
    +- CometFilter (110)
       +- CometScan parquet spark_catalog.default.date_dim (109)
@@ -661,12 +661,12 @@ Condition : (((((isnotnull(d_year#113) AND isnotnull(d_moy#114)) AND isnotnull(d
 Input [4]: [d_week_seq#112, d_year#113, d_moy#114, d_dom#115]
 Arguments: [d_week_seq#112], [d_week_seq#112]
 
-(112) ColumnarToRow [codegen id : 1]
+(112) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_week_seq#112]
 
 Subquery:8 Hosting operator id = 5 Hosting Expression = ss_sold_date_sk#11 IN dynamicpruning#12
 BroadcastExchange (117)
-+- * ColumnarToRow (116)
++- * CometColumnarToRow (116)
    +- CometProject (115)
       +- CometFilter (114)
          +- CometScan parquet spark_catalog.default.date_dim (113)
@@ -687,7 +687,7 @@ Condition : (((isnotnull(d_year#116) AND (d_year#116 >= 1999)) AND (d_year#116 <
 Input [2]: [d_date_sk#26, d_year#116]
 Arguments: [d_date_sk#26], [d_date_sk#26]
 
-(116) ColumnarToRow [codegen id : 1]
+(116) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#26]
 
 (117) BroadcastExchange
@@ -706,7 +706,7 @@ Subquery:13 Hosting operator id = 83 Hosting Expression = ReusedSubquery Subquer
 
 Subquery:14 Hosting operator id = 66 Hosting Expression = ss_sold_date_sk#63 IN dynamicpruning#64
 BroadcastExchange (122)
-+- * ColumnarToRow (121)
++- * CometColumnarToRow (121)
    +- CometProject (120)
       +- CometFilter (119)
          +- CometScan parquet spark_catalog.default.date_dim (118)
@@ -727,7 +727,7 @@ Condition : ((isnotnull(d_week_seq#71) AND (d_week_seq#71 = ReusedSubquery Subqu
 Input [2]: [d_date_sk#70, d_week_seq#71]
 Arguments: [d_date_sk#70], [d_date_sk#70]
 
-(121) ColumnarToRow [codegen id : 1]
+(121) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#70]
 
 (122) BroadcastExchange
@@ -737,7 +737,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint))
 Subquery:15 Hosting operator id = 119 Hosting Expression = ReusedSubquery Subquery scalar-subquery#72, [id=#73]
 
 Subquery:16 Hosting operator id = 118 Hosting Expression = Subquery scalar-subquery#72, [id=#73]
-* ColumnarToRow (126)
+* CometColumnarToRow (126)
 +- CometProject (125)
    +- CometFilter (124)
       +- CometScan parquet spark_catalog.default.date_dim (123)
@@ -758,7 +758,7 @@ Condition : (((((isnotnull(d_year#118) AND isnotnull(d_moy#119)) AND isnotnull(d
 Input [4]: [d_week_seq#117, d_year#118, d_moy#119, d_dom#120]
 Arguments: [d_week_seq#117], [d_week_seq#117]
 
-(126) ColumnarToRow [codegen id : 1]
+(126) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_week_seq#117]
 
 Subquery:17 Hosting operator id = 74 Hosting Expression = ReusedSubquery Subquery scalar-subquery#72, [id=#73]

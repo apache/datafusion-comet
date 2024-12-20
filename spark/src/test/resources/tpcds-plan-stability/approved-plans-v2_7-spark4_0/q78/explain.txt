@@ -8,7 +8,7 @@ TakeOrderedAndProject (69)
       :     :  +- * HashAggregate (21)
       :     :     +- Exchange (20)
       :     :        +- * HashAggregate (19)
-      :     :           +- * ColumnarToRow (18)
+      :     :           +- * CometColumnarToRow (18)
       :     :              +- CometProject (17)
       :     :                 +- CometBroadcastHashJoin (16)
       :     :                    :- CometProject (12)
@@ -31,7 +31,7 @@ TakeOrderedAndProject (69)
       :           +- * HashAggregate (41)
       :              +- Exchange (40)
       :                 +- * HashAggregate (39)
-      :                    +- * ColumnarToRow (38)
+      :                    +- * CometColumnarToRow (38)
       :                       +- CometProject (37)
       :                          +- CometBroadcastHashJoin (36)
       :                             :- CometProject (34)
@@ -52,7 +52,7 @@ TakeOrderedAndProject (69)
             +- * HashAggregate (64)
                +- Exchange (63)
                   +- * HashAggregate (62)
-                     +- * ColumnarToRow (61)
+                     +- * CometColumnarToRow (61)
                         +- CometProject (60)
                            +- CometBroadcastHashJoin (59)
                               :- CometProject (57)
@@ -150,7 +150,7 @@ Arguments: [ss_sold_date_sk#7], [d_date_sk#12], Inner, BuildRight
 Input [8]: [ss_item_sk#1, ss_customer_sk#2, ss_quantity#4, ss_wholesale_cost#5, ss_sales_price#6, ss_sold_date_sk#7, d_date_sk#12, d_year#13]
 Arguments: [ss_item_sk#1, ss_customer_sk#2, ss_quantity#4, ss_wholesale_cost#5, ss_sales_price#6, d_year#13], [ss_item_sk#1, ss_customer_sk#2, ss_quantity#4, ss_wholesale_cost#5, ss_sales_price#6, d_year#13]
 
-(18) ColumnarToRow [codegen id : 1]
+(18) CometColumnarToRow [codegen id : 1]
 Input [6]: [ss_item_sk#1, ss_customer_sk#2, ss_quantity#4, ss_wholesale_cost#5, ss_sales_price#6, d_year#13]
 
 (19) HashAggregate [codegen id : 1]
@@ -243,7 +243,7 @@ Arguments: [ws_sold_date_sk#33], [d_date_sk#38], Inner, BuildRight
 Input [8]: [ws_item_sk#27, ws_bill_customer_sk#28, ws_quantity#30, ws_wholesale_cost#31, ws_sales_price#32, ws_sold_date_sk#33, d_date_sk#38, d_year#39]
 Arguments: [ws_item_sk#27, ws_bill_customer_sk#28, ws_quantity#30, ws_wholesale_cost#31, ws_sales_price#32, d_year#39], [ws_item_sk#27, ws_bill_customer_sk#28, ws_quantity#30, ws_wholesale_cost#31, ws_sales_price#32, d_year#39]
 
-(38) ColumnarToRow [codegen id : 3]
+(38) CometColumnarToRow [codegen id : 3]
 Input [6]: [ws_item_sk#27, ws_bill_customer_sk#28, ws_quantity#30, ws_wholesale_cost#31, ws_sales_price#32, d_year#39]
 
 (39) HashAggregate [codegen id : 3]
@@ -350,7 +350,7 @@ Arguments: [cs_sold_date_sk#60], [d_date_sk#65], Inner, BuildRight
 Input [8]: [cs_bill_customer_sk#54, cs_item_sk#55, cs_quantity#57, cs_wholesale_cost#58, cs_sales_price#59, cs_sold_date_sk#60, d_date_sk#65, d_year#66]
 Arguments: [cs_bill_customer_sk#54, cs_item_sk#55, cs_quantity#57, cs_wholesale_cost#58, cs_sales_price#59, d_year#66], [cs_bill_customer_sk#54, cs_item_sk#55, cs_quantity#57, cs_wholesale_cost#58, cs_sales_price#59, d_year#66]
 
-(61) ColumnarToRow [codegen id : 6]
+(61) CometColumnarToRow [codegen id : 6]
 Input [6]: [cs_bill_customer_sk#54, cs_item_sk#55, cs_quantity#57, cs_wholesale_cost#58, cs_sales_price#59, d_year#66]
 
 (62) HashAggregate [codegen id : 6]
@@ -397,7 +397,7 @@ Arguments: 100, [ss_sold_year#23 ASC NULLS FIRST, ss_item_sk#1 ASC NULLS FIRST, 
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#7 IN dynamicpruning#8
 BroadcastExchange (73)
-+- * ColumnarToRow (72)
++- * CometColumnarToRow (72)
    +- CometFilter (71)
       +- CometScan parquet spark_catalog.default.date_dim (70)
 
@@ -413,7 +413,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int>
 Input [2]: [d_date_sk#12, d_year#13]
 Condition : ((isnotnull(d_year#13) AND (d_year#13 = 2000)) AND isnotnull(d_date_sk#12))
 
-(72) ColumnarToRow [codegen id : 1]
+(72) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#12, d_year#13]
 
 (73) BroadcastExchange
