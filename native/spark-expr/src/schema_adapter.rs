@@ -17,12 +17,8 @@
 
 //! Custom schema adapter that uses Spark-compatible casts
 
-use crate::cast::cast_supported;
-use crate::{spark_cast, SparkCastOptions};
+use crate::{spark_cast, EvalMode, SparkCastOptions};
 use arrow_array::{new_null_array, Array, RecordBatch, RecordBatchOptions};
-use arrow_schema::DataType::{
-    Boolean, Dictionary, Int16, Int32, Int64, Int8, UInt16, UInt32, UInt64, UInt8,
-};
 use arrow_schema::{DataType, Schema, SchemaRef};
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
 use datafusion_common::plan_err;
