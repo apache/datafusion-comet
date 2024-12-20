@@ -2522,18 +2522,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
-
-        // Test basic array_remove functionality
-        checkSparkAnswerAndOperator(sql("SELECT array_remove(array(1, 2, 3, null, 3), 2)"))
-
-        // Test removing multiple occurrences
-        checkSparkAnswerAndOperator(sql("SELECT array_remove(array(1, 3, 3, null, 3), 3)"))
-
-        // Test removing null
-        checkSparkAnswerAndOperator(sql("SELECT array_remove(array(1, 2, null, 4, null), null)"))
-
-        // Test when element doesn't exist
-        checkSparkAnswerAndOperator(sql("SELECT array_remove(array(1, 2, 3), 5)"))
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1");
+        checkSparkAnswerAndOperator(sql("SELECT array_remove(array(_2, _3,_4), 2) from t1"))
+        checkSparkAnswerAndOperator(sql("SELECT array_remove(array(_2, _3,_4), 3) from t1"))
+        checkSparkAnswerAndOperator(sql("SELECT array_remove(array(_2, _3,_4), 5) from t1"))
       }
     }
   }
