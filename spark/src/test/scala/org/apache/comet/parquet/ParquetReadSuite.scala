@@ -37,8 +37,7 @@ import org.apache.spark.SparkException
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
-import org.apache.spark.sql.comet.CometBatchScanExec
-import org.apache.spark.sql.comet.CometScanExec
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -1414,8 +1413,11 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
       data: Seq[T],
       f: Row => Boolean = _ => true): Unit = {
     withParquetDataFrame(data) { r =>
-      val scans = collect(r.filter(f).queryExecution.executedPlan) { case p: CometScanExec =>
-        p
+      val scans = collect(r.filter(f).queryExecution.executedPlan) {
+        case p: CometScanExec =>
+          p
+        case p: CometNativeScanExec =>
+          p
       }
       if (CometConf.COMET_ENABLED.get()) {
         assert(scans.nonEmpty)

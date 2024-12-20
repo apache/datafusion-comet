@@ -17,6 +17,7 @@
 
 //! Define JNI APIs which can be called from Java/Scala.
 
+use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 use arrow::datatypes::DataType as ArrowDataType;
 use arrow_array::RecordBatch;
 use datafusion::{
@@ -39,8 +40,6 @@ use jni::{
 };
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc, task::Poll};
-
-use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 
 use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
@@ -69,6 +68,8 @@ struct ExecutionContext {
     pub id: i64,
     /// The deserialized Spark plan
     pub spark_plan: Operator,
+    /// The number of partitions
+    pub partition_count: usize,
     /// The DataFusion root operator converted from the `spark_plan`
     pub root_op: Option<Arc<SparkPlan>>,
     /// The input sources for the DataFusion plan
@@ -103,6 +104,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     id: jlong,
     iterators: jobjectArray,
     serialized_query: jbyteArray,
+    partition_count: jint,
     metrics_node: JObject,
     comet_task_memory_manager_obj: JObject,
     batch_size: jint,
@@ -163,6 +165,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         let exec_context = Box::new(ExecutionContext {
             id,
             spark_plan,
+            partition_count: partition_count as usize,
             root_op: None,
             scans: vec![],
             input_sources,
@@ -325,6 +328,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             let (scans, root_op) = planner.create_plan(
                 &exec_context.spark_plan,
                 &mut exec_context.input_sources.clone(),
+                exec_context.partition_count,
             )?;
             let physical_plan_time = start.elapsed();
 
@@ -339,12 +343,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             }
 
             let task_ctx = exec_context.session_ctx.task_ctx();
-            let stream = exec_context
-                .root_op
-                .as_ref()
-                .unwrap()
-                .native_plan
-                .execute(0, task_ctx)?;
+
+            let plan = exec_context.root_op.as_ref().unwrap();
+
+            let stream = plan.native_plan.execute(partition as usize, task_ctx)?;
             exec_context.stream = Some(stream);
         } else {
             // Pull input batches
