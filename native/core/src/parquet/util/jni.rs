@@ -24,7 +24,6 @@ use jni::{
     JNIEnv,
 };
 
-use crate::execution::sort::RdxSort;
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
 use datafusion_execution::object_store::ObjectStoreUrl;
