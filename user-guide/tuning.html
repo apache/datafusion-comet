@@ -335,6 +335,11 @@ under the License.
      </li>
     </ul>
    </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#shuffle-compression">
+     Shuffle Compression
+    </a>
+   </li>
   </ul>
  </li>
  <li class="toc-h2 nav-item toc-entry">
@@ -466,6 +471,12 @@ native shuffle currently only supports <code class="docutils literal notranslate
 <p>To enable native shuffle, set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code> to <code class="docutils literal notranslate"><span class="pre">native</span></code>. If this mode is explicitly set,
 then any shuffle operations that cannot be supported in this mode will fall back to Spark.</p>
 </section>
+</section>
+<section id="shuffle-compression">
+<h3>Shuffle Compression<a class="headerlink" href="#shuffle-compression" title="Link to this heading">¶</a></h3>
+<p>By default, Spark compresses shuffle files using LZ4 compression. Comet overrides this behavior with ZSTD compression.
+Compression can be disabled by setting <code class="docutils literal notranslate"><span class="pre">spark.shuffle.compress=false</span></code>, which may result in faster shuffle times in
+certain environments, such as single-node setups with fast NVMe drives, at the expense of increased disk space usage.</p>
 </section>
 </section>
 <section id="explain-plan">
