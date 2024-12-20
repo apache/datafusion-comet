@@ -1,3 +1,5 @@
+use arrow::ipc::reader::StreamReader;
+use arrow::ipc::writer::StreamWriter;
 use arrow_array::{Array, ArrayRef, RecordBatch, StringArray};
 use arrow_buffer::{Buffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field, Schema};
@@ -5,7 +7,7 @@ use datafusion_common::DataFusionError;
 use std::io::Write;
 use std::sync::Arc;
 
-pub fn write_batch(batch: &RecordBatch, output: &mut Vec<u8>) -> Result<(), DataFusionError> {
+pub fn write_batch_fast(batch: &RecordBatch, output: &mut Vec<u8>) -> Result<(), DataFusionError> {
     // write schema
     let schema_len = batch.schema().fields().len();
     output.write_all(&schema_len.to_le_bytes()[..])?;
@@ -57,7 +59,7 @@ pub fn write_batch(batch: &RecordBatch, output: &mut Vec<u8>) -> Result<(), Data
     Ok(())
 }
 
-pub fn read_batch(input: &[u8]) -> Result<RecordBatch, DataFusionError> {
+pub fn read_batch_fast(input: &[u8]) -> Result<RecordBatch, DataFusionError> {
     let mut length = [0; 8];
     length.copy_from_slice(&input[0..8]);
     let schema_len = usize::from_le_bytes(length);
@@ -116,6 +118,18 @@ pub fn read_batch(input: &[u8]) -> Result<RecordBatch, DataFusionError> {
     Ok(RecordBatch::try_new(schema, arrays).unwrap())
 }
 
+pub fn write_batch_ipc(batch: &RecordBatch, output: &mut Vec<u8>) -> Result<(), DataFusionError> {
+    let mut arrow_writer = StreamWriter::try_new(output, &batch.schema())?;
+    arrow_writer.write(batch)?;
+    arrow_writer.finish().unwrap();
+    Ok(())
+}
+
+pub fn read_batch_ipc(input: &[u8]) -> Result<RecordBatch, DataFusionError> {
+    let mut arrow_reader = StreamReader::try_new(input, None).unwrap();
+    Ok(arrow_reader.next().unwrap().unwrap())
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -128,10 +142,38 @@ mod test {
         let batch = create_batch();
         let mut output = Vec::new();
 
-        write_batch(&batch, &mut output).unwrap();
-        // assert_eq!(64463, output.len());
+        write_batch_fast(&batch, &mut output).unwrap();
+        assert_eq!(193376, output.len());
 
-        let batch2 = read_batch(&output).unwrap();
+        let batch2 = read_batch_fast(&output).unwrap();
+
+        assert_eq!(batch.schema(), batch2.schema());
+        assert_eq!(batch.num_rows(), batch2.num_rows());
+
+        let a = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let b = batch2
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for i in 0..batch.num_rows() {
+            assert_eq!(a.value(i), b.value(i));
+        }
+    }
+
+    #[test]
+    fn roundtrip_batch_ipc() {
+        let batch = create_batch();
+        let mut output = Vec::new();
+
+        write_batch_ipc(&batch, &mut output).unwrap();
+        assert_eq!(197192, output.len());
+
+        let batch2 = read_batch_ipc(&output).unwrap();
 
         assert_eq!(batch.schema(), batch2.schema());
         assert_eq!(batch.num_rows(), batch2.num_rows());
@@ -152,12 +194,16 @@ mod test {
     }
 
     fn create_batch() -> RecordBatch {
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, false)]));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("c0", DataType::Utf8, false),
+            Field::new("c1", DataType::Utf8, false),
+            Field::new("c2", DataType::Utf8, false),
+        ]));
         let mut b = StringBuilder::new();
         for i in 0..8192 {
             b.append_value(format!("{i}"));
         }
-        let array = b.finish();
-        RecordBatch::try_new(schema.clone(), vec![Arc::new(array)]).unwrap()
+        let array = Arc::new(b.finish());
+        RecordBatch::try_new(schema.clone(), vec![array.clone(), array.clone(), array]).unwrap()
     }
 }

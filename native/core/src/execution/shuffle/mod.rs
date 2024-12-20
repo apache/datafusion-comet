@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod batch_serde;
+pub mod batch_serde;
 mod list;
 mod map;
 pub mod row;
