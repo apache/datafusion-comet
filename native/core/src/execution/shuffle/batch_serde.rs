@@ -205,7 +205,7 @@ mod test {
         }
         let array: ArrayRef = Arc::new(b.finish());
         RecordBatch::try_new(
-            schema.clone(),
+            Arc::clone(&schema),
             vec![Arc::clone(&array), Arc::clone(&array), array],
         )
         .unwrap()

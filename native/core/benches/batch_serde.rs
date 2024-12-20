@@ -30,32 +30,28 @@ fn criterion_benchmark(c: &mut Criterion) {
         let mut buffer = vec![];
         b.iter(|| {
             buffer.clear();
-            criterion::black_box(write_batch_fast(&batch, &mut buffer).unwrap());
+            criterion::black_box(write_batch_fast(&batch, &mut buffer).unwrap())
         });
     });
     group.bench_function("batch_serde: read_batch_fast", |b| {
         let batch = create_batch();
         let mut buffer = vec![];
         write_batch_fast(&batch, &mut buffer).unwrap();
-        b.iter(|| {
-            criterion::black_box(read_batch_fast(&buffer).unwrap());
-        });
+        b.iter(|| criterion::black_box(read_batch_fast(&buffer).unwrap()));
     });
     group.bench_function("batch_serde: write_batch_ipc", |b| {
         let batch = create_batch();
         let mut buffer = vec![];
         b.iter(|| {
             buffer.clear();
-            criterion::black_box(write_batch_ipc(&batch, &mut buffer).unwrap());
+            criterion::black_box(write_batch_ipc(&batch, &mut buffer).unwrap())
         });
     });
     group.bench_function("batch_serde: read_batch_ipc", |b| {
         let batch = create_batch();
         let mut buffer = vec![];
         write_batch_ipc(&batch, &mut buffer).unwrap();
-        b.iter(|| {
-            criterion::black_box(read_batch_ipc(&buffer).unwrap());
-        });
+        b.iter(|| criterion::black_box(read_batch_ipc(&buffer).unwrap()));
     });
 }
 
@@ -72,7 +68,7 @@ fn create_batch() -> RecordBatch {
     let array: ArrayRef = Arc::new(array.finish());
     let array = Arc::new(array);
     RecordBatch::try_new(
-        schema.clone(),
+        Arc::clone(&schema),
         vec![Arc::clone(&array), Arc::clone(&array), array],
     )
     .unwrap()
