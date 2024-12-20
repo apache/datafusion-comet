@@ -17,9 +17,7 @@
 
 use arrow_array::{builder::StringBuilder, ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use comet::execution::shuffle::batch_serde::{
-    read_batch_fast, read_batch_ipc, write_batch_fast, write_batch_ipc,
-};
+use comet::execution::shuffle::batch_serde::{read_batch_fast, read_batch_ipc, write_batch_fast, write_batch_ipc, write_batch_ipc_data_only};
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::sync::Arc;
 
@@ -72,7 +70,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         let mut buffer = vec![];
         b.iter(|| {
             buffer.clear();
-            criterion::black_box(write_batch_ipc(&batch, &mut buffer).unwrap())
+            criterion::black_box(write_batch_ipc_data_only(&batch, &mut buffer).unwrap())
         });
     });
 }
