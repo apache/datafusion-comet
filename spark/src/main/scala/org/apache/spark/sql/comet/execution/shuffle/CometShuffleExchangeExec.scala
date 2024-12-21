@@ -40,6 +40,7 @@ import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.comet.{CometExec, CometMetricNode, CometPlan}
 import org.apache.spark.sql.comet.shims.ShimCometShuffleWriteProcessor
+import org.apache.spark.sql.comet.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffledBatchRDD, CometShuffleDependency, ShuffleType}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, ShuffleExchangeLike, ShuffleOrigin}
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
@@ -557,6 +558,7 @@ class CometShuffleWriteProcessor(
       if (SparkEnv.get.conf.getBoolean("spark.shuffle.compress", true)) {
         val codec = CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_CODEC.get() match {
           case "zstd" => CompressionCodec.Zstd
+          case "lz4" => CompressionCodec.Lz4
           case other => throw new UnsupportedOperationException(s"invalid codec: $other")
         }
         shuffleWriterBuilder.setCodec(codec)

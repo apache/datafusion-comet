@@ -1055,6 +1055,7 @@ impl PhysicalPlanner {
                     Ok(SparkCompressionCodec::Zstd) => {
                         Ok(CompressionCodec::Zstd(writer.compression_level))
                     }
+                    Ok(SparkCompressionCodec::Lz4) => Ok(CompressionCodec::Lz4Frame),
                     _ => Err(ExecutionError::GeneralError(format!(
                         "Unsupported shuffle compression codec: {:?}",
                         writer.codec
