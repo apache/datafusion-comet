@@ -17,14 +17,11 @@
  * under the License.
  */
 
-package org.apache.spark.sql.comet.execution.shuffle
+package org.apache.spark.sql.comet.shuffle
 
-import java.io.EOFException
-import java.io.InputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.nio.channels.Channels
-import java.nio.channels.ReadableByteChannel
+import java.io.{EOFException, InputStream}
+import java.nio.{ByteBuffer, ByteOrder}
+import java.nio.channels.{Channels, ReadableByteChannel}
 
 import org.apache.spark.TaskContext
 import org.apache.spark.internal.Logging
@@ -37,7 +34,7 @@ case class IpcInputStreamIterator(
     extends Iterator[ReadableByteChannel]
     with Logging {
 
-  private[execution] val channel: ReadableByteChannel = if (in != null) {
+  private val channel: ReadableByteChannel = if (in != null) {
     Channels.newChannel(in)
   } else {
     null
@@ -49,7 +46,7 @@ case class IpcInputStreamIterator(
   // since all ipcs are sharing the same input stream and channel, the second
   // hasNext() must be called after the first ipc has been completely processed.
 
-  private[execution] var consumed = true
+  private var consumed = true
   private var finished = false
   private var currentIpcLength = 0L
   private var currentLimitedInputStream: LimitedInputStream = _

@@ -40,6 +40,7 @@ import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.comet.{CometExec, CometMetricNode, CometPlan}
 import org.apache.spark.sql.comet.shims.ShimCometShuffleWriteProcessor
+import org.apache.spark.sql.comet.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffledBatchRDD, CometShuffleDependency, ShuffleType}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, ShuffleExchangeLike, ShuffleOrigin}
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
