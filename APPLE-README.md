@@ -33,6 +33,32 @@ The Apple version of Comet differs from the Apache version in the following ways
 - The Apache version typically has all features enabled by default but we only enable a subset of features in the Apple
   version so that we can roll out features gradually once they are production-ready.
 
+### Memory Tuning
+
+Apple Comet provides two options for memory management:
+
+- **Unified Memory Management** shares an off-heap memory pool between Spark and Comet. This is the recommended option.
+- **Native Memory Management** leverages DataFusion's memory management for the native plans and allocates memory independently of Spark.
+
+### Unified Memory Management (default requirement for OSS Comet)
+
+This option is automatically enabled when `spark.memory.offHeap.enabled=true`.
+
+### Native Memory Management (only in Apple Comet)
+
+This option is automatically enabled when `spark.memory.offHeap.enabled=false`.
+
+- Each native plan has a dedicated memory pool.
+- By default, the size of each pool is `spark.comet.memory.overhead.factor * spark.executor.memory`.
+- It is important to take executor concurrency into account. The maximum number of concurrent plans in an executor can
+be calculated with `spark.executor.cores / spark.task.cpus`.
+- For example, if the executor can execute 4 plans concurrently, then the total amount of memory allocated will be
+`4 * spark.comet.memory.overhead.factor * spark.executor.memory`.
+- It is also possible to set `spark.comet.memoryOverhead` to the desired size for each pool, rather than calculating
+it based on `spark.comet.memory.overhead.factor`.
+- If both `spark.comet.memoryOverhead` and `spark.comet.memory.overhead.factor` are set, the former will be used.
+- Comet will allocate at least `spark.comet.memory.overhead.min` memory per pool.
+
 ## Release Notes 
 
 Release notes are available at [https://github.pie.apple.com/IPR/apache-arrow-datafusion-comet/releases](https://github.pie.apple.com/IPR/apache-arrow-datafusion-comet/releases).

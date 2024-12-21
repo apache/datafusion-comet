@@ -921,10 +921,14 @@ class CometSparkSessionExtensions
     override def apply(plan: SparkPlan): SparkPlan = {
 
       // Comet required off-heap memory to be enabled
+      // but not for internal release so that we can enable Comet by default without asking
+      // customers to set spark.memory.offHeap.size
       if (!isOffHeapEnabled(conf) && !isTesting) {
-        logWarning("Comet native exec disabled because spark.memory.offHeap.enabled=false")
-        withInfo(plan, "Comet native exec disabled because spark.memory.offHeap.enabled=false")
-        return plan
+        logWarning(
+          "For Comet native exec, setting spark.memory.offHeap.enabled=true is recommended")
+        // logWarning("Comet native exec disabled because spark.memory.offHeap.enabled=false")
+        // withInfo(plan, "Comet native exec disabled because spark.memory.offHeap.enabled=false")
+        // return plan
       }
 
       // DataFusion doesn't have ANSI mode. For now we just disable CometExec if ANSI mode is
@@ -1186,9 +1190,11 @@ object CometSparkSessionExtensions extends Logging {
   // 1. `COMET_EXEC_SHUFFLE_ENABLED` is true
   // 2. `spark.shuffle.manager` is set to `CometShuffleManager`
   // 3. Off-heap memory is enabled || Spark/Comet unit testing
+  //    Not requiring off-heap for internal release so that we can enable Comet by default
+  //    without asking customers to set spark.memory.offHeap.size
   private[comet] def isCometShuffleEnabled(conf: SQLConf): Boolean =
     COMET_EXEC_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf) &&
-      (isOffHeapEnabled(conf) || isTesting)
+      (true || isOffHeapEnabled(conf) || isTesting)
 
   private[comet] def getCometShuffleNotEnabledReason(conf: SQLConf): Option[String] = {
     if (!COMET_EXEC_SHUFFLE_ENABLED.get(conf)) {
