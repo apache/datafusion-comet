@@ -1569,9 +1569,7 @@ pub fn write_ipc_compressed<W: Write + Seek>(
     let mut timer = ipc_time.timer();
     let start_pos = output.stream_position()?;
 
-    // TODO write a more efficient header
-
-    // write encoded + compressed length placeholder
+    // write message length placeholder
     output.write_all(&[0u8; 8])?;
 
     // write number of columns because JVM side needs to know how many addresses to allocate
@@ -1621,8 +1619,6 @@ pub fn write_ipc_compressed<W: Write + Seek>(
 
     // fill ipc length
     let end_pos = output.stream_position()?;
-
-    // return compressed length including 4 bytes for codec header
     let compressed_length = end_pos - start_pos - 16;
 
     // fill ipc length
@@ -1632,7 +1628,7 @@ pub fn write_ipc_compressed<W: Write + Seek>(
 
     timer.stop();
 
-    Ok(compressed_length as usize)
+    Ok((end_pos - start_pos) as usize)
 }
 
 pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
@@ -1716,7 +1712,7 @@ mod test {
         )
         .unwrap();
         assert_eq!(40230, output.len());
-        assert_eq!(40214, length);
+        assert_eq!(40230, length);
 
         let ipc_without_length_prefix = &output[16..];
         let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
@@ -1737,7 +1733,7 @@ mod test {
         )
         .unwrap();
         assert_eq!(61756, output.len());
-        assert_eq!(61740, length);
+        assert_eq!(61756, length);
 
         let ipc_without_length_prefix = &output[16..];
         let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
