@@ -99,7 +99,6 @@ case class ShuffleBatchDecoderIterator(var in: InputStream, taskContext: TaskCon
     while (longBuf.hasRemaining && channel.read(longBuf) >= 0) {}
     longBuf.flip()
     val fieldCount = longBuf.getLong.toInt
-    assert(fieldCount>0, "fieldCount must be > 0")
 
     // read body
     val buffer = new Array[Byte](compressedLength - 8)
