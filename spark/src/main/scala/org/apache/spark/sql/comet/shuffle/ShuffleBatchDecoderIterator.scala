@@ -37,6 +37,7 @@ import org.apache.comet.vector.NativeUtil
  */
 case class ShuffleBatchDecoderIterator(var in: InputStream, taskContext: TaskContext)
     extends Iterator[ColumnarBatch] {
+  private val SPARK_LZ4_MAGIC = Array[Byte](76, 90, 52, 66, 108, 111, 99, 107) // "LZ4Block"
   private var nextBatch: Option[ColumnarBatch] = None
   private var finished = false;
   private val longBuf = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
@@ -49,7 +50,6 @@ case class ShuffleBatchDecoderIterator(var in: InputStream, taskContext: TaskCon
     })
   }
 
-  // TODO why would this ever be null?
   private val channel: ReadableByteChannel = if (in != null) {
     Channels.newChannel(in)
   } else {
@@ -84,6 +84,13 @@ case class ShuffleBatchDecoderIterator(var in: InputStream, taskContext: TaskCon
       throw new EOFException("Data corrupt: unexpected EOF while reading compressed ipc lengths")
     }
 
+    // make troubleshooting easier
+    if (longBuf.array().sameElements(SPARK_LZ4_MAGIC)) {
+      throw new IllegalStateException(
+        "Attempting to read Spark LZ4 stream with Comet shuffle block decoder")
+    }
+
+    // get compressed length (including headers)
     longBuf.flip()
     val compressedLength = longBuf.getLong.toInt
 
@@ -92,9 +99,10 @@ case class ShuffleBatchDecoderIterator(var in: InputStream, taskContext: TaskCon
     while (longBuf.hasRemaining && channel.read(longBuf) >= 0) {}
     longBuf.flip()
     val fieldCount = longBuf.getLong.toInt
+    assert(fieldCount>0, "fieldCount must be > 0")
 
     // read body
-    val buffer = new Array[Byte](compressedLength)
+    val buffer = new Array[Byte](compressedLength - 8)
     fillBuffer(in, buffer)
 
     // make native call to decode batch
@@ -121,7 +129,9 @@ case class ShuffleBatchDecoderIterator(var in: InputStream, taskContext: TaskCon
     var bytesRead = 0
     while (bytesRead < buffer.length) {
       val result = in.read(buffer, bytesRead, buffer.length - bytesRead)
-      if (result == -1) throw new EOFException()
+      if (result == -1) {
+        throw new EOFException(s"Expected ${buffer.length} bytes, only $bytesRead available")
+      }
       bytesRead += result
     }
   }

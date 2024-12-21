@@ -36,7 +36,7 @@ import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, PartitioningCollection, UnknownPartitioning}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.comet.plans.PartitioningPreservingUnaryExecNode
-import org.apache.spark.sql.comet.shuffle.ArrowReaderIterator
+import org.apache.spark.sql.comet.shuffle.{ArrowReaderIterator, ShuffleBatchDecoderIterator}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{BinaryExecNode, ColumnarToRowExec, ExecSubqueryExpression, ExplainUtils, LeafExecNode, ScalarSubquery, SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
@@ -87,7 +87,8 @@ abstract class CometExec extends CometPlan {
     val total = countsAndBytes.map(_._1).sum
     val rows = countsAndBytes.iterator
       .flatMap(countAndBytes =>
-        CometExec.decodeBatches(countAndBytes._2, this.getClass.getSimpleName))
+        ShuffleBatchDecoderIterator(countAndBytes._2.toInputStream(true), null))
+//        CometExec.decodeBatches(countAndBytes._2, this.getClass.getSimpleName))
     (total, rows)
   }
 
@@ -173,6 +174,8 @@ object CometExec {
 
     val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
     val cbbis = bytes.toInputStream()
+
+    // decompress with Spark codec not Comet so this is not compatible with shuffle
     val ins = new DataInputStream(codec.compressedInputStream(cbbis))
 
     new ArrowReaderIterator(Channels.newChannel(ins), source)

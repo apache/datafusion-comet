@@ -346,7 +346,7 @@ impl PartitionBuffer {
         let frozen_capacity_old = self.frozen.capacity();
         let mut cursor = Cursor::new(&mut self.frozen);
         cursor.seek(SeekFrom::End(0))?;
-        write_ipc_compressed(&frozen_batch, &mut cursor, &self.codec, ipc_time)?;
+        write_ipc_compressed(&frozen_batch, &mut cursor, &Encoding::ArrowIpcWithFieldCount, &self.codec, ipc_time)?;
 
         mem_diff += (self.frozen.capacity() - frozen_capacity_old) as isize;
         Ok(mem_diff)
@@ -1551,12 +1551,20 @@ pub enum CompressionCodec {
     Zstd(i32),
 }
 
+
+#[derive(Debug, Clone)]
+pub enum Encoding {
+    ArrowIpc,
+    ArrowIpcWithFieldCount,
+}
+
 /// Writes given record batch as Arrow IPC bytes into given writer.
 /// Returns number of bytes written.
 pub fn write_ipc_compressed<W: Write + Seek>(
     batch: &RecordBatch,
     output: &mut W,
-    codec: &CompressionCodec,
+    encoding: &Encoding,
+    compression_codec: &CompressionCodec,
     ipc_time: &Time,
 ) -> Result<usize> {
     if batch.num_rows() == 0 {
@@ -1566,14 +1574,16 @@ pub fn write_ipc_compressed<W: Write + Seek>(
     let mut timer = ipc_time.timer();
     let start_pos = output.stream_position()?;
 
-    // write encoded + compressed length placeholder
+    // write message length placeholder
     output.write_all(&[0u8; 8])?;
 
-    // write number of columns because JVM side needs to know how many addresses to allocate
-    let field_count = batch.schema().fields().len();
-    output.write_all(&field_count.to_le_bytes())?;
+    if matches!(encoding, Encoding::ArrowIpcWithFieldCount) {
+        // write number of columns because JVM side needs to know how many addresses to allocate
+        let field_count = batch.schema().fields().len();
+        output.write_all(&field_count.to_le_bytes())?;
+    }
 
-    let output = match codec {
+    let output = match compression_codec {
         CompressionCodec::None => {
             let mut arrow_writer = StreamWriter::try_new(output, &batch.schema())?;
             arrow_writer.write(batch)?;
@@ -1592,7 +1602,7 @@ pub fn write_ipc_compressed<W: Write + Seek>(
 
     // fill ipc length
     let end_pos = output.stream_position()?;
-    let compressed_length = end_pos - start_pos - 16;
+    let compressed_length = end_pos - start_pos - 8;
 
     // fill ipc length
     output.seek(SeekFrom::Start(start_pos))?;
@@ -1667,6 +1677,7 @@ mod test {
         let length = write_ipc_compressed(
             &batch,
             &mut cursor,
+            &Encoding::ArrowIpcWithFieldCount,
             &CompressionCodec::Zstd(1),
             &Time::default(),
         )

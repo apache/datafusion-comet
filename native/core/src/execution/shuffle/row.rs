@@ -292,7 +292,7 @@ macro_rules! downcast_builder_ref {
 }
 
 // Expose the macro for other modules.
-use crate::execution::shuffle::shuffle_writer::CompressionCodec;
+use crate::execution::shuffle::shuffle_writer::{CompressionCodec, Encoding};
 pub(crate) use downcast_builder_ref;
 
 /// Appends field of row to the given struct builder. `dt` is the data type of the field.
@@ -3360,8 +3360,9 @@ pub fn process_sorted_row_partition(
         // we do not collect metrics in Native_writeSortedFileNative
         let ipc_time = Time::default();
         // compression codec is not configurable for CometBypassMergeSortShuffleWriter
+        let encoding = Encoding::ArrowIpcWithFieldCount;
         let codec = CompressionCodec::Zstd(1);
-        written += write_ipc_compressed(&batch, &mut cursor, &codec, &ipc_time)?;
+        written += write_ipc_compressed(&batch, &mut cursor, &encoding, &codec, &ipc_time)?;
 
         if let Some(checksum) = &mut current_checksum {
             checksum.update(&mut cursor)?;
