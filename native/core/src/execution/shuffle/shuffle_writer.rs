@@ -21,6 +21,7 @@ use crate::{
     common::bit::ceil,
     errors::{CometError, CometResult},
 };
+use arrow::ipc::reader::StreamReader;
 use arrow::{datatypes::*, ipc::writer::StreamWriter};
 use async_trait::async_trait;
 use bytes::Buf;
@@ -1587,16 +1588,23 @@ pub fn write_ipc_compressed<W: Write + Seek>(
 
     // fill ipc length
     let end_pos = output.stream_position()?;
-    let ipc_length = end_pos - start_pos - 8;
+    let compressed_length = end_pos - start_pos - 8;
 
     // fill ipc length
     output.seek(SeekFrom::Start(start_pos))?;
-    output.write_all(&ipc_length.to_le_bytes()[..])?;
+    output.write_all(&compressed_length.to_le_bytes()[..])?;
     output.seek(SeekFrom::Start(end_pos))?;
 
     timer.stop();
 
-    Ok((end_pos - start_pos) as usize)
+    Ok(compressed_length as usize)
+}
+
+pub fn read_ipc_compressed_zstd(bytes: &[u8]) -> Result<RecordBatch> {
+    let decoder = zstd::Decoder::new(bytes)?;
+    let mut reader = StreamReader::try_new(decoder, None)?;
+    // TODO check for None
+    reader.next().unwrap().map_err(|e| e.into())
 }
 
 /// A stream that yields no record batches which represent end of output.
@@ -1648,11 +1656,11 @@ mod test {
 
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
-    fn write_ipc_zstd() {
+    fn roundtrip_ipc_zstd() {
         let batch = create_batch(8192);
         let mut output = vec![];
         let mut cursor = Cursor::new(&mut output);
-        write_ipc_compressed(
+        let length = write_ipc_compressed(
             &batch,
             &mut cursor,
             &CompressionCodec::Zstd(1),
@@ -1660,6 +1668,11 @@ mod test {
         )
         .unwrap();
         assert_eq!(40218, output.len());
+        assert_eq!(40210, length);
+
+        let ipc_without_length_prefix = &output[8..];
+        let batch2 = read_ipc_compressed_zstd(ipc_without_length_prefix).unwrap();
+        assert_eq!(batch, batch2);
     }
 
     #[test]
