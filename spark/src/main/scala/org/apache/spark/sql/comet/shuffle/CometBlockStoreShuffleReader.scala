@@ -92,9 +92,15 @@ class CometBlockStoreShuffleReader[K, C](
       }
     }
 
-    // TODO close streams
+    var currentDecoder: ShuffleBatchDecoderIterator = null
     val recordIter: Iterator[(Int, ColumnarBatch)] = fetchIterator
-      .flatMap(blockIdAndStream => ShuffleBatchDecoderIterator(blockIdAndStream._2, context))
+      .flatMap(blockIdAndStream => {
+        if (currentDecoder != null) {
+          currentDecoder.close()
+        }
+        currentDecoder = ShuffleBatchDecoderIterator(blockIdAndStream._2, context)
+        currentDecoder
+      })
       .map(b => (0, b))
 
     // Update the context task metrics for each record read.

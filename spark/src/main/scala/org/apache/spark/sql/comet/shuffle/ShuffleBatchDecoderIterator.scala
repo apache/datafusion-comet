@@ -63,15 +63,21 @@ case class ShuffleBatchDecoderIterator(var in: InputStream, taskContext: TaskCon
     if (nextBatch.isDefined) {
       return true
     }
+
     // read compressed batch size from header
-    longBuf.clear()
-    while (longBuf.hasRemaining && channel.read(longBuf) >= 0) {}
+    try {
+      longBuf.clear()
+      while (longBuf.hasRemaining && channel.read(longBuf) >= 0) {}
+    } catch {
+      case _: EOFException =>
+        close()
+        return false
+    }
 
     // If we reach the end of the stream, we are done, or if we read partial length
     // then the stream is corrupted.
     if (longBuf.hasRemaining) {
       if (longBuf.position() == 0) {
-        finished = true
         close()
         return false
       }
@@ -126,6 +132,7 @@ case class ShuffleBatchDecoderIterator(var in: InputStream, taskContext: TaskCon
         in.close()
         in = null
       }
+      finished = true
     }
   }
 
