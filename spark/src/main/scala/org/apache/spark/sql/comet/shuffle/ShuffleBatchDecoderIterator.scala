@@ -121,9 +121,7 @@ case class ShuffleBatchDecoderIterator(var in: InputStream, taskContext: TaskCon
     var bytesRead = 0
     while (bytesRead < buffer.length) {
       val result = in.read(buffer, bytesRead, buffer.length - bytesRead)
-      if (result == -1) {
-        throw new EOFException(s"Expected ${buffer.length} bytes, only $bytesRead available")
-      }
+      if (result == -1) throw new EOFException()
       bytesRead += result
     }
   }

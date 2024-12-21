@@ -3362,7 +3362,6 @@ pub fn process_sorted_row_partition(
         // compression codec is not configurable for CometBypassMergeSortShuffleWriter
         let codec = CompressionCodec::Zstd(1);
         written += write_ipc_compressed(&batch, &mut cursor, &codec, &ipc_time)?;
-        written += 8; // number of fields header
 
         if let Some(checksum) = &mut current_checksum {
             checksum.update(&mut cursor)?;
