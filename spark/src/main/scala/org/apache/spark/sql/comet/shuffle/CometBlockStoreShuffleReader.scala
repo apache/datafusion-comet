@@ -26,6 +26,7 @@ import org.apache.spark.internal.{config, Logging}
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.serializer.SerializerManager
 import org.apache.spark.shuffle.{BaseShuffleHandle, ShuffleReader, ShuffleReadMetricsReporter}
+import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.storage.{BlockId, BlockManager, BlockManagerId, ShuffleBlockFetcherIterator}
 import org.apache.spark.util.CompletionIterator
 
@@ -79,7 +80,7 @@ class CometBlockStoreShuffleReader[K, C](
 
   /** Read the combined key-values for this reduce task */
   override def read(): Iterator[Product2[K, C]] = {
-    var currentReadIterator: ArrowReaderIterator = null
+    var currentReadIterator: ShuffleBatchDecoderIterator = null
 
     // Closes last read iterator after the task is finished.
     // We need to close read iterator during iterating input streams,
@@ -91,18 +92,10 @@ class CometBlockStoreShuffleReader[K, C](
       }
     }
 
-    val recordIter = fetchIterator
-      .flatMap { case (_, inputStream) =>
-        IpcInputStreamIterator(inputStream, decompressingNeeded = true, context)
-          .flatMap { channel =>
-            if (currentReadIterator != null) {
-              // Closes previous read iterator.
-              currentReadIterator.close()
-            }
-            currentReadIterator = new ArrowReaderIterator(channel, this.getClass.getSimpleName)
-            currentReadIterator.map((0, _)) // use 0 as key since it's not used
-          }
-      }
+    // TODO close streams
+    val recordIter: Iterator[(Int, ColumnarBatch)] = fetchIterator
+      .flatMap(blockIdAndStream => ShuffleBatchDecoderIterator(blockIdAndStream._2, context))
+      .map(b => (0, b))
 
     // Update the context task metrics for each record read.
     val metricIter = CompletionIterator[(Any, Any), Iterator[(Any, Any)]](

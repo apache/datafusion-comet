@@ -17,6 +17,7 @@
 
 //! Define JNI APIs which can be called from Java/Scala.
 
+use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 use arrow::datatypes::DataType as ArrowDataType;
 use arrow_array::RecordBatch;
 use datafusion::{
@@ -40,8 +41,6 @@ use jni::{
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc, task::Poll};
 
-use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
-
 use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
     execution::{
@@ -60,6 +59,7 @@ use jni::{
 use tokio::runtime::Runtime;
 
 use crate::execution::operators::ScanExec;
+use crate::execution::shuffle::read_ipc_compressed_zstd;
 use crate::execution::spark_plan::SparkPlan;
 use log::info;
 
@@ -231,7 +231,7 @@ fn prepare_output(
     array_addrs: jlongArray,
     schema_addrs: jlongArray,
     output_batch: RecordBatch,
-    exec_context: &mut ExecutionContext,
+    debug_native: bool,
 ) -> CometResult<jlong> {
     let array_address_array = unsafe { JLongArray::from_raw(array_addrs) };
     let num_cols = env.get_array_length(&array_address_array)? as usize;
@@ -255,7 +255,7 @@ fn prepare_output(
         )));
     }
 
-    if exec_context.debug_native {
+    if debug_native {
         // Validate the output arrays.
         for array in results.iter() {
             let array_data = array.to_data();
@@ -274,9 +274,6 @@ fn prepare_output(
 
         i += 1;
     }
-
-    // Update metrics
-    update_metrics(env, exec_context)?;
 
     Ok(num_rows as jlong)
 }
@@ -358,12 +355,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 
             match poll_output {
                 Poll::Ready(Some(output)) => {
+                    // Update metrics
+                    update_metrics(&mut env, exec_context)?;
                     return prepare_output(
                         &mut env,
                         array_addrs,
                         schema_addrs,
                         output?,
-                        exec_context,
+                        exec_context.debug_native,
                     );
                 }
                 Poll::Ready(None) => {
@@ -542,5 +541,31 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
         array.rdxsort();
 
         Ok(())
+    })
+}
+
+#[no_mangle]
+/// Used by Comet native shuffle reader
+pub extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
+    e: JNIEnv,
+    _class: JClass,
+    byte_array: jbyteArray,
+    array_addrs: jlongArray,
+    schema_addrs: jlongArray,
+) -> jlong {
+    try_unwrap_or_throw(&e, |mut env| {
+        let value_array = unsafe { JPrimitiveArray::from_raw(byte_array) };
+        let length = env.get_array_length(&value_array)?;
+        let elements = unsafe { env.get_array_elements(&value_array, ReleaseMode::NoCopyBack)? };
+        let raw_pointer = elements.as_ptr();
+        let slice = unsafe { std::slice::from_raw_parts(raw_pointer, length as usize) };
+        let batch = read_ipc_compressed_zstd(slice)?;
+        Ok(prepare_output(
+            &mut env,
+            array_addrs,
+            schema_addrs,
+            batch,
+            false,
+        )?)
     })
 }

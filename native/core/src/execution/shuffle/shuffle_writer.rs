@@ -1566,8 +1566,12 @@ pub fn write_ipc_compressed<W: Write + Seek>(
     let mut timer = ipc_time.timer();
     let start_pos = output.stream_position()?;
 
-    // write ipc_length placeholder
+    // write encoded + compressed length placeholder
     output.write_all(&[0u8; 8])?;
+
+    // write number of columns because JVM side needs to know how many addresses to allocate
+    let field_count = batch.schema().fields().len();
+    output.write_all(&field_count.to_le_bytes())?;
 
     let output = match codec {
         CompressionCodec::None => {
@@ -1588,7 +1592,7 @@ pub fn write_ipc_compressed<W: Write + Seek>(
 
     // fill ipc length
     let end_pos = output.stream_position()?;
-    let compressed_length = end_pos - start_pos - 8;
+    let compressed_length = end_pos - start_pos - 16;
 
     // fill ipc length
     output.seek(SeekFrom::Start(start_pos))?;
@@ -1667,10 +1671,10 @@ mod test {
             &Time::default(),
         )
         .unwrap();
-        assert_eq!(40218, output.len());
+        assert_eq!(40226, output.len());
         assert_eq!(40210, length);
 
-        let ipc_without_length_prefix = &output[8..];
+        let ipc_without_length_prefix = &output[16..];
         let batch2 = read_ipc_compressed_zstd(ipc_without_length_prefix).unwrap();
         assert_eq!(batch, batch2);
     }
