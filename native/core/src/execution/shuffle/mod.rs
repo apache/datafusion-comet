@@ -20,5 +20,5 @@ mod map;
 pub mod row;
 mod shuffle_writer;
 pub use shuffle_writer::{
-    read_ipc_compressed_zstd, write_ipc_compressed, CompressionCodec, ShuffleWriterExec,
+    read_ipc_compressed, write_ipc_compressed, CompressionCodec, ShuffleWriterExec,
 };

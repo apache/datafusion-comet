@@ -59,7 +59,7 @@ use jni::{
 use tokio::runtime::Runtime;
 
 use crate::execution::operators::ScanExec;
-use crate::execution::shuffle::read_ipc_compressed_zstd;
+use crate::execution::shuffle::read_ipc_compressed;
 use crate::execution::spark_plan::SparkPlan;
 use log::info;
 
@@ -95,7 +95,7 @@ struct ExecutionContext {
 
 /// Accept serialized query plan and return the address of the native query plan.
 /// # Safety
-/// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     e: JNIEnv,
@@ -295,7 +295,7 @@ fn pull_input_batches(exec_context: &mut ExecutionContext) -> Result<(), CometEr
 /// Accept serialized query plan and the addresses of Arrow Arrays from Spark,
 /// then execute the query. Return addresses of arrow vector.
 /// # Safety
-/// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     e: JNIEnv,
@@ -458,7 +458,7 @@ fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
 
 /// Used by Comet shuffle external sorter to write sorted records to disk.
 /// # Safety
-/// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative(
     e: JNIEnv,
@@ -546,7 +546,9 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
 
 #[no_mangle]
 /// Used by Comet native shuffle reader
-pub extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
     e: JNIEnv,
     _class: JClass,
     byte_array: jbyteArray,
@@ -559,13 +561,7 @@ pub extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
         let elements = unsafe { env.get_array_elements(&value_array, ReleaseMode::NoCopyBack)? };
         let raw_pointer = elements.as_ptr();
         let slice = unsafe { std::slice::from_raw_parts(raw_pointer, length as usize) };
-        let batch = read_ipc_compressed_zstd(slice)?;
-        Ok(prepare_output(
-            &mut env,
-            array_addrs,
-            schema_addrs,
-            batch,
-            false,
-        )?)
+        let batch = read_ipc_compressed(slice)?;
+        prepare_output(&mut env, array_addrs, schema_addrs, batch, false)
     })
 }

@@ -1604,7 +1604,7 @@ pub fn write_ipc_compressed<W: Write + Seek>(
     Ok(compressed_length as usize)
 }
 
-pub fn read_ipc_compressed_zstd(bytes: &[u8]) -> Result<RecordBatch> {
+pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
     let decoder = zstd::Decoder::new(bytes)?;
     let mut reader = StreamReader::try_new(decoder, None)?;
     // TODO check for None
@@ -1675,7 +1675,7 @@ mod test {
         assert_eq!(40210, length);
 
         let ipc_without_length_prefix = &output[16..];
-        let batch2 = read_ipc_compressed_zstd(ipc_without_length_prefix).unwrap();
+        let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
         assert_eq!(batch, batch2);
     }
 
