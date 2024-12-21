@@ -35,7 +35,7 @@ import org.apache.comet.vector.NativeUtil
  * native ShuffleWriterExec and then calls native code to decompress and decode the shuffle blocks
  * and use Arrow FFI to return the Arrow record batch.
  */
-case class ShuffleBatchDecoderIterator(var in: InputStream, taskContext: TaskContext)
+case class NativeBatchDecoderIterator(var in: InputStream, taskContext: TaskContext)
     extends Iterator[ColumnarBatch] {
   private val SPARK_LZ4_MAGIC = Array[Byte](76, 90, 52, 66, 108, 111, 99, 107) // "LZ4Block"
   private var nextBatch: Option[ColumnarBatch] = None

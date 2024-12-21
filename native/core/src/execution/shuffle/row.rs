@@ -3363,9 +3363,6 @@ pub fn process_sorted_row_partition(
         let codec = CompressionCodec::Zstd(1);
         written += write_ipc_compressed(&batch, &mut cursor, &codec, &ipc_time)?;
 
-        // TODO document this more - this is important
-        written += 8;
-
         if let Some(checksum) = &mut current_checksum {
             checksum.update(&mut cursor)?;
         }

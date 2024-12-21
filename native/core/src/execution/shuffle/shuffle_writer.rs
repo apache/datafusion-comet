@@ -1601,7 +1601,7 @@ pub fn write_ipc_compressed<W: Write + Seek>(
 
     timer.stop();
 
-    Ok(compressed_length as usize)
+    Ok((end_pos - start_pos) as usize)
 }
 
 pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {

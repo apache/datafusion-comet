@@ -80,7 +80,7 @@ class CometBlockStoreShuffleReader[K, C](
 
   /** Read the combined key-values for this reduce task */
   override def read(): Iterator[Product2[K, C]] = {
-    var currentReadIterator: ShuffleBatchDecoderIterator = null
+    var currentReadIterator: NativeBatchDecoderIterator = null
 
     // Closes last read iterator after the task is finished.
     // We need to close read iterator during iterating input streams,
@@ -92,14 +92,13 @@ class CometBlockStoreShuffleReader[K, C](
       }
     }
 
-    var currentDecoder: ShuffleBatchDecoderIterator = null
     val recordIter: Iterator[(Int, ColumnarBatch)] = fetchIterator
       .flatMap(blockIdAndStream => {
-        if (currentDecoder != null) {
-          currentDecoder.close()
+        if (currentReadIterator != null) {
+          currentReadIterator.close()
         }
-        currentDecoder = ShuffleBatchDecoderIterator(blockIdAndStream._2, context)
-        currentDecoder
+        currentReadIterator = NativeBatchDecoderIterator(blockIdAndStream._2, context)
+        currentReadIterator
       })
       .map(b => (0, b))
 
