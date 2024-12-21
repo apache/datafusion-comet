@@ -34,6 +34,7 @@ import org.apache.spark.io.CompressionCodec
 import org.apache.spark.shuffle._
 import org.apache.spark.shuffle.api.ShuffleExecutorComponents
 import org.apache.spark.shuffle.sort.{BypassMergeSortShuffleHandle, SerializedShuffleHandle, SortShuffleManager, SortShuffleWriter}
+import org.apache.spark.sql.comet.shuffle.{CometBlockStoreShuffleReader, CometShuffleDependency}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.util.collection.OpenHashSet
 

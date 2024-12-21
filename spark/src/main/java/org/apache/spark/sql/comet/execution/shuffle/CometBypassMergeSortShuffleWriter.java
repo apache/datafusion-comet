@@ -51,6 +51,7 @@ import org.apache.spark.shuffle.api.ShufflePartitionWriter;
 import org.apache.spark.shuffle.api.WritableByteChannelWrapper;
 import org.apache.spark.shuffle.comet.CometShuffleChecksumSupport;
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow;
+import org.apache.spark.sql.comet.shuffle.CometShuffleDependency;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.storage.BlockManager;
 import org.apache.spark.storage.FileSegment;
