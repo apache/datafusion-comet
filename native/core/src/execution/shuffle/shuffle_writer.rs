@@ -1636,23 +1636,22 @@ pub fn write_ipc_compressed<W: Write + Seek>(
 }
 
 pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
-    // TODO this could be more efficient
-    let codec = unsafe { String::from_utf8_unchecked(Vec::from(&bytes[0..4])) };
-
-    match codec.as_str() {
-        "LZ4_" => {
+    match &bytes[0..4] {
+        b"LZ4_" => {
             let decoder = lz4_flex::frame::FrameDecoder::new(&bytes[4..]);
             let mut reader = StreamReader::try_new(decoder, None)?;
             // TODO check for None
             reader.next().unwrap().map_err(|e| e.into())
         }
-        "ZSTD" => {
+        b"ZSTD" => {
             let decoder = zstd::Decoder::new(&bytes[4..])?;
             let mut reader = StreamReader::try_new(decoder, None)?;
             // TODO check for None
             reader.next().unwrap().map_err(|e| e.into())
         }
-        other => Err(DataFusionError::Execution(format!("invalid shuffle block codec: {other}")))
+        _ => Err(DataFusionError::Execution(
+            "invalid shuffle block codec".to_owned(),
+        )),
     }
 }
 
