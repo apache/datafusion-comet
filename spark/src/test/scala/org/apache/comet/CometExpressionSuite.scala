@@ -2523,9 +2523,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
         spark.read.parquet(path.toString).createOrReplaceTempView("t1");
-        checkSparkAnswerAndOperator(sql("SELECT array_remove(array(_2, _3,_4), 2) from t1"))
+        checkSparkAnswerAndOperator(sql("SELECT array_remove(array(_2, _3,_4), _2) from t1"))
         checkSparkAnswerAndOperator(sql("SELECT array_remove(array(_2, _3,_4), 3) from t1"))
-        checkSparkAnswerAndOperator(sql("SELECT array_remove(array(_2, _3,_4), 5) from t1"))
+        checkSparkAnswerAndOperator(sql("SELECT array_remove(array(_2, _3,_4), 10) from t1"))
       }
     }
   }
