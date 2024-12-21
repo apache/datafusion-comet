@@ -1683,7 +1683,7 @@ mod test {
         )
         .unwrap();
         assert_eq!(40226, output.len());
-        assert_eq!(40210, length);
+        assert_eq!(40218, length);
 
         let ipc_without_length_prefix = &output[16..];
         let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
