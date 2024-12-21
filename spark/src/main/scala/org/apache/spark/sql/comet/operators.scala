@@ -19,14 +19,12 @@
 
 package org.apache.spark.sql.comet
 
-import java.io.{ByteArrayOutputStream, DataInputStream}
-import java.nio.channels.Channels
+import java.io.ByteArrayOutputStream
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 
-import org.apache.spark.{SparkEnv, TaskContext}
-import org.apache.spark.io.CompressionCodec
+import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, Expression, NamedExpression, SortOrder}
@@ -36,7 +34,6 @@ import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, PartitioningCollection, UnknownPartitioning}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.comet.plans.PartitioningPreservingUnaryExecNode
-import org.apache.spark.sql.comet.shuffle.{ArrowReaderIterator, ShuffleBatchDecoderIterator}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{BinaryExecNode, ColumnarToRowExec, ExecSubqueryExpression, ExplainUtils, LeafExecNode, ScalarSubquery, SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
@@ -78,19 +75,6 @@ abstract class CometExec extends CometPlan {
   // we should override this method in the specific CometExec, because Spark AQE may change the
   // outputPartitioning of SparkPlan, e.g., AQEShuffleReadExec.
   override def outputPartitioning: Partitioning = originalPlan.outputPartitioning
-
-  /**
-   * Executes the Comet operator and returns the result as an iterator of ColumnarBatch.
-   */
-  def executeColumnarCollectIterator(): (Long, Iterator[ColumnarBatch]) = {
-    val countsAndBytes = CometExec.getByteArrayRdd(this).collect()
-    val total = countsAndBytes.map(_._1).sum
-    val rows = countsAndBytes.iterator
-      .flatMap(countAndBytes =>
-        ShuffleBatchDecoderIterator(countAndBytes._2.toInputStream(true), null))
-//        CometExec.decodeBatches(countAndBytes._2, this.getClass.getSimpleName))
-    (total, rows)
-  }
 
   protected def setSubqueries(planId: Long, sparkPlan: SparkPlan): Unit = {
     sparkPlan.children.foreach(setSubqueries(planId, _))
@@ -162,23 +146,6 @@ object CometExec {
     cometPlan.executeColumnar().mapPartitionsInternal { iter =>
       Utils.serializeBatches(iter)
     }
-  }
-
-  /**
-   * Decodes the byte arrays back to ColumnarBatchs and put them into buffer.
-   */
-  def decodeBatches(bytes: ChunkedByteBuffer, source: String): Iterator[ColumnarBatch] = {
-    if (bytes.size == 0) {
-      return Iterator.empty
-    }
-
-    val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
-    val cbbis = bytes.toInputStream()
-
-    // decompress with Spark codec not Comet so this is not compatible with shuffle
-    val ins = new DataInputStream(codec.compressedInputStream(cbbis))
-
-    new ArrowReaderIterator(Channels.newChannel(ins), source)
   }
 }
 

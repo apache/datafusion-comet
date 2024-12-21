@@ -346,7 +346,13 @@ impl PartitionBuffer {
         let frozen_capacity_old = self.frozen.capacity();
         let mut cursor = Cursor::new(&mut self.frozen);
         cursor.seek(SeekFrom::End(0))?;
-        write_ipc_compressed(&frozen_batch, &mut cursor, &Encoding::ArrowIpcWithFieldCount, &self.codec, ipc_time)?;
+        write_ipc_compressed(
+            &frozen_batch,
+            &mut cursor,
+            &Encoding::ArrowIpcWithFieldCount,
+            &self.codec,
+            ipc_time,
+        )?;
 
         mem_diff += (self.frozen.capacity() - frozen_capacity_old) as isize;
         Ok(mem_diff)
@@ -1550,7 +1556,6 @@ pub enum CompressionCodec {
     None,
     Zstd(i32),
 }
-
 
 #[derive(Debug, Clone)]
 pub enum Encoding {
