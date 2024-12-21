@@ -1619,7 +1619,7 @@ pub fn write_ipc_compressed<W: Write + Seek>(
 
     // fill ipc length
     let end_pos = output.stream_position()?;
-    let compressed_length = end_pos - start_pos - 16;
+    let compressed_length = end_pos - start_pos - 8;
 
     // fill ipc length
     output.seek(SeekFrom::Start(start_pos))?;
