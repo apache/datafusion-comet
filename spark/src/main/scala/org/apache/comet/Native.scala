@@ -139,4 +139,19 @@ class Native extends NativeBase {
    *   the size of the array.
    */
   @native def sortRowPartitionsNative(addr: Long, size: Long): Unit
+
+  /**
+   * Decompress and decode a native shuffle block.
+   * @param shuffleBlock
+   *   the encoded anc compressed shuffle block.
+   * @param addr
+   *   the address of the array of compressed and encoded bytes.
+   * @param size
+   *   the size of the array.
+   */
+  @native def decodeShuffleBlock(
+      shuffleBlock: Array[Byte],
+      arrayAddrs: Array[Long],
+      schemaAddrs: Array[Long]): Long
+
 }

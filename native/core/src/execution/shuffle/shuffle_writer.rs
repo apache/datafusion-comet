@@ -21,6 +21,7 @@ use crate::{
     common::bit::ceil,
     errors::{CometError, CometResult},
 };
+use arrow::ipc::reader::StreamReader;
 use arrow::{datatypes::*, ipc::writer::StreamWriter};
 use async_trait::async_trait;
 use bytes::Buf;
@@ -788,6 +789,8 @@ impl ShuffleRepartitioner {
             Partitioning::Hash(exprs, _) => {
                 let (partition_starts, shuffled_partition_ids): (Vec<usize>, Vec<usize>) = {
                     let mut timer = self.metrics.repart_time.timer();
+
+                    // evaluate partition expressions
                     let arrays = exprs
                         .iter()
                         .map(|expr| expr.evaluate(&input)?.into_array(input.num_rows()))
@@ -1547,6 +1550,7 @@ impl Checksum {
 #[derive(Debug, Clone)]
 pub enum CompressionCodec {
     None,
+    Lz4Frame,
     Zstd(i32),
 }
 
@@ -1565,8 +1569,21 @@ pub fn write_ipc_compressed<W: Write + Seek>(
     let mut timer = ipc_time.timer();
     let start_pos = output.stream_position()?;
 
-    // write ipc_length placeholder
+    // TODO write a more efficient header
+
+    // write encoded + compressed length placeholder
     output.write_all(&[0u8; 8])?;
+
+    // write number of columns because JVM side needs to know how many addresses to allocate
+    let field_count = batch.schema().fields().len();
+    output.write_all(&field_count.to_le_bytes())?;
+
+    // write codec used
+    match codec {
+        &CompressionCodec::Lz4Frame => output.write_all("LZ4_".as_bytes())?,
+        &CompressionCodec::Zstd(_) => output.write_all("ZSTD".as_bytes())?,
+        &CompressionCodec::None => output.write_all("NONE".as_bytes())?,
+    }
 
     let output = match codec {
         CompressionCodec::None => {
@@ -1574,6 +1591,23 @@ pub fn write_ipc_compressed<W: Write + Seek>(
             arrow_writer.write(batch)?;
             arrow_writer.finish()?;
             arrow_writer.into_inner()?
+        }
+        CompressionCodec::Lz4Frame => {
+            // write IPC first without compression
+            let mut buffer = vec![];
+            let mut arrow_writer = StreamWriter::try_new(&mut buffer, &batch.schema())?;
+            arrow_writer.write(batch)?;
+            arrow_writer.finish()?;
+            let ipc_encoded = arrow_writer.into_inner()?;
+
+            // compress
+            let mut reader = Cursor::new(ipc_encoded);
+            let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
+            std::io::copy(&mut reader, &mut wtr)?;
+            let output = wtr
+                .finish()
+                .map_err(|e| DataFusionError::Execution(format!("lz4 compression error: {}", e)))?;
+            output
         }
         CompressionCodec::Zstd(level) => {
             let encoder = zstd::Encoder::new(output, *level)?;
@@ -1587,16 +1621,39 @@ pub fn write_ipc_compressed<W: Write + Seek>(
 
     // fill ipc length
     let end_pos = output.stream_position()?;
-    let ipc_length = end_pos - start_pos - 8;
+
+    // return compressed length including 4 bytes for codec header
+    let compressed_length = end_pos - start_pos - 16;
 
     // fill ipc length
     output.seek(SeekFrom::Start(start_pos))?;
-    output.write_all(&ipc_length.to_le_bytes()[..])?;
+    output.write_all(&compressed_length.to_le_bytes()[..])?;
     output.seek(SeekFrom::Start(end_pos))?;
 
     timer.stop();
 
-    Ok((end_pos - start_pos) as usize)
+    Ok(compressed_length as usize)
+}
+
+pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
+    // TODO this could be more efficient
+    let codec = unsafe { String::from_utf8_unchecked(Vec::from(&bytes[0..4])) };
+
+    match codec.as_str() {
+        "LZ4_" => {
+            let decoder = lz4_flex::frame::FrameDecoder::new(&bytes[4..]);
+            let mut reader = StreamReader::try_new(decoder, None)?;
+            // TODO check for None
+            reader.next().unwrap().map_err(|e| e.into())
+        }
+        "ZSTD" => {
+            let decoder = zstd::Decoder::new(&bytes[4..])?;
+            let mut reader = StreamReader::try_new(decoder, None)?;
+            // TODO check for None
+            reader.next().unwrap().map_err(|e| e.into())
+        }
+        other => Err(DataFusionError::Execution(format!("invalid shuffle block codec: {other}")))
+    }
 }
 
 /// A stream that yields no record batches which represent end of output.
@@ -1648,18 +1705,44 @@ mod test {
 
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
-    fn write_ipc_zstd() {
+    fn roundtrip_ipc_zstd() {
         let batch = create_batch(8192);
         let mut output = vec![];
         let mut cursor = Cursor::new(&mut output);
-        write_ipc_compressed(
+        let length = write_ipc_compressed(
             &batch,
             &mut cursor,
             &CompressionCodec::Zstd(1),
             &Time::default(),
         )
         .unwrap();
-        assert_eq!(40218, output.len());
+        assert_eq!(40230, output.len());
+        assert_eq!(40214, length);
+
+        let ipc_without_length_prefix = &output[16..];
+        let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
+        assert_eq!(batch, batch2);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn roundtrip_ipc_lz4() {
+        let batch = create_batch(8192);
+        let mut output = vec![];
+        let mut cursor = Cursor::new(&mut output);
+        let length = write_ipc_compressed(
+            &batch,
+            &mut cursor,
+            &CompressionCodec::Lz4Frame,
+            &Time::default(),
+        )
+        .unwrap();
+        assert_eq!(61756, output.len());
+        assert_eq!(61740, length);
+
+        let ipc_without_length_prefix = &output[16..];
+        let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
+        assert_eq!(batch, batch2);
     }
 
     #[test]
