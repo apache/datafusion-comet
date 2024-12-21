@@ -349,7 +349,6 @@ impl PartitionBuffer {
         write_ipc_compressed(
             &frozen_batch,
             &mut cursor,
-            &Encoding::ArrowIpcWithFieldCount,
             &self.codec,
             ipc_time,
         )?;
@@ -1557,18 +1556,11 @@ pub enum CompressionCodec {
     Zstd(i32),
 }
 
-#[derive(Debug, Clone)]
-pub enum Encoding {
-    ArrowIpc,
-    ArrowIpcWithFieldCount,
-}
-
 /// Writes given record batch as Arrow IPC bytes into given writer.
 /// Returns number of bytes written.
 pub fn write_ipc_compressed<W: Write + Seek>(
     batch: &RecordBatch,
     output: &mut W,
-    encoding: &Encoding,
     compression_codec: &CompressionCodec,
     ipc_time: &Time,
 ) -> Result<usize> {
@@ -1582,11 +1574,9 @@ pub fn write_ipc_compressed<W: Write + Seek>(
     // write message length placeholder
     output.write_all(&[0u8; 8])?;
 
-    if matches!(encoding, Encoding::ArrowIpcWithFieldCount) {
-        // write number of columns because JVM side needs to know how many addresses to allocate
-        let field_count = batch.schema().fields().len();
-        output.write_all(&field_count.to_le_bytes())?;
-    }
+    // write number of columns because JVM side needs to know how many addresses to allocate
+    let field_count = batch.schema().fields().len();
+    output.write_all(&field_count.to_le_bytes())?;
 
     let output = match compression_codec {
         CompressionCodec::None => {
@@ -1682,7 +1672,6 @@ mod test {
         let length = write_ipc_compressed(
             &batch,
             &mut cursor,
-            &Encoding::ArrowIpcWithFieldCount,
             &CompressionCodec::Zstd(1),
             &Time::default(),
         )
