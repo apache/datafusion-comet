@@ -238,7 +238,8 @@ object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
       partitioner = new Partitioner {
         override def numPartitions: Int = outputPartitioning.numPartitions
         override def getPartition(key: Any): Int = key.asInstanceOf[Int]
-      })
+      },
+      decodeTime = metrics("decodeTime"))
     dependency
   }
 
@@ -435,7 +436,8 @@ object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
         serializer,
         shuffleWriterProcessor = ShuffleExchangeExec.createShuffleWriteProcessor(writeMetrics),
         shuffleType = CometColumnarShuffle,
-        schema = Some(fromAttributes(outputAttributes)))
+        schema = Some(fromAttributes(outputAttributes)),
+        decodeTime = writeMetrics("decodeTime"))
 
     dependency
   }

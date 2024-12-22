@@ -136,6 +136,7 @@ object CometMetricNode {
       "mempool_time" -> SQLMetrics.createNanoTimingMetric(sc, "memory pool time"),
       "repart_time" -> SQLMetrics.createNanoTimingMetric(sc, "repartition time"),
       "ipc_time" -> SQLMetrics.createNanoTimingMetric(sc, "encoding and compression time"),
+      "decodeTime" -> SQLMetrics.createNanoTimingMetric(sc, "decoding and decompression time"),
       "spill_count" -> SQLMetrics.createMetric(sc, "number of spills"),
       "spilled_bytes" -> SQLMetrics.createMetric(sc, "spilled bytes"),
       "input_batches" -> SQLMetrics.createMetric(sc, "number of input batches"))

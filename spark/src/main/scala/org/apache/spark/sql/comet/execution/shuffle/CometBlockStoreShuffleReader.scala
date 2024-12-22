@@ -20,13 +20,20 @@
 package org.apache.spark.sql.comet.execution.shuffle
 
 import java.io.InputStream
+import java.nio.ByteBuffer
 
 import org.apache.spark.{InterruptibleIterator, MapOutputTracker, SparkEnv, TaskContext}
 import org.apache.spark.internal.{config, Logging}
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.serializer.SerializerManager
-import org.apache.spark.shuffle.{BaseShuffleHandle, ShuffleReader, ShuffleReadMetricsReporter}
-import org.apache.spark.storage.{BlockId, BlockManager, BlockManagerId, ShuffleBlockFetcherIterator}
+import org.apache.spark.shuffle.BaseShuffleHandle
+import org.apache.spark.shuffle.ShuffleReader
+import org.apache.spark.shuffle.ShuffleReadMetricsReporter
+import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.storage.BlockId
+import org.apache.spark.storage.BlockManager
+import org.apache.spark.storage.BlockManagerId
+import org.apache.spark.storage.ShuffleBlockFetcherIterator
 import org.apache.spark.util.CompletionIterator
 
 /**
@@ -79,7 +86,7 @@ class CometBlockStoreShuffleReader[K, C](
 
   /** Read the combined key-values for this reduce task */
   override def read(): Iterator[Product2[K, C]] = {
-    var currentReadIterator: ArrowReaderIterator = null
+    var currentReadIterator: NativeBatchDecoderIterator = null
 
     // Closes last read iterator after the task is finished.
     // We need to close read iterator during iterating input streams,
@@ -91,18 +98,20 @@ class CometBlockStoreShuffleReader[K, C](
       }
     }
 
-    val recordIter = fetchIterator
-      .flatMap { case (_, inputStream) =>
-        IpcInputStreamIterator(inputStream, decompressingNeeded = true, context)
-          .flatMap { channel =>
-            if (currentReadIterator != null) {
-              // Closes previous read iterator.
-              currentReadIterator.close()
-            }
-            currentReadIterator = new ArrowReaderIterator(channel, this.getClass.getSimpleName)
-            currentReadIterator.map((0, _)) // use 0 as key since it's not used
-          }
-      }
+    // reuse direct ByteBuffer across instances of NativeBatchDecoderIterator
+    var dataBuf: ByteBuffer = null
+
+    val recordIter: Iterator[(Int, ColumnarBatch)] = fetchIterator
+      .flatMap(blockIdAndStream => {
+        if (currentReadIterator != null) {
+          dataBuf = currentReadIterator.dataBuf
+          currentReadIterator.close()
+        }
+        currentReadIterator =
+          NativeBatchDecoderIterator(blockIdAndStream._2, dataBuf, context, dep.decodeTime)
+        currentReadIterator
+      })
+      .map(b => (0, b))
 
     // Update the context task metrics for each record read.
     val metricIter = CompletionIterator[(Any, Any), Iterator[(Any, Any)]](

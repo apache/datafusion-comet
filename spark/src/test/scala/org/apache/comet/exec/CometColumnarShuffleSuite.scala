@@ -1132,7 +1132,8 @@ class CometShuffleManagerSuite extends CometTestBase {
         partitioner = new Partitioner {
           override def numPartitions: Int = 50
           override def getPartition(key: Any): Int = key.asInstanceOf[Int]
-        })
+        },
+        decodeTime = null)
 
       assert(CometShuffleManager.shouldBypassMergeSort(conf, dependency))
 
