@@ -58,7 +58,6 @@ use std::{
     sync::Arc,
 };
 
-
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
 const MICROS_PER_SECOND: i64 = 1000000;
