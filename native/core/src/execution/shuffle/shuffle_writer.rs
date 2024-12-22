@@ -1556,7 +1556,7 @@ pub enum CompressionCodec {
 pub fn write_ipc_compressed<W: Write + Seek>(
     batch: &RecordBatch,
     output: &mut W,
-    compression_codec: &CompressionCodec,
+    codec: &CompressionCodec,
     ipc_time: &Time,
 ) -> Result<usize> {
     if batch.num_rows() == 0 {
@@ -1566,14 +1566,14 @@ pub fn write_ipc_compressed<W: Write + Seek>(
     let mut timer = ipc_time.timer();
     let start_pos = output.stream_position()?;
 
-    // write message length placeholder
+    // write ipc_length placeholder
     output.write_all(&[0u8; 8])?;
 
     // write number of columns because JVM side needs to know how many addresses to allocate
     let field_count = batch.schema().fields().len();
     output.write_all(&field_count.to_le_bytes())?;
 
-    let output = match compression_codec {
+    let output = match codec {
         CompressionCodec::None => {
             let mut arrow_writer = StreamWriter::try_new(output, &batch.schema())?;
             arrow_writer.write(batch)?;
@@ -1592,11 +1592,11 @@ pub fn write_ipc_compressed<W: Write + Seek>(
 
     // fill ipc length
     let end_pos = output.stream_position()?;
-    let compressed_length = end_pos - start_pos - 8;
+    let ipc_length = end_pos - start_pos - 8;
 
     // fill ipc length
     output.seek(SeekFrom::Start(start_pos))?;
-    output.write_all(&compressed_length.to_le_bytes()[..])?;
+    output.write_all(&ipc_length.to_le_bytes()[..])?;
     output.seek(SeekFrom::Start(end_pos))?;
 
     timer.stop();
