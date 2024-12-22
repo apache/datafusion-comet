@@ -21,21 +21,12 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import java.io.InputStream
 
-import org.apache.spark.InterruptibleIterator
-import org.apache.spark.MapOutputTracker
-import org.apache.spark.SparkEnv
-import org.apache.spark.TaskContext
-import org.apache.spark.internal.Logging
-import org.apache.spark.internal.config
+import org.apache.spark.{InterruptibleIterator, MapOutputTracker, SparkEnv, TaskContext}
+import org.apache.spark.internal.{config, Logging}
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.serializer.SerializerManager
-import org.apache.spark.shuffle.BaseShuffleHandle
-import org.apache.spark.shuffle.ShuffleReader
-import org.apache.spark.shuffle.ShuffleReadMetricsReporter
-import org.apache.spark.storage.BlockId
-import org.apache.spark.storage.BlockManager
-import org.apache.spark.storage.BlockManagerId
-import org.apache.spark.storage.ShuffleBlockFetcherIterator
+import org.apache.spark.shuffle.{BaseShuffleHandle, ShuffleReader, ShuffleReadMetricsReporter}
+import org.apache.spark.storage.{BlockId, BlockManager, BlockManagerId, ShuffleBlockFetcherIterator}
 import org.apache.spark.util.CompletionIterator
 
 /**

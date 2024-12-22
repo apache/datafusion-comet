@@ -19,12 +19,9 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
-import java.io.EOFException
-import java.io.InputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.nio.channels.Channels
-import java.nio.channels.ReadableByteChannel
+import java.io.{EOFException, InputStream}
+import java.nio.{ByteBuffer, ByteOrder}
+import java.nio.channels.{Channels, ReadableByteChannel}
 
 import org.apache.spark.TaskContext
 import org.apache.spark.internal.Logging
