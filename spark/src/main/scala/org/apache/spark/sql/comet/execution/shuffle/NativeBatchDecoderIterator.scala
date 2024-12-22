@@ -37,16 +37,16 @@ import org.apache.comet.vector.NativeUtil
  */
 case class NativeBatchDecoderIterator(
     var in: InputStream,
-    var dataBuf: ByteBuffer,
     taskContext: TaskContext,
     decodeTime: SQLMetric)
     extends Iterator[ColumnarBatch] {
-  private val SPARK_LZ4_MAGIC = Array[Byte](76, 90, 52, 66, 108, 111, 99, 107) // "LZ4Block"
   private var nextBatch: Option[ColumnarBatch] = None
   private var finished = false;
   private val longBuf = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
   private val native = new Native()
   private val nativeUtil = new NativeUtil()
+
+  import NativeBatchDecoderIterator.threadLocalDataBuf
 
   if (taskContext != null) {
     taskContext.addTaskCompletionListener[Unit](_ => {
@@ -88,12 +88,6 @@ case class NativeBatchDecoderIterator(
       throw new EOFException("Data corrupt: unexpected EOF while reading compressed ipc lengths")
     }
 
-    // make troubleshooting easier
-    if (longBuf.array().sameElements(SPARK_LZ4_MAGIC)) {
-      throw new IllegalStateException(
-        "Attempting to read Spark LZ4 stream with Comet shuffle block decoder")
-    }
-
     // get compressed length (including headers)
     longBuf.flip()
     val compressedLength = longBuf.getLong.toInt
@@ -109,8 +103,14 @@ case class NativeBatchDecoderIterator(
 
     // read body
     val bytesToRead = compressedLength - 8
-    if (dataBuf == null || dataBuf.capacity() < bytesToRead) {
-      dataBuf = ByteBuffer.allocateDirect(bytesToRead * 2)
+    var dataBuf = threadLocalDataBuf.get()
+    if (dataBuf.capacity() < bytesToRead) {
+      val newCapacity = bytesToRead * 2
+      // scalastyle:off println
+      val threadId = Thread.currentThread().getId
+      println(s"[$threadId] Growing buffer from ${dataBuf.capacity()} to $newCapacity bytes")
+      dataBuf = ByteBuffer.allocateDirect(newCapacity)
+      threadLocalDataBuf.set(dataBuf)
     }
     dataBuf.clear()
     dataBuf.limit(bytesToRead)
@@ -151,4 +151,10 @@ case class NativeBatchDecoderIterator(
     }
   }
 
+}
+
+object NativeBatchDecoderIterator {
+  private val threadLocalDataBuf: ThreadLocal[ByteBuffer] = ThreadLocal.withInitial(() => {
+    ByteBuffer.allocateDirect(128 * 1024)
+  })
 }
