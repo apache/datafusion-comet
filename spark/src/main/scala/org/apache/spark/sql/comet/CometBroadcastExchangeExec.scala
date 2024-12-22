@@ -307,20 +307,20 @@ class CometBatchRDD(
   }
 
   /**
-   * Decodes the byte arrays back to ColumnarBatches and put them into buffer.
+   * Decodes the byte arrays back to ColumnarBatchs and put them into buffer.
    */
   private def decodeBatches(bytes: ChunkedByteBuffer, source: String): Iterator[ColumnarBatch] = {
     if (bytes.size == 0) {
       return Iterator.empty
     }
 
-    // decompress with Spark codec not Comet so this is not compatible with shuffle
+    // use Spark's compression codec (LZ4 by default) and not Comet's compression
     val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
     val cbbis = bytes.toInputStream()
     val ins = new DataInputStream(codec.compressedInputStream(cbbis))
+    // batches are in Arrow IPC format
     new ArrowReaderIterator(Channels.newChannel(ins), source)
   }
-
 }
 
 class CometBatchPartition(
