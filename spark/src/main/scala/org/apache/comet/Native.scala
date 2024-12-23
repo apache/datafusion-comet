@@ -146,6 +146,8 @@ class Native extends NativeBase {
    * Decompress and decode a native shuffle block.
    * @param shuffleBlock
    *   the encoded anc compressed shuffle block.
+   * @param length
+   *   the limit of the byte buffer.
    * @param addr
    *   the address of the array of compressed and encoded bytes.
    * @param size
@@ -153,6 +155,7 @@ class Native extends NativeBase {
    */
   @native def decodeShuffleBlock(
       shuffleBlock: ByteBuffer,
+      length: Int,
       arrayAddrs: Array[Long],
       schemaAddrs: Array[Long]): Long
 

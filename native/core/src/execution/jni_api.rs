@@ -548,12 +548,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
     e: JNIEnv,
     _class: JClass,
     byte_buffer: JByteBuffer,
+    length: jint,
     array_addrs: jlongArray,
     schema_addrs: jlongArray,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
-        let length = env.get_direct_buffer_capacity(&byte_buffer)?;
+        let length = length as usize;
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
         let batch = read_ipc_compressed(slice)?;
         prepare_output(&mut env, array_addrs, schema_addrs, batch, false)

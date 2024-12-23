@@ -71,8 +71,6 @@ case class NativeBatchDecoderIterator(
     }
 
     // Release the previous batch.
-    // If it is not released, when closing the reader, arrow library will complain about
-    // memory leak.
     if (currentBatch != null) {
       currentBatch.close()
       currentBatch = null
@@ -141,9 +139,6 @@ case class NativeBatchDecoderIterator(
     var dataBuf = threadLocalDataBuf.get()
     if (dataBuf.capacity() < bytesToRead) {
       val newCapacity = bytesToRead * 2
-      // scalastyle:off println
-      val threadId = Thread.currentThread().getId
-      println(s"[$threadId] Growing buffer from ${dataBuf.capacity()} to $newCapacity bytes")
       dataBuf = ByteBuffer.allocateDirect(newCapacity)
       threadLocalDataBuf.set(dataBuf)
     }
@@ -159,7 +154,7 @@ case class NativeBatchDecoderIterator(
     val batch = nativeUtil.getNextBatch(
       fieldCount,
       (arrayAddrs, schemaAddrs) => {
-        native.decodeShuffleBlock(dataBuf, arrayAddrs, schemaAddrs)
+        native.decodeShuffleBlock(dataBuf, bytesToRead, arrayAddrs, schemaAddrs)
       })
     decodeTime.add(System.nanoTime() - startTime)
 
