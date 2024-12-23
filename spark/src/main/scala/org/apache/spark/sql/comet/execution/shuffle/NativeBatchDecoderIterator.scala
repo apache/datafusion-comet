@@ -40,11 +40,13 @@ case class NativeBatchDecoderIterator(
     taskContext: TaskContext,
     decodeTime: SQLMetric)
     extends Iterator[ColumnarBatch] {
-  private var nextBatch: Option[ColumnarBatch] = None
-  private var finished = false;
+
+  private var isClosed = false
   private val longBuf = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
   private val native = new Native()
   private val nativeUtil = new NativeUtil()
+  private var currentBatch: ColumnarBatch = null
+  private var batch = fetchNext()
 
   import NativeBatchDecoderIterator.threadLocalDataBuf
 
@@ -61,11 +63,44 @@ case class NativeBatchDecoderIterator(
   }
 
   def hasNext(): Boolean = {
-    if (channel == null || finished) {
+    if (channel == null || isClosed) {
       return false
     }
-    if (nextBatch.isDefined) {
+    if (batch.isDefined) {
       return true
+    }
+
+    // Release the previous batch.
+    // If it is not released, when closing the reader, arrow library will complain about
+    // memory leak.
+    if (currentBatch != null) {
+      currentBatch.close()
+      currentBatch = null
+    }
+
+    batch = fetchNext()
+    if (batch.isEmpty) {
+      close()
+      return false
+    }
+    true
+  }
+
+  def next(): ColumnarBatch = {
+    if (!hasNext) {
+      throw new NoSuchElementException
+    }
+
+    val nextBatch = batch.get
+
+    currentBatch = nextBatch
+    batch = None
+    currentBatch
+  }
+
+  private def fetchNext(): Option[ColumnarBatch] = {
+    if (channel == null || isClosed) {
+      return None
     }
 
     // read compressed batch size from header
@@ -75,7 +110,7 @@ case class NativeBatchDecoderIterator(
     } catch {
       case _: EOFException =>
         close()
-        return false
+        return None
     }
 
     // If we reach the end of the stream, we are done, or if we read partial length
@@ -83,7 +118,7 @@ case class NativeBatchDecoderIterator(
     if (longBuf.hasRemaining) {
       if (longBuf.position() == 0) {
         close()
-        return false
+        return None
       }
       throw new EOFException("Data corrupt: unexpected EOF while reading compressed ipc lengths")
     }
@@ -121,36 +156,28 @@ case class NativeBatchDecoderIterator(
 
     // make native call to decode batch
     val startTime = System.nanoTime()
-    nextBatch = nativeUtil.getNextBatch(
+    val batch = nativeUtil.getNextBatch(
       fieldCount,
       (arrayAddrs, schemaAddrs) => {
         native.decodeShuffleBlock(dataBuf, arrayAddrs, schemaAddrs)
       })
     decodeTime.add(System.nanoTime() - startTime)
 
-    true
-  }
-
-  def next(): ColumnarBatch = {
-    if (nextBatch.isDefined) {
-      val ret = nextBatch.get
-      nextBatch = None
-      ret
-    } else {
-      throw new IllegalStateException()
-    }
+    batch
   }
 
   def close(): Unit = {
     synchronized {
-      if (in != null) {
+      if (!isClosed) {
+        if (currentBatch != null) {
+          currentBatch.close()
+          currentBatch = null
+        }
         in.close()
-        in = null
+        isClosed = true
       }
-      finished = true
     }
   }
-
 }
 
 object NativeBatchDecoderIterator {
