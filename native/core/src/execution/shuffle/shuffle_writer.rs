@@ -68,7 +68,6 @@ use std::{
 };
 use tokio::time::Instant;
 
-
 /// The status of appending rows to a partition buffer.
 enum AppendRowStatus {
     /// The difference in memory usage after appending rows
@@ -1611,7 +1610,9 @@ pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
     if let Some(batch) = reader.next() {
         batch.map_err(|e| e.into())
     } else {
-        Err(DataFusionError::Execution("Failed to decode batch".to_string()))
+        Err(DataFusionError::Execution(
+            "Failed to decode batch".to_string(),
+        ))
     }
 }
 
