@@ -789,6 +789,8 @@ impl ShuffleRepartitioner {
             Partitioning::Hash(exprs, _) => {
                 let (partition_starts, shuffled_partition_ids): (Vec<usize>, Vec<usize>) = {
                     let mut timer = self.metrics.repart_time.timer();
+
+                    // evaluate partition expressions
                     let arrays = exprs
                         .iter()
                         .map(|expr| expr.evaluate(&input)?.into_array(input.num_rows()))
@@ -1548,6 +1550,7 @@ impl Checksum {
 #[derive(Debug, Clone)]
 pub enum CompressionCodec {
     None,
+    Lz4Frame,
     Zstd(i32),
 }
 
@@ -1573,12 +1576,36 @@ pub fn write_ipc_compressed<W: Write + Seek>(
     let field_count = batch.schema().fields().len();
     output.write_all(&field_count.to_le_bytes())?;
 
+    // write codec used
+    match codec {
+        &CompressionCodec::Lz4Frame => output.write_all("LZ4_".as_bytes())?,
+        &CompressionCodec::Zstd(_) => output.write_all("ZSTD".as_bytes())?,
+        &CompressionCodec::None => output.write_all("NONE".as_bytes())?,
+    }
+
     let output = match codec {
         CompressionCodec::None => {
             let mut arrow_writer = StreamWriter::try_new(output, &batch.schema())?;
             arrow_writer.write(batch)?;
             arrow_writer.finish()?;
             arrow_writer.into_inner()?
+        }
+        CompressionCodec::Lz4Frame => {
+            // write IPC first without compression
+            let mut buffer = vec![];
+            let mut arrow_writer = StreamWriter::try_new(&mut buffer, &batch.schema())?;
+            arrow_writer.write(batch)?;
+            arrow_writer.finish()?;
+            let ipc_encoded = arrow_writer.into_inner()?;
+
+            // compress
+            let mut reader = Cursor::new(ipc_encoded);
+            let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
+            std::io::copy(&mut reader, &mut wtr)?;
+            let output = wtr
+                .finish()
+                .map_err(|e| DataFusionError::Execution(format!("lz4 compression error: {}", e)))?;
+            output
         }
         CompressionCodec::Zstd(level) => {
             let encoder = zstd::Encoder::new(output, *level)?;
@@ -1605,14 +1632,20 @@ pub fn write_ipc_compressed<W: Write + Seek>(
 }
 
 pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
-    let decoder = zstd::Decoder::new(bytes)?;
-    let mut reader = StreamReader::try_new(decoder, None)?;
-    if let Some(batch) = reader.next() {
-        batch.map_err(|e| e.into())
-    } else {
-        Err(DataFusionError::Execution(
-            "Failed to decode batch".to_string(),
-        ))
+    match &bytes[0..4] {
+        b"LZ4_" => {
+            let decoder = lz4_flex::frame::FrameDecoder::new(&bytes[4..]);
+            let mut reader = StreamReader::try_new(decoder, None)?;
+            reader.next().unwrap().map_err(|e| e.into())
+        }
+        b"ZSTD" => {
+            let decoder = zstd::Decoder::new(&bytes[4..])?;
+            let mut reader = StreamReader::try_new(decoder, None)?;
+            reader.next().unwrap().map_err(|e| e.into())
+        }
+        _ => Err(DataFusionError::Execution(
+            "Failed to decode batch: invalid compression codec".to_string(),
+        )),
     }
 }
 
@@ -1676,8 +1709,29 @@ mod test {
             &Time::default(),
         )
         .unwrap();
-        assert_eq!(40226, output.len());
-        assert_eq!(40226, length);
+        assert_eq!(40230, output.len());
+        assert_eq!(40230, length);
+
+        let ipc_without_length_prefix = &output[16..];
+        let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
+        assert_eq!(batch, batch2);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn roundtrip_ipc_lz4() {
+        let batch = create_batch(8192);
+        let mut output = vec![];
+        let mut cursor = Cursor::new(&mut output);
+        let length = write_ipc_compressed(
+            &batch,
+            &mut cursor,
+            &CompressionCodec::Lz4Frame,
+            &Time::default(),
+        )
+        .unwrap();
+        assert_eq!(61756, output.len());
+        assert_eq!(61756, length);
 
         let ipc_without_length_prefix = &output[16..];
         let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();

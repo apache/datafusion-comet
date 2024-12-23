@@ -559,6 +559,7 @@ class CometShuffleWriteProcessor(
       if (SparkEnv.get.conf.getBoolean("spark.shuffle.compress", true)) {
         val codec = CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_CODEC.get() match {
           case "zstd" => CompressionCodec.Zstd
+          case "lz4" => CompressionCodec.Lz4
           case other => throw new UnsupportedOperationException(s"invalid codec: $other")
         }
         shuffleWriterBuilder.setCodec(codec)
