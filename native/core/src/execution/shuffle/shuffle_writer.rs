@@ -1578,9 +1578,9 @@ pub fn write_ipc_compressed<W: Write + Seek>(
 
     // write codec used
     match codec {
-        &CompressionCodec::Lz4Frame => output.write_all("LZ4_".as_bytes())?,
-        &CompressionCodec::Zstd(_) => output.write_all("ZSTD".as_bytes())?,
-        &CompressionCodec::None => output.write_all("NONE".as_bytes())?,
+        CompressionCodec::Lz4Frame => output.write_all("LZ4_".as_bytes())?,
+        CompressionCodec::Zstd(_) => output.write_all("ZSTD".as_bytes())?,
+        CompressionCodec::None => output.write_all("NONE".as_bytes())?,
     }
 
     let output = match codec {
@@ -1602,10 +1602,8 @@ pub fn write_ipc_compressed<W: Write + Seek>(
             let mut reader = Cursor::new(ipc_encoded);
             let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
             std::io::copy(&mut reader, &mut wtr)?;
-            let output = wtr
-                .finish()
-                .map_err(|e| DataFusionError::Execution(format!("lz4 compression error: {}", e)))?;
-            output
+            wtr.finish()
+                .map_err(|e| DataFusionError::Execution(format!("lz4 compression error: {}", e)))?
         }
         CompressionCodec::Zstd(level) => {
             let encoder = zstd::Encoder::new(output, *level)?;
