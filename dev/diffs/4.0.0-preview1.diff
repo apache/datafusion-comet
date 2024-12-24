@@ -53,7 +53,7 @@ index 19f6303be36..6c0e77882e6 100644
      <!--
        This spark-tags test-dep is needed even though it isn't used in this module, otherwise testing-cmds that exclude
 diff --git a/sql/core/src/main/scala/org/apache/spark/sql/SparkSession.scala b/sql/core/src/main/scala/org/apache/spark/sql/SparkSession.scala
-index 466e4cf8131..7ead2715b5d 100644
+index 466e4cf8131..798f118464c 100644
 --- a/sql/core/src/main/scala/org/apache/spark/sql/SparkSession.scala
 +++ b/sql/core/src/main/scala/org/apache/spark/sql/SparkSession.scala
 @@ -1376,6 +1376,14 @@ object SparkSession extends Logging {
@@ -61,7 +61,7 @@ index 466e4cf8131..7ead2715b5d 100644
    }
  
 +  private def loadCometExtension(sparkContext: SparkContext): Seq[String] = {
-+    if (sparkContext.getConf.getBoolean("spark.comet.enabled", false)) {
++    if (sparkContext.getConf.getBoolean("spark.comet.enabled", isCometEnabled)) {
 +      Seq("org.apache.comet.CometSparkSessionExtensions")
 +    } else {
 +      Seq.empty
@@ -81,6 +81,19 @@ index 466e4cf8131..7ead2715b5d 100644
        try {
          val extensionConfClass = Utils.classForName(extensionConfClassName)
          val extensionConf = extensionConfClass.getConstructor().newInstance()
+@@ -1420,4 +1429,12 @@ object SparkSession extends Logging {
+       }
+     }
+   }
++
++  /**
++   * Whether Comet extension is enabled
++   */
++  def isCometEnabled: Boolean = {
++    val v = System.getenv("ENABLE_COMET")
++    v == null || v.toBoolean
++  }
+ }
 diff --git a/sql/core/src/main/scala/org/apache/spark/sql/execution/SparkPlanInfo.scala b/sql/core/src/main/scala/org/apache/spark/sql/execution/SparkPlanInfo.scala
 index 7c45b02ee84..9f2b608c9f5 100644
 --- a/sql/core/src/main/scala/org/apache/spark/sql/execution/SparkPlanInfo.scala
@@ -1031,6 +1044,46 @@ index 56c364e2084..fc3abd7cdc4 100644
      withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
        SQLConf.ANSI_ENABLED.key -> "true") {
        withTable("t") {
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
+index 4d38e360f43..21e88695976 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
+@@ -190,11 +190,13 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
+     }
+   }
+ 
+-  test("inject columnar AQE on") {
++  test("inject columnar AQE on",
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1197")) {
+     testInjectColumnar(true)
+   }
+ 
+-  test("inject columnar AQE off") {
++  test("inject columnar AQE off",
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1197")) {
+     testInjectColumnar(false)
+   }
+ 
+@@ -215,7 +217,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
+     }
+   }
+ 
+-  test("SPARK-39991: AQE should retain column statistics from completed query stages") {
++  test("SPARK-39991: AQE should retain column statistics from completed query stages",
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1197")) {
+     val extensions = create { extensions =>
+       extensions.injectColumnar(_ =>
+         MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule()))
+@@ -315,7 +318,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
+     }
+   }
+ 
+-  test("reset column vectors") {
++  test("reset column vectors",
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1197")) {
+     val session = SparkSession.builder()
+       .master("local[1]")
+       .config(COLUMN_BATCH_SIZE.key, 2)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 index 68f14f13bbd..174636cefb5 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
@@ -2910,7 +2963,7 @@ index af07aceaed1..ed0b5e6d9be 100644
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-index 5fbf379644f..51debb8c481 100644
+index 5fbf379644f..1f2e5d7cfa0 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 @@ -41,6 +41,7 @@ import org.apache.spark.sql.catalyst.plans.PlanTest
@@ -2934,17 +2987,14 @@ index 5fbf379644f..51debb8c481 100644
      }
    }
  
-@@ -243,6 +248,42 @@ private[sql] trait SQLTestUtilsBase
+@@ -243,6 +248,39 @@ private[sql] trait SQLTestUtilsBase
      protected override def _sqlContext: SQLContext = self.spark.sqlContext
    }
  
 +  /**
 +   * Whether Comet extension is enabled
 +   */
-+  protected def isCometEnabled: Boolean = {
-+    val v = System.getenv("ENABLE_COMET")
-+    v != null && v.toBoolean
-+  }
++  protected def isCometEnabled: Boolean = SparkSession.isCometEnabled
 +
 +  /**
 +   * Whether to enable ansi mode This is only effective when
@@ -2977,7 +3027,7 @@ index 5fbf379644f..51debb8c481 100644
    protected override def withSQLConf[T](pairs: (String, String)*)(f: => T): T = {
      SparkSession.setActiveSession(spark)
      super.withSQLConf(pairs: _*)(f)
-@@ -434,6 +475,8 @@ private[sql] trait SQLTestUtilsBase
+@@ -434,6 +472,8 @@ private[sql] trait SQLTestUtilsBase
      val schema = df.schema
      val withoutFilters = df.queryExecution.executedPlan.transform {
        case FilterExec(_, child) => child
@@ -3061,10 +3111,10 @@ index 52abd248f3a..7a199931a08 100644
          case d: DynamicPruningExpression => d.child
        }
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
-index 3f8de93b330..fc06e81f41a 100644
+index 3f8de93b330..2912f98cc5b 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
-@@ -53,24 +53,53 @@ object TestHive
+@@ -53,24 +53,52 @@ object TestHive
      new SparkContext(
        System.getProperty("spark.sql.test.master", "local[1]"),
        "TestSQLContext",
@@ -3106,8 +3156,7 @@ index 3f8de93b330..fc06e81f41a 100644
 +          // ConstantPropagation etc.
 +          .set(SQLConf.OPTIMIZER_EXCLUDED_RULES.key, ConvertToLocalRelation.ruleName)
 +
-+        val v = System.getenv("ENABLE_COMET")
-+        if (v != null && v.toBoolean) {
++        if (SparkSession.isCometEnabled) {
 +          conf
 +            .set("spark.sql.extensions", "org.apache.comet.CometSparkSessionExtensions")
 +            .set("spark.comet.enabled", "true")
