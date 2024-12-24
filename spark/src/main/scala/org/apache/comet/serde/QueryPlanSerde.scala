@@ -2272,6 +2272,10 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             expr.children(1),
             inputs,
             (builder, binaryExpr) => builder.setArrayAppend(binaryExpr))
+
+        case Rand(child, _) =>
+          createUnaryExpr(child, inputs, (builder, unaryExpr) => builder.setRand(unaryExpr))
+
         case _ =>
           withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
           None

@@ -2517,4 +2517,21 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       checkSparkAnswer(df.select("arrUnsupportedArgs"))
     }
   }
+
+  test("rand expression with random parameters") {
+    val partitionsNumber = Random.nextInt(10) + 1
+    val rowsNumber = Random.nextInt(500)
+    val seed = Random.nextLong()
+    // use this value to have both single-batch and multi-batch partitions
+    val cometBatchSize = math.max(1, math.ceil(rowsNumber.toDouble / partitionsNumber).toInt)
+    withSQLConf("spark.comet.batchSize" -> cometBatchSize.toString) {
+      withParquetDataFrame((0 until rowsNumber).map(Tuple1.apply)) { df =>
+        val dfWithRandParameters = df.repartition(partitionsNumber).withColumn("rnd", rand(seed))
+        checkSparkAnswer(dfWithRandParameters)
+        val dfWithOverflowSeed =
+          df.repartition(partitionsNumber).withColumn("rnd", rand(Long.MaxValue))
+        checkSparkAnswer(dfWithOverflowSeed)
+      }
+    }
+  }
 }

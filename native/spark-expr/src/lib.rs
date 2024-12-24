@@ -66,6 +66,8 @@ pub use normalize_nan::NormalizeNaNAndZero;
 mod variance;
 pub use variance::Variance;
 mod comet_scalar_funcs;
+pub mod rand;
+
 pub use cast::{spark_cast, Cast, SparkCastOptions};
 pub use comet_scalar_funcs::create_comet_physical_fun;
 pub use error::{SparkError, SparkResult};
