@@ -87,8 +87,8 @@ impl RandExpr {
     }
 
     fn extract_init_state(seed: ScalarValue) -> Result<i64> {
-        if let ScalarValue::Int64(Some(init_seed)) = seed.cast_to(&DataType::Int64)? {
-            Ok(init_seed)
+        if let ScalarValue::Int64(seed_opt) = seed.cast_to(&DataType::Int64)? {
+            Ok(seed_opt.unwrap_or(0))
         } else {
             Err(DataFusionError::Internal(
                 "unexpected execution branch".to_string(),

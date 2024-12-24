@@ -2531,6 +2531,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val dfWithOverflowSeed =
           df.repartition(partitionsNumber).withColumn("rnd", rand(Long.MaxValue))
         checkSparkAnswer(dfWithOverflowSeed)
+        val dfWithNullSeed =
+          df.repartition(partitionsNumber).selectExpr("_1", "rand(null) as rnd")
+        checkSparkAnswer(dfWithNullSeed)
       }
     }
   }
