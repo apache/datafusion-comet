@@ -1721,8 +1721,8 @@ mod test {
             &Time::default(),
         )
         .unwrap();
-        assert_eq!(61756, output.len());
-        assert_eq!(61756, length);
+        assert_eq!(61791, output.len());
+        assert_eq!(61791, length);
 
         let ipc_without_length_prefix = &output[16..];
         let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
