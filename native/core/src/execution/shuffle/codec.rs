@@ -116,117 +116,131 @@ impl<W: Write> BatchWriter<W> {
     }
 }
 
-pub fn read_batch_fast(input: &[u8]) -> Result<RecordBatch, DataFusionError> {
-    let mut offset = 0;
+pub struct BatchReader {
+    input: Vec<u8>,
+    offset: usize,
+}
 
-    // use provided schema, or read schema from bytes
-    let mut length = [0; 8];
-    length.copy_from_slice(&input[0..8]);
-    offset += 8;
-    let schema_len = usize::from_le_bytes(length);
-
-    let mut fields: Vec<Arc<Field>> = Vec::with_capacity(schema_len);
-    for _ in 0..schema_len {
-        // read field name length
-        length.copy_from_slice(&input[offset..offset + 8]);
-        let field_name_len = usize::from_le_bytes(length);
-        offset += 8;
-
-        // read field name
-        let field_name_bytes = &input[offset..offset + field_name_len];
-        offset += field_name_bytes.len();
-        let field_name = unsafe { String::from_utf8_unchecked(field_name_bytes.into()) };
-
-        // TODO read field data type
-        let data_type = match &input[offset] {
-            0_u8 => DataType::Int32,
-            1_u8 => DataType::Utf8,
-            _ => todo!(),
-        };
-        offset += 1;
-
-        // create field
-        let field = Arc::new(Field::new(field_name, data_type, true));
-        fields.push(field);
+impl BatchReader {
+    pub fn new(input: Vec<u8>) -> Self {
+        Self { input, offset: 0 }
     }
-    let schema = Arc::new(Schema::new(fields));
 
-    let mut arrays = Vec::with_capacity(schema.fields().len());
-    for i in 0..schema.fields().len() {
-        // read data buffer length
-        length.copy_from_slice(&input[offset..offset + 8]);
-        let buffer_len = usize::from_le_bytes(length);
-        offset += 8;
+    pub fn read_batch(&mut self) -> Result<RecordBatch, DataFusionError> {
+        // use provided schema, or read schema from bytes
+        let mut length = [0; 8];
+        length.copy_from_slice(&self.input[0..8]);
+        self.offset += 8;
+        let schema_len = usize::from_le_bytes(length);
 
-        // read data buffer
-        // println!("reading data buffer with {buffer_len} bytes");
-        let offset_segment_start = offset + buffer_len;
-        let buffer = Buffer::from(&input[offset..offset_segment_start]);
-        offset += buffer_len;
+        let mut fields: Vec<Arc<Field>> = Vec::with_capacity(schema_len);
+        for _ in 0..schema_len {
+            // read field name length
+            length.copy_from_slice(&self.input[self.offset..self.offset + 8]);
+            let field_name_len = usize::from_le_bytes(length);
+            self.offset += 8;
 
-        match schema.field(i).data_type() {
-            DataType::Int32 => {
-                // create array
-                let data_buffer = ScalarBuffer::<i32>::from(buffer);
+            // read field name
+            let field_name_bytes = &self.input[self.offset..self.offset + field_name_len];
+            self.offset += field_name_bytes.len();
+            let field_name = unsafe { String::from_utf8_unchecked(field_name_bytes.into()) };
 
-                // read null buffer
-                length.copy_from_slice(&input[offset..offset + 8]);
-                let null_buffer_length = usize::from_le_bytes(length);
-                offset += 8;
-                let null_buffer = if null_buffer_length != 0 {
-                    let null_buffer = &input[offset..offset + null_buffer_length];
-                    Some(NullBuffer::new(BooleanBuffer::new(
-                        Buffer::from(null_buffer),
-                        0,
-                        null_buffer.len() * 8,
-                    )))
-                } else {
-                    None
-                };
-                offset += null_buffer_length;
+            // TODO read field data type
+            let data_type = match &self.input[self.offset] {
+                0_u8 => DataType::Int32,
+                1_u8 => DataType::Utf8,
+                _ => todo!(),
+            };
+            self.offset += 1;
 
-                let array: ArrayRef = Arc::new(Int32Array::try_new(data_buffer, null_buffer)?);
-                arrays.push(array);
-            }
-            DataType::Utf8 => {
-                // read offset buffer length
-                length.copy_from_slice(&input[offset_segment_start..offset_segment_start + 8]);
-                let offset_buffer_len = usize::from_le_bytes(length);
-                offset += 8;
-
-                // read offset buffer
-                // println!("reading offset buffer with {offset_buffer_len} bytes");
-                let offset_buffer = Buffer::from(&input[offset..offset + offset_buffer_len]);
-                offset += offset_buffer_len;
-                let scalar_buffer: ScalarBuffer<i32> = ScalarBuffer::from(offset_buffer);
-                let offset_buffer = OffsetBuffer::new(scalar_buffer);
-
-                // read null buffer
-                length.copy_from_slice(&input[offset..offset + 8]);
-                let null_buffer_length = usize::from_le_bytes(length);
-                offset += 8;
-                let null_buffer = if null_buffer_length != 0 {
-                    let null_buffer = &input[offset..offset + null_buffer_length];
-                    Some(NullBuffer::new(BooleanBuffer::new(
-                        Buffer::from(null_buffer),
-                        0,
-                        null_buffer.len() * 8,
-                    )))
-                } else {
-                    None
-                };
-                offset += null_buffer_length;
-
-                // create array
-                let array: ArrayRef =
-                    Arc::new(StringArray::try_new(offset_buffer, buffer, null_buffer)?);
-                arrays.push(array);
-            }
-            _ => todo!(),
+            // create field
+            let field = Arc::new(Field::new(field_name, data_type, true));
+            fields.push(field);
         }
-    }
+        let schema = Arc::new(Schema::new(fields));
 
-    Ok(RecordBatch::try_new(schema, arrays).unwrap())
+        let mut arrays = Vec::with_capacity(schema.fields().len());
+        for i in 0..schema.fields().len() {
+            // read data buffer length
+            length.copy_from_slice(&self.input[self.offset..self.offset + 8]);
+            let buffer_len = usize::from_le_bytes(length);
+            self.offset += 8;
+
+            // read data buffer
+            // println!("reading data buffer with {buffer_len} bytes");
+            let offset_segment_start = self.offset + buffer_len;
+            let buffer = Buffer::from(&self.input[self.offset..offset_segment_start]);
+            self.offset += buffer_len;
+
+            match schema.field(i).data_type() {
+                DataType::Int32 => {
+                    // create array
+                    let data_buffer = ScalarBuffer::<i32>::from(buffer);
+
+                    // read null buffer
+                    length.copy_from_slice(&self.input[self.offset..self.offset + 8]);
+                    let null_buffer_length = usize::from_le_bytes(length);
+                    self.offset += 8;
+                    let null_buffer = if null_buffer_length != 0 {
+                        let null_buffer =
+                            &self.input[self.offset..self.offset + null_buffer_length];
+                        Some(NullBuffer::new(BooleanBuffer::new(
+                            Buffer::from(null_buffer),
+                            0,
+                            null_buffer.len() * 8,
+                        )))
+                    } else {
+                        None
+                    };
+                    self.offset += null_buffer_length;
+
+                    let array: ArrayRef = Arc::new(Int32Array::try_new(data_buffer, null_buffer)?);
+                    arrays.push(array);
+                }
+                DataType::Utf8 => {
+                    // read offset buffer length
+                    length.copy_from_slice(
+                        &self.input[offset_segment_start..offset_segment_start + 8],
+                    );
+                    let offset_buffer_len = usize::from_le_bytes(length);
+                    self.offset += 8;
+
+                    // read offset buffer
+                    // println!("reading offset buffer with {offset_buffer_len} bytes");
+                    let offset_buffer =
+                        Buffer::from(&self.input[self.offset..self.offset + offset_buffer_len]);
+                    self.offset += offset_buffer_len;
+                    let scalar_buffer: ScalarBuffer<i32> = ScalarBuffer::from(offset_buffer);
+                    let offset_buffer = OffsetBuffer::new(scalar_buffer);
+
+                    // read null buffer
+                    length.copy_from_slice(&self.input[self.offset..self.offset + 8]);
+                    let null_buffer_length = usize::from_le_bytes(length);
+                    self.offset += 8;
+                    let null_buffer = if null_buffer_length != 0 {
+                        let null_buffer =
+                            &self.input[self.offset..self.offset + null_buffer_length];
+                        Some(NullBuffer::new(BooleanBuffer::new(
+                            Buffer::from(null_buffer),
+                            0,
+                            null_buffer.len() * 8,
+                        )))
+                    } else {
+                        None
+                    };
+                    self.offset += null_buffer_length;
+
+                    // create array
+                    let array: ArrayRef =
+                        Arc::new(StringArray::try_new(offset_buffer, buffer, null_buffer)?);
+                    arrays.push(array);
+                }
+                _ => todo!(),
+            }
+        }
+
+        Ok(RecordBatch::try_new(schema, arrays).unwrap())
+    }
 }
 
 #[cfg(test)]
@@ -244,7 +258,8 @@ mod test {
         let buffer = writer.inner();
         //assert_eq!(257315, buffer.len());
 
-        let batch2 = read_batch_fast(&buffer).unwrap();
+        let mut reader = BatchReader::new(buffer);
+        let batch2 = reader.read_batch().unwrap();
         assert_eq!(batch, batch2);
     }
 
