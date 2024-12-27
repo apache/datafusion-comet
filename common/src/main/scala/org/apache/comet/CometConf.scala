@@ -274,11 +274,12 @@ object CometConf extends ShimCometConf {
 
   val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
-      .doc("The codec of Comet native shuffle used to compress shuffle data. Only lz4 and zstd " +
-        "are supported. Compression can be disabled by setting spark.shuffle.compress=false.")
+      .doc("The codec of Comet native shuffle used to compress shuffle data. lz4, zstd, and " +
+        "snappy are supported. Compression can be disabled by setting " +
+        "spark.shuffle.compress=false.")
       .stringConf
-      .checkValues(Set("zstd", "lz4"))
-      .createWithDefault("lz4")
+      .checkValues(Set("zstd", "lz4", "snappy"))
+      .createWithDefault("snappy")
 
   val COMET_EXEC_SHUFFLE_COMPRESSION_LEVEL: ConfigEntry[Int] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.level")

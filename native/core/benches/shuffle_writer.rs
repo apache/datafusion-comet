@@ -42,6 +42,16 @@ fn criterion_benchmark(c: &mut Criterion) {
             write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::None, &ipc_time)
         });
     });
+    group.bench_function("shuffle_writer: encode and compress (snappy)", |b| {
+        let batch = create_batch(8192, true);
+        let mut buffer = vec![];
+        let ipc_time = Time::default();
+        b.iter(|| {
+            buffer.clear();
+            let mut cursor = Cursor::new(&mut buffer);
+            write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::Snappy, &ipc_time)
+        });
+    });
     group.bench_function("shuffle_writer: encode and compress (lz4)", |b| {
         let batch = create_batch(8192, true);
         let mut buffer = vec![];

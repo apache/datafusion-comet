@@ -1552,6 +1552,7 @@ pub enum CompressionCodec {
     None,
     Lz4Frame,
     Zstd(i32),
+    Snappy,
 }
 
 /// Writes given record batch as Arrow IPC bytes into given writer.
@@ -1578,6 +1579,7 @@ pub fn write_ipc_compressed<W: Write + Seek>(
 
     // write codec used
     match codec {
+        CompressionCodec::Snappy => output.write_all("SNAP".as_bytes())?,
         CompressionCodec::Lz4Frame => output.write_all("LZ4_".as_bytes())?,
         CompressionCodec::Zstd(_) => output.write_all("ZSTD".as_bytes())?,
         CompressionCodec::None => output.write_all("NONE".as_bytes())?,
@@ -1589,6 +1591,14 @@ pub fn write_ipc_compressed<W: Write + Seek>(
             arrow_writer.write(batch)?;
             arrow_writer.finish()?;
             arrow_writer.into_inner()?
+        }
+        CompressionCodec::Snappy => {
+            let mut wtr = snap::write::FrameEncoder::new(output);
+            let mut arrow_writer = StreamWriter::try_new(&mut wtr, &batch.schema())?;
+            arrow_writer.write(batch)?;
+            arrow_writer.finish()?;
+            wtr.into_inner()
+                .map_err(|e| DataFusionError::Execution(format!("lz4 compression error: {}", e)))?
         }
         CompressionCodec::Lz4Frame => {
             let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
@@ -1624,6 +1634,11 @@ pub fn write_ipc_compressed<W: Write + Seek>(
 
 pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
     match &bytes[0..4] {
+        b"SNAP" => {
+            let decoder = snap::read::FrameDecoder::new(&bytes[4..]);
+            let mut reader = StreamReader::try_new(decoder, None)?;
+            reader.next().unwrap().map_err(|e| e.into())
+        }
         b"LZ4_" => {
             let decoder = lz4_flex::frame::FrameDecoder::new(&bytes[4..]);
             let mut reader = StreamReader::try_new(decoder, None)?;

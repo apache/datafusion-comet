@@ -560,6 +560,7 @@ class CometShuffleWriteProcessor(
         val codec = CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_CODEC.get() match {
           case "zstd" => CompressionCodec.Zstd
           case "lz4" => CompressionCodec.Lz4
+          case "snappy" => CompressionCodec.Snap
           case other => throw new UnsupportedOperationException(s"invalid codec: $other")
         }
         shuffleWriterBuilder.setCodec(codec)
