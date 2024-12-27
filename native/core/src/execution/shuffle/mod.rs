@@ -19,6 +19,9 @@ mod list;
 mod map;
 pub mod row;
 mod shuffle_writer;
+mod codec;
+pub use codec::BatchWriter;
+
 pub use shuffle_writer::{
     read_ipc_compressed, write_ipc_compressed, CompressionCodec, ShuffleWriterExec,
 };
