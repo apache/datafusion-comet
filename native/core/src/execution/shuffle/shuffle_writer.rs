@@ -351,7 +351,12 @@ impl PartitionBuffer {
         let frozen_capacity_old = self.frozen.capacity();
         let mut cursor = Cursor::new(&mut self.frozen);
         cursor.seek(SeekFrom::End(0))?;
-        write_ipc_compressed(&frozen_batch, &mut cursor, &self.codec, &metrics.encode_time)?;
+        write_ipc_compressed(
+            &frozen_batch,
+            &mut cursor,
+            &self.codec,
+            &metrics.encode_time,
+        )?;
 
         mem_diff += (self.frozen.capacity() - frozen_capacity_old) as isize;
         Ok(mem_diff)
@@ -1041,7 +1046,6 @@ impl ShuffleRepartitioner {
             self.num_output_partitions,
             &self.metrics,
         )?;
-
 
         let mut spills = self.spills.lock().await;
         let used = self.reservation.size();
