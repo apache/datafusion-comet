@@ -311,7 +311,7 @@ impl PartitionBuffer {
             repart_timer.stop();
 
             if self.num_active_rows >= self.batch_size {
-                let flush = self.flush(&metrics.ipc_time);
+                let flush = self.flush(&metrics);
                 if let Err(e) = flush {
                     return AppendRowStatus::MemDiff(Err(e));
                 }
@@ -329,7 +329,7 @@ impl PartitionBuffer {
     }
 
     /// flush active data into frozen bytes
-    fn flush(&mut self, ipc_time: &Time) -> Result<isize> {
+    fn flush(&mut self, metrics: &ShuffleRepartitionerMetrics) -> Result<isize> {
         if self.num_active_rows == 0 {
             return Ok(0);
         }
@@ -339,14 +339,19 @@ impl PartitionBuffer {
         let active = std::mem::take(&mut self.active);
         let num_rows = self.num_active_rows;
         self.num_active_rows = 0;
-        self.reservation.try_shrink(self.active_slots_mem_size)?;
 
+        let mut mempool_timer = metrics.mempool_time.timer();
+        self.reservation.try_shrink(self.active_slots_mem_size)?;
+        mempool_timer.stop();
+
+        let mut repart_timer = metrics.repart_time.timer();
         let frozen_batch = make_batch(Arc::clone(&self.schema), active, num_rows)?;
+        repart_timer.stop();
 
         let frozen_capacity_old = self.frozen.capacity();
         let mut cursor = Cursor::new(&mut self.frozen);
         cursor.seek(SeekFrom::End(0))?;
-        write_ipc_compressed(&frozen_batch, &mut cursor, &self.codec, ipc_time)?;
+        write_ipc_compressed(&frozen_batch, &mut cursor, &self.codec, &metrics.encode_time)?;
 
         mem_diff += (self.frozen.capacity() - frozen_capacity_old) as isize;
         Ok(mem_diff)
@@ -651,7 +656,7 @@ struct ShuffleRepartitionerMetrics {
     mempool_time: Time,
 
     /// Time encoding batches to IPC format
-    ipc_time: Time,
+    encode_time: Time,
 
     /// Time spent writing to disk. Maps to "shuffleWriteTime" in Spark SQL Metrics.
     write_time: Time,
@@ -675,7 +680,7 @@ impl ShuffleRepartitionerMetrics {
             baseline: BaselineMetrics::new(metrics, partition),
             repart_time: MetricBuilder::new(metrics).subset_time("repart_time", partition),
             mempool_time: MetricBuilder::new(metrics).subset_time("mempool_time", partition),
-            ipc_time: MetricBuilder::new(metrics).subset_time("ipc_time", partition),
+            encode_time: MetricBuilder::new(metrics).subset_time("encode_time", partition),
             write_time: MetricBuilder::new(metrics).subset_time("write_time", partition),
             input_batches: MetricBuilder::new(metrics).counter("input_batches", partition),
             spill_count: MetricBuilder::new(metrics).spill_count(partition),
@@ -924,7 +929,7 @@ impl ShuffleRepartitioner {
         let mut output_batches: Vec<Vec<u8>> = vec![vec![]; num_output_partitions];
         let mut offsets = vec![0; num_output_partitions + 1];
         for i in 0..num_output_partitions {
-            buffered_partitions[i].flush(&self.metrics.ipc_time)?;
+            buffered_partitions[i].flush(&self.metrics)?;
             output_batches[i] = std::mem::take(&mut buffered_partitions[i].frozen);
         }
 
@@ -1024,19 +1029,19 @@ impl ShuffleRepartitioner {
         }
 
         let mut timer = self.metrics.write_time.timer();
-
         let spillfile = self
             .runtime
             .disk_manager
             .create_tmp_file("shuffle writer spill")?;
+        timer.stop();
+
         let offsets = spill_into(
             &mut self.buffered_partitions,
             spillfile.path(),
             self.num_output_partitions,
-            &self.metrics.ipc_time,
+            &self.metrics,
         )?;
 
-        timer.stop();
 
         let mut spills = self.spills.lock().await;
         let used = self.reservation.size();
@@ -1108,15 +1113,17 @@ fn spill_into(
     buffered_partitions: &mut [PartitionBuffer],
     path: &Path,
     num_output_partitions: usize,
-    ipc_time: &Time,
+    metrics: &ShuffleRepartitionerMetrics,
 ) -> Result<Vec<u64>> {
     let mut output_batches: Vec<Vec<u8>> = vec![vec![]; num_output_partitions];
 
     for i in 0..num_output_partitions {
-        buffered_partitions[i].flush(ipc_time)?;
+        buffered_partitions[i].flush(metrics)?;
         output_batches[i] = std::mem::take(&mut buffered_partitions[i].frozen);
     }
     let path = path.to_owned();
+
+    let mut write_timer = metrics.write_time.timer();
 
     let mut offsets = vec![0; num_output_partitions + 1];
     let mut spill_data = OpenOptions::new()
@@ -1131,6 +1138,8 @@ fn spill_into(
         spill_data.write_all(&output_batches[i])?;
         output_batches[i].clear();
     }
+    write_timer.stop();
+
     // add one extra offset at last to ease partition length computation
     offsets[num_output_partitions] = spill_data.stream_position()?;
     Ok(offsets)
