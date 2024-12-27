@@ -74,6 +74,8 @@ impl<W: Write> BatchWriter<W> {
                         let buffer = nulls.inner();
                         let buffer = buffer.inner();
                         self.write_buffer(buffer)?;
+                    } else {
+                        self.inner.write_all(&0_usize.to_le_bytes())?;
                     }
                 }
                 DataType::Utf8 => {
@@ -93,6 +95,8 @@ impl<W: Write> BatchWriter<W> {
                         let buffer = nulls.inner();
                         let buffer = buffer.inner();
                         self.write_buffer(buffer)?;
+                    } else {
+                        self.inner.write_all(&0_usize.to_le_bytes())?;
                     }
                 }
                 _ => todo!(),
