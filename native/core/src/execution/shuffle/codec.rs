@@ -16,7 +16,7 @@
 // under the License.
 
 use arrow_array::{Array, ArrayRef, Int32Array, RecordBatch, StringArray};
-use arrow_buffer::{Buffer, OffsetBuffer, ScalarBuffer};
+use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field, Schema};
 use datafusion_common::DataFusionError;
 use std::io::Write;
@@ -167,18 +167,26 @@ pub fn read_batch_fast(input: &[u8]) -> Result<RecordBatch, DataFusionError> {
         match schema.field(i).data_type() {
             DataType::Int32 => {
                 // create array
-                let x = ScalarBuffer::<i32>::from(buffer);
-                let array: ArrayRef = Arc::new(Int32Array::try_new(x, None)?);
-                arrays.push(array);
+                let data_buffer = ScalarBuffer::<i32>::from(buffer);
 
                 // read null buffer
                 length.copy_from_slice(&input[offset..offset + 8]);
                 let null_buffer_length = usize::from_le_bytes(length);
                 offset += 8;
-                if null_buffer_length != 0 {
-                    // TODO
-                }
+                let null_buffer = if null_buffer_length != 0 {
+                    let null_buffer = &input[offset..offset + null_buffer_length];
+                    Some(NullBuffer::new(BooleanBuffer::new(
+                        Buffer::from(null_buffer),
+                        0,
+                        null_buffer.len() * 8,
+                    )))
+                } else {
+                    None
+                };
                 offset += null_buffer_length;
+
+                let array: ArrayRef = Arc::new(Int32Array::try_new(data_buffer, null_buffer)?);
+                arrays.push(array);
             }
             DataType::Utf8 => {
                 // read offset buffer length
@@ -197,13 +205,21 @@ pub fn read_batch_fast(input: &[u8]) -> Result<RecordBatch, DataFusionError> {
                 length.copy_from_slice(&input[offset..offset + 8]);
                 let null_buffer_length = usize::from_le_bytes(length);
                 offset += 8;
-                if null_buffer_length != 0 {
-                    // TODO
-                }
+                let null_buffer = if null_buffer_length != 0 {
+                    let null_buffer = &input[offset..offset + null_buffer_length];
+                    Some(NullBuffer::new(BooleanBuffer::new(
+                        Buffer::from(null_buffer),
+                        0,
+                        null_buffer.len() * 8,
+                    )))
+                } else {
+                    None
+                };
                 offset += null_buffer_length;
 
                 // create array
-                let array: ArrayRef = Arc::new(StringArray::try_new(offset_buffer, buffer, None)?);
+                let array: ArrayRef =
+                    Arc::new(StringArray::try_new(offset_buffer, buffer, null_buffer)?);
                 arrays.push(array);
             }
             _ => todo!(),
@@ -221,7 +237,7 @@ mod test {
 
     #[test]
     fn roundtrip() {
-        let batch = create_batch(8192, false);
+        let batch = create_batch(8192, true);
         let buffer = Vec::new();
         let mut writer = BatchWriter::new(buffer);
         writer.write_batch(&batch).unwrap();
