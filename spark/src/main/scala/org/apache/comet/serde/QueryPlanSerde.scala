@@ -1745,7 +1745,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             exprToProtoInternal(elements._1, inputs)
           })
           val thenSeq = branches.map(elements => {
-            allBranches = allBranches :+ elements._1
+            allBranches = allBranches :+ elements._2
             exprToProtoInternal(elements._2, inputs)
           })
           assert(whenSeq.length == thenSeq.length)
