@@ -239,7 +239,7 @@ object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
         override def numPartitions: Int = outputPartitioning.numPartitions
         override def getPartition(key: Any): Int = key.asInstanceOf[Int]
       },
-      decodeTime = metrics("decodeTime"))
+      decodeTime = metrics("decode_time"))
     dependency
   }
 
@@ -437,7 +437,7 @@ object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
         shuffleWriterProcessor = ShuffleExchangeExec.createShuffleWriteProcessor(writeMetrics),
         shuffleType = CometColumnarShuffle,
         schema = Some(fromAttributes(outputAttributes)),
-        decodeTime = writeMetrics("decodeTime"))
+        decodeTime = writeMetrics("decode_time"))
 
     dependency
   }
@@ -483,7 +483,7 @@ class CometShuffleWriteProcessor(
 
     val detailedMetrics = Seq(
       "elapsed_compute",
-      "ipc_time",
+      "encode_time",
       "repart_time",
       "mempool_time",
       "input_batches",

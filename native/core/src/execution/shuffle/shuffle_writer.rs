@@ -1591,17 +1591,10 @@ pub fn write_ipc_compressed<W: Write + Seek>(
             arrow_writer.into_inner()?
         }
         CompressionCodec::Lz4Frame => {
-            // write IPC first without compression
-            let mut buffer = vec![];
-            let mut arrow_writer = StreamWriter::try_new(&mut buffer, &batch.schema())?;
+            let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
+            let mut arrow_writer = StreamWriter::try_new(&mut wtr, &batch.schema())?;
             arrow_writer.write(batch)?;
             arrow_writer.finish()?;
-            let ipc_encoded = arrow_writer.into_inner()?;
-
-            // compress
-            let mut reader = Cursor::new(ipc_encoded);
-            let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
-            std::io::copy(&mut reader, &mut wtr)?;
             wtr.finish()
                 .map_err(|e| DataFusionError::Execution(format!("lz4 compression error: {}", e)))?
         }
