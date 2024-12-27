@@ -280,7 +280,7 @@ object CometConf extends ShimCometConf {
           "spark.shuffle.compress=false.")
       .stringConf
       .checkValues(Set("zstd", "lz4", "snappy"))
-      .createWithDefault("snappy")
+      .createWithDefault("lz4")
 
   val COMET_EXEC_SHUFFLE_COMPRESSION_LEVEL: ConfigEntry[Int] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.level")
