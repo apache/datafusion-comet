@@ -1337,6 +1337,27 @@ index 47679ed7865..9ffbaecb98e 100644
      }.length == hashAggCount)
      assert(collectWithSubqueries(plan) { case s: SortAggregateExec => s }.length == sortAggCount)
    }
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
+index 966f4e74712..a715193d96d 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
+@@ -23,6 +23,7 @@ import org.apache.spark.sql.QueryTest
+ import org.apache.spark.sql.catalyst.InternalRow
+ import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
+ import org.apache.spark.sql.catalyst.plans.logical.Deduplicate
++import org.apache.spark.sql.comet.CometColumnarToRowExec
+ import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
+ import org.apache.spark.sql.internal.SQLConf
+ import org.apache.spark.sql.test.SharedSparkSession
+@@ -134,7 +135,7 @@ class SparkPlanSuite extends QueryTest with SharedSparkSession {
+         spark.range(1).write.parquet(path.getAbsolutePath)
+         val df = spark.read.parquet(path.getAbsolutePath)
+         val columnarToRowExec =
+-          df.queryExecution.executedPlan.collectFirst { case p: ColumnarToRowExec => p }.get
++          df.queryExecution.executedPlan.collectFirst { case p: CometColumnarToRowExec => p }.get
+         try {
+           spark.range(1).foreach { _ =>
+             columnarToRowExec.canonicalized
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
 index 3aaf61ffba4..4130ece2283 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
