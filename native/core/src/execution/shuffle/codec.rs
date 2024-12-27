@@ -161,16 +161,7 @@ impl BatchReader {
 
         let mut arrays = Vec::with_capacity(schema.fields().len());
         for i in 0..schema.fields().len() {
-            // read data buffer length
-            length.copy_from_slice(&self.input[self.offset..self.offset + 8]);
-            let buffer_len = usize::from_le_bytes(length);
-            self.offset += 8;
-
-            // read data buffer
-            // println!("reading data buffer with {buffer_len} bytes");
-            let offset_segment_start = self.offset + buffer_len;
-            let buffer = Buffer::from(&self.input[self.offset..offset_segment_start]);
-            self.offset += buffer_len;
+            let buffer = self.read_data_buffer();
 
             match schema.field(i).data_type() {
                 DataType::Int32 => {
@@ -178,30 +169,14 @@ impl BatchReader {
                     let data_buffer = ScalarBuffer::<i32>::from(buffer);
 
                     // read null buffer
-                    length.copy_from_slice(&self.input[self.offset..self.offset + 8]);
-                    let null_buffer_length = usize::from_le_bytes(length);
-                    self.offset += 8;
-                    let null_buffer = if null_buffer_length != 0 {
-                        let null_buffer =
-                            &self.input[self.offset..self.offset + null_buffer_length];
-                        Some(NullBuffer::new(BooleanBuffer::new(
-                            Buffer::from(null_buffer),
-                            0,
-                            null_buffer.len() * 8,
-                        )))
-                    } else {
-                        None
-                    };
-                    self.offset += null_buffer_length;
+                    let null_buffer = self.read_null_buffer();
 
                     let array: ArrayRef = Arc::new(Int32Array::try_new(data_buffer, null_buffer)?);
                     arrays.push(array);
                 }
                 DataType::Utf8 => {
                     // read offset buffer length
-                    length.copy_from_slice(
-                        &self.input[offset_segment_start..offset_segment_start + 8],
-                    );
+                    length.copy_from_slice(&self.input[self.offset..self.offset + 8]);
                     let offset_buffer_len = usize::from_le_bytes(length);
                     self.offset += 8;
 
@@ -214,21 +189,7 @@ impl BatchReader {
                     let offset_buffer = OffsetBuffer::new(scalar_buffer);
 
                     // read null buffer
-                    length.copy_from_slice(&self.input[self.offset..self.offset + 8]);
-                    let null_buffer_length = usize::from_le_bytes(length);
-                    self.offset += 8;
-                    let null_buffer = if null_buffer_length != 0 {
-                        let null_buffer =
-                            &self.input[self.offset..self.offset + null_buffer_length];
-                        Some(NullBuffer::new(BooleanBuffer::new(
-                            Buffer::from(null_buffer),
-                            0,
-                            null_buffer.len() * 8,
-                        )))
-                    } else {
-                        None
-                    };
-                    self.offset += null_buffer_length;
+                    let null_buffer = self.read_null_buffer();
 
                     // create array
                     let array: ArrayRef =
@@ -240,6 +201,39 @@ impl BatchReader {
         }
 
         Ok(RecordBatch::try_new(schema, arrays).unwrap())
+    }
+
+    fn read_data_buffer(&mut self) -> Buffer {
+        // read data buffer length
+        let mut length = [0; 8];
+        length.copy_from_slice(&self.input[self.offset..self.offset + 8]);
+        let buffer_len = usize::from_le_bytes(length);
+        self.offset += 8;
+
+        // read data buffer
+        // println!("reading data buffer with {buffer_len} bytes");
+        let buffer = Buffer::from(&self.input[self.offset..self.offset + buffer_len]);
+        self.offset += buffer_len;
+        buffer
+    }
+
+    fn read_null_buffer(&mut self) -> Option<NullBuffer> {
+        let mut length = [0; 8];
+        length.copy_from_slice(&self.input[self.offset..self.offset + 8]);
+        let null_buffer_length = usize::from_le_bytes(length);
+        self.offset += 8;
+        let null_buffer = if null_buffer_length != 0 {
+            let null_buffer = &self.input[self.offset..self.offset + null_buffer_length];
+            Some(NullBuffer::new(BooleanBuffer::new(
+                Buffer::from(null_buffer),
+                0,
+                null_buffer.len() * 8,
+            )))
+        } else {
+            None
+        };
+        self.offset += null_buffer_length;
+        null_buffer
     }
 }
 
