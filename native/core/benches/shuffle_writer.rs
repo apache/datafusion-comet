@@ -18,7 +18,9 @@
 use arrow_array::builder::Int32Builder;
 use arrow_array::{builder::StringBuilder, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use comet::execution::shuffle::{write_ipc_compressed, BatchWriter, CompressionCodec, ShuffleWriterExec};
+use comet::execution::shuffle::{
+    write_ipc_compressed, BatchWriter, CompressionCodec, ShuffleWriterExec,
+};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::physical_plan::metrics::Time;
 use datafusion::{
@@ -42,29 +44,35 @@ fn criterion_benchmark(c: &mut Criterion) {
             write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::None, &ipc_time)
         });
     });
-    group.bench_function("shuffle_writer: encode and compress (lz4) - Arrow IPC", |b| {
-        let batch = create_batch(8192, true);
-        let mut buffer = vec![];
-        let ipc_time = Time::default();
-        b.iter(|| {
-            buffer.clear();
-            let mut cursor = Cursor::new(&mut buffer);
-            write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::Lz4Frame, &ipc_time)
-        });
-    });
-    group.bench_function("shuffle_writer: encode and compress (lz4) - custom encoder", |b| {
-        let batch = create_batch(8192, true);
-        let mut buffer = vec![];
-        let ipc_time = Time::default();
-        b.iter(|| {
-            buffer.clear();
-            let wtr = lz4_flex::frame::FrameEncoder::new(&mut buffer);
-            let mut x = BatchWriter::new(wtr);
-            x.write_batch(&batch).unwrap();
-            let encoder = x.inner();
-            let _ = encoder.finish().unwrap();
-        });
-    });
+    group.bench_function(
+        "shuffle_writer: encode and compress (lz4) - Arrow IPC",
+        |b| {
+            let batch = create_batch(8192, true);
+            let mut buffer = vec![];
+            let ipc_time = Time::default();
+            b.iter(|| {
+                buffer.clear();
+                let mut cursor = Cursor::new(&mut buffer);
+                write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::Lz4Frame, &ipc_time)
+            });
+        },
+    );
+    group.bench_function(
+        "shuffle_writer: encode and compress (lz4) - custom encoder",
+        |b| {
+            let batch = create_batch(8192, true);
+            let mut buffer = vec![];
+            let ipc_time = Time::default();
+            b.iter(|| {
+                buffer.clear();
+                let wtr = lz4_flex::frame::FrameEncoder::new(&mut buffer);
+                let mut x = BatchWriter::new(wtr);
+                x.write_batch(&batch).unwrap();
+                let encoder = x.inner();
+                let _ = encoder.finish().unwrap();
+            });
+        },
+    );
     group.bench_function("shuffle_writer: encode and compress (zstd level 1)", |b| {
         let batch = create_batch(8192, true);
         let mut buffer = vec![];
