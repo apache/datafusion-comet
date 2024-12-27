@@ -311,7 +311,7 @@ impl PartitionBuffer {
             repart_timer.stop();
 
             if self.num_active_rows >= self.batch_size {
-                let flush = self.flush(&metrics);
+                let flush = self.flush(metrics);
                 if let Err(e) = flush {
                     return AppendRowStatus::MemDiff(Err(e));
                 }
