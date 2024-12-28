@@ -192,11 +192,10 @@ impl<W: Write> BatchWriter<W> {
     }
 
     fn write_buffer(&mut self, buffer: &Buffer) -> std::io::Result<()> {
-        let length = buffer.len();
-        let mut combined = Vec::with_capacity(8 + length); // 8 bytes for length + data
-        combined.extend_from_slice(&length.to_le_bytes());
-        combined.extend_from_slice(buffer.as_slice());
-        self.inner.write_all(&combined)
+        // write buffer length
+        self.inner.write_all(&buffer.len().to_le_bytes())?;
+        // write buffer data
+        self.inner.write_all(buffer.as_slice())
     }
 }
 
@@ -289,19 +288,13 @@ impl<'a> BatchReader<'a> {
                     let null_buffer = self.read_null_buffer();
                     Arc::new(StringArray::try_new(offset_buffer, buffer, null_buffer)?)
                 }
-                _ => todo!(),
+                other => {
+                    return Err(DataFusionError::Internal(format!(
+                        "unsupported type {other}"
+                    )))
+                }
             };
             arrays.push(array);
-        }
-
-        assert_eq!(schema.fields().len(), arrays.len());
-        for i in 0..arrays.len() {
-            println!(
-                "{}: {} length = {}",
-                schema.field(i).name(),
-                schema.field(i).data_type(),
-                arrays[i].len()
-            );
         }
 
         Ok(RecordBatch::try_new(schema, arrays).unwrap())

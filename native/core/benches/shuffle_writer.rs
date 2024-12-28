@@ -32,20 +32,20 @@ use tokio::runtime::Runtime;
 
 fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("shuffle_writer");
-    for enable_fast_compression in [true, false] {
+    for enable_fast_encoding in [true, false] {
         for compression_codec in [
             CompressionCodec::None,
             CompressionCodec::Lz4Frame,
             CompressionCodec::Zstd(1),
         ] {
-            group.bench_function(format!("shuffle_writer: write encoded (fast_compression={enable_fast_compression}, compression={compression_codec:?})"), |b| {
+            group.bench_function(format!("shuffle_writer: write encoded (enable_fast_encoding={enable_fast_encoding}, compression={compression_codec:?})"), |b| {
                 let batch = create_batch(8192, true);
                 let mut buffer = vec![];
                 let ipc_time = Time::default();
                 b.iter(|| {
                     buffer.clear();
                     let mut cursor = Cursor::new(&mut buffer);
-                    write_ipc_compressed(&batch, &mut cursor, enable_fast_compression, &compression_codec, &ipc_time)
+                    write_ipc_compressed(&batch, &mut cursor, enable_fast_encoding, &compression_codec, &ipc_time)
                 });
             });
         }
