@@ -212,7 +212,6 @@ impl ShuffleWriterExec {
 struct PartitionBuffer {
     /// The schema of batches to be partitioned.
     schema: SchemaRef,
-    encoded_schema: Vec<u8>,
     /// The "frozen" Arrow IPC bytes of active data. They are frozen when `flush` is called.
     frozen: Vec<u8>,
     /// Array builders for appending rows into buffering batches.
@@ -226,7 +225,8 @@ struct PartitionBuffer {
     batch_size: usize,
     /// Memory reservation for this partition buffer.
     reservation: MemoryReservation,
-    codec: CompressionCodec,
+    /// Writer that performs encoding and compression
+    shuffle_block_writer: ShuffleBlockWriter,
 }
 
 impl PartitionBuffer {
@@ -240,23 +240,16 @@ impl PartitionBuffer {
         let reservation = MemoryConsumer::new(format!("PartitionBuffer[{}]", partition_id))
             .with_can_spill(true)
             .register(&runtime.memory_pool);
-
-        // TODO schema could be encoded once rather than once per PartitionBuffer but this
-        // is better than once per batch
-        let mut encoded_schema = vec![];
-        let mut w = BatchWriter::new(&mut encoded_schema);
-        w.write_schema(schema.as_ref())?;
-
+        let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), true, codec)?;
         Ok(Self {
             schema,
-            encoded_schema,
             frozen: vec![],
             active: vec![],
             active_slots_mem_size: 0,
             num_active_rows: 0,
             batch_size,
             reservation,
-            codec,
+            shuffle_block_writer,
         })
     }
 
@@ -356,14 +349,8 @@ impl PartitionBuffer {
         let frozen_capacity_old = self.frozen.capacity();
         let mut cursor = Cursor::new(&mut self.frozen);
         cursor.seek(SeekFrom::End(0))?;
-        write_ipc_compressed(
-            &frozen_batch,
-            &mut cursor,
-            true,
-            &self.codec,
-            &self.encoded_schema,
-            ipc_time,
-        )?;
+        self.shuffle_block_writer
+            .write_batch(&frozen_batch, &mut cursor, ipc_time)?;
 
         mem_diff += (self.frozen.capacity() - frozen_capacity_old) as isize;
         Ok(mem_diff)
@@ -1571,110 +1558,134 @@ pub enum CompressionCodec {
     Zstd(i32),
 }
 
-/// Writes given record batch as Arrow IPC bytes into given writer.
-/// Returns number of bytes written.
-pub fn write_ipc_compressed<W: Write + Seek>(
-    batch: &RecordBatch,
-    output: &mut W,
+pub struct ShuffleBlockWriter {
     enable_fast_encoding: bool,
-    codec: &CompressionCodec,
-    encoded_schema: &[u8],
-    ipc_time: &Time,
-) -> Result<usize> {
-    if batch.num_rows() == 0 {
-        return Ok(0);
+    codec: CompressionCodec,
+    encoded_schema: Vec<u8>,
+}
+
+impl ShuffleBlockWriter {
+    pub fn try_new(
+        schema: &Schema,
+        enable_fast_encoding: bool,
+        codec: CompressionCodec,
+    ) -> Result<Self> {
+        let mut encoded_schema = vec![];
+        if enable_fast_encoding {
+            let mut w = BatchWriter::new(&mut encoded_schema);
+            w.write_schema(schema)?;
+        }
+        Ok(Self {
+            enable_fast_encoding,
+            codec,
+            encoded_schema,
+        })
     }
 
-    let mut timer = ipc_time.timer();
-    let start_pos = output.stream_position()?;
+    /// Writes given record batch as Arrow IPC bytes into given writer.
+    /// Returns number of bytes written.
+    pub fn write_batch<W: Write + Seek>(
+        &self,
+        batch: &RecordBatch,
+        output: &mut W,
+        ipc_time: &Time,
+    ) -> Result<usize> {
+        if batch.num_rows() == 0 {
+            return Ok(0);
+        }
 
-    // write ipc_length placeholder
-    output.write_all(&[0u8; 8])?;
+        let mut timer = ipc_time.timer();
+        let start_pos = output.stream_position()?;
 
-    // write number of columns because JVM side needs to know how many addresses to allocate
-    let field_count = batch.schema().fields().len();
-    output.write_all(&field_count.to_le_bytes())?;
+        // write ipc_length placeholder
+        output.write_all(&[0u8; 8])?;
 
-    // write compression codec used
-    match codec {
-        CompressionCodec::Lz4Frame => output.write_all("LZ4_".as_bytes())?,
-        CompressionCodec::Zstd(_) => output.write_all("ZSTD".as_bytes())?,
-        CompressionCodec::None => output.write_all("NONE".as_bytes())?,
+        // write number of columns because JVM side needs to know how many addresses to allocate
+        let field_count = batch.schema().fields().len();
+        output.write_all(&field_count.to_le_bytes())?;
+
+        // write compression codec used
+        match &self.codec {
+            CompressionCodec::Lz4Frame => output.write_all("LZ4_".as_bytes())?,
+            CompressionCodec::Zstd(_) => output.write_all("ZSTD".as_bytes())?,
+            CompressionCodec::None => output.write_all("NONE".as_bytes())?,
+        }
+
+        // write encoding method used
+        let fast_encoding = self.enable_fast_encoding
+            && batch
+                .schema()
+                .fields()
+                .iter()
+                .all(|f| fast_codec_supports_type(f.data_type()));
+
+        if fast_encoding {
+            output.write_all("FAST".as_bytes())?;
+        } else {
+            output.write_all("AIPC".as_bytes())?;
+        }
+
+        let output = match (fast_encoding, &self.codec) {
+            (false, CompressionCodec::None) => {
+                let mut arrow_writer = StreamWriter::try_new(output, &batch.schema())?;
+                arrow_writer.write(batch)?;
+                arrow_writer.finish()?;
+                arrow_writer.into_inner()?
+            }
+            (true, CompressionCodec::None) => {
+                let mut fast_writer = BatchWriter::new(&mut *output);
+                fast_writer.write_all(&self.encoded_schema)?;
+                fast_writer.write_batch(batch)?;
+                output
+            }
+            (false, CompressionCodec::Lz4Frame) => {
+                let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
+                let mut arrow_writer = StreamWriter::try_new(&mut wtr, &batch.schema())?;
+                arrow_writer.write(batch)?;
+                arrow_writer.finish()?;
+                wtr.finish().map_err(|e| {
+                    DataFusionError::Execution(format!("lz4 compression error: {}", e))
+                })?
+            }
+            (true, CompressionCodec::Lz4Frame) => {
+                let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
+                let mut fast_writer = BatchWriter::new(&mut wtr);
+                fast_writer.write_all(&self.encoded_schema)?;
+                fast_writer.write_batch(batch)?;
+                wtr.finish().map_err(|e| {
+                    DataFusionError::Execution(format!("lz4 compression error: {}", e))
+                })?
+            }
+            (false, CompressionCodec::Zstd(level)) => {
+                let encoder = zstd::Encoder::new(output, *level)?;
+                let mut arrow_writer = StreamWriter::try_new(encoder, &batch.schema())?;
+                arrow_writer.write(batch)?;
+                arrow_writer.finish()?;
+                let zstd_encoder = arrow_writer.into_inner()?;
+                zstd_encoder.finish()?
+            }
+            (true, CompressionCodec::Zstd(level)) => {
+                let mut encoder = zstd::Encoder::new(output, *level)?;
+                let mut fast_writer = BatchWriter::new(&mut encoder);
+                fast_writer.write_all(&self.encoded_schema)?;
+                fast_writer.write_batch(batch)?;
+                encoder.finish()?
+            }
+        };
+
+        // fill ipc length
+        let end_pos = output.stream_position()?;
+        let ipc_length = end_pos - start_pos - 8;
+
+        // fill ipc length
+        output.seek(SeekFrom::Start(start_pos))?;
+        output.write_all(&ipc_length.to_le_bytes()[..])?;
+        output.seek(SeekFrom::Start(end_pos))?;
+
+        timer.stop();
+
+        Ok((end_pos - start_pos) as usize)
     }
-
-    // write encoding method used
-    let fast_encoding = enable_fast_encoding
-        && batch
-            .schema()
-            .fields()
-            .iter()
-            .all(|f| fast_codec_supports_type(f.data_type()));
-
-    if fast_encoding {
-        output.write_all("FAST".as_bytes())?;
-        output.write_all(encoded_schema)?;
-    } else {
-        output.write_all("AIPC".as_bytes())?;
-    }
-
-    let output = match (fast_encoding, codec) {
-        (false, CompressionCodec::None) => {
-            let mut arrow_writer = StreamWriter::try_new(output, &batch.schema())?;
-            arrow_writer.write(batch)?;
-            arrow_writer.finish()?;
-            arrow_writer.into_inner()?
-        }
-        (true, CompressionCodec::None) => {
-            let mut fast_writer = BatchWriter::new(&mut *output);
-            fast_writer.write_all(encoded_schema)?;
-            fast_writer.write_batch(batch)?;
-            output
-        }
-        (false, CompressionCodec::Lz4Frame) => {
-            let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
-            let mut arrow_writer = StreamWriter::try_new(&mut wtr, &batch.schema())?;
-            arrow_writer.write(batch)?;
-            arrow_writer.finish()?;
-            wtr.finish()
-                .map_err(|e| DataFusionError::Execution(format!("lz4 compression error: {}", e)))?
-        }
-        (true, CompressionCodec::Lz4Frame) => {
-            let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
-            let mut fast_writer = BatchWriter::new(&mut wtr);
-            fast_writer.write_all(encoded_schema)?;
-            fast_writer.write_batch(batch)?;
-            wtr.finish()
-                .map_err(|e| DataFusionError::Execution(format!("lz4 compression error: {}", e)))?
-        }
-        (false, CompressionCodec::Zstd(level)) => {
-            let encoder = zstd::Encoder::new(output, *level)?;
-            let mut arrow_writer = StreamWriter::try_new(encoder, &batch.schema())?;
-            arrow_writer.write(batch)?;
-            arrow_writer.finish()?;
-            let zstd_encoder = arrow_writer.into_inner()?;
-            zstd_encoder.finish()?
-        }
-        (true, CompressionCodec::Zstd(level)) => {
-            let mut encoder = zstd::Encoder::new(output, *level)?;
-            let mut fast_writer = BatchWriter::new(&mut encoder);
-            fast_writer.write_all(encoded_schema)?;
-            fast_writer.write_batch(batch)?;
-            encoder.finish()?
-        }
-    };
-
-    // fill ipc length
-    let end_pos = output.stream_position()?;
-    let ipc_length = end_pos - start_pos - 8;
-
-    // fill ipc length
-    output.seek(SeekFrom::Start(start_pos))?;
-    output.write_all(&ipc_length.to_le_bytes()[..])?;
-    output.seek(SeekFrom::Start(end_pos))?;
-
-    timer.stop();
-
-    Ok((end_pos - start_pos) as usize)
 }
 
 pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
@@ -1687,28 +1698,36 @@ pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
             )))
         }
     };
-    match (fast_encoding, &bytes[0..4]) {
-        (false, b"LZ4_") => {
-            let decoder = lz4_flex::frame::FrameDecoder::new(&bytes[8..]);
-            let mut reader = StreamReader::try_new(decoder, None)?;
-            reader.next().unwrap().map_err(|e| e.into())
-        }
-        (true, b"LZ4_") => {
+    match &bytes[0..4] {
+        b"LZ4_" => {
             let mut decoder = lz4_flex::frame::FrameDecoder::new(&bytes[8..]);
-            let mut buffer = vec![];
-            // TODO avoid reading bytes into interim buffer
-            decoder.read_to_end(&mut buffer)?;
-            let mut reader = BatchReader::new(&buffer);
-            reader.read_batch()
+            if fast_encoding {
+                // TODO avoid reading bytes into interim buffer
+                let mut buffer = vec![];
+                decoder.read_to_end(&mut buffer)?;
+                let mut reader = BatchReader::new(&buffer);
+                reader.read_batch()
+            } else {
+                let mut reader = StreamReader::try_new(decoder, None)?;
+                reader.next().unwrap().map_err(|e| e.into())
+            }
         }
-        (false, b"ZSTD") => {
-            let decoder = zstd::Decoder::new(&bytes[8..])?;
-            let mut reader = StreamReader::try_new(decoder, None)?;
-            reader.next().unwrap().map_err(|e| e.into())
+        b"ZSTD" => {
+            let mut decoder = zstd::Decoder::new(&bytes[8..])?;
+            if fast_encoding {
+                // TODO avoid reading bytes into interim buffer
+                let mut buffer = vec![];
+                decoder.read_to_end(&mut buffer)?;
+                let mut reader = BatchReader::new(&buffer);
+                reader.read_batch()
+            } else {
+                let mut reader = StreamReader::try_new(decoder, None)?;
+                reader.next().unwrap().map_err(|e| e.into())
+            }
         }
-        _ => Err(DataFusionError::Execution(
-            "Failed to decode batch: invalid compression codec".to_string(),
-        )),
+        other => Err(DataFusionError::Execution(format!(
+            "Failed to decode batch: invalid compression codec: {other:?}"
+        ))),
     }
 }
 
@@ -1765,17 +1784,14 @@ mod test {
         let batch = create_batch(8192);
         let mut output = vec![];
         let mut cursor = Cursor::new(&mut output);
-        let length = write_ipc_compressed(
-            &batch,
-            &mut cursor,
-            false,
-            &CompressionCodec::Zstd(1),
-            &[],
-            &Time::default(),
-        )
-        .unwrap();
-        assert_eq!(40234, output.len());
-        assert_eq!(40234, length);
+        let writer =
+            ShuffleBlockWriter::try_new(batch.schema().as_ref(), true, CompressionCodec::Zstd(1))
+                .unwrap();
+        let length = writer
+            .write_batch(&batch, &mut cursor, &Time::default())
+            .unwrap();
+        assert_eq!(40058, output.len());
+        assert_eq!(40058, length);
 
         let ipc_without_length_prefix = &output[16..];
         let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
@@ -1788,17 +1804,14 @@ mod test {
         let batch = create_batch(8192);
         let mut output = vec![];
         let mut cursor = Cursor::new(&mut output);
-        let length = write_ipc_compressed(
-            &batch,
-            &mut cursor,
-            false,
-            &CompressionCodec::Lz4Frame,
-            &[],
-            &Time::default(),
-        )
-        .unwrap();
-        assert_eq!(61795, output.len());
-        assert_eq!(61795, length);
+        let writer =
+            ShuffleBlockWriter::try_new(batch.schema().as_ref(), true, CompressionCodec::Lz4Frame)
+                .unwrap();
+        let length = writer
+            .write_batch(&batch, &mut cursor, &Time::default())
+            .unwrap();
+        assert_eq!(61524, output.len());
+        assert_eq!(61524, length);
 
         let ipc_without_length_prefix = &output[16..];
         let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();

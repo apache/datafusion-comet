@@ -358,9 +358,10 @@ mod test {
         let batch = create_batch(8192, true);
         let buffer = Vec::new();
         let mut writer = BatchWriter::new(buffer);
+        writer.write_schema(&batch.schema()).unwrap();
         writer.write_batch(&batch).unwrap();
         let buffer = writer.inner();
-        //assert_eq!(257315, buffer.len());
+        assert_eq!(421203, buffer.len());
 
         let mut reader = BatchReader::new(&buffer);
         let batch2 = reader.read_batch().unwrap();
