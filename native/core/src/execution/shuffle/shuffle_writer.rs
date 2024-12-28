@@ -1669,6 +1669,7 @@ pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
         (true, b"LZ4_") => {
             let mut decoder = lz4_flex::frame::FrameDecoder::new(&bytes[8..]);
             let mut buffer = vec![];
+            // TODO avoid reading bytes into interim buffer
             decoder.read_to_end(&mut buffer)?;
             let mut reader = BatchReader::new(&buffer);
             reader.read_batch()

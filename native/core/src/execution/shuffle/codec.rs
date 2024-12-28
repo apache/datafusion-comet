@@ -15,7 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow_array::{Array, ArrayRef, Date32Array, Int32Array, RecordBatch, StringArray};
+use arrow_array::{
+    Array, ArrayRef, Date32Array, Decimal128Array, Int32Array, Int64Array, RecordBatch, StringArray,
+};
 use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field, Schema};
 use datafusion_common::DataFusionError;
@@ -23,16 +25,20 @@ use std::io::Write;
 use std::sync::Arc;
 
 pub fn fast_codec_supports_type(data_type: &DataType) -> bool {
-    matches!(data_type, DataType::Int32 | DataType::Utf8)
+    match data_type {
+        DataType::Int32 | DataType::Int64 | DataType::Date32 | DataType::Utf8 => true,
+        DataType::Decimal128(_, s) if *s >= 0 => true,
+        _ => false,
+    }
 }
 
 enum DataTypeId {
     // Int8 = 0,
     // Int16 = 1,
     Int32 = 2,
-    // Int64 = 3,
+    Int64 = 3,
     Date32 = 4,
-    // Decimal128 = 5,
+    Decimal128 = 5,
     Utf8 = 6,
 }
 
@@ -60,11 +66,18 @@ impl<W: Write> BatchWriter<W> {
                 DataType::Int32 => {
                     self.inner.write_all(&[DataTypeId::Int32 as u8])?;
                 }
+                DataType::Int64 => {
+                    self.inner.write_all(&[DataTypeId::Int32 as u8])?;
+                }
                 DataType::Date32 => {
                     self.inner.write_all(&[DataTypeId::Date32 as u8])?;
                 }
                 DataType::Utf8 => {
                     self.inner.write_all(&[DataTypeId::Utf8 as u8])?;
+                }
+                DataType::Decimal128(p, s) if *s >= 0 => {
+                    self.inner
+                        .write_all(&[DataTypeId::Decimal128 as u8, *p, *s as u8])?;
                 }
                 _ => todo!(),
             }
@@ -93,8 +106,40 @@ impl<W: Write> BatchWriter<W> {
                         self.inner.write_all(&0_usize.to_le_bytes())?;
                     }
                 }
+                DataType::Int64 => {
+                    let arr = col.as_any().downcast_ref::<Int64Array>().unwrap();
+
+                    // write data buffer
+                    let buffer = arr.values();
+                    let buffer = buffer.inner();
+                    self.write_buffer(buffer)?;
+
+                    if let Some(nulls) = arr.nulls() {
+                        let buffer = nulls.inner();
+                        let buffer = buffer.inner();
+                        self.write_buffer(buffer)?;
+                    } else {
+                        self.inner.write_all(&0_usize.to_le_bytes())?;
+                    }
+                }
                 DataType::Date32 => {
                     let arr = col.as_any().downcast_ref::<Date32Array>().unwrap();
+
+                    // write data buffer
+                    let buffer = arr.values();
+                    let buffer = buffer.inner();
+                    self.write_buffer(buffer)?;
+
+                    if let Some(nulls) = arr.nulls() {
+                        let buffer = nulls.inner();
+                        let buffer = buffer.inner();
+                        self.write_buffer(buffer)?;
+                    } else {
+                        self.inner.write_all(&0_usize.to_le_bytes())?;
+                    }
+                }
+                DataType::Decimal128(_, _) => {
+                    let arr = col.as_any().downcast_ref::<Decimal128Array>().unwrap();
 
                     // write data buffer
                     let buffer = arr.values();
@@ -182,11 +227,19 @@ impl<'a> BatchReader<'a> {
             let type_id = self.input[self.offset] as i32;
             let data_type = match type_id {
                 x if x == DataTypeId::Int32 as i32 => DataType::Int32,
+                x if x == DataTypeId::Int64 as i32 => DataType::Int64,
                 x if x == DataTypeId::Date32 as i32 => DataType::Date32,
                 x if x == DataTypeId::Utf8 as i32 => DataType::Utf8,
+                x if x == DataTypeId::Decimal128 as i32 => DataType::Decimal128(
+                    self.input[self.offset + 1],
+                    self.input[self.offset + 2] as i8,
+                ),
                 _ => unreachable!(),
             };
             self.offset += 1;
+            if matches!(data_type, DataType::Decimal128(_, _)) {
+                self.offset += 2;
+            }
 
             // create field
             let field = Arc::new(Field::new(field_name, data_type, true));
@@ -209,6 +262,16 @@ impl<'a> BatchReader<'a> {
                     let array: ArrayRef = Arc::new(Int32Array::try_new(data_buffer, null_buffer)?);
                     arrays.push(array);
                 }
+                DataType::Int64 => {
+                    // create array
+                    let data_buffer = ScalarBuffer::<i64>::from(buffer);
+
+                    // read null buffer
+                    let null_buffer = self.read_null_buffer();
+
+                    let array: ArrayRef = Arc::new(Int64Array::try_new(data_buffer, null_buffer)?);
+                    arrays.push(array);
+                }
                 DataType::Date32 => {
                     // create array
                     let data_buffer = ScalarBuffer::<i32>::from(buffer);
@@ -217,6 +280,19 @@ impl<'a> BatchReader<'a> {
                     let null_buffer = self.read_null_buffer();
 
                     let array: ArrayRef = Arc::new(Date32Array::try_new(data_buffer, null_buffer)?);
+                    arrays.push(array);
+                }
+                DataType::Decimal128(p, s) => {
+                    // create array
+                    let data_buffer = ScalarBuffer::<i128>::from(buffer);
+
+                    // read null buffer
+                    let null_buffer = self.read_null_buffer();
+
+                    let array: ArrayRef = Arc::new(
+                        Decimal128Array::try_new(data_buffer, null_buffer)?
+                            .with_precision_and_scale(*p, *s)?,
+                    );
                     arrays.push(array);
                 }
                 DataType::Utf8 => {
@@ -282,7 +358,7 @@ impl<'a> BatchReader<'a> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow_array::builder::{Date32Builder, Int32Builder, StringBuilder};
+    use arrow_array::builder::{Date32Builder, Decimal128Builder, Int32Builder, StringBuilder};
     use std::sync::Arc;
 
     #[test]
@@ -304,13 +380,18 @@ mod test {
             Field::new("c0", DataType::Int32, true),
             Field::new("c1", DataType::Utf8, true),
             Field::new("c2", DataType::Date32, true),
+            Field::new("c3", DataType::Decimal128(11, 2), true),
         ]));
         let mut a = Int32Builder::new();
         let mut b = StringBuilder::new();
         let mut c = Date32Builder::new();
+        let mut d = Decimal128Builder::new()
+            .with_precision_and_scale(11, 2)
+            .unwrap();
         for i in 0..num_rows {
             a.append_value(i as i32);
             c.append_value(i as i32);
+            d.append_value((i * 1000000) as i128);
             if allow_nulls && i % 10 == 0 {
                 b.append_null();
             } else {
@@ -320,6 +401,11 @@ mod test {
         let a = a.finish();
         let b = b.finish();
         let c = c.finish();
-        RecordBatch::try_new(schema.clone(), vec![Arc::new(a), Arc::new(b), Arc::new(c)]).unwrap()
+        let d = d.finish();
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(a), Arc::new(b), Arc::new(c), Arc::new(d)],
+        )
+        .unwrap()
     }
 }
