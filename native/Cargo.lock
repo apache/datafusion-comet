@@ -430,34 +430,13 @@ dependencies = [
 
 [[package]]
 name = "brotli"
-version = "3.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d640d25bc63c50fb1f0b545ffd80207d2e10a4c965530809b40ba3386825c391"
-dependencies = [
- "alloc-no-stdlib",
- "alloc-stdlib",
- "brotli-decompressor 2.5.1",
-]
-
-[[package]]
-name = "brotli"
 version = "7.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc97b8f16f944bba54f0433f07e30be199b6dc2bd25937444bbad560bcea29bd"
 dependencies = [
  "alloc-no-stdlib",
  "alloc-stdlib",
- "brotli-decompressor 4.0.1",
-]
-
-[[package]]
-name = "brotli-decompressor"
-version = "2.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e2e4afe60d7dd600fdd3de8d0f08c2b7ec039712e3b6137ff98b7004e82de4f"
-dependencies = [
- "alloc-no-stdlib",
- "alloc-stdlib",
+ "brotli-decompressor",
 ]
 
 [[package]]
@@ -900,7 +879,6 @@ dependencies = [
  "arrow-schema",
  "assertables",
  "async-trait",
- "brotli 3.5.0",
  "bytes",
  "crc32fast",
  "criterion",
@@ -912,7 +890,6 @@ dependencies = [
  "datafusion-expr",
  "datafusion-functions-nested",
  "datafusion-physical-expr",
- "flate2",
  "futures",
  "hex",
  "itertools 0.11.0",
@@ -920,7 +897,6 @@ dependencies = [
  "lazy_static",
  "log",
  "log4rs",
- "lz4",
  "mimalloc",
  "num",
  "once_cell",
@@ -932,7 +908,6 @@ dependencies = [
  "regex",
  "serde",
  "simd-adler32",
- "snap",
  "tempfile",
  "thiserror",
  "tokio",
@@ -2112,25 +2087,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lz4"
-version = "1.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d1febb2b4a79ddd1980eede06a8f7902197960aa0383ffcfdd62fe723036725"
-dependencies = [
- "lz4-sys",
-]
-
-[[package]]
-name = "lz4-sys"
-version = "1.11.1+lz4-1.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bd8c0d6c6ed0cd30b3652886bb8711dc4bb01d637a68105a3d5158039b418e6"
-dependencies = [
- "cc",
- "libc",
-]
-
-[[package]]
 name = "lz4_flex"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2382,7 +2338,7 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "base64",
- "brotli 7.0.0",
+ "brotli",
  "bytes",
  "chrono",
  "flate2",
