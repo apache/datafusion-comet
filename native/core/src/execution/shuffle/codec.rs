@@ -56,8 +56,8 @@ impl<W: Write> BatchWriter<W> {
         Self { inner }
     }
 
-    /// Encode the schema
-    pub fn write_schema(&mut self, schema: &Schema) -> Result<(), DataFusionError> {
+    /// Encode the schema (just column names because data types can vary per batch)
+    pub fn write_partial_schema(&mut self, schema: &Schema) -> Result<(), DataFusionError> {
         let schema_len = schema.fields().len();
         self.inner.write_all(&schema_len.to_le_bytes())?;
         for field in schema.fields() {
@@ -65,8 +65,6 @@ impl<W: Write> BatchWriter<W> {
             let field_name = field.name();
             self.inner.write_all(&field_name.len().to_le_bytes())?;
             self.inner.write_all(field_name.as_str().as_bytes())?;
-            // data type
-            self.write_data_type(field.data_type())?;
             // TODO nullable - assume all nullable for now
         }
         Ok(())
@@ -90,7 +88,7 @@ impl<W: Write> BatchWriter<W> {
                 self.inner
                     .write_all(&[DataTypeId::Decimal128 as u8, *p, *s as u8])?;
             }
-            DataType::Dictionary(k, v) if fast_codec_supports_type(k) && fast_codec_supports_type(v) => {
+            DataType::Dictionary(k, v) => {
                 self.inner.write_all(&[DataTypeId::Dictionary as u8])?;
                 self.write_data_type(&k)?;
                 self.write_data_type(&v)?;
@@ -116,6 +114,9 @@ impl<W: Write> BatchWriter<W> {
     }
 
     fn write_array(&mut self, col: &dyn Array) -> Result<(), DataFusionError> {
+        // data type
+        self.write_data_type(col.data_type())?;
+        // array contents
         match col.data_type() {
             DataType::Int32 => {
                 let arr = col.as_any().downcast_ref::<Int32Array>().unwrap();
@@ -242,13 +243,12 @@ impl<'a> BatchReader<'a> {
     }
 
     pub fn read_batch(&mut self) -> Result<RecordBatch, DataFusionError> {
-        // use provided schema, or read schema from bytes
         let mut length = [0; 8];
         length.copy_from_slice(&self.input[0..8]);
         self.offset += 8;
         let schema_len = usize::from_le_bytes(length);
 
-        let mut fields: Vec<Arc<Field>> = Vec::with_capacity(schema_len);
+        let mut field_names: Vec<String> = Vec::with_capacity(schema_len);
         for _ in 0..schema_len {
             // read field name length
             length.copy_from_slice(&self.input[self.offset..self.offset + 8]);
@@ -258,27 +258,24 @@ impl<'a> BatchReader<'a> {
             // read field name
             let field_name_bytes = &self.input[self.offset..self.offset + field_name_len];
             self.offset += field_name_bytes.len();
-            let field_name = unsafe { String::from_utf8_unchecked(field_name_bytes.into()) };
+            field_names.push(unsafe { String::from_utf8_unchecked(field_name_bytes.into()) });
+        }
 
-            // read data type
-            let data_type = self.read_data_type()?;
-
-            // create field
-            let field = Arc::new(Field::new(field_name, data_type, true));
+        let mut fields: Vec<Arc<Field>> = Vec::with_capacity(schema_len);
+        let mut arrays = Vec::with_capacity(schema_len);
+        for i in 0..schema_len {
+            let array = self.read_array()?;
+            let field = Arc::new(Field::new(&field_names[i], array.data_type().clone(), true));
+            arrays.push(array);
             fields.push(field);
         }
         let schema = Arc::new(Schema::new(fields));
-
-        let mut arrays = Vec::with_capacity(schema.fields().len());
-        for i in 0..schema.fields().len() {
-            let array = self.read_array(schema.field(i).data_type())?;
-            arrays.push(array);
-        }
-
         Ok(RecordBatch::try_new(schema, arrays).unwrap())
     }
 
-    fn read_array(&mut self, data_type: &DataType) -> Result<ArrayRef, DataFusionError> {
+    fn read_array(&mut self) -> Result<ArrayRef, DataFusionError> {
+        // read data type
+        let data_type = self.read_data_type()?;
         Ok(match data_type {
             DataType::Int32 => {
                 let buffer = self.read_buffer();
@@ -304,7 +301,7 @@ impl<'a> BatchReader<'a> {
                 let null_buffer = self.read_null_buffer();
                 Arc::new(
                     Decimal128Array::try_new(data_buffer, null_buffer)?
-                        .with_precision_and_scale(*p, *s)?,
+                        .with_precision_and_scale(p, s)?,
                 )
             }
             DataType::Utf8 => {
@@ -313,9 +310,9 @@ impl<'a> BatchReader<'a> {
                 let null_buffer = self.read_null_buffer();
                 Arc::new(StringArray::try_new(offset_buffer, buffer, null_buffer)?)
             }
-            DataType::Dictionary(k, v) => {
-                let k = self.read_array(&k)?;
-                let v = self.read_array(&v)?;
+            DataType::Dictionary(_, _) => {
+                let k = self.read_array()?;
+                let v = self.read_array()?;
                 Arc::new(DictionaryArray::try_new(
                     k.as_primitive::<Int32Type>().to_owned(),
                     v,
@@ -351,7 +348,10 @@ impl<'a> BatchReader<'a> {
             }
         };
         self.offset += 1;
-        if matches!(data_type, DataType::Decimal128(_, _) | DataType::Dictionary(_, _)) {
+        if matches!(
+            data_type,
+            DataType::Decimal128(_, _) | DataType::Dictionary(_, _)
+        ) {
             self.offset += 2;
         }
         Ok(data_type)
@@ -409,7 +409,7 @@ mod test {
         let batch = create_batch(8192, true);
         let buffer = Vec::new();
         let mut writer = BatchWriter::new(buffer);
-        writer.write_schema(&batch.schema()).unwrap();
+        writer.write_partial_schema(&batch.schema()).unwrap();
         writer.write_batch(&batch).unwrap();
         let buffer = writer.inner();
         assert_eq!(421203, buffer.len());

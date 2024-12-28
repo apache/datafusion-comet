@@ -48,7 +48,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 b.iter(|| {
                     if enable_fast_encoding && encoded_schema.is_empty() {
                         let mut w = BatchWriter::new(&mut encoded_schema);
-                        w.write_schema(batch.schema().as_ref())?;
+                        w.write_partial_schema(batch.schema().as_ref())?;
                     }
                     buffer.clear();
                     let mut cursor = Cursor::new(&mut buffer);

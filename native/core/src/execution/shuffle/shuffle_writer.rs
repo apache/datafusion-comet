@@ -1573,7 +1573,7 @@ impl ShuffleBlockWriter {
         let mut encoded_schema = vec![];
         if enable_fast_encoding {
             let mut w = BatchWriter::new(&mut encoded_schema);
-            w.write_schema(schema)?;
+            w.write_partial_schema(schema)?;
         }
         Ok(Self {
             enable_fast_encoding,
