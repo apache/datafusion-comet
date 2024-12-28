@@ -68,6 +68,7 @@ use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr}
 use datafusion_functions_nested::concat::ArrayAppend;
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
+use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
 use datafusion_comet_proto::{
     spark_expression::{
@@ -76,8 +77,8 @@ use datafusion_comet_proto::{
     },
     spark_operator::{
         self, lower_window_frame_bound::LowerFrameBoundStruct, operator::OpStruct,
-        upper_window_frame_bound::UpperFrameBoundStruct, BuildSide, JoinType, Operator,
-        WindowFrameType,
+        upper_window_frame_bound::UpperFrameBoundStruct, BuildSide,
+        CompressionCodec as SparkCompressionCodec, JoinType, Operator, WindowFrameType,
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
@@ -1048,9 +1049,21 @@ impl PhysicalPlanner {
                 let partitioning = self
                     .create_partitioning(writer.partitioning.as_ref().unwrap(), child.schema())?;
 
+                let codec = match writer.codec.try_into() {
+                    Ok(SparkCompressionCodec::None) => Ok(CompressionCodec::None),
+                    Ok(SparkCompressionCodec::Zstd) => {
+                        Ok(CompressionCodec::Zstd(writer.compression_level))
+                    }
+                    _ => Err(ExecutionError::GeneralError(format!(
+                        "Unsupported shuffle compression codec: {:?}",
+                        writer.codec
+                    ))),
+                }?;
+
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
                     Arc::clone(&child.native_plan),
                     partitioning,
+                    codec,
                     writer.output_data_file.clone(),
                     writer.output_index_file.clone(),
                 )?);
