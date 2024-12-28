@@ -64,8 +64,8 @@ impl XorShiftRandom {
 
     fn init_seed(init: i64) -> i64 {
         let bytes_repr = init.to_be_bytes();
-        let low_bits = spark_compatible_murmur3_hash(&bytes_repr, SPARK_MURMUR_ARRAY_SEED);
-        let high_bits = spark_compatible_murmur3_hash(&bytes_repr, low_bits);
+        let low_bits = spark_compatible_murmur3_hash(bytes_repr, SPARK_MURMUR_ARRAY_SEED);
+        let high_bits = spark_compatible_murmur3_hash(bytes_repr, low_bits);
         ((high_bits as i64) << 32) | (low_bits as i64 & 0xFFFFFFFFi64)
     }
 }
