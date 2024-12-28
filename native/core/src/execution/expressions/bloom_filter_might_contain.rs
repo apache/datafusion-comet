@@ -19,24 +19,35 @@ use crate::{execution::util::spark_bloom_filter::SparkBloomFilter, parquet::data
 use arrow::record_batch::RecordBatch;
 use arrow_array::cast::as_primitive_array;
 use arrow_schema::{DataType, Schema};
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_common::{internal_err, Result, ScalarValue};
 use datafusion_physical_expr::PhysicalExpr;
-use std::{
-    any::Any,
-    fmt::Display,
-    hash::{Hash, Hasher},
-    sync::Arc,
-};
+use std::hash::Hash;
+use std::{any::Any, fmt::Display, sync::Arc};
 
 /// A physical expression that checks if a value might be in a bloom filter. It corresponds to the
 /// Spark's `BloomFilterMightContain` expression.
-#[derive(Debug, Hash)]
+#[derive(Debug, Eq)]
 pub struct BloomFilterMightContain {
     pub bloom_filter_expr: Arc<dyn PhysicalExpr>,
     pub value_expr: Arc<dyn PhysicalExpr>,
     bloom_filter: Option<SparkBloomFilter>,
+}
+
+impl Hash for BloomFilterMightContain {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.bloom_filter_expr.hash(state);
+        self.value_expr.hash(state);
+        self.bloom_filter.hash(state);
+    }
+}
+
+impl PartialEq for BloomFilterMightContain {
+    fn eq(&self, other: &Self) -> bool {
+        self.bloom_filter_expr.eq(&other.bloom_filter_expr)
+            && self.value_expr.eq(&other.value_expr)
+            && self.bloom_filter.eq(&other.bloom_filter)
+    }
 }
 
 impl Display for BloomFilterMightContain {
@@ -46,18 +57,6 @@ impl Display for BloomFilterMightContain {
             "BloomFilterMightContain [bloom_filter_expr: {}, value_expr: {}]",
             self.bloom_filter_expr, self.value_expr
         )
-    }
-}
-
-impl PartialEq<dyn Any> for BloomFilterMightContain {
-    fn eq(&self, _other: &dyn Any) -> bool {
-        down_cast_any_ref(_other)
-            .downcast_ref::<Self>()
-            .map(|other| {
-                self.bloom_filter_expr.eq(&other.bloom_filter_expr)
-                    && self.value_expr.eq(&other.value_expr)
-            })
-            .unwrap_or(false)
     }
 }
 
@@ -140,12 +139,5 @@ impl PhysicalExpr for BloomFilterMightContain {
             Arc::clone(&children[0]),
             Arc::clone(&children[1]),
         )?))
-    }
-
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.bloom_filter_expr.hash(&mut s);
-        self.value_expr.hash(&mut s);
-        self.hash(&mut s);
     }
 }
