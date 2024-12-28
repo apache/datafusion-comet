@@ -212,6 +212,7 @@ impl ShuffleWriterExec {
 struct PartitionBuffer {
     /// The schema of batches to be partitioned.
     schema: SchemaRef,
+    encoded_schema: Vec<u8>,
     /// The "frozen" Arrow IPC bytes of active data. They are frozen when `flush` is called.
     frozen: Vec<u8>,
     /// Array builders for appending rows into buffering batches.
@@ -229,19 +230,26 @@ struct PartitionBuffer {
 }
 
 impl PartitionBuffer {
-    fn new(
+    fn try_new(
         schema: SchemaRef,
         batch_size: usize,
         partition_id: usize,
         runtime: &Arc<RuntimeEnv>,
         codec: CompressionCodec,
-    ) -> Self {
+    ) -> Result<Self> {
         let reservation = MemoryConsumer::new(format!("PartitionBuffer[{}]", partition_id))
             .with_can_spill(true)
             .register(&runtime.memory_pool);
 
-        Self {
+        // TODO schema could be encoded once rather than once per PartitionBuffer but this
+        // is better than once per batch
+        let mut encoded_schema = vec![];
+        let mut w = BatchWriter::new(&mut encoded_schema);
+        w.write_schema(schema.as_ref())?;
+
+        Ok(Self {
             schema,
+            encoded_schema,
             frozen: vec![],
             active: vec![],
             active_slots_mem_size: 0,
@@ -249,7 +257,7 @@ impl PartitionBuffer {
             batch_size,
             reservation,
             codec,
-        }
+        })
     }
 
     /// Initializes active builders if necessary.
@@ -348,7 +356,14 @@ impl PartitionBuffer {
         let frozen_capacity_old = self.frozen.capacity();
         let mut cursor = Cursor::new(&mut self.frozen);
         cursor.seek(SeekFrom::End(0))?;
-        write_ipc_compressed(&frozen_batch, &mut cursor, true, &self.codec, ipc_time)?;
+        write_ipc_compressed(
+            &frozen_batch,
+            &mut cursor,
+            true,
+            &self.codec,
+            &self.encoded_schema,
+            ipc_time,
+        )?;
 
         mem_diff += (self.frozen.capacity() - frozen_capacity_old) as isize;
         Ok(mem_diff)
@@ -689,7 +704,7 @@ impl ShuffleRepartitionerMetrics {
 
 impl ShuffleRepartitioner {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub fn try_new(
         partition_id: usize,
         output_data_file: String,
         output_index_file: String,
@@ -699,7 +714,7 @@ impl ShuffleRepartitioner {
         runtime: Arc<RuntimeEnv>,
         batch_size: usize,
         codec: CompressionCodec,
-    ) -> Self {
+    ) -> Result<Self> {
         let num_output_partitions = partitioning.partition_count();
         let reservation = MemoryConsumer::new(format!("ShuffleRepartitioner[{}]", partition_id))
             .with_can_spill(true)
@@ -715,13 +730,13 @@ impl ShuffleRepartitioner {
             partition_ids.set_len(batch_size);
         }
 
-        Self {
+        Ok(Self {
             output_data_file,
             output_index_file,
             schema: Arc::clone(&schema),
             buffered_partitions: (0..num_output_partitions)
                 .map(|partition_id| {
-                    PartitionBuffer::new(
+                    PartitionBuffer::try_new(
                         Arc::clone(&schema),
                         batch_size,
                         partition_id,
@@ -729,7 +744,7 @@ impl ShuffleRepartitioner {
                         codec.clone(),
                     )
                 })
-                .collect::<Vec<_>>(),
+                .collect::<Result<Vec<_>>>()?,
             spills: Mutex::new(vec![]),
             partitioning,
             num_output_partitions,
@@ -739,7 +754,7 @@ impl ShuffleRepartitioner {
             hashes_buf,
             partition_ids,
             batch_size,
-        }
+        })
     }
 
     /// Shuffles rows in input batch into corresponding partition buffer.
@@ -1161,7 +1176,7 @@ async fn external_shuffle(
     codec: CompressionCodec,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
-    let mut repartitioner = ShuffleRepartitioner::new(
+    let mut repartitioner = ShuffleRepartitioner::try_new(
         partition_id,
         output_data_file,
         output_index_file,
@@ -1171,7 +1186,7 @@ async fn external_shuffle(
         context.runtime_env(),
         context.session_config().batch_size(),
         codec,
-    );
+    )?;
 
     while let Some(batch) = input.next().await {
         // Block on the repartitioner to insert the batch and shuffle the rows
@@ -1563,6 +1578,7 @@ pub fn write_ipc_compressed<W: Write + Seek>(
     output: &mut W,
     enable_fast_encoding: bool,
     codec: &CompressionCodec,
+    encoded_schema: &[u8],
     ipc_time: &Time,
 ) -> Result<usize> {
     if batch.num_rows() == 0 {
@@ -1594,6 +1610,13 @@ pub fn write_ipc_compressed<W: Write + Seek>(
             .iter()
             .all(|f| fast_codec_supports_type(f.data_type()));
 
+    if fast_encoding {
+        output.write_all("FAST".as_bytes())?;
+        output.write_all(encoded_schema)?;
+    } else {
+        output.write_all("AIPC".as_bytes())?;
+    }
+
     let output = match (fast_encoding, codec) {
         (false, CompressionCodec::None) => {
             let mut arrow_writer = StreamWriter::try_new(output, &batch.schema())?;
@@ -1603,6 +1626,7 @@ pub fn write_ipc_compressed<W: Write + Seek>(
         }
         (true, CompressionCodec::None) => {
             let mut fast_writer = BatchWriter::new(&mut *output);
+            fast_writer.write_all(encoded_schema)?;
             fast_writer.write_batch(batch)?;
             output
         }
@@ -1617,6 +1641,7 @@ pub fn write_ipc_compressed<W: Write + Seek>(
         (true, CompressionCodec::Lz4Frame) => {
             let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
             let mut fast_writer = BatchWriter::new(&mut wtr);
+            fast_writer.write_all(encoded_schema)?;
             fast_writer.write_batch(batch)?;
             wtr.finish()
                 .map_err(|e| DataFusionError::Execution(format!("lz4 compression error: {}", e)))?
@@ -1632,6 +1657,7 @@ pub fn write_ipc_compressed<W: Write + Seek>(
         (true, CompressionCodec::Zstd(level)) => {
             let mut encoder = zstd::Encoder::new(output, *level)?;
             let mut fast_writer = BatchWriter::new(&mut encoder);
+            fast_writer.write_all(encoded_schema)?;
             fast_writer.write_batch(batch)?;
             encoder.finish()?
         }
@@ -1655,7 +1681,11 @@ pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
     let fast_encoding = match &bytes[4..8] {
         b"AIPC" => false,
         b"FAST" => true,
-        _ => unreachable!(),
+        other => {
+            return Err(DataFusionError::Internal(format!(
+                "invalid encoding schema: {other:?}"
+            )))
+        }
     };
     match (fast_encoding, &bytes[0..4]) {
         (false, b"LZ4_") => {
@@ -1740,11 +1770,12 @@ mod test {
             &mut cursor,
             false,
             &CompressionCodec::Zstd(1),
+            &[],
             &Time::default(),
         )
         .unwrap();
-        assert_eq!(40230, output.len());
-        assert_eq!(40230, length);
+        assert_eq!(40234, output.len());
+        assert_eq!(40234, length);
 
         let ipc_without_length_prefix = &output[16..];
         let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
@@ -1762,11 +1793,12 @@ mod test {
             &mut cursor,
             false,
             &CompressionCodec::Lz4Frame,
+            &[],
             &Time::default(),
         )
         .unwrap();
-        assert_eq!(61791, output.len());
-        assert_eq!(61791, length);
+        assert_eq!(61795, output.len());
+        assert_eq!(61795, length);
 
         let ipc_without_length_prefix = &output[16..];
         let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();

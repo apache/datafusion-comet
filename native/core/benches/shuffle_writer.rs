@@ -18,7 +18,9 @@
 use arrow_array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
 use arrow_array::{builder::StringBuilder, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use comet::execution::shuffle::{write_ipc_compressed, CompressionCodec, ShuffleWriterExec};
+use comet::execution::shuffle::{
+    write_ipc_compressed, BatchWriter, CompressionCodec, ShuffleWriterExec,
+};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::physical_plan::metrics::Time;
 use datafusion::{
@@ -32,20 +34,25 @@ use tokio::runtime::Runtime;
 
 fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("shuffle_writer");
-    for enable_fast_encoding in [true, false] {
-        for compression_codec in [
-            CompressionCodec::None,
-            CompressionCodec::Lz4Frame,
-            CompressionCodec::Zstd(1),
-        ] {
+    for compression_codec in [
+        CompressionCodec::None,
+        CompressionCodec::Lz4Frame,
+        CompressionCodec::Zstd(1),
+    ] {
+        for enable_fast_encoding in [true, false] {
             group.bench_function(format!("shuffle_writer: write encoded (enable_fast_encoding={enable_fast_encoding}, compression={compression_codec:?})"), |b| {
                 let batch = create_batch(8192, true);
                 let mut buffer = vec![];
                 let ipc_time = Time::default();
+                let mut encoded_schema = vec![];
                 b.iter(|| {
+                    if enable_fast_encoding && encoded_schema.is_empty() {
+                        let mut w = BatchWriter::new(&mut encoded_schema);
+                        w.write_schema(batch.schema().as_ref())?;
+                    }
                     buffer.clear();
                     let mut cursor = Cursor::new(&mut buffer);
-                    write_ipc_compressed(&batch, &mut cursor, enable_fast_encoding, &compression_codec, &ipc_time)
+                    write_ipc_compressed(&batch, &mut cursor, enable_fast_encoding, &compression_codec, &encoded_schema, &ipc_time)
                 });
             });
         }

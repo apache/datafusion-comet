@@ -51,12 +51,11 @@ impl<W: Write> BatchWriter<W> {
         Self { inner }
     }
 
-    pub fn write_batch(&mut self, batch: &RecordBatch) -> Result<(), DataFusionError> {
-        // write schema
-        let schema_len = batch.schema().fields().len();
+    /// Encode the schema
+    pub fn write_schema(&mut self, schema: &Schema) -> Result<(), DataFusionError> {
+        let schema_len = schema.fields().len();
         self.inner.write_all(&schema_len.to_le_bytes())?;
-
-        for field in batch.schema().fields() {
+        for field in schema.fields() {
             // field name
             let field_name = field.name();
             self.inner.write_all(&field_name.len().to_le_bytes())?;
@@ -87,7 +86,14 @@ impl<W: Write> BatchWriter<W> {
             }
             // TODO nullable - assume all nullable for now
         }
+        Ok(())
+    }
 
+    pub fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.inner.write_all(bytes)
+    }
+
+    pub fn write_batch(&mut self, batch: &RecordBatch) -> Result<(), DataFusionError> {
         for i in 0..batch.num_columns() {
             let col = batch.column(i);
             match col.data_type() {
