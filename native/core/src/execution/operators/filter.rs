@@ -210,7 +210,8 @@ impl FilterExec {
         Ok(PlanProperties::new(
             eq_properties,
             input.output_partitioning().clone(), // Output Partitioning
-            input.execution_mode(),              // Execution Mode
+            input.pipeline_behavior(),
+            input.boundedness(),
         ))
     }
 }
