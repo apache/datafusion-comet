@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow_array::builder::Int32Builder;
+use arrow_array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
 use arrow_array::{builder::StringBuilder, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use comet::execution::shuffle::{
@@ -53,23 +53,32 @@ fn criterion_benchmark(c: &mut Criterion) {
             b.iter(|| {
                 buffer.clear();
                 let mut cursor = Cursor::new(&mut buffer);
-                write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::Lz4Frame, &ipc_time)
+                write_ipc_compressed(
+                    &batch,
+                    &mut cursor,
+                    false,
+                    &CompressionCodec::Lz4Frame,
+                    &ipc_time,
+                )
             });
         },
     );
     group.bench_function(
-        "shuffle_writer: encode and compress (lz4) - custom encoder",
+        "shuffle_writer: encode and compress (lz4) - fast encoder",
         |b| {
             let batch = create_batch(8192, true);
             let mut buffer = vec![];
             let ipc_time = Time::default();
             b.iter(|| {
                 buffer.clear();
-                let wtr = lz4_flex::frame::FrameEncoder::new(&mut buffer);
-                let mut x = BatchWriter::new(wtr);
-                x.write_batch(&batch).unwrap();
-                let encoder = x.inner();
-                let _ = encoder.finish().unwrap();
+                let mut cursor = Cursor::new(&mut buffer);
+                write_ipc_compressed(
+                    &batch,
+                    &mut cursor,
+                    true,
+                    &CompressionCodec::Lz4Frame,
+                    &ipc_time,
+                )
             });
         },
     );
@@ -132,11 +141,19 @@ fn create_batch(num_rows: usize, allow_nulls: bool) -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![
         Field::new("c0", DataType::Int32, true),
         Field::new("c1", DataType::Utf8, true),
+        Field::new("c2", DataType::Date32, true),
+        Field::new("c3", DataType::Decimal128(11, 2), true),
     ]));
     let mut a = Int32Builder::new();
     let mut b = StringBuilder::new();
+    let mut c = Date32Builder::new();
+    let mut d = Decimal128Builder::new()
+        .with_precision_and_scale(11, 2)
+        .unwrap();
     for i in 0..num_rows {
         a.append_value(i as i32);
+        c.append_value(i as i32);
+        d.append_value((i * 1000000) as i128);
         if allow_nulls && i % 10 == 0 {
             b.append_null();
         } else {
@@ -145,7 +162,13 @@ fn create_batch(num_rows: usize, allow_nulls: bool) -> RecordBatch {
     }
     let a = a.finish();
     let b = b.finish();
-    RecordBatch::try_new(schema.clone(), vec![Arc::new(a), Arc::new(b)]).unwrap()
+    let c = c.finish();
+    let d = d.finish();
+    RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(a), Arc::new(b), Arc::new(c), Arc::new(d)],
+    )
+    .unwrap()
 }
 
 fn config() -> Criterion {

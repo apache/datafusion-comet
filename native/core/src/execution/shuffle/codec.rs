@@ -67,7 +67,7 @@ impl<W: Write> BatchWriter<W> {
                     self.inner.write_all(&[DataTypeId::Int32 as u8])?;
                 }
                 DataType::Int64 => {
-                    self.inner.write_all(&[DataTypeId::Int32 as u8])?;
+                    self.inner.write_all(&[DataTypeId::Int64 as u8])?;
                 }
                 DataType::Date32 => {
                     self.inner.write_all(&[DataTypeId::Date32 as u8])?;
@@ -309,6 +309,11 @@ impl<'a> BatchReader<'a> {
                 }
                 _ => todo!(),
             }
+        }
+
+        assert_eq!(schema.fields().len(), arrays.len());
+        for i in 0..arrays.len() {
+            println!("{} length = {}", schema.field(i).name(), arrays[i].len());
         }
 
         Ok(RecordBatch::try_new(schema, arrays).unwrap())

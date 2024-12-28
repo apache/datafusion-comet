@@ -348,7 +348,7 @@ impl PartitionBuffer {
         let frozen_capacity_old = self.frozen.capacity();
         let mut cursor = Cursor::new(&mut self.frozen);
         cursor.seek(SeekFrom::End(0))?;
-        write_ipc_compressed(&frozen_batch, &mut cursor, &self.codec, ipc_time)?;
+        write_ipc_compressed(&frozen_batch, &mut cursor, true, &self.codec, ipc_time)?;
 
         mem_diff += (self.frozen.capacity() - frozen_capacity_old) as isize;
         Ok(mem_diff)
@@ -1561,6 +1561,7 @@ pub enum CompressionCodec {
 pub fn write_ipc_compressed<W: Write + Seek>(
     batch: &RecordBatch,
     output: &mut W,
+    enable_fast_encoding: bool,
     codec: &CompressionCodec,
     ipc_time: &Time,
 ) -> Result<usize> {
@@ -1586,26 +1587,12 @@ pub fn write_ipc_compressed<W: Write + Seek>(
     }
 
     // write encoding method used
-    let fast_encoding = batch
-        .schema()
-        .fields()
-        .iter()
-        .all(|f| fast_codec_supports_type(f.data_type()));
-    if fast_encoding {
-        output.write_all("FAST".as_bytes())?;
-    } else {
-        output.write_all("AIPC".as_bytes())?;
-    }
-
-    println!(
-        "Encoding types {:?} with fast_encoding={fast_encoding}",
-        batch
+    let fast_encoding = enable_fast_encoding
+        && batch
             .schema()
             .fields()
             .iter()
-            .map(|f| f.data_type())
-            .collect_vec()
-    );
+            .all(|f| fast_codec_supports_type(f.data_type()));
 
     let output = match (fast_encoding, codec) {
         (false, CompressionCodec::None) => {
@@ -1741,6 +1728,7 @@ mod test {
         let length = write_ipc_compressed(
             &batch,
             &mut cursor,
+            false,
             &CompressionCodec::Zstd(1),
             &Time::default(),
         )
@@ -1762,6 +1750,7 @@ mod test {
         let length = write_ipc_compressed(
             &batch,
             &mut cursor,
+            false,
             &CompressionCodec::Lz4Frame,
             &Time::default(),
         )
