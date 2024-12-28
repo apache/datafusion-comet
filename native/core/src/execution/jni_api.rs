@@ -21,10 +21,7 @@ use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 use arrow::datatypes::DataType as ArrowDataType;
 use arrow_array::RecordBatch;
 use datafusion::{
-    execution::{
-        disk_manager::DiskManagerConfig,
-        runtime_env::{RuntimeConfig, RuntimeEnv},
-    },
+    execution::{disk_manager::DiskManagerConfig, runtime_env::RuntimeEnv},
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
@@ -51,6 +48,7 @@ use crate::{
 };
 use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_common::ScalarValue;
+use datafusion_execution::runtime_env::RuntimeEnvBuilder;
 use futures::stream::StreamExt;
 use jni::{
     objects::GlobalRef,
@@ -191,7 +189,7 @@ fn prepare_datafusion_session_context(
     memory_fraction: f64,
     comet_task_memory_manager: Arc<GlobalRef>,
 ) -> CometResult<SessionContext> {
-    let mut rt_config = RuntimeConfig::new().with_disk_manager(DiskManagerConfig::NewOs);
+    let mut rt_config = RuntimeEnvBuilder::new().with_disk_manager(DiskManagerConfig::NewOs);
 
     // Check if we are using unified memory manager integrated with Spark.
     if use_unified_memory_manager {
@@ -219,6 +217,7 @@ fn prepare_datafusion_session_context(
             &ScalarValue::Float64(Some(1.1)),
         );
 
+    #[allow(deprecated)]
     let runtime = RuntimeEnv::try_new(rt_config)?;
 
     let mut session_ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime));
