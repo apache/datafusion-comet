@@ -15,12 +15,26 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow_array::{Array, ArrayRef, Int32Array, RecordBatch, StringArray};
+use arrow_array::{Array, ArrayRef, Date32Array, Int32Array, RecordBatch, StringArray};
 use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field, Schema};
 use datafusion_common::DataFusionError;
 use std::io::Write;
 use std::sync::Arc;
+
+pub fn fast_codec_supports_type(data_type: &DataType) -> bool {
+    matches!(data_type, DataType::Int32 | DataType::Utf8)
+}
+
+enum DataTypeId {
+    // Int8 = 0,
+    // Int16 = 1,
+    Int32 = 2,
+    // Int64 = 3,
+    Date32 = 4,
+    // Decimal128 = 5,
+    Utf8 = 6,
+}
 
 pub struct BatchWriter<W: Write> {
     inner: W,
@@ -44,14 +58,17 @@ impl<W: Write> BatchWriter<W> {
             // data type
             match field.data_type() {
                 DataType::Int32 => {
-                    self.inner.write_all(&[0_u8])?;
+                    self.inner.write_all(&[DataTypeId::Int32 as u8])?;
+                }
+                DataType::Date32 => {
+                    self.inner.write_all(&[DataTypeId::Date32 as u8])?;
                 }
                 DataType::Utf8 => {
-                    self.inner.write_all(&[1_u8])?;
+                    self.inner.write_all(&[DataTypeId::Utf8 as u8])?;
                 }
                 _ => todo!(),
             }
-            // TODO nullable
+            // TODO nullable - assume all nullable for now
         }
 
         // write row count
@@ -62,6 +79,22 @@ impl<W: Write> BatchWriter<W> {
             match col.data_type() {
                 DataType::Int32 => {
                     let arr = col.as_any().downcast_ref::<Int32Array>().unwrap();
+
+                    // write data buffer
+                    let buffer = arr.values();
+                    let buffer = buffer.inner();
+                    self.write_buffer(buffer)?;
+
+                    if let Some(nulls) = arr.nulls() {
+                        let buffer = nulls.inner();
+                        let buffer = buffer.inner();
+                        self.write_buffer(buffer)?;
+                    } else {
+                        self.inner.write_all(&0_usize.to_le_bytes())?;
+                    }
+                }
+                DataType::Date32 => {
+                    let arr = col.as_any().downcast_ref::<Date32Array>().unwrap();
 
                     // write data buffer
                     let buffer = arr.values();
@@ -116,13 +149,13 @@ impl<W: Write> BatchWriter<W> {
     }
 }
 
-pub struct BatchReader {
-    input: Vec<u8>,
+pub struct BatchReader<'a> {
+    input: &'a [u8],
     offset: usize,
 }
 
-impl BatchReader {
-    pub fn new(input: Vec<u8>) -> Self {
+impl<'a> BatchReader<'a> {
+    pub fn new(input: &'a [u8]) -> Self {
         Self { input, offset: 0 }
     }
 
@@ -145,11 +178,13 @@ impl BatchReader {
             self.offset += field_name_bytes.len();
             let field_name = unsafe { String::from_utf8_unchecked(field_name_bytes.into()) };
 
-            // TODO read field data type
-            let data_type = match &self.input[self.offset] {
-                0_u8 => DataType::Int32,
-                1_u8 => DataType::Utf8,
-                _ => todo!(),
+            // read data type
+            let type_id = self.input[self.offset] as i32;
+            let data_type = match type_id {
+                x if x == DataTypeId::Int32 as i32 => DataType::Int32,
+                x if x == DataTypeId::Date32 as i32 => DataType::Date32,
+                x if x == DataTypeId::Utf8 as i32 => DataType::Utf8,
+                _ => unreachable!(),
             };
             self.offset += 1;
 
@@ -161,7 +196,7 @@ impl BatchReader {
 
         let mut arrays = Vec::with_capacity(schema.fields().len());
         for i in 0..schema.fields().len() {
-            let buffer = self.read_data_buffer();
+            let buffer = self.read_buffer();
 
             match schema.field(i).data_type() {
                 DataType::Int32 => {
@@ -174,19 +209,19 @@ impl BatchReader {
                     let array: ArrayRef = Arc::new(Int32Array::try_new(data_buffer, null_buffer)?);
                     arrays.push(array);
                 }
-                DataType::Utf8 => {
-                    // read offset buffer length
-                    length.copy_from_slice(&self.input[self.offset..self.offset + 8]);
-                    let offset_buffer_len = usize::from_le_bytes(length);
-                    self.offset += 8;
+                DataType::Date32 => {
+                    // create array
+                    let data_buffer = ScalarBuffer::<i32>::from(buffer);
 
+                    // read null buffer
+                    let null_buffer = self.read_null_buffer();
+
+                    let array: ArrayRef = Arc::new(Date32Array::try_new(data_buffer, null_buffer)?);
+                    arrays.push(array);
+                }
+                DataType::Utf8 => {
                     // read offset buffer
-                    // println!("reading offset buffer with {offset_buffer_len} bytes");
-                    let offset_buffer =
-                        Buffer::from(&self.input[self.offset..self.offset + offset_buffer_len]);
-                    self.offset += offset_buffer_len;
-                    let scalar_buffer: ScalarBuffer<i32> = ScalarBuffer::from(offset_buffer);
-                    let offset_buffer = OffsetBuffer::new(scalar_buffer);
+                    let offset_buffer = self.read_offset_buffer();
 
                     // read null buffer
                     let null_buffer = self.read_null_buffer();
@@ -203,7 +238,14 @@ impl BatchReader {
         Ok(RecordBatch::try_new(schema, arrays).unwrap())
     }
 
-    fn read_data_buffer(&mut self) -> Buffer {
+    fn read_offset_buffer(&mut self) -> OffsetBuffer<i32> {
+        let offset_buffer = self.read_buffer();
+        let offset_buffer: ScalarBuffer<i32> = ScalarBuffer::from(offset_buffer);
+        let offset_buffer = OffsetBuffer::new(offset_buffer);
+        offset_buffer
+    }
+
+    fn read_buffer(&mut self) -> Buffer {
         // read data buffer length
         let mut length = [0; 8];
         length.copy_from_slice(&self.input[self.offset..self.offset + 8]);
@@ -240,7 +282,7 @@ impl BatchReader {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow_array::builder::{Int32Builder, StringBuilder};
+    use arrow_array::builder::{Date32Builder, Int32Builder, StringBuilder};
     use std::sync::Arc;
 
     #[test]
@@ -252,7 +294,7 @@ mod test {
         let buffer = writer.inner();
         //assert_eq!(257315, buffer.len());
 
-        let mut reader = BatchReader::new(buffer);
+        let mut reader = BatchReader::new(&buffer);
         let batch2 = reader.read_batch().unwrap();
         assert_eq!(batch, batch2);
     }
@@ -261,11 +303,14 @@ mod test {
         let schema = Arc::new(Schema::new(vec![
             Field::new("c0", DataType::Int32, true),
             Field::new("c1", DataType::Utf8, true),
+            Field::new("c2", DataType::Date32, true),
         ]));
         let mut a = Int32Builder::new();
         let mut b = StringBuilder::new();
+        let mut c = Date32Builder::new();
         for i in 0..num_rows {
             a.append_value(i as i32);
+            c.append_value(i as i32);
             if allow_nulls && i % 10 == 0 {
                 b.append_null();
             } else {
@@ -274,6 +319,7 @@ mod test {
         }
         let a = a.finish();
         let b = b.finish();
-        RecordBatch::try_new(schema.clone(), vec![Arc::new(a), Arc::new(b)]).unwrap()
+        let c = c.finish();
+        RecordBatch::try_new(schema.clone(), vec![Arc::new(a), Arc::new(b), Arc::new(c)]).unwrap()
     }
 }

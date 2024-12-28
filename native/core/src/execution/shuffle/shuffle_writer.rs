@@ -17,6 +17,8 @@
 
 //! Defines the External shuffle repartition plan.
 
+use crate::execution::shuffle::codec::{fast_codec_supports_type, BatchReader};
+use crate::execution::shuffle::BatchWriter;
 use crate::{
     common::bit::ceil,
     errors::{CometError, CometResult},
@@ -1576,21 +1578,43 @@ pub fn write_ipc_compressed<W: Write + Seek>(
     let field_count = batch.schema().fields().len();
     output.write_all(&field_count.to_le_bytes())?;
 
-    // write codec used
+    // write compression codec used
     match codec {
         CompressionCodec::Lz4Frame => output.write_all("LZ4_".as_bytes())?,
         CompressionCodec::Zstd(_) => output.write_all("ZSTD".as_bytes())?,
         CompressionCodec::None => output.write_all("NONE".as_bytes())?,
     }
 
-    let output = match codec {
-        CompressionCodec::None => {
+    // write encoding method used
+    let fast_encoding = batch
+        .schema()
+        .fields()
+        .iter()
+        .all(|f| fast_codec_supports_type(f.data_type()));
+    if fast_encoding {
+        output.write_all("FAST".as_bytes())?;
+    } else {
+        output.write_all("AIPC".as_bytes())?;
+    }
+
+    println!(
+        "Encoding types {:?} with fast_encoding={fast_encoding}",
+        batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.data_type())
+            .collect_vec()
+    );
+
+    let output = match (fast_encoding, codec) {
+        (false, CompressionCodec::None) => {
             let mut arrow_writer = StreamWriter::try_new(output, &batch.schema())?;
             arrow_writer.write(batch)?;
             arrow_writer.finish()?;
             arrow_writer.into_inner()?
         }
-        CompressionCodec::Lz4Frame => {
+        (false, CompressionCodec::Lz4Frame) => {
             let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
             let mut arrow_writer = StreamWriter::try_new(&mut wtr, &batch.schema())?;
             arrow_writer.write(batch)?;
@@ -1598,7 +1622,14 @@ pub fn write_ipc_compressed<W: Write + Seek>(
             wtr.finish()
                 .map_err(|e| DataFusionError::Execution(format!("lz4 compression error: {}", e)))?
         }
-        CompressionCodec::Zstd(level) => {
+        (true, CompressionCodec::Lz4Frame) => {
+            let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
+            let mut fast_writer = BatchWriter::new(&mut wtr);
+            fast_writer.write_batch(batch)?;
+            wtr.finish()
+                .map_err(|e| DataFusionError::Execution(format!("lz4 compression error: {}", e)))?
+        }
+        (false, CompressionCodec::Zstd(level)) => {
             let encoder = zstd::Encoder::new(output, *level)?;
             let mut arrow_writer = StreamWriter::try_new(encoder, &batch.schema())?;
             arrow_writer.write(batch)?;
@@ -1606,6 +1637,7 @@ pub fn write_ipc_compressed<W: Write + Seek>(
             let zstd_encoder = arrow_writer.into_inner()?;
             zstd_encoder.finish()?
         }
+        _ => unreachable!(),
     };
 
     // fill ipc length
@@ -1623,14 +1655,26 @@ pub fn write_ipc_compressed<W: Write + Seek>(
 }
 
 pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
-    match &bytes[0..4] {
-        b"LZ4_" => {
-            let decoder = lz4_flex::frame::FrameDecoder::new(&bytes[4..]);
+    let fast_encoding = match &bytes[4..8] {
+        b"AIPC" => false,
+        b"FAST" => true,
+        _ => unreachable!(),
+    };
+    match (fast_encoding, &bytes[0..4]) {
+        (false, b"LZ4_") => {
+            let decoder = lz4_flex::frame::FrameDecoder::new(&bytes[8..]);
             let mut reader = StreamReader::try_new(decoder, None)?;
             reader.next().unwrap().map_err(|e| e.into())
         }
-        b"ZSTD" => {
-            let decoder = zstd::Decoder::new(&bytes[4..])?;
+        (true, b"LZ4_") => {
+            let mut decoder = lz4_flex::frame::FrameDecoder::new(&bytes[8..]);
+            let mut buffer = vec![];
+            decoder.read_to_end(&mut buffer)?;
+            let mut reader = BatchReader::new(&buffer);
+            reader.read_batch()
+        }
+        (false, b"ZSTD") => {
+            let decoder = zstd::Decoder::new(&bytes[8..])?;
             let mut reader = StreamReader::try_new(decoder, None)?;
             reader.next().unwrap().map_err(|e| e.into())
         }
