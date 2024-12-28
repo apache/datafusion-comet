@@ -40,6 +40,7 @@ use arrow_array::{
     Array, ArrayRef, RecordBatch, RecordBatchOptions,
 };
 use arrow_schema::{ArrowError, DataType, Field, Schema, TimeUnit};
+use datafusion::physical_plan::metrics::Time;
 use jni::sys::{jint, jlong};
 use std::{
     fs::OpenOptions,
@@ -291,6 +292,7 @@ macro_rules! downcast_builder_ref {
 }
 
 // Expose the macro for other modules.
+use crate::execution::shuffle::shuffle_writer::CompressionCodec;
 pub(crate) use downcast_builder_ref;
 
 /// Appends field of row to the given struct builder. `dt` is the data type of the field.
@@ -3354,7 +3356,12 @@ pub fn process_sorted_row_partition(
         let mut frozen: Vec<u8> = vec![];
         let mut cursor = Cursor::new(&mut frozen);
         cursor.seek(SeekFrom::End(0))?;
-        written += write_ipc_compressed(&batch, &mut cursor)?;
+
+        // we do not collect metrics in Native_writeSortedFileNative
+        let ipc_time = Time::default();
+        // compression codec is not configurable for CometBypassMergeSortShuffleWriter
+        let codec = CompressionCodec::Zstd(1);
+        written += write_ipc_compressed(&batch, &mut cursor, &codec, &ipc_time)?;
 
         if let Some(checksum) = &mut current_checksum {
             checksum.update(&mut cursor)?;

@@ -17,22 +17,14 @@
 
 //! Defines the External shuffle repartition plan.
 
-use std::{
-    any::Any,
-    fmt,
-    fmt::{Debug, Formatter},
-    fs::{File, OpenOptions},
-    io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write},
-    path::Path,
-    sync::Arc,
-    task::{Context, Poll},
+use crate::{
+    common::bit::ceil,
+    errors::{CometError, CometResult},
 };
-
 use arrow::{datatypes::*, ipc::writer::StreamWriter};
 use async_trait::async_trait;
 use bytes::Buf;
 use crc32fast::Hasher;
-use datafusion::physical_plan::metrics::Time;
 use datafusion::{
     arrow::{
         array::*,
@@ -48,23 +40,32 @@ use datafusion::{
         runtime_env::RuntimeEnv,
     },
     physical_plan::{
-        metrics::{BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet},
+        metrics::{
+            BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, Time,
+        },
         stream::RecordBatchStreamAdapter,
         DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, Partitioning, PlanProperties,
         RecordBatchStream, SendableRecordBatchStream, Statistics,
     },
 };
+use datafusion_comet_spark_expr::spark_hash::create_murmur3_hashes;
 use datafusion_physical_expr::EquivalenceProperties;
 use futures::executor::block_on;
 use futures::{lock::Mutex, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
 use simd_adler32::Adler32;
-
-use crate::{
-    common::bit::ceil,
-    errors::{CometError, CometResult},
+use std::io::Error;
+use std::{
+    any::Any,
+    fmt,
+    fmt::{Debug, Formatter},
+    fs::{File, OpenOptions},
+    io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write},
+    path::Path,
+    sync::Arc,
+    task::{Context, Poll},
 };
-use datafusion_comet_spark_expr::spark_hash::create_murmur3_hashes;
+use tokio::time::Instant;
 
 /// The status of appending rows to a partition buffer.
 enum AppendRowStatus {
@@ -89,6 +90,7 @@ pub struct ShuffleWriterExec {
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
     cache: PlanProperties,
+    codec: CompressionCodec,
 }
 
 impl DisplayAs for ShuffleWriterExec {
@@ -125,6 +127,7 @@ impl ExecutionPlan for ShuffleWriterExec {
             1 => Ok(Arc::new(ShuffleWriterExec::try_new(
                 Arc::clone(&children[0]),
                 self.partitioning.clone(),
+                self.codec.clone(),
                 self.output_data_file.clone(),
                 self.output_index_file.clone(),
             )?)),
@@ -151,6 +154,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                     self.partitioning.clone(),
                     metrics,
                     context,
+                    self.codec.clone(),
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
@@ -180,6 +184,7 @@ impl ShuffleWriterExec {
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         partitioning: Partitioning,
+        codec: CompressionCodec,
         output_data_file: String,
         output_index_file: String,
     ) -> Result<Self> {
@@ -196,6 +201,7 @@ impl ShuffleWriterExec {
             output_data_file,
             output_index_file,
             cache,
+            codec,
         })
     }
 }
@@ -216,6 +222,7 @@ struct PartitionBuffer {
     batch_size: usize,
     /// Memory reservation for this partition buffer.
     reservation: MemoryReservation,
+    codec: CompressionCodec,
 }
 
 impl PartitionBuffer {
@@ -224,6 +231,7 @@ impl PartitionBuffer {
         batch_size: usize,
         partition_id: usize,
         runtime: &Arc<RuntimeEnv>,
+        codec: CompressionCodec,
     ) -> Self {
         let reservation = MemoryConsumer::new(format!("PartitionBuffer[{}]", partition_id))
             .with_can_spill(true)
@@ -237,12 +245,13 @@ impl PartitionBuffer {
             num_active_rows: 0,
             batch_size,
             reservation,
+            codec,
         }
     }
 
     /// Initializes active builders if necessary.
     /// Returns error if memory reservation fails.
-    fn init_active_if_necessary(&mut self) -> Result<isize> {
+    fn init_active_if_necessary(&mut self, metrics: &ShuffleRepartitionerMetrics) -> Result<isize> {
         let mut mem_diff = 0;
 
         if self.active.is_empty() {
@@ -256,9 +265,13 @@ impl PartitionBuffer {
                     .sum::<usize>();
             }
 
+            let mut mempool_timer = metrics.mempool_time.timer();
             self.reservation.try_grow(self.active_slots_mem_size)?;
+            mempool_timer.stop();
 
+            let mut repart_timer = metrics.repart_time.timer();
             self.active = new_array_builders(&self.schema, self.batch_size);
+            repart_timer.stop();
 
             mem_diff += self.active_slots_mem_size as isize;
         }
@@ -271,13 +284,13 @@ impl PartitionBuffer {
         columns: &[ArrayRef],
         indices: &[usize],
         start_index: usize,
-        time_metric: &Time,
+        metrics: &ShuffleRepartitionerMetrics,
     ) -> AppendRowStatus {
         let mut mem_diff = 0;
         let mut start = start_index;
 
         // lazy init because some partition may be empty
-        let init = self.init_active_if_necessary();
+        let init = self.init_active_if_necessary(metrics);
         if init.is_err() {
             return AppendRowStatus::StartIndex(start);
         }
@@ -285,6 +298,8 @@ impl PartitionBuffer {
 
         while start < indices.len() {
             let end = (start + self.batch_size).min(indices.len());
+
+            let mut repart_timer = metrics.repart_time.timer();
             self.active
                 .iter_mut()
                 .zip(columns)
@@ -292,16 +307,16 @@ impl PartitionBuffer {
                     append_columns(builder, column, &indices[start..end], column.data_type());
                 });
             self.num_active_rows += end - start;
+            repart_timer.stop();
+
             if self.num_active_rows >= self.batch_size {
-                let mut timer = time_metric.timer();
-                let flush = self.flush();
+                let flush = self.flush(&metrics.ipc_time);
                 if let Err(e) = flush {
                     return AppendRowStatus::MemDiff(Err(e));
                 }
                 mem_diff += flush.unwrap();
-                timer.stop();
 
-                let init = self.init_active_if_necessary();
+                let init = self.init_active_if_necessary(metrics);
                 if init.is_err() {
                     return AppendRowStatus::StartIndex(end);
                 }
@@ -313,7 +328,7 @@ impl PartitionBuffer {
     }
 
     /// flush active data into frozen bytes
-    fn flush(&mut self) -> Result<isize> {
+    fn flush(&mut self, ipc_time: &Time) -> Result<isize> {
         if self.num_active_rows == 0 {
             return Ok(0);
         }
@@ -330,7 +345,7 @@ impl PartitionBuffer {
         let frozen_capacity_old = self.frozen.capacity();
         let mut cursor = Cursor::new(&mut self.frozen);
         cursor.seek(SeekFrom::End(0))?;
-        write_ipc_compressed(&frozen_batch, &mut cursor)?;
+        write_ipc_compressed(&frozen_batch, &mut cursor, &self.codec, ipc_time)?;
 
         mem_diff += (self.frozen.capacity() - frozen_capacity_old) as isize;
         Ok(mem_diff)
@@ -628,6 +643,21 @@ struct ShuffleRepartitionerMetrics {
     /// metrics
     baseline: BaselineMetrics,
 
+    /// Time to perform repartitioning
+    repart_time: Time,
+
+    /// Time interacting with memory pool
+    mempool_time: Time,
+
+    /// Time encoding batches to IPC format
+    ipc_time: Time,
+
+    /// Time spent writing to disk. Maps to "shuffleWriteTime" in Spark SQL Metrics.
+    write_time: Time,
+
+    /// Number of input batches
+    input_batches: Count,
+
     /// count of spills during the execution of the operator
     spill_count: Count,
 
@@ -642,6 +672,11 @@ impl ShuffleRepartitionerMetrics {
     fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
         Self {
             baseline: BaselineMetrics::new(metrics, partition),
+            repart_time: MetricBuilder::new(metrics).subset_time("repart_time", partition),
+            mempool_time: MetricBuilder::new(metrics).subset_time("mempool_time", partition),
+            ipc_time: MetricBuilder::new(metrics).subset_time("ipc_time", partition),
+            write_time: MetricBuilder::new(metrics).subset_time("write_time", partition),
+            input_batches: MetricBuilder::new(metrics).counter("input_batches", partition),
             spill_count: MetricBuilder::new(metrics).spill_count(partition),
             spilled_bytes: MetricBuilder::new(metrics).spilled_bytes(partition),
             data_size: MetricBuilder::new(metrics).counter("data_size", partition),
@@ -660,6 +695,7 @@ impl ShuffleRepartitioner {
         metrics: ShuffleRepartitionerMetrics,
         runtime: Arc<RuntimeEnv>,
         batch_size: usize,
+        codec: CompressionCodec,
     ) -> Self {
         let num_output_partitions = partitioning.partition_count();
         let reservation = MemoryConsumer::new(format!("ShuffleRepartitioner[{}]", partition_id))
@@ -682,7 +718,13 @@ impl ShuffleRepartitioner {
             schema: Arc::clone(&schema),
             buffered_partitions: (0..num_output_partitions)
                 .map(|partition_id| {
-                    PartitionBuffer::new(Arc::clone(&schema), batch_size, partition_id, &runtime)
+                    PartitionBuffer::new(
+                        Arc::clone(&schema),
+                        batch_size,
+                        partition_id,
+                        &runtime,
+                        codec.clone(),
+                    )
                 })
                 .collect::<Vec<_>>(),
             spills: Mutex::new(vec![]),
@@ -701,6 +743,7 @@ impl ShuffleRepartitioner {
     /// This function will slice input batch according to configured batch size and then
     /// shuffle rows into corresponding partition buffer.
     async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()> {
+        let start_time = Instant::now();
         let mut start = 0;
         while start < batch.num_rows() {
             let end = (start + self.batch_size).min(batch.num_rows());
@@ -708,6 +751,11 @@ impl ShuffleRepartitioner {
             self.partitioning_batch(batch).await?;
             start = end;
         }
+        self.metrics.input_batches.add(1);
+        self.metrics
+            .baseline
+            .elapsed_compute()
+            .add_duration(start_time.elapsed());
         Ok(())
     }
 
@@ -738,53 +786,61 @@ impl ShuffleRepartitioner {
         let num_output_partitions = self.num_output_partitions;
         match &self.partitioning {
             Partitioning::Hash(exprs, _) => {
-                let arrays = exprs
-                    .iter()
-                    .map(|expr| expr.evaluate(&input)?.into_array(input.num_rows()))
-                    .collect::<Result<Vec<_>>>()?;
+                let (partition_starts, shuffled_partition_ids): (Vec<usize>, Vec<usize>) = {
+                    let mut timer = self.metrics.repart_time.timer();
+                    let arrays = exprs
+                        .iter()
+                        .map(|expr| expr.evaluate(&input)?.into_array(input.num_rows()))
+                        .collect::<Result<Vec<_>>>()?;
 
-                // use identical seed as spark hash partition
-                let hashes_buf = &mut self.hashes_buf[..arrays[0].len()];
-                hashes_buf.fill(42_u32);
+                    // use identical seed as spark hash partition
+                    let hashes_buf = &mut self.hashes_buf[..arrays[0].len()];
+                    hashes_buf.fill(42_u32);
 
-                // Hash arrays and compute buckets based on number of partitions
-                let partition_ids = &mut self.partition_ids[..arrays[0].len()];
-                create_murmur3_hashes(&arrays, hashes_buf)?
-                    .iter()
-                    .enumerate()
-                    .for_each(|(idx, hash)| {
-                        partition_ids[idx] = pmod(*hash, num_output_partitions) as u64
+                    // Hash arrays and compute buckets based on number of partitions
+                    let partition_ids = &mut self.partition_ids[..arrays[0].len()];
+                    create_murmur3_hashes(&arrays, hashes_buf)?
+                        .iter()
+                        .enumerate()
+                        .for_each(|(idx, hash)| {
+                            partition_ids[idx] = pmod(*hash, num_output_partitions) as u64
+                        });
+
+                    // count each partition size
+                    let mut partition_counters = vec![0usize; num_output_partitions];
+                    partition_ids
+                        .iter()
+                        .for_each(|partition_id| partition_counters[*partition_id as usize] += 1);
+
+                    // accumulate partition counters into partition ends
+                    // e.g. partition counter: [1, 3, 2, 1] => [1, 4, 6, 7]
+                    let mut partition_ends = partition_counters;
+                    let mut accum = 0;
+                    partition_ends.iter_mut().for_each(|v| {
+                        *v += accum;
+                        accum = *v;
                     });
 
-                // count each partition size
-                let mut partition_counters = vec![0usize; num_output_partitions];
-                partition_ids
-                    .iter()
-                    .for_each(|partition_id| partition_counters[*partition_id as usize] += 1);
+                    // calculate shuffled partition ids
+                    // e.g. partition ids: [3, 1, 1, 1, 2, 2, 0] => [6, 1, 2, 3, 4, 5, 0] which is the
+                    // row indices for rows ordered by their partition id. For example, first partition
+                    // 0 has one row index [6], partition 1 has row indices [1, 2, 3], etc.
+                    let mut shuffled_partition_ids = vec![0usize; input.num_rows()];
+                    for (index, partition_id) in partition_ids.iter().enumerate().rev() {
+                        partition_ends[*partition_id as usize] -= 1;
+                        let end = partition_ends[*partition_id as usize];
+                        shuffled_partition_ids[end] = index;
+                    }
 
-                // accumulate partition counters into partition ends
-                // e.g. partition counter: [1, 3, 2, 1] => [1, 4, 6, 7]
-                let mut partition_ends = partition_counters;
-                let mut accum = 0;
-                partition_ends.iter_mut().for_each(|v| {
-                    *v += accum;
-                    accum = *v;
-                });
-
-                // calculate shuffled partition ids
-                // e.g. partition ids: [3, 1, 1, 1, 2, 2, 0] => [6, 1, 2, 3, 4, 5, 0] which is the
-                // row indices for rows ordered by their partition id. For example, first partition
-                // 0 has one row index [6], partition 1 has row indices [1, 2, 3], etc.
-                let mut shuffled_partition_ids = vec![0usize; input.num_rows()];
-                for (index, partition_id) in partition_ids.iter().enumerate().rev() {
-                    partition_ends[*partition_id as usize] -= 1;
-                    let end = partition_ends[*partition_id as usize];
-                    shuffled_partition_ids[end] = index;
-                }
-
-                // after calculating, partition ends become partition starts
-                let mut partition_starts = partition_ends;
-                partition_starts.push(input.num_rows());
+                    // after calculating, partition ends become partition starts
+                    let mut partition_starts = partition_ends;
+                    partition_starts.push(input.num_rows());
+                    timer.stop();
+                    Ok::<(Vec<usize>, Vec<usize>), DataFusionError>((
+                        partition_starts,
+                        shuffled_partition_ids,
+                    ))
+                }?;
 
                 // For each interval of row indices of partition, taking rows from input batch and
                 // appending into output buffer.
@@ -804,11 +860,20 @@ impl ShuffleRepartitioner {
 
                     if mem_diff > 0 {
                         let mem_increase = mem_diff as usize;
-                        if self.reservation.try_grow(mem_increase).is_err() {
+
+                        let try_grow = {
+                            let mut mempool_timer = self.metrics.mempool_time.timer();
+                            let result = self.reservation.try_grow(mem_increase);
+                            mempool_timer.stop();
+                            result
+                        };
+
+                        if try_grow.is_err() {
                             self.spill().await?;
+                            let mut mempool_timer = self.metrics.mempool_time.timer();
                             self.reservation.free();
                             self.reservation.try_grow(mem_increase)?;
-
+                            mempool_timer.stop();
                             mem_diff = 0;
                         }
                     }
@@ -816,7 +881,9 @@ impl ShuffleRepartitioner {
                     if mem_diff < 0 {
                         let mem_used = self.reservation.size();
                         let mem_decrease = mem_used.min(-mem_diff as usize);
+                        let mut mempool_timer = self.metrics.mempool_time.timer();
                         self.reservation.shrink(mem_decrease);
+                        mempool_timer.stop();
                     }
                 }
             }
@@ -848,12 +915,13 @@ impl ShuffleRepartitioner {
 
     /// Writes buffered shuffled record batches into Arrow IPC bytes.
     async fn shuffle_write(&mut self) -> Result<SendableRecordBatchStream> {
+        let mut elapsed_compute = self.metrics.baseline.elapsed_compute().timer();
         let num_output_partitions = self.num_output_partitions;
         let buffered_partitions = &mut self.buffered_partitions;
         let mut output_batches: Vec<Vec<u8>> = vec![vec![]; num_output_partitions];
-
+        let mut offsets = vec![0; num_output_partitions + 1];
         for i in 0..num_output_partitions {
-            buffered_partitions[i].flush()?;
+            buffered_partitions[i].flush(&self.metrics.ipc_time)?;
             output_batches[i] = std::mem::take(&mut buffered_partitions[i].frozen);
         }
 
@@ -863,53 +931,38 @@ impl ShuffleRepartitioner {
         let data_file = self.output_data_file.clone();
         let index_file = self.output_index_file.clone();
 
-        let mut offsets = vec![0; num_output_partitions + 1];
-        let mut output_data = OpenOptions::new()
+        let mut write_time = self.metrics.write_time.timer();
+
+        let output_data = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .open(data_file)
             .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
 
-        for i in 0..num_output_partitions {
-            let mut timer = self.metrics.baseline.elapsed_compute().timer();
+        let mut output_data = BufWriter::new(output_data);
 
+        for i in 0..num_output_partitions {
             offsets[i] = output_data.stream_position()?;
             output_data.write_all(&output_batches[i])?;
-
-            timer.stop();
-
             output_batches[i].clear();
 
             // append partition in each spills
             for spill in &output_spills {
                 let length = spill.offsets[i + 1] - spill.offsets[i];
                 if length > 0 {
-                    let mut timer = self.metrics.baseline.elapsed_compute().timer();
-
                     let mut spill_file =
-                        BufReader::new(File::open(spill.file.path()).map_err(|e| {
-                            DataFusionError::Execution(format!("shuffle write error: {:?}", e))
-                        })?);
+                        BufReader::new(File::open(spill.file.path()).map_err(Self::to_df_err)?);
                     spill_file.seek(SeekFrom::Start(spill.offsets[i]))?;
-                    std::io::copy(&mut spill_file.take(length), &mut output_data).map_err(|e| {
-                        DataFusionError::Execution(format!("shuffle write error: {:?}", e))
-                    })?;
-
-                    timer.stop();
+                    std::io::copy(&mut spill_file.take(length), &mut output_data)
+                        .map_err(Self::to_df_err)?;
                 }
             }
         }
-        let mut timer = self.metrics.baseline.elapsed_compute().timer();
         output_data.flush()?;
-        timer.stop();
 
         // add one extra offset at last to ease partition length computation
-        offsets[num_output_partitions] = output_data
-            .stream_position()
-            .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
-
-        let mut timer = self.metrics.baseline.elapsed_compute().timer();
+        offsets[num_output_partitions] = output_data.stream_position().map_err(Self::to_df_err)?;
 
         let mut output_index =
             BufWriter::new(File::create(index_file).map_err(|e| {
@@ -918,17 +971,25 @@ impl ShuffleRepartitioner {
         for offset in offsets {
             output_index
                 .write_all(&(offset as i64).to_le_bytes()[..])
-                .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
+                .map_err(Self::to_df_err)?;
         }
         output_index.flush()?;
 
-        timer.stop();
+        write_time.stop();
 
+        let mut mempool_timer = self.metrics.mempool_time.timer();
         let used = self.reservation.size();
         self.reservation.shrink(used);
+        mempool_timer.stop();
+
+        elapsed_compute.stop();
 
         // shuffle writer always has empty output
         Ok(Box::pin(EmptyStream::try_new(Arc::clone(&self.schema))?))
+    }
+
+    fn to_df_err(e: Error) -> DataFusionError {
+        DataFusionError::Execution(format!("shuffle write error: {:?}", e))
     }
 
     fn used(&self) -> usize {
@@ -959,7 +1020,7 @@ impl ShuffleRepartitioner {
             return Ok(0);
         }
 
-        let mut timer = self.metrics.baseline.elapsed_compute().timer();
+        let mut timer = self.metrics.write_time.timer();
 
         let spillfile = self
             .runtime
@@ -969,6 +1030,7 @@ impl ShuffleRepartitioner {
             &mut self.buffered_partitions,
             spillfile.path(),
             self.num_output_partitions,
+            &self.metrics.ipc_time,
         )?;
 
         timer.stop();
@@ -995,12 +1057,10 @@ impl ShuffleRepartitioner {
 
         let output = &mut self.buffered_partitions[partition_id];
 
-        let time_metric = self.metrics.baseline.elapsed_compute();
-
         // If the range of indices is not big enough, just appending the rows into
         // active array builders instead of directly adding them as a record batch.
         let mut start_index: usize = 0;
-        let mut output_ret = output.append_rows(columns, indices, start_index, time_metric);
+        let mut output_ret = output.append_rows(columns, indices, start_index, &self.metrics);
 
         loop {
             match output_ret {
@@ -1012,15 +1072,15 @@ impl ShuffleRepartitioner {
                     // Cannot allocate enough memory for the array builders in the partition,
                     // spill partitions and retry.
                     self.spill().await?;
-                    self.reservation.free();
 
+                    let mut mempool_timer = self.metrics.mempool_time.timer();
+                    self.reservation.free();
                     let output = &mut self.buffered_partitions[partition_id];
                     output.reservation.free();
-
-                    let time_metric = self.metrics.baseline.elapsed_compute();
+                    mempool_timer.stop();
 
                     start_index = new_start;
-                    output_ret = output.append_rows(columns, indices, start_index, time_metric);
+                    output_ret = output.append_rows(columns, indices, start_index, &self.metrics);
 
                     if let AppendRowStatus::StartIndex(new_start) = output_ret {
                         if new_start == start_index {
@@ -1045,11 +1105,12 @@ fn spill_into(
     buffered_partitions: &mut [PartitionBuffer],
     path: &Path,
     num_output_partitions: usize,
+    ipc_time: &Time,
 ) -> Result<Vec<u64>> {
     let mut output_batches: Vec<Vec<u8>> = vec![vec![]; num_output_partitions];
 
     for i in 0..num_output_partitions {
-        buffered_partitions[i].flush()?;
+        buffered_partitions[i].flush(ipc_time)?;
         output_batches[i] = std::mem::take(&mut buffered_partitions[i].frozen);
     }
     let path = path.to_owned();
@@ -1083,6 +1144,7 @@ impl Debug for ShuffleRepartitioner {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn external_shuffle(
     mut input: SendableRecordBatchStream,
     partition_id: usize,
@@ -1091,6 +1153,7 @@ async fn external_shuffle(
     partitioning: Partitioning,
     metrics: ShuffleRepartitionerMetrics,
     context: Arc<TaskContext>,
+    codec: CompressionCodec,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
     let mut repartitioner = ShuffleRepartitioner::new(
@@ -1102,6 +1165,7 @@ async fn external_shuffle(
         metrics,
         context.runtime_env(),
         context.session_config().batch_size(),
+        codec,
     );
 
     while let Some(batch) = input.next().await {
@@ -1480,36 +1544,58 @@ impl Checksum {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum CompressionCodec {
+    None,
+    Zstd(i32),
+}
+
 /// Writes given record batch as Arrow IPC bytes into given writer.
 /// Returns number of bytes written.
-pub(crate) fn write_ipc_compressed<W: Write + Seek>(
+pub fn write_ipc_compressed<W: Write + Seek>(
     batch: &RecordBatch,
     output: &mut W,
+    codec: &CompressionCodec,
+    ipc_time: &Time,
 ) -> Result<usize> {
     if batch.num_rows() == 0 {
         return Ok(0);
     }
+
+    let mut timer = ipc_time.timer();
     let start_pos = output.stream_position()?;
 
     // write ipc_length placeholder
     output.write_all(&[0u8; 8])?;
 
-    // write ipc data
-    // TODO: make compression level configurable
-    let mut arrow_writer = StreamWriter::try_new(zstd::Encoder::new(output, 1)?, &batch.schema())?;
-    arrow_writer.write(batch)?;
-    arrow_writer.finish()?;
+    let output = match codec {
+        CompressionCodec::None => {
+            let mut arrow_writer = StreamWriter::try_new(output, &batch.schema())?;
+            arrow_writer.write(batch)?;
+            arrow_writer.finish()?;
+            arrow_writer.into_inner()?
+        }
+        CompressionCodec::Zstd(level) => {
+            let encoder = zstd::Encoder::new(output, *level)?;
+            let mut arrow_writer = StreamWriter::try_new(encoder, &batch.schema())?;
+            arrow_writer.write(batch)?;
+            arrow_writer.finish()?;
+            let zstd_encoder = arrow_writer.into_inner()?;
+            zstd_encoder.finish()?
+        }
+    };
 
-    let zwriter = arrow_writer.into_inner()?;
-    let output = zwriter.finish()?;
+    // fill ipc length
     let end_pos = output.stream_position()?;
     let ipc_length = end_pos - start_pos - 8;
 
     // fill ipc length
     output.seek(SeekFrom::Start(start_pos))?;
     output.write_all(&ipc_length.to_le_bytes()[..])?;
-
     output.seek(SeekFrom::Start(end_pos))?;
+
+    timer.stop();
+
     Ok((end_pos - start_pos) as usize)
 }
 
@@ -1559,6 +1645,22 @@ mod test {
     use datafusion_execution::runtime_env::RuntimeEnvBuilder;
     use datafusion_physical_expr::expressions::Column;
     use tokio::runtime::Runtime;
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn write_ipc_zstd() {
+        let batch = create_batch(8192);
+        let mut output = vec![];
+        let mut cursor = Cursor::new(&mut output);
+        write_ipc_compressed(
+            &batch,
+            &mut cursor,
+            &CompressionCodec::Zstd(1),
+            &Time::default(),
+        )
+        .unwrap();
+        assert_eq!(40218, output.len());
+    }
 
     #[test]
     fn test_slot_size() {
@@ -1622,13 +1724,7 @@ mod test {
         num_partitions: usize,
         memory_limit: Option<usize>,
     ) {
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
-        let mut b = StringBuilder::new();
-        for i in 0..batch_size {
-            b.append_value(format!("{i}"));
-        }
-        let array = b.finish();
-        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).unwrap();
+        let batch = create_batch(batch_size);
 
         let batches = (0..num_batches).map(|_| batch.clone()).collect::<Vec<_>>();
 
@@ -1636,6 +1732,7 @@ mod test {
         let exec = ShuffleWriterExec::try_new(
             Arc::new(MemoryExec::try_new(partitions, batch.schema(), None).unwrap()),
             Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+            CompressionCodec::Zstd(1),
             "/tmp/data.out".to_string(),
             "/tmp/index.out".to_string(),
         )
@@ -1654,6 +1751,16 @@ mod test {
         let stream = exec.execute(0, task_ctx).unwrap();
         let rt = Runtime::new().unwrap();
         rt.block_on(collect(stream)).unwrap();
+    }
+
+    fn create_batch(batch_size: usize) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
+        let mut b = StringBuilder::new();
+        for i in 0..batch_size {
+            b.append_value(format!("{i}"));
+        }
+        let array = b.finish();
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).unwrap()
     }
 
     #[test]

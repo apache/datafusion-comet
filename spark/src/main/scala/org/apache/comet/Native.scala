@@ -43,6 +43,7 @@ class Native extends NativeBase {
    * @return
    *   the address to native query plan.
    */
+  // scalastyle:off
   @native def createPlan(
       id: Long,
       iterators: Array[CometBatchIterator],
@@ -50,10 +51,14 @@ class Native extends NativeBase {
       metrics: CometMetricNode,
       taskMemoryManager: CometTaskMemoryManager,
       batchSize: Int,
+      use_unified_memory_manager: Boolean,
+      memory_limit: Long,
+      memory_fraction: Double,
       debug: Boolean,
       explain: Boolean,
       workerThreads: Int,
       blockingThreads: Int): Long
+  // scalastyle:on
 
   /**
    * Execute a native query plan based on given input Arrow arrays.

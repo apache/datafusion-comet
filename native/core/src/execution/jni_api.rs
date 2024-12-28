@@ -106,6 +106,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     metrics_node: JObject,
     comet_task_memory_manager_obj: JObject,
     batch_size: jint,
+    use_unified_memory_manager: jboolean,
+    memory_limit: jlong,
+    memory_fraction: jdouble,
     debug_native: jboolean,
     explain_native: jboolean,
     worker_threads: jint,
@@ -147,7 +150,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         // We need to keep the session context alive. Some session state like temporary
         // dictionaries are stored in session context. If it is dropped, the temporary
         // dictionaries will be dropped as well.
-        let session = prepare_datafusion_session_context(batch_size as usize, task_memory_manager)?;
+        let session = prepare_datafusion_session_context(
+            batch_size as usize,
+            use_unified_memory_manager == 1,
+            memory_limit as usize,
+            memory_fraction,
+            task_memory_manager,
+        )?;
 
         let plan_creation_time = start.elapsed();
 
@@ -174,13 +183,22 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 /// Configure DataFusion session context.
 fn prepare_datafusion_session_context(
     batch_size: usize,
+    use_unified_memory_manager: bool,
+    memory_limit: usize,
+    memory_fraction: f64,
     comet_task_memory_manager: Arc<GlobalRef>,
 ) -> CometResult<SessionContext> {
     let mut rt_config = RuntimeConfig::new().with_disk_manager(DiskManagerConfig::NewOs);
 
-    // Set Comet memory pool for native
-    let memory_pool = CometMemoryPool::new(comet_task_memory_manager);
-    rt_config = rt_config.with_memory_pool(Arc::new(memory_pool));
+    // Check if we are using unified memory manager integrated with Spark.
+    if use_unified_memory_manager {
+        // Set Comet memory pool for native
+        let memory_pool = CometMemoryPool::new(comet_task_memory_manager);
+        rt_config = rt_config.with_memory_pool(Arc::new(memory_pool));
+    } else {
+        // Use the memory pool from DF
+        rt_config = rt_config.with_memory_limit(memory_limit, memory_fraction)
+    }
 
     // Get Datafusion configuration from Spark Execution context
     // can be configured in Comet Spark JVM using Spark --conf parameters
@@ -213,7 +231,7 @@ fn prepare_output(
     array_addrs: jlongArray,
     schema_addrs: jlongArray,
     output_batch: RecordBatch,
-    exec_context: &mut ExecutionContext,
+    validate: bool,
 ) -> CometResult<jlong> {
     let array_address_array = unsafe { JLongArray::from_raw(array_addrs) };
     let num_cols = env.get_array_length(&array_address_array)? as usize;
@@ -237,7 +255,7 @@ fn prepare_output(
         )));
     }
 
-    if exec_context.debug_native {
+    if validate {
         // Validate the output arrays.
         for array in results.iter() {
             let array_data = array.to_data();
@@ -256,9 +274,6 @@ fn prepare_output(
 
         i += 1;
     }
-
-    // Update metrics
-    update_metrics(env, exec_context)?;
 
     Ok(num_rows as jlong)
 }
@@ -338,22 +353,22 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             let next_item = exec_context.stream.as_mut().unwrap().next();
             let poll_output = exec_context.runtime.block_on(async { poll!(next_item) });
 
+            // Update metrics
+            update_metrics(&mut env, exec_context)?;
+
             match poll_output {
                 Poll::Ready(Some(output)) => {
+                    // prepare output for FFI transfer
                     return prepare_output(
                         &mut env,
                         array_addrs,
                         schema_addrs,
                         output?,
-                        exec_context,
+                        exec_context.debug_native,
                     );
                 }
                 Poll::Ready(None) => {
                     // Reaches EOF of output.
-
-                    // Update metrics
-                    update_metrics(&mut env, exec_context)?;
-
                     if exec_context.explain_native {
                         if let Some(plan) = &exec_context.root_op {
                             let formatted_plan_str =
@@ -373,9 +388,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 // A poll pending means there are more than one blocking operators,
                 // we don't need go back-forth between JVM/Native. Just keeping polling.
                 Poll::Pending => {
-                    // Update metrics
-                    update_metrics(&mut env, exec_context)?;
-
                     // Pull input batches
                     pull_input_batches(exec_context)?;
 
