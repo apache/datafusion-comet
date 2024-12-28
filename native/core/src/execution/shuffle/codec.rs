@@ -175,7 +175,11 @@ impl<W: Write> BatchWriter<W> {
                         self.inner.write_all(&0_usize.to_le_bytes())?;
                     }
                 }
-                _ => todo!(),
+                other => {
+                    return Err(DataFusionError::Internal(format!(
+                        "unsupported type {other}"
+                    )))
+                }
             }
         }
 
@@ -187,10 +191,11 @@ impl<W: Write> BatchWriter<W> {
     }
 
     fn write_buffer(&mut self, buffer: &Buffer) -> std::io::Result<()> {
-        // write buffer length
-        self.inner.write_all(&buffer.len().to_le_bytes())?;
-        // write buffer data
-        self.inner.write_all(buffer.as_slice())
+        let length = buffer.len();
+        let mut combined = Vec::with_capacity(8 + length); // 8 bytes for length + data
+        combined.extend_from_slice(&length.to_le_bytes());
+        combined.extend_from_slice(buffer.as_slice());
+        self.inner.write_all(&combined)
     }
 }
 
@@ -234,7 +239,11 @@ impl<'a> BatchReader<'a> {
                     self.input[self.offset + 1],
                     self.input[self.offset + 2] as i8,
                 ),
-                _ => unreachable!(),
+                other => {
+                    return Err(DataFusionError::Internal(format!(
+                        "unsupported type {other}"
+                    )))
+                }
             };
             self.offset += 1;
             if matches!(data_type, DataType::Decimal128(_, _)) {
@@ -250,70 +259,48 @@ impl<'a> BatchReader<'a> {
         let mut arrays = Vec::with_capacity(schema.fields().len());
         for i in 0..schema.fields().len() {
             let buffer = self.read_buffer();
-
-            match schema.field(i).data_type() {
+            let array: ArrayRef = match schema.field(i).data_type() {
                 DataType::Int32 => {
-                    // create array
                     let data_buffer = ScalarBuffer::<i32>::from(buffer);
-
-                    // read null buffer
                     let null_buffer = self.read_null_buffer();
-
-                    let array: ArrayRef = Arc::new(Int32Array::try_new(data_buffer, null_buffer)?);
-                    arrays.push(array);
+                    Arc::new(Int32Array::try_new(data_buffer, null_buffer)?)
                 }
                 DataType::Int64 => {
-                    // create array
                     let data_buffer = ScalarBuffer::<i64>::from(buffer);
-
-                    // read null buffer
                     let null_buffer = self.read_null_buffer();
-
-                    let array: ArrayRef = Arc::new(Int64Array::try_new(data_buffer, null_buffer)?);
-                    arrays.push(array);
+                    Arc::new(Int64Array::try_new(data_buffer, null_buffer)?)
                 }
                 DataType::Date32 => {
-                    // create array
                     let data_buffer = ScalarBuffer::<i32>::from(buffer);
-
-                    // read null buffer
                     let null_buffer = self.read_null_buffer();
-
-                    let array: ArrayRef = Arc::new(Date32Array::try_new(data_buffer, null_buffer)?);
-                    arrays.push(array);
+                    Arc::new(Date32Array::try_new(data_buffer, null_buffer)?)
                 }
                 DataType::Decimal128(p, s) => {
-                    // create array
                     let data_buffer = ScalarBuffer::<i128>::from(buffer);
-
-                    // read null buffer
                     let null_buffer = self.read_null_buffer();
-
-                    let array: ArrayRef = Arc::new(
+                    Arc::new(
                         Decimal128Array::try_new(data_buffer, null_buffer)?
                             .with_precision_and_scale(*p, *s)?,
-                    );
-                    arrays.push(array);
+                    )
                 }
                 DataType::Utf8 => {
-                    // read offset buffer
                     let offset_buffer = self.read_offset_buffer();
-
-                    // read null buffer
                     let null_buffer = self.read_null_buffer();
-
-                    // create array
-                    let array: ArrayRef =
-                        Arc::new(StringArray::try_new(offset_buffer, buffer, null_buffer)?);
-                    arrays.push(array);
+                    Arc::new(StringArray::try_new(offset_buffer, buffer, null_buffer)?)
                 }
                 _ => todo!(),
-            }
+            };
+            arrays.push(array);
         }
 
         assert_eq!(schema.fields().len(), arrays.len());
         for i in 0..arrays.len() {
-            println!("{} length = {}", schema.field(i).name(), arrays[i].len());
+            println!(
+                "{}: {} length = {}",
+                schema.field(i).name(),
+                schema.field(i).data_type(),
+                arrays[i].len()
+            );
         }
 
         Ok(RecordBatch::try_new(schema, arrays).unwrap())
