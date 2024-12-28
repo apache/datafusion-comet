@@ -31,9 +31,7 @@ pub fn fast_codec_supports_type(data_type: &DataType) -> bool {
     match data_type {
         DataType::Int32 | DataType::Int64 | DataType::Date32 | DataType::Utf8 => true,
         DataType::Decimal128(_, s) if *s >= 0 => true,
-        DataType::Dictionary(k, v) if **k == DataType::Int32 => {
-            fast_codec_supports_type(k) && fast_codec_supports_type(v)
-        }
+        DataType::Dictionary(k, v) if **k == DataType::Int32 => fast_codec_supports_type(v),
         _ => false,
     }
 }
@@ -92,14 +90,14 @@ impl<W: Write> BatchWriter<W> {
                 self.inner
                     .write_all(&[DataTypeId::Decimal128 as u8, *p, *s as u8])?;
             }
-            DataType::Dictionary(k, v) => {
+            DataType::Dictionary(k, v) if fast_codec_supports_type(k) && fast_codec_supports_type(v) => {
                 self.inner.write_all(&[DataTypeId::Dictionary as u8])?;
                 self.write_data_type(&k)?;
                 self.write_data_type(&v)?;
             }
             other => {
                 return Err(DataFusionError::Internal(format!(
-                    "unsupported type {other}"
+                    "unsupported type in fast writer {other}"
                 )))
             }
         }
@@ -325,7 +323,7 @@ impl<'a> BatchReader<'a> {
             }
             other => {
                 return Err(DataFusionError::Internal(format!(
-                    "unsupported type {other}"
+                    "unsupported type in fast reader {other}"
                 )))
             }
         })
@@ -353,7 +351,7 @@ impl<'a> BatchReader<'a> {
             }
         };
         self.offset += 1;
-        if matches!(data_type, DataType::Decimal128(_, _)) {
+        if matches!(data_type, DataType::Decimal128(_, _) | DataType::Dictionary(_, _)) {
             self.offset += 2;
         }
         Ok(data_type)
