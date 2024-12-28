@@ -1606,9 +1606,9 @@ impl ShuffleBlockWriter {
 
         // write compression codec used
         match &self.codec {
-            CompressionCodec::Lz4Frame => output.write_all("LZ4_".as_bytes())?,
-            CompressionCodec::Zstd(_) => output.write_all("ZSTD".as_bytes())?,
-            CompressionCodec::None => output.write_all("NONE".as_bytes())?,
+            CompressionCodec::Lz4Frame => output.write_all(b"LZ4_")?,
+            CompressionCodec::Zstd(_) => output.write_all(b"ZSTD")?,
+            CompressionCodec::None => output.write_all(b"NONE")?,
         }
 
         // write encoding method used
@@ -1620,9 +1620,9 @@ impl ShuffleBlockWriter {
                 .all(|f| fast_codec_supports_type(f.data_type()));
 
         if fast_encoding {
-            output.write_all("FAST".as_bytes())?;
+            output.write_all(b"FAST")?;
         } else {
-            output.write_all("AIPC".as_bytes())?;
+            output.write_all(b"AIPC")?;
         }
 
         let output = match (fast_encoding, &self.codec) {
