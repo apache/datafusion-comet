@@ -18,9 +18,7 @@
 use arrow_array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
 use arrow_array::{builder::StringBuilder, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use comet::execution::shuffle::{
-    write_ipc_compressed, BatchWriter, CompressionCodec, ShuffleWriterExec,
-};
+use comet::execution::shuffle::{write_ipc_compressed, CompressionCodec, ShuffleWriterExec};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::physical_plan::metrics::Time;
 use datafusion::{
@@ -34,84 +32,44 @@ use tokio::runtime::Runtime;
 
 fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("shuffle_writer");
-    group.bench_function("shuffle_writer: encode (no compression))", |b| {
-        let batch = create_batch(8192, true);
-        let mut buffer = vec![];
-        let ipc_time = Time::default();
-        b.iter(|| {
-            buffer.clear();
-            let mut cursor = Cursor::new(&mut buffer);
-            write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::None, &ipc_time)
-        });
-    });
-    group.bench_function(
-        "shuffle_writer: encode and compress (lz4) - Arrow IPC",
-        |b| {
-            let batch = create_batch(8192, true);
-            let mut buffer = vec![];
-            let ipc_time = Time::default();
-            b.iter(|| {
-                buffer.clear();
-                let mut cursor = Cursor::new(&mut buffer);
-                write_ipc_compressed(
-                    &batch,
-                    &mut cursor,
-                    false,
-                    &CompressionCodec::Lz4Frame,
-                    &ipc_time,
-                )
+    for enable_fast_compression in [true, false] {
+        for compression_codec in [
+            CompressionCodec::None,
+            CompressionCodec::Lz4Frame,
+            CompressionCodec::Zstd(1),
+        ] {
+            group.bench_function(format!("shuffle_writer: write encoded (fast_compression={enable_fast_compression}, compression={compression_codec:?})"), |b| {
+                let batch = create_batch(8192, true);
+                let mut buffer = vec![];
+                let ipc_time = Time::default();
+                b.iter(|| {
+                    buffer.clear();
+                    let mut cursor = Cursor::new(&mut buffer);
+                    write_ipc_compressed(&batch, &mut cursor, enable_fast_compression, &compression_codec, &ipc_time)
+                });
             });
-        },
-    );
-    group.bench_function(
-        "shuffle_writer: encode and compress (lz4) - fast encoder",
-        |b| {
-            let batch = create_batch(8192, true);
-            let mut buffer = vec![];
-            let ipc_time = Time::default();
-            b.iter(|| {
-                buffer.clear();
-                let mut cursor = Cursor::new(&mut buffer);
-                write_ipc_compressed(
-                    &batch,
-                    &mut cursor,
-                    true,
-                    &CompressionCodec::Lz4Frame,
-                    &ipc_time,
-                )
-            });
-        },
-    );
-    group.bench_function("shuffle_writer: encode and compress (zstd level 1)", |b| {
-        let batch = create_batch(8192, true);
-        let mut buffer = vec![];
-        let ipc_time = Time::default();
-        b.iter(|| {
-            buffer.clear();
-            let mut cursor = Cursor::new(&mut buffer);
-            write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::Zstd(1), &ipc_time)
-        });
-    });
-    group.bench_function("shuffle_writer: encode and compress (zstd level 6)", |b| {
-        let batch = create_batch(8192, true);
-        let mut buffer = vec![];
-        let ipc_time = Time::default();
-        b.iter(|| {
-            buffer.clear();
-            let mut cursor = Cursor::new(&mut buffer);
-            write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::Zstd(6), &ipc_time)
-        });
-    });
-    group.bench_function("shuffle_writer: end to end", |b| {
-        let ctx = SessionContext::new();
-        let exec = create_shuffle_writer_exec(CompressionCodec::Zstd(1));
-        b.iter(|| {
-            let task_ctx = ctx.task_ctx();
-            let stream = exec.execute(0, task_ctx).unwrap();
-            let rt = Runtime::new().unwrap();
-            criterion::black_box(rt.block_on(collect(stream)).unwrap());
-        });
-    });
+        }
+    }
+
+    for compression_codec in [
+        CompressionCodec::None,
+        CompressionCodec::Lz4Frame,
+        CompressionCodec::Zstd(1),
+    ] {
+        group.bench_function(
+            format!("shuffle_writer: end to end (compression = {compression_codec:?}"),
+            |b| {
+                let ctx = SessionContext::new();
+                let exec = create_shuffle_writer_exec(compression_codec.clone());
+                b.iter(|| {
+                    let task_ctx = ctx.task_ctx();
+                    let stream = exec.execute(0, task_ctx).unwrap();
+                    let rt = Runtime::new().unwrap();
+                    criterion::black_box(rt.block_on(collect(stream)).unwrap());
+                });
+            },
+        );
+    }
 }
 
 fn create_shuffle_writer_exec(compression_codec: CompressionCodec) -> ShuffleWriterExec {
