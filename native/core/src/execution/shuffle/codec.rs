@@ -79,13 +79,14 @@ impl<W: Write> BatchWriter<W> {
                     self.inner
                         .write_all(&[DataTypeId::Decimal128 as u8, *p, *s as u8])?;
                 }
-                _ => todo!(),
+                other => {
+                    return Err(DataFusionError::Internal(format!(
+                        "unsupported type {other}"
+                    )))
+                }
             }
             // TODO nullable - assume all nullable for now
         }
-
-        // write row count
-        // self.inner.write_all(&batch.num_rows().to_le_bytes())?;
 
         for i in 0..batch.num_columns() {
             let col = batch.column(i);

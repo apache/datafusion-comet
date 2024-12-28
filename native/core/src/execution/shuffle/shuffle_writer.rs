@@ -1601,6 +1601,11 @@ pub fn write_ipc_compressed<W: Write + Seek>(
             arrow_writer.finish()?;
             arrow_writer.into_inner()?
         }
+        (true, CompressionCodec::None) => {
+            let mut fast_writer = BatchWriter::new(&mut *output);
+            fast_writer.write_batch(batch)?;
+            output
+        }
         (false, CompressionCodec::Lz4Frame) => {
             let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
             let mut arrow_writer = StreamWriter::try_new(&mut wtr, &batch.schema())?;
@@ -1624,7 +1629,12 @@ pub fn write_ipc_compressed<W: Write + Seek>(
             let zstd_encoder = arrow_writer.into_inner()?;
             zstd_encoder.finish()?
         }
-        _ => unreachable!(),
+        (true, CompressionCodec::Zstd(level)) => {
+            let mut encoder = zstd::Encoder::new(output, *level)?;
+            let mut fast_writer = BatchWriter::new(&mut encoder);
+            fast_writer.write_batch(batch)?;
+            encoder.finish()?
+        }
     };
 
     // fill ipc length
