@@ -248,7 +248,6 @@ impl<W: Write> BatchWriter<W> {
         Ok(())
     }
 
-    #[inline]
     fn write_null_buffer(
         &mut self,
         null_buffer: Option<&NullBuffer>,
@@ -263,7 +262,6 @@ impl<W: Write> BatchWriter<W> {
         Ok(())
     }
 
-    #[inline]
     fn write_buffer(&mut self, buffer: &Buffer) -> std::io::Result<()> {
         // write buffer length
         self.inner.write_all(&buffer.len().to_le_bytes())?;
@@ -430,14 +428,12 @@ impl<'a> BatchReader<'a> {
         Ok(data_type)
     }
 
-    #[inline]
     fn read_offset_buffer(&mut self) -> OffsetBuffer<i32> {
         let offset_buffer = self.read_buffer();
         let offset_buffer: ScalarBuffer<i32> = ScalarBuffer::from(offset_buffer);
         OffsetBuffer::new(offset_buffer)
     }
 
-    #[inline]
     fn read_buffer(&mut self) -> Buffer {
         // read data buffer length
         let mut length = [0; 8];
@@ -452,7 +448,6 @@ impl<'a> BatchReader<'a> {
         buffer
     }
 
-    #[inline]
     fn read_null_buffer(&mut self) -> Option<NullBuffer> {
         let mut length = [0; 8];
         length.copy_from_slice(&self.input[self.offset..self.offset + 8]);
