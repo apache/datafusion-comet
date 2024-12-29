@@ -18,10 +18,8 @@
 use arrow_array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
 use arrow_array::{builder::StringBuilder, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use comet::execution::shuffle::{
-    write_ipc_compressed, BatchWriter, CompressionCodec, ShuffleWriterExec,
-};
-use criterion::{criterion_group, criterion_main, Criterion};
+use comet::execution::shuffle::{BatchWriter, CompressionCodec, ShuffleWriterExec};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use datafusion::physical_plan::metrics::Time;
 use datafusion::{
     physical_plan::{common::collect, memory::MemoryExec, ExecutionPlan},
@@ -45,15 +43,17 @@ fn criterion_benchmark(c: &mut Criterion) {
                 let mut buffer = vec![];
                 let ipc_time = Time::default();
                 let mut encoded_schema = vec![];
-                b.iter(|| {
+                b.iter(|| black_box({
                     if enable_fast_encoding && encoded_schema.is_empty() {
                         let mut w = BatchWriter::new(&mut encoded_schema);
                         w.write_partial_schema(batch.schema().as_ref())?;
                     }
                     buffer.clear();
-                    let mut cursor = Cursor::new(&mut buffer);
-                    write_ipc_compressed(&batch, &mut cursor, enable_fast_encoding, &compression_codec, &encoded_schema, &ipc_time)
-                });
+                    let cursor = Cursor::new(&mut buffer);
+                    let mut w = BatchWriter::new(cursor);
+                    w.write_batch(&batch)?;
+                    let _ = w.inner();
+                }));
             });
         }
     }
@@ -69,10 +69,12 @@ fn criterion_benchmark(c: &mut Criterion) {
                 let ctx = SessionContext::new();
                 let exec = create_shuffle_writer_exec(compression_codec.clone());
                 b.iter(|| {
-                    let task_ctx = ctx.task_ctx();
-                    let stream = exec.execute(0, task_ctx).unwrap();
-                    let rt = Runtime::new().unwrap();
-                    criterion::black_box(rt.block_on(collect(stream)).unwrap());
+                    black_box({
+                        let task_ctx = ctx.task_ctx();
+                        let stream = exec.execute(0, task_ctx).unwrap();
+                        let rt = Runtime::new().unwrap();
+                        criterion::black_box(rt.block_on(collect(stream)).unwrap());
+                    })
                 });
             },
         );

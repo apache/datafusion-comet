@@ -519,7 +519,7 @@ mod test {
                 c4_bool.append_null();
             } else {
                 // test for dictionary-encoded strings
-                b.append_value(format!("this string is repeated a lot"));
+                b.append_value("this string is repeated a lot");
                 c4_bool.append_value(i % 2 == 0)
             }
         }
@@ -529,7 +529,7 @@ mod test {
         let d = d.finish();
         let c4_bool = c4_bool.finish();
         RecordBatch::try_new(
-            schema.clone(),
+            Arc::clone(&schema),
             vec![
                 Arc::new(a),
                 Arc::new(b),
