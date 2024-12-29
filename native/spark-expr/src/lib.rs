@@ -23,12 +23,8 @@ mod cast;
 mod error;
 mod if_expr;
 
-mod avg;
-pub use avg::Avg;
 mod bitwise_not;
 pub use bitwise_not::{bitwise_not, BitwiseNotExpr};
-mod avg_decimal;
-pub use avg_decimal::AvgDecimal;
 mod checkoverflow;
 pub use checkoverflow::CheckOverflow;
 mod correlation;
@@ -65,6 +61,7 @@ mod variance;
 pub use variance::Variance;
 mod comet_scalar_funcs;
 mod string_funcs;
+mod agg_funcs;
 
 pub use cast::{spark_cast, Cast, SparkCastOptions};
 pub use comet_scalar_funcs::create_comet_physical_fun;
@@ -76,6 +73,7 @@ pub use structs::{CreateNamedStruct, GetStructField};
 pub use temporal::{DateTruncExpr, HourExpr, MinuteExpr, SecondExpr, TimestampTruncExpr};
 pub use to_json::ToJson;
 pub use string_funcs::*;
+pub use agg_funcs::*;
 
 /// Spark supports three evaluation modes when evaluating expressions, which affect
 /// the behavior when processing input values that are invalid or would result in an
