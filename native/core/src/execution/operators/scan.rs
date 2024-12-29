@@ -28,6 +28,7 @@ use arrow_data::ffi::FFI_ArrowArray;
 use arrow_data::ArrayData;
 use arrow_schema::ffi::FFI_ArrowSchema;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{
     BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, Time,
 };
@@ -122,7 +123,8 @@ impl ScanExec {
             // The partitioning is not important because we are not using DataFusion's
             // query planner or optimizer
             Partitioning::UnknownPartitioning(1),
-            ExecutionMode::Bounded,
+            EmissionType::Final,
+            Boundedness::Bounded,
         );
 
         Ok(Self {

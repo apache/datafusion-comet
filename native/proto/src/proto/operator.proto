@@ -86,6 +86,7 @@ enum CompressionCodec {
   None = 0;
   Zstd = 1;
   Lz4 = 2;
+  Snappy = 3;
 }
 
 message ShuffleWriter {

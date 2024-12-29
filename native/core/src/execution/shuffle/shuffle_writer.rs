@@ -28,6 +28,7 @@ use arrow::{datatypes::*, ipc::writer::StreamWriter};
 use async_trait::async_trait;
 use bytes::Buf;
 use crc32fast::Hasher;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::{
     arrow::{
         array::*,
@@ -47,7 +48,7 @@ use datafusion::{
             BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, Time,
         },
         stream::RecordBatchStreamAdapter,
-        DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, Partitioning, PlanProperties,
+        DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
         RecordBatchStream, SendableRecordBatchStream, Statistics,
     },
 };
@@ -194,7 +195,8 @@ impl ShuffleWriterExec {
         let cache = PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
             partitioning.clone(),
-            ExecutionMode::Bounded,
+            EmissionType::Final,
+            Boundedness::Bounded,
         );
 
         Ok(ShuffleWriterExec {
@@ -314,7 +316,7 @@ impl PartitionBuffer {
             repart_timer.stop();
 
             if self.num_active_rows >= self.batch_size {
-                let flush = self.flush(&metrics.ipc_time);
+                let flush = self.flush(metrics);
                 if let Err(e) = flush {
                     return AppendRowStatus::MemDiff(Err(e));
                 }
@@ -332,7 +334,7 @@ impl PartitionBuffer {
     }
 
     /// flush active data into frozen bytes
-    fn flush(&mut self, ipc_time: &Time) -> Result<isize> {
+    fn flush(&mut self, metrics: &ShuffleRepartitionerMetrics) -> Result<isize> {
         if self.num_active_rows == 0 {
             return Ok(0);
         }
@@ -342,9 +344,14 @@ impl PartitionBuffer {
         let active = std::mem::take(&mut self.active);
         let num_rows = self.num_active_rows;
         self.num_active_rows = 0;
-        self.reservation.try_shrink(self.active_slots_mem_size)?;
 
+        let mut mempool_timer = metrics.mempool_time.timer();
+        self.reservation.try_shrink(self.active_slots_mem_size)?;
+        mempool_timer.stop();
+
+        let mut repart_timer = metrics.repart_time.timer();
         let frozen_batch = make_batch(Arc::clone(&self.schema), active, num_rows)?;
+        repart_timer.stop();
 
         let frozen_capacity_old = self.frozen.capacity();
         let mut cursor = Cursor::new(&mut self.frozen);
@@ -655,7 +662,7 @@ struct ShuffleRepartitionerMetrics {
     mempool_time: Time,
 
     /// Time encoding batches to IPC format
-    ipc_time: Time,
+    encode_time: Time,
 
     /// Time spent writing to disk. Maps to "shuffleWriteTime" in Spark SQL Metrics.
     write_time: Time,
@@ -679,7 +686,7 @@ impl ShuffleRepartitionerMetrics {
             baseline: BaselineMetrics::new(metrics, partition),
             repart_time: MetricBuilder::new(metrics).subset_time("repart_time", partition),
             mempool_time: MetricBuilder::new(metrics).subset_time("mempool_time", partition),
-            ipc_time: MetricBuilder::new(metrics).subset_time("ipc_time", partition),
+            encode_time: MetricBuilder::new(metrics).subset_time("encode_time", partition),
             write_time: MetricBuilder::new(metrics).subset_time("write_time", partition),
             input_batches: MetricBuilder::new(metrics).counter("input_batches", partition),
             spill_count: MetricBuilder::new(metrics).spill_count(partition),
@@ -928,7 +935,7 @@ impl ShuffleRepartitioner {
         let mut output_batches: Vec<Vec<u8>> = vec![vec![]; num_output_partitions];
         let mut offsets = vec![0; num_output_partitions + 1];
         for i in 0..num_output_partitions {
-            buffered_partitions[i].flush(&self.metrics.ipc_time)?;
+            buffered_partitions[i].flush(&self.metrics)?;
             output_batches[i] = std::mem::take(&mut buffered_partitions[i].frozen);
         }
 
@@ -1028,19 +1035,18 @@ impl ShuffleRepartitioner {
         }
 
         let mut timer = self.metrics.write_time.timer();
-
         let spillfile = self
             .runtime
             .disk_manager
             .create_tmp_file("shuffle writer spill")?;
+        timer.stop();
+
         let offsets = spill_into(
             &mut self.buffered_partitions,
             spillfile.path(),
             self.num_output_partitions,
-            &self.metrics.ipc_time,
+            &self.metrics,
         )?;
-
-        timer.stop();
 
         let mut spills = self.spills.lock().await;
         let used = self.reservation.size();
@@ -1112,15 +1118,17 @@ fn spill_into(
     buffered_partitions: &mut [PartitionBuffer],
     path: &Path,
     num_output_partitions: usize,
-    ipc_time: &Time,
+    metrics: &ShuffleRepartitionerMetrics,
 ) -> Result<Vec<u64>> {
     let mut output_batches: Vec<Vec<u8>> = vec![vec![]; num_output_partitions];
 
     for i in 0..num_output_partitions {
-        buffered_partitions[i].flush(ipc_time)?;
+        buffered_partitions[i].flush(metrics)?;
         output_batches[i] = std::mem::take(&mut buffered_partitions[i].frozen);
     }
     let path = path.to_owned();
+
+    let mut write_timer = metrics.write_time.timer();
 
     let mut offsets = vec![0; num_output_partitions + 1];
     let mut spill_data = OpenOptions::new()
@@ -1135,6 +1143,8 @@ fn spill_into(
         spill_data.write_all(&output_batches[i])?;
         output_batches[i].clear();
     }
+    write_timer.stop();
+
     // add one extra offset at last to ease partition length computation
     offsets[num_output_partitions] = spill_data.stream_position()?;
     Ok(offsets)
@@ -1556,6 +1566,7 @@ pub enum CompressionCodec {
     None,
     Lz4Frame,
     Zstd(i32),
+    Snappy,
 }
 
 pub struct ShuffleBlockWriter {
@@ -1699,6 +1710,11 @@ pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
         }
     };
     match &bytes[0..4] {
+        b"SNAP" => {
+            let decoder = snap::read::FrameDecoder::new(&bytes[4..]);
+            let mut reader = StreamReader::try_new(decoder, None)?;
+            reader.next().unwrap().map_err(|e| e.into())
+        }
         b"LZ4_" => {
             let mut decoder = lz4_flex::frame::FrameDecoder::new(&bytes[8..]);
             if fast_encoding {
