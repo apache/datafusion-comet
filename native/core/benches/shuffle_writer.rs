@@ -18,7 +18,9 @@
 use arrow_array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
 use arrow_array::{builder::StringBuilder, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use comet::execution::shuffle::{BatchWriter, CompressionCodec, ShuffleWriterExec};
+use comet::execution::shuffle::{
+    CompressionCodec, ShuffleBlockWriter, ShuffleWriterExec,
+};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use datafusion::physical_plan::metrics::Time;
 use datafusion::{
@@ -31,29 +33,31 @@ use std::sync::Arc;
 use tokio::runtime::Runtime;
 
 fn criterion_benchmark(c: &mut Criterion) {
+    let batch = create_batch(8192, true);
     let mut group = c.benchmark_group("shuffle_writer");
-    for compression_codec in [
+    for compression_codec in &[
         CompressionCodec::None,
         CompressionCodec::Lz4Frame,
         CompressionCodec::Zstd(1),
     ] {
         for enable_fast_encoding in [true, false] {
-            group.bench_function(format!("shuffle_writer: write encoded (enable_fast_encoding={enable_fast_encoding}, compression={compression_codec:?})"), |b| {
-                let batch = create_batch(8192, true);
+            let name = format!("shuffle_writer: write encoded (enable_fast_encoding={enable_fast_encoding}, compression={compression_codec:?})");
+            group.bench_function(name, |b| {
                 let mut buffer = vec![];
                 let ipc_time = Time::default();
-                let mut encoded_schema = vec![];
-                b.iter(|| black_box({
-                    if enable_fast_encoding && encoded_schema.is_empty() {
-                        let mut w = BatchWriter::new(&mut encoded_schema);
-                        w.write_partial_schema(batch.schema().as_ref())?;
-                    }
-                    buffer.clear();
-                    let cursor = Cursor::new(&mut buffer);
-                    let mut w = BatchWriter::new(cursor);
-                    w.write_batch(&batch)?;
-                    let _ = w.inner();
-                }));
+                let w = ShuffleBlockWriter::try_new(
+                    &batch.schema(),
+                    enable_fast_encoding,
+                    compression_codec.clone(),
+                )
+                .unwrap();
+                b.iter(|| {
+                    black_box({
+                        buffer.clear();
+                        let mut cursor = Cursor::new(&mut buffer);
+                        w.write_batch(&batch, &mut cursor, &ipc_time).unwrap();
+                    })
+                });
             });
         }
     }
@@ -73,7 +77,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                         let task_ctx = ctx.task_ctx();
                         let stream = exec.execute(0, task_ctx).unwrap();
                         let rt = Runtime::new().unwrap();
-                        criterion::black_box(rt.block_on(collect(stream)).unwrap());
+                        rt.block_on(collect(stream)).unwrap();
                     })
                 });
             },

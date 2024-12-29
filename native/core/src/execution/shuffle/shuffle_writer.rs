@@ -1583,6 +1583,7 @@ impl ShuffleBlockWriter {
     ) -> Result<Self> {
         let mut encoded_schema = vec![];
         if enable_fast_encoding {
+            // encode the schema once and then reuse the encoded bytes for each batch
             let mut w = BatchWriter::new(&mut encoded_schema);
             w.write_partial_schema(schema)?;
         }
