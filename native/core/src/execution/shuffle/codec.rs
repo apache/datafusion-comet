@@ -29,7 +29,8 @@ use std::sync::Arc;
 
 pub fn fast_codec_supports_type(data_type: &DataType) -> bool {
     match data_type {
-        DataType::Int32
+        DataType::Boolean
+        | DataType::Int32
         | DataType::Int64
         | DataType::Float64
         | DataType::Date32
@@ -139,6 +140,10 @@ impl<W: Write> BatchWriter<W> {
             DataType::Boolean => {
                 let arr = col.as_any().downcast_ref::<BooleanArray>().unwrap();
 
+                // boolean array is the only type we write the array length because it cannot
+                // be determined from the data buffer size
+                self.write_all(&arr.len().to_le_bytes())?;
+
                 // write data buffer
                 let buffer = arr.values();
                 let buffer = buffer.inner();
@@ -243,6 +248,7 @@ impl<W: Write> BatchWriter<W> {
         Ok(())
     }
 
+    #[inline]
     fn write_null_buffer(
         &mut self,
         null_buffer: Option<&NullBuffer>,
@@ -257,15 +263,16 @@ impl<W: Write> BatchWriter<W> {
         Ok(())
     }
 
-    pub fn inner(self) -> W {
-        self.inner
-    }
-
+    #[inline]
     fn write_buffer(&mut self, buffer: &Buffer) -> std::io::Result<()> {
         // write buffer length
         self.inner.write_all(&buffer.len().to_le_bytes())?;
         // write buffer data
         self.inner.write_all(buffer.as_slice())
+    }
+
+    pub fn inner(self) -> W {
+        self.inner
     }
 }
 
@@ -315,10 +322,13 @@ impl<'a> BatchReader<'a> {
         let data_type = self.read_data_type()?;
         Ok(match data_type {
             DataType::Boolean => {
+                // read array length (number of bits)
+                let mut length = [0; 8];
+                length.copy_from_slice(&self.input[self.offset..self.offset + 8]);
+                self.offset += 8;
+                let array_len = usize::from_le_bytes(length);
                 let buffer = self.read_buffer();
-                // TODO check length calculation
-                let length = buffer.len();
-                let data_buffer = BooleanBuffer::new(buffer, 0, length * 8);
+                let data_buffer = BooleanBuffer::new(buffer, 0, array_len);
                 let null_buffer = self.read_null_buffer();
                 Arc::new(BooleanArray::new(data_buffer, null_buffer))
             }
@@ -420,12 +430,14 @@ impl<'a> BatchReader<'a> {
         Ok(data_type)
     }
 
+    #[inline]
     fn read_offset_buffer(&mut self) -> OffsetBuffer<i32> {
         let offset_buffer = self.read_buffer();
         let offset_buffer: ScalarBuffer<i32> = ScalarBuffer::from(offset_buffer);
         OffsetBuffer::new(offset_buffer)
     }
 
+    #[inline]
     fn read_buffer(&mut self) -> Buffer {
         // read data buffer length
         let mut length = [0; 8];
@@ -440,6 +452,7 @@ impl<'a> BatchReader<'a> {
         buffer
     }
 
+    #[inline]
     fn read_null_buffer(&mut self) -> Option<NullBuffer> {
         let mut length = [0; 8];
         length.copy_from_slice(&self.input[self.offset..self.offset + 8]);
