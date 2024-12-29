@@ -50,6 +50,7 @@ mod predicate_funcs;
 mod conditional_funcs;
 mod array_funcs;
 mod struct_funcs;
+mod datetime_funcs;
 
 pub use comet_scalar_funcs::create_comet_physical_fun;
 pub use error::{SparkError, SparkResult};
@@ -64,6 +65,7 @@ pub use predicate_funcs::*;
 pub use conditional_funcs::*;
 pub use array_funcs::*;
 pub use struct_funcs::*;
+pub use datetime_funcs::*;
 
 /// Spark supports three evaluation modes when evaluating expressions, which affect
 /// the behavior when processing input values that are invalid or would result in an
