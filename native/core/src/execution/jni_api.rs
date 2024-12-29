@@ -71,8 +71,6 @@ struct ExecutionContext {
     pub root_op: Option<Arc<SparkPlan>>,
     /// The input sources for the DataFusion plan
     pub scans: Vec<ScanExec>,
-    /// The global reference of input sources for the DataFusion plan
-    pub input_sources: Vec<Arc<GlobalRef>>,
     /// The record batch stream to pull results from
     pub stream: Option<SendableRecordBatchStream>,
     /// The Tokio runtime used for async.
@@ -99,7 +97,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     e: JNIEnv,
     _class: JClass,
     id: jlong,
-    iterators: jobjectArray,
     serialized_query: jbyteArray,
     metrics_node: JObject,
     comet_task_memory_manager_obj: JObject,
@@ -133,15 +130,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
         let metrics = Arc::new(jni_new_global_ref!(env, metrics_node)?);
 
-        // Get the global references of input sources
-        let mut input_sources = vec![];
-        let iter_array = JObjectArray::from_raw(iterators);
-        let num_inputs = env.get_array_length(&iter_array)?;
-        for i in 0..num_inputs {
-            let input_source = env.get_object_array_element(&iter_array, i)?;
-            let input_source = Arc::new(jni_new_global_ref!(env, input_source)?);
-            input_sources.push(input_source);
-        }
         let task_memory_manager =
             Arc::new(jni_new_global_ref!(env, comet_task_memory_manager_obj)?);
 
@@ -163,7 +151,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             spark_plan,
             root_op: None,
             scans: vec![],
-            input_sources,
             stream: None,
             runtime,
             metrics,
@@ -302,6 +289,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     stage_id: jint,
     partition: jint,
     exec_context: jlong,
+    iterators: jobjectArray,
     array_addrs: jlongArray,
     schema_addrs: jlongArray,
 ) -> jlong {
@@ -318,10 +306,19 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             let start = Instant::now();
             let planner = PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx))
                 .with_exec_id(exec_context_id);
-            let (scans, root_op) = planner.create_plan(
-                &exec_context.spark_plan,
-                &mut exec_context.input_sources.clone(),
-            )?;
+
+            // Get the global references of input sources
+            let mut input_sources = vec![];
+            let iter_array = JObjectArray::from_raw(iterators);
+            let num_inputs = env.get_array_length(&iter_array)?;
+            for i in 0..num_inputs {
+                let input_source = env.get_object_array_element(&iter_array, i)?;
+                let input_source = Arc::new(jni_new_global_ref!(env, input_source)?);
+                input_sources.push(input_source);
+            }
+
+            let (scans, root_op) =
+                planner.create_plan(&exec_context.spark_plan, &mut input_sources)?;
             let physical_plan_time = start.elapsed();
 
             exec_context.plan_creation_time += physical_plan_time;

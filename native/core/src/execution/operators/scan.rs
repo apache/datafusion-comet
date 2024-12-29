@@ -57,8 +57,7 @@ use std::{
 /// Native.executePlan, it passes in the memory addresses of the input batches.
 #[derive(Debug, Clone)]
 pub struct ScanExec {
-    /// The ID of the execution context that owns this subquery. We use this ID to retrieve the JVM
-    /// environment `JNIEnv` from the execution context.
+    /// The ID of the execution context that owns this scan.
     pub exec_context_id: i64,
     /// The input source of scan node. It is a global reference of JVM `CometBatchIterator` object.
     pub input_source: Option<Arc<GlobalRef>>,

@@ -129,14 +129,11 @@ object CometExec {
     nativePlan.writeTo(outputStream)
     outputStream.close()
     val bytes = outputStream.toByteArray
-    new CometExecIterator(
-      newIterId,
-      inputs,
-      numOutputCols,
-      bytes,
-      nativeMetrics,
-      numParts,
-      partitionIdx)
+
+    val planId = CometExec.newIterId
+    val nativePlanId = CometExecIterator.createPlan(planId, bytes, nativeMetrics)
+
+    new CometExecIterator(newIterId, nativePlanId, inputs, numOutputCols, numParts, partitionIdx)
   }
 
   /**
@@ -206,12 +203,14 @@ abstract class CometNativeExec extends CometExec {
             inputs: Seq[Iterator[ColumnarBatch]],
             numParts: Int,
             partitionIndex: Int): CometExecIterator = {
+          val planId = CometExec.newIterId
+          val nativePlan = CometExecIterator.createPlan(planId, serializedPlanCopy, nativeMetrics)
+
           val it = new CometExecIterator(
-            CometExec.newIterId,
+            planId,
+            nativePlan,
             inputs,
             output.length,
-            serializedPlanCopy,
-            nativeMetrics,
             numParts,
             partitionIndex)
 
@@ -221,6 +220,7 @@ abstract class CometNativeExec extends CometExec {
             context.addTaskCompletionListener[Unit] { _ =>
               it.close()
               cleanSubqueries(it.id, this)
+              CometExecIterator.releasePlan(serializedPlanCopy)
             }
           }
 

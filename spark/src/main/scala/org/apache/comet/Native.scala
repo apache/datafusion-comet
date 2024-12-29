@@ -30,9 +30,6 @@ class Native extends NativeBase {
    *   The id of the query plan.
    * @param configMap
    *   The Java Map object for the configs of native engine.
-   * @param iterators
-   *   the input iterators to the native query plan. It should be the same number as the number of
-   *   scan nodes in the SparkPlan.
    * @param plan
    *   the bytes of serialized SparkPlan.
    * @param metrics
@@ -46,7 +43,6 @@ class Native extends NativeBase {
   // scalastyle:off
   @native def createPlan(
       id: Long,
-      iterators: Array[CometBatchIterator],
       plan: Array[Byte],
       metrics: CometMetricNode,
       taskMemoryManager: CometTaskMemoryManager,
@@ -69,6 +65,9 @@ class Native extends NativeBase {
    *   the partition ID, for informational purposes
    * @param plan
    *   the address to native query plan.
+   * @param iterators
+   *   the input iterators to the native query plan. It should be the same number as the number of
+   *   scan nodes in the SparkPlan.
    * @param arrayAddrs
    *   the addresses of Arrow Array structures
    * @param schemaAddrs
@@ -80,6 +79,7 @@ class Native extends NativeBase {
       stage: Int,
       partition: Int,
       plan: Long,
+      iterators: Array[CometBatchIterator],
       arrayAddrs: Array[Long],
       schemaAddrs: Array[Long]): Long
 
