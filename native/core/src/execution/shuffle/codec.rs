@@ -29,8 +29,7 @@ use std::sync::Arc;
 
 pub fn fast_codec_supports_type(data_type: &DataType) -> bool {
     match data_type {
-        DataType::Boolean
-        | DataType::Int32
+        DataType::Int32
         | DataType::Int64
         | DataType::Float64
         | DataType::Date32
