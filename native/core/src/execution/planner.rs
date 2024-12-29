@@ -728,7 +728,7 @@ impl PhysicalPlanner {
                 println!("value {:?}", value);
                 println!("count {:?}", count);
                 let return_type = value.data_type(&input_schema)?;
-                let args = vec![Arc::clone(&value), count.clone()];
+                let args = vec![Arc::clone(&value), Arc::clone(&count)];
 
                 let datafusion_array_repeat = array_repeat_udf();
                 let array_repeat_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
