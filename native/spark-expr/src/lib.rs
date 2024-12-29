@@ -30,11 +30,9 @@ pub use schema_adapter::SparkSchemaAdapterFactory;
 
 pub mod spark_hash;
 mod normalize_nan;
-mod temporal;
 
 pub mod test_common;
 pub mod timezone;
-mod to_json;
 mod unbound;
 pub use unbound::UnboundColumn;
 pub mod utils;
@@ -51,11 +49,11 @@ mod conditional_funcs;
 mod array_funcs;
 mod struct_funcs;
 mod datetime_funcs;
+mod json_funcs;
 
 pub use comet_scalar_funcs::create_comet_physical_fun;
 pub use error::{SparkError, SparkResult};
-pub use temporal::{DateTruncExpr, HourExpr, MinuteExpr, SecondExpr, TimestampTruncExpr};
-pub use to_json::ToJson;
+pub use json_funcs::*;
 pub use string_funcs::*;
 pub use agg_funcs::*;
 pub use conversion_funcs::*;
