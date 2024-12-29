@@ -17,7 +17,7 @@
 
 //! Custom schema adapter that uses Spark-compatible casts
 
-use crate::cast::cast_supported;
+use crate::conversion_funcs::cast::cast_supported;
 use crate::{spark_cast, SparkCastOptions};
 use arrow_array::{new_null_array, Array, RecordBatch, RecordBatchOptions};
 use arrow_schema::{Schema, SchemaRef};

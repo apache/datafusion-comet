@@ -19,7 +19,6 @@
 // The lint makes easier for code reader/reviewer separate references clones from more heavyweight ones
 #![deny(clippy::clone_on_ref_ptr)]
 
-mod cast;
 mod error;
 mod if_expr;
 
@@ -62,8 +61,8 @@ pub use variance::Variance;
 mod comet_scalar_funcs;
 mod string_funcs;
 mod agg_funcs;
+mod conversion_funcs;
 
-pub use cast::{spark_cast, Cast, SparkCastOptions};
 pub use comet_scalar_funcs::create_comet_physical_fun;
 pub use error::{SparkError, SparkResult};
 pub use if_expr::IfExpr;
@@ -74,6 +73,7 @@ pub use temporal::{DateTruncExpr, HourExpr, MinuteExpr, SecondExpr, TimestampTru
 pub use to_json::ToJson;
 pub use string_funcs::*;
 pub use agg_funcs::*;
+pub use conversion_funcs::*;
 
 /// Spark supports three evaluation modes when evaluating expressions, which affect
 /// the behavior when processing input values that are invalid or would result in an

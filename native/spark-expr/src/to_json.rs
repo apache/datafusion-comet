@@ -19,7 +19,7 @@
 // of the Spark-specific compatibility features that we need (including
 // being able to specify Spark-compatible cast from all types to string)
 
-use crate::cast::SparkCastOptions;
+use crate::SparkCastOptions;
 use crate::{spark_cast, EvalMode};
 use arrow_array::builder::StringBuilder;
 use arrow_array::{Array, ArrayRef, RecordBatch, StringArray, StructArray};
