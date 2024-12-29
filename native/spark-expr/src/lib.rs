@@ -35,8 +35,6 @@ mod correlation;
 pub use correlation::Correlation;
 mod covariance;
 pub use covariance::Covariance;
-mod strings;
-pub use strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExpr, SubstringExpr};
 mod kernels;
 mod list;
 mod regexp;
@@ -66,6 +64,8 @@ pub use normalize_nan::NormalizeNaNAndZero;
 mod variance;
 pub use variance::Variance;
 mod comet_scalar_funcs;
+mod string_funcs;
+
 pub use cast::{spark_cast, Cast, SparkCastOptions};
 pub use comet_scalar_funcs::create_comet_physical_fun;
 pub use error::{SparkError, SparkResult};
@@ -75,6 +75,7 @@ pub use regexp::RLike;
 pub use structs::{CreateNamedStruct, GetStructField};
 pub use temporal::{DateTruncExpr, HourExpr, MinuteExpr, SecondExpr, TimestampTruncExpr};
 pub use to_json::ToJson;
+pub use string_funcs::*;
 
 /// Spark supports three evaluation modes when evaluating expressions, which affect
 /// the behavior when processing input values that are invalid or would result in an
