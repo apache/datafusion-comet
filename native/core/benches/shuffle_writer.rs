@@ -19,7 +19,7 @@ use arrow_array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
 use arrow_array::{builder::StringBuilder, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use comet::execution::shuffle::{CompressionCodec, ShuffleBlockWriter, ShuffleWriterExec};
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::physical_plan::metrics::Time;
 use datafusion::{
     physical_plan::{common::collect, memory::MemoryExec, ExecutionPlan},
@@ -50,11 +50,9 @@ fn criterion_benchmark(c: &mut Criterion) {
                 )
                 .unwrap();
                 b.iter(|| {
-                    black_box({
-                        buffer.clear();
-                        let mut cursor = Cursor::new(&mut buffer);
-                        w.write_batch(&batch, &mut cursor, &ipc_time).unwrap();
-                    })
+                    buffer.clear();
+                    let mut cursor = Cursor::new(&mut buffer);
+                    w.write_batch(&batch, &mut cursor, &ipc_time).unwrap();
                 });
             });
         }
@@ -71,12 +69,10 @@ fn criterion_benchmark(c: &mut Criterion) {
                 let ctx = SessionContext::new();
                 let exec = create_shuffle_writer_exec(compression_codec.clone());
                 b.iter(|| {
-                    black_box({
-                        let task_ctx = ctx.task_ctx();
-                        let stream = exec.execute(0, task_ctx).unwrap();
-                        let rt = Runtime::new().unwrap();
-                        rt.block_on(collect(stream)).unwrap();
-                    })
+                    let task_ctx = ctx.task_ctx();
+                    let stream = exec.execute(0, task_ctx).unwrap();
+                    let rt = Runtime::new().unwrap();
+                    rt.block_on(collect(stream)).unwrap();
                 });
             },
         );
