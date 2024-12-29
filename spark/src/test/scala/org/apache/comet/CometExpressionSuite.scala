@@ -2517,4 +2517,26 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       checkSparkAnswer(df.select("arrUnsupportedArgs"))
     }
   }
+  test("array_repeat") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+
+//        checkSparkAnswerAndOperator(sql("SELECT array_repeat(_2, 3) from t1"))
+//        checkSparkAnswerAndOperator(sql("SELECT array_repeat(5, _2) from t1"))
+//        checkSparkAnswerAndOperator(sql("SELECT array_repeat(_2, null) from t1"))
+//        checkSparkAnswerAndOperator(sql("SELECT array_repeat(2, null) from t1"))
+//        checkSparkAnswerAndOperator(sql("SELECT array_repeat(null, 3) from t1"))
+//        checkSparkAnswerAndOperator(sql("SELECT array_repeat(null, _3) from t1"))
+//        checkSparkAnswerAndOperator(sql("SELECT array_repeat(_2, 0) from t1"))
+//        checkSparkAnswerAndOperator(sql("SELECT array_repeat(_2, -1) from t1"))
+        checkSparkAnswerAndOperator(sql("SELECT array_repeat(8, 5) from t1"))
+        checkSparkAnswerAndOperator(sql("SELECT array_repeat(_8, 2) from t1"))
+        checkSparkAnswerAndOperator(sql("SELECT array_repeat(true, 3) from t1"))
+        checkSparkAnswerAndOperator(sql("SELECT array_repeat(1.5, 2) from t1"))
+      }
+    }
+  }
 }

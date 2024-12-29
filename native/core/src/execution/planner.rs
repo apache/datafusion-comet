@@ -98,6 +98,7 @@ use datafusion_expr::{
     AggregateUDF, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
     WindowFunctionDefinition,
 };
+use datafusion_functions_nested::repeat::array_repeat_udf;
 use datafusion_physical_expr::expressions::{Literal, StatsType};
 use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr::LexOrdering;
@@ -718,6 +719,35 @@ impl PhysicalPlanner {
                     item_expr,
                     expr.legacy_negative_index,
                 )))
+            }
+            ExprStruct::ArrayRepeat(expr) => {
+                let value =
+                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let count =
+                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                println!("value {:?}", value);
+                println!("count {:?}", count);
+                let return_type = value.data_type(&input_schema)?;
+                let args = vec![Arc::clone(&value), count.clone()];
+
+                let datafusion_array_repeat = array_repeat_udf();
+                let array_repeat_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
+                    "array_repat",
+                    datafusion_array_repeat,
+                    args,
+                    return_type,
+                ));
+
+                let is_null_expr: Arc<dyn PhysicalExpr> = Arc::new(IsNullExpr::new(count));
+                let null_literal_expr: Arc<dyn PhysicalExpr> =
+                    Arc::new(Literal::new(ScalarValue::Null));
+
+                let case_expr = CaseExpr::try_new(
+                    None,
+                    vec![(is_null_expr, null_literal_expr)],
+                    Some(array_repeat_expr),
+                )?;
+                Ok(Arc::new(case_expr))
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
