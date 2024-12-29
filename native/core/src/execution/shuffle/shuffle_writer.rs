@@ -357,7 +357,7 @@ impl PartitionBuffer {
         let mut cursor = Cursor::new(&mut self.frozen);
         cursor.seek(SeekFrom::End(0))?;
         self.shuffle_block_writer
-            .write_batch(&frozen_batch, &mut cursor, ipc_time)?;
+            .write_batch(&frozen_batch, &mut cursor, &metrics.encode_time)?;
 
         mem_diff += (self.frozen.capacity() - frozen_capacity_old) as isize;
         Ok(mem_diff)
@@ -1617,6 +1617,7 @@ impl ShuffleBlockWriter {
 
         // write compression codec used
         match &self.codec {
+            CompressionCodec::Snappy => output.write_all(b"SNAP")?,
             CompressionCodec::Lz4Frame => output.write_all(b"LZ4_")?,
             CompressionCodec::Zstd(_) => output.write_all(b"ZSTD")?,
             CompressionCodec::None => output.write_all(b"NONE")?,
@@ -1682,6 +1683,7 @@ impl ShuffleBlockWriter {
                 fast_writer.write_batch(batch)?;
                 encoder.finish()?
             }
+            _ => unreachable!(),
         };
 
         // fill ipc length
