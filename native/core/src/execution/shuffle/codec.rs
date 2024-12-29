@@ -365,7 +365,7 @@ impl<'a> BatchReader<'a> {
                 let buffer = self.read_buffer();
                 let offset_buffer = self.read_offset_buffer();
                 let null_buffer = self.read_null_buffer();
-                Arc::new(StringArray::try_new(offset_buffer, buffer, null_buffer)?)
+                Arc::new(BinaryArray::try_new(offset_buffer, buffer, null_buffer)?)
             }
             DataType::Dictionary(_, _) => {
                 let k = self.read_array()?;
