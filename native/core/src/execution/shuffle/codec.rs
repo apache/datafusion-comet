@@ -109,8 +109,8 @@ impl<W: Write> BatchWriter<W> {
             }
             DataType::Dictionary(k, v) => {
                 self.inner.write_all(&[DataTypeId::Dictionary as u8])?;
-                self.write_data_type(&k)?;
-                self.write_data_type(&v)?;
+                self.write_data_type(k)?;
+                self.write_data_type(v)?;
             }
             other => {
                 return Err(DataFusionError::Internal(format!(
@@ -301,9 +301,9 @@ impl<'a> BatchReader<'a> {
 
         let mut fields: Vec<Arc<Field>> = Vec::with_capacity(schema_len);
         let mut arrays = Vec::with_capacity(schema_len);
-        for i in 0..schema_len {
+        for name in &field_names {
             let array = self.read_array()?;
-            let field = Arc::new(Field::new(&field_names[i], array.data_type().clone(), true));
+            let field = Arc::new(Field::new(name, array.data_type().clone(), true));
             arrays.push(array);
             fields.push(field);
         }
@@ -424,8 +424,7 @@ impl<'a> BatchReader<'a> {
     fn read_offset_buffer(&mut self) -> OffsetBuffer<i32> {
         let offset_buffer = self.read_buffer();
         let offset_buffer: ScalarBuffer<i32> = ScalarBuffer::from(offset_buffer);
-        let offset_buffer = OffsetBuffer::new(offset_buffer);
-        offset_buffer
+        OffsetBuffer::new(offset_buffer)
     }
 
     fn read_buffer(&mut self) -> Buffer {
