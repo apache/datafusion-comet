@@ -22,12 +22,8 @@
 mod error;
 mod if_expr;
 
-mod bitwise_not;
-pub use bitwise_not::{bitwise_not, BitwiseNotExpr};
 mod checkoverflow;
 pub use checkoverflow::CheckOverflow;
-mod correlation;
-pub use correlation::Correlation;
 mod covariance;
 pub use covariance::Covariance;
 mod kernels;
@@ -62,6 +58,7 @@ mod comet_scalar_funcs;
 mod string_funcs;
 mod agg_funcs;
 mod conversion_funcs;
+mod bitwise_funcs;
 
 pub use comet_scalar_funcs::create_comet_physical_fun;
 pub use error::{SparkError, SparkResult};
@@ -74,6 +71,7 @@ pub use to_json::ToJson;
 pub use string_funcs::*;
 pub use agg_funcs::*;
 pub use conversion_funcs::*;
+pub use bitwise_funcs::*;
 
 /// Spark supports three evaluation modes when evaluating expressions, which affect
 /// the behavior when processing input values that are invalid or would result in an
