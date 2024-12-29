@@ -35,10 +35,10 @@ import org.apache.comet.vector.NativeUtil
  * `hasNext` can be used to check if it is the end of this iterator (i.e. the native query is
  * done).
  *
+ * @param id
+ *   The unique id of the query plan behind this native execution.
  * @param inputs
  *   The input iterators producing sequence of batches of Arrow Arrays.
- * @param protobufQueryPlan
- *   The serialized bytes of Spark execution plan.
  * @param numParts
  *   The number of partitions.
  * @param partitionIndex
@@ -46,39 +46,17 @@ import org.apache.comet.vector.NativeUtil
  */
 class CometExecIterator(
     val id: Long,
+    nativePlan: Long,
     inputs: Seq[Iterator[ColumnarBatch]],
     numOutputCols: Int,
-    protobufQueryPlan: Array[Byte],
-    nativeMetrics: CometMetricNode,
     numParts: Int,
     partitionIndex: Int)
     extends Iterator[ColumnarBatch] {
+  import CometExecIterator._
 
-  private val nativeLib = new Native()
-  private val nativeUtil = new NativeUtil()
   private val cometBatchIterators = inputs.map { iterator =>
     new CometBatchIterator(iterator, nativeUtil)
   }.toArray
-  private val plan = {
-    val conf = SparkEnv.get.conf
-    // Only enable unified memory manager when off-heap mode is enabled. Otherwise,
-    // we'll use the built-in memory pool from DF, and initializes with `memory_limit`
-    // and `memory_fraction` below.
-    nativeLib.createPlan(
-      id,
-      cometBatchIterators,
-      protobufQueryPlan,
-      nativeMetrics,
-      new CometTaskMemoryManager(id),
-      batchSize = COMET_BATCH_SIZE.get(),
-      use_unified_memory_manager = conf.getBoolean("spark.memory.offHeap.enabled", false),
-      memory_limit = CometSparkSessionExtensions.getCometMemoryOverhead(conf),
-      memory_fraction = COMET_EXEC_MEMORY_FRACTION.get(),
-      debug = COMET_DEBUG_ENABLED.get(),
-      explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
-      workerThreads = COMET_WORKER_THREADS.get(),
-      blockingThreads = COMET_BLOCKING_THREADS.get())
-  }
 
   private var nextBatch: Option[ColumnarBatch] = None
   private var currentBatch: ColumnarBatch = null
@@ -91,7 +69,13 @@ class CometExecIterator(
       numOutputCols,
       (arrayAddrs, schemaAddrs) => {
         val ctx = TaskContext.get()
-        nativeLib.executePlan(ctx.stageId(), partitionIndex, plan, arrayAddrs, schemaAddrs)
+        nativeLib.executePlan(
+          ctx.stageId(),
+          partitionIndex,
+          nativePlan,
+          cometBatchIterators,
+          arrayAddrs,
+          schemaAddrs)
       })
   }
 
@@ -134,8 +118,6 @@ class CometExecIterator(
         currentBatch.close()
         currentBatch = null
       }
-      nativeUtil.close()
-      nativeLib.releasePlan(plan)
 
       // The allocator thoughts the exported ArrowArray and ArrowSchema structs are not released,
       // so it will report:
@@ -157,6 +139,46 @@ class CometExecIterator(
 
       // allocator.close()
       closed = true
+    }
+  }
+}
+
+object CometExecIterator {
+  val nativeLib = new Native()
+  val nativeUtil = new NativeUtil()
+
+  val planMap = new java.util.concurrent.ConcurrentHashMap[Array[Byte], Long]()
+
+  def createPlan(id: Long, protobufQueryPlan: Array[Byte], nativeMetrics: CometMetricNode): Long =
+    synchronized {
+      if (planMap.containsKey(protobufQueryPlan)) {
+        planMap.get(protobufQueryPlan)
+      } else {
+        val conf = SparkEnv.get.conf
+
+        val plan = nativeLib.createPlan(
+          id,
+          protobufQueryPlan,
+          nativeMetrics,
+          new CometTaskMemoryManager(id),
+          batchSize = COMET_BATCH_SIZE.get(),
+          use_unified_memory_manager = conf.getBoolean("spark.memory.offHeap.enabled", false),
+          memory_limit = CometSparkSessionExtensions.getCometMemoryOverhead(conf),
+          memory_fraction = COMET_EXEC_MEMORY_FRACTION.get(),
+          debug = COMET_DEBUG_ENABLED.get(),
+          explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
+          workerThreads = COMET_WORKER_THREADS.get(),
+          blockingThreads = COMET_BLOCKING_THREADS.get())
+        planMap.put(protobufQueryPlan, plan)
+        plan
+      }
+    }
+
+  def releasePlan(protobufQueryPlan: Array[Byte]): Unit = synchronized {
+    if (planMap.containsKey(protobufQueryPlan)) {
+      val plan = planMap.get(protobufQueryPlan)
+      nativeLib.releasePlan(plan)
+      planMap.remove(protobufQueryPlan)
     }
   }
 }
