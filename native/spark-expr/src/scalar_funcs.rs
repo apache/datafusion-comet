@@ -47,9 +47,6 @@ pub use unhex::spark_unhex;
 mod hex;
 pub use hex::spark_hex;
 
-mod chr;
-pub use chr::SparkChrFunc;
-
 pub mod hash_expressions;
 // exposed for benchmark only
 pub use hash_expressions::{spark_murmur3_hash, spark_xxhash64};
