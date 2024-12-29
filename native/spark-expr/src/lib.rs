@@ -20,27 +20,16 @@
 #![deny(clippy::clone_on_ref_ptr)]
 
 mod error;
-mod if_expr;
 
 mod checkoverflow;
 pub use checkoverflow::CheckOverflow;
-mod covariance;
-pub use covariance::Covariance;
 mod kernels;
-mod list;
-mod regexp;
 pub mod scalar_funcs;
 mod schema_adapter;
 pub use schema_adapter::SparkSchemaAdapterFactory;
 
 pub mod spark_hash;
-mod stddev;
-pub use stddev::Stddev;
 mod structs;
-mod sum_decimal;
-pub use sum_decimal::SumDecimal;
-mod negative;
-pub use negative::{create_negate_expr, NegativeExpr};
 mod normalize_nan;
 mod temporal;
 
@@ -52,19 +41,18 @@ pub use unbound::UnboundColumn;
 pub mod utils;
 pub use normalize_nan::NormalizeNaNAndZero;
 
-mod variance;
-pub use variance::Variance;
 mod comet_scalar_funcs;
 mod string_funcs;
 mod agg_funcs;
 mod conversion_funcs;
 mod bitwise_funcs;
+mod math_funcs;
+mod predicate_funcs;
+mod conditional_funcs;
+mod array_funcs;
 
 pub use comet_scalar_funcs::create_comet_physical_fun;
 pub use error::{SparkError, SparkResult};
-pub use if_expr::IfExpr;
-pub use list::{ArrayInsert, GetArrayStructFields, ListExtract};
-pub use regexp::RLike;
 pub use structs::{CreateNamedStruct, GetStructField};
 pub use temporal::{DateTruncExpr, HourExpr, MinuteExpr, SecondExpr, TimestampTruncExpr};
 pub use to_json::ToJson;
@@ -72,6 +60,10 @@ pub use string_funcs::*;
 pub use agg_funcs::*;
 pub use conversion_funcs::*;
 pub use bitwise_funcs::*;
+pub use math_funcs::*;
+pub use predicate_funcs::*;
+pub use conditional_funcs::*;
+pub use array_funcs::*;
 
 /// Spark supports three evaluation modes when evaluating expressions, which affect
 /// the behavior when processing input values that are invalid or would result in an
