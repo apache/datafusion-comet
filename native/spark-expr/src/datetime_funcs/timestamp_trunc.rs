@@ -28,9 +28,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::kernels::temporal::{
-    timestamp_trunc_array_fmt_dyn, timestamp_trunc_dyn,
-};
+use crate::kernels::temporal::{timestamp_trunc_array_fmt_dyn, timestamp_trunc_dyn};
 
 #[derive(Debug, Eq)]
 pub struct TimestampTruncExpr {

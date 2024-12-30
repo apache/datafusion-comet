@@ -35,12 +35,12 @@ use datafusion::{
     error::{DataFusionError, Result},
 };
 
+use crate::create_hashes_internal;
 use arrow_array::{Array, ArrayRef, Int32Array, Int64Array, StringArray};
 use datafusion::functions::crypto::{sha224, sha256, sha384, sha512};
 use datafusion_common::cast::as_binary_array;
 use datafusion_expr::{ColumnarValue, ScalarUDF};
 use std::sync::Arc;
-use crate::create_hashes_internal;
 
 /// Spark compatible xxhash64 in vectorized execution fashion
 pub fn spark_xxhash64(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
@@ -86,7 +86,6 @@ pub fn spark_xxhash64(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
     }
 }
 
-
 #[inline]
 fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u64 {
     XxHash64::oneshot(seed, data.as_ref())
@@ -127,7 +126,6 @@ fn create_xxhash64_hashes_dictionary<K: ArrowDictionaryKeyType>(
     Ok(())
 }
 
-
 /// Creates xxhash64 hash values for every row, based on the values in the
 /// columns.
 ///
@@ -151,9 +149,9 @@ mod tests {
     use arrow::array::{Float32Array, Float64Array};
     use std::sync::Arc;
 
-    use super::{create_xxhash64_hashes};
-    use datafusion::arrow::array::{ArrayRef, Int32Array, Int64Array, Int8Array, StringArray};
+    use super::create_xxhash64_hashes;
     use crate::test_hashes_with_nulls;
+    use datafusion::arrow::array::{ArrayRef, Int32Array, Int64Array, Int8Array, StringArray};
 
     fn test_xxhash64_hash<I: Clone, T: arrow_array::Array + From<Vec<Option<I>>> + 'static>(
         values: Vec<Option<I>>,
@@ -178,7 +176,6 @@ mod tests {
 
     #[test]
     fn test_i32() {
-
         test_xxhash64_hash::<i32, Int32Array>(
             vec![Some(1), Some(0), Some(-1), Some(i32::MAX), Some(i32::MIN)],
             vec![
@@ -193,7 +190,6 @@ mod tests {
 
     #[test]
     fn test_i64() {
-
         test_xxhash64_hash::<i64, Int64Array>(
             vec![Some(1), Some(0), Some(-1), Some(i64::MAX), Some(i64::MIN)],
             vec![
@@ -208,7 +204,6 @@ mod tests {
 
     #[test]
     fn test_f32() {
-
         test_xxhash64_hash::<f32, Float32Array>(
             vec![
                 Some(1.0),
@@ -231,7 +226,6 @@ mod tests {
 
     #[test]
     fn test_f64() {
-
         test_xxhash64_hash::<f64, Float64Array>(
             vec![
                 Some(1.0),
@@ -257,9 +251,9 @@ mod tests {
         let input = [
             "hello", "bar", "", "😁", "天地", "a", "ab", "abc", "abcd", "abcde",
         ]
-            .iter()
-            .map(|s| Some(s.to_string()))
-            .collect::<Vec<Option<String>>>();
+        .iter()
+        .map(|s| Some(s.to_string()))
+        .collect::<Vec<Option<String>>>();
         let expected: Vec<u32> = vec![
             3286402344, 2486176763, 142593372, 885025535, 2395000894, 1485273170, 0xfa37157b,
             1322437556, 0xe860e5cc, 814637928,

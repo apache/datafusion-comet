@@ -15,15 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::{
-    array::MutableArrayData
-    ,
-    datatypes::ArrowNativeType,
-    record_batch::RecordBatch,
-};
-use arrow_array::{
-    Array, GenericListArray, Int32Array, OffsetSizeTrait,
-};
+use arrow::{array::MutableArrayData, datatypes::ArrowNativeType, record_batch::RecordBatch};
+use arrow_array::{Array, GenericListArray, Int32Array, OffsetSizeTrait};
 use arrow_schema::{DataType, FieldRef, Schema};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{
@@ -270,15 +263,14 @@ impl Display for ListExtract {
     }
 }
 
-
 #[cfg(test)]
 mod test {
 
+    use super::*;
     use arrow::datatypes::Int32Type;
     use arrow_array::{Array, ArrayRef, Int32Array, ListArray};
     use datafusion_common::{Result, ScalarValue};
     use datafusion_expr::ColumnarValue;
-    use super::*;
 
     #[test]
     fn test_list_extract_default_value() -> Result<()> {
@@ -316,5 +308,4 @@ mod test {
         );
         Ok(())
     }
-
 }

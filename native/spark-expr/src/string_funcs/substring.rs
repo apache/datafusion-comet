@@ -18,6 +18,8 @@
 #![allow(deprecated)]
 
 use arrow::record_batch::RecordBatch;
+use arrow_array::cast::as_dictionary_array;
+use arrow_array::{make_array, Array, ArrayRef, DictionaryArray, LargeStringArray, StringArray};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::DataFusionError;
 use datafusion_physical_expr::PhysicalExpr;
@@ -27,16 +29,12 @@ use std::{
     hash::Hash,
     sync::Arc,
 };
-use arrow_array::{make_array, Array, ArrayRef, DictionaryArray, LargeStringArray, StringArray};
-use arrow_array::cast::as_dictionary_array;
 
 use arrow::{
-    array::*
-    ,
+    array::*,
     compute::kernels::substring::{substring as arrow_substring, substring_by_char},
-    datatypes::{Schema, DataType, Int32Type},
+    datatypes::{DataType, Int32Type, Schema},
 };
-
 
 #[derive(Debug, Eq)]
 pub struct SubstringExpr {
@@ -118,8 +116,11 @@ impl PhysicalExpr for SubstringExpr {
     }
 }
 
-
-pub fn substring_kernel(array: &dyn Array, start: i64, length: u64) -> Result<ArrayRef, DataFusionError> {
+pub fn substring_kernel(
+    array: &dyn Array,
+    start: i64,
+    length: u64,
+) -> Result<ArrayRef, DataFusionError> {
     match array.data_type() {
         DataType::LargeUtf8 => substring_by_char(
             array
@@ -129,8 +130,8 @@ pub fn substring_kernel(array: &dyn Array, start: i64, length: u64) -> Result<Ar
             start,
             Some(length),
         )
-            .map_err(|e| e.into())
-            .map(|t| make_array(t.into_data())),
+        .map_err(|e| e.into())
+        .map(|t| make_array(t.into_data())),
         DataType::Utf8 => substring_by_char(
             array
                 .as_any()
@@ -139,8 +140,8 @@ pub fn substring_kernel(array: &dyn Array, start: i64, length: u64) -> Result<Ar
             start,
             Some(length),
         )
-            .map_err(|e| e.into())
-            .map(|t| make_array(t.into_data())),
+        .map_err(|e| e.into())
+        .map(|t| make_array(t.into_data())),
         DataType::Binary | DataType::LargeBinary => {
             arrow_substring(array, start, Some(length)).map_err(|e| e.into())
         }

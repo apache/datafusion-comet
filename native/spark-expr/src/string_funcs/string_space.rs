@@ -19,6 +19,13 @@
 
 use crate::kernels::strings::string_space;
 use arrow::record_batch::RecordBatch;
+use arrow_array::cast::as_dictionary_array;
+use arrow_array::types::Int32Type;
+use arrow_array::{
+    make_array, Array, ArrayRef, DictionaryArray, GenericStringArray, Int32Array, OffsetSizeTrait,
+};
+use arrow_buffer::MutableBuffer;
+use arrow_data::ArrayData;
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::DataFusionError;
@@ -29,11 +36,6 @@ use std::{
     hash::Hash,
     sync::Arc,
 };
-use arrow_array::{make_array, Array, ArrayRef, DictionaryArray, GenericStringArray, Int32Array, OffsetSizeTrait};
-use arrow_array::cast::as_dictionary_array;
-use arrow_array::types::Int32Type;
-use arrow_buffer::MutableBuffer;
-use arrow_data::ArrayData;
 
 #[derive(Debug, Eq)]
 pub struct StringSpaceExpr {
@@ -51,7 +53,6 @@ impl PartialEq for StringSpaceExpr {
         self.child.eq(&other.child)
     }
 }
-
 
 impl StringSpaceExpr {
     pub fn new(child: Arc<dyn PhysicalExpr>) -> Self {
@@ -132,7 +133,6 @@ pub fn string_space_kernel(length: &dyn Array) -> Result<ArrayRef, DataFusionErr
         ),
     }
 }
-
 
 fn generic_string_space<OffsetSize: OffsetSizeTrait>(length: &Int32Array) -> ArrayRef {
     let array_len = length.len();

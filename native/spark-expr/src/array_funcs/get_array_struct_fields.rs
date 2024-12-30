@@ -16,9 +16,7 @@
 // under the License.
 
 use arrow::record_batch::RecordBatch;
-use arrow_array::{
-    Array, GenericListArray, OffsetSizeTrait, StructArray,
-};
+use arrow_array::{Array, GenericListArray, OffsetSizeTrait, StructArray};
 use arrow_schema::{DataType, FieldRef, Schema};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{

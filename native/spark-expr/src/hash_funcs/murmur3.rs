@@ -15,15 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-
+use crate::create_hashes_internal;
+use arrow::compute::take;
+use arrow_array::types::ArrowDictionaryKeyType;
 use arrow_array::{Array, ArrayRef, ArrowNativeTypeOp, DictionaryArray, Int32Array};
+use arrow_buffer::ArrowNativeType;
 use datafusion_common::{internal_err, DataFusionError, ScalarValue};
 use datafusion_expr::ColumnarValue;
 use std::sync::Arc;
-use arrow::compute::take;
-use arrow_array::types::ArrowDictionaryKeyType;
-use arrow_buffer::ArrowNativeType;
-use crate::create_hashes_internal;
 
 /// Spark compatible murmur3 hash (just `hash` in Spark) in vectorized execution fashion
 pub fn spark_murmur3_hash(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
@@ -136,7 +135,6 @@ pub fn spark_compatible_murmur3_hash<T: AsRef<[u8]>>(data: T, seed: u32) -> u32 
     }
 }
 
-
 /// Hash the values in a dictionary array
 fn create_hashes_dictionary<K: ArrowDictionaryKeyType>(
     array: &ArrayRef,
@@ -190,14 +188,13 @@ pub fn create_murmur3_hashes<'a>(
     Ok(hashes_buffer)
 }
 
-
 #[cfg(test)]
 mod tests {
     use arrow::array::{Float32Array, Float64Array};
     use std::sync::Arc;
 
-    use datafusion::arrow::array::{ArrayRef, Int32Array, Int64Array, Int8Array, StringArray};
     use crate::test_hashes_with_nulls;
+    use datafusion::arrow::array::{ArrayRef, Int32Array, Int64Array, Int8Array, StringArray};
 
     fn test_murmur3_hash<I: Clone, T: arrow_array::Array + From<Vec<Option<I>>> + 'static>(
         values: Vec<Option<I>>,
@@ -262,7 +259,6 @@ mod tests {
                 0xe4876492, 0x9c67b85d, 0x9c67b85d, 0x13d81357, 0xb87e1595, 0xa0eef9f9,
             ],
         );
-
     }
 
     #[test]
@@ -270,9 +266,9 @@ mod tests {
         let input = [
             "hello", "bar", "", "😁", "天地", "a", "ab", "abc", "abcd", "abcde",
         ]
-            .iter()
-            .map(|s| Some(s.to_string()))
-            .collect::<Vec<Option<String>>>();
+        .iter()
+        .map(|s| Some(s.to_string()))
+        .collect::<Vec<Option<String>>>();
         let expected: Vec<u32> = vec![
             3286402344, 2486176763, 142593372, 885025535, 2395000894, 1485273170, 0xfa37157b,
             1322437556, 0xe860e5cc, 814637928,
