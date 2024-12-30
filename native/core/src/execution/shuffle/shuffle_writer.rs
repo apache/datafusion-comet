@@ -1845,8 +1845,8 @@ mod test {
         let length = writer
             .write_batch(&batch, &mut cursor, &Time::default())
             .unwrap();
-        assert_eq!(40058, output.len());
-        assert_eq!(40058, length);
+        assert_eq!(40060, output.len());
+        assert_eq!(40060, length);
 
         let ipc_without_length_prefix = &output[16..];
         let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
@@ -1865,8 +1865,8 @@ mod test {
         let length = writer
             .write_batch(&batch, &mut cursor, &Time::default())
             .unwrap();
-        assert_eq!(61524, output.len());
-        assert_eq!(61524, length);
+        assert_eq!(61529, output.len());
+        assert_eq!(61529, length);
 
         let ipc_without_length_prefix = &output[16..];
         let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
