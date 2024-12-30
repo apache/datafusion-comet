@@ -19,7 +19,7 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::Int32Type;
 use arrow_array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Date32Array, Decimal128Array, DictionaryArray,
-    Float64Array, Int32Array, Int64Array, RecordBatch, StringArray,
+    Float64Array, Int32Array, Int64Array, RecordBatch, RecordBatchOptions, StringArray,
 };
 use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field, Schema};
@@ -126,6 +126,7 @@ impl<W: Write> BatchWriter<W> {
     }
 
     pub fn write_batch(&mut self, batch: &RecordBatch) -> Result<(), DataFusionError> {
+        self.write_all(&batch.num_rows().to_le_bytes())?;
         for i in 0..batch.num_columns() {
             self.write_array(batch.column(i))?;
         }
@@ -303,6 +304,10 @@ impl<'a> BatchReader<'a> {
             self.offset += field_name_len;
         }
 
+        length.copy_from_slice(&self.input[self.offset..self.offset + 8]);
+        self.offset += 8;
+        let num_rows = usize::from_le_bytes(length);
+
         let mut fields: Vec<Arc<Field>> = Vec::with_capacity(schema_len);
         let mut arrays = Vec::with_capacity(schema_len);
         for name in &field_names {
@@ -312,7 +317,12 @@ impl<'a> BatchReader<'a> {
             fields.push(field);
         }
         let schema = Arc::new(Schema::new(fields));
-        Ok(RecordBatch::try_new(schema, arrays).unwrap())
+        Ok(RecordBatch::try_new_with_options(
+            schema,
+            arrays,
+            &RecordBatchOptions::new().with_row_count(Some(num_rows)),
+        )
+        .unwrap())
     }
 
     fn read_array(&mut self) -> Result<ArrayRef, DataFusionError> {
