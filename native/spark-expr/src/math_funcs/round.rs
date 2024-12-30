@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::scalar_funcs::utils::{get_precision_scale, make_decimal_array, make_decimal_scalar};
+use crate::math_funcs::utils::{get_precision_scale, make_decimal_array, make_decimal_scalar};
 use arrow::array::{Int16Array, Int32Array, Int64Array, Int8Array};
 use arrow_array::{Array, ArrowNativeTypeOp};
 use arrow_schema::DataType;

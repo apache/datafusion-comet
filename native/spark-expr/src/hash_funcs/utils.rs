@@ -17,6 +17,7 @@
 
 //! This includes utilities for hashing and murmur3 hashing.
 
+#[macro_export]
 macro_rules! hash_array {
     ($array_type: ident, $column: ident, $hashes: ident, $hash_method: ident) => {
         let array = $column.as_any().downcast_ref::<$array_type>().unwrap();
@@ -34,6 +35,7 @@ macro_rules! hash_array {
     };
 }
 
+#[macro_export]
 macro_rules! hash_array_boolean {
     ($array_type: ident, $column: ident, $hash_input_type: ident, $hashes: ident, $hash_method: ident) => {
         let array = $column.as_any().downcast_ref::<$array_type>().unwrap();
@@ -52,6 +54,7 @@ macro_rules! hash_array_boolean {
     };
 }
 
+#[macro_export]
 macro_rules! hash_array_primitive {
     ($array_type: ident, $column: ident, $ty: ident, $hashes: ident, $hash_method: ident) => {
         let array = $column.as_any().downcast_ref::<$array_type>().unwrap();
@@ -71,6 +74,7 @@ macro_rules! hash_array_primitive {
     };
 }
 
+#[macro_export]
 macro_rules! hash_array_primitive_float {
     ($array_type: ident, $column: ident, $ty: ident, $ty2: ident, $hashes: ident, $hash_method: ident) => {
         let array = $column.as_any().downcast_ref::<$array_type>().unwrap();
@@ -100,6 +104,7 @@ macro_rules! hash_array_primitive_float {
     };
 }
 
+#[macro_export]
 macro_rules! hash_array_decimal {
     ($array_type:ident, $column: ident, $hashes: ident, $hash_method: ident) => {
         let array = $column.as_any().downcast_ref::<$array_type>().unwrap();
@@ -129,26 +134,59 @@ macro_rules! hash_array_decimal {
 #[macro_export]
 macro_rules! create_hashes_internal {
     ($arrays: ident, $hashes_buffer: ident, $hash_method: ident, $create_dictionary_hash_method: ident) => {
+        use arrow::datatypes::{DataType, TimeUnit};
+        use arrow_array::{types::*, *};
+
         for (i, col) in $arrays.iter().enumerate() {
             let first_col = i == 0;
             match col.data_type() {
                 DataType::Boolean => {
-                    hash_array_boolean!(BooleanArray, col, i32, $hashes_buffer, $hash_method);
+                    $crate::hash_array_boolean!(
+                        BooleanArray,
+                        col,
+                        i32,
+                        $hashes_buffer,
+                        $hash_method
+                    );
                 }
                 DataType::Int8 => {
-                    hash_array_primitive!(Int8Array, col, i32, $hashes_buffer, $hash_method);
+                    $crate::hash_array_primitive!(
+                        Int8Array,
+                        col,
+                        i32,
+                        $hashes_buffer,
+                        $hash_method
+                    );
                 }
                 DataType::Int16 => {
-                    hash_array_primitive!(Int16Array, col, i32, $hashes_buffer, $hash_method);
+                    $crate::hash_array_primitive!(
+                        Int16Array,
+                        col,
+                        i32,
+                        $hashes_buffer,
+                        $hash_method
+                    );
                 }
                 DataType::Int32 => {
-                    hash_array_primitive!(Int32Array, col, i32, $hashes_buffer, $hash_method);
+                    $crate::hash_array_primitive!(
+                        Int32Array,
+                        col,
+                        i32,
+                        $hashes_buffer,
+                        $hash_method
+                    );
                 }
                 DataType::Int64 => {
-                    hash_array_primitive!(Int64Array, col, i64, $hashes_buffer, $hash_method);
+                    $crate::hash_array_primitive!(
+                        Int64Array,
+                        col,
+                        i64,
+                        $hashes_buffer,
+                        $hash_method
+                    );
                 }
                 DataType::Float32 => {
-                    hash_array_primitive_float!(
+                    $crate::hash_array_primitive_float!(
                         Float32Array,
                         col,
                         f32,
@@ -158,7 +196,7 @@ macro_rules! create_hashes_internal {
                     );
                 }
                 DataType::Float64 => {
-                    hash_array_primitive_float!(
+                    $crate::hash_array_primitive_float!(
                         Float64Array,
                         col,
                         f64,
@@ -168,7 +206,7 @@ macro_rules! create_hashes_internal {
                     );
                 }
                 DataType::Timestamp(TimeUnit::Second, _) => {
-                    hash_array_primitive!(
+                    $crate::hash_array_primitive!(
                         TimestampSecondArray,
                         col,
                         i64,
@@ -177,7 +215,7 @@ macro_rules! create_hashes_internal {
                     );
                 }
                 DataType::Timestamp(TimeUnit::Millisecond, _) => {
-                    hash_array_primitive!(
+                    $crate::hash_array_primitive!(
                         TimestampMillisecondArray,
                         col,
                         i64,
@@ -186,7 +224,7 @@ macro_rules! create_hashes_internal {
                     );
                 }
                 DataType::Timestamp(TimeUnit::Microsecond, _) => {
-                    hash_array_primitive!(
+                    $crate::hash_array_primitive!(
                         TimestampMicrosecondArray,
                         col,
                         i64,
@@ -195,7 +233,7 @@ macro_rules! create_hashes_internal {
                     );
                 }
                 DataType::Timestamp(TimeUnit::Nanosecond, _) => {
-                    hash_array_primitive!(
+                    $crate::hash_array_primitive!(
                         TimestampNanosecondArray,
                         col,
                         i64,
@@ -204,28 +242,40 @@ macro_rules! create_hashes_internal {
                     );
                 }
                 DataType::Date32 => {
-                    hash_array_primitive!(Date32Array, col, i32, $hashes_buffer, $hash_method);
+                    $crate::hash_array_primitive!(
+                        Date32Array,
+                        col,
+                        i32,
+                        $hashes_buffer,
+                        $hash_method
+                    );
                 }
                 DataType::Date64 => {
-                    hash_array_primitive!(Date64Array, col, i64, $hashes_buffer, $hash_method);
+                    $crate::hash_array_primitive!(
+                        Date64Array,
+                        col,
+                        i64,
+                        $hashes_buffer,
+                        $hash_method
+                    );
                 }
                 DataType::Utf8 => {
-                    hash_array!(StringArray, col, $hashes_buffer, $hash_method);
+                    $crate::hash_array!(StringArray, col, $hashes_buffer, $hash_method);
                 }
                 DataType::LargeUtf8 => {
-                    hash_array!(LargeStringArray, col, $hashes_buffer, $hash_method);
+                    $crate::hash_array!(LargeStringArray, col, $hashes_buffer, $hash_method);
                 }
                 DataType::Binary => {
-                    hash_array!(BinaryArray, col, $hashes_buffer, $hash_method);
+                    $crate::hash_array!(BinaryArray, col, $hashes_buffer, $hash_method);
                 }
                 DataType::LargeBinary => {
-                    hash_array!(LargeBinaryArray, col, $hashes_buffer, $hash_method);
+                    $crate::hash_array!(LargeBinaryArray, col, $hashes_buffer, $hash_method);
                 }
                 DataType::FixedSizeBinary(_) => {
-                    hash_array!(FixedSizeBinaryArray, col, $hashes_buffer, $hash_method);
+                    $crate::hash_array!(FixedSizeBinaryArray, col, $hashes_buffer, $hash_method);
                 }
                 DataType::Decimal128(_, _) => {
-                    hash_array_decimal!(Decimal128Array, col, $hashes_buffer, $hash_method);
+                    $crate::hash_array_decimal!(Decimal128Array, col, $hashes_buffer, $hash_method);
                 }
                 DataType::Dictionary(index_type, _) => match **index_type {
                     DataType::Int8 => {

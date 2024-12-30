@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::downcast_compute_op;
-use crate::math_funcs::utils::{get_precision_scale, make_decimal_array};
+use crate::math_funcs::utils::{get_precision_scale, make_decimal_array, make_decimal_scalar};
 use arrow::array::{Float32Array, Float64Array, Int64Array};
 use arrow_array::{Array, ArrowNativeTypeOp};
 use arrow_schema::DataType;

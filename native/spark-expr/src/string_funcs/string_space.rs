@@ -17,7 +17,6 @@
 
 #![allow(deprecated)]
 
-use crate::kernels::strings::string_space;
 use arrow::record_batch::RecordBatch;
 use arrow_array::cast::as_dictionary_array;
 use arrow_array::types::Int32Type;

@@ -51,11 +51,22 @@ mod static_invoke;
 mod string_funcs;
 mod struct_funcs;
 
+pub use agg_funcs::*;
+pub use array_funcs::*;
+pub use bitwise_funcs::*;
 pub use comet_scalar_funcs::create_comet_physical_fun;
-use conversion_funcs::*;
+pub use comet_scalar_funcs::*;
+pub use conditional_funcs::*;
+pub use conversion_funcs::*;
+pub use datetime_funcs::*;
 pub use error::{SparkError, SparkResult};
-use math_funcs::*;
-use string_funcs::*;
+pub use hash_funcs::*;
+pub use json_funcs::*;
+pub use math_funcs::*;
+pub use predicate_funcs::*;
+pub use static_invoke::*;
+pub use string_funcs::*;
+pub use struct_funcs::*;
 
 /// Spark supports three evaluation modes when evaluating expressions, which affect
 /// the behavior when processing input values that are invalid or would result in an
