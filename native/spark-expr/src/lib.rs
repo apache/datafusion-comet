@@ -21,20 +21,15 @@
 
 mod error;
 
-mod checkoverflow;
-pub use checkoverflow::CheckOverflow;
 mod kernels;
 mod schema_adapter;
 pub use schema_adapter::SparkSchemaAdapterFactory;
-
-mod normalize_nan;
 
 pub mod test_common;
 pub mod timezone;
 mod unbound;
 pub use unbound::UnboundColumn;
 pub mod utils;
-pub use normalize_nan::NormalizeNaNAndZero;
 
 mod agg_funcs;
 mod array_funcs;
