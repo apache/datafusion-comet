@@ -31,7 +31,6 @@ use std::{
 };
 
 use arrow::{
-    array::*,
     compute::kernels::substring::{substring as arrow_substring, substring_by_char},
     datatypes::{DataType, Int32Type, Schema},
 };

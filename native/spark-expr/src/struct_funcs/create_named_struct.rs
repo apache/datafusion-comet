@@ -16,7 +16,7 @@
 // under the License.
 
 use arrow::record_batch::RecordBatch;
-use arrow_array::{Array, StructArray};
+use arrow_array::StructArray;
 use arrow_schema::{DataType, Field, Schema};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::Result as DataFusionResult;

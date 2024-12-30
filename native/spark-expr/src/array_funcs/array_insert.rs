@@ -21,14 +21,12 @@ use arrow::{
     datatypes::ArrowNativeType,
     record_batch::RecordBatch,
 };
-use arrow_array::{
-    make_array, Array, ArrayRef, GenericListArray, Int32Array, OffsetSizeTrait, StructArray,
-};
-use arrow_schema::{DataType, Field, FieldRef, Schema};
+use arrow_array::{make_array, Array, ArrayRef, GenericListArray, Int32Array, OffsetSizeTrait};
+use arrow_schema::{DataType, Field, Schema};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{
-    cast::{as_int32_array, as_large_list_array, as_list_array},
-    internal_err, DataFusionError, Result as DataFusionResult, ScalarValue,
+    cast::{as_large_list_array, as_list_array},
+    internal_err, DataFusionError, Result as DataFusionResult,
 };
 use datafusion_physical_expr::PhysicalExpr;
 use std::hash::Hash;
@@ -321,11 +319,10 @@ impl Display for ArrayInsert {
 
 #[cfg(test)]
 mod test {
-
     use super::*;
     use arrow::datatypes::Int32Type;
     use arrow_array::{Array, ArrayRef, Int32Array, ListArray};
-    use datafusion_common::{Result, ScalarValue};
+    use datafusion_common::Result;
     use datafusion_expr::ColumnarValue;
     use std::sync::Arc;
 

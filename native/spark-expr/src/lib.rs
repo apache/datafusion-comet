@@ -55,7 +55,6 @@ pub use agg_funcs::*;
 pub use array_funcs::*;
 pub use bitwise_funcs::*;
 pub use comet_scalar_funcs::create_comet_physical_fun;
-pub use comet_scalar_funcs::*;
 pub use conditional_funcs::*;
 pub use conversion_funcs::*;
 pub use datetime_funcs::*;

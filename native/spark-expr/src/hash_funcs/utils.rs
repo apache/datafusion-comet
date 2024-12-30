@@ -351,6 +351,7 @@ macro_rules! create_hashes_internal {
 
 pub(crate) mod test_utils {
 
+    #[macro_export]
     macro_rules! test_hashes_internal {
         ($hash_method: ident, $input: expr, $initial_seeds: expr, $expected: expr) => {
             let i = $input;
@@ -370,7 +371,7 @@ pub(crate) mod test_utils {
             let len = $values.len();
             let initial_seeds = vec![42 as $seed_type; len];
             let i = Arc::new(<$t>::from($values)) as ArrayRef;
-            test_hashes_internal!($method, i, initial_seeds, $expected);
+            $crate::test_hashes_internal!($method, i, initial_seeds, $expected);
 
             // test with nulls
             let median = len / 2;
@@ -381,7 +382,7 @@ pub(crate) mod test_utils {
             let len_with_nulls = len + 2;
             let initial_seeds_with_nulls = vec![42 as $seed_type; len_with_nulls];
             let nullable_input = Arc::new(<$t>::from(input_with_nulls)) as ArrayRef;
-            test_hashes_internal!(
+            $crate::test_hashes_internal!(
                 $method,
                 nullable_input,
                 initial_seeds_with_nulls,

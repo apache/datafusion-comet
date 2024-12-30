@@ -15,31 +15,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::math_funcs::hex::hex_strings;
-
-use arrow::{
-    compute::take,
-    datatypes::{ArrowNativeTypeOp, UInt16Type, UInt32Type, UInt64Type, UInt8Type},
-};
+use arrow::compute::take;
 use twox_hash::XxHash64;
 
 use datafusion::{
     arrow::{
         array::*,
-        datatypes::{
-            ArrowDictionaryKeyType, ArrowNativeType, DataType, Int16Type, Int32Type, Int64Type,
-            Int8Type, TimeUnit,
-        },
+        datatypes::{ArrowDictionaryKeyType, ArrowNativeType},
     },
-    common::{exec_err, internal_err, ScalarValue},
+    common::{internal_err, ScalarValue},
     error::{DataFusionError, Result},
 };
 
 use crate::create_hashes_internal;
-use arrow_array::{Array, ArrayRef, Int32Array, Int64Array, StringArray};
-use datafusion::functions::crypto::{sha224, sha256, sha384, sha512};
-use datafusion_common::cast::as_binary_array;
-use datafusion_expr::{ColumnarValue, ScalarUDF};
+use arrow_array::{Array, ArrayRef, Int64Array};
+use datafusion_expr::ColumnarValue;
 use std::sync::Arc;
 
 /// Spark compatible xxhash64 in vectorized execution fashion
@@ -254,10 +244,6 @@ mod tests {
         .iter()
         .map(|s| Some(s.to_string()))
         .collect::<Vec<Option<String>>>();
-        let expected: Vec<u32> = vec![
-            3286402344, 2486176763, 142593372, 885025535, 2395000894, 1485273170, 0xfa37157b,
-            1322437556, 0xe860e5cc, 814637928,
-        ];
 
         test_xxhash64_hash::<String, StringArray>(
             input,

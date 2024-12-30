@@ -21,7 +21,6 @@ use arrow_array::{Array, ArrowNativeTypeOp};
 use arrow_schema::DataType;
 use datafusion::{functions::math::round::round, physical_plan::ColumnarValue};
 use datafusion_common::{exec_err, internal_err, DataFusionError, ScalarValue};
-use num::Signed;
 use std::{cmp::min, sync::Arc};
 
 macro_rules! integer_round {

@@ -22,17 +22,13 @@ use arrow::{
 };
 use arrow_schema::{DataType, Schema, TimeUnit::Microsecond};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion_common::{DataFusionError, ScalarValue::Utf8};
+use datafusion_common::DataFusionError;
 use datafusion_physical_expr::PhysicalExpr;
 use std::hash::Hash;
 use std::{
     any::Any,
     fmt::{Debug, Display, Formatter},
     sync::Arc,
-};
-
-use crate::kernels::temporal::{
-    date_trunc_array_fmt_dyn, date_trunc_dyn, timestamp_trunc_array_fmt_dyn, timestamp_trunc_dyn,
 };
 
 #[derive(Debug, Eq)]

@@ -193,6 +193,7 @@ mod tests {
     use arrow::array::{Float32Array, Float64Array};
     use std::sync::Arc;
 
+    use crate::murmur3::create_murmur3_hashes;
     use crate::test_hashes_with_nulls;
     use datafusion::arrow::array::{ArrayRef, Int32Array, Int64Array, Int8Array, StringArray};
 

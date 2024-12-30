@@ -265,10 +265,9 @@ impl Display for ListExtract {
 
 #[cfg(test)]
 mod test {
-
     use super::*;
     use arrow::datatypes::Int32Type;
-    use arrow_array::{Array, ArrayRef, Int32Array, ListArray};
+    use arrow_array::{Array, Int32Array, ListArray};
     use datafusion_common::{Result, ScalarValue};
     use datafusion_expr::ColumnarValue;
 
