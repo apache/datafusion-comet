@@ -255,6 +255,11 @@ impl<W: Write> BatchWriter<W> {
     ) -> Result<(), DataFusionError> {
         if let Some(nulls) = null_buffer {
             let buffer = nulls.inner();
+
+            // write null buffer length in bits
+            self.write_all(&buffer.len().to_le_bytes())?;
+
+            // write null buffer
             let buffer = buffer.inner();
             self.write_buffer(buffer)?;
         } else {
@@ -459,16 +464,26 @@ impl<'a> BatchReader<'a> {
     }
 
     fn read_null_buffer(&mut self) -> Option<NullBuffer> {
+        // read null buffer length in bits
         let mut length = [0; 8];
+        length.copy_from_slice(&self.input[self.offset..self.offset + 8]);
+        let length_bits = usize::from_le_bytes(length);
+        self.offset += 8;
+        if length_bits == 0 {
+            return None;
+        }
+
+        // read buffer length in bytes
         length.copy_from_slice(&self.input[self.offset..self.offset + 8]);
         let null_buffer_length = usize::from_le_bytes(length);
         self.offset += 8;
+
         let null_buffer = if null_buffer_length != 0 {
             let null_buffer = &self.input[self.offset..self.offset + null_buffer_length];
             Some(NullBuffer::new(BooleanBuffer::new(
                 Buffer::from(null_buffer),
                 0,
-                null_buffer.len() * 8,
+                length_bits,
             )))
         } else {
             None
