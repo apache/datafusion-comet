@@ -93,15 +93,23 @@ pub struct ShuffleWriterExec {
     output_index_file: String,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
+    /// Cache for expensive-to-compute plan properties
     cache: PlanProperties,
+    /// The compression codec to use when compressing shuffle blocks
     codec: CompressionCodec,
+    /// When true, Comet will use a fast proprietary encoding rather than using Arrow IPC
+    enable_fast_encoding: bool,
 }
 
 impl DisplayAs for ShuffleWriterExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "ShuffleWriterExec: partitioning={:?}", self.partitioning)
+                write!(
+                    f,
+                    "ShuffleWriterExec: partitioning={:?}, fast_encoding={}, compression={:?}",
+                    self.partitioning, self.enable_fast_encoding, self.codec
+                )
             }
         }
     }
@@ -134,6 +142,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                 self.codec.clone(),
                 self.output_data_file.clone(),
                 self.output_index_file.clone(),
+                self.enable_fast_encoding,
             )?)),
             _ => panic!("ShuffleWriterExec wrong number of children"),
         }
@@ -159,6 +168,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                     metrics,
                     context,
                     self.codec.clone(),
+                    self.enable_fast_encoding,
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
@@ -191,6 +201,7 @@ impl ShuffleWriterExec {
         codec: CompressionCodec,
         output_data_file: String,
         output_index_file: String,
+        enable_fast_encoding: bool,
     ) -> Result<Self> {
         let cache = PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
@@ -207,6 +218,7 @@ impl ShuffleWriterExec {
             output_index_file,
             cache,
             codec,
+            enable_fast_encoding,
         })
     }
 }
@@ -238,11 +250,13 @@ impl PartitionBuffer {
         partition_id: usize,
         runtime: &Arc<RuntimeEnv>,
         codec: CompressionCodec,
+        enable_fast_encoding: bool,
     ) -> Result<Self> {
         let reservation = MemoryConsumer::new(format!("PartitionBuffer[{}]", partition_id))
             .with_can_spill(true)
             .register(&runtime.memory_pool);
-        let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), true, codec)?;
+        let shuffle_block_writer =
+            ShuffleBlockWriter::try_new(schema.as_ref(), enable_fast_encoding, codec)?;
         Ok(Self {
             schema,
             frozen: vec![],
@@ -708,6 +722,7 @@ impl ShuffleRepartitioner {
         runtime: Arc<RuntimeEnv>,
         batch_size: usize,
         codec: CompressionCodec,
+        enable_fast_encoding: bool,
     ) -> Result<Self> {
         let num_output_partitions = partitioning.partition_count();
         let reservation = MemoryConsumer::new(format!("ShuffleRepartitioner[{}]", partition_id))
@@ -736,6 +751,7 @@ impl ShuffleRepartitioner {
                         partition_id,
                         &runtime,
                         codec.clone(),
+                        enable_fast_encoding,
                     )
                 })
                 .collect::<Result<Vec<_>>>()?,
@@ -1171,6 +1187,7 @@ async fn external_shuffle(
     metrics: ShuffleRepartitionerMetrics,
     context: Arc<TaskContext>,
     codec: CompressionCodec,
+    enable_fast_encoding: bool,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
     let mut repartitioner = ShuffleRepartitioner::try_new(
@@ -1183,6 +1200,7 @@ async fn external_shuffle(
         context.runtime_env(),
         context.session_config().batch_size(),
         codec,
+        enable_fast_encoding,
     )?;
 
     while let Some(batch) = input.next().await {
@@ -1946,6 +1964,7 @@ mod test {
             CompressionCodec::Zstd(1),
             "/tmp/data.out".to_string(),
             "/tmp/index.out".to_string(),
+            true,
         )
         .unwrap();
 

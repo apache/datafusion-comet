@@ -555,6 +555,8 @@ class CometShuffleWriteProcessor(
       val shuffleWriterBuilder = OperatorOuterClass.ShuffleWriter.newBuilder()
       shuffleWriterBuilder.setOutputDataFile(dataFile)
       shuffleWriterBuilder.setOutputIndexFile(indexFile)
+      shuffleWriterBuilder.setEnableFastEncoding(
+        CometConf.COMET_SHUFFLE_ENABLE_FAST_ENCODING.get())
 
       if (SparkEnv.get.conf.getBoolean("spark.shuffle.compress", true)) {
         val codec = CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_CODEC.get() match {
@@ -567,7 +569,8 @@ class CometShuffleWriteProcessor(
       } else {
         shuffleWriterBuilder.setCodec(CompressionCodec.None)
       }
-      shuffleWriterBuilder.setCompressionLevel(CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_LEVEL.get)
+      shuffleWriterBuilder.setCompressionLevel(
+        CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_LEVEL.get())
 
       outputPartitioning match {
         case _: HashPartitioning =>
