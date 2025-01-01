@@ -242,17 +242,28 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
-  val COMET_SHUFFLE_MODE: ConfigEntry[String] = conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.mode")
-    .doc("The mode of Comet shuffle. This config is only effective if Comet shuffle " +
-      "is enabled. Available modes are 'native', 'jvm', and 'auto'. " +
-      "'native' is for native shuffle which has best performance in general. " +
-      "'jvm' is for jvm-based columnar shuffle which has higher coverage than native shuffle. " +
-      "'auto' is for Comet to choose the best shuffle mode based on the query plan.")
-    .internal()
-    .stringConf
-    .transform(_.toLowerCase(Locale.ROOT))
-    .checkValues(Set("native", "jvm", "auto"))
-    .createWithDefault("auto")
+  val COMET_SHUFFLE_MODE: ConfigEntry[String] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.mode.deprecated")
+      .doc(
+        s"Legacy configuration only used in tests. Use ${COMET_NATIVE_SHUFFLE_ENABLED.key} and " +
+          s"${COMET_COLUMNAR_SHUFFLE_ENABLED.key} instead")
+      .internal()
+      .stringConf
+      .transform(_.toLowerCase(Locale.ROOT))
+      .checkValues(Set("native", "jvm", "auto"))
+      .createWithDefault("auto")
+
+  val COMET_NATIVE_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.native.enabled")
+      .doc(s"Whether to enable Comet native shuffle. $TUNING_GUIDE.")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_COLUMNAR_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.columnar.enabled")
+      .doc(s"Whether to enable Comet columnar shuffle. $TUNING_GUIDE.")
+      .booleanConf
+      .createWithDefault(true)
 
   val COMET_EXEC_BROADCAST_FORCE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.broadcast.enabled")
@@ -334,8 +345,7 @@ object CometConf extends ShimCometConf {
       .doc(
         "Test-only config. This is only used to test Comet shuffle with Spark tests. " +
           "The optional maximum size of the memory used for Comet columnar shuffle, in MiB. " +
-          "Note that this config is only used when `spark.comet.exec.shuffle.mode` is " +
-          "`jvm`. Once allocated memory size reaches this config, the current batch will be " +
+          "Once allocated memory size reaches this config, the current batch will be " +
           "flushed to disk immediately. If this is not configured, Comet will use " +
           "`spark.comet.shuffle.memory.factor` * `spark.comet.memoryOverhead` as " +
           "shuffle memory size. If final calculated value is larger than Comet memory " +
@@ -384,7 +394,7 @@ object CometConf extends ShimCometConf {
         "prefer dictionary encoding when shuffling the column. If the ratio is higher than " +
         "this config, dictionary encoding will be used on shuffling string column. This config " +
         "is effective if it is higher than 1.0. Note that this " +
-        "config is only used when `spark.comet.exec.shuffle.mode` is `jvm`.")
+        "config is only used by columnar shuffle.")
     .doubleConf
     .createWithDefault(10.0)
 
