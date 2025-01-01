@@ -57,7 +57,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
         CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> asyncShuffleEnable.toString,
         CometConf.COMET_COLUMNAR_SHUFFLE_SPILL_THRESHOLD.key -> numElementsForceSpillThreshold.toString,
         CometConf.COMET_EXEC_ENABLED.key -> "false",
-        CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
         CometConf.COMET_COLUMNAR_SHUFFLE_UNIFIED_MEMORY_ALLOCATOR_IN_TEST.key ->
           useUnifiedMemoryAllocator.toString,
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
@@ -1001,7 +1001,7 @@ class CometShuffleSuite extends CometColumnarShuffleSuite {
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
         val df = sql("SELECT * FROM tbl_a")
         val shuffled = df
@@ -1021,7 +1021,7 @@ class CometShuffleSuite extends CometColumnarShuffleSuite {
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
         withParquetTable((0 until 10).map(i => (i % 10, i + 2)), "tbl_b") {
           val df = sql("SELECT * FROM tbl_a")
@@ -1054,7 +1054,7 @@ class DisableAQECometShuffleSuite extends CometColumnarShuffleSuite {
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
         withParquetTable((0 until 10).map(i => (i % 10, i + 2)), "tbl_b") {
           val df = sql("SELECT * FROM tbl_a")
@@ -1099,7 +1099,7 @@ class CometShuffleEncryptionSuite extends CometTestBase {
               withSQLConf(
                 CometConf.COMET_EXEC_ENABLED.key -> "false",
                 CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-                CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false",
+                CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
                 CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> asyncEnabled.toString) {
                 readParquetFile(path.toString) { df =>
                   val shuffled = df
