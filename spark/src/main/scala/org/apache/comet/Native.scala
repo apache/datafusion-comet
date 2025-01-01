@@ -118,9 +118,14 @@ class Native extends NativeBase {
    * @param currentChecksum
    *   the current checksum of the file. As the checksum is computed incrementally, this is used
    *   to resume the computation of checksum for previous written data.
+   * @param compressionCodec
+   *   the compression codec
+   * @param compressionLevel
+   *   the compression level
    * @return
    *   [the number of bytes written to disk, the checksum]
    */
+  // scalastyle:off
   @native def writeSortedFileNative(
       addresses: Array[Long],
       rowSizes: Array[Int],
@@ -130,7 +135,10 @@ class Native extends NativeBase {
       batchSize: Int,
       checksumEnabled: Boolean,
       checksumAlgo: Int,
-      currentChecksum: Long): Array[Long]
+      currentChecksum: Long,
+      compressionCodec: String,
+      compressionLevel: Int): Array[Long]
+  // scalastyle:on
 
   /**
    * Sorts partition ids of Spark unsafe rows in place. Used by Comet shuffle external sorter.
