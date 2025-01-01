@@ -272,20 +272,29 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] = conf(
-    s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
-    .doc(
-      "The codec of Comet native shuffle used to compress shuffle data. Only zstd is supported. " +
-        "Compression can be disabled by setting spark.shuffle.compress=false.")
-    .stringConf
-    .checkValues(Set("zstd"))
-    .createWithDefault("zstd")
+  val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
+      .doc(
+        "The codec of Comet native shuffle used to compress shuffle data. lz4, zstd, and " +
+          "snappy are supported. Compression can be disabled by setting " +
+          "spark.shuffle.compress=false.")
+      .stringConf
+      .checkValues(Set("zstd", "lz4", "snappy"))
+      .createWithDefault("lz4")
 
   val COMET_EXEC_SHUFFLE_COMPRESSION_LEVEL: ConfigEntry[Int] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.level")
-      .doc("The compression level to use when compression shuffle files.")
+      .doc("The compression level to use when compressing shuffle files with zstd.")
       .intConf
       .createWithDefault(1)
+
+  val COMET_SHUFFLE_ENABLE_FAST_ENCODING: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enableFastEncoding")
+      .doc("Whether to enable Comet's faster proprietary encoding for shuffle blocks " +
+        "rather than using Arrow IPC.")
+      .internal()
+      .booleanConf
+      .createWithDefault(true)
 
   val COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.columnar.shuffle.async.enabled")
