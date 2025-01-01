@@ -90,7 +90,7 @@ class CometTPCHQuerySuite extends QueryTest with TPCBase with ShimCometTPCHQuery
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
-    conf.set(CometConf.COMET_SHUFFLE_MODE.key, "jvm")
+    conf.set(CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key, "false")
     conf.set(MEMORY_OFFHEAP_ENABLED.key, "true")
     conf.set(MEMORY_OFFHEAP_SIZE.key, "2g")
   }
