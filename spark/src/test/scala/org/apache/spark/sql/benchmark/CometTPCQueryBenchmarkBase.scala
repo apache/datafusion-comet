@@ -75,8 +75,7 @@ trait CometTPCQueryBenchmarkBase extends SqlBasedBenchmark with CometTPCQueryBas
           CometConf.COMET_ENABLED.key -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true",
           CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-          CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "true",
-          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+          CometConf.COMET_SHUFFLE_MODE.key -> "auto") {
           cometSpark.sql(queryString).noop()
         }
       }
@@ -87,8 +86,7 @@ trait CometTPCQueryBenchmarkBase extends SqlBasedBenchmark with CometTPCQueryBas
           CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
           CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
           CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-          CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "true",
-          CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "true") {
+          CometConf.COMET_SHUFFLE_MODE.key -> "auto") {
           cometSpark.sql(queryString).noop()
         }
       }
