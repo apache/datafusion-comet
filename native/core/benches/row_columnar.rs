@@ -19,9 +19,9 @@ use arrow::datatypes::DataType as ArrowDataType;
 use comet::execution::shuffle::row::{
     process_sorted_row_partition, SparkUnsafeObject, SparkUnsafeRow,
 };
+use comet::execution::shuffle::CompressionCodec;
 use criterion::{criterion_group, criterion_main, Criterion};
 use tempfile::Builder;
-use comet::execution::shuffle::CompressionCodec;
 
 const NUM_ROWS: usize = 10000;
 const BATCH_SIZE: usize = 5000;
@@ -78,7 +78,7 @@ fn benchmark(c: &mut Criterion) {
                 false,
                 0,
                 None,
-                &CompressionCodec::Zstd(1)
+                &CompressionCodec::Zstd(1),
             )
             .unwrap();
         });
