@@ -242,17 +242,6 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
-  val COMET_SHUFFLE_MODE: ConfigEntry[String] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.mode.deprecated")
-      .doc(
-        s"Legacy configuration only used in tests. Use ${COMET_NATIVE_SHUFFLE_ENABLED.key} and " +
-          s"${COMET_COLUMNAR_SHUFFLE_ENABLED.key} instead")
-      .internal()
-      .stringConf
-      .transform(_.toLowerCase(Locale.ROOT))
-      .checkValues(Set("native", "jvm", "auto"))
-      .createWithDefault("auto")
-
   val COMET_NATIVE_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.native.enabled")
       .doc(s"Whether to enable Comet native shuffle. $TUNING_GUIDE.")
@@ -264,6 +253,17 @@ object CometConf extends ShimCometConf {
       .doc(s"Whether to enable Comet columnar shuffle. $TUNING_GUIDE.")
       .booleanConf
       .createWithDefault(true)
+
+  val COMET_SHUFFLE_MODE: ConfigEntry[String] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.mode.deprecated")
+      .doc(
+        s"Legacy configuration only used in tests. Use ${COMET_NATIVE_SHUFFLE_ENABLED.key} and " +
+          s"${COMET_COLUMNAR_SHUFFLE_ENABLED.key} instead")
+      .internal()
+      .stringConf
+      .transform(_.toLowerCase(Locale.ROOT))
+      .checkValues(Set("native", "jvm", "auto"))
+      .createWithDefault("auto")
 
   val COMET_EXEC_BROADCAST_FORCE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.broadcast.enabled")

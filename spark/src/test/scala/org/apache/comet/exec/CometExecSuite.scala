@@ -118,7 +118,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("ShuffleQueryStageExec could be direct child node of CometBroadcastExchangeExec") {
-    withSQLConf(CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false") {
+    withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val table = "src"
       withTable(table) {
         withView("lv_noalias") {
@@ -141,7 +141,7 @@ class CometExecSuite extends CometTestBase {
       SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val data1 =
         Seq(Tuple1(null), Tuple1((1, "a")), Tuple1((2, null)), Tuple1((3, "b")), Tuple1(null))
 
@@ -372,7 +372,7 @@ class CometExecSuite extends CometTestBase {
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled,
         // `REQUIRE_ALL_CLUSTER_KEYS_FOR_DISTRIBUTION` is a new config in Spark 3.3+.
         "spark.sql.requireAllClusterKeysForDistribution" -> "true",
-        CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false") {
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
         val df =
           Seq(("a", 1, 1), ("a", 2, 2), ("b", 1, 3), ("b", 1, 4)).toDF("key1", "key2", "value")
         val windowSpec = Window.partitionBy("key1", "key2").orderBy("value")
@@ -478,7 +478,7 @@ class CometExecSuite extends CometTestBase {
     dataTypes.map { subqueryType =>
       withSQLConf(
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
         CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
           var column1 = s"CAST(max(_1) AS $subqueryType)"
@@ -680,7 +680,7 @@ class CometExecSuite extends CometTestBase {
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       withTable(tableName, dim) {
 
         sql(
@@ -938,7 +938,7 @@ class CometExecSuite extends CometTestBase {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
         val df = sql("SELECT * FROM tbl").sort($"_1".desc)
         checkSparkAnswerAndOperator(df)
@@ -1690,7 +1690,7 @@ class CometExecSuite extends CometTestBase {
     Seq("true", "false").foreach(cacheVectorized => {
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-        CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
         SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> cacheVectorized) {
         spark
           .range(1000)
@@ -1718,7 +1718,7 @@ class CometExecSuite extends CometTestBase {
   test("SparkToColumnar eliminate redundant in AQE") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
-      CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val df = spark
         .range(1000)
         .selectExpr("id as key", "id % 8 as value")

@@ -1214,11 +1214,19 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   private[comet] def isCometNativeShuffleMode(conf: SQLConf): Boolean = {
-    COMET_NATIVE_SHUFFLE_ENABLED.get(conf)
+    COMET_SHUFFLE_MODE.get(conf) match {
+      case "native" => true
+      case "auto" => CometConf.COMET_NATIVE_SHUFFLE_ENABLED.get(conf)
+      case _ => false
+    }
   }
 
   private[comet] def isCometJVMShuffleMode(conf: SQLConf): Boolean = {
-    COMET_COLUMNAR_SHUFFLE_ENABLED.get(conf)
+    COMET_SHUFFLE_MODE.get(conf) match {
+      case "jvm" => true
+      case "auto" => CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.get(conf)
+      case _ => false
+    }
   }
 
   def isCometScan(op: SparkPlan): Boolean = {
