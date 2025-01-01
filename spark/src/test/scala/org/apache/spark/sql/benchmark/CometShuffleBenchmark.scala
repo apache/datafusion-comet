@@ -104,7 +104,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
             CometConf.COMET_EXEC_ENABLED.key -> "true",
             CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> "1.0",
-            CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false",
+            CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
             CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> "false") {
             spark
               .sql(
@@ -161,7 +161,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
             CometConf.COMET_EXEC_ENABLED.key -> "true",
             CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> "1.0",
-            CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false",
+            CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
             CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> "false") {
             spark
               .sql(
@@ -216,7 +216,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
             CometConf.COMET_EXEC_ENABLED.key -> "true",
             CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> "1.0",
-            CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false",
+            CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
             CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> "false") {
             spark
               .sql("select c1 from parquetV1Table")
@@ -231,7 +231,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
             CometConf.COMET_EXEC_ENABLED.key -> "true",
             CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> "2.0",
-            CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false",
+            CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
             CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> "false") {
             spark
               .sql("select c1 from parquetV1Table")
@@ -246,7 +246,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
             CometConf.COMET_EXEC_ENABLED.key -> "true",
             CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> "1000000000.0",
-            CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false",
+            CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
             CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> "false") {
             spark
               .sql("select c1 from parquetV1Table")
@@ -311,7 +311,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
             CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false",
+            CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
             CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> "false") {
             spark
               .sql("select c1 from parquetV1Table")
@@ -325,7 +325,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
             CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false",
+            CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
             CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> "true") {
             spark
               .sql("select c1 from parquetV1Table")
@@ -395,7 +395,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
             CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false") {
+            CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
             spark
               .sql(s"select $columns from parquetV1Table")
               .repartition(partitionNum, Column("c1"))
