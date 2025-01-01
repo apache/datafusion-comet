@@ -58,7 +58,7 @@ use jni::{
 use tokio::runtime::Runtime;
 
 use crate::execution::operators::ScanExec;
-use crate::execution::shuffle::read_ipc_compressed;
+use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 use log::info;
 
@@ -467,6 +467,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
     checksum_enabled: jboolean,
     checksum_algo: jint,
     current_checksum: jlong,
+    compression_codec: jstring,
+    compression_level: jint,
 ) -> jlongArray {
     try_unwrap_or_throw(&e, |mut env| unsafe {
         let data_types = convert_datatype_arrays(&mut env, serialized_datatypes)?;
@@ -494,6 +496,18 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
             Some(current_checksum as u32)
         };
 
+        let compression_codec: String = env
+            .get_string(&JString::from_raw(compression_codec))
+            .unwrap()
+            .into();
+
+        let compression_codec = match compression_codec.as_str() {
+            "zstd" => CompressionCodec::Zstd(compression_level.into()),
+            "lz4" => CompressionCodec::Lz4Frame,
+            "snappy" => CompressionCodec::Snappy,
+            _ => CompressionCodec::Lz4Frame,
+        };
+
         let (written_bytes, checksum) = process_sorted_row_partition(
             row_num,
             batch_size as usize,
@@ -505,6 +519,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
             checksum_enabled,
             checksum_algo,
             current_checksum,
+            &compression_codec,
         )?;
 
         let checksum = if let Some(checksum) = checksum {

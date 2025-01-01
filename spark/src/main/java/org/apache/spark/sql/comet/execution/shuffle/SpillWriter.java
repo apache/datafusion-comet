@@ -171,7 +171,9 @@ public abstract class SpillWriter {
       File file,
       RowPartition rowPartition,
       ShuffleWriteMetricsReporter writeMetricsToUse,
-      double preferDictionaryRatio) {
+      double preferDictionaryRatio,
+      String compressionCodec,
+      int compressionLevel) {
     long[] addresses = rowPartition.getRowAddresses();
     int[] sizes = rowPartition.getRowSizes();
 
@@ -190,7 +192,9 @@ public abstract class SpillWriter {
             batchSize,
             checksumEnabled,
             checksumAlgo,
-            currentChecksum);
+            currentChecksum,
+            compressionCodec,
+            compressionLevel);
 
     long written = results[0];
     checksum = results[1];
