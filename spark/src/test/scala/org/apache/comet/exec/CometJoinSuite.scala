@@ -394,13 +394,11 @@ class CometJoinSuite extends CometTestBase {
           val df10 = sql(
             "SELECT * FROM tbl_a LEFT ANTI JOIN tbl_b ON tbl_a._2 = tbl_b._1 " +
               "AND tbl_a._2 >= tbl_b._1")
-
           checkSparkAnswerAndOperator(df10)
 
           val df11 = sql(
             "SELECT * FROM tbl_b LEFT ANTI JOIN tbl_a ON tbl_a._2 = tbl_b._1 " +
               "AND tbl_a._2 >= tbl_b._1")
-
           checkSparkAnswerAndOperator(df11)
         }
       }
