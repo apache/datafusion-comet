@@ -1664,6 +1664,10 @@ pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
             let mut reader = StreamReader::try_new(decoder, None)?;
             reader.next().unwrap().map_err(|e| e.into())
         }
+        b"NONE" => {
+            let mut reader = StreamReader::try_new(&bytes[4..], None)?;
+            reader.next().unwrap().map_err(|e| e.into())
+        }
         _ => Err(DataFusionError::Execution(
             "Failed to decode batch: invalid compression codec".to_string(),
         )),
@@ -1719,44 +1723,24 @@ mod test {
 
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
-    fn roundtrip_ipc_zstd() {
+    fn roundtrip_ipc() {
         let batch = create_batch(8192);
-        let mut output = vec![];
-        let mut cursor = Cursor::new(&mut output);
-        let length = write_ipc_compressed(
-            &batch,
-            &mut cursor,
-            &CompressionCodec::Zstd(1),
-            &Time::default(),
-        )
-        .unwrap();
-        assert_eq!(40230, output.len());
-        assert_eq!(40230, length);
+        for codec in &[
+            CompressionCodec::None,
+            CompressionCodec::Zstd(1),
+            CompressionCodec::Snappy,
+            CompressionCodec::Lz4Frame,
+        ] {
+            let mut output = vec![];
+            let mut cursor = Cursor::new(&mut output);
+            let length =
+                write_ipc_compressed(&batch, &mut cursor, codec, &Time::default()).unwrap();
+            assert_eq!(length, output.len());
 
-        let ipc_without_length_prefix = &output[16..];
-        let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
-        assert_eq!(batch, batch2);
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
-    fn roundtrip_ipc_lz4() {
-        let batch = create_batch(8192);
-        let mut output = vec![];
-        let mut cursor = Cursor::new(&mut output);
-        let length = write_ipc_compressed(
-            &batch,
-            &mut cursor,
-            &CompressionCodec::Lz4Frame,
-            &Time::default(),
-        )
-        .unwrap();
-        assert_eq!(61791, output.len());
-        assert_eq!(61791, length);
-
-        let ipc_without_length_prefix = &output[16..];
-        let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
-        assert_eq!(batch, batch2);
+            let ipc_without_length_prefix = &output[16..];
+            let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
+            assert_eq!(batch, batch2);
+        }
     }
 
     #[test]
