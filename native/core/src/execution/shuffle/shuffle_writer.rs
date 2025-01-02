@@ -1592,22 +1592,16 @@ pub fn write_ipc_compressed<W: Write + Seek>(
     let field_count = batch.schema().fields().len();
     output.write_all(&field_count.to_le_bytes())?;
 
-    // write codec used
-    match codec {
-        CompressionCodec::Snappy => output.write_all("SNAP".as_bytes())?,
-        CompressionCodec::Lz4Frame => output.write_all("LZ4_".as_bytes())?,
-        CompressionCodec::Zstd(_) => output.write_all("ZSTD".as_bytes())?,
-        CompressionCodec::None => output.write_all("NONE".as_bytes())?,
-    }
-
     let output = match codec {
         CompressionCodec::None => {
+            output.write_all(b"NONE")?;
             let mut arrow_writer = StreamWriter::try_new(output, &batch.schema())?;
             arrow_writer.write(batch)?;
             arrow_writer.finish()?;
             arrow_writer.into_inner()?
         }
         CompressionCodec::Snappy => {
+            output.write_all(b"SNAP")?;
             let mut wtr = snap::write::FrameEncoder::new(output);
             let mut arrow_writer = StreamWriter::try_new(&mut wtr, &batch.schema())?;
             arrow_writer.write(batch)?;
@@ -1616,6 +1610,7 @@ pub fn write_ipc_compressed<W: Write + Seek>(
                 .map_err(|e| DataFusionError::Execution(format!("lz4 compression error: {}", e)))?
         }
         CompressionCodec::Lz4Frame => {
+            output.write_all(b"LZ4_")?;
             let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
             let mut arrow_writer = StreamWriter::try_new(&mut wtr, &batch.schema())?;
             arrow_writer.write(batch)?;
@@ -1624,6 +1619,7 @@ pub fn write_ipc_compressed<W: Write + Seek>(
                 .map_err(|e| DataFusionError::Execution(format!("lz4 compression error: {}", e)))?
         }
         CompressionCodec::Zstd(level) => {
+            output.write_all(b"ZSTD")?;
             let encoder = zstd::Encoder::new(output, *level)?;
             let mut arrow_writer = StreamWriter::try_new(encoder, &batch.schema())?;
             arrow_writer.write(batch)?;
