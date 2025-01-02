@@ -2526,7 +2526,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       checkSparkAnswerAndOperator(
         spark.sql("SELECT array_contains(array(_2, _3, _4), _2) FROM t1"))
       checkSparkAnswerAndOperator(
-        spark.sql("SELECT array_append((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
+        spark.sql("SELECT array_contains((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
     }
   }
 }
