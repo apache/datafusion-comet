@@ -20,6 +20,7 @@
 package org.apache.comet
 
 import org.apache.spark._
+import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
 
@@ -89,7 +90,9 @@ class CometExecIterator(
 
   private def getMemoryLimitPerTask(conf: SparkConf): Long = {
     val numCores = numDriverOrExecutorCores(conf).toFloat
-    val maxMemory = CometSparkSessionExtensions.getCometMemoryOverhead(conf)
+    val maxMemory = ConfigHelpers
+      .byteFromString(conf.get("spark.executor.memory", "1024MB"), ByteUnit.BYTE)
+
     val coresPerTask = conf.get("spark.task.cpus", "1").toFloat
     // example 16GB maxMemory * 16 cores with 4 cores per task results
     // in memory_limit_per_task = 16 GB * 4 / 16 = 16 GB / 4 = 4GB
