@@ -1585,8 +1585,8 @@ pub fn write_ipc_compressed<W: Write + Seek>(
     let mut timer = ipc_time.timer();
     let start_pos = output.stream_position()?;
 
-    // write ipc_length placeholder
-    output.write_all(&[0u8; 8])?;
+    // seek past ipc_length placeholder
+    output.seek_relative(8)?;
 
     // write number of columns because JVM side needs to know how many addresses to allocate
     let field_count = batch.schema().fields().len();
