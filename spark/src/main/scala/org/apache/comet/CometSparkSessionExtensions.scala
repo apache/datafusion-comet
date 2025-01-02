@@ -567,7 +567,7 @@ class CometSparkSessionExtensions
 
         case op: SortMergeJoinExec
             if CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) &&
-              op.children.forall(isCometNative(_)) =>
+              op.children.forall(isCometNative) =>
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
