@@ -560,7 +560,9 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
 ) {
     try_unwrap_or_throw(&e, |_| unsafe {
         let execution_context = get_execution_context(exec_context);
-        if execution_context.memory_pool_config.pool_type == MemoryPoolType::FairSpillTaskShared {
+        if execution_context.memory_pool_config.pool_type == MemoryPoolType::FairSpillTaskShared
+            || execution_context.memory_pool_config.pool_type == MemoryPoolType::GreedyTaskShared
+        {
             // Decrement the number of native plans using the per-task shared memory pool, and
             // remove the memory pool if the released native plan is the last native plan using it.
             let task_attempt_id = execution_context.task_attempt_id;

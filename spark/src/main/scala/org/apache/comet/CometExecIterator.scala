@@ -90,6 +90,9 @@ class CometExecIterator(
 
   private def getMemoryLimitPerTask(conf: SparkConf): Long = {
     val numCores = numDriverOrExecutorCores(conf).toFloat
+
+    // TODO need to think about best configs to use here for max memory to
+    // allocate to Comet memory pools
     val maxMemory = ConfigHelpers
       .byteFromString(conf.get("spark.executor.memory", "1024MB"), ByteUnit.BYTE)
 
