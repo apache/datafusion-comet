@@ -1187,7 +1187,10 @@ impl PhysicalPlanner {
                 if join.filter.is_some() {
                     // SMJ with join filter produces lots of tiny batches
                     let coalesce_batches: Arc<dyn ExecutionPlan> =
-                        Arc::new(CoalesceBatchesExec::new(join.clone(), 8192));
+                        Arc::new(CoalesceBatchesExec::new(
+                            Arc::clone(&join),
+                            self.session_ctx.state().config_options().batch_size(),
+                        ));
                     Ok((
                         scans,
                         Arc::new(SparkPlan::new_with_additional(
