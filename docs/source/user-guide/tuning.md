@@ -49,6 +49,13 @@ The valid pool types are:
 - `fair_spill_global`
 - `fair_spill_task_shared`
 
+Pool types ending with `_global` use a single global memory pool between all tasks.
+
+Pool types ending with `_task_shared` share a single memory pool across all attempts for a single task.
+
+Other pool types create a dedicated pool per plan using a fraction of the available pool size based on number of cores 
+and cores per task.
+
 The `greedy*` pool types use DataFusion's [GreedyMemoryPool], which implements a greedy first-come first-serve limit. This
 pool works well for queries that do not need to spill or have a single spillable operator.
 
@@ -62,7 +69,6 @@ a first-come, first-serve fashion
 [GreedyMemoryPool]: https://docs.rs/datafusion/latest/datafusion/execution/memory_pool/struct.GreedyMemoryPool.html
 [FairSpillPool]: https://docs.rs/datafusion/latest/datafusion/execution/memory_pool/struct.FairSpillPool.html
 
-TODO: explain global vs task_shared
 
 ### Determining How Much Memory to Allocate
 
