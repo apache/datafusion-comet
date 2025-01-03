@@ -15,14 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::scalar_funcs::hash_expressions::{
-    spark_sha224, spark_sha256, spark_sha384, spark_sha512,
+use crate::datetime_funcs::{spark_date_add, spark_date_sub};
+use crate::hash_funcs::{
+    spark_murmur3_hash, spark_sha224, spark_sha256, spark_sha384, spark_sha512, spark_xxhash64,
 };
-use crate::scalar_funcs::{
-    spark_ceil, spark_date_add, spark_date_sub, spark_decimal_div, spark_floor, spark_hex,
-    spark_isnan, spark_make_decimal, spark_murmur3_hash, spark_read_side_padding, spark_round,
-    spark_unhex, spark_unscaled_value, spark_xxhash64, SparkChrFunc,
+use crate::math_funcs::internal::{spark_make_decimal, spark_unscaled_value};
+use crate::math_funcs::{
+    spark_ceil, spark_decimal_div, spark_floor, spark_hex, spark_round, spark_unhex,
 };
+use crate::predicate_funcs::spark_isnan;
+use crate::static_invoke::spark_read_side_padding;
+use crate::string_funcs::SparkChrFunc;
 use arrow_schema::DataType;
 use datafusion_common::{DataFusionError, Result as DataFusionResult};
 use datafusion_expr::registry::FunctionRegistry;

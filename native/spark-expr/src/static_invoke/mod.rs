@@ -15,6 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Kernels
+mod char_varchar_utils;
 
-pub(crate) mod temporal;
+pub use char_varchar_utils::*;
