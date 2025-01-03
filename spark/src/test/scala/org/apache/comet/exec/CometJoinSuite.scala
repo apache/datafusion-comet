@@ -30,7 +30,6 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.Decimal
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED
 import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 
 class CometJoinSuite extends CometTestBase {
@@ -295,7 +294,7 @@ class CometJoinSuite extends CometTestBase {
 
   test("SortMergeJoin without join filter") {
     withSQLConf(
-      CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.key -> "true",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
       withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
@@ -342,6 +341,7 @@ class CometJoinSuite extends CometTestBase {
 
   test("SortMergeJoin with join filter") {
     withSQLConf(
+      CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key -> "true",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
