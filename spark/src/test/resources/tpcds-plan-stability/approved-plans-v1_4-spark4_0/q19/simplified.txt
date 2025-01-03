@@ -5,7 +5,7 @@ TakeOrderedAndProject [ext_price,brand,brand_id,i_manufact_id,i_manufact]
         Exchange [i_brand,i_brand_id,i_manufact_id,i_manufact] #1
           WholeStageCodegen (1)
             HashAggregate [i_brand,i_brand_id,i_manufact_id,i_manufact,ss_ext_sales_price] [sum,sum]
-              ColumnarToRow
+              CometColumnarToRow
                 InputAdapter
                   CometProject [ss_ext_sales_price,i_brand_id,i_brand,i_manufact_id,i_manufact]
                     CometBroadcastHashJoin [ss_store_sk,ss_ext_sales_price,i_brand_id,i_brand,i_manufact_id,i_manufact,ca_zip,s_store_sk,s_zip]

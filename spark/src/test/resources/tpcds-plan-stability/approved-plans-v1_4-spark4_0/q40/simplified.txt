@@ -5,7 +5,7 @@ TakeOrderedAndProject [w_state,i_item_id,sales_before,sales_after]
         Exchange [w_state,i_item_id] #1
           WholeStageCodegen (1)
             HashAggregate [w_state,i_item_id,d_date,cs_sales_price,cr_refunded_cash] [sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty]
-              ColumnarToRow
+              CometColumnarToRow
                 InputAdapter
                   CometProject [cs_sales_price,cr_refunded_cash,w_state,i_item_id,d_date]
                     CometBroadcastHashJoin [cs_sales_price,cs_sold_date_sk,cr_refunded_cash,w_state,i_item_id,d_date_sk,d_date]
@@ -22,7 +22,7 @@ TakeOrderedAndProject [w_state,i_item_id,sales_before,sales_after]
                                           SubqueryBroadcast [d_date_sk] #1
                                             BroadcastExchange #3
                                               WholeStageCodegen (1)
-                                                ColumnarToRow
+                                                CometColumnarToRow
                                                   InputAdapter
                                                     CometFilter [d_date_sk,d_date]
                                                       CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date]

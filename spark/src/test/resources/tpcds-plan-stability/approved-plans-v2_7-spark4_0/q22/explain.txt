@@ -6,7 +6,7 @@ TakeOrderedAndProject (24)
          +- * Expand (20)
             +- * Project (19)
                +- * BroadcastNestedLoopJoin Inner BuildRight (18)
-                  :- * ColumnarToRow (14)
+                  :- * CometColumnarToRow (14)
                   :  +- CometProject (13)
                   :     +- CometBroadcastHashJoin (12)
                   :        :- CometProject (8)
@@ -21,7 +21,7 @@ TakeOrderedAndProject (24)
                   :           +- CometFilter (10)
                   :              +- CometScan parquet spark_catalog.default.item (9)
                   +- BroadcastExchange (17)
-                     +- * ColumnarToRow (16)
+                     +- * CometColumnarToRow (16)
                         +- CometScan parquet spark_catalog.default.warehouse (15)
 
 
@@ -89,7 +89,7 @@ Arguments: [inv_item_sk#1], [i_item_sk#7], Inner, BuildRight
 Input [7]: [inv_item_sk#1, inv_quantity_on_hand#2, i_item_sk#7, i_brand#8, i_class#9, i_category#10, i_product_name#11]
 Arguments: [inv_quantity_on_hand#2, i_brand#8, i_class#9, i_category#10, i_product_name#11], [inv_quantity_on_hand#2, i_brand#8, i_class#9, i_category#10, i_product_name#11]
 
-(14) ColumnarToRow [codegen id : 2]
+(14) CometColumnarToRow [codegen id : 2]
 Input [5]: [inv_quantity_on_hand#2, i_brand#8, i_class#9, i_category#10, i_product_name#11]
 
 (15) CometScan parquet spark_catalog.default.warehouse
@@ -98,7 +98,7 @@ Batched: true
 Location [not included in comparison]/{warehouse_dir}/warehouse]
 ReadSchema: struct<>
 
-(16) ColumnarToRow [codegen id : 1]
+(16) CometColumnarToRow [codegen id : 1]
 Input: []
 
 (17) BroadcastExchange
@@ -143,7 +143,7 @@ Arguments: 100, [qoh#22 ASC NULLS FIRST, i_product_name#12 ASC NULLS FIRST, i_br
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = inv_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (29)
-+- * ColumnarToRow (28)
++- * CometColumnarToRow (28)
    +- CometProject (27)
       +- CometFilter (26)
          +- CometScan parquet spark_catalog.default.date_dim (25)
@@ -164,7 +164,7 @@ Condition : (((isnotnull(d_month_seq#6) AND (d_month_seq#6 >= 1200)) AND (d_mont
 Input [2]: [d_date_sk#5, d_month_seq#6]
 Arguments: [d_date_sk#5], [d_date_sk#5]
 
-(28) ColumnarToRow [codegen id : 1]
+(28) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#5]
 
 (29) BroadcastExchange
