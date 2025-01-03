@@ -42,7 +42,7 @@ class CometExec3_4PlusSuite extends CometTestBase {
 
   // The syntax is only supported by Spark 3.4+.
   test("subquery limit: limit with offset should return correct results") {
-    withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+    withSQLConf(CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false") {
       withTable("t1", "t2") {
         val table1 =
           """create temporary view t1 as select * from values
@@ -94,7 +94,7 @@ class CometExec3_4PlusSuite extends CometTestBase {
 
   // Dataset.offset API is not available before Spark 3.4
   test("offset") {
-    withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+    withSQLConf(CometConf.COMET_NATIVE_SHUFFLE_ENABLED.key -> "false") {
       checkSparkAnswer(testData.offset(90))
       checkSparkAnswer(arrayData.toDF().offset(99))
       checkSparkAnswer(mapData.toDF().offset(99))

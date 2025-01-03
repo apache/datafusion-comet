@@ -78,43 +78,47 @@ It must be set before the Spark context is created. You can enable or disable Co
 at runtime by setting `spark.comet.exec.shuffle.enabled` to `true` or `false`.
 Once it is disabled, Comet will fall back to the default Spark shuffle manager.
 
-### Shuffle Mode
+### Shuffle Implementations
 
-Comet provides three shuffle modes: Columnar Shuffle, Native Shuffle and Auto Mode.
-
-#### Auto Mode
-
-`spark.comet.exec.shuffle.mode` to `auto` will let Comet choose the best shuffle mode based on the query plan. This
-is the default.
-
-#### Columnar (JVM) Shuffle
-
-Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobinPartitioning`, `RangePartitioning`, and
-`SinglePartitioning`. This mode has the highest query coverage.
-
-Columnar shuffle can be enabled by setting `spark.comet.exec.shuffle.mode` to `jvm`. If this mode is explicitly set,
-then any shuffle operations that cannot be supported in this mode will fall back to Spark.
+Comet provides two shuffle implementations.
 
 #### Native Shuffle
 
-Comet also provides a fully native shuffle implementation, which generally provides the best performance. However,
-native shuffle currently only supports `HashPartitioning` and `SinglePartitioning`.
+Comet Native Shuffle reads columnar batches and repartitions them before writing the shuffled columnar data
+to the output file. Native Shuffle supports `HashPartitioning` and `SinglePartition` and primitive data
+s (`Boolean`, `Byte`, `Short`, `Integer`, `Long`, `Float`, `Double`, `Decimal`,
+`Date`, `Timestamp`, `String`, and `Binary`).
 
-To enable native shuffle, set `spark.comet.exec.shuffle.mode` to `native`. If this mode is explicitly set,
-then any shuffle operations that cannot be supported in this mode will fall back to Spark.
+Native shuffle is enabled by default and can be disabled by setting `spark.comet.exec.shuffle.native.enabled=false`.
+
+#### Columnar (JVM) Shuffle
+
+Comet Columnar Shuffle is used for cases where Native Shuffle is not supported. Columnar Shuffle supports
+`HashPartitioning`, `RangePartitioning`, `RoundRobinPartitioning` and `SinglePartition` and supports complex
+types in addition to the primitive types supported by Native Shuffle.
+
+Columnar Shuffle inserts a `ColumnarToRowExec` transition on the input data (this does not appear in the query
+plan) and delegates the partitioning to Spark. The partitioned output rows are then converted back into columnar
+format before being written to the shuffle output file.
+
+Columnar shuffle is enabled by default and can be disabled by setting `spark.comet.exec.shuffle.columnar.enabled=false`.
 
 ### Shuffle Compression
 
 By default, Spark compresses shuffle files using LZ4 compression. Comet overrides this behavior with ZSTD compression.
-Compression can be disabled by setting `spark.shuffle.compress=false`, which may result in faster shuffle times in 
+Compression can be disabled by setting `spark.shuffle.compress=false`, which may result in faster shuffle times in
 certain environments, such as single-node setups with fast NVMe drives, at the expense of increased disk space usage.
 
 ## Explain Plan
+
 ### Extended Explain
+
 With Spark 4.0.0 and newer, Comet can provide extended explain plan information in the Spark UI. Currently this lists
 reasons why Comet may not have been enabled for specific operations.
 To enable this, in the Spark configuration, set the following:
+
 ```shell
 -c spark.sql.extendedExplainProviders=org.apache.comet.ExtendedExplainInfo
 ```
+
 This will add a section to the detailed plan displayed in the Spark SQL UI page.

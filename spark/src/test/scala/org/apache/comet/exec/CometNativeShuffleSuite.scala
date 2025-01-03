@@ -37,7 +37,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     super.test(testName, testTags: _*) {
       withSQLConf(
         CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        CometConf.COMET_COLUMNAR_SHUFFLE_ENABLED.key -> "false",
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
         testFun
       }
