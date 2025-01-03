@@ -70,6 +70,7 @@ use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctio
 
 use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
+use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion_comet_proto::{
     spark_expression::{
         self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
@@ -1183,17 +1184,42 @@ impl PhysicalPlanner {
                     false,
                 )?);
 
-                Ok((
-                    scans,
-                    Arc::new(SparkPlan::new(
-                        spark_plan.plan_id,
-                        join,
-                        vec![
-                            Arc::clone(&join_params.left),
-                            Arc::clone(&join_params.right),
-                        ],
-                    )),
-                ))
+                if join.filter.is_some() {
+                    // SMJ with join filter produces lots of tiny batches
+                    let coalesce_batches: Arc<dyn ExecutionPlan> =
+                        Arc::new(CoalesceBatchesExec::new(
+                            Arc::<SortMergeJoinExec>::clone(&join),
+                            self.session_ctx
+                                .state()
+                                .config_options()
+                                .execution
+                                .batch_size,
+                        ));
+                    Ok((
+                        scans,
+                        Arc::new(SparkPlan::new_with_additional(
+                            spark_plan.plan_id,
+                            coalesce_batches,
+                            vec![
+                                Arc::clone(&join_params.left),
+                                Arc::clone(&join_params.right),
+                            ],
+                            vec![join],
+                        )),
+                    ))
+                } else {
+                    Ok((
+                        scans,
+                        Arc::new(SparkPlan::new(
+                            spark_plan.plan_id,
+                            join,
+                            vec![
+                                Arc::clone(&join_params.left),
+                                Arc::clone(&join_params.right),
+                            ],
+                        )),
+                    ))
+                }
             }
             OpStruct::HashJoin(join) => {
                 let (join_params, scans) = self.parse_join_parameters(
