@@ -919,14 +919,6 @@ class CometSparkSessionExtensions
     }
 
     override def apply(plan: SparkPlan): SparkPlan = {
-
-      // Comet required off-heap memory to be enabled
-//      if (!isOffHeapEnabled(conf) && !isTesting) {
-//        logWarning("Comet native exec disabled because spark.memory.offHeap.enabled=false")
-//        withInfo(plan, "Comet native exec disabled because spark.memory.offHeap.enabled=false")
-//        return plan
-//      }
-
       // DataFusion doesn't have ANSI mode. For now we just disable CometExec if ANSI mode is
       // enabled.
       if (isANSIEnabled(conf)) {
