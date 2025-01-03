@@ -70,6 +70,7 @@ use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctio
 
 use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
+use datafusion::optimizer::OptimizerConfig;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion_comet_proto::{
     spark_expression::{
@@ -1188,8 +1189,12 @@ impl PhysicalPlanner {
                     // SMJ with join filter produces lots of tiny batches
                     let coalesce_batches: Arc<dyn ExecutionPlan> =
                         Arc::new(CoalesceBatchesExec::new(
-                            Arc::clone(&join),
-                            self.session_ctx.state().config_options().batch_size(),
+                            Arc::<SortMergeJoinExec>::clone(&join),
+                            self.session_ctx
+                                .state()
+                                .config_options()
+                                .execution
+                                .batch_size,
                         ));
                     Ok((
                         scans,
