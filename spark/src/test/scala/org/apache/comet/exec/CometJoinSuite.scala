@@ -21,12 +21,14 @@ package org.apache.comet.exec
 
 import org.scalactic.source.Position
 import org.scalatest.Tag
+
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.Decimal
+
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED
 import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
@@ -295,8 +297,7 @@ class CometJoinSuite extends CometTestBase {
     withSQLConf(
       CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key -> "true",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1"
-      ) {
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
       withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
         withParquetTable((0 until 10).map(i => (i % 10, i + 2)), "tbl_b") {
           val df1 = sql("SELECT * FROM tbl_a JOIN tbl_b ON tbl_a._2 = tbl_b._1")
