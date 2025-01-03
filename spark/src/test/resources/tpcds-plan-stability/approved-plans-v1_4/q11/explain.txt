@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (69)
+* CometColumnarToRow (69)
 +- CometTakeOrderedAndProject (68)
    +- CometProject (67)
       +- CometBroadcastHashJoin (66)
@@ -393,14 +393,14 @@ Arguments: [customer_preferred_cust_flag#36], [customer_preferred_cust_flag#36]
 Input [1]: [customer_preferred_cust_flag#36]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[customer_preferred_cust_flag#36 ASC NULLS FIRST], output=[customer_preferred_cust_flag#36]), [customer_preferred_cust_flag#36], 100, [customer_preferred_cust_flag#36 ASC NULLS FIRST], [customer_preferred_cust_flag#36]
 
-(69) ColumnarToRow [codegen id : 1]
+(69) CometColumnarToRow [codegen id : 1]
 Input [1]: [customer_preferred_cust_flag#36]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 3 Hosting Expression = ss_sold_date_sk#12 IN dynamicpruning#13
 BroadcastExchange (73)
-+- * ColumnarToRow (72)
++- * CometColumnarToRow (72)
    +- CometFilter (71)
       +- CometScan parquet spark_catalog.default.date_dim (70)
 
@@ -416,7 +416,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int>
 Input [2]: [d_date_sk#14, d_year#15]
 Condition : ((isnotnull(d_year#15) AND (d_year#15 = 2001)) AND isnotnull(d_date_sk#14))
 
-(72) ColumnarToRow [codegen id : 1]
+(72) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#14, d_year#15]
 
 (73) BroadcastExchange
@@ -425,7 +425,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)
 
 Subquery:2 Hosting operator id = 19 Hosting Expression = ss_sold_date_sk#30 IN dynamicpruning#31
 BroadcastExchange (77)
-+- * ColumnarToRow (76)
++- * CometColumnarToRow (76)
    +- CometFilter (75)
       +- CometScan parquet spark_catalog.default.date_dim (74)
 
@@ -441,7 +441,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int>
 Input [2]: [d_date_sk#32, d_year#33]
 Condition : ((isnotnull(d_year#33) AND (d_year#33 = 2002)) AND isnotnull(d_date_sk#32))
 
-(76) ColumnarToRow [codegen id : 1]
+(76) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#32, d_year#33]
 
 (77) BroadcastExchange

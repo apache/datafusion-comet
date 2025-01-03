@@ -28,8 +28,8 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
-import org.apache.spark.sql.comet.CometProjectExec
-import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, ProjectExec, WholeStageCodegenExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec}
+import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
@@ -749,7 +749,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val project = cometPlan
         .asInstanceOf[WholeStageCodegenExec]
         .child
-        .asInstanceOf[ColumnarToRowExec]
+        .asInstanceOf[CometColumnarToRowExec]
         .child
         .asInstanceOf[InputAdapter]
         .child
@@ -2515,6 +2515,18 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         .withColumn("idx", udf((_: Int) => 1).apply(col("_4")))
         .withColumn("arrUnsupportedArgs", expr("array_insert(arr, idx, 1)"))
       checkSparkAnswer(df.select("arrUnsupportedArgs"))
+    }
+  }
+
+  test("array_contains") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      makeParquetFileAllTypes(path, dictionaryEnabled = false, n = 10000)
+      spark.read.parquet(path.toString).createOrReplaceTempView("t1");
+      checkSparkAnswerAndOperator(
+        spark.sql("SELECT array_contains(array(_2, _3, _4), _2) FROM t1"))
+      checkSparkAnswerAndOperator(
+        spark.sql("SELECT array_contains((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
     }
   }
 }

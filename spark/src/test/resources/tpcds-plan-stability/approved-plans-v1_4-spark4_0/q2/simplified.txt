@@ -1,5 +1,5 @@
 WholeStageCodegen (7)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometSort [d_week_seq1,round((sun_sales1 / sun_sales2), 2),round((mon_sales1 / mon_sales2), 2),round((tue_sales1 / tue_sales2), 2),round((wed_sales1 / wed_sales2), 2),round((thu_sales1 / thu_sales2), 2),round((fri_sales1 / fri_sales2), 2),round((sat_sales1 / sat_sales2), 2)]
         CometColumnarExchange [d_week_seq1] #1
@@ -13,7 +13,7 @@ WholeStageCodegen (7)
                         Exchange [d_week_seq] #2
                           WholeStageCodegen (1)
                             HashAggregate [d_week_seq,d_day_name,sales_price] [sum,sum,sum,sum,sum,sum,sum,sum,sum,sum,sum,sum,sum,sum]
-                              ColumnarToRow
+                              CometColumnarToRow
                                 InputAdapter
                                   CometProject [sales_price,d_week_seq,d_day_name]
                                     CometBroadcastHashJoin [sold_date_sk,sales_price,d_date_sk,d_week_seq,d_day_name]
@@ -28,7 +28,7 @@ WholeStageCodegen (7)
                     InputAdapter
                       BroadcastExchange #4
                         WholeStageCodegen (2)
-                          ColumnarToRow
+                          CometColumnarToRow
                             InputAdapter
                               CometProject [d_week_seq]
                                 CometFilter [d_week_seq,d_year]
@@ -44,7 +44,7 @@ WholeStageCodegen (7)
                           InputAdapter
                             BroadcastExchange #6
                               WholeStageCodegen (4)
-                                ColumnarToRow
+                                CometColumnarToRow
                                   InputAdapter
                                     CometProject [d_week_seq]
                                       CometFilter [d_week_seq,d_year]

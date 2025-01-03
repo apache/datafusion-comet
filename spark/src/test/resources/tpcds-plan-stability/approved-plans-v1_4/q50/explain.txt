@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (28)
+* CometColumnarToRow (28)
 +- CometTakeOrderedAndProject (27)
    +- CometHashAggregate (26)
       +- CometExchange (25)
@@ -160,14 +160,14 @@ Functions [5]: [sum(CASE WHEN ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 30
 Input [15]: [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21, 30 days #31, 31 - 60 days #32, 61 - 90 days #33, 91 - 120 days #34, >120 days #35]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[s_store_name#12 ASC NULLS FIRST,s_company_id#13 ASC NULLS FIRST,s_street_number#14 ASC NULLS FIRST,s_street_name#15 ASC NULLS FIRST,s_street_type#16 ASC NULLS FIRST,s_suite_number#17 ASC NULLS FIRST,s_city#18 ASC NULLS FIRST,s_county#19 ASC NULLS FIRST,s_state#20 ASC NULLS FIRST,s_zip#21 ASC NULLS FIRST], output=[s_store_name#12,s_company_id#13,s_street_number#14,s_street_name#15,s_street_type#16,s_suite_number#17,s_city#18,s_county#19,s_state#20,s_zip#21,30 days #31,31 - 60 days #32,61 - 90 days #33,91 - 120 days #34,>120 days #35]), [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21, 30 days #31, 31 - 60 days #32, 61 - 90 days #33, 91 - 120 days #34, >120 days #35], 100, [s_store_name#12 ASC NULLS FIRST, s_company_id#13 ASC NULLS FIRST, s_street_number#14 ASC NULLS FIRST, s_street_name#15 ASC NULLS FIRST, s_street_type#16 ASC NULLS FIRST, s_suite_number#17 ASC NULLS FIRST, s_city#18 ASC NULLS FIRST, s_county#19 ASC NULLS FIRST, s_state#20 ASC NULLS FIRST, s_zip#21 ASC NULLS FIRST], [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21, 30 days #31, 31 - 60 days #32, 61 - 90 days #33, 91 - 120 days #34, >120 days #35]
 
-(28) ColumnarToRow [codegen id : 1]
+(28) CometColumnarToRow [codegen id : 1]
 Input [15]: [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21, 30 days #31, 31 - 60 days #32, 61 - 90 days #33, 91 - 120 days #34, >120 days #35]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 3 Hosting Expression = sr_returned_date_sk#9 IN dynamicpruning#10
 BroadcastExchange (33)
-+- * ColumnarToRow (32)
++- * CometColumnarToRow (32)
    +- CometProject (31)
       +- CometFilter (30)
          +- CometScan parquet spark_catalog.default.date_dim (29)
@@ -188,7 +188,7 @@ Condition : ((((isnotnull(d_year#24) AND isnotnull(d_moy#25)) AND (d_year#24 = 2
 Input [3]: [d_date_sk#23, d_year#24, d_moy#25]
 Arguments: [d_date_sk#23], [d_date_sk#23]
 
-(32) ColumnarToRow [codegen id : 1]
+(32) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#23]
 
 (33) BroadcastExchange

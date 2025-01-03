@@ -8,7 +8,7 @@ WholeStageCodegen (1)
               Exchange #1
                 WholeStageCodegen (1)
                   HashAggregate [ss_ext_discount_amt,ss_net_paid] [count,sum,count,sum,count,count,sum,count,sum,count]
-                    ColumnarToRow
+                    CometColumnarToRow
                       InputAdapter
                         CometProject [ss_ext_discount_amt,ss_net_paid]
                           CometFilter [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
@@ -23,7 +23,7 @@ WholeStageCodegen (1)
               Exchange #2
                 WholeStageCodegen (1)
                   HashAggregate [ss_ext_discount_amt,ss_net_paid] [count,sum,count,sum,count,count,sum,count,sum,count]
-                    ColumnarToRow
+                    CometColumnarToRow
                       InputAdapter
                         CometProject [ss_ext_discount_amt,ss_net_paid]
                           CometFilter [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
@@ -38,7 +38,7 @@ WholeStageCodegen (1)
               Exchange #3
                 WholeStageCodegen (1)
                   HashAggregate [ss_ext_discount_amt,ss_net_paid] [count,sum,count,sum,count,count,sum,count,sum,count]
-                    ColumnarToRow
+                    CometColumnarToRow
                       InputAdapter
                         CometProject [ss_ext_discount_amt,ss_net_paid]
                           CometFilter [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
@@ -53,7 +53,7 @@ WholeStageCodegen (1)
               Exchange #4
                 WholeStageCodegen (1)
                   HashAggregate [ss_ext_discount_amt,ss_net_paid] [count,sum,count,sum,count,count,sum,count,sum,count]
-                    ColumnarToRow
+                    CometColumnarToRow
                       InputAdapter
                         CometProject [ss_ext_discount_amt,ss_net_paid]
                           CometFilter [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
@@ -68,14 +68,14 @@ WholeStageCodegen (1)
               Exchange #5
                 WholeStageCodegen (1)
                   HashAggregate [ss_ext_discount_amt,ss_net_paid] [count,sum,count,sum,count,count,sum,count,sum,count]
-                    ColumnarToRow
+                    CometColumnarToRow
                       InputAdapter
                         CometProject [ss_ext_discount_amt,ss_net_paid]
                           CometFilter [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
                             CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
     ReusedSubquery [mergedValue] #5
     ReusedSubquery [mergedValue] #5
-    ColumnarToRow
+    CometColumnarToRow
       InputAdapter
         CometFilter [r_reason_sk]
           CometScan parquet spark_catalog.default.reason [r_reason_sk]

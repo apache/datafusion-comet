@@ -1,5 +1,5 @@
 WholeStageCodegen (1)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [prev_year,year,i_brand_id,i_class_id,i_category_id,i_manufact_id,prev_yr_cnt,curr_yr_cnt,sales_cnt_diff,sales_amt_diff]
         CometProject [d_year,d_year,sales_cnt,sales_cnt,sales_amt,sales_amt] [prev_year,year,i_brand_id,i_class_id,i_category_id,i_manufact_id,prev_yr_cnt,curr_yr_cnt,sales_cnt_diff,sales_amt_diff]
@@ -27,7 +27,7 @@ WholeStageCodegen (1)
                                                     SubqueryBroadcast [d_date_sk] #1
                                                       BroadcastExchange #5
                                                         WholeStageCodegen (1)
-                                                          ColumnarToRow
+                                                          CometColumnarToRow
                                                             InputAdapter
                                                               CometFilter [d_date_sk,d_year]
                                                                 CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
@@ -102,7 +102,7 @@ WholeStageCodegen (1)
                                                     SubqueryBroadcast [d_date_sk] #2
                                                       BroadcastExchange #17
                                                         WholeStageCodegen (1)
-                                                          ColumnarToRow
+                                                          CometColumnarToRow
                                                             InputAdapter
                                                               CometFilter [d_date_sk,d_year]
                                                                 CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
