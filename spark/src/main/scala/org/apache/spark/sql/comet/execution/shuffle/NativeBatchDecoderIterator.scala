@@ -138,7 +138,9 @@ case class NativeBatchDecoderIterator(
     val bytesToRead = compressedLength - 8
     var dataBuf = threadLocalDataBuf.get()
     if (dataBuf.capacity() < bytesToRead) {
-      val newCapacity = bytesToRead * 2
+      // it is unlikely that we would overflow here since it would
+      // require a 1GB compressed shuffle block but we check anyway
+      val newCapacity = (bytesToRead * 2L).min(Integer.MAX_VALUE).toInt
       dataBuf = ByteBuffer.allocateDirect(newCapacity)
       threadLocalDataBuf.set(dataBuf)
     }
