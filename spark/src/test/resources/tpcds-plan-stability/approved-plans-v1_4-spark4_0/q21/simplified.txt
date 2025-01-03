@@ -6,7 +6,7 @@ TakeOrderedAndProject [w_warehouse_name,i_item_id,inv_before,inv_after]
           Exchange [w_warehouse_name,i_item_id] #1
             WholeStageCodegen (1)
               HashAggregate [w_warehouse_name,i_item_id,d_date,inv_quantity_on_hand] [sum,sum,sum,sum]
-                ColumnarToRow
+                CometColumnarToRow
                   InputAdapter
                     CometProject [inv_quantity_on_hand,w_warehouse_name,i_item_id,d_date]
                       CometBroadcastHashJoin [inv_quantity_on_hand,inv_date_sk,w_warehouse_name,i_item_id,d_date_sk,d_date]
@@ -19,7 +19,7 @@ TakeOrderedAndProject [w_warehouse_name,i_item_id,inv_before,inv_after]
                                     SubqueryBroadcast [d_date_sk] #1
                                       BroadcastExchange #2
                                         WholeStageCodegen (1)
-                                          ColumnarToRow
+                                          CometColumnarToRow
                                             InputAdapter
                                               CometFilter [d_date_sk,d_date]
                                                 CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date]

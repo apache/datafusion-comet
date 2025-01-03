@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (39)
+* CometColumnarToRow (39)
 +- CometTakeOrderedAndProject (38)
    +- CometHashAggregate (37)
       +- CometExchange (36)
@@ -220,14 +220,14 @@ Functions [1]: [count(1)]
 Input [14]: [cd_gender#23, cd_marital_status#24, cd_education_status#25, cnt1#32, cd_purchase_estimate#26, cnt2#33, cd_credit_rating#27, cnt3#34, cd_dep_count#28, cnt4#35, cd_dep_employed_count#29, cnt5#36, cd_dep_college_count#30, cnt6#37]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[cd_gender#23 ASC NULLS FIRST,cd_marital_status#24 ASC NULLS FIRST,cd_education_status#25 ASC NULLS FIRST,cd_purchase_estimate#26 ASC NULLS FIRST,cd_credit_rating#27 ASC NULLS FIRST,cd_dep_count#28 ASC NULLS FIRST,cd_dep_employed_count#29 ASC NULLS FIRST,cd_dep_college_count#30 ASC NULLS FIRST], output=[cd_gender#23,cd_marital_status#24,cd_education_status#25,cnt1#32,cd_purchase_estimate#26,cnt2#33,cd_credit_rating#27,cnt3#34,cd_dep_count#28,cnt4#35,cd_dep_employed_count#29,cnt5#36,cd_dep_college_count#30,cnt6#37]), [cd_gender#23, cd_marital_status#24, cd_education_status#25, cnt1#32, cd_purchase_estimate#26, cnt2#33, cd_credit_rating#27, cnt3#34, cd_dep_count#28, cnt4#35, cd_dep_employed_count#29, cnt5#36, cd_dep_college_count#30, cnt6#37], 100, [cd_gender#23 ASC NULLS FIRST, cd_marital_status#24 ASC NULLS FIRST, cd_education_status#25 ASC NULLS FIRST, cd_purchase_estimate#26 ASC NULLS FIRST, cd_credit_rating#27 ASC NULLS FIRST, cd_dep_count#28 ASC NULLS FIRST, cd_dep_employed_count#29 ASC NULLS FIRST, cd_dep_college_count#30 ASC NULLS FIRST], [cd_gender#23, cd_marital_status#24, cd_education_status#25, cnt1#32, cd_purchase_estimate#26, cnt2#33, cd_credit_rating#27, cnt3#34, cd_dep_count#28, cnt4#35, cd_dep_employed_count#29, cnt5#36, cd_dep_college_count#30, cnt6#37]
 
-(39) ColumnarToRow [codegen id : 1]
+(39) CometColumnarToRow [codegen id : 1]
 Input [14]: [cd_gender#23, cd_marital_status#24, cd_education_status#25, cnt1#32, cd_purchase_estimate#26, cnt2#33, cd_credit_rating#27, cnt3#34, cd_dep_count#28, cnt4#35, cd_dep_employed_count#29, cnt5#36, cd_dep_college_count#30, cnt6#37]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 3 Hosting Expression = ss_sold_date_sk#5 IN dynamicpruning#6
 BroadcastExchange (44)
-+- * ColumnarToRow (43)
++- * CometColumnarToRow (43)
    +- CometProject (42)
       +- CometFilter (41)
          +- CometScan parquet spark_catalog.default.date_dim (40)
@@ -248,7 +248,7 @@ Condition : (((((isnotnull(d_year#8) AND isnotnull(d_moy#9)) AND (d_year#8 = 200
 Input [3]: [d_date_sk#7, d_year#8, d_moy#9]
 Arguments: [d_date_sk#7], [d_date_sk#7]
 
-(43) ColumnarToRow [codegen id : 1]
+(43) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#7]
 
 (44) BroadcastExchange
