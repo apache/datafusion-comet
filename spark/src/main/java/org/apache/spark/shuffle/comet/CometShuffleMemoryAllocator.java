@@ -52,7 +52,7 @@ public final class CometShuffleMemoryAllocator extends CometShuffleMemoryAllocat
         (boolean)
             CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_UNIFIED_MEMORY_ALLOCATOR_IN_TEST().get();
 
-    if (isSparkTesting && !useUnifiedMemAllocator) {
+    if (!useUnifiedMemAllocator) {
       synchronized (CometShuffleMemoryAllocator.class) {
         if (INSTANCE == null) {
           // CometTestShuffleMemoryAllocator handles pages by itself so it can be a singleton.

@@ -162,7 +162,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     memory_pool_type: jstring,
     memory_limit: jlong,
     memory_limit_per_task: jlong,
-    memory_fraction: jdouble,
     task_attempt_id: jlong,
     debug_native: jboolean,
     explain_native: jboolean,
@@ -208,7 +207,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             memory_pool_type,
             memory_limit,
             memory_limit_per_task,
-            memory_fraction,
         )?;
         let memory_pool =
             create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
@@ -281,14 +279,13 @@ fn parse_memory_pool_config(
     memory_pool_type: String,
     memory_limit: i64,
     memory_limit_per_task: i64,
-    memory_fraction: f64,
 ) -> CometResult<MemoryPoolConfig> {
     let memory_pool_config = if use_unified_memory_manager {
         MemoryPoolConfig::new(MemoryPoolType::Unified, 0)
     } else {
         // Use the memory pool from DF
-        let pool_size = (memory_limit as f64 * memory_fraction) as usize;
-        let pool_size_per_task = (memory_limit_per_task as f64 * memory_fraction) as usize;
+        let pool_size = memory_limit as usize;
+        let pool_size_per_task = memory_limit_per_task as usize;
         match memory_pool_type.as_str() {
             "fair_spill_task_shared" => {
                 MemoryPoolConfig::new(MemoryPoolType::FairSpillTaskShared, pool_size_per_task)

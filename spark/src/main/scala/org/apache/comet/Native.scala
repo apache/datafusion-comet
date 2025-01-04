@@ -55,7 +55,6 @@ class Native extends NativeBase {
       memory_pool_type: String,
       memory_limit: Long,
       memory_limit_per_task: Long,
-      memory_fraction: Double,
       task_attempt_id: Long,
       debug: Boolean,
       explain: Boolean,

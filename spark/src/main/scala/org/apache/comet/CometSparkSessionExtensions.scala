@@ -53,7 +53,7 @@ import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isOffHeapEnabled, isSpark34Plus, isSpark40Plus, isTesting, shouldApplySparkToColumnar, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark34Plus, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.rules.RewriteJoin
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -919,14 +919,6 @@ class CometSparkSessionExtensions
     }
 
     override def apply(plan: SparkPlan): SparkPlan = {
-
-      // Comet required off-heap memory to be enabled
-      if (!isOffHeapEnabled(conf) && !isTesting) {
-        logWarning("Comet native exec disabled because spark.memory.offHeap.enabled=false")
-        withInfo(plan, "Comet native exec disabled because spark.memory.offHeap.enabled=false")
-        return plan
-      }
-
       // DataFusion doesn't have ANSI mode. For now we just disable CometExec if ANSI mode is
       // enabled.
       if (isANSIEnabled(conf)) {
@@ -1187,21 +1179,12 @@ object CometSparkSessionExtensions extends Logging {
     }
   }
 
-  private[comet] def isOffHeapEnabled(conf: SQLConf): Boolean =
-    conf.getConfString("spark.memory.offHeap.enabled", "false").toBoolean
-
-  // Copied from org.apache.spark.util.Utils which is private to Spark.
-  private[comet] def isTesting: Boolean = {
-    System.getenv("SPARK_TESTING") != null || System.getProperty("spark.testing") != null
-  }
-
   // Check whether Comet shuffle is enabled:
   // 1. `COMET_EXEC_SHUFFLE_ENABLED` is true
   // 2. `spark.shuffle.manager` is set to `CometShuffleManager`
   // 3. Off-heap memory is enabled || Spark/Comet unit testing
   private[comet] def isCometShuffleEnabled(conf: SQLConf): Boolean =
-    COMET_EXEC_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf) &&
-      (isOffHeapEnabled(conf) || isTesting)
+    COMET_EXEC_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf)
 
   private[comet] def getCometShuffleNotEnabledReason(conf: SQLConf): Option[String] = {
     if (!COMET_EXEC_SHUFFLE_ENABLED.get(conf)) {
