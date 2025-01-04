@@ -91,12 +91,16 @@ use datafusion_comet_spark_expr::{
     TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
 use datafusion_common::scalar::ScalarStructBuilder;
-use datafusion_common::{tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter}, ExprSchema, JoinType as DFJoinType, ScalarValue};
+use datafusion_common::{
+    tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
+    ExprSchema, JoinType as DFJoinType, ScalarValue,
+};
 use datafusion_expr::{
     AggregateUDF, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
     WindowFunctionDefinition,
 };
 use datafusion_functions_nested::array_has::ArrayHas;
+use datafusion_functions_nested::length::ArrayLength;
 use datafusion_physical_expr::expressions::{Literal, StatsType};
 use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr::LexOrdering;
@@ -105,7 +109,6 @@ use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
-use datafusion_functions_nested::length::ArrayLength;
 
 // For clippy error on type_complexity.
 type PhyAggResult = Result<Vec<AggregateFunctionExpr>, ExecutionError>;
@@ -734,7 +737,8 @@ impl PhysicalPlanner {
                 Ok(array_has_expr)
             }
             ExprStruct::ArraySize(expr) => {
-                let src_array_expr = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let src_array_expr =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 Ok(Arc::new(ScalarFunctionExpr::new(
                     "array_size",
                     Arc::new(ScalarUDF::new_from_impl(ArrayLength::new())),
