@@ -65,7 +65,7 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr};
-use datafusion_functions_nested::concat::{ArrayAppend, ArrayPrepend};
+use datafusion_functions_nested::concat::ArrayAppend;
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
 use crate::execution::shuffle::CompressionCodec;
