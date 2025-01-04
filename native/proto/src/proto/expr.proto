@@ -85,6 +85,9 @@ message Expr {
     BinaryExpr array_append = 58;
     ArrayInsert array_insert = 59;
     BinaryExpr array_contains = 60;
+    UnaryExpr array_size = 61;
+    BinaryExpr sort_array = 62;
+    BinaryExpr array_prepend = 63;
   }
 }
 
