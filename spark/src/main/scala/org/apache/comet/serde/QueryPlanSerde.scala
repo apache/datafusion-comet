@@ -2278,12 +2278,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             expr.children(1),
             inputs,
             (builder, binaryExpr) => builder.setArrayAppend(binaryExpr))
-        case _ if expr.prettyName == "sort_array" =>
-          createBinaryExpr(
-            expr.children(0),
-            expr.children(1),
-            inputs,
-            (builder, binaryExpr) => builder.setSortArray(binaryExpr))
         case _ if expr.prettyName == "array_prepend" =>
           createBinaryExpr(
             expr.children(0),

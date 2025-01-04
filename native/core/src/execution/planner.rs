@@ -65,7 +65,7 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr};
-use datafusion_functions_nested::concat::ArrayAppend;
+use datafusion_functions_nested::concat::{ArrayAppend, ArrayPrepend};
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
 use crate::execution::shuffle::CompressionCodec;
@@ -91,10 +91,7 @@ use datafusion_comet_spark_expr::{
     TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
 use datafusion_common::scalar::ScalarStructBuilder;
-use datafusion_common::{
-    tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
-    JoinType as DFJoinType, ScalarValue,
-};
+use datafusion_common::{tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter}, ExprSchema, JoinType as DFJoinType, ScalarValue};
 use datafusion_expr::{
     AggregateUDF, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
     WindowFunctionDefinition,
@@ -108,6 +105,7 @@ use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
+use datafusion_functions_nested::length::ArrayLength;
 
 // For clippy error on type_complexity.
 type PhyAggResult = Result<Vec<AggregateFunctionExpr>, ExecutionError>;
@@ -735,14 +733,38 @@ impl PhysicalPlanner {
                 ));
                 Ok(array_has_expr)
             }
-            ExprStruct::SortArray(expr) => {
-                unimplemented!()
-            }
             ExprStruct::ArrayPrepend(expr) => {
-                unimplemented!()
+                let array_expr =
+                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let value_expr =
+                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let return_type = array_expr.data_type(&input_schema)?;
+                let args = vec![value_expr, Arc::clone(&array_expr)];
+                let array_prepend_expr = Arc::new(ScalarFunctionExpr::new(
+                    "array_prepend",
+                    Arc::new(ScalarUDF::new_from_impl(ArrayPrepend::new())),
+                    args,
+                    return_type,
+                ));
+                // If array is null return null else prepend the value to input array
+                let is_null_expr: Arc<dyn PhysicalExpr> = Arc::new(IsNullExpr::new(array_expr));
+                let null_literal_expr: Arc<dyn PhysicalExpr> =
+                    Arc::new(Literal::new(ScalarValue::Null));
+                let case_expr = CaseExpr::try_new(
+                    None,
+                    vec![(is_null_expr, null_literal_expr)],
+                    Some(array_prepend_expr),
+                )?;
+                Ok(Arc::new(case_expr))
             }
             ExprStruct::ArraySize(expr) => {
-                unimplemented!()
+                let src_array_expr = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                Ok(Arc::new(ScalarFunctionExpr::new(
+                    "array_size",
+                    Arc::new(ScalarUDF::new_from_impl(ArrayLength::new())),
+                    vec![src_array_expr],
+                    DataType::UInt64,
+                )))
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
