@@ -2540,6 +2540,4 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         spark.sql("SELECT array_size((CASE WHEN _2 =_3 THEN array(_4) END)) FROM t1"));
     }
   }
-
-  test("array_prepend") {}
 }
