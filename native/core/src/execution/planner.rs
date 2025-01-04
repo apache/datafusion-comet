@@ -733,30 +733,6 @@ impl PhysicalPlanner {
                 ));
                 Ok(array_has_expr)
             }
-            ExprStruct::ArrayPrepend(expr) => {
-                let array_expr =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let value_expr =
-                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let return_type = array_expr.data_type(&input_schema)?;
-                let args = vec![value_expr, Arc::clone(&array_expr)];
-                let array_prepend_expr = Arc::new(ScalarFunctionExpr::new(
-                    "array_prepend",
-                    Arc::new(ScalarUDF::new_from_impl(ArrayPrepend::new())),
-                    args,
-                    return_type,
-                ));
-                // If array is null return null else prepend the value to input array
-                let is_null_expr: Arc<dyn PhysicalExpr> = Arc::new(IsNullExpr::new(array_expr));
-                let null_literal_expr: Arc<dyn PhysicalExpr> =
-                    Arc::new(Literal::new(ScalarValue::Null));
-                let case_expr = CaseExpr::try_new(
-                    None,
-                    vec![(is_null_expr, null_literal_expr)],
-                    Some(array_prepend_expr),
-                )?;
-                Ok(Arc::new(case_expr))
-            }
             ExprStruct::ArraySize(expr) => {
                 let src_array_expr = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 Ok(Arc::new(ScalarFunctionExpr::new(
