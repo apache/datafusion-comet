@@ -52,7 +52,7 @@ Comet provides the following configuration settings.
 | spark.comet.exec.project.enabled | Whether to enable project by default. | true |
 | spark.comet.exec.replaceSortMergeJoin | Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin for improved performance. This feature is not stable yet. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html). | false |
 | spark.comet.exec.shuffle.compression.codec | The codec of Comet native shuffle used to compress shuffle data. lz4, zstd, and snappy are supported. Compression can be disabled by setting spark.shuffle.compress=false. | lz4 |
-| spark.comet.exec.shuffle.compression.level | The compression level to use when compressing shuffle files with zstd. | 1 |
+| spark.comet.exec.shuffle.compression.zstd.level | The compression level to use when compressing shuffle files with zstd. | 1 |
 | spark.comet.exec.shuffle.enabled | Whether to enable Comet native shuffle. Note that this requires setting 'spark.shuffle.manager' to 'org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager'. 'spark.shuffle.manager' must be set before starting the Spark application and cannot be changed during the application. | true |
 | spark.comet.exec.sort.enabled | Whether to enable sort by default. | true |
 | spark.comet.exec.sortMergeJoin.enabled | Whether to enable sortMergeJoin by default. | true |
