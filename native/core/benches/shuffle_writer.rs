@@ -35,23 +35,52 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.bench_function("shuffle_writer: encode (no compression))", |b| {
         let batch = create_batch(8192, true);
         let mut buffer = vec![];
-        let mut cursor = Cursor::new(&mut buffer);
         let ipc_time = Time::default();
-        b.iter(|| write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::None, &ipc_time));
+        b.iter(|| {
+            buffer.clear();
+            let mut cursor = Cursor::new(&mut buffer);
+            write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::None, &ipc_time)
+        });
+    });
+    group.bench_function("shuffle_writer: encode and compress (snappy)", |b| {
+        let batch = create_batch(8192, true);
+        let mut buffer = vec![];
+        let ipc_time = Time::default();
+        b.iter(|| {
+            buffer.clear();
+            let mut cursor = Cursor::new(&mut buffer);
+            write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::Snappy, &ipc_time)
+        });
+    });
+    group.bench_function("shuffle_writer: encode and compress (lz4)", |b| {
+        let batch = create_batch(8192, true);
+        let mut buffer = vec![];
+        let ipc_time = Time::default();
+        b.iter(|| {
+            buffer.clear();
+            let mut cursor = Cursor::new(&mut buffer);
+            write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::Lz4Frame, &ipc_time)
+        });
     });
     group.bench_function("shuffle_writer: encode and compress (zstd level 1)", |b| {
         let batch = create_batch(8192, true);
         let mut buffer = vec![];
-        let mut cursor = Cursor::new(&mut buffer);
         let ipc_time = Time::default();
-        b.iter(|| write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::Zstd(1), &ipc_time));
+        b.iter(|| {
+            buffer.clear();
+            let mut cursor = Cursor::new(&mut buffer);
+            write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::Zstd(1), &ipc_time)
+        });
     });
     group.bench_function("shuffle_writer: encode and compress (zstd level 6)", |b| {
         let batch = create_batch(8192, true);
         let mut buffer = vec![];
-        let mut cursor = Cursor::new(&mut buffer);
         let ipc_time = Time::default();
-        b.iter(|| write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::Zstd(6), &ipc_time));
+        b.iter(|| {
+            buffer.clear();
+            let mut cursor = Cursor::new(&mut buffer);
+            write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::Zstd(6), &ipc_time)
+        });
     });
     group.bench_function("shuffle_writer: end to end", |b| {
         let ctx = SessionContext::new();
