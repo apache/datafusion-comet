@@ -55,9 +55,9 @@ pub use negative::{create_negate_expr, NegativeExpr};
 mod normalize_nan;
 mod temporal;
 
+mod json_funcs;
 pub mod test_common;
 pub mod timezone;
-mod to_json;
 mod unbound;
 pub use unbound::UnboundColumn;
 pub mod utils;
@@ -70,11 +70,11 @@ pub use cast::{spark_cast, Cast, SparkCastOptions};
 pub use comet_scalar_funcs::create_comet_physical_fun;
 pub use error::{SparkError, SparkResult};
 pub use if_expr::IfExpr;
+pub use json_funcs::*;
 pub use list::{ArrayInsert, GetArrayStructFields, ListExtract};
 pub use regexp::RLike;
 pub use structs::{CreateNamedStruct, GetStructField};
 pub use temporal::{DateTruncExpr, HourExpr, MinuteExpr, SecondExpr, TimestampTruncExpr};
-pub use to_json::ToJson;
 
 /// Spark supports three evaluation modes when evaluating expressions, which affect
 /// the behavior when processing input values that are invalid or would result in an
