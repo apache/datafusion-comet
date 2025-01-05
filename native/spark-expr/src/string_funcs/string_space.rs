@@ -46,7 +46,6 @@ impl PartialEq for StringSpaceExpr {
     }
 }
 
-
 impl StringSpaceExpr {
     pub fn new(child: Arc<dyn PhysicalExpr>) -> Self {
         Self { child }

@@ -72,10 +72,10 @@ pub use error::{SparkError, SparkResult};
 pub use if_expr::IfExpr;
 pub use list::{ArrayInsert, GetArrayStructFields, ListExtract};
 pub use regexp::RLike;
+pub use string_funcs::*;
 pub use structs::{CreateNamedStruct, GetStructField};
 pub use temporal::{DateTruncExpr, HourExpr, MinuteExpr, SecondExpr, TimestampTruncExpr};
 pub use to_json::ToJson;
-pub use string_funcs::*;
 
 /// Spark supports three evaluation modes when evaluating expressions, which affect
 /// the behavior when processing input values that are invalid or would result in an

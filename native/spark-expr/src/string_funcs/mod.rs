@@ -1,5 +1,5 @@
-mod string_space;
 mod prediction;
+mod string_space;
 mod substring;
 
 pub use prediction::*;
