@@ -62,7 +62,7 @@ pub use unbound::UnboundColumn;
 pub mod utils;
 pub use normalize_nan::NormalizeNaNAndZero;
 mod predicate_funcs;
-pub use predicate_funcs::*;
+pub use predicate_funcs::{spark_isnan, RLike};
 
 mod variance;
 pub use variance::Variance;
