@@ -21,7 +21,6 @@ use arrow_array::{Float64Array, RecordBatch};
 use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion_common::ScalarValue;
 use datafusion_common::{DataFusionError, Result};
 use std::any::Any;
@@ -134,12 +133,17 @@ impl Display for RandExpr {
     }
 }
 
-impl PartialEq<dyn Any> for RandExpr {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| self.seed.eq(&x.seed))
-            .unwrap_or(false)
+impl PartialEq for RandExpr {
+    fn eq(&self, other: &Self) -> bool {
+        self.seed.eq(&other.seed) && self.init_seed_shift == other.init_seed_shift
+    }
+}
+
+impl Eq for RandExpr {}
+
+impl Hash for RandExpr {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.children().hash(state);
     }
 }
 
@@ -178,11 +182,6 @@ impl PhysicalExpr for RandExpr {
             Arc::clone(&children[0]),
             self.init_seed_shift,
         )))
-    }
-
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.children().hash(&mut s);
     }
 }
 

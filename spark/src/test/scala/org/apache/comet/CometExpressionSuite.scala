@@ -2529,7 +2529,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         spark.sql("SELECT array_contains((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
     }
   }
-  
+
   test("rand expression with random parameters") {
     val partitionsNumber = Random.nextInt(10) + 1
     val rowsNumber = Random.nextInt(500)
