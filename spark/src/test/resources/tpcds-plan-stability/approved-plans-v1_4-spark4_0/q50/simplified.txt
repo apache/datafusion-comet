@@ -5,7 +5,7 @@ TakeOrderedAndProject [s_store_name,s_company_id,s_street_number,s_street_name,s
         Exchange [s_store_name,s_company_id,s_street_number,s_street_name,s_street_type,s_suite_number,s_city,s_county,s_state,s_zip] #1
           WholeStageCodegen (1)
             HashAggregate [s_store_name,s_company_id,s_street_number,s_street_name,s_street_type,s_suite_number,s_city,s_county,s_state,s_zip,sr_returned_date_sk,ss_sold_date_sk] [sum,sum,sum,sum,sum,sum,sum,sum,sum,sum]
-              ColumnarToRow
+              CometColumnarToRow
                 InputAdapter
                   CometProject [ss_sold_date_sk,sr_returned_date_sk,s_store_name,s_company_id,s_street_number,s_street_name,s_street_type,s_suite_number,s_city,s_county,s_state,s_zip]
                     CometBroadcastHashJoin [ss_sold_date_sk,sr_returned_date_sk,s_store_name,s_company_id,s_street_number,s_street_name,s_street_type,s_suite_number,s_city,s_county,s_state,s_zip,d_date_sk]
@@ -23,7 +23,7 @@ TakeOrderedAndProject [s_store_name,s_company_id,s_street_number,s_street_name,s
                                         SubqueryBroadcast [d_date_sk] #1
                                           BroadcastExchange #3
                                             WholeStageCodegen (1)
-                                              ColumnarToRow
+                                              CometColumnarToRow
                                                 InputAdapter
                                                   CometProject [d_date_sk]
                                                     CometFilter [d_date_sk,d_year,d_moy]

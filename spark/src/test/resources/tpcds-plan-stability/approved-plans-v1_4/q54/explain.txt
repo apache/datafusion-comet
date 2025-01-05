@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (56)
+* CometColumnarToRow (56)
 +- CometTakeOrderedAndProject (55)
    +- CometHashAggregate (54)
       +- CometExchange (53)
@@ -320,14 +320,14 @@ Functions [1]: [count(1)]
 Input [3]: [segment#38, num_customers#40, segment_base#41]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[segment#38 ASC NULLS FIRST,num_customers#40 ASC NULLS FIRST], output=[segment#38,num_customers#40,segment_base#41]), [segment#38, num_customers#40, segment_base#41], 100, [segment#38 ASC NULLS FIRST, num_customers#40 ASC NULLS FIRST], [segment#38, num_customers#40, segment_base#41]
 
-(56) ColumnarToRow [codegen id : 1]
+(56) CometColumnarToRow [codegen id : 1]
 Input [3]: [segment#38, num_customers#40, segment_base#41]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = cs_sold_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (61)
-+- * ColumnarToRow (60)
++- * CometColumnarToRow (60)
    +- CometProject (59)
       +- CometFilter (58)
          +- CometScan parquet spark_catalog.default.date_dim (57)
@@ -348,7 +348,7 @@ Condition : ((((isnotnull(d_moy#19) AND isnotnull(d_year#18)) AND (d_moy#19 = 12
 Input [3]: [d_date_sk#17, d_year#18, d_moy#19]
 Arguments: [d_date_sk#17], [d_date_sk#17]
 
-(60) ColumnarToRow [codegen id : 1]
+(60) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#17]
 
 (61) BroadcastExchange
@@ -359,7 +359,7 @@ Subquery:2 Hosting operator id = 4 Hosting Expression = ws_sold_date_sk#10 IN dy
 
 Subquery:3 Hosting operator id = 28 Hosting Expression = ss_sold_date_sk#24 IN dynamicpruning#25
 BroadcastExchange (66)
-+- * ColumnarToRow (65)
++- * CometColumnarToRow (65)
    +- CometProject (64)
       +- CometFilter (63)
          +- CometScan parquet spark_catalog.default.date_dim (62)
@@ -380,7 +380,7 @@ Condition : (((isnotnull(d_month_seq#32) AND (d_month_seq#32 >= Subquery scalar-
 Input [2]: [d_date_sk#31, d_month_seq#32]
 Arguments: [d_date_sk#31], [d_date_sk#31]
 
-(65) ColumnarToRow [codegen id : 1]
+(65) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#31]
 
 (66) BroadcastExchange
@@ -388,7 +388,7 @@ Input [1]: [d_date_sk#31]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=5]
 
 Subquery:4 Hosting operator id = 63 Hosting Expression = Subquery scalar-subquery#33, [id=#34]
-* ColumnarToRow (73)
+* CometColumnarToRow (73)
 +- CometHashAggregate (72)
    +- CometExchange (71)
       +- CometHashAggregate (70)
@@ -426,11 +426,11 @@ Input [1]: [(d_month_seq + 1)#45]
 Keys [1]: [(d_month_seq + 1)#45]
 Functions: []
 
-(73) ColumnarToRow [codegen id : 1]
+(73) CometColumnarToRow [codegen id : 1]
 Input [1]: [(d_month_seq + 1)#45]
 
 Subquery:5 Hosting operator id = 63 Hosting Expression = Subquery scalar-subquery#35, [id=#36]
-* ColumnarToRow (80)
+* CometColumnarToRow (80)
 +- CometHashAggregate (79)
    +- CometExchange (78)
       +- CometHashAggregate (77)
@@ -468,7 +468,7 @@ Input [1]: [(d_month_seq + 3)#49]
 Keys [1]: [(d_month_seq + 3)#49]
 Functions: []
 
-(80) ColumnarToRow [codegen id : 1]
+(80) CometColumnarToRow [codegen id : 1]
 Input [1]: [(d_month_seq + 3)#49]
 
 Subquery:6 Hosting operator id = 44 Hosting Expression = ReusedSubquery Subquery scalar-subquery#33, [id=#34]

@@ -32,7 +32,7 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                               InputAdapter
                                                                 Window [ws_item_sk,d_date]
                                                                   WholeStageCodegen (1)
-                                                                    ColumnarToRow
+                                                                    CometColumnarToRow
                                                                       InputAdapter
                                                                         CometSort [item_sk,d_date,sumws,ws_item_sk]
                                                                           CometExchange [ws_item_sk] #4
@@ -46,7 +46,7 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                                                           SubqueryBroadcast [d_date_sk] #1
                                                                                             BroadcastExchange #6
                                                                                               WholeStageCodegen (1)
-                                                                                                ColumnarToRow
+                                                                                                CometColumnarToRow
                                                                                                   InputAdapter
                                                                                                     CometProject [d_date_sk,d_date]
                                                                                                       CometFilter [d_date_sk,d_date,d_month_seq]
@@ -62,7 +62,7 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                                     InputAdapter
                                                                       Window [ws_item_sk,d_date]
                                                                         WholeStageCodegen (2)
-                                                                          ColumnarToRow
+                                                                          CometColumnarToRow
                                                                             InputAdapter
                                                                               CometSort [item_sk,d_date,sumws,ws_item_sk]
                                                                                 ReusedExchange [item_sk,d_date,sumws,ws_item_sk] #4
@@ -83,7 +83,7 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                               InputAdapter
                                                                 Window [ss_item_sk,d_date]
                                                                   WholeStageCodegen (7)
-                                                                    ColumnarToRow
+                                                                    CometColumnarToRow
                                                                       InputAdapter
                                                                         CometSort [item_sk,d_date,sumss,ss_item_sk]
                                                                           CometExchange [ss_item_sk] #11
@@ -103,7 +103,7 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                                     InputAdapter
                                                                       Window [ss_item_sk,d_date]
                                                                         WholeStageCodegen (8)
-                                                                          ColumnarToRow
+                                                                          CometColumnarToRow
                                                                             InputAdapter
                                                                               CometSort [item_sk,d_date,sumss,ss_item_sk]
                                                                                 ReusedExchange [item_sk,d_date,sumss,ss_item_sk] #11
