@@ -19,14 +19,10 @@
 // The lint makes easier for code reader/reviewer separate references clones from more heavyweight ones
 #![deny(clippy::clone_on_ref_ptr)]
 
-mod cast;
 mod error;
-mod if_expr;
 
 mod avg;
 pub use avg::Avg;
-mod bitwise_not;
-pub use bitwise_not::{bitwise_not, BitwiseNotExpr};
 mod avg_decimal;
 pub use avg_decimal::AvgDecimal;
 mod checkoverflow;
@@ -38,7 +34,6 @@ pub use covariance::Covariance;
 mod strings;
 pub use strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExpr, SubstringExpr};
 mod kernels;
-mod list;
 mod regexp;
 pub mod scalar_funcs;
 mod schema_adapter;
@@ -65,12 +60,19 @@ pub use normalize_nan::NormalizeNaNAndZero;
 
 mod variance;
 pub use variance::Variance;
+mod array_funcs;
+mod bitwise_funcs;
 mod comet_scalar_funcs;
-pub use cast::{spark_cast, Cast, SparkCastOptions};
+mod conditional_funcs;
+mod conversion_funcs;
+
+pub use array_funcs::*;
+pub use bitwise_funcs::*;
+pub use conditional_funcs::*;
+pub use conversion_funcs::*;
+
 pub use comet_scalar_funcs::create_comet_physical_fun;
 pub use error::{SparkError, SparkResult};
-pub use if_expr::IfExpr;
-pub use list::{ArrayInsert, GetArrayStructFields, ListExtract};
 pub use regexp::RLike;
 pub use structs::{CreateNamedStruct, GetStructField};
 pub use temporal::{DateTruncExpr, HourExpr, MinuteExpr, SecondExpr, TimestampTruncExpr};
