@@ -53,7 +53,6 @@ pub use sum_decimal::SumDecimal;
 mod negative;
 pub use negative::{create_negate_expr, NegativeExpr};
 mod normalize_nan;
-mod temporal;
 
 pub mod test_common;
 pub mod timezone;
@@ -66,14 +65,16 @@ pub use normalize_nan::NormalizeNaNAndZero;
 mod variance;
 pub use variance::Variance;
 mod comet_scalar_funcs;
+mod datetime_funcs;
+
 pub use cast::{spark_cast, Cast, SparkCastOptions};
 pub use comet_scalar_funcs::create_comet_physical_fun;
+pub use datetime_funcs::*;
 pub use error::{SparkError, SparkResult};
 pub use if_expr::IfExpr;
 pub use list::{ArrayInsert, GetArrayStructFields, ListExtract};
 pub use regexp::RLike;
 pub use structs::{CreateNamedStruct, GetStructField};
-pub use temporal::{DateTruncExpr, HourExpr, MinuteExpr, SecondExpr, TimestampTruncExpr};
 pub use to_json::ToJson;
 
 /// Spark supports three evaluation modes when evaluating expressions, which affect
