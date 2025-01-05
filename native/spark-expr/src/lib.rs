@@ -44,7 +44,6 @@ pub mod scalar_funcs;
 mod schema_adapter;
 pub use schema_adapter::SparkSchemaAdapterFactory;
 
-pub mod spark_hash;
 mod stddev;
 pub use stddev::Stddev;
 mod structs;
@@ -66,7 +65,7 @@ pub use normalize_nan::NormalizeNaNAndZero;
 mod variance;
 pub use variance::Variance;
 mod comet_scalar_funcs;
-mod hash_funcs;
+pub mod hash_funcs;
 
 pub use cast::{spark_cast, Cast, SparkCastOptions};
 pub use comet_scalar_funcs::create_comet_physical_fun;
