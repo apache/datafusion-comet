@@ -15,9 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::scalar_funcs::hex::hex_strings;
 use crate::spark_hash::{create_murmur3_hashes, create_xxhash64_hashes};
 
+use crate::math_funcs::hex::hex_strings;
 use arrow_array::{Array, ArrayRef, Int32Array, Int64Array, StringArray};
 use datafusion::functions::crypto::{sha224, sha256, sha384, sha512};
 use datafusion_common::cast::as_binary_array;
