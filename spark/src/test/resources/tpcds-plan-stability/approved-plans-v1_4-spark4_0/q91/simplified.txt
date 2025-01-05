@@ -1,5 +1,5 @@
 WholeStageCodegen (3)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometSort [Call_Center,Call_Center_Name,Manager,Returns_Loss]
         CometColumnarExchange [Returns_Loss] #1
@@ -9,7 +9,7 @@ WholeStageCodegen (3)
                 Exchange [cc_call_center_id,cc_name,cc_manager,cd_marital_status,cd_education_status] #2
                   WholeStageCodegen (1)
                     HashAggregate [cc_call_center_id,cc_name,cc_manager,cd_marital_status,cd_education_status,cr_net_loss] [sum,sum]
-                      ColumnarToRow
+                      CometColumnarToRow
                         InputAdapter
                           CometProject [cc_call_center_id,cc_name,cc_manager,cr_net_loss,cd_marital_status,cd_education_status]
                             CometBroadcastHashJoin [cc_call_center_id,cc_name,cc_manager,cr_net_loss,c_current_hdemo_sk,cd_marital_status,cd_education_status,hd_demo_sk]
@@ -31,7 +31,7 @@ WholeStageCodegen (3)
                                                         SubqueryBroadcast [d_date_sk] #1
                                                           BroadcastExchange #4
                                                             WholeStageCodegen (1)
-                                                              ColumnarToRow
+                                                              CometColumnarToRow
                                                                 InputAdapter
                                                                   CometProject [d_date_sk]
                                                                     CometFilter [d_date_sk,d_year,d_moy]

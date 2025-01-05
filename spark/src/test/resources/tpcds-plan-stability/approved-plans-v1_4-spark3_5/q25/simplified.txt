@@ -1,5 +1,5 @@
 WholeStageCodegen (1)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [i_item_id,i_item_desc,s_store_id,s_store_name,store_sales_profit,store_returns_loss,catalog_sales_profit]
         CometHashAggregate [i_item_id,i_item_desc,s_store_id,s_store_name,store_sales_profit,store_returns_loss,catalog_sales_profit,sum,sum,sum,sum(UnscaledValue(ss_net_profit)),sum(UnscaledValue(sr_net_loss)),sum(UnscaledValue(cs_net_profit))]
@@ -24,7 +24,7 @@ WholeStageCodegen (1)
                                               SubqueryBroadcast [d_date_sk] #1
                                                 BroadcastExchange #2
                                                   WholeStageCodegen (1)
-                                                    ColumnarToRow
+                                                    CometColumnarToRow
                                                       InputAdapter
                                                         CometProject [d_date_sk]
                                                           CometFilter [d_date_sk,d_year,d_moy]
@@ -35,7 +35,7 @@ WholeStageCodegen (1)
                                                 SubqueryBroadcast [d_date_sk] #2
                                                   BroadcastExchange #4
                                                     WholeStageCodegen (1)
-                                                      ColumnarToRow
+                                                      CometColumnarToRow
                                                         InputAdapter
                                                           CometProject [d_date_sk]
                                                             CometFilter [d_date_sk,d_year,d_moy]

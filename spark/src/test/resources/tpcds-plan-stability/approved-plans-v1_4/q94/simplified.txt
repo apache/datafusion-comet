@@ -5,7 +5,7 @@ WholeStageCodegen (2)
         WholeStageCodegen (1)
           HashAggregate [ws_order_number] [sum(UnscaledValue(ws_ext_ship_cost)),sum(UnscaledValue(ws_net_profit)),count(ws_order_number),sum,sum,count,sum,sum,count]
             HashAggregate [ws_order_number] [sum(UnscaledValue(ws_ext_ship_cost)),sum(UnscaledValue(ws_net_profit)),sum,sum,sum,sum]
-              ColumnarToRow
+              CometColumnarToRow
                 InputAdapter
                   CometHashAggregate [ws_order_number,sum,sum,ws_ext_ship_cost,ws_net_profit]
                     CometProject [ws_order_number,ws_ext_ship_cost,ws_net_profit]

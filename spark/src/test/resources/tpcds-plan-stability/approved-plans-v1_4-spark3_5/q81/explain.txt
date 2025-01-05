@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (47)
+* CometColumnarToRow (47)
 +- CometTakeOrderedAndProject (46)
    +- CometProject (45)
       +- CometBroadcastHashJoin (44)
@@ -263,14 +263,14 @@ Arguments: [c_customer_id#29, c_salutation#31, c_first_name#32, c_last_name#33, 
 Input [16]: [c_customer_id#29, c_salutation#31, c_first_name#32, c_last_name#33, ca_street_number#35, ca_street_name#36, ca_street_type#37, ca_suite_number#38, ca_city#39, ca_county#40, ca_state#41, ca_zip#42, ca_country#43, ca_gmt_offset#44, ca_location_type#45, ctr_total_return#13]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[c_customer_id#29 ASC NULLS FIRST,c_salutation#31 ASC NULLS FIRST,c_first_name#32 ASC NULLS FIRST,c_last_name#33 ASC NULLS FIRST,ca_street_number#35 ASC NULLS FIRST,ca_street_name#36 ASC NULLS FIRST,ca_street_type#37 ASC NULLS FIRST,ca_suite_number#38 ASC NULLS FIRST,ca_city#39 ASC NULLS FIRST,ca_county#40 ASC NULLS FIRST,ca_state#41 ASC NULLS FIRST,ca_zip#42 ASC NULLS FIRST,ca_country#43 ASC NULLS FIRST,ca_gmt_offset#44 ASC NULLS FIRST,ca_location_type#45 ASC NULLS FIRST,ctr_total_return#13 ASC NULLS FIRST], output=[c_customer_id#29,c_salutation#31,c_first_name#32,c_last_name#33,ca_street_number#35,ca_street_name#36,ca_street_type#37,ca_suite_number#38,ca_city#39,ca_county#40,ca_state#41,ca_zip#42,ca_country#43,ca_gmt_offset#44,ca_location_type#45,ctr_total_return#13]), [c_customer_id#29, c_salutation#31, c_first_name#32, c_last_name#33, ca_street_number#35, ca_street_name#36, ca_street_type#37, ca_suite_number#38, ca_city#39, ca_county#40, ca_state#41, ca_zip#42, ca_country#43, ca_gmt_offset#44, ca_location_type#45, ctr_total_return#13], 100, [c_customer_id#29 ASC NULLS FIRST, c_salutation#31 ASC NULLS FIRST, c_first_name#32 ASC NULLS FIRST, c_last_name#33 ASC NULLS FIRST, ca_street_number#35 ASC NULLS FIRST, ca_street_name#36 ASC NULLS FIRST, ca_street_type#37 ASC NULLS FIRST, ca_suite_number#38 ASC NULLS FIRST, ca_city#39 ASC NULLS FIRST, ca_county#40 ASC NULLS FIRST, ca_state#41 ASC NULLS FIRST, ca_zip#42 ASC NULLS FIRST, ca_country#43 ASC NULLS FIRST, ca_gmt_offset#44 ASC NULLS FIRST, ca_location_type#45 ASC NULLS FIRST, ctr_total_return#13 ASC NULLS FIRST], [c_customer_id#29, c_salutation#31, c_first_name#32, c_last_name#33, ca_street_number#35, ca_street_name#36, ca_street_type#37, ca_suite_number#38, ca_city#39, ca_county#40, ca_state#41, ca_zip#42, ca_country#43, ca_gmt_offset#44, ca_location_type#45, ctr_total_return#13]
 
-(47) ColumnarToRow [codegen id : 1]
+(47) CometColumnarToRow [codegen id : 1]
 Input [16]: [c_customer_id#29, c_salutation#31, c_first_name#32, c_last_name#33, ca_street_number#35, ca_street_name#36, ca_street_type#37, ca_suite_number#38, ca_city#39, ca_county#40, ca_state#41, ca_zip#42, ca_country#43, ca_gmt_offset#44, ca_location_type#45, ctr_total_return#13]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = cr_returned_date_sk#4 IN dynamicpruning#5
 BroadcastExchange (52)
-+- * ColumnarToRow (51)
++- * CometColumnarToRow (51)
    +- CometProject (50)
       +- CometFilter (49)
          +- CometScan parquet spark_catalog.default.date_dim (48)
@@ -291,7 +291,7 @@ Condition : ((isnotnull(d_year#7) AND (d_year#7 = 2000)) AND isnotnull(d_date_sk
 Input [2]: [d_date_sk#6, d_year#7]
 Arguments: [d_date_sk#6], [d_date_sk#6]
 
-(51) ColumnarToRow [codegen id : 1]
+(51) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#6]
 
 (52) BroadcastExchange

@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (37)
+* CometColumnarToRow (37)
 +- CometSort (36)
    +- CometColumnarExchange (35)
       +- CometHashAggregate (34)
@@ -209,14 +209,14 @@ Arguments: rangepartitioning(ext_price#41 DESC NULLS LAST, brand_id#39 ASC NULLS
 Input [5]: [brand_id#39, brand#40, t_hour#35, t_minute#36, ext_price#41]
 Arguments: [brand_id#39, brand#40, t_hour#35, t_minute#36, ext_price#41], [ext_price#41 DESC NULLS LAST, brand_id#39 ASC NULLS FIRST]
 
-(37) ColumnarToRow [codegen id : 1]
+(37) CometColumnarToRow [codegen id : 1]
 Input [5]: [brand_id#39, brand#40, t_hour#35, t_minute#36, ext_price#41]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 5 Hosting Expression = ws_sold_date_sk#8 IN dynamicpruning#9
 BroadcastExchange (42)
-+- * ColumnarToRow (41)
++- * CometColumnarToRow (41)
    +- CometProject (40)
       +- CometFilter (39)
          +- CometScan parquet spark_catalog.default.date_dim (38)
@@ -237,7 +237,7 @@ Condition : ((((isnotnull(d_moy#12) AND isnotnull(d_year#11)) AND (d_moy#12 = 11
 Input [3]: [d_date_sk#10, d_year#11, d_moy#12]
 Arguments: [d_date_sk#10], [d_date_sk#10]
 
-(41) ColumnarToRow [codegen id : 1]
+(41) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#10]
 
 (42) BroadcastExchange

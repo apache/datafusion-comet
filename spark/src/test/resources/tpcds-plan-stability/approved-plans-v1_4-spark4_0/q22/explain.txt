@@ -3,7 +3,7 @@ TakeOrderedAndProject (24)
 +- * HashAggregate (23)
    +- Exchange (22)
       +- * HashAggregate (21)
-         +- * ColumnarToRow (20)
+         +- * CometColumnarToRow (20)
             +- CometExpand (19)
                +- CometProject (18)
                   +- CometBroadcastHashJoin (17)
@@ -117,7 +117,7 @@ Arguments: [inv_quantity_on_hand#3, i_product_name#12, i_brand#9, i_class#10, i_
 Input [5]: [inv_quantity_on_hand#3, i_product_name#12, i_brand#9, i_class#10, i_category#11]
 Arguments: [[inv_quantity_on_hand#3, i_product_name#12, i_brand#9, i_class#10, i_category#11, 0], [inv_quantity_on_hand#3, i_product_name#12, i_brand#9, i_class#10, null, 1], [inv_quantity_on_hand#3, i_product_name#12, i_brand#9, null, null, 3], [inv_quantity_on_hand#3, i_product_name#12, null, null, null, 7], [inv_quantity_on_hand#3, null, null, null, null, 15]], [inv_quantity_on_hand#3, i_product_name#14, i_brand#15, i_class#16, i_category#17, spark_grouping_id#18]
 
-(20) ColumnarToRow [codegen id : 1]
+(20) CometColumnarToRow [codegen id : 1]
 Input [6]: [inv_quantity_on_hand#3, i_product_name#14, i_brand#15, i_class#16, i_category#17, spark_grouping_id#18]
 
 (21) HashAggregate [codegen id : 1]
@@ -146,7 +146,7 @@ Arguments: 100, [qoh#24 ASC NULLS FIRST, i_product_name#14 ASC NULLS FIRST, i_br
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = inv_date_sk#4 IN dynamicpruning#5
 BroadcastExchange (29)
-+- * ColumnarToRow (28)
++- * CometColumnarToRow (28)
    +- CometProject (27)
       +- CometFilter (26)
          +- CometScan parquet spark_catalog.default.date_dim (25)
@@ -167,7 +167,7 @@ Condition : (((isnotnull(d_month_seq#7) AND (d_month_seq#7 >= 1200)) AND (d_mont
 Input [2]: [d_date_sk#6, d_month_seq#7]
 Arguments: [d_date_sk#6], [d_date_sk#6]
 
-(28) ColumnarToRow [codegen id : 1]
+(28) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#6]
 
 (29) BroadcastExchange

@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (28)
+* CometColumnarToRow (28)
 +- CometTakeOrderedAndProject (27)
    +- CometHashAggregate (26)
       +- CometExchange (25)
@@ -158,6 +158,6 @@ Functions [5]: [sum(CASE WHEN ((ws_ship_date_sk#1 - ws_sold_date_sk#5) <= 30) TH
 Input [8]: [substr(w_warehouse_name, 1, 20)#20, sm_type#9, web_name#11, 30 days #21, 31 - 60 days #22, 61 - 90 days #23, 91 - 120 days #24, >120 days #25]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[substr(w_warehouse_name, 1, 20)#20 ASC NULLS FIRST,sm_type#9 ASC NULLS FIRST,web_name#11 ASC NULLS FIRST], output=[substr(w_warehouse_name, 1, 20)#20,sm_type#9,web_name#11,30 days #21,31 - 60 days #22,61 - 90 days #23,91 - 120 days #24,>120 days #25]), [substr(w_warehouse_name, 1, 20)#20, sm_type#9, web_name#11, 30 days #21, 31 - 60 days #22, 61 - 90 days #23, 91 - 120 days #24, >120 days #25], 100, [substr(w_warehouse_name, 1, 20)#20 ASC NULLS FIRST, sm_type#9 ASC NULLS FIRST, web_name#11 ASC NULLS FIRST], [substr(w_warehouse_name, 1, 20)#20, sm_type#9, web_name#11, 30 days #21, 31 - 60 days #22, 61 - 90 days #23, 91 - 120 days #24, >120 days #25]
 
-(28) ColumnarToRow [codegen id : 1]
+(28) CometColumnarToRow [codegen id : 1]
 Input [8]: [substr(w_warehouse_name, 1, 20)#20, sm_type#9, web_name#11, 30 days #21, 31 - 60 days #22, 61 - 90 days #23, 91 - 120 days #24, >120 days #25]
 
