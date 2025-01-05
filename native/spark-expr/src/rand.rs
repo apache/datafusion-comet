@@ -30,17 +30,17 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
 /// Adoption of the XOR-shift algorithm used in Apache Spark.
-/// See: https://github.com/apache/spark/blob/master/core/src/main/scala/org/apache/spark/util/random/XORShiftRandom.scala
+/// See: https://github.com/apache/spark/blob/91f3fdd25852b43095dd5273358fc394ffd11b66/core/src/main/scala/org/apache/spark/util/random/XORShiftRandom.scala
 
 /// Normalization multiplier used in mapping from a random i64 value to the f64 interval [0.0, 1.0).
-/// Corresponds to the java implementation: https://github.com/openjdk/jdk/blob/master/src/java.base/share/classes/java/util/Random.java#L302)
+/// Corresponds to the java implementation: https://github.com/openjdk/jdk/blob/07c9f7138affdf0d42ecdc30adcb854515569985/src/java.base/share/classes/java/util/Random.java#L302
 /// Due to the lack of hexadecimal float literals support in rust, the scientific notation is used instead.
 const DOUBLE_UNIT: f64 = 1.1102230246251565e-16;
 
 /// Spark-compatible initial seed which is actually a part of  the scala standard library murmurhash3 implementation.
 /// The references:
-/// https://github.com/apache/spark/blob/master/core/src/main/scala/org/apache/spark/util/random/XORShiftRandom.scala#L63
-/// https://github.com/scala/scala/blob/2.13.x/src/library/scala/util/hashing/MurmurHash3.scala#L331
+/// https://github.com/apache/spark/blob/91f3fdd25852b43095dd5273358fc394ffd11b66/core/src/main/scala/org/apache/spark/util/random/XORShiftRandom.scala#L63
+/// https://github.com/scala/scala/blob/360d5da544d84b821c40e4662ad08703b51a44e1/src/library/scala/util/hashing/MurmurHash3.scala#L331
 const SPARK_MURMUR_ARRAY_SEED: u32 = 0x3c074a61;
 
 #[derive(Debug, Clone)]
