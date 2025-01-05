@@ -17,4 +17,4 @@
 
 mod char_varchar_utils;
 
-pub use char_varchar_utils::*;
+pub use char_varchar_utils::spark_read_side_padding;
