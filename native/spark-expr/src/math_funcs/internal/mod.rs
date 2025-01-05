@@ -15,6 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Kernels
+mod checkoverflow;
+mod make_decimal;
+mod normalize_nan;
+mod unscaled_value;
 
-pub(crate) mod temporal;
+pub use checkoverflow::CheckOverflow;
+pub use make_decimal::spark_make_decimal;
+pub use normalize_nan::NormalizeNaNAndZero;
+pub use unscaled_value::spark_unscaled_value;

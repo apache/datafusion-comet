@@ -15,6 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Kernels
+pub mod cast;
 
-pub(crate) mod temporal;
+pub use cast::{spark_cast, Cast, SparkCastOptions};

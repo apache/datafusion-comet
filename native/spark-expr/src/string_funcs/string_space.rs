@@ -15,24 +15,106 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! String kernels
+#![allow(deprecated)]
 
-use std::sync::Arc;
-
-use arrow::{
-    array::*,
-    buffer::MutableBuffer,
-    compute::kernels::substring::{substring as arrow_substring, substring_by_char},
-    datatypes::{DataType, Int32Type},
+use arrow::record_batch::RecordBatch;
+use arrow_array::cast::as_dictionary_array;
+use arrow_array::types::Int32Type;
+use arrow_array::{
+    make_array, Array, ArrayRef, DictionaryArray, GenericStringArray, Int32Array, OffsetSizeTrait,
 };
+use arrow_buffer::MutableBuffer;
+use arrow_data::ArrayData;
+use arrow_schema::{DataType, Schema};
+use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::DataFusionError;
+use datafusion_physical_expr::PhysicalExpr;
+use std::{
+    any::Any,
+    fmt::{Display, Formatter},
+    hash::Hash,
+    sync::Arc,
+};
+
+#[derive(Debug, Eq)]
+pub struct StringSpaceExpr {
+    pub child: Arc<dyn PhysicalExpr>,
+}
+
+impl Hash for StringSpaceExpr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.child.hash(state);
+    }
+}
+
+impl PartialEq for StringSpaceExpr {
+    fn eq(&self, other: &Self) -> bool {
+        self.child.eq(&other.child)
+    }
+}
+
+impl StringSpaceExpr {
+    pub fn new(child: Arc<dyn PhysicalExpr>) -> Self {
+        Self { child }
+    }
+}
+
+impl Display for StringSpaceExpr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "StringSpace [child: {}] ", self.child)
+    }
+}
+
+impl PhysicalExpr for StringSpaceExpr {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn data_type(&self, input_schema: &Schema) -> datafusion_common::Result<DataType> {
+        match self.child.data_type(input_schema)? {
+            DataType::Dictionary(key_type, _) => {
+                Ok(DataType::Dictionary(key_type, Box::new(DataType::Utf8)))
+            }
+            _ => Ok(DataType::Utf8),
+        }
+    }
+
+    fn nullable(&self, _: &Schema) -> datafusion_common::Result<bool> {
+        Ok(true)
+    }
+
+    fn evaluate(&self, batch: &RecordBatch) -> datafusion_common::Result<ColumnarValue> {
+        let arg = self.child.evaluate(batch)?;
+        match arg {
+            ColumnarValue::Array(array) => {
+                let result = string_space_kernel(&array)?;
+
+                Ok(ColumnarValue::Array(result))
+            }
+            _ => Err(DataFusionError::Execution(
+                "StringSpace(scalar) should be fold in Spark JVM side.".to_string(),
+            )),
+        }
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        vec![&self.child]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn PhysicalExpr>>,
+    ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
+        Ok(Arc::new(StringSpaceExpr::new(Arc::clone(&children[0]))))
+    }
+}
 
 /// Returns an ArrayRef with a string consisting of `length` spaces.
 ///
 /// # Preconditions
 ///
 /// - elements in `length` must not be negative
-pub fn string_space(length: &dyn Array) -> Result<ArrayRef, DataFusionError> {
+pub fn string_space_kernel(length: &dyn Array) -> Result<ArrayRef, DataFusionError> {
     match length.data_type() {
         DataType::Int32 => {
             let array = length.as_any().downcast_ref::<Int32Array>().unwrap();
@@ -40,7 +122,7 @@ pub fn string_space(length: &dyn Array) -> Result<ArrayRef, DataFusionError> {
         }
         DataType::Dictionary(_, _) => {
             let dict = as_dictionary_array::<Int32Type>(length);
-            let values = string_space(dict.values())?;
+            let values = string_space_kernel(dict.values())?;
             let result = DictionaryArray::try_new(dict.keys().clone(), values)?;
             Ok(Arc::new(result))
         }
@@ -48,41 +130,6 @@ pub fn string_space(length: &dyn Array) -> Result<ArrayRef, DataFusionError> {
             "Unsupported input type for function 'string_space': {:?}",
             dt
         ),
-    }
-}
-
-pub fn substring(array: &dyn Array, start: i64, length: u64) -> Result<ArrayRef, DataFusionError> {
-    match array.data_type() {
-        DataType::LargeUtf8 => substring_by_char(
-            array
-                .as_any()
-                .downcast_ref::<LargeStringArray>()
-                .expect("A large string is expected"),
-            start,
-            Some(length),
-        )
-        .map_err(|e| e.into())
-        .map(|t| make_array(t.into_data())),
-        DataType::Utf8 => substring_by_char(
-            array
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .expect("A string is expected"),
-            start,
-            Some(length),
-        )
-        .map_err(|e| e.into())
-        .map(|t| make_array(t.into_data())),
-        DataType::Binary | DataType::LargeBinary => {
-            arrow_substring(array, start, Some(length)).map_err(|e| e.into())
-        }
-        DataType::Dictionary(_, _) => {
-            let dict = as_dictionary_array::<Int32Type>(array);
-            let values = substring(dict.values(), start, length)?;
-            let result = DictionaryArray::try_new(dict.keys().clone(), values)?;
-            Ok(Arc::new(result))
-        }
-        dt => panic!("Unsupported input type for function 'substring': {:?}", dt),
     }
 }
 

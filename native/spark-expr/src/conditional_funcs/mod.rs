@@ -15,6 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Kernels
+mod if_expr;
 
-pub(crate) mod temporal;
+pub use if_expr::IfExpr;

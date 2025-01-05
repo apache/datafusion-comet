@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Kernels
+mod is_nan;
+mod rlike;
 
-pub(crate) mod temporal;
+pub use is_nan::spark_isnan;
+pub use rlike::RLike;

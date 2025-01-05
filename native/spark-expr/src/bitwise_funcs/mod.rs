@@ -15,6 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Kernels
+mod bitwise_not;
 
-pub(crate) mod temporal;
+pub use bitwise_not::{bitwise_not, BitwiseNotExpr};

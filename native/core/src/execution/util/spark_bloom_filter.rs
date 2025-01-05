@@ -19,7 +19,7 @@ use crate::execution::util::spark_bit_array;
 use crate::execution::util::spark_bit_array::SparkBitArray;
 use arrow_array::{ArrowNativeTypeOp, BooleanArray, Int64Array};
 use arrow_buffer::ToByteSlice;
-use datafusion_comet_spark_expr::spark_hash::spark_compatible_murmur3_hash;
+use datafusion_comet_spark_expr::hash_funcs::murmur3::spark_compatible_murmur3_hash;
 use std::cmp;
 
 const SPARK_BLOOM_FILTER_VERSION_1: i32 = 1;

@@ -15,6 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Kernels
+mod chr;
+mod prediction;
+mod string_space;
+mod substring;
 
-pub(crate) mod temporal;
+pub use chr::SparkChrFunc;
+pub use prediction::*;
+pub use string_space::StringSpaceExpr;
+pub use substring::SubstringExpr;
