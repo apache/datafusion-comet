@@ -26,7 +26,7 @@ Comet provides some tuning options to help you get the best performance from you
 ### Unified Memory Management with Off-Heap Memory
 
 The recommended way to share memory between Spark and Comet is to set `spark.memory.offHeap.enabled=true`. This allows
-Comet to share an off-heap memory pool with Spark. The size of the pool is specified by `spark.memory.offHeap.size`.
+Comet to share an off-heap memory pool with Spark. The size of the pool is specified by `spark.memory.offHeap.size`. For more details about Spark off-heap memory mode, please refer to Spark documentation: https://spark.apache.org/docs/latest/configuration.html.
 
 ### Dedicated Comet Memory Pools
 
