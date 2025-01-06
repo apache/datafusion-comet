@@ -41,7 +41,7 @@ under the License.
       
   
     
-    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=a746c00c" />
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../_static/styles/pydata-sphinx-theme.css?v=1140d252" />
     <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=c6d785ac" />
     
@@ -292,6 +292,16 @@ under the License.
   </a>
   <ul class="nav section-nav flex-column">
    <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#unified-memory-management-with-off-heap-memory">
+     Unified Memory Management with Off-Heap Memory
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#dedicated-comet-memory-pools">
+     Dedicated Comet Memory Pools
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
     <a class="reference internal nav-link" href="#determining-how-much-memory-to-allocate">
      Determining How Much Memory to Allocate
     </a>
@@ -405,10 +415,42 @@ under the License.
 <p>Comet provides some tuning options to help you get the best performance from your queries.</p>
 <section id="memory-tuning">
 <h2>Memory Tuning<a class="headerlink" href="#memory-tuning" title="Link to this heading">¶</a></h2>
-<p>Comet shares an off-heap memory pool between Spark and Comet. This requires setting <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=true</span></code>.
-If this setting is not enabled, Comet will not accelerate queries and will fall back to Spark.</p>
-<p>Each executor will have a single memory pool which will be shared by all native plans being executed within that
-process, and by Spark itself. The size of the pool is specified by <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>.</p>
+<section id="unified-memory-management-with-off-heap-memory">
+<h3>Unified Memory Management with Off-Heap Memory<a class="headerlink" href="#unified-memory-management-with-off-heap-memory" title="Link to this heading">¶</a></h3>
+<p>The recommended way to share memory between Spark and Comet is to set <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=true</span></code>. This allows
+Comet to share an off-heap memory pool with Spark. The size of the pool is specified by <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>. For more details about Spark off-heap memory mode, please refer to Spark documentation: https://spark.apache.org/docs/latest/configuration.html.</p>
+</section>
+<section id="dedicated-comet-memory-pools">
+<h3>Dedicated Comet Memory Pools<a class="headerlink" href="#dedicated-comet-memory-pools" title="Link to this heading">¶</a></h3>
+<p>Spark uses on-heap memory mode by default, i.e., the <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled</span></code> setting is not enabled. If Spark is under on-heap memory mode, Comet will use its own dedicated memory pools that
+are not shared with Spark. This requires additional configuration settings to be specified to set the size and type of
+memory pool to use.</p>
+<p>The size of the pool can be set explicitly with <code class="docutils literal notranslate"><span class="pre">spark.comet.memoryOverhead</span></code>. If this setting is not specified then
+the memory overhead will be calculated by multiplying the executor memory by <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.factor</span></code>
+(defaults to <code class="docutils literal notranslate"><span class="pre">0.2</span></code>).</p>
+<p>The type of pool can be specified with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool</span></code>. The default setting is <code class="docutils literal notranslate"><span class="pre">greedy_task_shared</span></code>.</p>
+<p>The valid pool types are:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">greedy</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">greedy_global</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">greedy_task_shared</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">fair_spill</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">fair_spill_global</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">fair_spill_task_shared</span></code></p></li>
+</ul>
+<p>Pool types ending with <code class="docutils literal notranslate"><span class="pre">_global</span></code> use a single global memory pool between all tasks on same executor.</p>
+<p>Pool types ending with <code class="docutils literal notranslate"><span class="pre">_task_shared</span></code> share a single memory pool across all attempts for a single task.</p>
+<p>Other pool types create a dedicated pool per native query plan using a fraction of the available pool size based on number of cores
+and cores per task.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">greedy*</span></code> pool types use DataFusion’s <a class="reference external" href="https://docs.rs/datafusion/latest/datafusion/execution/memory_pool/struct.GreedyMemoryPool.html">GreedyMemoryPool</a>, which implements a greedy first-come first-serve limit. This
+pool works well for queries that do not need to spill or have a single spillable operator.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">fair_spill*</span></code> pool types use DataFusion’s <a class="reference external" href="https://docs.rs/datafusion/latest/datafusion/execution/memory_pool/struct.FairSpillPool.html">FairSpillPool</a>, which prevents spillable reservations from using more
+than an even fraction of the available memory sans any unspillable reservations
+(i.e. <code class="docutils literal notranslate"><span class="pre">(pool_size</span> <span class="pre">-</span> <span class="pre">unspillable_memory)</span> <span class="pre">/</span> <span class="pre">num_spillable_reservations)</span></code>). This pool works best when you know beforehand
+the query has multiple spillable operators that will likely all need to spill. Sometimes it will cause spills even
+when there was sufficient memory (reserved for other operators) to avoid doing so. Unspillable memory is allocated in
+a first-come, first-serve fashion</p>
+</section>
 <section id="determining-how-much-memory-to-allocate">
 <h3>Determining How Much Memory to Allocate<a class="headerlink" href="#determining-how-much-memory-to-allocate" title="Link to this heading">¶</a></h3>
 <p>Generally, increasing memory overhead will improve query performance, especially for queries containing joins and
