@@ -30,7 +30,7 @@ Comet to share an off-heap memory pool with Spark. The size of the pool is speci
 
 ### Dedicated Comet Memory Pools
 
-If the `spark.memory.offHeap.enabled` setting is not enabled then Comet will use its own dedicated memory pools that
+Spark uses on-heap memory mode by default, i.e., the `spark.memory.offHeap.enabled` setting is not enabled. If Spark is under on-heap memory mode, Comet will use its own dedicated memory pools that
 are not shared with Spark. This requires additional configuration settings to be specified to set the size and type of
 memory pool to use.
 
