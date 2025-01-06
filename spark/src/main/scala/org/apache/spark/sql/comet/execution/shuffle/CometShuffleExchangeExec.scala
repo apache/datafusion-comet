@@ -567,7 +567,8 @@ class CometShuffleWriteProcessor(
       } else {
         shuffleWriterBuilder.setCodec(CompressionCodec.None)
       }
-      shuffleWriterBuilder.setCompressionLevel(CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_LEVEL.get)
+      shuffleWriterBuilder.setCompressionLevel(
+        CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL.get)
 
       outputPartitioning match {
         case _: HashPartitioning =>

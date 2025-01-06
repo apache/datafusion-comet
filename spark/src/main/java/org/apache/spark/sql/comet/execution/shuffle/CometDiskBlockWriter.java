@@ -156,7 +156,8 @@ public final class CometDiskBlockWriter {
 
     this.columnarBatchSize = (int) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_BATCH_SIZE().get();
     this.compressionCodec = CometConf$.MODULE$.COMET_EXEC_SHUFFLE_COMPRESSION_CODEC().get();
-    this.compressionLevel = (int) CometConf$.MODULE$.COMET_EXEC_SHUFFLE_COMPRESSION_LEVEL().get();
+    this.compressionLevel =
+        (int) CometConf$.MODULE$.COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL().get();
 
     this.numElementsForSpillThreshold =
         (int) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_SPILL_THRESHOLD().get();

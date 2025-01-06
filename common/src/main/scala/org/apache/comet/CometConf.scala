@@ -282,7 +282,7 @@ object CometConf extends ShimCometConf {
       .checkValues(Set("zstd", "lz4", "snappy"))
       .createWithDefault("lz4")
 
-  val COMET_EXEC_SHUFFLE_COMPRESSION_LEVEL: ConfigEntry[Int] =
+  val COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL: ConfigEntry[Int] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.zstd.level")
       .doc("The compression level to use when compressing shuffle files with zstd.")
       .intConf
