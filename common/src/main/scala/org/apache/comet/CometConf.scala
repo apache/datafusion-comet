@@ -452,15 +452,6 @@ object CometConf extends ShimCometConf {
     .intConf
     .createWithDefault(8192)
 
-  val COMET_EXEC_MEMORY_FRACTION: ConfigEntry[Double] = conf("spark.comet.exec.memoryFraction")
-    .doc(
-      "The fraction of memory from Comet memory overhead that the native memory " +
-        "manager can use for execution. The purpose of this config is to set aside memory for " +
-        "untracked data structures, as well as imprecise size estimation during memory " +
-        "acquisition.")
-    .doubleConf
-    .createWithDefault(0.7)
-
   val COMET_PARQUET_ENABLE_DIRECT_BUFFER: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.enable.directBuffer")
       .doc("Whether to use Java direct byte buffer when reading Parquet.")
