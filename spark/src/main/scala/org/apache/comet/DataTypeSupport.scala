@@ -40,8 +40,11 @@ trait DataTypeSupport {
       true
     case t: DataType if t.typeName == "timestamp_ntz" => true
     case _: StructType
-        if CometConf.COMET_FULL_NATIVE_SCAN_ENABLED
-          .get() || CometConf.COMET_NATIVE_RECORDBATCH_READER_ENABLED.get() =>
+        if CometConf.COMET_NATIVE_SCAN_IMPL
+          .get()
+          .equals("native_full") || CometConf.COMET_NATIVE_SCAN_IMPL
+          .get()
+          .equals("native_recordbatch") =>
       true
     case _ => false
   }

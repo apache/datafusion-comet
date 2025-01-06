@@ -77,25 +77,20 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(false)
 
-  val COMET_FULL_NATIVE_SCAN_ENABLED: ConfigEntry[Boolean] = conf(
-    "spark.comet.native.scan.enabled")
-    .internal()
+  val COMET_NATIVE_SCAN_IMPL: ConfigEntry[String] = conf("spark.comet.scan.impl")
     .doc(
-      "Whether to enable the fully native scan. When this is turned on, Spark will use Comet to " +
-        "read supported data sources (currently only Parquet is supported natively)." +
-        " By default, this config is true.")
-    .booleanConf
-    .createWithDefault(true)
-
-  val COMET_NATIVE_RECORDBATCH_READER_ENABLED: ConfigEntry[Boolean] = conf(
-    "spark.comet.native.arrow.scan.enabled")
+      "The implementation of Comet Native Scan to use. Available modes are 'native'," +
+        "'native_full', and 'native_recordbatch'. " +
+        "'native' is for the original Comet native scan which uses a jvm based parquet file " +
+        "reader and native column decoding. Supports simple types only " +
+        "'native_full' is a fully native implementation of scan based on DataFusion" +
+        "'native_recordbatch' is a native implementation that exposes apis to read parquet " +
+        "columns natively.")
     .internal()
-    .doc(
-      "Whether to enable the fully native datafusion based column reader. When this is turned on," +
-        " Spark will use Comet to read Parquet files natively via the Datafusion based Parquet" +
-        " reader. By default, this config is false.")
-    .booleanConf
-    .createWithDefault(false)
+    .stringConf
+    .transform(_.toLowerCase(Locale.ROOT))
+    .checkValues(Set("native", "native_full", "native_recordbatch"))
+    .createWithDefault("native_full")
 
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.parallel.io.enabled")

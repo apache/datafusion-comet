@@ -80,8 +80,7 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
     conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
-    conf.set(CometConf.COMET_FULL_NATIVE_SCAN_ENABLED.key, "false")
-    conf.set(CometConf.COMET_NATIVE_RECORDBATCH_READER_ENABLED.key, "true")
+    conf.set(CometConf.COMET_NATIVE_SCAN_IMPL.key, "native_full")
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "2g")
     conf.set(CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key, "true")
     conf
