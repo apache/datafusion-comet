@@ -2278,9 +2278,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             expr.children(1),
             inputs,
             (builder, binaryExpr) => builder.setArrayAppend(binaryExpr))
-        case _ if expr.prettyName == "array_size" =>
+        case _ if expr.prettyName == "array_size" || expr.prettyName == "size" =>
+          if (!expr.children.head.dataType.isInstanceOf[ArrayType]) {
+            return None
+          }
           createUnaryExpr(
-            expr.children(0),
+            expr.children.head,
             inputs,
             (builder, unaryExpr) => builder.setArraySize(unaryExpr))
         case _ =>

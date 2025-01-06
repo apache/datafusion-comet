@@ -164,6 +164,7 @@ abstract class CometTestBase
       df: => DataFrame,
       includeClasses: Seq[Class[_]],
       excludedClasses: Class[_]*): Unit = {
+    println(df.queryExecution.executedPlan)
     checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan), excludedClasses: _*)
     checkPlanContains(stripAQEPlan(df.queryExecution.executedPlan), includeClasses: _*)
     checkSparkAnswer(df)

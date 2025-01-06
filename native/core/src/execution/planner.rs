@@ -93,7 +93,7 @@ use datafusion_comet_spark_expr::{
 use datafusion_common::scalar::ScalarStructBuilder;
 use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
-    ExprSchema, JoinType as DFJoinType, ScalarValue,
+    JoinType as DFJoinType, ScalarValue,
 };
 use datafusion_expr::{
     AggregateUDF, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
@@ -739,11 +739,19 @@ impl PhysicalPlanner {
             ExprStruct::ArraySize(expr) => {
                 let src_array_expr =
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                Ok(Arc::new(ScalarFunctionExpr::new(
+                let array_size_expr = Arc::new(ScalarFunctionExpr::new(
                     "array_size",
                     Arc::new(ScalarUDF::new_from_impl(ArrayLength::new())),
                     vec![src_array_expr],
                     DataType::UInt64,
+                ));
+                // Note: Return type of array_size if UInt32, casting to Int32 for Spark compatibility
+                let mut cast_opts = SparkCastOptions::new_without_timezone(EvalMode::Legacy, false);
+                cast_opts.allow_cast_unsigned_ints = true;
+                Ok(Arc::new(Cast::new(
+                    array_size_expr,
+                    DataType::Int32,
+                    cast_opts,
                 )))
             }
             expr => Err(ExecutionError::GeneralError(format!(
