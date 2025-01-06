@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (22)
+* CometColumnarToRow (22)
 +- CometTakeOrderedAndProject (21)
    +- CometHashAggregate (20)
       +- CometExchange (19)
@@ -119,6 +119,6 @@ Functions [1]: [sum(act_sales#14)]
 Input [2]: [ss_customer_sk#2, sumsales#17]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[sumsales#17 ASC NULLS FIRST,ss_customer_sk#2 ASC NULLS FIRST], output=[ss_customer_sk#2,sumsales#17]), [ss_customer_sk#2, sumsales#17], 100, [sumsales#17 ASC NULLS FIRST, ss_customer_sk#2 ASC NULLS FIRST], [ss_customer_sk#2, sumsales#17]
 
-(22) ColumnarToRow [codegen id : 1]
+(22) CometColumnarToRow [codegen id : 1]
 Input [2]: [ss_customer_sk#2, sumsales#17]
 

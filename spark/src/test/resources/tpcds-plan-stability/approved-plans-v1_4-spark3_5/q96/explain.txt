@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (25)
+* CometColumnarToRow (25)
 +- CometHashAggregate (24)
    +- CometExchange (23)
       +- CometHashAggregate (22)
@@ -138,6 +138,6 @@ Input [1]: [count#12]
 Keys: []
 Functions [1]: [count(1)]
 
-(25) ColumnarToRow [codegen id : 1]
+(25) CometColumnarToRow [codegen id : 1]
 Input [1]: [count(1)#13]
 

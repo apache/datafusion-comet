@@ -3,7 +3,7 @@
 +- Exchange (39)
    +- * HashAggregate (38)
       +- * HashAggregate (37)
-         +- * ColumnarToRow (36)
+         +- * CometColumnarToRow (36)
             +- CometHashAggregate (35)
                +- CometProject (34)
                   +- CometBroadcastHashJoin (33)
@@ -203,7 +203,7 @@ Input [3]: [ws_order_number#5, ws_ext_ship_cost#6, ws_net_profit#7]
 Keys [1]: [ws_order_number#5]
 Functions [2]: [partial_sum(UnscaledValue(ws_ext_ship_cost#6)), partial_sum(UnscaledValue(ws_net_profit#7))]
 
-(36) ColumnarToRow [codegen id : 1]
+(36) CometColumnarToRow [codegen id : 1]
 Input [3]: [ws_order_number#5, sum#20, sum#21]
 
 (37) HashAggregate [codegen id : 1]

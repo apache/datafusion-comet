@@ -16,20 +16,19 @@
 // under the License.
 
 use arrow::record_batch::RecordBatch;
-use arrow_array::{Array, StructArray};
+use arrow_array::StructArray;
 use arrow_schema::{DataType, Field, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
-use datafusion_common::{DataFusionError, Result as DataFusionResult, ScalarValue};
+use datafusion_common::Result as DataFusionResult;
 use datafusion_physical_expr::PhysicalExpr;
 use std::{
     any::Any,
     fmt::{Display, Formatter},
-    hash::{Hash, Hasher},
+    hash::Hash,
     sync::Arc,
 };
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub struct CreateNamedStruct {
     values: Vec<Arc<dyn PhysicalExpr>>,
     names: Vec<String>,
@@ -95,13 +94,6 @@ impl PhysicalExpr for CreateNamedStruct {
             self.names.clone(),
         )))
     }
-
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.values.hash(&mut s);
-        self.names.hash(&mut s);
-        self.hash(&mut s);
-    }
 }
 
 impl Display for CreateNamedStruct {
@@ -111,123 +103,6 @@ impl Display for CreateNamedStruct {
             "CreateNamedStruct [values: {:?}, names: {:?}]",
             self.values, self.names
         )
-    }
-}
-
-impl PartialEq<dyn Any> for CreateNamedStruct {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| {
-                self.values
-                    .iter()
-                    .zip(x.values.iter())
-                    .all(|(a, b)| a.eq(b))
-                    && self.values.len() == x.values.len()
-                    && self.names.iter().zip(x.names.iter()).all(|(a, b)| a.eq(b))
-                    && self.names.len() == x.names.len()
-            })
-            .unwrap_or(false)
-    }
-}
-
-#[derive(Debug, Hash)]
-pub struct GetStructField {
-    child: Arc<dyn PhysicalExpr>,
-    ordinal: usize,
-}
-
-impl GetStructField {
-    pub fn new(child: Arc<dyn PhysicalExpr>, ordinal: usize) -> Self {
-        Self { child, ordinal }
-    }
-
-    fn child_field(&self, input_schema: &Schema) -> DataFusionResult<Arc<Field>> {
-        match self.child.data_type(input_schema)? {
-            DataType::Struct(fields) => Ok(Arc::clone(&fields[self.ordinal])),
-            data_type => Err(DataFusionError::Plan(format!(
-                "Expect struct field, got {:?}",
-                data_type
-            ))),
-        }
-    }
-}
-
-impl PhysicalExpr for GetStructField {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn data_type(&self, input_schema: &Schema) -> DataFusionResult<DataType> {
-        Ok(self.child_field(input_schema)?.data_type().clone())
-    }
-
-    fn nullable(&self, input_schema: &Schema) -> DataFusionResult<bool> {
-        Ok(self.child_field(input_schema)?.is_nullable())
-    }
-
-    fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
-        let child_value = self.child.evaluate(batch)?;
-
-        match child_value {
-            ColumnarValue::Array(array) => {
-                let struct_array = array
-                    .as_any()
-                    .downcast_ref::<StructArray>()
-                    .expect("A struct is expected");
-
-                Ok(ColumnarValue::Array(Arc::clone(
-                    struct_array.column(self.ordinal),
-                )))
-            }
-            ColumnarValue::Scalar(ScalarValue::Struct(struct_array)) => Ok(ColumnarValue::Array(
-                Arc::clone(struct_array.column(self.ordinal)),
-            )),
-            value => Err(DataFusionError::Execution(format!(
-                "Expected a struct array, got {:?}",
-                value
-            ))),
-        }
-    }
-
-    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
-        vec![&self.child]
-    }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn PhysicalExpr>>,
-    ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
-        Ok(Arc::new(GetStructField::new(
-            Arc::clone(&children[0]),
-            self.ordinal,
-        )))
-    }
-
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.child.hash(&mut s);
-        self.ordinal.hash(&mut s);
-        self.hash(&mut s);
-    }
-}
-
-impl Display for GetStructField {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "GetStructField [child: {:?}, ordinal: {:?}]",
-            self.child, self.ordinal
-        )
-    }
-}
-
-impl PartialEq<dyn Any> for GetStructField {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| self.child.eq(&x.child) && self.ordinal.eq(&x.ordinal))
-            .unwrap_or(false)
     }
 }
 

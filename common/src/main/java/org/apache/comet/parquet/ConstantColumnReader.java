@@ -53,13 +53,13 @@ public class ConstantColumnReader extends MetadataColumnReader {
 
   public ConstantColumnReader(
       DataType type, ColumnDescriptor descriptor, Object value, boolean useDecimal128) {
-    super(type, descriptor, useDecimal128);
+    super(type, descriptor, useDecimal128, true);
     this.value = value;
   }
 
   ConstantColumnReader(
       DataType type, ColumnDescriptor descriptor, int batchSize, boolean useDecimal128) {
-    super(type, descriptor, useDecimal128);
+    super(type, descriptor, useDecimal128, true);
     this.batchSize = batchSize;
     initNative();
   }

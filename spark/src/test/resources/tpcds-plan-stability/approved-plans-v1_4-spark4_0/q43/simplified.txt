@@ -5,7 +5,7 @@ TakeOrderedAndProject [s_store_name,s_store_id,sun_sales,mon_sales,tue_sales,wed
         Exchange [s_store_name,s_store_id] #1
           WholeStageCodegen (1)
             HashAggregate [s_store_name,s_store_id,d_day_name,ss_sales_price] [sum,sum,sum,sum,sum,sum,sum,sum,sum,sum,sum,sum,sum,sum]
-              ColumnarToRow
+              CometColumnarToRow
                 InputAdapter
                   CometProject [d_day_name,ss_sales_price,s_store_id,s_store_name]
                     CometBroadcastHashJoin [d_day_name,ss_store_sk,ss_sales_price,s_store_sk,s_store_id,s_store_name]

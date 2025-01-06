@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (36)
+* CometColumnarToRow (36)
 +- CometSort (35)
    +- CometColumnarExchange (34)
       +- * Project (33)
@@ -9,7 +9,7 @@
             :     :- * HashAggregate (14)
             :     :  +- Exchange (13)
             :     :     +- * HashAggregate (12)
-            :     :        +- * ColumnarToRow (11)
+            :     :        +- * CometColumnarToRow (11)
             :     :           +- CometProject (10)
             :     :              +- CometBroadcastHashJoin (9)
             :     :                 :- CometUnion (5)
@@ -21,7 +21,7 @@
             :     :                    +- CometFilter (7)
             :     :                       +- CometScan parquet spark_catalog.default.date_dim (6)
             :     +- BroadcastExchange (19)
-            :        +- * ColumnarToRow (18)
+            :        +- * CometColumnarToRow (18)
             :           +- CometProject (17)
             :              +- CometFilter (16)
             :                 +- CometScan parquet spark_catalog.default.date_dim (15)
@@ -31,7 +31,7 @@
                      :- * HashAggregate (23)
                      :  +- ReusedExchange (22)
                      +- BroadcastExchange (28)
-                        +- * ColumnarToRow (27)
+                        +- * CometColumnarToRow (27)
                            +- CometProject (26)
                               +- CometFilter (25)
                                  +- CometScan parquet spark_catalog.default.date_dim (24)
@@ -87,7 +87,7 @@ Arguments: [sold_date_sk#3], [d_date_sk#9], Inner, BuildRight
 Input [5]: [sold_date_sk#3, sales_price#4, d_date_sk#9, d_week_seq#10, d_day_name#11]
 Arguments: [sales_price#4, d_week_seq#10, d_day_name#11], [sales_price#4, d_week_seq#10, d_day_name#11]
 
-(11) ColumnarToRow [codegen id : 1]
+(11) CometColumnarToRow [codegen id : 1]
 Input [3]: [sales_price#4, d_week_seq#10, d_day_name#11]
 
 (12) HashAggregate [codegen id : 1]
@@ -123,7 +123,7 @@ Condition : ((isnotnull(d_year#41) AND (d_year#41 = 2001)) AND isnotnull(d_week_
 Input [2]: [d_week_seq#40, d_year#41]
 Arguments: [d_week_seq#40], [d_week_seq#40]
 
-(18) ColumnarToRow [codegen id : 2]
+(18) CometColumnarToRow [codegen id : 2]
 Input [1]: [d_week_seq#40]
 
 (19) BroadcastExchange
@@ -165,7 +165,7 @@ Condition : ((isnotnull(d_year#68) AND (d_year#68 = 2002)) AND isnotnull(d_week_
 Input [2]: [d_week_seq#67, d_year#68]
 Arguments: [d_week_seq#67], [d_week_seq#67]
 
-(27) ColumnarToRow [codegen id : 4]
+(27) CometColumnarToRow [codegen id : 4]
 Input [1]: [d_week_seq#67]
 
 (28) BroadcastExchange
@@ -204,6 +204,6 @@ Arguments: rangepartitioning(d_week_seq1#42 ASC NULLS FIRST, 5), ENSURE_REQUIREM
 Input [8]: [d_week_seq1#42, round((sun_sales1 / sun_sales2), 2)#77, round((mon_sales1 / mon_sales2), 2)#78, round((tue_sales1 / tue_sales2), 2)#79, round((wed_sales1 / wed_sales2), 2)#80, round((thu_sales1 / thu_sales2), 2)#81, round((fri_sales1 / fri_sales2), 2)#82, round((sat_sales1 / sat_sales2), 2)#83]
 Arguments: [d_week_seq1#42, round((sun_sales1 / sun_sales2), 2)#77, round((mon_sales1 / mon_sales2), 2)#78, round((tue_sales1 / tue_sales2), 2)#79, round((wed_sales1 / wed_sales2), 2)#80, round((thu_sales1 / thu_sales2), 2)#81, round((fri_sales1 / fri_sales2), 2)#82, round((sat_sales1 / sat_sales2), 2)#83], [d_week_seq1#42 ASC NULLS FIRST]
 
-(36) ColumnarToRow [codegen id : 7]
+(36) CometColumnarToRow [codegen id : 7]
 Input [8]: [d_week_seq1#42, round((sun_sales1 / sun_sales2), 2)#77, round((mon_sales1 / mon_sales2), 2)#78, round((tue_sales1 / tue_sales2), 2)#79, round((wed_sales1 / wed_sales2), 2)#80, round((thu_sales1 / thu_sales2), 2)#81, round((fri_sales1 / fri_sales2), 2)#82, round((sat_sales1 / sat_sales2), 2)#83]
 

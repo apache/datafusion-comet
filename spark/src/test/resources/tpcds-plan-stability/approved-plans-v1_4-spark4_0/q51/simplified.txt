@@ -29,7 +29,7 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                         Exchange [ws_item_sk,d_date] #4
                                                           WholeStageCodegen (1)
                                                             HashAggregate [ws_item_sk,d_date,ws_sales_price] [sum,sum]
-                                                              ColumnarToRow
+                                                              CometColumnarToRow
                                                                 InputAdapter
                                                                   CometProject [ws_item_sk,ws_sales_price,d_date]
                                                                     CometBroadcastHashJoin [ws_item_sk,ws_sales_price,ws_sold_date_sk,d_date_sk,d_date]
@@ -38,7 +38,7 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                                           SubqueryBroadcast [d_date_sk] #1
                                                                             BroadcastExchange #5
                                                                               WholeStageCodegen (1)
-                                                                                ColumnarToRow
+                                                                                CometColumnarToRow
                                                                                   InputAdapter
                                                                                     CometProject [d_date_sk,d_date]
                                                                                       CometFilter [d_date_sk,d_date,d_month_seq]
@@ -66,7 +66,7 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                         Exchange [ss_item_sk,d_date] #9
                                                           WholeStageCodegen (6)
                                                             HashAggregate [ss_item_sk,d_date,ss_sales_price] [sum,sum]
-                                                              ColumnarToRow
+                                                              CometColumnarToRow
                                                                 InputAdapter
                                                                   CometProject [ss_item_sk,ss_sales_price,d_date]
                                                                     CometBroadcastHashJoin [ss_item_sk,ss_sales_price,ss_sold_date_sk,d_date_sk,d_date]

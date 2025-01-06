@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (45)
+* CometColumnarToRow (45)
 +- CometSort (44)
    +- CometColumnarExchange (43)
       +- * Filter (42)
@@ -11,7 +11,7 @@
                         +- * HashAggregate (36)
                            +- * Project (35)
                               +- * BroadcastHashJoin Inner BuildRight (34)
-                                 :- * ColumnarToRow (29)
+                                 :- * CometColumnarToRow (29)
                                  :  +- CometProject (28)
                                  :     +- CometBroadcastHashJoin (27)
                                  :        :- CometProject (23)
@@ -41,7 +41,7 @@
                                  :           +- CometFilter (25)
                                  :              +- CometScan parquet spark_catalog.default.customer (24)
                                  +- BroadcastExchange (33)
-                                    +- * ColumnarToRow (32)
+                                    +- * CometColumnarToRow (32)
                                        +- CometFilter (31)
                                           +- CometScan parquet spark_catalog.default.customer_address (30)
 
@@ -177,7 +177,7 @@ Arguments: [ss_customer_sk#2], [c_customer_sk#21], Inner, BuildRight
 Input [15]: [ss_customer_sk#2, ss_net_paid#5, s_store_name#11, s_state#13, s_zip#14, i_current_price#16, i_size#17, i_color#18, i_units#19, i_manager_id#20, c_customer_sk#21, c_current_addr_sk#22, c_first_name#23, c_last_name#24, c_birth_country#25]
 Arguments: [ss_net_paid#5, s_store_name#11, s_state#13, s_zip#14, i_current_price#16, i_size#17, i_color#18, i_units#19, i_manager_id#20, c_current_addr_sk#22, c_first_name#23, c_last_name#24, c_birth_country#25], [ss_net_paid#5, s_store_name#11, s_state#13, s_zip#14, i_current_price#16, i_size#17, i_color#18, i_units#19, i_manager_id#20, c_current_addr_sk#22, c_first_name#23, c_last_name#24, c_birth_country#25]
 
-(29) ColumnarToRow [codegen id : 2]
+(29) CometColumnarToRow [codegen id : 2]
 Input [13]: [ss_net_paid#5, s_store_name#11, s_state#13, s_zip#14, i_current_price#16, i_size#17, i_color#18, i_units#19, i_manager_id#20, c_current_addr_sk#22, c_first_name#23, c_last_name#24, c_birth_country#25]
 
 (30) CometScan parquet spark_catalog.default.customer_address
@@ -191,7 +191,7 @@ ReadSchema: struct<ca_address_sk:int,ca_state:string,ca_zip:string,ca_country:st
 Input [4]: [ca_address_sk#26, ca_state#27, ca_zip#28, ca_country#29]
 Condition : ((isnotnull(ca_address_sk#26) AND isnotnull(ca_country#29)) AND isnotnull(ca_zip#28))
 
-(32) ColumnarToRow [codegen id : 1]
+(32) CometColumnarToRow [codegen id : 1]
 Input [4]: [ca_address_sk#26, ca_state#27, ca_zip#28, ca_country#29]
 
 (33) BroadcastExchange
@@ -256,7 +256,7 @@ Arguments: rangepartitioning(c_last_name#24 ASC NULLS FIRST, c_first_name#23 ASC
 Input [4]: [c_last_name#24, c_first_name#23, s_store_name#11, paid#39]
 Arguments: [c_last_name#24, c_first_name#23, s_store_name#11, paid#39], [c_last_name#24 ASC NULLS FIRST, c_first_name#23 ASC NULLS FIRST, s_store_name#11 ASC NULLS FIRST]
 
-(45) ColumnarToRow [codegen id : 5]
+(45) CometColumnarToRow [codegen id : 5]
 Input [4]: [c_last_name#24, c_first_name#23, s_store_name#11, paid#39]
 
 ===== Subqueries =====
@@ -270,7 +270,7 @@ Subquery:1 Hosting operator id = 42 Hosting Expression = Subquery scalar-subquer
             +- * HashAggregate (67)
                +- * Project (66)
                   +- * BroadcastHashJoin Inner BuildRight (65)
-                     :- * ColumnarToRow (63)
+                     :- * CometColumnarToRow (63)
                      :  +- CometProject (62)
                      :     +- CometBroadcastHashJoin (61)
                      :        :- CometProject (59)
@@ -362,7 +362,7 @@ Arguments: [ss_customer_sk#43], [c_customer_sk#59], Inner, BuildRight
 Input [15]: [ss_customer_sk#43, ss_net_paid#46, s_store_name#50, s_state#51, s_zip#52, i_current_price#54, i_size#55, i_color#56, i_units#57, i_manager_id#58, c_customer_sk#59, c_current_addr_sk#60, c_first_name#61, c_last_name#62, c_birth_country#63]
 Arguments: [ss_net_paid#46, s_store_name#50, s_state#51, s_zip#52, i_current_price#54, i_size#55, i_color#56, i_units#57, i_manager_id#58, c_current_addr_sk#60, c_first_name#61, c_last_name#62, c_birth_country#63], [ss_net_paid#46, s_store_name#50, s_state#51, s_zip#52, i_current_price#54, i_size#55, i_color#56, i_units#57, i_manager_id#58, c_current_addr_sk#60, c_first_name#61, c_last_name#62, c_birth_country#63]
 
-(63) ColumnarToRow [codegen id : 2]
+(63) CometColumnarToRow [codegen id : 2]
 Input [13]: [ss_net_paid#46, s_store_name#50, s_state#51, s_zip#52, i_current_price#54, i_size#55, i_color#56, i_units#57, i_manager_id#58, c_current_addr_sk#60, c_first_name#61, c_last_name#62, c_birth_country#63]
 
 (64) ReusedExchange [Reuses operator id: 33]

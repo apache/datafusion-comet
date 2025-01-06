@@ -3,7 +3,7 @@ TakeOrderedAndProject (28)
 +- * HashAggregate (27)
    +- Exchange (26)
       +- * HashAggregate (25)
-         +- * ColumnarToRow (24)
+         +- * CometColumnarToRow (24)
             +- CometProject (23)
                +- CometBroadcastHashJoin (22)
                   :- CometProject (17)
@@ -142,7 +142,7 @@ Arguments: [sr_returned_date_sk#9], [d_date_sk#23], Inner, BuildRight
 Input [13]: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21, d_date_sk#23]
 Arguments: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21], [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21]
 
-(24) ColumnarToRow [codegen id : 1]
+(24) CometColumnarToRow [codegen id : 1]
 Input [12]: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21]
 
 (25) HashAggregate [codegen id : 1]
@@ -171,7 +171,7 @@ Arguments: 100, [s_store_name#12 ASC NULLS FIRST, s_company_id#13 ASC NULLS FIRS
 
 Subquery:1 Hosting operator id = 3 Hosting Expression = sr_returned_date_sk#9 IN dynamicpruning#10
 BroadcastExchange (33)
-+- * ColumnarToRow (32)
++- * CometColumnarToRow (32)
    +- CometProject (31)
       +- CometFilter (30)
          +- CometScan parquet spark_catalog.default.date_dim (29)
@@ -192,7 +192,7 @@ Condition : ((((isnotnull(d_year#24) AND isnotnull(d_moy#25)) AND (d_year#24 = 2
 Input [3]: [d_date_sk#23, d_year#24, d_moy#25]
 Arguments: [d_date_sk#23], [d_date_sk#23]
 
-(32) ColumnarToRow [codegen id : 1]
+(32) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#23]
 
 (33) BroadcastExchange

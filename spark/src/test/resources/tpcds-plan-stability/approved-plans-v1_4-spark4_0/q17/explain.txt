@@ -3,7 +3,7 @@ TakeOrderedAndProject (42)
 +- * HashAggregate (41)
    +- Exchange (40)
       +- * HashAggregate (39)
-         +- * ColumnarToRow (38)
+         +- * CometColumnarToRow (38)
             +- CometProject (37)
                +- CometBroadcastHashJoin (36)
                   :- CometProject (32)
@@ -221,7 +221,7 @@ Arguments: [ss_item_sk#1], [i_item_sk#26], Inner, BuildRight
 Input [8]: [ss_item_sk#1, ss_quantity#5, sr_return_quantity#11, cs_quantity#16, s_state#25, i_item_sk#26, i_item_id#27, i_item_desc#28]
 Arguments: [ss_quantity#5, sr_return_quantity#11, cs_quantity#16, s_state#25, i_item_id#27, i_item_desc#28], [ss_quantity#5, sr_return_quantity#11, cs_quantity#16, s_state#25, i_item_id#27, i_item_desc#28]
 
-(38) ColumnarToRow [codegen id : 1]
+(38) CometColumnarToRow [codegen id : 1]
 Input [6]: [ss_quantity#5, sr_return_quantity#11, cs_quantity#16, s_state#25, i_item_id#27, i_item_desc#28]
 
 (39) HashAggregate [codegen id : 1]
@@ -250,7 +250,7 @@ Arguments: 100, [i_item_id#27 ASC NULLS FIRST, i_item_desc#28 ASC NULLS FIRST, s
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#6 IN dynamicpruning#7
 BroadcastExchange (47)
-+- * ColumnarToRow (46)
++- * CometColumnarToRow (46)
    +- CometProject (45)
       +- CometFilter (44)
          +- CometScan parquet spark_catalog.default.date_dim (43)
@@ -271,7 +271,7 @@ Condition : ((isnotnull(d_quarter_name#20) AND (d_quarter_name#20 = 2001Q1)) AND
 Input [2]: [d_date_sk#19, d_quarter_name#20]
 Arguments: [d_date_sk#19], [d_date_sk#19]
 
-(46) ColumnarToRow [codegen id : 1]
+(46) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#19]
 
 (47) BroadcastExchange
@@ -280,7 +280,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint))
 
 Subquery:2 Hosting operator id = 3 Hosting Expression = sr_returned_date_sk#12 IN dynamicpruning#13
 BroadcastExchange (52)
-+- * ColumnarToRow (51)
++- * CometColumnarToRow (51)
    +- CometProject (50)
       +- CometFilter (49)
          +- CometScan parquet spark_catalog.default.date_dim (48)
@@ -301,7 +301,7 @@ Condition : (d_quarter_name#22 IN (2001Q1,2001Q2,2001Q3) AND isnotnull(d_date_sk
 Input [2]: [d_date_sk#21, d_quarter_name#22]
 Arguments: [d_date_sk#21], [d_date_sk#21]
 
-(51) ColumnarToRow [codegen id : 1]
+(51) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#21]
 
 (52) BroadcastExchange
