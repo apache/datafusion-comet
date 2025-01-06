@@ -18,7 +18,6 @@
 use crate::timezone;
 use crate::utils::array_with_timezone;
 use crate::{EvalMode, SparkError, SparkResult};
-use arrow::ipc::NullBuilder;
 use arrow::{
     array::{
         cast::AsArray,
@@ -36,8 +35,8 @@ use arrow::{
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
-use arrow_array::builder::{StringBuilder, StructBuilder};
-use arrow_array::{DictionaryArray, NullArray, StringArray, StructArray};
+use arrow_array::builder::StringBuilder;
+use arrow_array::{DictionaryArray, StringArray, StructArray};
 use arrow_buffer::NullBufferBuilder;
 use arrow_schema::{DataType, Field, Schema};
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
