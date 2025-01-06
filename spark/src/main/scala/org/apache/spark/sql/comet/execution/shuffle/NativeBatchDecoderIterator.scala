@@ -123,7 +123,7 @@ case class NativeBatchDecoderIterator(
 
     // get compressed length (including headers)
     longBuf.flip()
-    val compressedLength = longBuf.getLong.toInt
+    val compressedLength = longBuf.getLong
 
     // read field count from header
     longBuf.clear()
@@ -136,16 +136,20 @@ case class NativeBatchDecoderIterator(
 
     // read body
     val bytesToRead = compressedLength - 8
+    if (bytesToRead > Integer.MAX_VALUE) {
+      // very unlikely that shuffle block will reach 2GB
+      throw new IllegalStateException(
+        s"Native shuffle block size of $bytesToRead exceeds " +
+          s"maximum of ${Integer.MAX_VALUE}. Try reducing shuffle batch size.")
+    }
     var dataBuf = threadLocalDataBuf.get()
     if (dataBuf.capacity() < bytesToRead) {
-      // it is unlikely that we would overflow here since it would
-      // require a 1GB compressed shuffle block but we check anyway
       val newCapacity = (bytesToRead * 2L).min(Integer.MAX_VALUE).toInt
       dataBuf = ByteBuffer.allocateDirect(newCapacity)
       threadLocalDataBuf.set(dataBuf)
     }
     dataBuf.clear()
-    dataBuf.limit(bytesToRead)
+    dataBuf.limit(bytesToRead.toInt)
     while (dataBuf.hasRemaining && channel.read(dataBuf) >= 0) {}
     if (dataBuf.hasRemaining) {
       throw new EOFException("Data corrupt: unexpected EOF while reading compressed batch")
@@ -156,7 +160,7 @@ case class NativeBatchDecoderIterator(
     val batch = nativeUtil.getNextBatch(
       fieldCount,
       (arrayAddrs, schemaAddrs) => {
-        native.decodeShuffleBlock(dataBuf, bytesToRead, arrayAddrs, schemaAddrs)
+        native.decodeShuffleBlock(dataBuf, bytesToRead.toInt, arrayAddrs, schemaAddrs)
       })
     decodeTime.add(System.nanoTime() - startTime)
 
