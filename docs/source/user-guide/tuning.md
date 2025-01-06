@@ -49,7 +49,7 @@ The valid pool types are:
 - `fair_spill_global`
 - `fair_spill_task_shared`
 
-Pool types ending with `_global` use a single global memory pool between all tasks.
+Pool types ending with `_global` use a single global memory pool between all tasks on same executor.
 
 Pool types ending with `_task_shared` share a single memory pool across all attempts for a single task.
 
