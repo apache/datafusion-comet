@@ -85,9 +85,9 @@ Comet provides two shuffle implementations.
 #### Native Shuffle
 
 Comet Native Shuffle reads columnar batches and repartitions them before writing the shuffled columnar data
-to the output file. Native Shuffle supports `HashPartitioning` and `SinglePartition` and primitive data
-s (`Boolean`, `Byte`, `Short`, `Integer`, `Long`, `Float`, `Double`, `Decimal`,
-`Date`, `Timestamp`, `String`, and `Binary`).
+to the output file. Native Shuffle supports `HashPartitioning` and `SinglePartition`. Only primitive types 
+are supported for partitioning expressions (`Boolean`, `Byte`, `Short`, `Integer`, `Long`, `Float`, `Double`, 
+`Decimal`, `Date`, `Timestamp`, `String`, and `Binary`).
 
 Native shuffle is enabled by default and can be disabled by setting `spark.comet.exec.shuffle.native.enabled=false`.
 
@@ -95,7 +95,7 @@ Native shuffle is enabled by default and can be disabled by setting `spark.comet
 
 Comet Columnar Shuffle is used for cases where Native Shuffle is not supported. Columnar Shuffle supports
 `HashPartitioning`, `RangePartitioning`, `RoundRobinPartitioning` and `SinglePartition` and supports complex
-types in addition to the primitive types supported by Native Shuffle.
+types for hash-partitioning expressions in addition to the primitive types supported by Native Shuffle.
 
 Columnar Shuffle inserts a `ColumnarToRowExec` transition on the input data (this does not appear in the query
 plan) and delegates the partitioning to Spark. The partitioned output rows are then converted back into columnar

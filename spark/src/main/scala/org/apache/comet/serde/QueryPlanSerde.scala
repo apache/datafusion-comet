@@ -3063,7 +3063,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           _: DateType | _: BooleanType =>
         true
       case _ =>
-        // Native shuffle doesn't support struct/array yet
+        // Native shuffle doesn't support complex types (struct/array/map) for
+        // partitioning expressions yet
         false
     }
 
