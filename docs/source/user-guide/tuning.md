@@ -26,11 +26,11 @@ Comet provides some tuning options to help you get the best performance from you
 ### Unified Memory Management with Off-Heap Memory
 
 The recommended way to share memory between Spark and Comet is to set `spark.memory.offHeap.enabled=true`. This allows
-Comet to share an off-heap memory pool with Spark. The size of the pool is specified by `spark.memory.offHeap.size`.
+Comet to share an off-heap memory pool with Spark. The size of the pool is specified by `spark.memory.offHeap.size`. For more details about Spark off-heap memory mode, please refer to Spark documentation: https://spark.apache.org/docs/latest/configuration.html.
 
 ### Dedicated Comet Memory Pools
 
-If the `spark.memory.offHeap.enabled` setting is not enabled then Comet will use its own dedicated memory pools that
+Spark uses on-heap memory mode by default, i.e., the `spark.memory.offHeap.enabled` setting is not enabled. If Spark is under on-heap memory mode, Comet will use its own dedicated memory pools that
 are not shared with Spark. This requires additional configuration settings to be specified to set the size and type of
 memory pool to use.
 
@@ -49,11 +49,11 @@ The valid pool types are:
 - `fair_spill_global`
 - `fair_spill_task_shared`
 
-Pool types ending with `_global` use a single global memory pool between all tasks.
+Pool types ending with `_global` use a single global memory pool between all tasks on same executor.
 
 Pool types ending with `_task_shared` share a single memory pool across all attempts for a single task.
 
-Other pool types create a dedicated pool per task using a fraction of the available pool size based on number of cores 
+Other pool types create a dedicated pool per native query plan using a fraction of the available pool size based on number of cores 
 and cores per task.
 
 The `greedy*` pool types use DataFusion's [GreedyMemoryPool], which implements a greedy first-come first-serve limit. This
