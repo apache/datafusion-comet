@@ -37,7 +37,6 @@ use arrow::{
 };
 use arrow_array::builder::StringBuilder;
 use arrow_array::{DictionaryArray, StringArray, StructArray};
-use arrow_buffer::NullBufferBuilder;
 use arrow_schema::{DataType, Field, Schema};
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
@@ -819,10 +818,6 @@ fn cast_struct_to_struct(
 ) -> DataFusionResult<ArrayRef> {
     match (from_type, to_type) {
         (DataType::Struct(_), DataType::Struct(to_fields)) => {
-            let mut b = NullBufferBuilder::new(array.len());
-            for i in 0..array.len() {
-                b.append(!array.is_null(i));
-            }
             let mut cast_fields: Vec<ArrayRef> = Vec::with_capacity(to_fields.len());
             for i in 0..to_fields.len() {
                 let cast_field = cast_array(
@@ -835,7 +830,7 @@ fn cast_struct_to_struct(
             Ok(Arc::new(StructArray::new(
                 to_fields.clone(),
                 cast_fields,
-                b.finish(),
+                array.nulls().map(|nulls| nulls.clone()),
             )))
         }
         _ => unreachable!(),
