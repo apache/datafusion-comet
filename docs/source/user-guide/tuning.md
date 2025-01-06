@@ -53,7 +53,7 @@ Pool types ending with `_global` use a single global memory pool between all tas
 
 Pool types ending with `_task_shared` share a single memory pool across all attempts for a single task.
 
-Other pool types create a dedicated pool per task using a fraction of the available pool size based on number of cores 
+Other pool types create a dedicated pool per native query plan using a fraction of the available pool size based on number of cores 
 and cores per task.
 
 The `greedy*` pool types use DataFusion's [GreedyMemoryPool], which implements a greedy first-come first-serve limit. This
