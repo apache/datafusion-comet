@@ -93,7 +93,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     var expectedSimplified = FileUtils.readFileToString(simplifiedFile, StandardCharsets.UTF_8)
     val explainFile = new File(dir, "explain.txt")
     var expectedExplain = FileUtils.readFileToString(explainFile, StandardCharsets.UTF_8)
-    if (!CometConf.COMET_FULL_NATIVE_SCAN_ENABLED.get()) {
+    if (!CometConf.COMET_NATIVE_SCAN_IMPL.get().equals("native_full")) {
       expectedExplain = expectedExplain.replace("CometNativeScan", "CometScan")
       expectedSimplified = expectedSimplified.replace("CometNativeScan", "CometScan")
     }
@@ -265,8 +265,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
-      CometConf.COMET_FULL_NATIVE_SCAN_ENABLED.key -> "false",
-      CometConf.COMET_NATIVE_RECORDBATCH_READER_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_full",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "false",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
@@ -299,8 +298,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
-    conf.set(CometConf.COMET_FULL_NATIVE_SCAN_ENABLED.key, "false")
-    conf.set(CometConf.COMET_NATIVE_RECORDBATCH_READER_ENABLED.key, "true")
+    conf.set(CometConf.COMET_NATIVE_SCAN_IMPL.key, "native_full")
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "1g")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
 

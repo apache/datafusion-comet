@@ -201,7 +201,7 @@ class CometSparkSessionExtensions
                 _)
               if CometNativeScanExec.isSchemaSupported(requiredSchema)
                 && CometNativeScanExec.isSchemaSupported(partitionSchema)
-                && COMET_FULL_NATIVE_SCAN_ENABLED.get =>
+                && COMET_NATIVE_SCAN_IMPL.get.equals("native_full") =>
             logInfo("Comet extension enabled for v1 full native Scan")
             CometScanExec(scanExec, session)
 
@@ -371,7 +371,7 @@ class CometSparkSessionExtensions
 
       plan.transformUp {
         // Fully native scan for V1
-        case scan: CometScanExec if COMET_FULL_NATIVE_SCAN_ENABLED.get =>
+        case scan: CometScanExec if COMET_NATIVE_SCAN_IMPL.get.equals("native_full") =>
           val nativeOp = QueryPlanSerde.operator2Proto(scan).get
           CometNativeScanExec(nativeOp, scan.wrapped, scan.session)
 

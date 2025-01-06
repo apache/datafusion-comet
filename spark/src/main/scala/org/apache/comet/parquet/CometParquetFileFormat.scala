@@ -100,7 +100,8 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
 
     // Comet specific configurations
     val capacity = CometConf.COMET_BATCH_SIZE.get(sqlConf)
-    val nativeArrowReaderEnabled = CometConf.COMET_NATIVE_RECORDBATCH_READER_ENABLED.get(sqlConf)
+    val nativeRecordBatchReaderEnabled =
+      CometConf.COMET_NATIVE_SCAN_IMPL.get(sqlConf).equals("native_recordbatch")
 
     (file: PartitionedFile) => {
       val sharedConf = broadcastedHadoopConf.value.value
@@ -136,7 +137,7 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
       pushed.foreach(p => ParquetInputFormat.setFilterPredicate(sharedConf, p))
 
       val recordBatchReader =
-        if (nativeArrowReaderEnabled) {
+        if (nativeRecordBatchReaderEnabled) {
           val batchReader = new NativeBatchReader(
             sharedConf,
             file,
