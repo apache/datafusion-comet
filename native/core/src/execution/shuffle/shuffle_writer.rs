@@ -1632,6 +1632,13 @@ pub fn write_ipc_compressed<W: Write + Seek>(
     // fill ipc length
     let end_pos = output.stream_position()?;
     let ipc_length = end_pos - start_pos - 8;
+    let max_size = i32::MAX as u64;
+    if ipc_length > max_size {
+        return Err(DataFusionError::Execution(format!(
+            "Shuffle block size {ipc_length} exceeds maximum size of {max_size}. \
+            Try reducing batch size or increasing compression level"
+        )));
+    }
 
     // fill ipc length
     output.seek(SeekFrom::Start(start_pos))?;
