@@ -29,6 +29,7 @@ use std::{
     hash::Hash,
     sync::Arc,
 };
+
 #[derive(Debug, Eq)]
 pub struct StringSpaceExpr {
     pub child: Arc<dyn PhysicalExpr>,
