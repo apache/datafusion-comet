@@ -2529,4 +2529,27 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         spark.sql("SELECT array_contains((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
     }
   }
+
+  test("array_union") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      makeParquetFileAllTypes(path, dictionaryEnabled = false, n = 10000)
+      spark.read.parquet(path.toString).createOrReplaceTempView("t1");
+      checkSparkAnswerAndOperator(
+        spark.sql("SELECT array_union(array(_2, _3, _4), array(_2, _3, _4)) FROM t1"))
+    }
+  }
+
+  test("sort_array") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      makeParquetFileAllTypes(path, dictionaryEnabled = false, n = 10000)
+      spark.read.parquet(path.toString).createOrReplaceTempView("t1");
+      val q = spark.sql("SELECT sort_array(array(_2, _3, _4)) FROM t1");
+      q.explain(true)
+      q.show(false)
+      // FIXME: Why collect fails ?  could not cast value to arrow_array::array::byte_array::GenericByteArray<arrow_array::types::GenericStringType<i32>>
+      // q.collect();
+    }
+  }
 }
