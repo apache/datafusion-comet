@@ -38,15 +38,9 @@ mod static_invoke;
 pub use schema_adapter::SparkSchemaAdapterFactory;
 pub use static_invoke::*;
 
-pub mod spark_hash;
-mod stddev;
-pub use stddev::Stddev;
-mod struct_funcs;
-mod sum_decimal;
-pub use sum_decimal::SumDecimal;
 mod negative;
 pub mod spark_hash;
-mod structs;
+mod struct_funcs;
 pub use negative::{create_negate_expr, NegativeExpr};
 mod normalize_nan;
 mod temporal;
