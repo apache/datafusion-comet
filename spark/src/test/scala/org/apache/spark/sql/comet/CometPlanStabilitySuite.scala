@@ -270,9 +270,8 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_FULL,
-      SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> dppEnabled.toString,
       CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "false",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key -> "true",
       CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true", // needed for v1.4/q9, v1.4/q44, v2.7.0/q6, v2.7.0/q64
@@ -303,7 +302,6 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
-    conf.set(CometConf.COMET_NATIVE_SCAN_IMPL.key, CometConf.SCAN_NATIVE_FULL)
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "1g")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
 
