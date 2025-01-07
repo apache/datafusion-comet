@@ -11,11 +11,11 @@ WholeStageCodegen (1)
                     CometBroadcastHashJoin [d_date_sk,d_year,ss_item_sk,ss_ext_sales_price,ss_sold_date_sk]
                       CometProject [d_date_sk,d_year]
                         CometFilter [d_date_sk,d_year,d_moy]
-                          CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
+                          CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_year,d_moy]
                       CometBroadcastExchange [ss_item_sk,ss_ext_sales_price,ss_sold_date_sk] #2
                         CometFilter [ss_item_sk,ss_ext_sales_price,ss_sold_date_sk]
-                          CometNativeScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_ext_sales_price,ss_sold_date_sk]
+                          CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_item_sk,ss_ext_sales_price,ss_sold_date_sk]
                   CometBroadcastExchange [i_item_sk,i_category_id,i_category] #3
                     CometProject [i_item_sk,i_category_id,i_category]
                       CometFilter [i_item_sk,i_category_id,i_category,i_manager_id]
-                        CometNativeScan parquet spark_catalog.default.item [i_item_sk,i_category_id,i_category,i_manager_id]
+                        CometNativeScan: `spark_catalog`.`default`.`item` [i_item_sk,i_category_id,i_category,i_manager_id]

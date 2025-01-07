@@ -11,11 +11,11 @@ WholeStageCodegen (1)
                     CometBroadcastHashJoin [d_date_sk,d_day_name,ss_store_sk,ss_sales_price,ss_sold_date_sk]
                       CometProject [d_date_sk,d_day_name]
                         CometFilter [d_date_sk,d_year,d_day_name]
-                          CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_day_name]
+                          CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_year,d_day_name]
                       CometBroadcastExchange [ss_store_sk,ss_sales_price,ss_sold_date_sk] #2
                         CometFilter [ss_store_sk,ss_sales_price,ss_sold_date_sk]
-                          CometScan parquet spark_catalog.default.store_sales [ss_store_sk,ss_sales_price,ss_sold_date_sk]
+                          CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_store_sk,ss_sales_price,ss_sold_date_sk]
                   CometBroadcastExchange [s_store_sk,s_store_id,s_store_name] #3
                     CometProject [s_store_sk,s_store_id,s_store_name]
                       CometFilter [s_store_sk,s_store_id,s_store_name,s_gmt_offset]
-                        CometScan parquet spark_catalog.default.store [s_store_sk,s_store_id,s_store_name,s_gmt_offset]
+                        CometNativeScan: `spark_catalog`.`default`.`store` [s_store_sk,s_store_id,s_store_name,s_gmt_offset]

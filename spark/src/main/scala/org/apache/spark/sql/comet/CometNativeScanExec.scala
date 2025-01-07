@@ -54,6 +54,9 @@ case class CometNativeScanExec(
     override val serializedPlanOpt: SerializedPlan)
     extends CometLeafExec {
 
+  override def nodeName: String =
+    s"${super.nodeName}: ${tableIdentifier.map(_.toString).getOrElse("")}"
+
   override def outputPartitioning: Partitioning =
     UnknownPartitioning(originalPlan.inputRDD.getNumPartitions)
   override def outputOrdering: Seq[SortOrder] = originalPlan.outputOrdering

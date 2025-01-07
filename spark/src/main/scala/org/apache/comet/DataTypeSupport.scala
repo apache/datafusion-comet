@@ -42,9 +42,9 @@ trait DataTypeSupport {
     case _: StructType
         if CometConf.COMET_NATIVE_SCAN_IMPL
           .get()
-          .equals("native_full") || CometConf.COMET_NATIVE_SCAN_IMPL
+          .equals(CometConf.SCAN_NATIVE_FULL) || CometConf.COMET_NATIVE_SCAN_IMPL
           .get()
-          .equals("native_recordbatch") =>
+          .equals(CometConf.SCAN_NATIVE_RECORDBATCH) =>
       true
     case _ => false
   }

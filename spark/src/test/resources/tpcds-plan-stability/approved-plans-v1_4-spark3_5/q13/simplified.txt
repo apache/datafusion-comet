@@ -15,29 +15,21 @@ WholeStageCodegen (1)
                             CometProject [ss_cdemo_sk,ss_hdemo_sk,ss_addr_sk,ss_quantity,ss_sales_price,ss_ext_sales_price,ss_ext_wholesale_cost,ss_net_profit,ss_sold_date_sk]
                               CometBroadcastHashJoin [ss_cdemo_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_quantity,ss_sales_price,ss_ext_sales_price,ss_ext_wholesale_cost,ss_net_profit,ss_sold_date_sk,s_store_sk]
                                 CometFilter [ss_cdemo_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_quantity,ss_sales_price,ss_ext_sales_price,ss_ext_wholesale_cost,ss_net_profit,ss_sold_date_sk]
-                                  CometScan parquet spark_catalog.default.store_sales [ss_cdemo_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_quantity,ss_sales_price,ss_ext_sales_price,ss_ext_wholesale_cost,ss_net_profit,ss_sold_date_sk]
-                                    SubqueryBroadcast [d_date_sk] #1
-                                      BroadcastExchange #2
-                                        WholeStageCodegen (1)
-                                          ColumnarToRow
-                                            InputAdapter
-                                              CometProject [d_date_sk]
-                                                CometFilter [d_date_sk,d_year]
-                                                  CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
-                                CometBroadcastExchange [s_store_sk] #3
+                                  CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_cdemo_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_quantity,ss_sales_price,ss_ext_sales_price,ss_ext_wholesale_cost,ss_net_profit,ss_sold_date_sk]
+                                CometBroadcastExchange [s_store_sk] #2
                                   CometFilter [s_store_sk]
-                                    CometScan parquet spark_catalog.default.store [s_store_sk]
-                            CometBroadcastExchange [ca_address_sk,ca_state] #4
+                                    CometNativeScan: `spark_catalog`.`default`.`store` [s_store_sk]
+                            CometBroadcastExchange [ca_address_sk,ca_state] #3
                               CometProject [ca_address_sk,ca_state]
                                 CometFilter [ca_address_sk,ca_state,ca_country]
-                                  CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_state,ca_country]
-                        CometBroadcastExchange [d_date_sk] #5
+                                  CometNativeScan: `spark_catalog`.`default`.`customer_address` [ca_address_sk,ca_state,ca_country]
+                        CometBroadcastExchange [d_date_sk] #4
                           CometProject [d_date_sk]
                             CometFilter [d_date_sk,d_year]
-                              CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
-                    CometBroadcastExchange [cd_demo_sk,cd_marital_status,cd_education_status] #6
+                              CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_year]
+                    CometBroadcastExchange [cd_demo_sk,cd_marital_status,cd_education_status] #5
                       CometFilter [cd_demo_sk,cd_marital_status,cd_education_status]
-                        CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
-                CometBroadcastExchange [hd_demo_sk,hd_dep_count] #7
+                        CometNativeScan: `spark_catalog`.`default`.`customer_demographics` [cd_demo_sk,cd_marital_status,cd_education_status]
+                CometBroadcastExchange [hd_demo_sk,hd_dep_count] #6
                   CometFilter [hd_demo_sk,hd_dep_count]
-                    CometScan parquet spark_catalog.default.household_demographics [hd_demo_sk,hd_dep_count]
+                    CometNativeScan: `spark_catalog`.`default`.`household_demographics` [hd_demo_sk,hd_dep_count]

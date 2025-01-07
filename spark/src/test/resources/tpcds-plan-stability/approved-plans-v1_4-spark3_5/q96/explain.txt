@@ -11,27 +11,24 @@
                :     :  +- CometBroadcastHashJoin (8)
                :     :     :- CometProject (3)
                :     :     :  +- CometFilter (2)
-               :     :     :     +- CometScan parquet spark_catalog.default.store_sales (1)
+               :     :     :     +- CometNativeScan: `spark_catalog`.`default`.`store_sales` (1)
                :     :     +- CometBroadcastExchange (7)
                :     :        +- CometProject (6)
                :     :           +- CometFilter (5)
-               :     :              +- CometScan parquet spark_catalog.default.household_demographics (4)
+               :     :              +- CometNativeScan: `spark_catalog`.`default`.`household_demographics` (4)
                :     +- CometBroadcastExchange (13)
                :        +- CometProject (12)
                :           +- CometFilter (11)
-               :              +- CometScan parquet spark_catalog.default.time_dim (10)
+               :              +- CometNativeScan: `spark_catalog`.`default`.`time_dim` (10)
                +- CometBroadcastExchange (19)
                   +- CometProject (18)
                      +- CometFilter (17)
-                        +- CometScan parquet spark_catalog.default.store (16)
+                        +- CometNativeScan: `spark_catalog`.`default`.`store` (16)
 
 
-(1) CometScan parquet spark_catalog.default.store_sales
+(1) CometNativeScan: `spark_catalog`.`default`.`store_sales`
 Output [4]: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3, ss_sold_date_sk#4]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/store_sales]
-PushedFilters: [IsNotNull(ss_hdemo_sk), IsNotNull(ss_sold_time_sk), IsNotNull(ss_store_sk)]
-ReadSchema: struct<ss_sold_time_sk:int,ss_hdemo_sk:int,ss_store_sk:int>
+Arguments: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3, ss_sold_date_sk#4]
 
 (2) CometFilter
 Input [4]: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3, ss_sold_date_sk#4]
@@ -41,12 +38,9 @@ Condition : ((isnotnull(ss_hdemo_sk#2) AND isnotnull(ss_sold_time_sk#1)) AND isn
 Input [4]: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3, ss_sold_date_sk#4]
 Arguments: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3], [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3]
 
-(4) CometScan parquet spark_catalog.default.household_demographics
+(4) CometNativeScan: `spark_catalog`.`default`.`household_demographics`
 Output [2]: [hd_demo_sk#5, hd_dep_count#6]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/household_demographics]
-PushedFilters: [IsNotNull(hd_dep_count), EqualTo(hd_dep_count,7), IsNotNull(hd_demo_sk)]
-ReadSchema: struct<hd_demo_sk:int,hd_dep_count:int>
+Arguments: [hd_demo_sk#5, hd_dep_count#6]
 
 (5) CometFilter
 Input [2]: [hd_demo_sk#5, hd_dep_count#6]
@@ -69,12 +63,9 @@ Arguments: [ss_hdemo_sk#2], [hd_demo_sk#5], Inner, BuildRight
 Input [4]: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3, hd_demo_sk#5]
 Arguments: [ss_sold_time_sk#1, ss_store_sk#3], [ss_sold_time_sk#1, ss_store_sk#3]
 
-(10) CometScan parquet spark_catalog.default.time_dim
+(10) CometNativeScan: `spark_catalog`.`default`.`time_dim`
 Output [3]: [t_time_sk#7, t_hour#8, t_minute#9]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/time_dim]
-PushedFilters: [IsNotNull(t_hour), IsNotNull(t_minute), EqualTo(t_hour,20), GreaterThanOrEqual(t_minute,30), IsNotNull(t_time_sk)]
-ReadSchema: struct<t_time_sk:int,t_hour:int,t_minute:int>
+Arguments: [t_time_sk#7, t_hour#8, t_minute#9]
 
 (11) CometFilter
 Input [3]: [t_time_sk#7, t_hour#8, t_minute#9]
@@ -97,12 +88,9 @@ Arguments: [ss_sold_time_sk#1], [t_time_sk#7], Inner, BuildRight
 Input [3]: [ss_sold_time_sk#1, ss_store_sk#3, t_time_sk#7]
 Arguments: [ss_store_sk#3], [ss_store_sk#3]
 
-(16) CometScan parquet spark_catalog.default.store
+(16) CometNativeScan: `spark_catalog`.`default`.`store`
 Output [2]: [s_store_sk#10, s_store_name#11]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/store]
-PushedFilters: [IsNotNull(s_store_name), EqualTo(s_store_name,ese), IsNotNull(s_store_sk)]
-ReadSchema: struct<s_store_sk:int,s_store_name:string>
+Arguments: [s_store_sk#10, s_store_name#11]
 
 (17) CometFilter
 Input [2]: [s_store_sk#10, s_store_name#11]

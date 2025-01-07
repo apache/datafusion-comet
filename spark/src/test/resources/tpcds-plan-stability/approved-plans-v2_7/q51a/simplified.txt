@@ -42,21 +42,13 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                                                   CometProject [ws_item_sk,ws_sales_price,d_date]
                                                                                     CometBroadcastHashJoin [ws_item_sk,ws_sales_price,ws_sold_date_sk,d_date_sk,d_date]
                                                                                       CometFilter [ws_item_sk,ws_sales_price,ws_sold_date_sk]
-                                                                                        CometScan parquet spark_catalog.default.web_sales [ws_item_sk,ws_sales_price,ws_sold_date_sk]
-                                                                                          SubqueryBroadcast [d_date_sk] #1
-                                                                                            BroadcastExchange #6
-                                                                                              WholeStageCodegen (1)
-                                                                                                ColumnarToRow
-                                                                                                  InputAdapter
-                                                                                                    CometProject [d_date_sk,d_date]
-                                                                                                      CometFilter [d_date_sk,d_date,d_month_seq]
-                                                                                                        CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date,d_month_seq]
-                                                                                      CometBroadcastExchange [d_date_sk,d_date] #7
+                                                                                        CometNativeScan: `spark_catalog`.`default`.`web_sales` [ws_item_sk,ws_sales_price,ws_sold_date_sk]
+                                                                                      CometBroadcastExchange [d_date_sk,d_date] #6
                                                                                         CometProject [d_date_sk,d_date]
                                                                                           CometFilter [d_date_sk,d_date,d_month_seq]
-                                                                                            CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date,d_month_seq]
+                                                                                            CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_date,d_month_seq]
                                                             InputAdapter
-                                                              BroadcastExchange #8
+                                                              BroadcastExchange #7
                                                                 WholeStageCodegen (3)
                                                                   Project [item_sk,sumws,rk]
                                                                     InputAdapter
@@ -70,45 +62,9 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                     WholeStageCodegen (12)
                                       Sort [item_sk,d_date]
                                         InputAdapter
-                                          Exchange [item_sk,d_date] #9
-                                            WholeStageCodegen (11)
-                                              HashAggregate [item_sk,d_date,sumss,sum,isEmpty] [sum(sumss),cume_sales,sum,isEmpty]
-                                                InputAdapter
-                                                  Exchange [item_sk,d_date,sumss] #10
-                                                    WholeStageCodegen (10)
-                                                      HashAggregate [item_sk,d_date,sumss,sumss] [sum,isEmpty,sum,isEmpty]
-                                                        Project [item_sk,d_date,sumss,sumss]
-                                                          BroadcastHashJoin [item_sk,item_sk,rk,rk]
-                                                            Project [item_sk,d_date,sumss,rk]
-                                                              InputAdapter
-                                                                Window [ss_item_sk,d_date]
-                                                                  WholeStageCodegen (7)
-                                                                    ColumnarToRow
-                                                                      InputAdapter
-                                                                        CometSort [item_sk,d_date,sumss,ss_item_sk]
-                                                                          CometExchange [ss_item_sk] #11
-                                                                            CometHashAggregate [item_sk,d_date,sumss,ss_item_sk,sum,sum(UnscaledValue(ss_sales_price))]
-                                                                              CometExchange [ss_item_sk,d_date] #12
-                                                                                CometHashAggregate [ss_item_sk,d_date,sum,ss_sales_price]
-                                                                                  CometProject [ss_item_sk,ss_sales_price,d_date]
-                                                                                    CometBroadcastHashJoin [ss_item_sk,ss_sales_price,ss_sold_date_sk,d_date_sk,d_date]
-                                                                                      CometFilter [ss_item_sk,ss_sales_price,ss_sold_date_sk]
-                                                                                        CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_sales_price,ss_sold_date_sk]
-                                                                                          ReusedSubquery [d_date_sk] #1
-                                                                                      ReusedExchange [d_date_sk,d_date] #7
-                                                            InputAdapter
-                                                              BroadcastExchange #13
-                                                                WholeStageCodegen (9)
-                                                                  Project [item_sk,sumss,rk]
-                                                                    InputAdapter
-                                                                      Window [ss_item_sk,d_date]
-                                                                        WholeStageCodegen (8)
-                                                                          ColumnarToRow
-                                                                            InputAdapter
-                                                                              CometSort [item_sk,d_date,sumss,ss_item_sk]
-                                                                                ReusedExchange [item_sk,d_date,sumss,ss_item_sk] #11
+                                          ReusedExchange [item_sk,d_date,cume_sales] #2
               InputAdapter
-                BroadcastExchange #14
+                BroadcastExchange #8
                   WholeStageCodegen (29)
                     Project [item_sk,web_sales,store_sales,rk]
                       InputAdapter

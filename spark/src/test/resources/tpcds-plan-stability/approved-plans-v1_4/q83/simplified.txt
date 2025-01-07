@@ -14,56 +14,24 @@ WholeStageCodegen (1)
                           CometProject [sr_return_quantity,sr_returned_date_sk,i_item_id]
                             CometBroadcastHashJoin [sr_item_sk,sr_return_quantity,sr_returned_date_sk,i_item_sk,i_item_id]
                               CometFilter [sr_item_sk,sr_return_quantity,sr_returned_date_sk]
-                                CometScan parquet spark_catalog.default.store_returns [sr_item_sk,sr_return_quantity,sr_returned_date_sk]
-                                  SubqueryBroadcast [d_date_sk] #1
-                                    BroadcastExchange #2
-                                      WholeStageCodegen (1)
-                                        ColumnarToRow
-                                          InputAdapter
-                                            CometProject [d_date_sk]
-                                              CometBroadcastHashJoin [d_date_sk,d_date,d_date]
-                                                CometFilter [d_date_sk,d_date]
-                                                  CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date]
-                                                CometBroadcastExchange [d_date] #3
-                                                  CometProject [d_date]
-                                                    CometBroadcastHashJoin [d_date,d_week_seq,d_week_seq]
-                                                      CometScan parquet spark_catalog.default.date_dim [d_date,d_week_seq]
-                                                      CometBroadcastExchange [d_week_seq] #4
-                                                        CometProject [d_week_seq]
-                                                          CometFilter [d_date,d_week_seq]
-                                                            CometScan parquet spark_catalog.default.date_dim [d_date,d_week_seq]
-                              CometBroadcastExchange [i_item_sk,i_item_id] #5
+                                CometNativeScan: `spark_catalog`.`default`.`store_returns` [sr_item_sk,sr_return_quantity,sr_returned_date_sk]
+                              CometBroadcastExchange [i_item_sk,i_item_id] #2
                                 CometFilter [i_item_sk,i_item_id]
-                                  CometScan parquet spark_catalog.default.item [i_item_sk,i_item_id]
-                          CometBroadcastExchange [d_date_sk] #6
+                                  CometNativeScan: `spark_catalog`.`default`.`item` [i_item_sk,i_item_id]
+                          CometBroadcastExchange [d_date_sk] #3
                             CometProject [d_date_sk]
                               CometBroadcastHashJoin [d_date_sk,d_date,d_date]
                                 CometFilter [d_date_sk,d_date]
-                                  CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date]
-                                ReusedExchange [d_date] #3
-                CometBroadcastExchange [item_id,cr_item_qty] #7
+                                  CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_date]
+                                CometBroadcastExchange [d_date] #4
+                                  CometProject [d_date]
+                                    CometBroadcastHashJoin [d_date,d_week_seq,d_week_seq]
+                                      CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date,d_week_seq]
+                                      CometBroadcastExchange [d_week_seq] #5
+                                        CometProject [d_week_seq]
+                                          CometFilter [d_date,d_week_seq]
+                                            CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date,d_week_seq]
+                CometBroadcastExchange [item_id,cr_item_qty] #6
                   CometHashAggregate [item_id,cr_item_qty,i_item_id,sum,sum(cr_return_quantity)]
-                    CometExchange [i_item_id] #8
-                      CometHashAggregate [i_item_id,sum,cr_return_quantity]
-                        CometProject [cr_return_quantity,i_item_id]
-                          CometBroadcastHashJoin [cr_return_quantity,cr_returned_date_sk,i_item_id,d_date_sk]
-                            CometProject [cr_return_quantity,cr_returned_date_sk,i_item_id]
-                              CometBroadcastHashJoin [cr_item_sk,cr_return_quantity,cr_returned_date_sk,i_item_sk,i_item_id]
-                                CometFilter [cr_item_sk,cr_return_quantity,cr_returned_date_sk]
-                                  CometScan parquet spark_catalog.default.catalog_returns [cr_item_sk,cr_return_quantity,cr_returned_date_sk]
-                                    ReusedSubquery [d_date_sk] #1
-                                ReusedExchange [i_item_sk,i_item_id] #5
-                            ReusedExchange [d_date_sk] #6
-            CometBroadcastExchange [item_id,wr_item_qty] #9
-              CometHashAggregate [item_id,wr_item_qty,i_item_id,sum,sum(wr_return_quantity)]
-                CometExchange [i_item_id] #10
-                  CometHashAggregate [i_item_id,sum,wr_return_quantity]
-                    CometProject [wr_return_quantity,i_item_id]
-                      CometBroadcastHashJoin [wr_return_quantity,wr_returned_date_sk,i_item_id,d_date_sk]
-                        CometProject [wr_return_quantity,wr_returned_date_sk,i_item_id]
-                          CometBroadcastHashJoin [wr_item_sk,wr_return_quantity,wr_returned_date_sk,i_item_sk,i_item_id]
-                            CometFilter [wr_item_sk,wr_return_quantity,wr_returned_date_sk]
-                              CometScan parquet spark_catalog.default.web_returns [wr_item_sk,wr_return_quantity,wr_returned_date_sk]
-                                ReusedSubquery [d_date_sk] #1
-                            ReusedExchange [i_item_sk,i_item_id] #5
-                        ReusedExchange [d_date_sk] #6
+                    ReusedExchange [i_item_id,sum] #1
+            ReusedExchange [item_id,wr_item_qty] #6

@@ -14,16 +14,16 @@ WholeStageCodegen (1)
                           CometBroadcastHashJoin [sold_date_sk,sales_price,d_date_sk,d_week_seq,d_day_name]
                             CometUnion [sold_date_sk,sales_price]
                               CometProject [ws_sold_date_sk,ws_ext_sales_price] [sold_date_sk,sales_price]
-                                CometNativeScan parquet spark_catalog.default.web_sales [ws_ext_sales_price,ws_sold_date_sk]
+                                CometNativeScan: `spark_catalog`.`default`.`web_sales` [ws_ext_sales_price,ws_sold_date_sk]
                               CometProject [cs_sold_date_sk,cs_ext_sales_price] [sold_date_sk,sales_price]
-                                CometNativeScan parquet spark_catalog.default.catalog_sales [cs_ext_sales_price,cs_sold_date_sk]
+                                CometNativeScan: `spark_catalog`.`default`.`catalog_sales` [cs_ext_sales_price,cs_sold_date_sk]
                             CometBroadcastExchange [d_date_sk,d_week_seq,d_day_name] #3
                               CometFilter [d_date_sk,d_week_seq,d_day_name]
-                                CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_week_seq,d_day_name]
+                                CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_week_seq,d_day_name]
                   CometBroadcastExchange [d_week_seq] #4
                     CometProject [d_week_seq]
                       CometFilter [d_week_seq,d_year]
-                        CometNativeScan parquet spark_catalog.default.date_dim [d_week_seq,d_year]
+                        CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_week_seq,d_year]
               CometBroadcastExchange [d_week_seq2,sun_sales2,mon_sales2,tue_sales2,wed_sales2,thu_sales2,fri_sales2,sat_sales2] #5
                 CometProject [d_week_seq,sun_sales,mon_sales,tue_sales,wed_sales,thu_sales,fri_sales,sat_sales] [d_week_seq2,sun_sales2,mon_sales2,tue_sales2,wed_sales2,thu_sales2,fri_sales2,sat_sales2]
                   CometBroadcastHashJoin [d_week_seq,sun_sales,mon_sales,tue_sales,wed_sales,thu_sales,fri_sales,sat_sales,d_week_seq]
@@ -32,4 +32,4 @@ WholeStageCodegen (1)
                     CometBroadcastExchange [d_week_seq] #6
                       CometProject [d_week_seq]
                         CometFilter [d_week_seq,d_year]
-                          CometNativeScan parquet spark_catalog.default.date_dim [d_week_seq,d_year]
+                          CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_week_seq,d_year]

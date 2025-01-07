@@ -17,20 +17,18 @@ WholeStageCodegen (1)
                                 CometBroadcastHashJoin [d_date_sk,ss_item_sk,ss_customer_sk,ss_store_sk,ss_ext_sales_price,ss_sold_date_sk]
                                   CometProject [d_date_sk]
                                     CometFilter [d_date_sk,d_year,d_moy]
-                                      CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
+                                      CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_year,d_moy]
                                   CometBroadcastExchange [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ext_sales_price,ss_sold_date_sk] #2
                                     CometFilter [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ext_sales_price,ss_sold_date_sk]
-                                      CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ext_sales_price,ss_sold_date_sk]
+                                      CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ext_sales_price,ss_sold_date_sk]
                               CometBroadcastExchange [i_item_sk,i_brand_id,i_brand,i_manufact_id,i_manufact] #3
                                 CometProject [i_item_sk,i_brand_id,i_brand,i_manufact_id,i_manufact]
                                   CometFilter [i_item_sk,i_brand_id,i_brand,i_manufact_id,i_manufact,i_manager_id]
-                                    CometScan parquet spark_catalog.default.item [i_item_sk,i_brand_id,i_brand,i_manufact_id,i_manufact,i_manager_id]
+                                    CometNativeScan: `spark_catalog`.`default`.`item` [i_item_sk,i_brand_id,i_brand,i_manufact_id,i_manufact,i_manager_id]
                           CometBroadcastExchange [c_customer_sk,c_current_addr_sk] #4
                             CometFilter [c_customer_sk,c_current_addr_sk]
-                              CometScan parquet spark_catalog.default.customer [c_customer_sk,c_current_addr_sk]
+                              CometNativeScan: `spark_catalog`.`default`.`customer` [c_customer_sk,c_current_addr_sk]
                       CometBroadcastExchange [ca_address_sk,ca_zip] #5
                         CometFilter [ca_address_sk,ca_zip]
-                          CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_zip]
-                  CometBroadcastExchange [s_store_sk,s_zip] #6
-                    CometFilter [s_store_sk,s_zip]
-                      CometScan parquet spark_catalog.default.store [s_store_sk,s_zip]
+                          CometNativeScan: `spark_catalog`.`default`.`customer_address` [ca_address_sk,ca_zip]
+                  ReusedExchange [s_store_sk,s_zip] #5

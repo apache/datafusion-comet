@@ -14,17 +14,13 @@ WholeStageCodegen (1)
                           CometProject [cs_ship_date_sk,cs_call_center_sk,cs_ship_mode_sk,cs_sold_date_sk,w_warehouse_name]
                             CometBroadcastHashJoin [cs_ship_date_sk,cs_call_center_sk,cs_ship_mode_sk,cs_warehouse_sk,cs_sold_date_sk,w_warehouse_sk,w_warehouse_name]
                               CometFilter [cs_ship_date_sk,cs_call_center_sk,cs_ship_mode_sk,cs_warehouse_sk,cs_sold_date_sk]
-                                CometNativeScan parquet spark_catalog.default.catalog_sales [cs_ship_date_sk,cs_call_center_sk,cs_ship_mode_sk,cs_warehouse_sk,cs_sold_date_sk]
+                                CometNativeScan: `spark_catalog`.`default`.`catalog_sales` [cs_ship_date_sk,cs_call_center_sk,cs_ship_mode_sk,cs_warehouse_sk,cs_sold_date_sk]
                               CometBroadcastExchange [w_warehouse_sk,w_warehouse_name] #2
                                 CometFilter [w_warehouse_sk,w_warehouse_name]
-                                  CometNativeScan parquet spark_catalog.default.warehouse [w_warehouse_sk,w_warehouse_name]
-                          CometBroadcastExchange [sm_ship_mode_sk,sm_type] #3
-                            CometFilter [sm_ship_mode_sk,sm_type]
-                              CometNativeScan parquet spark_catalog.default.ship_mode [sm_ship_mode_sk,sm_type]
-                      CometBroadcastExchange [cc_call_center_sk,cc_name] #4
-                        CometFilter [cc_call_center_sk,cc_name]
-                          CometNativeScan parquet spark_catalog.default.call_center [cc_call_center_sk,cc_name]
-                  CometBroadcastExchange [d_date_sk] #5
+                                  CometNativeScan: `spark_catalog`.`default`.`warehouse` [w_warehouse_sk,w_warehouse_name]
+                          ReusedExchange [sm_ship_mode_sk,sm_type] #2
+                      ReusedExchange [cc_call_center_sk,cc_name] #2
+                  CometBroadcastExchange [d_date_sk] #3
                     CometProject [d_date_sk]
                       CometFilter [d_date_sk,d_month_seq]
-                        CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
+                        CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_month_seq]

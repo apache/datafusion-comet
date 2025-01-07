@@ -21,24 +21,24 @@ WholeStageCodegen (2)
                                         CometExchange [cs_order_number] #2
                                           CometProject [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_warehouse_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit]
                                             CometFilter [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_warehouse_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit,cs_sold_date_sk]
-                                              CometScan parquet spark_catalog.default.catalog_sales [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_warehouse_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit,cs_sold_date_sk]
+                                              CometNativeScan: `spark_catalog`.`default`.`catalog_sales` [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_warehouse_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit,cs_sold_date_sk]
                                       CometSort [cs_warehouse_sk,cs_order_number]
                                         CometExchange [cs_order_number] #3
                                           CometProject [cs_warehouse_sk,cs_order_number]
-                                            CometScan parquet spark_catalog.default.catalog_sales [cs_warehouse_sk,cs_order_number,cs_sold_date_sk]
+                                            CometNativeScan: `spark_catalog`.`default`.`catalog_sales` [cs_warehouse_sk,cs_order_number,cs_sold_date_sk]
                                   CometSort [cr_order_number]
                                     CometExchange [cr_order_number] #4
                                       CometProject [cr_order_number]
-                                        CometScan parquet spark_catalog.default.catalog_returns [cr_order_number,cr_returned_date_sk]
+                                        CometNativeScan: `spark_catalog`.`default`.`catalog_returns` [cr_order_number,cr_returned_date_sk]
                                 CometBroadcastExchange [d_date_sk] #5
                                   CometProject [d_date_sk]
                                     CometFilter [d_date_sk,d_date]
-                                      CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date]
+                                      CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_date]
                             CometBroadcastExchange [ca_address_sk] #6
                               CometProject [ca_address_sk]
                                 CometFilter [ca_address_sk,ca_state]
-                                  CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_state]
+                                  CometNativeScan: `spark_catalog`.`default`.`customer_address` [ca_address_sk,ca_state]
                         CometBroadcastExchange [cc_call_center_sk] #7
                           CometProject [cc_call_center_sk]
                             CometFilter [cc_call_center_sk,cc_county]
-                              CometScan parquet spark_catalog.default.call_center [cc_call_center_sk,cc_county]
+                              CometNativeScan: `spark_catalog`.`default`.`call_center` [cc_call_center_sk,cc_county]

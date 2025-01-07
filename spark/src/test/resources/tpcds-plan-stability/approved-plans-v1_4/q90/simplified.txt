@@ -14,19 +14,19 @@ WholeStageCodegen (2)
                           CometBroadcastHashJoin [ws_sold_time_sk,ws_ship_hdemo_sk,ws_web_page_sk,hd_demo_sk]
                             CometProject [ws_sold_time_sk,ws_ship_hdemo_sk,ws_web_page_sk]
                               CometFilter [ws_sold_time_sk,ws_ship_hdemo_sk,ws_web_page_sk,ws_sold_date_sk]
-                                CometNativeScan parquet spark_catalog.default.web_sales [ws_sold_time_sk,ws_ship_hdemo_sk,ws_web_page_sk,ws_sold_date_sk]
+                                CometNativeScan: `spark_catalog`.`default`.`web_sales` [ws_sold_time_sk,ws_ship_hdemo_sk,ws_web_page_sk,ws_sold_date_sk]
                             CometBroadcastExchange [hd_demo_sk] #2
                               CometProject [hd_demo_sk]
                                 CometFilter [hd_demo_sk,hd_dep_count]
-                                  CometNativeScan parquet spark_catalog.default.household_demographics [hd_demo_sk,hd_dep_count]
+                                  CometNativeScan: `spark_catalog`.`default`.`household_demographics` [hd_demo_sk,hd_dep_count]
                         CometBroadcastExchange [t_time_sk] #3
                           CometProject [t_time_sk]
                             CometFilter [t_time_sk,t_hour]
-                              CometNativeScan parquet spark_catalog.default.time_dim [t_time_sk,t_hour]
+                              CometNativeScan: `spark_catalog`.`default`.`time_dim` [t_time_sk,t_hour]
                     CometBroadcastExchange [wp_web_page_sk] #4
                       CometProject [wp_web_page_sk]
                         CometFilter [wp_web_page_sk,wp_char_count]
-                          CometNativeScan parquet spark_catalog.default.web_page [wp_web_page_sk,wp_char_count]
+                          CometNativeScan: `spark_catalog`.`default`.`web_page` [wp_web_page_sk,wp_char_count]
       InputAdapter
         BroadcastExchange #5
           WholeStageCodegen (1)
@@ -43,10 +43,10 @@ WholeStageCodegen (2)
                                 CometBroadcastHashJoin [ws_sold_time_sk,ws_ship_hdemo_sk,ws_web_page_sk,hd_demo_sk]
                                   CometProject [ws_sold_time_sk,ws_ship_hdemo_sk,ws_web_page_sk]
                                     CometFilter [ws_sold_time_sk,ws_ship_hdemo_sk,ws_web_page_sk,ws_sold_date_sk]
-                                      CometNativeScan parquet spark_catalog.default.web_sales [ws_sold_time_sk,ws_ship_hdemo_sk,ws_web_page_sk,ws_sold_date_sk]
+                                      CometNativeScan: `spark_catalog`.`default`.`web_sales` [ws_sold_time_sk,ws_ship_hdemo_sk,ws_web_page_sk,ws_sold_date_sk]
                                   ReusedExchange [hd_demo_sk] #2
                               CometBroadcastExchange [t_time_sk] #7
                                 CometProject [t_time_sk]
                                   CometFilter [t_time_sk,t_hour]
-                                    CometNativeScan parquet spark_catalog.default.time_dim [t_time_sk,t_hour]
+                                    CometNativeScan: `spark_catalog`.`default`.`time_dim` [t_time_sk,t_hour]
                           ReusedExchange [wp_web_page_sk] #4

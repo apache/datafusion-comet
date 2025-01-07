@@ -19,7 +19,7 @@ TakeOrderedAndProject (33)
       :     :     :                             +- CometHashAggregate (4)
       :     :     :                                +- CometProject (3)
       :     :     :                                   +- CometFilter (2)
-      :     :     :                                      +- CometNativeScan parquet spark_catalog.default.store_sales (1)
+      :     :     :                                      +- CometNativeScan: `spark_catalog`.`default`.`store_sales` (1)
       :     :     +- * Sort (21)
       :     :        +- * Project (20)
       :     :           +- * Filter (19)
@@ -30,16 +30,13 @@ TakeOrderedAndProject (33)
       :     +- BroadcastExchange (27)
       :        +- * ColumnarToRow (26)
       :           +- CometFilter (25)
-      :              +- CometNativeScan parquet spark_catalog.default.item (24)
+      :              +- CometNativeScan: `spark_catalog`.`default`.`item` (24)
       +- ReusedExchange (30)
 
 
-(1) CometNativeScan parquet spark_catalog.default.store_sales
+(1) CometNativeScan: `spark_catalog`.`default`.`store_sales`
 Output [4]: [ss_item_sk#1, ss_store_sk#2, ss_net_profit#3, ss_sold_date_sk#4]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/store_sales]
-PushedFilters: [IsNotNull(ss_store_sk), EqualTo(ss_store_sk,4)]
-ReadSchema: struct<ss_item_sk:int,ss_store_sk:int,ss_net_profit:decimal(7,2)>
+Arguments: [ss_item_sk#1, ss_store_sk#2, ss_net_profit#3, ss_sold_date_sk#4]
 
 (2) CometFilter
 Input [4]: [ss_item_sk#1, ss_store_sk#2, ss_net_profit#3, ss_sold_date_sk#4]
@@ -130,12 +127,9 @@ Join condition: None
 Output [3]: [item_sk#7, rnk#11, item_sk#12]
 Input [4]: [item_sk#7, rnk#11, item_sk#12, rnk#14]
 
-(24) CometNativeScan parquet spark_catalog.default.item
+(24) CometNativeScan: `spark_catalog`.`default`.`item`
 Output [2]: [i_item_sk#15, i_product_name#16]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_item_sk)]
-ReadSchema: struct<i_item_sk:int,i_product_name:string>
+Arguments: [i_item_sk#15, i_product_name#16]
 
 (25) CometFilter
 Input [2]: [i_item_sk#15, i_product_name#16]
@@ -184,15 +178,12 @@ Subquery:1 Hosting operator id = 7 Hosting Expression = Subquery scalar-subquery
       +- CometHashAggregate (37)
          +- CometProject (36)
             +- CometFilter (35)
-               +- CometNativeScan parquet spark_catalog.default.store_sales (34)
+               +- CometNativeScan: `spark_catalog`.`default`.`store_sales` (34)
 
 
-(34) CometNativeScan parquet spark_catalog.default.store_sales
+(34) CometNativeScan: `spark_catalog`.`default`.`store_sales`
 Output [4]: [ss_addr_sk#21, ss_store_sk#22, ss_net_profit#23, ss_sold_date_sk#24]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/store_sales]
-PushedFilters: [IsNotNull(ss_store_sk), EqualTo(ss_store_sk,4), IsNull(ss_addr_sk)]
-ReadSchema: struct<ss_addr_sk:int,ss_store_sk:int,ss_net_profit:decimal(7,2)>
+Arguments: [ss_addr_sk#21, ss_store_sk#22, ss_net_profit#23, ss_sold_date_sk#24]
 
 (35) CometFilter
 Input [4]: [ss_addr_sk#21, ss_store_sk#22, ss_net_profit#23, ss_sold_date_sk#24]
