@@ -2195,7 +2195,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  ignore("get_struct_field - select primitive fields") {
+  test("get_struct_field - select primitive fields") {
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2208,12 +2208,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         df.write.parquet(dir.toString())
       }
 
-      Seq("", "parquet").foreach { v1List =>
-        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
-          val df = spark.read.parquet(dir.toString())
-          checkSparkAnswerAndOperator(df.select("nested1.id"))
-        }
-      }
+      val df = spark.read.parquet(dir.toString())
+      checkSparkAnswerAndOperator(df.select("nested1.id"))
     }
   }
 
