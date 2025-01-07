@@ -14,27 +14,27 @@
                :     :     :     :- CometProject (7)
                :     :     :     :  +- CometBroadcastHashJoin (6)
                :     :     :     :     :- CometFilter (2)
-               :     :     :     :     :  +- CometNativeScan (1)
+               :     :     :     :     :  +- CometNativeScan: `spark_catalog`.`default`.`store_sales` (1)
                :     :     :     :     +- CometBroadcastExchange (5)
                :     :     :     :        +- CometFilter (4)
-               :     :     :     :           +- CometNativeScan (3)
+               :     :     :     :           +- CometNativeScan: `spark_catalog`.`default`.`store` (3)
                :     :     :     +- CometBroadcastExchange (11)
                :     :     :        +- CometProject (10)
                :     :     :           +- CometFilter (9)
-               :     :     :              +- CometNativeScan (8)
+               :     :     :              +- CometNativeScan: `spark_catalog`.`default`.`customer_address` (8)
                :     :     +- CometBroadcastExchange (17)
                :     :        +- CometProject (16)
                :     :           +- CometFilter (15)
-               :     :              +- CometNativeScan (14)
+               :     :              +- CometNativeScan: `spark_catalog`.`default`.`date_dim` (14)
                :     +- CometBroadcastExchange (22)
                :        +- CometFilter (21)
-               :           +- CometNativeScan (20)
+               :           +- CometNativeScan: `spark_catalog`.`default`.`customer_demographics` (20)
                +- CometBroadcastExchange (27)
                   +- CometFilter (26)
-                     +- CometNativeScan (25)
+                     +- CometNativeScan: `spark_catalog`.`default`.`household_demographics` (25)
 
 
-(1) CometNativeScan
+(1) CometNativeScan: `spark_catalog`.`default`.`store_sales`
 Output [10]: [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_store_sk#4, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, ss_net_profit#9, ss_sold_date_sk#10]
 Arguments: [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_store_sk#4, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, ss_net_profit#9, ss_sold_date_sk#10]
 
@@ -42,7 +42,7 @@ Arguments: [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_store_sk#4, ss_quanti
 Input [10]: [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_store_sk#4, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, ss_net_profit#9, ss_sold_date_sk#10]
 Condition : (((((isnotnull(ss_store_sk#4) AND isnotnull(ss_addr_sk#3)) AND isnotnull(ss_cdemo_sk#1)) AND isnotnull(ss_hdemo_sk#2)) AND ((((ss_net_profit#9 >= 100.00) AND (ss_net_profit#9 <= 200.00)) OR ((ss_net_profit#9 >= 150.00) AND (ss_net_profit#9 <= 300.00))) OR ((ss_net_profit#9 >= 50.00) AND (ss_net_profit#9 <= 250.00)))) AND ((((ss_sales_price#6 >= 100.00) AND (ss_sales_price#6 <= 150.00)) OR ((ss_sales_price#6 >= 50.00) AND (ss_sales_price#6 <= 100.00))) OR ((ss_sales_price#6 >= 150.00) AND (ss_sales_price#6 <= 200.00))))
 
-(3) CometNativeScan
+(3) CometNativeScan: `spark_catalog`.`default`.`store`
 Output [1]: [s_store_sk#11]
 Arguments: [s_store_sk#11]
 
@@ -63,7 +63,7 @@ Arguments: [ss_store_sk#4], [s_store_sk#11], Inner, BuildRight
 Input [11]: [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_store_sk#4, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, ss_net_profit#9, ss_sold_date_sk#10, s_store_sk#11]
 Arguments: [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, ss_net_profit#9, ss_sold_date_sk#10], [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, ss_net_profit#9, ss_sold_date_sk#10]
 
-(8) CometNativeScan
+(8) CometNativeScan: `spark_catalog`.`default`.`customer_address`
 Output [3]: [ca_address_sk#12, ca_state#13, ca_country#14]
 Arguments: [ca_address_sk#12, ca_state#13, ca_country#14]
 
@@ -88,7 +88,7 @@ Arguments: [ss_addr_sk#3], [ca_address_sk#12], Inner, ((((ca_state#13 IN (TX,OH)
 Input [11]: [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, ss_net_profit#9, ss_sold_date_sk#10, ca_address_sk#12, ca_state#13]
 Arguments: [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, ss_sold_date_sk#10], [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, ss_sold_date_sk#10]
 
-(14) CometNativeScan
+(14) CometNativeScan: `spark_catalog`.`default`.`date_dim`
 Output [2]: [d_date_sk#15, d_year#16]
 Arguments: [d_date_sk#15, d_year#16]
 
@@ -113,7 +113,7 @@ Arguments: [ss_sold_date_sk#10], [d_date_sk#15], Inner, BuildRight
 Input [8]: [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, ss_sold_date_sk#10, d_date_sk#15]
 Arguments: [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8], [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8]
 
-(20) CometNativeScan
+(20) CometNativeScan: `spark_catalog`.`default`.`customer_demographics`
 Output [3]: [cd_demo_sk#17, cd_marital_status#18, cd_education_status#19]
 Arguments: [cd_demo_sk#17, cd_marital_status#18, cd_education_status#19]
 
@@ -134,7 +134,7 @@ Arguments: [ss_cdemo_sk#1], [cd_demo_sk#17], Inner, ((((((cd_marital_status#18 =
 Input [9]: [ss_cdemo_sk#1, ss_hdemo_sk#2, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, cd_demo_sk#17, cd_marital_status#18, cd_education_status#19]
 Arguments: [ss_hdemo_sk#2, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, cd_marital_status#18, cd_education_status#19], [ss_hdemo_sk#2, ss_quantity#5, ss_sales_price#6, ss_ext_sales_price#7, ss_ext_wholesale_cost#8, cd_marital_status#18, cd_education_status#19]
 
-(25) CometNativeScan
+(25) CometNativeScan: `spark_catalog`.`default`.`household_demographics`
 Output [2]: [hd_demo_sk#20, hd_dep_count#21]
 Arguments: [hd_demo_sk#20, hd_dep_count#21]
 

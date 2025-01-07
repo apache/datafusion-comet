@@ -22,27 +22,27 @@ TakeOrderedAndProject (71)
                :                 :     :     :     :     :- CometSort (4)
                :                 :     :     :     :     :  +- CometExchange (3)
                :                 :     :     :     :     :     +- CometFilter (2)
-               :                 :     :     :     :     :        +- CometNativeScan (1)
+               :                 :     :     :     :     :        +- CometNativeScan: `spark_catalog`.`default`.`store_sales` (1)
                :                 :     :     :     :     +- CometSort (9)
                :                 :     :     :     :        +- CometExchange (8)
                :                 :     :     :     :           +- CometProject (7)
                :                 :     :     :     :              +- CometFilter (6)
-               :                 :     :     :     :                 +- CometNativeScan (5)
+               :                 :     :     :     :                 +- CometNativeScan: `spark_catalog`.`default`.`store_returns` (5)
                :                 :     :     :     +- CometBroadcastExchange (15)
                :                 :     :     :        +- CometProject (14)
                :                 :     :     :           +- CometFilter (13)
-               :                 :     :     :              +- CometNativeScan (12)
+               :                 :     :     :              +- CometNativeScan: `spark_catalog`.`default`.`date_dim` (12)
                :                 :     :     +- CometBroadcastExchange (20)
                :                 :     :        +- CometFilter (19)
-               :                 :     :           +- CometNativeScan (18)
+               :                 :     :           +- CometNativeScan: `spark_catalog`.`default`.`store` (18)
                :                 :     +- CometBroadcastExchange (26)
                :                 :        +- CometProject (25)
                :                 :           +- CometFilter (24)
-               :                 :              +- CometNativeScan (23)
+               :                 :              +- CometNativeScan: `spark_catalog`.`default`.`item` (23)
                :                 +- CometBroadcastExchange (32)
                :                    +- CometProject (31)
                :                       +- CometFilter (30)
-               :                          +- CometNativeScan (29)
+               :                          +- CometNativeScan: `spark_catalog`.`default`.`promotion` (29)
                :- * HashAggregate (62)
                :  +- * ColumnarToRow (61)
                :     +- CometExchange (60)
@@ -60,7 +60,7 @@ TakeOrderedAndProject (71)
                :                 :     :     :     :     :- CometSort (42)
                :                 :     :     :     :     :  +- CometExchange (41)
                :                 :     :     :     :     :     +- CometFilter (40)
-               :                 :     :     :     :     :        +- CometNativeScan (39)
+               :                 :     :     :     :     :        +- CometNativeScan: `spark_catalog`.`default`.`catalog_sales` (39)
                :                 :     :     :     :     +- CometSort (44)
                :                 :     :     :     :        +- ReusedExchange (43)
                :                 :     :     :     +- ReusedExchange (47)
@@ -72,7 +72,7 @@ TakeOrderedAndProject (71)
                      +- ReusedExchange (63)
 
 
-(1) CometNativeScan
+(1) CometNativeScan: `spark_catalog`.`default`.`store_sales`
 Output [7]: [ss_item_sk#1, ss_store_sk#2, ss_promo_sk#3, ss_ticket_number#4, ss_ext_sales_price#5, ss_net_profit#6, ss_sold_date_sk#7]
 Arguments: [ss_item_sk#1, ss_store_sk#2, ss_promo_sk#3, ss_ticket_number#4, ss_ext_sales_price#5, ss_net_profit#6, ss_sold_date_sk#7]
 
@@ -88,7 +88,7 @@ Arguments: hashpartitioning(ss_item_sk#1, ss_ticket_number#4, 5), ENSURE_REQUIRE
 Input [7]: [ss_item_sk#1, ss_store_sk#2, ss_promo_sk#3, ss_ticket_number#4, ss_ext_sales_price#5, ss_net_profit#6, ss_sold_date_sk#7]
 Arguments: [ss_item_sk#1, ss_store_sk#2, ss_promo_sk#3, ss_ticket_number#4, ss_ext_sales_price#5, ss_net_profit#6, ss_sold_date_sk#7], [ss_item_sk#1 ASC NULLS FIRST, ss_ticket_number#4 ASC NULLS FIRST]
 
-(5) CometNativeScan
+(5) CometNativeScan: `spark_catalog`.`default`.`store_returns`
 Output [5]: [sr_item_sk#8, sr_ticket_number#9, sr_return_amt#10, sr_net_loss#11, sr_returned_date_sk#12]
 Arguments: [sr_item_sk#8, sr_ticket_number#9, sr_return_amt#10, sr_net_loss#11, sr_returned_date_sk#12]
 
@@ -117,7 +117,7 @@ Arguments: [ss_item_sk#1, ss_ticket_number#4], [sr_item_sk#8, sr_ticket_number#9
 Input [11]: [ss_item_sk#1, ss_store_sk#2, ss_promo_sk#3, ss_ticket_number#4, ss_ext_sales_price#5, ss_net_profit#6, ss_sold_date_sk#7, sr_item_sk#8, sr_ticket_number#9, sr_return_amt#10, sr_net_loss#11]
 Arguments: [ss_item_sk#1, ss_store_sk#2, ss_promo_sk#3, ss_ext_sales_price#5, ss_net_profit#6, ss_sold_date_sk#7, sr_return_amt#10, sr_net_loss#11], [ss_item_sk#1, ss_store_sk#2, ss_promo_sk#3, ss_ext_sales_price#5, ss_net_profit#6, ss_sold_date_sk#7, sr_return_amt#10, sr_net_loss#11]
 
-(12) CometNativeScan
+(12) CometNativeScan: `spark_catalog`.`default`.`date_dim`
 Output [2]: [d_date_sk#13, d_date#14]
 Arguments: [d_date_sk#13, d_date#14]
 
@@ -142,7 +142,7 @@ Arguments: [ss_sold_date_sk#7], [d_date_sk#13], Inner, BuildRight
 Input [9]: [ss_item_sk#1, ss_store_sk#2, ss_promo_sk#3, ss_ext_sales_price#5, ss_net_profit#6, ss_sold_date_sk#7, sr_return_amt#10, sr_net_loss#11, d_date_sk#13]
 Arguments: [ss_item_sk#1, ss_store_sk#2, ss_promo_sk#3, ss_ext_sales_price#5, ss_net_profit#6, sr_return_amt#10, sr_net_loss#11], [ss_item_sk#1, ss_store_sk#2, ss_promo_sk#3, ss_ext_sales_price#5, ss_net_profit#6, sr_return_amt#10, sr_net_loss#11]
 
-(18) CometNativeScan
+(18) CometNativeScan: `spark_catalog`.`default`.`store`
 Output [2]: [s_store_sk#15, s_store_id#16]
 Arguments: [s_store_sk#15, s_store_id#16]
 
@@ -163,7 +163,7 @@ Arguments: [ss_store_sk#2], [s_store_sk#15], Inner, BuildRight
 Input [9]: [ss_item_sk#1, ss_store_sk#2, ss_promo_sk#3, ss_ext_sales_price#5, ss_net_profit#6, sr_return_amt#10, sr_net_loss#11, s_store_sk#15, s_store_id#16]
 Arguments: [ss_item_sk#1, ss_promo_sk#3, ss_ext_sales_price#5, ss_net_profit#6, sr_return_amt#10, sr_net_loss#11, s_store_id#16], [ss_item_sk#1, ss_promo_sk#3, ss_ext_sales_price#5, ss_net_profit#6, sr_return_amt#10, sr_net_loss#11, s_store_id#16]
 
-(23) CometNativeScan
+(23) CometNativeScan: `spark_catalog`.`default`.`item`
 Output [2]: [i_item_sk#17, i_current_price#18]
 Arguments: [i_item_sk#17, i_current_price#18]
 
@@ -188,7 +188,7 @@ Arguments: [ss_item_sk#1], [i_item_sk#17], Inner, BuildRight
 Input [8]: [ss_item_sk#1, ss_promo_sk#3, ss_ext_sales_price#5, ss_net_profit#6, sr_return_amt#10, sr_net_loss#11, s_store_id#16, i_item_sk#17]
 Arguments: [ss_promo_sk#3, ss_ext_sales_price#5, ss_net_profit#6, sr_return_amt#10, sr_net_loss#11, s_store_id#16], [ss_promo_sk#3, ss_ext_sales_price#5, ss_net_profit#6, sr_return_amt#10, sr_net_loss#11, s_store_id#16]
 
-(29) CometNativeScan
+(29) CometNativeScan: `spark_catalog`.`default`.`promotion`
 Output [2]: [p_promo_sk#19, p_channel_tv#20]
 Arguments: [p_promo_sk#19, p_channel_tv#20]
 
@@ -232,7 +232,7 @@ Functions [3]: [sum(UnscaledValue(ss_ext_sales_price#5)), sum(coalesce(cast(sr_r
 Aggregate Attributes [3]: [sum(UnscaledValue(ss_ext_sales_price#5))#26, sum(coalesce(cast(sr_return_amt#10 as decimal(12,2)), 0.00))#27, sum((ss_net_profit#6 - coalesce(cast(sr_net_loss#11 as decimal(12,2)), 0.00)))#28]
 Results [5]: [MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#5))#26,17,2) AS sales#29, sum(coalesce(cast(sr_return_amt#10 as decimal(12,2)), 0.00))#27 AS returns#30, sum((ss_net_profit#6 - coalesce(cast(sr_net_loss#11 as decimal(12,2)), 0.00)))#28 AS profit#31, store channel AS channel#32, concat(store, s_store_id#16) AS id#33]
 
-(39) CometNativeScan
+(39) CometNativeScan: `spark_catalog`.`default`.`catalog_sales`
 Output [7]: [cs_catalog_page_sk#34, cs_item_sk#35, cs_promo_sk#36, cs_order_number#37, cs_ext_sales_price#38, cs_net_profit#39, cs_sold_date_sk#40]
 Arguments: [cs_catalog_page_sk#34, cs_item_sk#35, cs_promo_sk#36, cs_order_number#37, cs_ext_sales_price#38, cs_net_profit#39, cs_sold_date_sk#40]
 

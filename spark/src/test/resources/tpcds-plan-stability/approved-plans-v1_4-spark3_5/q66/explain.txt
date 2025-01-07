@@ -17,26 +17,26 @@
                :              :     :     :- CometProject (7)
                :              :     :     :  +- CometBroadcastHashJoin (6)
                :              :     :     :     :- CometFilter (2)
-               :              :     :     :     :  +- CometNativeScan (1)
+               :              :     :     :     :  +- CometNativeScan: `spark_catalog`.`default`.`web_sales` (1)
                :              :     :     :     +- CometBroadcastExchange (5)
                :              :     :     :        +- CometFilter (4)
-               :              :     :     :           +- CometNativeScan (3)
+               :              :     :     :           +- CometNativeScan: `spark_catalog`.`default`.`warehouse` (3)
                :              :     :     +- CometBroadcastExchange (10)
                :              :     :        +- CometFilter (9)
-               :              :     :           +- CometNativeScan (8)
+               :              :     :           +- CometNativeScan: `spark_catalog`.`default`.`date_dim` (8)
                :              :     +- CometBroadcastExchange (16)
                :              :        +- CometProject (15)
                :              :           +- CometFilter (14)
-               :              :              +- CometNativeScan (13)
+               :              :              +- CometNativeScan: `spark_catalog`.`default`.`time_dim` (13)
                :              +- CometBroadcastExchange (22)
                :                 +- CometProject (21)
                :                    +- CometFilter (20)
-               :                       +- CometNativeScan (19)
+               :                       +- CometNativeScan: `spark_catalog`.`default`.`ship_mode` (19)
                +- CometHashAggregate (29)
                   +- ReusedExchange (28)
 
 
-(1) CometNativeScan
+(1) CometNativeScan: `spark_catalog`.`default`.`web_sales`
 Output [7]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_warehouse_sk#3, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7]
 Arguments: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_warehouse_sk#3, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7]
 
@@ -44,7 +44,7 @@ Arguments: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_warehouse_sk#3, ws_quantity
 Input [7]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_warehouse_sk#3, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7]
 Condition : ((isnotnull(ws_warehouse_sk#3) AND isnotnull(ws_sold_time_sk#1)) AND isnotnull(ws_ship_mode_sk#2))
 
-(3) CometNativeScan
+(3) CometNativeScan: `spark_catalog`.`default`.`warehouse`
 Output [7]: [w_warehouse_sk#8, w_warehouse_name#9, w_warehouse_sq_ft#10, w_city#11, w_county#12, w_state#13, w_country#14]
 Arguments: [w_warehouse_sk#8, w_warehouse_name#9, w_warehouse_sq_ft#10, w_city#11, w_county#12, w_state#13, w_country#14]
 
@@ -65,7 +65,7 @@ Arguments: [ws_warehouse_sk#3], [w_warehouse_sk#8], Inner, BuildRight
 Input [14]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_warehouse_sk#3, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7, w_warehouse_sk#8, w_warehouse_name#9, w_warehouse_sq_ft#10, w_city#11, w_county#12, w_state#13, w_country#14]
 Arguments: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7, w_warehouse_name#9, w_warehouse_sq_ft#10, w_city#11, w_county#12, w_state#13, w_country#14], [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7, w_warehouse_name#9, w_warehouse_sq_ft#10, w_city#11, w_county#12, w_state#13, w_country#14]
 
-(8) CometNativeScan
+(8) CometNativeScan: `spark_catalog`.`default`.`date_dim`
 Output [3]: [d_date_sk#15, d_year#16, d_moy#17]
 Arguments: [d_date_sk#15, d_year#16, d_moy#17]
 
@@ -86,7 +86,7 @@ Arguments: [ws_sold_date_sk#7], [d_date_sk#15], Inner, BuildRight
 Input [15]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7, w_warehouse_name#9, w_warehouse_sq_ft#10, w_city#11, w_county#12, w_state#13, w_country#14, d_date_sk#15, d_year#16, d_moy#17]
 Arguments: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#9, w_warehouse_sq_ft#10, w_city#11, w_county#12, w_state#13, w_country#14, d_year#16, d_moy#17], [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#9, w_warehouse_sq_ft#10, w_city#11, w_county#12, w_state#13, w_country#14, d_year#16, d_moy#17]
 
-(13) CometNativeScan
+(13) CometNativeScan: `spark_catalog`.`default`.`time_dim`
 Output [2]: [t_time_sk#18, t_time#19]
 Arguments: [t_time_sk#18, t_time#19]
 
@@ -111,7 +111,7 @@ Arguments: [ws_sold_time_sk#1], [t_time_sk#18], Inner, BuildRight
 Input [14]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#9, w_warehouse_sq_ft#10, w_city#11, w_county#12, w_state#13, w_country#14, d_year#16, d_moy#17, t_time_sk#18]
 Arguments: [ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#9, w_warehouse_sq_ft#10, w_city#11, w_county#12, w_state#13, w_country#14, d_year#16, d_moy#17], [ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#9, w_warehouse_sq_ft#10, w_city#11, w_county#12, w_state#13, w_country#14, d_year#16, d_moy#17]
 
-(19) CometNativeScan
+(19) CometNativeScan: `spark_catalog`.`default`.`ship_mode`
 Output [2]: [sm_ship_mode_sk#20, sm_carrier#21]
 Arguments: [sm_ship_mode_sk#20, sm_carrier#21]
 

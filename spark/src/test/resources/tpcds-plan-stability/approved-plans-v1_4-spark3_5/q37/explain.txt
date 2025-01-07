@@ -13,21 +13,21 @@
                   :        :  +- CometBroadcastHashJoin (8)
                   :        :     :- CometProject (3)
                   :        :     :  +- CometFilter (2)
-                  :        :     :     +- CometNativeScan (1)
+                  :        :     :     +- CometNativeScan: `spark_catalog`.`default`.`item` (1)
                   :        :     +- CometBroadcastExchange (7)
                   :        :        +- CometProject (6)
                   :        :           +- CometFilter (5)
-                  :        :              +- CometNativeScan (4)
+                  :        :              +- CometNativeScan: `spark_catalog`.`default`.`inventory` (4)
                   :        +- CometBroadcastExchange (13)
                   :           +- CometProject (12)
                   :              +- CometFilter (11)
-                  :                 +- CometNativeScan (10)
+                  :                 +- CometNativeScan: `spark_catalog`.`default`.`date_dim` (10)
                   +- CometProject (19)
                      +- CometFilter (18)
-                        +- CometNativeScan (17)
+                        +- CometNativeScan: `spark_catalog`.`default`.`catalog_sales` (17)
 
 
-(1) CometNativeScan
+(1) CometNativeScan: `spark_catalog`.`default`.`item`
 Output [5]: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4, i_manufact_id#5]
 Arguments: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4, i_manufact_id#5]
 
@@ -39,7 +39,7 @@ Condition : ((((isnotnull(i_current_price#4) AND (i_current_price#4 >= 68.00)) A
 Input [5]: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4, i_manufact_id#5]
 Arguments: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4], [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4]
 
-(4) CometNativeScan
+(4) CometNativeScan: `spark_catalog`.`default`.`inventory`
 Output [3]: [inv_item_sk#6, inv_quantity_on_hand#7, inv_date_sk#8]
 Arguments: [inv_item_sk#6, inv_quantity_on_hand#7, inv_date_sk#8]
 
@@ -64,7 +64,7 @@ Arguments: [i_item_sk#1], [inv_item_sk#6], Inner, BuildRight
 Input [6]: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4, inv_item_sk#6, inv_date_sk#8]
 Arguments: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4, inv_date_sk#8], [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4, inv_date_sk#8]
 
-(10) CometNativeScan
+(10) CometNativeScan: `spark_catalog`.`default`.`date_dim`
 Output [2]: [d_date_sk#9, d_date#10]
 Arguments: [d_date_sk#9, d_date#10]
 
@@ -93,7 +93,7 @@ Arguments: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4], [i_item
 Input [4]: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4]
 Arguments: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4]
 
-(17) CometNativeScan
+(17) CometNativeScan: `spark_catalog`.`default`.`catalog_sales`
 Output [2]: [cs_item_sk#11, cs_sold_date_sk#12]
 Arguments: [cs_item_sk#11, cs_sold_date_sk#12]
 

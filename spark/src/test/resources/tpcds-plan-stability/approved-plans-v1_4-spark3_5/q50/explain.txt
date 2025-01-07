@@ -13,23 +13,23 @@
                   :     :     :- CometProject (7)
                   :     :     :  +- CometBroadcastHashJoin (6)
                   :     :     :     :- CometFilter (2)
-                  :     :     :     :  +- CometNativeScan (1)
+                  :     :     :     :  +- CometNativeScan: `spark_catalog`.`default`.`store_sales` (1)
                   :     :     :     +- CometBroadcastExchange (5)
                   :     :     :        +- CometFilter (4)
-                  :     :     :           +- CometNativeScan (3)
+                  :     :     :           +- CometNativeScan: `spark_catalog`.`default`.`store_returns` (3)
                   :     :     +- CometBroadcastExchange (10)
                   :     :        +- CometFilter (9)
-                  :     :           +- CometNativeScan (8)
+                  :     :           +- CometNativeScan: `spark_catalog`.`default`.`store` (8)
                   :     +- CometBroadcastExchange (15)
                   :        +- CometFilter (14)
-                  :           +- CometNativeScan (13)
+                  :           +- CometNativeScan: `spark_catalog`.`default`.`date_dim` (13)
                   +- CometBroadcastExchange (21)
                      +- CometProject (20)
                         +- CometFilter (19)
-                           +- CometNativeScan (18)
+                           +- CometNativeScan: `spark_catalog`.`default`.`date_dim` (18)
 
 
-(1) CometNativeScan
+(1) CometNativeScan: `spark_catalog`.`default`.`store_sales`
 Output [5]: [ss_item_sk#1, ss_customer_sk#2, ss_store_sk#3, ss_ticket_number#4, ss_sold_date_sk#5]
 Arguments: [ss_item_sk#1, ss_customer_sk#2, ss_store_sk#3, ss_ticket_number#4, ss_sold_date_sk#5]
 
@@ -37,7 +37,7 @@ Arguments: [ss_item_sk#1, ss_customer_sk#2, ss_store_sk#3, ss_ticket_number#4, s
 Input [5]: [ss_item_sk#1, ss_customer_sk#2, ss_store_sk#3, ss_ticket_number#4, ss_sold_date_sk#5]
 Condition : (((isnotnull(ss_ticket_number#4) AND isnotnull(ss_item_sk#1)) AND isnotnull(ss_customer_sk#2)) AND isnotnull(ss_store_sk#3))
 
-(3) CometNativeScan
+(3) CometNativeScan: `spark_catalog`.`default`.`store_returns`
 Output [4]: [sr_item_sk#6, sr_customer_sk#7, sr_ticket_number#8, sr_returned_date_sk#9]
 Arguments: [sr_item_sk#6, sr_customer_sk#7, sr_ticket_number#8, sr_returned_date_sk#9]
 
@@ -58,7 +58,7 @@ Arguments: [ss_ticket_number#4, ss_item_sk#1, ss_customer_sk#2], [sr_ticket_numb
 Input [9]: [ss_item_sk#1, ss_customer_sk#2, ss_store_sk#3, ss_ticket_number#4, ss_sold_date_sk#5, sr_item_sk#6, sr_customer_sk#7, sr_ticket_number#8, sr_returned_date_sk#9]
 Arguments: [ss_store_sk#3, ss_sold_date_sk#5, sr_returned_date_sk#9], [ss_store_sk#3, ss_sold_date_sk#5, sr_returned_date_sk#9]
 
-(8) CometNativeScan
+(8) CometNativeScan: `spark_catalog`.`default`.`store`
 Output [11]: [s_store_sk#10, s_store_name#11, s_company_id#12, s_street_number#13, s_street_name#14, s_street_type#15, s_suite_number#16, s_city#17, s_county#18, s_state#19, s_zip#20]
 Arguments: [s_store_sk#10, s_store_name#11, s_company_id#12, s_street_number#13, s_street_name#14, s_street_type#15, s_suite_number#16, s_city#17, s_county#18, s_state#19, s_zip#20]
 
@@ -79,7 +79,7 @@ Arguments: [ss_store_sk#3], [s_store_sk#10], Inner, BuildRight
 Input [14]: [ss_store_sk#3, ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_sk#10, s_store_name#11, s_company_id#12, s_street_number#13, s_street_name#14, s_street_type#15, s_suite_number#16, s_city#17, s_county#18, s_state#19, s_zip#20]
 Arguments: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#11, s_company_id#12, s_street_number#13, s_street_name#14, s_street_type#15, s_suite_number#16, s_city#17, s_county#18, s_state#19, s_zip#20], [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#11, s_company_id#12, s_street_number#13, s_street_name#14, s_street_type#15, s_suite_number#16, s_city#17, s_county#18, s_state#19, s_zip#20]
 
-(13) CometNativeScan
+(13) CometNativeScan: `spark_catalog`.`default`.`date_dim`
 Output [1]: [d_date_sk#21]
 Arguments: [d_date_sk#21]
 
@@ -100,7 +100,7 @@ Arguments: [ss_sold_date_sk#5], [d_date_sk#21], Inner, BuildRight
 Input [13]: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#11, s_company_id#12, s_street_number#13, s_street_name#14, s_street_type#15, s_suite_number#16, s_city#17, s_county#18, s_state#19, s_zip#20, d_date_sk#21]
 Arguments: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#11, s_company_id#12, s_street_number#13, s_street_name#14, s_street_type#15, s_suite_number#16, s_city#17, s_county#18, s_state#19, s_zip#20], [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#11, s_company_id#12, s_street_number#13, s_street_name#14, s_street_type#15, s_suite_number#16, s_city#17, s_county#18, s_state#19, s_zip#20]
 
-(18) CometNativeScan
+(18) CometNativeScan: `spark_catalog`.`default`.`date_dim`
 Output [3]: [d_date_sk#22, d_year#23, d_moy#24]
 Arguments: [d_date_sk#22, d_year#23, d_moy#24]
 

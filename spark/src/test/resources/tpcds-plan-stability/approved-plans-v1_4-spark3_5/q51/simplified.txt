@@ -30,11 +30,11 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                           CometProject [ws_item_sk,ws_sales_price,d_date]
                                                             CometBroadcastHashJoin [ws_item_sk,ws_sales_price,ws_sold_date_sk,d_date_sk,d_date]
                                                               CometFilter [ws_item_sk,ws_sales_price,ws_sold_date_sk]
-                                                                CometNativeScan [ws_item_sk,ws_sales_price,ws_sold_date_sk]
+                                                                CometNativeScan: `spark_catalog`.`default`.`web_sales` [ws_item_sk,ws_sales_price,ws_sold_date_sk]
                                                               CometBroadcastExchange [d_date_sk,d_date] #5
                                                                 CometProject [d_date_sk,d_date]
                                                                   CometFilter [d_date_sk,d_date,d_month_seq]
-                                                                    CometNativeScan [d_date_sk,d_date,d_month_seq]
+                                                                    CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_date,d_month_seq]
                         InputAdapter
                           WholeStageCodegen (6)
                             Sort [item_sk,d_date]

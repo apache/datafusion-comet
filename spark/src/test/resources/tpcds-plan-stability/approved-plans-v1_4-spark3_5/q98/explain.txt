@@ -16,17 +16,17 @@
                                        :- CometProject (7)
                                        :  +- CometBroadcastHashJoin (6)
                                        :     :- CometFilter (2)
-                                       :     :  +- CometNativeScan (1)
+                                       :     :  +- CometNativeScan: `spark_catalog`.`default`.`store_sales` (1)
                                        :     +- CometBroadcastExchange (5)
                                        :        +- CometFilter (4)
-                                       :           +- CometNativeScan (3)
+                                       :           +- CometNativeScan: `spark_catalog`.`default`.`item` (3)
                                        +- CometBroadcastExchange (11)
                                           +- CometProject (10)
                                              +- CometFilter (9)
-                                                +- CometNativeScan (8)
+                                                +- CometNativeScan: `spark_catalog`.`default`.`date_dim` (8)
 
 
-(1) CometNativeScan
+(1) CometNativeScan: `spark_catalog`.`default`.`store_sales`
 Output [3]: [ss_item_sk#1, ss_ext_sales_price#2, ss_sold_date_sk#3]
 Arguments: [ss_item_sk#1, ss_ext_sales_price#2, ss_sold_date_sk#3]
 
@@ -34,7 +34,7 @@ Arguments: [ss_item_sk#1, ss_ext_sales_price#2, ss_sold_date_sk#3]
 Input [3]: [ss_item_sk#1, ss_ext_sales_price#2, ss_sold_date_sk#3]
 Condition : isnotnull(ss_item_sk#1)
 
-(3) CometNativeScan
+(3) CometNativeScan: `spark_catalog`.`default`.`item`
 Output [6]: [i_item_sk#4, i_item_id#5, i_item_desc#6, i_current_price#7, i_class#8, i_category#9]
 Arguments: [i_item_sk#4, i_item_id#5, i_item_desc#6, i_current_price#7, i_class#8, i_category#9]
 
@@ -55,7 +55,7 @@ Arguments: [ss_item_sk#1], [i_item_sk#4], Inner, BuildRight
 Input [9]: [ss_item_sk#1, ss_ext_sales_price#2, ss_sold_date_sk#3, i_item_sk#4, i_item_id#5, i_item_desc#6, i_current_price#7, i_class#8, i_category#9]
 Arguments: [ss_ext_sales_price#2, ss_sold_date_sk#3, i_item_id#5, i_item_desc#6, i_current_price#7, i_class#8, i_category#9], [ss_ext_sales_price#2, ss_sold_date_sk#3, i_item_id#5, i_item_desc#6, i_current_price#7, i_class#8, i_category#9]
 
-(8) CometNativeScan
+(8) CometNativeScan: `spark_catalog`.`default`.`date_dim`
 Output [2]: [d_date_sk#10, d_date#11]
 Arguments: [d_date_sk#10, d_date#11]
 

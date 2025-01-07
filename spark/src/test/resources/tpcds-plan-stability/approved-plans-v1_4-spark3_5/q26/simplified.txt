@@ -14,19 +14,19 @@ WholeStageCodegen (1)
                           CometProject [cs_item_sk,cs_promo_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_sold_date_sk]
                             CometBroadcastHashJoin [cs_bill_cdemo_sk,cs_item_sk,cs_promo_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_sold_date_sk,cd_demo_sk]
                               CometFilter [cs_bill_cdemo_sk,cs_item_sk,cs_promo_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_sold_date_sk]
-                                CometNativeScan [cs_bill_cdemo_sk,cs_item_sk,cs_promo_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_sold_date_sk]
+                                CometNativeScan: `spark_catalog`.`default`.`catalog_sales` [cs_bill_cdemo_sk,cs_item_sk,cs_promo_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_sold_date_sk]
                               CometBroadcastExchange [cd_demo_sk] #2
                                 CometProject [cd_demo_sk]
                                   CometFilter [cd_demo_sk,cd_gender,cd_marital_status,cd_education_status]
-                                    CometNativeScan [cd_demo_sk,cd_gender,cd_marital_status,cd_education_status]
+                                    CometNativeScan: `spark_catalog`.`default`.`customer_demographics` [cd_demo_sk,cd_gender,cd_marital_status,cd_education_status]
                           CometBroadcastExchange [d_date_sk] #3
                             CometProject [d_date_sk]
                               CometFilter [d_date_sk,d_year]
-                                CometNativeScan [d_date_sk,d_year]
+                                CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_year]
                       CometBroadcastExchange [i_item_sk,i_item_id] #4
                         CometFilter [i_item_sk,i_item_id]
-                          CometNativeScan [i_item_sk,i_item_id]
+                          CometNativeScan: `spark_catalog`.`default`.`item` [i_item_sk,i_item_id]
                   CometBroadcastExchange [p_promo_sk] #5
                     CometProject [p_promo_sk]
                       CometFilter [p_promo_sk,p_channel_email,p_channel_event]
-                        CometNativeScan [p_promo_sk,p_channel_email,p_channel_event]
+                        CometNativeScan: `spark_catalog`.`default`.`promotion` [p_promo_sk,p_channel_email,p_channel_event]

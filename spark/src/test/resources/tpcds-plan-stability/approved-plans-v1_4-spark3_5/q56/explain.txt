@@ -15,23 +15,23 @@
                :              :     :- CometProject (8)
                :              :     :  +- CometBroadcastHashJoin (7)
                :              :     :     :- CometFilter (2)
-               :              :     :     :  +- CometNativeScan (1)
+               :              :     :     :  +- CometNativeScan: `spark_catalog`.`default`.`store_sales` (1)
                :              :     :     +- CometBroadcastExchange (6)
                :              :     :        +- CometProject (5)
                :              :     :           +- CometFilter (4)
-               :              :     :              +- CometNativeScan (3)
+               :              :     :              +- CometNativeScan: `spark_catalog`.`default`.`date_dim` (3)
                :              :     +- CometBroadcastExchange (12)
                :              :        +- CometProject (11)
                :              :           +- CometFilter (10)
-               :              :              +- CometNativeScan (9)
+               :              :              +- CometNativeScan: `spark_catalog`.`default`.`customer_address` (9)
                :              +- CometBroadcastExchange (22)
                :                 +- CometBroadcastHashJoin (21)
                :                    :- CometFilter (16)
-               :                    :  +- CometNativeScan (15)
+               :                    :  +- CometNativeScan: `spark_catalog`.`default`.`item` (15)
                :                    +- CometBroadcastExchange (20)
                :                       +- CometProject (19)
                :                          +- CometFilter (18)
-               :                             +- CometNativeScan (17)
+               :                             +- CometNativeScan: `spark_catalog`.`default`.`item` (17)
                :- CometHashAggregate (41)
                :  +- CometExchange (40)
                :     +- CometHashAggregate (39)
@@ -42,7 +42,7 @@
                :              :     :- CometProject (32)
                :              :     :  +- CometBroadcastHashJoin (31)
                :              :     :     :- CometFilter (29)
-               :              :     :     :  +- CometNativeScan (28)
+               :              :     :     :  +- CometNativeScan: `spark_catalog`.`default`.`catalog_sales` (28)
                :              :     :     +- ReusedExchange (30)
                :              :     +- ReusedExchange (33)
                :              +- ReusedExchange (36)
@@ -50,7 +50,7 @@
                   +- ReusedExchange (42)
 
 
-(1) CometNativeScan
+(1) CometNativeScan: `spark_catalog`.`default`.`store_sales`
 Output [4]: [ss_item_sk#1, ss_addr_sk#2, ss_ext_sales_price#3, ss_sold_date_sk#4]
 Arguments: [ss_item_sk#1, ss_addr_sk#2, ss_ext_sales_price#3, ss_sold_date_sk#4]
 
@@ -58,7 +58,7 @@ Arguments: [ss_item_sk#1, ss_addr_sk#2, ss_ext_sales_price#3, ss_sold_date_sk#4]
 Input [4]: [ss_item_sk#1, ss_addr_sk#2, ss_ext_sales_price#3, ss_sold_date_sk#4]
 Condition : (isnotnull(ss_addr_sk#2) AND isnotnull(ss_item_sk#1))
 
-(3) CometNativeScan
+(3) CometNativeScan: `spark_catalog`.`default`.`date_dim`
 Output [3]: [d_date_sk#5, d_year#6, d_moy#7]
 Arguments: [d_date_sk#5, d_year#6, d_moy#7]
 
@@ -83,7 +83,7 @@ Arguments: [ss_sold_date_sk#4], [d_date_sk#5], Inner, BuildRight
 Input [5]: [ss_item_sk#1, ss_addr_sk#2, ss_ext_sales_price#3, ss_sold_date_sk#4, d_date_sk#5]
 Arguments: [ss_item_sk#1, ss_addr_sk#2, ss_ext_sales_price#3], [ss_item_sk#1, ss_addr_sk#2, ss_ext_sales_price#3]
 
-(9) CometNativeScan
+(9) CometNativeScan: `spark_catalog`.`default`.`customer_address`
 Output [2]: [ca_address_sk#8, ca_gmt_offset#9]
 Arguments: [ca_address_sk#8, ca_gmt_offset#9]
 
@@ -108,7 +108,7 @@ Arguments: [ss_addr_sk#2], [ca_address_sk#8], Inner, BuildRight
 Input [4]: [ss_item_sk#1, ss_addr_sk#2, ss_ext_sales_price#3, ca_address_sk#8]
 Arguments: [ss_item_sk#1, ss_ext_sales_price#3], [ss_item_sk#1, ss_ext_sales_price#3]
 
-(15) CometNativeScan
+(15) CometNativeScan: `spark_catalog`.`default`.`item`
 Output [2]: [i_item_sk#10, i_item_id#11]
 Arguments: [i_item_sk#10, i_item_id#11]
 
@@ -116,7 +116,7 @@ Arguments: [i_item_sk#10, i_item_id#11]
 Input [2]: [i_item_sk#10, i_item_id#11]
 Condition : isnotnull(i_item_sk#10)
 
-(17) CometNativeScan
+(17) CometNativeScan: `spark_catalog`.`default`.`item`
 Output [2]: [i_item_id#12, i_color#13]
 Arguments: [i_item_id#12, i_color#13]
 
@@ -164,7 +164,7 @@ Input [2]: [i_item_id#11, sum#14]
 Keys [1]: [i_item_id#11]
 Functions [1]: [sum(UnscaledValue(ss_ext_sales_price#3))]
 
-(28) CometNativeScan
+(28) CometNativeScan: `spark_catalog`.`default`.`catalog_sales`
 Output [4]: [cs_bill_addr_sk#15, cs_item_sk#16, cs_ext_sales_price#17, cs_sold_date_sk#18]
 Arguments: [cs_bill_addr_sk#15, cs_item_sk#16, cs_ext_sales_price#17, cs_sold_date_sk#18]
 

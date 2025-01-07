@@ -13,25 +13,25 @@
                   :     :     :- CometProject (8)
                   :     :     :  +- CometBroadcastHashJoin (7)
                   :     :     :     :- CometFilter (2)
-                  :     :     :     :  +- CometNativeScan (1)
+                  :     :     :     :  +- CometNativeScan: `spark_catalog`.`default`.`catalog_sales` (1)
                   :     :     :     +- CometBroadcastExchange (6)
                   :     :     :        +- CometProject (5)
                   :     :     :           +- CometFilter (4)
-                  :     :     :              +- CometNativeScan (3)
+                  :     :     :              +- CometNativeScan: `spark_catalog`.`default`.`customer_demographics` (3)
                   :     :     +- CometBroadcastExchange (12)
                   :     :        +- CometProject (11)
                   :     :           +- CometFilter (10)
-                  :     :              +- CometNativeScan (9)
+                  :     :              +- CometNativeScan: `spark_catalog`.`default`.`date_dim` (9)
                   :     +- CometBroadcastExchange (17)
                   :        +- CometFilter (16)
-                  :           +- CometNativeScan (15)
+                  :           +- CometNativeScan: `spark_catalog`.`default`.`item` (15)
                   +- CometBroadcastExchange (23)
                      +- CometProject (22)
                         +- CometFilter (21)
-                           +- CometNativeScan (20)
+                           +- CometNativeScan: `spark_catalog`.`default`.`promotion` (20)
 
 
-(1) CometNativeScan
+(1) CometNativeScan: `spark_catalog`.`default`.`catalog_sales`
 Output [8]: [cs_bill_cdemo_sk#1, cs_item_sk#2, cs_promo_sk#3, cs_quantity#4, cs_list_price#5, cs_sales_price#6, cs_coupon_amt#7, cs_sold_date_sk#8]
 Arguments: [cs_bill_cdemo_sk#1, cs_item_sk#2, cs_promo_sk#3, cs_quantity#4, cs_list_price#5, cs_sales_price#6, cs_coupon_amt#7, cs_sold_date_sk#8]
 
@@ -39,7 +39,7 @@ Arguments: [cs_bill_cdemo_sk#1, cs_item_sk#2, cs_promo_sk#3, cs_quantity#4, cs_l
 Input [8]: [cs_bill_cdemo_sk#1, cs_item_sk#2, cs_promo_sk#3, cs_quantity#4, cs_list_price#5, cs_sales_price#6, cs_coupon_amt#7, cs_sold_date_sk#8]
 Condition : ((isnotnull(cs_bill_cdemo_sk#1) AND isnotnull(cs_item_sk#2)) AND isnotnull(cs_promo_sk#3))
 
-(3) CometNativeScan
+(3) CometNativeScan: `spark_catalog`.`default`.`customer_demographics`
 Output [4]: [cd_demo_sk#9, cd_gender#10, cd_marital_status#11, cd_education_status#12]
 Arguments: [cd_demo_sk#9, cd_gender#10, cd_marital_status#11, cd_education_status#12]
 
@@ -64,7 +64,7 @@ Arguments: [cs_bill_cdemo_sk#1], [cd_demo_sk#9], Inner, BuildRight
 Input [9]: [cs_bill_cdemo_sk#1, cs_item_sk#2, cs_promo_sk#3, cs_quantity#4, cs_list_price#5, cs_sales_price#6, cs_coupon_amt#7, cs_sold_date_sk#8, cd_demo_sk#9]
 Arguments: [cs_item_sk#2, cs_promo_sk#3, cs_quantity#4, cs_list_price#5, cs_sales_price#6, cs_coupon_amt#7, cs_sold_date_sk#8], [cs_item_sk#2, cs_promo_sk#3, cs_quantity#4, cs_list_price#5, cs_sales_price#6, cs_coupon_amt#7, cs_sold_date_sk#8]
 
-(9) CometNativeScan
+(9) CometNativeScan: `spark_catalog`.`default`.`date_dim`
 Output [2]: [d_date_sk#13, d_year#14]
 Arguments: [d_date_sk#13, d_year#14]
 
@@ -89,7 +89,7 @@ Arguments: [cs_sold_date_sk#8], [d_date_sk#13], Inner, BuildRight
 Input [8]: [cs_item_sk#2, cs_promo_sk#3, cs_quantity#4, cs_list_price#5, cs_sales_price#6, cs_coupon_amt#7, cs_sold_date_sk#8, d_date_sk#13]
 Arguments: [cs_item_sk#2, cs_promo_sk#3, cs_quantity#4, cs_list_price#5, cs_sales_price#6, cs_coupon_amt#7], [cs_item_sk#2, cs_promo_sk#3, cs_quantity#4, cs_list_price#5, cs_sales_price#6, cs_coupon_amt#7]
 
-(15) CometNativeScan
+(15) CometNativeScan: `spark_catalog`.`default`.`item`
 Output [2]: [i_item_sk#15, i_item_id#16]
 Arguments: [i_item_sk#15, i_item_id#16]
 
@@ -110,7 +110,7 @@ Arguments: [cs_item_sk#2], [i_item_sk#15], Inner, BuildRight
 Input [8]: [cs_item_sk#2, cs_promo_sk#3, cs_quantity#4, cs_list_price#5, cs_sales_price#6, cs_coupon_amt#7, i_item_sk#15, i_item_id#16]
 Arguments: [cs_promo_sk#3, cs_quantity#4, cs_list_price#5, cs_sales_price#6, cs_coupon_amt#7, i_item_id#16], [cs_promo_sk#3, cs_quantity#4, cs_list_price#5, cs_sales_price#6, cs_coupon_amt#7, i_item_id#16]
 
-(20) CometNativeScan
+(20) CometNativeScan: `spark_catalog`.`default`.`promotion`
 Output [3]: [p_promo_sk#17, p_channel_email#18, p_channel_event#19]
 Arguments: [p_promo_sk#17, p_channel_email#18, p_channel_event#19]
 
