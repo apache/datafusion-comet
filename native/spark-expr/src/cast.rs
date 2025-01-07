@@ -37,7 +37,7 @@ use arrow::{
 };
 use arrow_array::builder::StringBuilder;
 use arrow_array::{DictionaryArray, StringArray, StructArray};
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{DataType, Schema};
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use datafusion_common::{
@@ -50,6 +50,7 @@ use num::{
     ToPrimitive,
 };
 use regex::Regex;
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::{
     any::Any,
@@ -817,11 +818,18 @@ fn cast_struct_to_struct(
     cast_options: &SparkCastOptions,
 ) -> DataFusionResult<ArrayRef> {
     match (from_type, to_type) {
-        (DataType::Struct(_), DataType::Struct(to_fields)) => {
+        (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
+            // TODO some of this logic may be specific to converting Parquet to Spark
+            let mut field_name_to_index_map = HashMap::new();
+            for (i, field) in from_fields.iter().enumerate() {
+                field_name_to_index_map.insert(field.name(), i);
+            }
+            assert_eq!(field_name_to_index_map.len(), from_fields.len());
             let mut cast_fields: Vec<ArrayRef> = Vec::with_capacity(to_fields.len());
             for i in 0..to_fields.len() {
+                let from_index = field_name_to_index_map[to_fields[i].name()];
                 let cast_field = cast_array(
-                    Arc::clone(array.column(i)),
+                    Arc::clone(array.column(from_index)),
                     to_fields[i].data_type(),
                     cast_options,
                 )?;
