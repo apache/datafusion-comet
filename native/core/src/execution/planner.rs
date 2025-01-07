@@ -100,6 +100,8 @@ use datafusion_expr::{
     WindowFunctionDefinition,
 };
 use datafusion_functions_nested::array_has::ArrayHas;
+use datafusion_functions_nested::set_ops::array_union_udf;
+use datafusion_functions_nested::sort::array_sort_udf;
 use datafusion_physical_expr::expressions::{Literal, StatsType};
 use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr::LexOrdering;
@@ -742,13 +744,54 @@ impl PhysicalPlanner {
                 unimplemented!()
             }
             ExprStruct::SortArray(expr) => {
-                unimplemented!()
+                let array_expr =
+                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let asc_order_expr =
+                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
+
+                let true_literal_expr: Arc<dyn PhysicalExpr> =
+                    Arc::new(Literal::new(ScalarValue::Boolean(Some(true))));
+
+                let is_ordering_ignored: Arc<dyn PhysicalExpr> =
+                    Arc::new(IsNullExpr::new(Arc::clone(&asc_order_expr)));
+
+                // desc order expr
+                let not_asc_order_expr: Arc<dyn PhysicalExpr> =
+                    Arc::new(NotExpr::new(Arc::clone(&asc_order_expr)));
+
+                // Default to true of ordering expression is ignored
+                let ordering_expr: Arc<dyn PhysicalExpr> = Arc::new(CaseExpr::try_new(
+                    None,
+                    vec![(is_ordering_ignored, Arc::clone(&true_literal_expr))],
+                    Some(not_asc_order_expr),
+                )?);
+
+                let nulls_first: Arc<dyn PhysicalExpr> = true_literal_expr;
+                let return_type = array_expr.data_type(&input_schema)?;
+                let args = vec![array_expr, ordering_expr, nulls_first];
+                Ok(Arc::new(ScalarFunctionExpr::new(
+                    "array_sort",
+                    array_sort_udf(),
+                    args,
+                    return_type,
+                )))
             }
             ExprStruct::ArrayZip(expr) => {
                 unimplemented!()
             }
             ExprStruct::ArrayUnion(expr) => {
-                unimplemented!()
+                let left =
+                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let right =
+                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let return_type = left.data_type(&input_schema)?;
+                let args = vec![left, right];
+                Ok(Arc::new(ScalarFunctionExpr::new(
+                    "array_union",
+                    array_union_udf(),
+                    args,
+                    return_type,
+                )))
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",

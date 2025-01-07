@@ -736,11 +736,13 @@ impl PhysicalExpr for ArrayMin {
         todo!()
     }
 
-    fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn PhysicalExpr>>) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn PhysicalExpr>>,
+    ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
         todo!()
     }
 }
-
 
 #[derive(Debug, Eq)]
 struct ArrayMax {
@@ -793,7 +795,10 @@ impl PhysicalExpr for ArrayMax {
         todo!()
     }
 
-    fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn PhysicalExpr>>) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn PhysicalExpr>>,
+    ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
         todo!()
     }
 }
