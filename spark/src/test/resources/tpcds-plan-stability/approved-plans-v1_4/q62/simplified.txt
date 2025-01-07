@@ -14,17 +14,13 @@ WholeStageCodegen (1)
                           CometProject [ws_ship_date_sk,ws_web_site_sk,ws_ship_mode_sk,ws_sold_date_sk,w_warehouse_name]
                             CometBroadcastHashJoin [ws_ship_date_sk,ws_web_site_sk,ws_ship_mode_sk,ws_warehouse_sk,ws_sold_date_sk,w_warehouse_sk,w_warehouse_name]
                               CometFilter [ws_ship_date_sk,ws_web_site_sk,ws_ship_mode_sk,ws_warehouse_sk,ws_sold_date_sk]
-                                CometNativeScan parquet spark_catalog.default.web_sales [ws_ship_date_sk,ws_web_site_sk,ws_ship_mode_sk,ws_warehouse_sk,ws_sold_date_sk]
+                                CometNativeScan [ws_ship_date_sk,ws_web_site_sk,ws_ship_mode_sk,ws_warehouse_sk,ws_sold_date_sk]
                               CometBroadcastExchange [w_warehouse_sk,w_warehouse_name] #2
                                 CometFilter [w_warehouse_sk,w_warehouse_name]
-                                  CometNativeScan parquet spark_catalog.default.warehouse [w_warehouse_sk,w_warehouse_name]
-                          CometBroadcastExchange [sm_ship_mode_sk,sm_type] #3
-                            CometFilter [sm_ship_mode_sk,sm_type]
-                              CometNativeScan parquet spark_catalog.default.ship_mode [sm_ship_mode_sk,sm_type]
-                      CometBroadcastExchange [web_site_sk,web_name] #4
-                        CometFilter [web_site_sk,web_name]
-                          CometNativeScan parquet spark_catalog.default.web_site [web_site_sk,web_name]
-                  CometBroadcastExchange [d_date_sk] #5
+                                  CometNativeScan [w_warehouse_sk,w_warehouse_name]
+                          ReusedExchange [sm_ship_mode_sk,sm_type] #2
+                      ReusedExchange [web_site_sk,web_name] #2
+                  CometBroadcastExchange [d_date_sk] #3
                     CometProject [d_date_sk]
                       CometFilter [d_date_sk,d_month_seq]
-                        CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
+                        CometNativeScan [d_date_sk,d_month_seq]

@@ -1,31 +1,28 @@
 == Physical Plan ==
-* Project (4)
-+- * ColumnarToRow (3)
+* ColumnarToRow (4)
++- CometProject (3)
    +- CometFilter (2)
-      +- CometNativeScan parquet spark_catalog.default.reason (1)
+      +- CometNativeScan (1)
 
 
-(1) CometNativeScan parquet spark_catalog.default.reason
+(1) CometNativeScan
 Output [1]: [r_reason_sk#1]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/reason]
-PushedFilters: [IsNotNull(r_reason_sk), EqualTo(r_reason_sk,1)]
-ReadSchema: struct<r_reason_sk:int>
+Arguments: [r_reason_sk#1]
 
 (2) CometFilter
 Input [1]: [r_reason_sk#1]
 Condition : (isnotnull(r_reason_sk#1) AND (r_reason_sk#1 = 1))
 
-(3) ColumnarToRow [codegen id : 1]
+(3) CometProject
 Input [1]: [r_reason_sk#1]
+Arguments: [bucket1#2, bucket2#3, bucket3#4, bucket4#5, bucket5#6], [CASE WHEN (Subquery scalar-subquery#7, [id=#8].count(1) > 62316685) THEN ReusedSubquery Subquery scalar-subquery#7, [id=#8].avg(ss_ext_discount_amt) ELSE ReusedSubquery Subquery scalar-subquery#7, [id=#8].avg(ss_net_paid) END AS bucket1#2, CASE WHEN (Subquery scalar-subquery#9, [id=#10].count(1) > 19045798) THEN ReusedSubquery Subquery scalar-subquery#9, [id=#10].avg(ss_ext_discount_amt) ELSE ReusedSubquery Subquery scalar-subquery#9, [id=#10].avg(ss_net_paid) END AS bucket2#3, CASE WHEN (Subquery scalar-subquery#11, [id=#12].count(1) > 365541424) THEN ReusedSubquery Subquery scalar-subquery#11, [id=#12].avg(ss_ext_discount_amt) ELSE ReusedSubquery Subquery scalar-subquery#11, [id=#12].avg(ss_net_paid) END AS bucket3#4, CASE WHEN (Subquery scalar-subquery#13, [id=#14].count(1) > 216357808) THEN ReusedSubquery Subquery scalar-subquery#13, [id=#14].avg(ss_ext_discount_amt) ELSE ReusedSubquery Subquery scalar-subquery#13, [id=#14].avg(ss_net_paid) END AS bucket4#5, CASE WHEN (Subquery scalar-subquery#15, [id=#16].count(1) > 184483884) THEN ReusedSubquery Subquery scalar-subquery#15, [id=#16].avg(ss_ext_discount_amt) ELSE ReusedSubquery Subquery scalar-subquery#15, [id=#16].avg(ss_net_paid) END AS bucket5#6]
 
-(4) Project [codegen id : 1]
-Output [5]: [CASE WHEN (Subquery scalar-subquery#2, [id=#3].count(1) > 62316685) THEN ReusedSubquery Subquery scalar-subquery#2, [id=#3].avg(ss_ext_discount_amt) ELSE ReusedSubquery Subquery scalar-subquery#2, [id=#3].avg(ss_net_paid) END AS bucket1#4, CASE WHEN (Subquery scalar-subquery#5, [id=#6].count(1) > 19045798) THEN ReusedSubquery Subquery scalar-subquery#5, [id=#6].avg(ss_ext_discount_amt) ELSE ReusedSubquery Subquery scalar-subquery#5, [id=#6].avg(ss_net_paid) END AS bucket2#7, CASE WHEN (Subquery scalar-subquery#8, [id=#9].count(1) > 365541424) THEN ReusedSubquery Subquery scalar-subquery#8, [id=#9].avg(ss_ext_discount_amt) ELSE ReusedSubquery Subquery scalar-subquery#8, [id=#9].avg(ss_net_paid) END AS bucket3#10, CASE WHEN (Subquery scalar-subquery#11, [id=#12].count(1) > 216357808) THEN ReusedSubquery Subquery scalar-subquery#11, [id=#12].avg(ss_ext_discount_amt) ELSE ReusedSubquery Subquery scalar-subquery#11, [id=#12].avg(ss_net_paid) END AS bucket4#13, CASE WHEN (Subquery scalar-subquery#14, [id=#15].count(1) > 184483884) THEN ReusedSubquery Subquery scalar-subquery#14, [id=#15].avg(ss_ext_discount_amt) ELSE ReusedSubquery Subquery scalar-subquery#14, [id=#15].avg(ss_net_paid) END AS bucket5#16]
-Input [1]: [r_reason_sk#1]
+(4) ColumnarToRow [codegen id : 1]
+Input [5]: [bucket1#2, bucket2#3, bucket3#4, bucket4#5, bucket5#6]
 
 ===== Subqueries =====
 
-Subquery:1 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery#2, [id=#3]
+Subquery:1 Hosting operator id = 3 Hosting Expression = Subquery scalar-subquery#7, [id=#8]
 * ColumnarToRow (12)
 +- CometProject (11)
    +- CometHashAggregate (10)
@@ -33,15 +30,12 @@ Subquery:1 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery
          +- CometHashAggregate (8)
             +- CometProject (7)
                +- CometFilter (6)
-                  +- CometNativeScan parquet spark_catalog.default.store_sales (5)
+                  +- CometNativeScan (5)
 
 
-(5) CometNativeScan parquet spark_catalog.default.store_sales
+(5) CometNativeScan
 Output [4]: [ss_quantity#17, ss_ext_discount_amt#18, ss_net_paid#19, ss_sold_date_sk#20]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/store_sales]
-PushedFilters: [IsNotNull(ss_quantity), GreaterThanOrEqual(ss_quantity,1), LessThanOrEqual(ss_quantity,20)]
-ReadSchema: struct<ss_quantity:int,ss_ext_discount_amt:decimal(7,2),ss_net_paid:decimal(7,2)>
+Arguments: [ss_quantity#17, ss_ext_discount_amt#18, ss_net_paid#19, ss_sold_date_sk#20]
 
 (6) CometFilter
 Input [4]: [ss_quantity#17, ss_ext_discount_amt#18, ss_net_paid#19, ss_sold_date_sk#20]
@@ -72,11 +66,11 @@ Arguments: [mergedValue#29], [named_struct(count(1), count(1)#26, avg(ss_ext_dis
 (12) ColumnarToRow [codegen id : 1]
 Input [1]: [mergedValue#29]
 
-Subquery:2 Hosting operator id = 4 Hosting Expression = ReusedSubquery Subquery scalar-subquery#2, [id=#3]
+Subquery:2 Hosting operator id = 3 Hosting Expression = ReusedSubquery Subquery scalar-subquery#7, [id=#8]
 
-Subquery:3 Hosting operator id = 4 Hosting Expression = ReusedSubquery Subquery scalar-subquery#2, [id=#3]
+Subquery:3 Hosting operator id = 3 Hosting Expression = ReusedSubquery Subquery scalar-subquery#7, [id=#8]
 
-Subquery:4 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery#5, [id=#6]
+Subquery:4 Hosting operator id = 3 Hosting Expression = Subquery scalar-subquery#9, [id=#10]
 * ColumnarToRow (20)
 +- CometProject (19)
    +- CometHashAggregate (18)
@@ -84,15 +78,12 @@ Subquery:4 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery
          +- CometHashAggregate (16)
             +- CometProject (15)
                +- CometFilter (14)
-                  +- CometNativeScan parquet spark_catalog.default.store_sales (13)
+                  +- CometNativeScan (13)
 
 
-(13) CometNativeScan parquet spark_catalog.default.store_sales
+(13) CometNativeScan
 Output [4]: [ss_quantity#30, ss_ext_discount_amt#31, ss_net_paid#32, ss_sold_date_sk#33]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/store_sales]
-PushedFilters: [IsNotNull(ss_quantity), GreaterThanOrEqual(ss_quantity,21), LessThanOrEqual(ss_quantity,40)]
-ReadSchema: struct<ss_quantity:int,ss_ext_discount_amt:decimal(7,2),ss_net_paid:decimal(7,2)>
+Arguments: [ss_quantity#30, ss_ext_discount_amt#31, ss_net_paid#32, ss_sold_date_sk#33]
 
 (14) CometFilter
 Input [4]: [ss_quantity#30, ss_ext_discount_amt#31, ss_net_paid#32, ss_sold_date_sk#33]
@@ -123,11 +114,11 @@ Arguments: [mergedValue#42], [named_struct(count(1), count(1)#39, avg(ss_ext_dis
 (20) ColumnarToRow [codegen id : 1]
 Input [1]: [mergedValue#42]
 
-Subquery:5 Hosting operator id = 4 Hosting Expression = ReusedSubquery Subquery scalar-subquery#5, [id=#6]
+Subquery:5 Hosting operator id = 3 Hosting Expression = ReusedSubquery Subquery scalar-subquery#9, [id=#10]
 
-Subquery:6 Hosting operator id = 4 Hosting Expression = ReusedSubquery Subquery scalar-subquery#5, [id=#6]
+Subquery:6 Hosting operator id = 3 Hosting Expression = ReusedSubquery Subquery scalar-subquery#9, [id=#10]
 
-Subquery:7 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery#8, [id=#9]
+Subquery:7 Hosting operator id = 3 Hosting Expression = Subquery scalar-subquery#11, [id=#12]
 * ColumnarToRow (28)
 +- CometProject (27)
    +- CometHashAggregate (26)
@@ -135,15 +126,12 @@ Subquery:7 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery
          +- CometHashAggregate (24)
             +- CometProject (23)
                +- CometFilter (22)
-                  +- CometNativeScan parquet spark_catalog.default.store_sales (21)
+                  +- CometNativeScan (21)
 
 
-(21) CometNativeScan parquet spark_catalog.default.store_sales
+(21) CometNativeScan
 Output [4]: [ss_quantity#43, ss_ext_discount_amt#44, ss_net_paid#45, ss_sold_date_sk#46]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/store_sales]
-PushedFilters: [IsNotNull(ss_quantity), GreaterThanOrEqual(ss_quantity,41), LessThanOrEqual(ss_quantity,60)]
-ReadSchema: struct<ss_quantity:int,ss_ext_discount_amt:decimal(7,2),ss_net_paid:decimal(7,2)>
+Arguments: [ss_quantity#43, ss_ext_discount_amt#44, ss_net_paid#45, ss_sold_date_sk#46]
 
 (22) CometFilter
 Input [4]: [ss_quantity#43, ss_ext_discount_amt#44, ss_net_paid#45, ss_sold_date_sk#46]
@@ -174,11 +162,11 @@ Arguments: [mergedValue#55], [named_struct(count(1), count(1)#52, avg(ss_ext_dis
 (28) ColumnarToRow [codegen id : 1]
 Input [1]: [mergedValue#55]
 
-Subquery:8 Hosting operator id = 4 Hosting Expression = ReusedSubquery Subquery scalar-subquery#8, [id=#9]
+Subquery:8 Hosting operator id = 3 Hosting Expression = ReusedSubquery Subquery scalar-subquery#11, [id=#12]
 
-Subquery:9 Hosting operator id = 4 Hosting Expression = ReusedSubquery Subquery scalar-subquery#8, [id=#9]
+Subquery:9 Hosting operator id = 3 Hosting Expression = ReusedSubquery Subquery scalar-subquery#11, [id=#12]
 
-Subquery:10 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery#11, [id=#12]
+Subquery:10 Hosting operator id = 3 Hosting Expression = Subquery scalar-subquery#13, [id=#14]
 * ColumnarToRow (36)
 +- CometProject (35)
    +- CometHashAggregate (34)
@@ -186,15 +174,12 @@ Subquery:10 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquer
          +- CometHashAggregate (32)
             +- CometProject (31)
                +- CometFilter (30)
-                  +- CometNativeScan parquet spark_catalog.default.store_sales (29)
+                  +- CometNativeScan (29)
 
 
-(29) CometNativeScan parquet spark_catalog.default.store_sales
+(29) CometNativeScan
 Output [4]: [ss_quantity#56, ss_ext_discount_amt#57, ss_net_paid#58, ss_sold_date_sk#59]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/store_sales]
-PushedFilters: [IsNotNull(ss_quantity), GreaterThanOrEqual(ss_quantity,61), LessThanOrEqual(ss_quantity,80)]
-ReadSchema: struct<ss_quantity:int,ss_ext_discount_amt:decimal(7,2),ss_net_paid:decimal(7,2)>
+Arguments: [ss_quantity#56, ss_ext_discount_amt#57, ss_net_paid#58, ss_sold_date_sk#59]
 
 (30) CometFilter
 Input [4]: [ss_quantity#56, ss_ext_discount_amt#57, ss_net_paid#58, ss_sold_date_sk#59]
@@ -225,11 +210,11 @@ Arguments: [mergedValue#68], [named_struct(count(1), count(1)#65, avg(ss_ext_dis
 (36) ColumnarToRow [codegen id : 1]
 Input [1]: [mergedValue#68]
 
-Subquery:11 Hosting operator id = 4 Hosting Expression = ReusedSubquery Subquery scalar-subquery#11, [id=#12]
+Subquery:11 Hosting operator id = 3 Hosting Expression = ReusedSubquery Subquery scalar-subquery#13, [id=#14]
 
-Subquery:12 Hosting operator id = 4 Hosting Expression = ReusedSubquery Subquery scalar-subquery#11, [id=#12]
+Subquery:12 Hosting operator id = 3 Hosting Expression = ReusedSubquery Subquery scalar-subquery#13, [id=#14]
 
-Subquery:13 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery#14, [id=#15]
+Subquery:13 Hosting operator id = 3 Hosting Expression = Subquery scalar-subquery#15, [id=#16]
 * ColumnarToRow (44)
 +- CometProject (43)
    +- CometHashAggregate (42)
@@ -237,15 +222,12 @@ Subquery:13 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquer
          +- CometHashAggregate (40)
             +- CometProject (39)
                +- CometFilter (38)
-                  +- CometNativeScan parquet spark_catalog.default.store_sales (37)
+                  +- CometNativeScan (37)
 
 
-(37) CometNativeScan parquet spark_catalog.default.store_sales
+(37) CometNativeScan
 Output [4]: [ss_quantity#69, ss_ext_discount_amt#70, ss_net_paid#71, ss_sold_date_sk#72]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/store_sales]
-PushedFilters: [IsNotNull(ss_quantity), GreaterThanOrEqual(ss_quantity,81), LessThanOrEqual(ss_quantity,100)]
-ReadSchema: struct<ss_quantity:int,ss_ext_discount_amt:decimal(7,2),ss_net_paid:decimal(7,2)>
+Arguments: [ss_quantity#69, ss_ext_discount_amt#70, ss_net_paid#71, ss_sold_date_sk#72]
 
 (38) CometFilter
 Input [4]: [ss_quantity#69, ss_ext_discount_amt#70, ss_net_paid#71, ss_sold_date_sk#72]
@@ -276,8 +258,8 @@ Arguments: [mergedValue#81], [named_struct(count(1), count(1)#78, avg(ss_ext_dis
 (44) ColumnarToRow [codegen id : 1]
 Input [1]: [mergedValue#81]
 
-Subquery:14 Hosting operator id = 4 Hosting Expression = ReusedSubquery Subquery scalar-subquery#14, [id=#15]
+Subquery:14 Hosting operator id = 3 Hosting Expression = ReusedSubquery Subquery scalar-subquery#15, [id=#16]
 
-Subquery:15 Hosting operator id = 4 Hosting Expression = ReusedSubquery Subquery scalar-subquery#14, [id=#15]
+Subquery:15 Hosting operator id = 3 Hosting Expression = ReusedSubquery Subquery scalar-subquery#15, [id=#16]
 
 

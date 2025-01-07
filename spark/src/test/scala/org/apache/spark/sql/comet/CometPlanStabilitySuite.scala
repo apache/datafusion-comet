@@ -263,11 +263,13 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       classLoader = Thread.currentThread().getContextClassLoader)
     // Disable char/varchar read-side handling for better performance.
     withSQLConf(
+      // Comet does not yet support DPP yet
+      // https://github.com/apache/datafusion-comet/issues/121
+      SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "false",
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
       CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_full",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "false",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key -> "true",
       CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true", // needed for v1.4/q9, v1.4/q44, v2.7.0/q6, v2.7.0/q64
