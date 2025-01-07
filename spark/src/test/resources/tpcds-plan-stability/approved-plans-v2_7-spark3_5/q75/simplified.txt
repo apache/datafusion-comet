@@ -23,122 +23,66 @@ WholeStageCodegen (1)
                                             CometProject [cs_item_sk,cs_order_number,cs_quantity,cs_ext_sales_price,cs_sold_date_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id]
                                               CometBroadcastHashJoin [cs_item_sk,cs_order_number,cs_quantity,cs_ext_sales_price,cs_sold_date_sk,i_item_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id]
                                                 CometFilter [cs_item_sk,cs_order_number,cs_quantity,cs_ext_sales_price,cs_sold_date_sk]
-                                                  CometScan parquet spark_catalog.default.catalog_sales [cs_item_sk,cs_order_number,cs_quantity,cs_ext_sales_price,cs_sold_date_sk]
-                                                    SubqueryBroadcast [d_date_sk] #1
-                                                      BroadcastExchange #5
-                                                        WholeStageCodegen (1)
-                                                          ColumnarToRow
-                                                            InputAdapter
-                                                              CometFilter [d_date_sk,d_year]
-                                                                CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
-                                                CometBroadcastExchange [i_item_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id] #6
+                                                  CometNativeScan [cs_item_sk,cs_order_number,cs_quantity,cs_ext_sales_price,cs_sold_date_sk]
+                                                CometBroadcastExchange [i_item_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id] #5
                                                   CometProject [i_item_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id]
                                                     CometFilter [i_item_sk,i_brand_id,i_class_id,i_category_id,i_category,i_manufact_id]
-                                                      CometScan parquet spark_catalog.default.item [i_item_sk,i_brand_id,i_class_id,i_category_id,i_category,i_manufact_id]
-                                            CometBroadcastExchange [d_date_sk,d_year] #7
+                                                      CometNativeScan [i_item_sk,i_brand_id,i_class_id,i_category_id,i_category,i_manufact_id]
+                                            CometBroadcastExchange [d_date_sk,d_year] #6
                                               CometFilter [d_date_sk,d_year]
-                                                CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                                CometNativeScan [d_date_sk,d_year]
                                     CometSort [cr_item_sk,cr_order_number,cr_return_quantity,cr_return_amount]
-                                      CometExchange [cr_order_number,cr_item_sk] #8
+                                      CometExchange [cr_order_number,cr_item_sk] #7
                                         CometProject [cr_item_sk,cr_order_number,cr_return_quantity,cr_return_amount]
                                           CometFilter [cr_item_sk,cr_order_number,cr_return_quantity,cr_return_amount,cr_returned_date_sk]
-                                            CometScan parquet spark_catalog.default.catalog_returns [cr_item_sk,cr_order_number,cr_return_quantity,cr_return_amount,cr_returned_date_sk]
+                                            CometNativeScan [cr_item_sk,cr_order_number,cr_return_quantity,cr_return_amount,cr_returned_date_sk]
                                 CometProject [ss_quantity,sr_return_quantity,ss_ext_sales_price,sr_return_amt] [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt]
                                   CometSortMergeJoin [ss_item_sk,ss_ticket_number,ss_quantity,ss_ext_sales_price,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_year,sr_item_sk,sr_ticket_number,sr_return_quantity,sr_return_amt]
                                     CometSort [ss_item_sk,ss_ticket_number,ss_quantity,ss_ext_sales_price,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_year]
-                                      CometExchange [ss_ticket_number,ss_item_sk] #9
-                                        CometProject [ss_item_sk,ss_ticket_number,ss_quantity,ss_ext_sales_price,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_year]
-                                          CometBroadcastHashJoin [ss_item_sk,ss_ticket_number,ss_quantity,ss_ext_sales_price,ss_sold_date_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_date_sk,d_year]
-                                            CometProject [ss_item_sk,ss_ticket_number,ss_quantity,ss_ext_sales_price,ss_sold_date_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id]
-                                              CometBroadcastHashJoin [ss_item_sk,ss_ticket_number,ss_quantity,ss_ext_sales_price,ss_sold_date_sk,i_item_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id]
-                                                CometFilter [ss_item_sk,ss_ticket_number,ss_quantity,ss_ext_sales_price,ss_sold_date_sk]
-                                                  CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_ticket_number,ss_quantity,ss_ext_sales_price,ss_sold_date_sk]
-                                                    ReusedSubquery [d_date_sk] #1
-                                                ReusedExchange [i_item_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id] #6
-                                            ReusedExchange [d_date_sk,d_year] #7
+                                      ReusedExchange [ss_item_sk,ss_ticket_number,ss_quantity,ss_ext_sales_price,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_year] #4
                                     CometSort [sr_item_sk,sr_ticket_number,sr_return_quantity,sr_return_amt]
-                                      CometExchange [sr_ticket_number,sr_item_sk] #10
-                                        CometProject [sr_item_sk,sr_ticket_number,sr_return_quantity,sr_return_amt]
-                                          CometFilter [sr_item_sk,sr_ticket_number,sr_return_quantity,sr_return_amt,sr_returned_date_sk]
-                                            CometScan parquet spark_catalog.default.store_returns [sr_item_sk,sr_ticket_number,sr_return_quantity,sr_return_amt,sr_returned_date_sk]
+                                      ReusedExchange [sr_item_sk,sr_ticket_number,sr_return_quantity,sr_return_amt] #7
                                 CometProject [ws_quantity,wr_return_quantity,ws_ext_sales_price,wr_return_amt] [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt]
                                   CometSortMergeJoin [ws_item_sk,ws_order_number,ws_quantity,ws_ext_sales_price,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_year,wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt]
                                     CometSort [ws_item_sk,ws_order_number,ws_quantity,ws_ext_sales_price,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_year]
-                                      CometExchange [ws_order_number,ws_item_sk] #11
-                                        CometProject [ws_item_sk,ws_order_number,ws_quantity,ws_ext_sales_price,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_year]
-                                          CometBroadcastHashJoin [ws_item_sk,ws_order_number,ws_quantity,ws_ext_sales_price,ws_sold_date_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_date_sk,d_year]
-                                            CometProject [ws_item_sk,ws_order_number,ws_quantity,ws_ext_sales_price,ws_sold_date_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id]
-                                              CometBroadcastHashJoin [ws_item_sk,ws_order_number,ws_quantity,ws_ext_sales_price,ws_sold_date_sk,i_item_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id]
-                                                CometFilter [ws_item_sk,ws_order_number,ws_quantity,ws_ext_sales_price,ws_sold_date_sk]
-                                                  CometScan parquet spark_catalog.default.web_sales [ws_item_sk,ws_order_number,ws_quantity,ws_ext_sales_price,ws_sold_date_sk]
-                                                    ReusedSubquery [d_date_sk] #1
-                                                ReusedExchange [i_item_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id] #6
-                                            ReusedExchange [d_date_sk,d_year] #7
+                                      ReusedExchange [ws_item_sk,ws_order_number,ws_quantity,ws_ext_sales_price,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_year] #4
                                     CometSort [wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt]
-                                      CometExchange [wr_order_number,wr_item_sk] #12
-                                        CometProject [wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt]
-                                          CometFilter [wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt,wr_returned_date_sk]
-                                            CometScan parquet spark_catalog.default.web_returns [wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt,wr_returned_date_sk]
+                                      ReusedExchange [wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt] #7
             CometSort [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt]
-              CometExchange [i_brand_id,i_class_id,i_category_id,i_manufact_id] #13
+              CometExchange [i_brand_id,i_class_id,i_category_id,i_manufact_id] #8
                 CometFilter [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt]
                   CometHashAggregate [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt,sum,sum,sum(sales_cnt),sum(UnscaledValue(sales_amt))]
-                    CometExchange [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id] #14
+                    CometExchange [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id] #9
                       CometHashAggregate [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sum,sum,sales_cnt,sales_amt]
                         CometHashAggregate [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt]
-                          CometExchange [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt] #15
+                          CometExchange [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt] #10
                             CometHashAggregate [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt]
                               CometUnion [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt]
                                 CometProject [cs_quantity,cr_return_quantity,cs_ext_sales_price,cr_return_amount] [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt]
                                   CometSortMergeJoin [cs_item_sk,cs_order_number,cs_quantity,cs_ext_sales_price,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_year,cr_item_sk,cr_order_number,cr_return_quantity,cr_return_amount]
                                     CometSort [cs_item_sk,cs_order_number,cs_quantity,cs_ext_sales_price,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_year]
-                                      CometExchange [cs_order_number,cs_item_sk] #16
+                                      CometExchange [cs_order_number,cs_item_sk] #11
                                         CometProject [cs_item_sk,cs_order_number,cs_quantity,cs_ext_sales_price,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_year]
                                           CometBroadcastHashJoin [cs_item_sk,cs_order_number,cs_quantity,cs_ext_sales_price,cs_sold_date_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_date_sk,d_year]
                                             CometProject [cs_item_sk,cs_order_number,cs_quantity,cs_ext_sales_price,cs_sold_date_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id]
                                               CometBroadcastHashJoin [cs_item_sk,cs_order_number,cs_quantity,cs_ext_sales_price,cs_sold_date_sk,i_item_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id]
                                                 CometFilter [cs_item_sk,cs_order_number,cs_quantity,cs_ext_sales_price,cs_sold_date_sk]
-                                                  CometScan parquet spark_catalog.default.catalog_sales [cs_item_sk,cs_order_number,cs_quantity,cs_ext_sales_price,cs_sold_date_sk]
-                                                    SubqueryBroadcast [d_date_sk] #2
-                                                      BroadcastExchange #17
-                                                        WholeStageCodegen (1)
-                                                          ColumnarToRow
-                                                            InputAdapter
-                                                              CometFilter [d_date_sk,d_year]
-                                                                CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
-                                                ReusedExchange [i_item_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id] #6
-                                            CometBroadcastExchange [d_date_sk,d_year] #18
+                                                  CometNativeScan [cs_item_sk,cs_order_number,cs_quantity,cs_ext_sales_price,cs_sold_date_sk]
+                                                ReusedExchange [i_item_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id] #5
+                                            CometBroadcastExchange [d_date_sk,d_year] #12
                                               CometFilter [d_date_sk,d_year]
-                                                CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                                CometNativeScan [d_date_sk,d_year]
                                     CometSort [cr_item_sk,cr_order_number,cr_return_quantity,cr_return_amount]
-                                      ReusedExchange [cr_item_sk,cr_order_number,cr_return_quantity,cr_return_amount] #8
+                                      ReusedExchange [cr_item_sk,cr_order_number,cr_return_quantity,cr_return_amount] #7
                                 CometProject [ss_quantity,sr_return_quantity,ss_ext_sales_price,sr_return_amt] [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt]
                                   CometSortMergeJoin [ss_item_sk,ss_ticket_number,ss_quantity,ss_ext_sales_price,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_year,sr_item_sk,sr_ticket_number,sr_return_quantity,sr_return_amt]
                                     CometSort [ss_item_sk,ss_ticket_number,ss_quantity,ss_ext_sales_price,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_year]
-                                      CometExchange [ss_ticket_number,ss_item_sk] #19
-                                        CometProject [ss_item_sk,ss_ticket_number,ss_quantity,ss_ext_sales_price,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_year]
-                                          CometBroadcastHashJoin [ss_item_sk,ss_ticket_number,ss_quantity,ss_ext_sales_price,ss_sold_date_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_date_sk,d_year]
-                                            CometProject [ss_item_sk,ss_ticket_number,ss_quantity,ss_ext_sales_price,ss_sold_date_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id]
-                                              CometBroadcastHashJoin [ss_item_sk,ss_ticket_number,ss_quantity,ss_ext_sales_price,ss_sold_date_sk,i_item_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id]
-                                                CometFilter [ss_item_sk,ss_ticket_number,ss_quantity,ss_ext_sales_price,ss_sold_date_sk]
-                                                  CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_ticket_number,ss_quantity,ss_ext_sales_price,ss_sold_date_sk]
-                                                    ReusedSubquery [d_date_sk] #2
-                                                ReusedExchange [i_item_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id] #6
-                                            ReusedExchange [d_date_sk,d_year] #18
+                                      ReusedExchange [ss_item_sk,ss_ticket_number,ss_quantity,ss_ext_sales_price,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_year] #11
                                     CometSort [sr_item_sk,sr_ticket_number,sr_return_quantity,sr_return_amt]
-                                      ReusedExchange [sr_item_sk,sr_ticket_number,sr_return_quantity,sr_return_amt] #10
+                                      ReusedExchange [sr_item_sk,sr_ticket_number,sr_return_quantity,sr_return_amt] #7
                                 CometProject [ws_quantity,wr_return_quantity,ws_ext_sales_price,wr_return_amt] [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt]
                                   CometSortMergeJoin [ws_item_sk,ws_order_number,ws_quantity,ws_ext_sales_price,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_year,wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt]
                                     CometSort [ws_item_sk,ws_order_number,ws_quantity,ws_ext_sales_price,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_year]
-                                      CometExchange [ws_order_number,ws_item_sk] #20
-                                        CometProject [ws_item_sk,ws_order_number,ws_quantity,ws_ext_sales_price,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_year]
-                                          CometBroadcastHashJoin [ws_item_sk,ws_order_number,ws_quantity,ws_ext_sales_price,ws_sold_date_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_date_sk,d_year]
-                                            CometProject [ws_item_sk,ws_order_number,ws_quantity,ws_ext_sales_price,ws_sold_date_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id]
-                                              CometBroadcastHashJoin [ws_item_sk,ws_order_number,ws_quantity,ws_ext_sales_price,ws_sold_date_sk,i_item_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id]
-                                                CometFilter [ws_item_sk,ws_order_number,ws_quantity,ws_ext_sales_price,ws_sold_date_sk]
-                                                  CometScan parquet spark_catalog.default.web_sales [ws_item_sk,ws_order_number,ws_quantity,ws_ext_sales_price,ws_sold_date_sk]
-                                                    ReusedSubquery [d_date_sk] #2
-                                                ReusedExchange [i_item_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id] #6
-                                            ReusedExchange [d_date_sk,d_year] #18
+                                      ReusedExchange [ws_item_sk,ws_order_number,ws_quantity,ws_ext_sales_price,i_brand_id,i_class_id,i_category_id,i_manufact_id,d_year] #11
                                     CometSort [wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt]
-                                      ReusedExchange [wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt] #12
+                                      ReusedExchange [wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt] #7

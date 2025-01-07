@@ -13,43 +13,37 @@ TakeOrderedAndProject (32)
          :        :     :     :- CometProject (8)
          :        :     :     :  +- CometBroadcastHashJoin (7)
          :        :     :     :     :- CometFilter (2)
-         :        :     :     :     :  +- CometScan parquet spark_catalog.default.customer (1)
+         :        :     :     :     :  +- CometNativeScan (1)
          :        :     :     :     +- CometBroadcastExchange (6)
          :        :     :     :        +- CometProject (5)
          :        :     :     :           +- CometFilter (4)
-         :        :     :     :              +- CometScan parquet spark_catalog.default.customer_address (3)
+         :        :     :     :              +- CometNativeScan (3)
          :        :     :     +- CometBroadcastExchange (11)
          :        :     :        +- CometFilter (10)
-         :        :     :           +- CometScan parquet spark_catalog.default.customer_demographics (9)
+         :        :     :           +- CometNativeScan (9)
          :        :     +- CometBroadcastExchange (16)
          :        :        +- CometFilter (15)
-         :        :           +- CometScan parquet spark_catalog.default.household_demographics (14)
+         :        :           +- CometNativeScan (14)
          :        +- CometBroadcastExchange (22)
          :           +- CometProject (21)
          :              +- CometFilter (20)
-         :                 +- CometScan parquet spark_catalog.default.income_band (19)
+         :                 +- CometNativeScan (19)
          +- CometProject (28)
             +- CometFilter (27)
-               +- CometScan parquet spark_catalog.default.store_returns (26)
+               +- CometNativeScan (26)
 
 
-(1) CometScan parquet spark_catalog.default.customer
+(1) CometNativeScan
 Output [6]: [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_current_addr_sk#4, c_first_name#5, c_last_name#6]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/customer]
-PushedFilters: [IsNotNull(c_current_addr_sk), IsNotNull(c_current_cdemo_sk), IsNotNull(c_current_hdemo_sk)]
-ReadSchema: struct<c_customer_id:string,c_current_cdemo_sk:int,c_current_hdemo_sk:int,c_current_addr_sk:int,c_first_name:string,c_last_name:string>
+Arguments: [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_current_addr_sk#4, c_first_name#5, c_last_name#6]
 
 (2) CometFilter
 Input [6]: [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_current_addr_sk#4, c_first_name#5, c_last_name#6]
 Condition : ((isnotnull(c_current_addr_sk#4) AND isnotnull(c_current_cdemo_sk#2)) AND isnotnull(c_current_hdemo_sk#3))
 
-(3) CometScan parquet spark_catalog.default.customer_address
+(3) CometNativeScan
 Output [2]: [ca_address_sk#7, ca_city#8]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [IsNotNull(ca_city), EqualTo(ca_city,Edgewood), IsNotNull(ca_address_sk)]
-ReadSchema: struct<ca_address_sk:int,ca_city:string>
+Arguments: [ca_address_sk#7, ca_city#8]
 
 (4) CometFilter
 Input [2]: [ca_address_sk#7, ca_city#8]
@@ -72,12 +66,9 @@ Arguments: [c_current_addr_sk#4], [ca_address_sk#7], Inner, BuildRight
 Input [7]: [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_current_addr_sk#4, c_first_name#5, c_last_name#6, ca_address_sk#7]
 Arguments: [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_first_name#5, c_last_name#6], [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_first_name#5, c_last_name#6]
 
-(9) CometScan parquet spark_catalog.default.customer_demographics
+(9) CometNativeScan
 Output [1]: [cd_demo_sk#9]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/customer_demographics]
-PushedFilters: [IsNotNull(cd_demo_sk)]
-ReadSchema: struct<cd_demo_sk:int>
+Arguments: [cd_demo_sk#9]
 
 (10) CometFilter
 Input [1]: [cd_demo_sk#9]
@@ -96,12 +87,9 @@ Arguments: [c_current_cdemo_sk#2], [cd_demo_sk#9], Inner, BuildRight
 Input [6]: [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_first_name#5, c_last_name#6, cd_demo_sk#9]
 Arguments: [c_customer_id#1, c_current_hdemo_sk#3, c_first_name#5, c_last_name#6, cd_demo_sk#9], [c_customer_id#1, c_current_hdemo_sk#3, c_first_name#5, c_last_name#6, cd_demo_sk#9]
 
-(14) CometScan parquet spark_catalog.default.household_demographics
+(14) CometNativeScan
 Output [2]: [hd_demo_sk#10, hd_income_band_sk#11]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/household_demographics]
-PushedFilters: [IsNotNull(hd_demo_sk), IsNotNull(hd_income_band_sk)]
-ReadSchema: struct<hd_demo_sk:int,hd_income_band_sk:int>
+Arguments: [hd_demo_sk#10, hd_income_band_sk#11]
 
 (15) CometFilter
 Input [2]: [hd_demo_sk#10, hd_income_band_sk#11]
@@ -120,12 +108,9 @@ Arguments: [c_current_hdemo_sk#3], [hd_demo_sk#10], Inner, BuildRight
 Input [7]: [c_customer_id#1, c_current_hdemo_sk#3, c_first_name#5, c_last_name#6, cd_demo_sk#9, hd_demo_sk#10, hd_income_band_sk#11]
 Arguments: [c_customer_id#1, c_first_name#5, c_last_name#6, cd_demo_sk#9, hd_income_band_sk#11], [c_customer_id#1, c_first_name#5, c_last_name#6, cd_demo_sk#9, hd_income_band_sk#11]
 
-(19) CometScan parquet spark_catalog.default.income_band
+(19) CometNativeScan
 Output [3]: [ib_income_band_sk#12, ib_lower_bound#13, ib_upper_bound#14]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/income_band]
-PushedFilters: [IsNotNull(ib_lower_bound), IsNotNull(ib_upper_bound), GreaterThanOrEqual(ib_lower_bound,38128), LessThanOrEqual(ib_upper_bound,88128), IsNotNull(ib_income_band_sk)]
-ReadSchema: struct<ib_income_band_sk:int,ib_lower_bound:int,ib_upper_bound:int>
+Arguments: [ib_income_band_sk#12, ib_lower_bound#13, ib_upper_bound#14]
 
 (20) CometFilter
 Input [3]: [ib_income_band_sk#12, ib_lower_bound#13, ib_upper_bound#14]
@@ -152,12 +137,9 @@ Arguments: [c_customer_id#1, c_first_name#5, c_last_name#6, cd_demo_sk#9], [c_cu
 Input [4]: [c_customer_id#1, c_first_name#5, c_last_name#6, cd_demo_sk#9]
 Arguments: [c_customer_id#1, c_first_name#5, c_last_name#6, cd_demo_sk#9]
 
-(26) CometScan parquet spark_catalog.default.store_returns
+(26) CometNativeScan
 Output [2]: [sr_cdemo_sk#15, sr_returned_date_sk#16]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/store_returns]
-PushedFilters: [IsNotNull(sr_cdemo_sk)]
-ReadSchema: struct<sr_cdemo_sk:int>
+Arguments: [sr_cdemo_sk#15, sr_returned_date_sk#16]
 
 (27) CometFilter
 Input [2]: [sr_cdemo_sk#15, sr_returned_date_sk#16]

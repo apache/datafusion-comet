@@ -12,13 +12,13 @@ WholeStageCodegen (1)
                       CometSort [ss_item_sk,ss_customer_sk,ss_ticket_number,ss_quantity,ss_sales_price]
                         CometExchange [ss_item_sk,ss_ticket_number] #2
                           CometProject [ss_item_sk,ss_customer_sk,ss_ticket_number,ss_quantity,ss_sales_price]
-                            CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_ticket_number,ss_quantity,ss_sales_price,ss_sold_date_sk]
+                            CometNativeScan [ss_item_sk,ss_customer_sk,ss_ticket_number,ss_quantity,ss_sales_price,ss_sold_date_sk]
                       CometSort [sr_item_sk,sr_reason_sk,sr_ticket_number,sr_return_quantity]
                         CometExchange [sr_item_sk,sr_ticket_number] #3
                           CometProject [sr_item_sk,sr_reason_sk,sr_ticket_number,sr_return_quantity]
                             CometFilter [sr_item_sk,sr_reason_sk,sr_ticket_number,sr_return_quantity,sr_returned_date_sk]
-                              CometScan parquet spark_catalog.default.store_returns [sr_item_sk,sr_reason_sk,sr_ticket_number,sr_return_quantity,sr_returned_date_sk]
+                              CometNativeScan [sr_item_sk,sr_reason_sk,sr_ticket_number,sr_return_quantity,sr_returned_date_sk]
                   CometBroadcastExchange [r_reason_sk] #4
                     CometProject [r_reason_sk]
                       CometFilter [r_reason_sk,r_reason_desc]
-                        CometScan parquet spark_catalog.default.reason [r_reason_sk,r_reason_desc]
+                        CometNativeScan [r_reason_sk,r_reason_desc]

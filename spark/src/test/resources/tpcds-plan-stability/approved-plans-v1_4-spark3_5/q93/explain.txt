@@ -11,23 +11,21 @@
                   :     :- CometSort (4)
                   :     :  +- CometExchange (3)
                   :     :     +- CometProject (2)
-                  :     :        +- CometScan parquet spark_catalog.default.store_sales (1)
+                  :     :        +- CometNativeScan (1)
                   :     +- CometSort (9)
                   :        +- CometExchange (8)
                   :           +- CometProject (7)
                   :              +- CometFilter (6)
-                  :                 +- CometScan parquet spark_catalog.default.store_returns (5)
+                  :                 +- CometNativeScan (5)
                   +- CometBroadcastExchange (15)
                      +- CometProject (14)
                         +- CometFilter (13)
-                           +- CometScan parquet spark_catalog.default.reason (12)
+                           +- CometNativeScan (12)
 
 
-(1) CometScan parquet spark_catalog.default.store_sales
+(1) CometNativeScan
 Output [6]: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_sales_price#5, ss_sold_date_sk#6]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/store_sales]
-ReadSchema: struct<ss_item_sk:int,ss_customer_sk:int,ss_ticket_number:int,ss_quantity:int,ss_sales_price:decimal(7,2)>
+Arguments: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_sales_price#5, ss_sold_date_sk#6]
 
 (2) CometProject
 Input [6]: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_sales_price#5, ss_sold_date_sk#6]
@@ -41,12 +39,9 @@ Arguments: hashpartitioning(ss_item_sk#1, ss_ticket_number#3, 5), ENSURE_REQUIRE
 Input [5]: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_sales_price#5]
 Arguments: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_sales_price#5], [ss_item_sk#1 ASC NULLS FIRST, ss_ticket_number#3 ASC NULLS FIRST]
 
-(5) CometScan parquet spark_catalog.default.store_returns
+(5) CometNativeScan
 Output [5]: [sr_item_sk#7, sr_reason_sk#8, sr_ticket_number#9, sr_return_quantity#10, sr_returned_date_sk#11]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/store_returns]
-PushedFilters: [IsNotNull(sr_item_sk), IsNotNull(sr_ticket_number), IsNotNull(sr_reason_sk)]
-ReadSchema: struct<sr_item_sk:int,sr_reason_sk:int,sr_ticket_number:int,sr_return_quantity:int>
+Arguments: [sr_item_sk#7, sr_reason_sk#8, sr_ticket_number#9, sr_return_quantity#10, sr_returned_date_sk#11]
 
 (6) CometFilter
 Input [5]: [sr_item_sk#7, sr_reason_sk#8, sr_ticket_number#9, sr_return_quantity#10, sr_returned_date_sk#11]
@@ -73,12 +68,9 @@ Arguments: [ss_item_sk#1, ss_ticket_number#3], [sr_item_sk#7, sr_ticket_number#9
 Input [9]: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_sales_price#5, sr_item_sk#7, sr_reason_sk#8, sr_ticket_number#9, sr_return_quantity#10]
 Arguments: [ss_customer_sk#2, ss_quantity#4, ss_sales_price#5, sr_reason_sk#8, sr_return_quantity#10], [ss_customer_sk#2, ss_quantity#4, ss_sales_price#5, sr_reason_sk#8, sr_return_quantity#10]
 
-(12) CometScan parquet spark_catalog.default.reason
+(12) CometNativeScan
 Output [2]: [r_reason_sk#12, r_reason_desc#13]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/reason]
-PushedFilters: [IsNotNull(r_reason_desc), EqualTo(r_reason_desc,reason 28                                                                                           ), IsNotNull(r_reason_sk)]
-ReadSchema: struct<r_reason_sk:int,r_reason_desc:string>
+Arguments: [r_reason_sk#12, r_reason_desc#13]
 
 (13) CometFilter
 Input [2]: [r_reason_sk#12, r_reason_desc#13]

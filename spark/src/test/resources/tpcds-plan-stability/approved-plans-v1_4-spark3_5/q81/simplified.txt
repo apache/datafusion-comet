@@ -17,42 +17,33 @@ WholeStageCodegen (1)
                                 CometProject [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax]
                                   CometBroadcastHashJoin [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax,cr_returned_date_sk,d_date_sk]
                                     CometFilter [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax,cr_returned_date_sk]
-                                      CometScan parquet spark_catalog.default.catalog_returns [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax,cr_returned_date_sk]
-                                        SubqueryBroadcast [d_date_sk] #1
-                                          BroadcastExchange #2
-                                            WholeStageCodegen (1)
-                                              ColumnarToRow
-                                                InputAdapter
-                                                  CometProject [d_date_sk]
-                                                    CometFilter [d_date_sk,d_year]
-                                                      CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
-                                    CometBroadcastExchange [d_date_sk] #3
+                                      CometNativeScan [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax,cr_returned_date_sk]
+                                    CometBroadcastExchange [d_date_sk] #2
                                       CometProject [d_date_sk]
                                         CometFilter [d_date_sk,d_year]
-                                          CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
-                                CometBroadcastExchange [ca_address_sk,ca_state] #4
+                                          CometNativeScan [d_date_sk,d_year]
+                                CometBroadcastExchange [ca_address_sk,ca_state] #3
                                   CometFilter [ca_address_sk,ca_state]
-                                    CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_state]
-                    CometBroadcastExchange [(avg(ctr_total_return) * 1.2),ctr_state] #5
+                                    CometNativeScan [ca_address_sk,ca_state]
+                    CometBroadcastExchange [(avg(ctr_total_return) * 1.2),ctr_state] #4
                       CometFilter [(avg(ctr_total_return) * 1.2),ctr_state]
                         CometHashAggregate [(avg(ctr_total_return) * 1.2),ctr_state,sum,count,avg(ctr_total_return)]
-                          CometExchange [ctr_state] #6
+                          CometExchange [ctr_state] #5
                             CometHashAggregate [ctr_state,sum,count,ctr_total_return]
                               CometHashAggregate [ctr_state,ctr_total_return,cr_returning_customer_sk,ca_state,sum,sum(UnscaledValue(cr_return_amt_inc_tax))]
-                                CometExchange [cr_returning_customer_sk,ca_state] #7
+                                CometExchange [cr_returning_customer_sk,ca_state] #6
                                   CometHashAggregate [cr_returning_customer_sk,ca_state,sum,cr_return_amt_inc_tax]
                                     CometProject [cr_returning_customer_sk,cr_return_amt_inc_tax,ca_state]
                                       CometBroadcastHashJoin [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax,ca_address_sk,ca_state]
                                         CometProject [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax]
                                           CometBroadcastHashJoin [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax,cr_returned_date_sk,d_date_sk]
                                             CometFilter [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax,cr_returned_date_sk]
-                                              CometScan parquet spark_catalog.default.catalog_returns [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax,cr_returned_date_sk]
-                                                ReusedSubquery [d_date_sk] #1
-                                            ReusedExchange [d_date_sk] #3
-                                        ReusedExchange [ca_address_sk,ca_state] #4
-                CometBroadcastExchange [c_customer_sk,c_customer_id,c_current_addr_sk,c_salutation,c_first_name,c_last_name] #8
+                                              CometNativeScan [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax,cr_returned_date_sk]
+                                            ReusedExchange [d_date_sk] #2
+                                        ReusedExchange [ca_address_sk,ca_state] #3
+                CometBroadcastExchange [c_customer_sk,c_customer_id,c_current_addr_sk,c_salutation,c_first_name,c_last_name] #7
                   CometFilter [c_customer_sk,c_customer_id,c_current_addr_sk,c_salutation,c_first_name,c_last_name]
-                    CometScan parquet spark_catalog.default.customer [c_customer_sk,c_customer_id,c_current_addr_sk,c_salutation,c_first_name,c_last_name]
-            CometBroadcastExchange [ca_address_sk,ca_street_number,ca_street_name,ca_street_type,ca_suite_number,ca_city,ca_county,ca_state,ca_zip,ca_country,ca_gmt_offset,ca_location_type] #9
+                    CometNativeScan [c_customer_sk,c_customer_id,c_current_addr_sk,c_salutation,c_first_name,c_last_name]
+            CometBroadcastExchange [ca_address_sk,ca_street_number,ca_street_name,ca_street_type,ca_suite_number,ca_city,ca_county,ca_state,ca_zip,ca_country,ca_gmt_offset,ca_location_type] #8
               CometFilter [ca_address_sk,ca_street_number,ca_street_name,ca_street_type,ca_suite_number,ca_city,ca_county,ca_state,ca_zip,ca_country,ca_gmt_offset,ca_location_type]
-                CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_street_number,ca_street_name,ca_street_type,ca_suite_number,ca_city,ca_county,ca_state,ca_zip,ca_country,ca_gmt_offset,ca_location_type]
+                CometNativeScan [ca_address_sk,ca_street_number,ca_street_name,ca_street_type,ca_suite_number,ca_city,ca_county,ca_state,ca_zip,ca_country,ca_gmt_offset,ca_location_type]
