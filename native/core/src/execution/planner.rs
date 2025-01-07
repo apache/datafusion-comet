@@ -741,7 +741,7 @@ impl PhysicalPlanner {
                     self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let key_expr =
                     self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let args = vec![Arc::clone(&src_array_expr), key_expr];
+                let args = vec![Arc::clone(&src_array_expr), Arc::clone(&key_expr)];
                 let return_type = src_array_expr.data_type(&input_schema)?;
 
                 let datafusion_array_remove = array_remove_all_udf();
@@ -752,7 +752,19 @@ impl PhysicalPlanner {
                     args,
                     return_type,
                 ));
-                Ok(array_remove_expr)
+                let is_null_expr: Arc<dyn PhysicalExpr> = Arc::new(IsNullExpr::new(key_expr));
+
+                let null_literal_expr: Arc<dyn PhysicalExpr> =
+                    Arc::new(Literal::new(ScalarValue::Null));
+
+                let case_expr = CaseExpr::try_new(
+                    None,
+                    vec![(is_null_expr, null_literal_expr)],
+                    Some(array_remove_expr),
+                )?;
+
+                Ok(Arc::new(case_expr))
+                // Ok(array_remove_expr)
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
