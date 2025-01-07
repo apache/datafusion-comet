@@ -735,6 +735,21 @@ impl PhysicalPlanner {
                 ));
                 Ok(array_has_expr)
             }
+            ExprStruct::ArrayMin(expr) => {
+                unimplemented!()
+            }
+            ExprStruct::ArrayMax(expr) => {
+                unimplemented!()
+            }
+            ExprStruct::SortArray(expr) => {
+                unimplemented!()
+            }
+            ExprStruct::ArrayZip(expr) => {
+                unimplemented!()
+            }
+            ExprStruct::ArrayUnion(expr) => {
+                unimplemented!()
+            }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
                 expr
