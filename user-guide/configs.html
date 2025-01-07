@@ -447,11 +447,11 @@ under the License.
 <td><p>false</p></td>
 </tr>
 <tr class="row-odd"><td><p>spark.comet.exec.shuffle.compression.codec</p></td>
-<td><p>The codec of Comet native shuffle used to compress shuffle data. Only zstd is supported. Compression can be disabled by setting spark.shuffle.compress=false.</p></td>
-<td><p>zstd</p></td>
+<td><p>The codec of Comet native shuffle used to compress shuffle data. lz4, zstd, and snappy are supported. Compression can be disabled by setting spark.shuffle.compress=false.</p></td>
+<td><p>lz4</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.exec.shuffle.compression.level</p></td>
-<td><p>The compression level to use when compression shuffle files.</p></td>
+<tr class="row-even"><td><p>spark.comet.exec.shuffle.compression.zstd.level</p></td>
+<td><p>The compression level to use when compressing shuffle files with zstd.</p></td>
 <td><p>1</p></td>
 </tr>
 <tr class="row-odd"><td><p>spark.comet.exec.shuffle.enabled</p></td>
