@@ -20,10 +20,11 @@
 package org.apache.comet
 
 import org.apache.spark._
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
 
-import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_BLOCKING_THREADS, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_FRACTION, COMET_EXEC_MEMORY_POOL_TYPE, COMET_EXPLAIN_NATIVE_ENABLED, COMET_WORKER_THREADS}
+import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_BLOCKING_THREADS, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_POOL_TYPE, COMET_EXPLAIN_NATIVE_ENABLED, COMET_WORKER_THREADS}
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -52,7 +53,8 @@ class CometExecIterator(
     nativeMetrics: CometMetricNode,
     numParts: Int,
     partitionIndex: Int)
-    extends Iterator[ColumnarBatch] {
+    extends Iterator[ColumnarBatch]
+    with Logging {
 
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
@@ -75,7 +77,6 @@ class CometExecIterator(
       memory_pool_type = COMET_EXEC_MEMORY_POOL_TYPE.get(),
       memory_limit = CometSparkSessionExtensions.getCometMemoryOverhead(conf),
       memory_limit_per_task = getMemoryLimitPerTask(conf),
-      memory_fraction = COMET_EXEC_MEMORY_FRACTION.get(),
       task_attempt_id = TaskContext.get().taskAttemptId,
       debug = COMET_DEBUG_ENABLED.get(),
       explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
@@ -94,7 +95,10 @@ class CometExecIterator(
     val coresPerTask = conf.get("spark.task.cpus", "1").toFloat
     // example 16GB maxMemory * 16 cores with 4 cores per task results
     // in memory_limit_per_task = 16 GB * 4 / 16 = 16 GB / 4 = 4GB
-    (maxMemory.toFloat * coresPerTask / numCores).toLong
+    val limit = (maxMemory.toFloat * coresPerTask / numCores).toLong
+    logInfo(
+      s"Calculated per-task memory limit of $limit ($maxMemory * $coresPerTask / $numCores)")
+    limit
   }
 
   private def numDriverOrExecutorCores(conf: SparkConf): Int = {
