@@ -23,6 +23,7 @@ use arrow_schema::{DataType, Schema, SchemaRef};
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
 use datafusion_common::plan_err;
 use datafusion_expr::ColumnarValue;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// An implementation of DataFusion's `SchemaAdapterFactory` that uses a Spark-compatible
@@ -321,10 +322,26 @@ fn cast_supported(from_type: &DataType, to_type: &DataType, options: &SparkCastO
         (Timestamp(_, Some(_)), _) => can_cast_from_timestamp(to_type, options),
         (Utf8 | LargeUtf8, _) => can_cast_from_string(to_type, options),
         (_, Utf8 | LargeUtf8) => can_cast_to_string(from_type, options),
-        (Struct(from_fields), Struct(to_fields)) => from_fields
-            .iter()
-            .zip(to_fields.iter())
-            .all(|(a, b)| cast_supported(a.data_type(), b.data_type(), options)),
+        (Struct(from_fields), Struct(to_fields)) => {
+            // TODO some of this logic may be specific to converting Parquet to Spark
+            let mut field_types = HashMap::new();
+            for field in from_fields {
+                field_types.insert(field.name(), field.data_type());
+            }
+            if field_types.iter().len() != from_fields.len() {
+                return false;
+            }
+            for field in to_fields {
+                if let Some(from_type) = field_types.get(&field.name()) {
+                    if !cast_supported(from_type, field.data_type(), options) {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+            true
+        }
         _ => false,
     }
 }
