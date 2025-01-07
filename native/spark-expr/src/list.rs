@@ -685,6 +685,119 @@ impl Display for ArrayInsert {
     }
 }
 
+#[derive(Debug, Eq)]
+struct ArrayMin {
+    src_array_expr: Arc<dyn PhysicalExpr>,
+    legacy_negative_index: bool,
+}
+
+impl Hash for ArrayMin {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.src_array_expr.hash(state);
+        self.legacy_negative_index.hash(state);
+    }
+}
+
+impl PartialEq for ArrayMin {
+    fn eq(&self, other: &Self) -> bool {
+        self.src_array_expr.eq(&other.src_array_expr)
+            && self.legacy_negative_index.eq(&other.legacy_negative_index)
+    }
+}
+
+impl Display for ArrayMin {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ArrayMin [array: {:?}, legacy_negative_index: {:?}]",
+            self.src_array_expr, self.legacy_negative_index
+        )
+    }
+}
+
+impl PhysicalExpr for ArrayMin {
+    fn as_any(&self) -> &dyn Any {
+        todo!()
+    }
+
+    fn data_type(&self, input_schema: &Schema) -> DataFusionResult<DataType> {
+        todo!()
+    }
+
+    fn nullable(&self, input_schema: &Schema) -> DataFusionResult<bool> {
+        todo!()
+    }
+
+    fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
+        todo!()
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        todo!()
+    }
+
+    fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn PhysicalExpr>>) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
+        todo!()
+    }
+}
+
+
+#[derive(Debug, Eq)]
+struct ArrayMax {
+    src_array_expr: Arc<dyn PhysicalExpr>,
+    legacy_negative_index: bool,
+}
+
+impl Hash for ArrayMax {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.src_array_expr.hash(state);
+        self.legacy_negative_index.hash(state);
+    }
+}
+
+impl PartialEq for ArrayMax {
+    fn eq(&self, other: &Self) -> bool {
+        self.src_array_expr.eq(&other.src_array_expr)
+            && self.legacy_negative_index.eq(&other.legacy_negative_index)
+    }
+}
+
+impl Display for ArrayMax {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ArrayMin [array: {:?}, legacy_negative_index: {:?}]",
+            self.src_array_expr, self.legacy_negative_index
+        )
+    }
+}
+
+impl PhysicalExpr for ArrayMax {
+    fn as_any(&self) -> &dyn Any {
+        todo!()
+    }
+
+    fn data_type(&self, input_schema: &Schema) -> DataFusionResult<DataType> {
+        todo!()
+    }
+
+    fn nullable(&self, input_schema: &Schema) -> DataFusionResult<bool> {
+        todo!()
+    }
+
+    fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
+        todo!()
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        todo!()
+    }
+
+    fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn PhysicalExpr>>) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
+        todo!()
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crate::list::{array_insert, list_extract, zero_based_index};
@@ -846,5 +959,15 @@ mod test {
         assert_eq!(&result.to_data(), &expected.to_data());
 
         Ok(())
+    }
+
+    #[test]
+    fn test_array_min() -> Result<()> {
+        unimplemented!()
+    }
+
+    #[test]
+    fn test_array_max() -> Result<()> {
+        unimplemented!()
     }
 }
