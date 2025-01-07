@@ -23,35 +23,25 @@ mod cast;
 mod error;
 mod if_expr;
 
-mod avg;
-pub use avg::Avg;
 mod bitwise_not;
 pub use bitwise_not::{bitwise_not, BitwiseNotExpr};
-mod avg_decimal;
-pub use avg_decimal::AvgDecimal;
 mod checkoverflow;
 pub use checkoverflow::CheckOverflow;
-mod correlation;
-pub use correlation::Correlation;
-mod covariance;
-pub use covariance::Covariance;
+
 mod kernels;
 mod list;
 mod regexp;
 pub mod scalar_funcs;
 mod schema_adapter;
+mod static_invoke;
 pub use schema_adapter::SparkSchemaAdapterFactory;
+pub use static_invoke::*;
 
-pub mod spark_hash;
-mod stddev;
-pub use stddev::Stddev;
-mod structs;
-mod sum_decimal;
-pub use sum_decimal::SumDecimal;
 mod negative;
+pub mod spark_hash;
+mod struct_funcs;
 pub use negative::{create_negate_expr, NegativeExpr};
 mod normalize_nan;
-mod temporal;
 
 pub mod test_common;
 pub mod timezone;
@@ -61,20 +51,24 @@ pub use unbound::UnboundColumn;
 pub mod utils;
 pub use normalize_nan::NormalizeNaNAndZero;
 
-mod variance;
-pub use variance::Variance;
+mod agg_funcs;
 mod comet_scalar_funcs;
 mod string_funcs;
 
+mod datetime_funcs;
+pub use agg_funcs::*;
+
+pub use crate::{CreateNamedStruct, GetStructField};
+pub use crate::{DateTruncExpr, HourExpr, MinuteExpr, SecondExpr, TimestampTruncExpr};
 pub use cast::{spark_cast, Cast, SparkCastOptions};
 pub use comet_scalar_funcs::create_comet_physical_fun;
+pub use datetime_funcs::*;
 pub use error::{SparkError, SparkResult};
 pub use if_expr::IfExpr;
 pub use list::{ArrayInsert, GetArrayStructFields, ListExtract};
 pub use regexp::RLike;
 pub use string_funcs::*;
-pub use structs::{CreateNamedStruct, GetStructField};
-pub use temporal::{DateTruncExpr, HourExpr, MinuteExpr, SecondExpr, TimestampTruncExpr};
+pub use struct_funcs::*;
 pub use to_json::ToJson;
 
 /// Spark supports three evaluation modes when evaluating expressions, which affect
