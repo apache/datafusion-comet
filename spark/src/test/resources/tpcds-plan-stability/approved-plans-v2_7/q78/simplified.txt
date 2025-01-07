@@ -18,15 +18,15 @@ TakeOrderedAndProject [ss_sold_year,ss_item_sk,ss_customer_sk,ss_qty,ss_wc,ss_sp
                                   CometSort [ss_item_sk,ss_customer_sk,ss_ticket_number,ss_quantity,ss_wholesale_cost,ss_sales_price,ss_sold_date_sk]
                                     CometExchange [ss_ticket_number,ss_item_sk] #2
                                       CometFilter [ss_item_sk,ss_customer_sk,ss_ticket_number,ss_quantity,ss_wholesale_cost,ss_sales_price,ss_sold_date_sk]
-                                        CometNativeScan [ss_item_sk,ss_customer_sk,ss_ticket_number,ss_quantity,ss_wholesale_cost,ss_sales_price,ss_sold_date_sk]
+                                        CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_item_sk,ss_customer_sk,ss_ticket_number,ss_quantity,ss_wholesale_cost,ss_sales_price,ss_sold_date_sk]
                                   CometSort [sr_item_sk,sr_ticket_number]
                                     CometExchange [sr_ticket_number,sr_item_sk] #3
                                       CometProject [sr_item_sk,sr_ticket_number]
                                         CometFilter [sr_item_sk,sr_ticket_number,sr_returned_date_sk]
-                                          CometNativeScan [sr_item_sk,sr_ticket_number,sr_returned_date_sk]
+                                          CometNativeScan: `spark_catalog`.`default`.`store_returns` [sr_item_sk,sr_ticket_number,sr_returned_date_sk]
                             CometBroadcastExchange [d_date_sk,d_year] #4
                               CometFilter [d_date_sk,d_year]
-                                CometNativeScan [d_date_sk,d_year]
+                                CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_year]
                 CometSort [ws_sold_year,ws_item_sk,ws_customer_sk,ws_qty,ws_wc,ws_sp]
                   CometFilter [ws_sold_year,ws_item_sk,ws_customer_sk,ws_qty,ws_wc,ws_sp]
                     CometHashAggregate [ws_sold_year,ws_item_sk,ws_customer_sk,ws_qty,ws_wc,ws_sp,d_year,ws_bill_customer_sk,sum,sum,sum,sum(ws_quantity),sum(UnscaledValue(ws_wholesale_cost)),sum(UnscaledValue(ws_sales_price))]
@@ -44,7 +44,7 @@ TakeOrderedAndProject [ss_sold_year,ss_item_sk,ss_customer_sk,ss_qty,ss_wc,ss_sp
                                 CometSort [cs_bill_customer_sk,cs_item_sk,cs_order_number,cs_quantity,cs_wholesale_cost,cs_sales_price,cs_sold_date_sk]
                                   CometExchange [cs_order_number,cs_item_sk] #6
                                     CometFilter [cs_bill_customer_sk,cs_item_sk,cs_order_number,cs_quantity,cs_wholesale_cost,cs_sales_price,cs_sold_date_sk]
-                                      CometNativeScan [cs_bill_customer_sk,cs_item_sk,cs_order_number,cs_quantity,cs_wholesale_cost,cs_sales_price,cs_sold_date_sk]
+                                      CometNativeScan: `spark_catalog`.`default`.`catalog_sales` [cs_bill_customer_sk,cs_item_sk,cs_order_number,cs_quantity,cs_wholesale_cost,cs_sales_price,cs_sold_date_sk]
                                 CometSort [cr_item_sk,cr_order_number]
                                   ReusedExchange [cr_item_sk,cr_order_number] #3
                           ReusedExchange [d_date_sk,d_year] #4

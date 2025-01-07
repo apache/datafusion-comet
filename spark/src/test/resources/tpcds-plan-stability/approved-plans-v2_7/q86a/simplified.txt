@@ -20,14 +20,14 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
                                       CometProject [ws_item_sk,ws_net_paid]
                                         CometBroadcastHashJoin [ws_item_sk,ws_net_paid,ws_sold_date_sk,d_date_sk]
                                           CometFilter [ws_item_sk,ws_net_paid,ws_sold_date_sk]
-                                            CometNativeScan [ws_item_sk,ws_net_paid,ws_sold_date_sk]
+                                            CometNativeScan: `spark_catalog`.`default`.`web_sales` [ws_item_sk,ws_net_paid,ws_sold_date_sk]
                                           CometBroadcastExchange [d_date_sk] #4
                                             CometProject [d_date_sk]
                                               CometFilter [d_date_sk,d_month_seq]
-                                                CometNativeScan [d_date_sk,d_month_seq]
+                                                CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_month_seq]
                                       CometBroadcastExchange [i_item_sk,i_class,i_category] #5
                                         CometFilter [i_item_sk,i_class,i_category]
-                                          CometNativeScan [i_item_sk,i_class,i_category]
+                                          CometNativeScan: `spark_catalog`.`default`.`item` [i_item_sk,i_class,i_category]
                             CometHashAggregate [total_sum,i_category,i_class,g_category,g_class,lochierarchy,sum,isEmpty,sum(total_sum)]
                               CometExchange [i_category] #6
                                 CometHashAggregate [i_category,sum,isEmpty,total_sum]
