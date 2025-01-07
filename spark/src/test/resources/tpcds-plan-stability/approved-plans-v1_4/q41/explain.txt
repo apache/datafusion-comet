@@ -8,7 +8,7 @@
                +- CometBroadcastHashJoin (13)
                   :- CometProject (3)
                   :  +- CometFilter (2)
-                  :     +- CometNativeScan (1)
+                  :     +- CometNativeScan: `spark_catalog`.`default`.`item` (1)
                   +- CometBroadcastExchange (12)
                      +- CometProject (11)
                         +- CometFilter (10)
@@ -17,10 +17,10 @@
                                  +- CometHashAggregate (7)
                                     +- CometProject (6)
                                        +- CometFilter (5)
-                                          +- CometNativeScan (4)
+                                          +- CometNativeScan: `spark_catalog`.`default`.`item` (4)
 
 
-(1) CometNativeScan
+(1) CometNativeScan: `spark_catalog`.`default`.`item`
 Output [3]: [i_manufact_id#1, i_manufact#2, i_product_name#3]
 Arguments: [i_manufact_id#1, i_manufact#2, i_product_name#3]
 
@@ -32,7 +32,7 @@ Condition : (((isnotnull(i_manufact_id#1) AND (i_manufact_id#1 >= 738)) AND (i_m
 Input [3]: [i_manufact_id#1, i_manufact#2, i_product_name#3]
 Arguments: [i_manufact#2, i_product_name#3], [i_manufact#2, i_product_name#3]
 
-(4) CometNativeScan
+(4) CometNativeScan: `spark_catalog`.`default`.`item`
 Output [5]: [i_category#4, i_manufact#5, i_size#6, i_color#7, i_units#8]
 Arguments: [i_category#4, i_manufact#5, i_size#6, i_color#7, i_units#8]
 

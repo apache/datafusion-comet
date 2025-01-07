@@ -13,14 +13,14 @@ WholeStageCodegen (1)
                         CometProject [inv_item_sk,inv_quantity_on_hand,inv_date_sk,w_warehouse_name]
                           CometBroadcastHashJoin [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk,w_warehouse_sk,w_warehouse_name]
                             CometFilter [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]
-                              CometNativeScan [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]
+                              CometNativeScan: `spark_catalog`.`default`.`inventory` [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]
                             CometBroadcastExchange [w_warehouse_sk,w_warehouse_name] #2
                               CometFilter [w_warehouse_sk,w_warehouse_name]
-                                CometNativeScan [w_warehouse_sk,w_warehouse_name]
+                                CometNativeScan: `spark_catalog`.`default`.`warehouse` [w_warehouse_sk,w_warehouse_name]
                         CometBroadcastExchange [i_item_sk,i_item_id] #3
                           CometProject [i_item_sk,i_item_id]
                             CometFilter [i_item_sk,i_item_id,i_current_price]
-                              CometNativeScan [i_item_sk,i_item_id,i_current_price]
+                              CometNativeScan: `spark_catalog`.`default`.`item` [i_item_sk,i_item_id,i_current_price]
                     CometBroadcastExchange [d_date_sk,d_date] #4
                       CometFilter [d_date_sk,d_date]
-                        CometNativeScan [d_date_sk,d_date]
+                        CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_date]

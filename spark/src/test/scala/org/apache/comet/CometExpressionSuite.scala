@@ -2327,7 +2327,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withSQLConf(
           SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
           CometConf.COMET_ENABLED.key -> "true",
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_full",
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_FULL,
           CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
 
           val df = spark.read.parquet(dir.toString())
@@ -2360,7 +2360,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withSQLConf(
           SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
           CometConf.COMET_ENABLED.key -> "true",
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_full",
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_FULL,
           CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
 
           val df = spark.read.parquet(dir.toString())

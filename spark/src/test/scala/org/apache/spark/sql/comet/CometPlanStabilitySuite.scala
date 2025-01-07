@@ -93,7 +93,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     var expectedSimplified = FileUtils.readFileToString(simplifiedFile, StandardCharsets.UTF_8)
     val explainFile = new File(dir, "explain.txt")
     var expectedExplain = FileUtils.readFileToString(explainFile, StandardCharsets.UTF_8)
-    if (!CometConf.COMET_NATIVE_SCAN_IMPL.get().equals("native_full")) {
+    if (!CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_FULL)) {
       expectedExplain = expectedExplain.replace("CometNativeScan", "CometScan")
       expectedSimplified = expectedSimplified.replace("CometNativeScan", "CometScan")
     }
@@ -261,14 +261,17 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     val queryString = resourceToString(
       s"$tpcdsGroup/$query.sql",
       classLoader = Thread.currentThread().getContextClassLoader)
+
+    // Comet does not yet support DPP yet with full native scan enabled
+    // https://github.com/apache/datafusion-comet/issues/121
+    val dppEnabled = CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE
+
     // Disable char/varchar read-side handling for better performance.
     withSQLConf(
-      // Comet does not yet support DPP yet
-      // https://github.com/apache/datafusion-comet/issues/121
-      SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "false",
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_full",
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_FULL,
+      SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> dppEnabled.toString,
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key -> "true",
@@ -300,7 +303,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
-    conf.set(CometConf.COMET_NATIVE_SCAN_IMPL.key, "native_full")
+    conf.set(CometConf.COMET_NATIVE_SCAN_IMPL.key, CometConf.SCAN_NATIVE_FULL)
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "1g")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
 

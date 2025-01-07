@@ -19,19 +19,19 @@ WholeStageCodegen (8)
                                     CometBroadcastHashJoin [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,hd_demo_sk]
                                       CometProject [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
                                         CometFilter [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                          CometNativeScan [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
+                                          CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
                                       CometBroadcastExchange [hd_demo_sk] #2
                                         CometProject [hd_demo_sk]
                                           CometFilter [hd_demo_sk,hd_dep_count,hd_vehicle_count]
-                                            CometNativeScan [hd_demo_sk,hd_dep_count,hd_vehicle_count]
+                                            CometNativeScan: `spark_catalog`.`default`.`household_demographics` [hd_demo_sk,hd_dep_count,hd_vehicle_count]
                                   CometBroadcastExchange [t_time_sk] #3
                                     CometProject [t_time_sk]
                                       CometFilter [t_time_sk,t_hour,t_minute]
-                                        CometNativeScan [t_time_sk,t_hour,t_minute]
+                                        CometNativeScan: `spark_catalog`.`default`.`time_dim` [t_time_sk,t_hour,t_minute]
                               CometBroadcastExchange [s_store_sk] #4
                                 CometProject [s_store_sk]
                                   CometFilter [s_store_sk,s_store_name]
-                                    CometNativeScan [s_store_sk,s_store_name]
+                                    CometNativeScan: `spark_catalog`.`default`.`store` [s_store_sk,s_store_name]
                 InputAdapter
                   BroadcastExchange #5
                     WholeStageCodegen (1)
@@ -48,12 +48,12 @@ WholeStageCodegen (8)
                                           CometBroadcastHashJoin [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,hd_demo_sk]
                                             CometProject [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
                                               CometFilter [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                                CometNativeScan [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
+                                                CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
                                             ReusedExchange [hd_demo_sk] #2
                                         CometBroadcastExchange [t_time_sk] #7
                                           CometProject [t_time_sk]
                                             CometFilter [t_time_sk,t_hour,t_minute]
-                                              CometNativeScan [t_time_sk,t_hour,t_minute]
+                                              CometNativeScan: `spark_catalog`.`default`.`time_dim` [t_time_sk,t_hour,t_minute]
                                     ReusedExchange [s_store_sk] #4
               InputAdapter
                 BroadcastExchange #8
@@ -71,12 +71,12 @@ WholeStageCodegen (8)
                                         CometBroadcastHashJoin [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,hd_demo_sk]
                                           CometProject [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
                                             CometFilter [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                              CometNativeScan [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
+                                              CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
                                           ReusedExchange [hd_demo_sk] #2
                                       CometBroadcastExchange [t_time_sk] #10
                                         CometProject [t_time_sk]
                                           CometFilter [t_time_sk,t_hour,t_minute]
-                                            CometNativeScan [t_time_sk,t_hour,t_minute]
+                                            CometNativeScan: `spark_catalog`.`default`.`time_dim` [t_time_sk,t_hour,t_minute]
                                   ReusedExchange [s_store_sk] #4
             InputAdapter
               BroadcastExchange #11
@@ -94,12 +94,12 @@ WholeStageCodegen (8)
                                       CometBroadcastHashJoin [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,hd_demo_sk]
                                         CometProject [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
                                           CometFilter [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                            CometNativeScan [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
+                                            CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
                                         ReusedExchange [hd_demo_sk] #2
                                     CometBroadcastExchange [t_time_sk] #13
                                       CometProject [t_time_sk]
                                         CometFilter [t_time_sk,t_hour,t_minute]
-                                          CometNativeScan [t_time_sk,t_hour,t_minute]
+                                          CometNativeScan: `spark_catalog`.`default`.`time_dim` [t_time_sk,t_hour,t_minute]
                                 ReusedExchange [s_store_sk] #4
           InputAdapter
             BroadcastExchange #14
@@ -117,12 +117,12 @@ WholeStageCodegen (8)
                                     CometBroadcastHashJoin [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,hd_demo_sk]
                                       CometProject [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
                                         CometFilter [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                          CometNativeScan [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
+                                          CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
                                       ReusedExchange [hd_demo_sk] #2
                                   CometBroadcastExchange [t_time_sk] #16
                                     CometProject [t_time_sk]
                                       CometFilter [t_time_sk,t_hour,t_minute]
-                                        CometNativeScan [t_time_sk,t_hour,t_minute]
+                                        CometNativeScan: `spark_catalog`.`default`.`time_dim` [t_time_sk,t_hour,t_minute]
                               ReusedExchange [s_store_sk] #4
         InputAdapter
           BroadcastExchange #17
@@ -140,12 +140,12 @@ WholeStageCodegen (8)
                                   CometBroadcastHashJoin [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,hd_demo_sk]
                                     CometProject [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
                                       CometFilter [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                        CometNativeScan [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
+                                        CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
                                     ReusedExchange [hd_demo_sk] #2
                                 CometBroadcastExchange [t_time_sk] #19
                                   CometProject [t_time_sk]
                                     CometFilter [t_time_sk,t_hour,t_minute]
-                                      CometNativeScan [t_time_sk,t_hour,t_minute]
+                                      CometNativeScan: `spark_catalog`.`default`.`time_dim` [t_time_sk,t_hour,t_minute]
                             ReusedExchange [s_store_sk] #4
       InputAdapter
         BroadcastExchange #20
@@ -163,12 +163,12 @@ WholeStageCodegen (8)
                                 CometBroadcastHashJoin [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,hd_demo_sk]
                                   CometProject [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
                                     CometFilter [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                      CometNativeScan [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
+                                      CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
                                   ReusedExchange [hd_demo_sk] #2
                               CometBroadcastExchange [t_time_sk] #22
                                 CometProject [t_time_sk]
                                   CometFilter [t_time_sk,t_hour,t_minute]
-                                    CometNativeScan [t_time_sk,t_hour,t_minute]
+                                    CometNativeScan: `spark_catalog`.`default`.`time_dim` [t_time_sk,t_hour,t_minute]
                           ReusedExchange [s_store_sk] #4
     InputAdapter
       BroadcastExchange #23
@@ -186,10 +186,10 @@ WholeStageCodegen (8)
                               CometBroadcastHashJoin [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,hd_demo_sk]
                                 CometProject [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
                                   CometFilter [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                    CometNativeScan [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
+                                    CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
                                 ReusedExchange [hd_demo_sk] #2
                             CometBroadcastExchange [t_time_sk] #25
                               CometProject [t_time_sk]
                                 CometFilter [t_time_sk,t_hour,t_minute]
-                                  CometNativeScan [t_time_sk,t_hour,t_minute]
+                                  CometNativeScan: `spark_catalog`.`default`.`time_dim` [t_time_sk,t_hour,t_minute]
                         ReusedExchange [s_store_sk] #4

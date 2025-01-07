@@ -14,13 +14,13 @@ WholeStageCodegen (1)
                           CometProject [ws_ship_date_sk,ws_web_site_sk,ws_ship_mode_sk,ws_sold_date_sk,w_warehouse_name]
                             CometBroadcastHashJoin [ws_ship_date_sk,ws_web_site_sk,ws_ship_mode_sk,ws_warehouse_sk,ws_sold_date_sk,w_warehouse_sk,w_warehouse_name]
                               CometFilter [ws_ship_date_sk,ws_web_site_sk,ws_ship_mode_sk,ws_warehouse_sk,ws_sold_date_sk]
-                                CometNativeScan [ws_ship_date_sk,ws_web_site_sk,ws_ship_mode_sk,ws_warehouse_sk,ws_sold_date_sk]
+                                CometNativeScan: `spark_catalog`.`default`.`web_sales` [ws_ship_date_sk,ws_web_site_sk,ws_ship_mode_sk,ws_warehouse_sk,ws_sold_date_sk]
                               CometBroadcastExchange [w_warehouse_sk,w_warehouse_name] #2
                                 CometFilter [w_warehouse_sk,w_warehouse_name]
-                                  CometNativeScan [w_warehouse_sk,w_warehouse_name]
+                                  CometNativeScan: `spark_catalog`.`default`.`warehouse` [w_warehouse_sk,w_warehouse_name]
                           ReusedExchange [sm_ship_mode_sk,sm_type] #2
                       ReusedExchange [web_site_sk,web_name] #2
                   CometBroadcastExchange [d_date_sk] #3
                     CometProject [d_date_sk]
                       CometFilter [d_date_sk,d_month_seq]
-                        CometNativeScan [d_date_sk,d_month_seq]
+                        CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_month_seq]

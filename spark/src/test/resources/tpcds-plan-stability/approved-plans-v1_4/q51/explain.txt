@@ -19,16 +19,16 @@ TakeOrderedAndProject (27)
                   :                             +- CometProject (8)
                   :                                +- CometBroadcastHashJoin (7)
                   :                                   :- CometFilter (2)
-                  :                                   :  +- CometNativeScan (1)
+                  :                                   :  +- CometNativeScan: `spark_catalog`.`default`.`web_sales` (1)
                   :                                   +- CometBroadcastExchange (6)
                   :                                      +- CometProject (5)
                   :                                         +- CometFilter (4)
-                  :                                            +- CometNativeScan (3)
+                  :                                            +- CometNativeScan: `spark_catalog`.`default`.`date_dim` (3)
                   +- * Sort (20)
                      +- ReusedExchange (19)
 
 
-(1) CometNativeScan
+(1) CometNativeScan: `spark_catalog`.`default`.`web_sales`
 Output [3]: [ws_item_sk#1, ws_sales_price#2, ws_sold_date_sk#3]
 Arguments: [ws_item_sk#1, ws_sales_price#2, ws_sold_date_sk#3]
 
@@ -36,7 +36,7 @@ Arguments: [ws_item_sk#1, ws_sales_price#2, ws_sold_date_sk#3]
 Input [3]: [ws_item_sk#1, ws_sales_price#2, ws_sold_date_sk#3]
 Condition : isnotnull(ws_item_sk#1)
 
-(3) CometNativeScan
+(3) CometNativeScan: `spark_catalog`.`default`.`date_dim`
 Output [3]: [d_date_sk#4, d_date#5, d_month_seq#6]
 Arguments: [d_date_sk#4, d_date#5, d_month_seq#6]
 

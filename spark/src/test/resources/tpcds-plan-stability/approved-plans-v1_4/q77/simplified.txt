@@ -21,14 +21,14 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                         CometProject [ss_store_sk,ss_ext_sales_price,ss_net_profit]
                                           CometBroadcastHashJoin [ss_store_sk,ss_ext_sales_price,ss_net_profit,ss_sold_date_sk,d_date_sk]
                                             CometFilter [ss_store_sk,ss_ext_sales_price,ss_net_profit,ss_sold_date_sk]
-                                              CometNativeScan [ss_store_sk,ss_ext_sales_price,ss_net_profit,ss_sold_date_sk]
+                                              CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_store_sk,ss_ext_sales_price,ss_net_profit,ss_sold_date_sk]
                                             CometBroadcastExchange [d_date_sk] #3
                                               CometProject [d_date_sk]
                                                 CometFilter [d_date_sk,d_date]
-                                                  CometNativeScan [d_date_sk,d_date]
+                                                  CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_date]
                                         CometBroadcastExchange [s_store_sk] #4
                                           CometFilter [s_store_sk]
-                                            CometNativeScan [s_store_sk]
+                                            CometNativeScan: `spark_catalog`.`default`.`store` [s_store_sk]
                               CometBroadcastExchange [s_store_sk,returns,profit_loss] #5
                                 CometHashAggregate [s_store_sk,returns,profit_loss,sum,sum,sum(UnscaledValue(sr_return_amt)),sum(UnscaledValue(sr_net_loss))]
                                   ReusedExchange [s_store_sk,sum,sum] #2
@@ -45,7 +45,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                         CometHashAggregate [cs_call_center_sk,sum,sum,cs_ext_sales_price,cs_net_profit]
                                           CometProject [cs_call_center_sk,cs_ext_sales_price,cs_net_profit]
                                             CometBroadcastHashJoin [cs_call_center_sk,cs_ext_sales_price,cs_net_profit,cs_sold_date_sk,d_date_sk]
-                                              CometNativeScan [cs_call_center_sk,cs_ext_sales_price,cs_net_profit,cs_sold_date_sk]
+                                              CometNativeScan: `spark_catalog`.`default`.`catalog_sales` [cs_call_center_sk,cs_ext_sales_price,cs_net_profit,cs_sold_date_sk]
                                               ReusedExchange [d_date_sk] #3
                           ColumnarToRow
                             InputAdapter
@@ -54,7 +54,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                   CometHashAggregate [sum,sum,cr_return_amount,cr_net_loss]
                                     CometProject [cr_return_amount,cr_net_loss]
                                       CometBroadcastHashJoin [cr_return_amount,cr_net_loss,cr_returned_date_sk,d_date_sk]
-                                        CometNativeScan [cr_return_amount,cr_net_loss,cr_returned_date_sk]
+                                        CometNativeScan: `spark_catalog`.`default`.`catalog_returns` [cr_return_amount,cr_net_loss,cr_returned_date_sk]
                                         ReusedExchange [d_date_sk] #3
                     WholeStageCodegen (4)
                       ColumnarToRow

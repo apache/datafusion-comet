@@ -11,22 +11,22 @@
                :     :  +- CometBroadcastHashJoin (8)
                :     :     :- CometProject (3)
                :     :     :  +- CometFilter (2)
-               :     :     :     +- CometNativeScan (1)
+               :     :     :     +- CometNativeScan: `spark_catalog`.`default`.`store_sales` (1)
                :     :     +- CometBroadcastExchange (7)
                :     :        +- CometProject (6)
                :     :           +- CometFilter (5)
-               :     :              +- CometNativeScan (4)
+               :     :              +- CometNativeScan: `spark_catalog`.`default`.`household_demographics` (4)
                :     +- CometBroadcastExchange (13)
                :        +- CometProject (12)
                :           +- CometFilter (11)
-               :              +- CometNativeScan (10)
+               :              +- CometNativeScan: `spark_catalog`.`default`.`time_dim` (10)
                +- CometBroadcastExchange (19)
                   +- CometProject (18)
                      +- CometFilter (17)
-                        +- CometNativeScan (16)
+                        +- CometNativeScan: `spark_catalog`.`default`.`store` (16)
 
 
-(1) CometNativeScan
+(1) CometNativeScan: `spark_catalog`.`default`.`store_sales`
 Output [4]: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3, ss_sold_date_sk#4]
 Arguments: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3, ss_sold_date_sk#4]
 
@@ -38,7 +38,7 @@ Condition : ((isnotnull(ss_hdemo_sk#2) AND isnotnull(ss_sold_time_sk#1)) AND isn
 Input [4]: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3, ss_sold_date_sk#4]
 Arguments: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3], [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3]
 
-(4) CometNativeScan
+(4) CometNativeScan: `spark_catalog`.`default`.`household_demographics`
 Output [2]: [hd_demo_sk#5, hd_dep_count#6]
 Arguments: [hd_demo_sk#5, hd_dep_count#6]
 
@@ -63,7 +63,7 @@ Arguments: [ss_hdemo_sk#2], [hd_demo_sk#5], Inner, BuildRight
 Input [4]: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3, hd_demo_sk#5]
 Arguments: [ss_sold_time_sk#1, ss_store_sk#3], [ss_sold_time_sk#1, ss_store_sk#3]
 
-(10) CometNativeScan
+(10) CometNativeScan: `spark_catalog`.`default`.`time_dim`
 Output [3]: [t_time_sk#7, t_hour#8, t_minute#9]
 Arguments: [t_time_sk#7, t_hour#8, t_minute#9]
 
@@ -88,7 +88,7 @@ Arguments: [ss_sold_time_sk#1], [t_time_sk#7], Inner, BuildRight
 Input [3]: [ss_sold_time_sk#1, ss_store_sk#3, t_time_sk#7]
 Arguments: [ss_store_sk#3], [ss_store_sk#3]
 
-(16) CometNativeScan
+(16) CometNativeScan: `spark_catalog`.`default`.`store`
 Output [2]: [s_store_sk#10, s_store_name#11]
 Arguments: [s_store_sk#10, s_store_name#11]
 

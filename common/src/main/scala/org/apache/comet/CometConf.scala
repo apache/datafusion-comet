@@ -77,6 +77,10 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(false)
 
+  val SCAN_NATIVE = "native"
+  val SCAN_NATIVE_FULL = "native_full"
+  val SCAN_NATIVE_RECORDBATCH = "native_recordbatch"
+
   val COMET_NATIVE_SCAN_IMPL: ConfigEntry[String] = conf("spark.comet.scan.impl")
     .doc(
       "The implementation of Comet Native Scan to use. Available modes are 'native'," +
@@ -89,8 +93,8 @@ object CometConf extends ShimCometConf {
     .internal()
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
-    .checkValues(Set("native", "native_full", "native_recordbatch"))
-    .createWithDefault("native_full")
+    .checkValues(Set(SCAN_NATIVE, SCAN_NATIVE_FULL, SCAN_NATIVE_RECORDBATCH))
+    .createWithDefault(SCAN_NATIVE_FULL)
 
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.parallel.io.enabled")

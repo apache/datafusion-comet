@@ -12,20 +12,20 @@
                      :     :- CometProject (8)
                      :     :  +- CometBroadcastHashJoin (7)
                      :     :     :- CometFilter (2)
-                     :     :     :  +- CometNativeScan (1)
+                     :     :     :  +- CometNativeScan: `spark_catalog`.`default`.`inventory` (1)
                      :     :     +- CometBroadcastExchange (6)
                      :     :        +- CometProject (5)
                      :     :           +- CometFilter (4)
-                     :     :              +- CometNativeScan (3)
+                     :     :              +- CometNativeScan: `spark_catalog`.`default`.`date_dim` (3)
                      :     +- CometBroadcastExchange (11)
                      :        +- CometFilter (10)
-                     :           +- CometNativeScan (9)
+                     :           +- CometNativeScan: `spark_catalog`.`default`.`item` (9)
                      +- CometBroadcastExchange (16)
                         +- CometFilter (15)
-                           +- CometNativeScan (14)
+                           +- CometNativeScan: `spark_catalog`.`default`.`warehouse` (14)
 
 
-(1) CometNativeScan
+(1) CometNativeScan: `spark_catalog`.`default`.`inventory`
 Output [4]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4]
 Arguments: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4]
 
@@ -33,7 +33,7 @@ Arguments: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_
 Input [4]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4]
 Condition : (isnotnull(inv_item_sk#1) AND isnotnull(inv_warehouse_sk#2))
 
-(3) CometNativeScan
+(3) CometNativeScan: `spark_catalog`.`default`.`date_dim`
 Output [2]: [d_date_sk#5, d_month_seq#6]
 Arguments: [d_date_sk#5, d_month_seq#6]
 
@@ -58,7 +58,7 @@ Arguments: [inv_date_sk#4], [d_date_sk#5], Inner, BuildRight
 Input [5]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4, d_date_sk#5]
 Arguments: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3], [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3]
 
-(9) CometNativeScan
+(9) CometNativeScan: `spark_catalog`.`default`.`item`
 Output [5]: [i_item_sk#7, i_brand#8, i_class#9, i_category#10, i_product_name#11]
 Arguments: [i_item_sk#7, i_brand#8, i_class#9, i_category#10, i_product_name#11]
 
@@ -79,7 +79,7 @@ Arguments: [inv_item_sk#1], [i_item_sk#7], Inner, BuildRight
 Input [8]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, i_item_sk#7, i_brand#8, i_class#9, i_category#10, i_product_name#11]
 Arguments: [inv_warehouse_sk#2, inv_quantity_on_hand#3, i_brand#8, i_class#9, i_category#10, i_product_name#11], [inv_warehouse_sk#2, inv_quantity_on_hand#3, i_brand#8, i_class#9, i_category#10, i_product_name#11]
 
-(14) CometNativeScan
+(14) CometNativeScan: `spark_catalog`.`default`.`warehouse`
 Output [1]: [w_warehouse_sk#12]
 Arguments: [w_warehouse_sk#12]
 

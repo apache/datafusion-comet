@@ -9,7 +9,7 @@ WholeStageCodegen (1)
                 CometProject [s_store_name,ss_store_sk,ss_item_sk,revenue]
                   CometBroadcastHashJoin [s_store_sk,s_store_name,ss_store_sk,ss_item_sk,revenue]
                     CometFilter [s_store_sk,s_store_name]
-                      CometNativeScan [s_store_sk,s_store_name]
+                      CometNativeScan: `spark_catalog`.`default`.`store` [s_store_sk,s_store_name]
                     CometBroadcastExchange [ss_store_sk,ss_item_sk,revenue] #1
                       CometFilter [ss_store_sk,ss_item_sk,revenue]
                         CometHashAggregate [ss_store_sk,ss_item_sk,revenue,sum,sum(UnscaledValue(ss_sales_price))]
@@ -18,14 +18,14 @@ WholeStageCodegen (1)
                               CometProject [ss_item_sk,ss_store_sk,ss_sales_price]
                                 CometBroadcastHashJoin [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk,d_date_sk]
                                   CometFilter [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk]
-                                    CometNativeScan [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk]
+                                    CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk]
                                   CometBroadcastExchange [d_date_sk] #3
                                     CometProject [d_date_sk]
                                       CometFilter [d_date_sk,d_month_seq]
-                                        CometNativeScan [d_date_sk,d_month_seq]
+                                        CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_month_seq]
                 CometBroadcastExchange [i_item_sk,i_item_desc,i_current_price,i_wholesale_cost,i_brand] #4
                   CometFilter [i_item_sk,i_item_desc,i_current_price,i_wholesale_cost,i_brand]
-                    CometNativeScan [i_item_sk,i_item_desc,i_current_price,i_wholesale_cost,i_brand]
+                    CometNativeScan: `spark_catalog`.`default`.`item` [i_item_sk,i_item_desc,i_current_price,i_wholesale_cost,i_brand]
             CometBroadcastExchange [ss_store_sk,ave] #5
               CometFilter [ss_store_sk,ave]
                 CometHashAggregate [ss_store_sk,ave,sum,count,avg(revenue)]
@@ -37,5 +37,5 @@ WholeStageCodegen (1)
                             CometProject [ss_item_sk,ss_store_sk,ss_sales_price]
                               CometBroadcastHashJoin [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk,d_date_sk]
                                 CometFilter [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk]
-                                  CometNativeScan [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk]
+                                  CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk]
                                 ReusedExchange [d_date_sk] #3

@@ -14,23 +14,23 @@ WholeStageCodegen (1)
                           CometProject [sr_return_quantity,sr_returned_date_sk,i_item_id]
                             CometBroadcastHashJoin [sr_item_sk,sr_return_quantity,sr_returned_date_sk,i_item_sk,i_item_id]
                               CometFilter [sr_item_sk,sr_return_quantity,sr_returned_date_sk]
-                                CometNativeScan [sr_item_sk,sr_return_quantity,sr_returned_date_sk]
+                                CometNativeScan: `spark_catalog`.`default`.`store_returns` [sr_item_sk,sr_return_quantity,sr_returned_date_sk]
                               CometBroadcastExchange [i_item_sk,i_item_id] #2
                                 CometFilter [i_item_sk,i_item_id]
-                                  CometNativeScan [i_item_sk,i_item_id]
+                                  CometNativeScan: `spark_catalog`.`default`.`item` [i_item_sk,i_item_id]
                           CometBroadcastExchange [d_date_sk] #3
                             CometProject [d_date_sk]
                               CometBroadcastHashJoin [d_date_sk,d_date,d_date]
                                 CometFilter [d_date_sk,d_date]
-                                  CometNativeScan [d_date_sk,d_date]
+                                  CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_date]
                                 CometBroadcastExchange [d_date] #4
                                   CometProject [d_date]
                                     CometBroadcastHashJoin [d_date,d_week_seq,d_week_seq]
-                                      CometNativeScan [d_date,d_week_seq]
+                                      CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date,d_week_seq]
                                       CometBroadcastExchange [d_week_seq] #5
                                         CometProject [d_week_seq]
                                           CometFilter [d_date,d_week_seq]
-                                            CometNativeScan [d_date,d_week_seq]
+                                            CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date,d_week_seq]
                 CometBroadcastExchange [item_id,cr_item_qty] #6
                   CometHashAggregate [item_id,cr_item_qty,i_item_id,sum,sum(cr_return_quantity)]
                     ReusedExchange [i_item_id,sum] #1

@@ -19,14 +19,14 @@ TakeOrderedAndProject [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_
                                     CometProject [ss_item_sk,ss_store_sk,ss_quantity,ss_sales_price,d_year,d_moy,d_qoy]
                                       CometBroadcastHashJoin [ss_item_sk,ss_store_sk,ss_quantity,ss_sales_price,ss_sold_date_sk,d_date_sk,d_year,d_moy,d_qoy]
                                         CometFilter [ss_item_sk,ss_store_sk,ss_quantity,ss_sales_price,ss_sold_date_sk]
-                                          CometNativeScan [ss_item_sk,ss_store_sk,ss_quantity,ss_sales_price,ss_sold_date_sk]
+                                          CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_item_sk,ss_store_sk,ss_quantity,ss_sales_price,ss_sold_date_sk]
                                         CometBroadcastExchange [d_date_sk,d_year,d_moy,d_qoy] #3
                                           CometProject [d_date_sk,d_year,d_moy,d_qoy]
                                             CometFilter [d_date_sk,d_month_seq,d_year,d_moy,d_qoy]
-                                              CometNativeScan [d_date_sk,d_month_seq,d_year,d_moy,d_qoy]
+                                              CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_month_seq,d_year,d_moy,d_qoy]
                                     CometBroadcastExchange [s_store_sk,s_store_id] #4
                                       CometFilter [s_store_sk,s_store_id]
-                                        CometNativeScan [s_store_sk,s_store_id]
+                                        CometNativeScan: `spark_catalog`.`default`.`store` [s_store_sk,s_store_id]
                                 CometBroadcastExchange [i_item_sk,i_brand,i_class,i_category,i_product_name] #5
                                   CometFilter [i_item_sk,i_brand,i_class,i_category,i_product_name]
-                                    CometNativeScan [i_item_sk,i_brand,i_class,i_category,i_product_name]
+                                    CometNativeScan: `spark_catalog`.`default`.`item` [i_item_sk,i_brand,i_class,i_category,i_product_name]

@@ -2,10 +2,10 @@
 * ColumnarToRow (4)
 +- CometProject (3)
    +- CometFilter (2)
-      +- CometNativeScan (1)
+      +- CometNativeScan: `spark_catalog`.`default`.`reason` (1)
 
 
-(1) CometNativeScan
+(1) CometNativeScan: `spark_catalog`.`default`.`reason`
 Output [1]: [r_reason_sk#1]
 Arguments: [r_reason_sk#1]
 
@@ -30,10 +30,10 @@ Subquery:1 Hosting operator id = 3 Hosting Expression = Subquery scalar-subquery
          +- CometHashAggregate (8)
             +- CometProject (7)
                +- CometFilter (6)
-                  +- CometNativeScan (5)
+                  +- CometNativeScan: `spark_catalog`.`default`.`store_sales` (5)
 
 
-(5) CometNativeScan
+(5) CometNativeScan: `spark_catalog`.`default`.`store_sales`
 Output [4]: [ss_quantity#17, ss_ext_discount_amt#18, ss_net_paid#19, ss_sold_date_sk#20]
 Arguments: [ss_quantity#17, ss_ext_discount_amt#18, ss_net_paid#19, ss_sold_date_sk#20]
 
@@ -78,10 +78,10 @@ Subquery:4 Hosting operator id = 3 Hosting Expression = Subquery scalar-subquery
          +- CometHashAggregate (16)
             +- CometProject (15)
                +- CometFilter (14)
-                  +- CometNativeScan (13)
+                  +- CometNativeScan: `spark_catalog`.`default`.`store_sales` (13)
 
 
-(13) CometNativeScan
+(13) CometNativeScan: `spark_catalog`.`default`.`store_sales`
 Output [4]: [ss_quantity#30, ss_ext_discount_amt#31, ss_net_paid#32, ss_sold_date_sk#33]
 Arguments: [ss_quantity#30, ss_ext_discount_amt#31, ss_net_paid#32, ss_sold_date_sk#33]
 
@@ -126,10 +126,10 @@ Subquery:7 Hosting operator id = 3 Hosting Expression = Subquery scalar-subquery
          +- CometHashAggregate (24)
             +- CometProject (23)
                +- CometFilter (22)
-                  +- CometNativeScan (21)
+                  +- CometNativeScan: `spark_catalog`.`default`.`store_sales` (21)
 
 
-(21) CometNativeScan
+(21) CometNativeScan: `spark_catalog`.`default`.`store_sales`
 Output [4]: [ss_quantity#43, ss_ext_discount_amt#44, ss_net_paid#45, ss_sold_date_sk#46]
 Arguments: [ss_quantity#43, ss_ext_discount_amt#44, ss_net_paid#45, ss_sold_date_sk#46]
 
@@ -174,10 +174,10 @@ Subquery:10 Hosting operator id = 3 Hosting Expression = Subquery scalar-subquer
          +- CometHashAggregate (32)
             +- CometProject (31)
                +- CometFilter (30)
-                  +- CometNativeScan (29)
+                  +- CometNativeScan: `spark_catalog`.`default`.`store_sales` (29)
 
 
-(29) CometNativeScan
+(29) CometNativeScan: `spark_catalog`.`default`.`store_sales`
 Output [4]: [ss_quantity#56, ss_ext_discount_amt#57, ss_net_paid#58, ss_sold_date_sk#59]
 Arguments: [ss_quantity#56, ss_ext_discount_amt#57, ss_net_paid#58, ss_sold_date_sk#59]
 
@@ -222,10 +222,10 @@ Subquery:13 Hosting operator id = 3 Hosting Expression = Subquery scalar-subquer
          +- CometHashAggregate (40)
             +- CometProject (39)
                +- CometFilter (38)
-                  +- CometNativeScan (37)
+                  +- CometNativeScan: `spark_catalog`.`default`.`store_sales` (37)
 
 
-(37) CometNativeScan
+(37) CometNativeScan: `spark_catalog`.`default`.`store_sales`
 Output [4]: [ss_quantity#69, ss_ext_discount_amt#70, ss_net_paid#71, ss_sold_date_sk#72]
 Arguments: [ss_quantity#69, ss_ext_discount_amt#70, ss_net_paid#71, ss_sold_date_sk#72]
 
