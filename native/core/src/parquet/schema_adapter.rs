@@ -17,11 +17,11 @@
 
 //! Custom schema adapter that uses Spark-compatible conversions
 
-use crate::parquet_support::{spark_parquet_convert, SparkParquetOptions};
-use crate::EvalMode;
+use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
 use arrow_array::{new_null_array, Array, RecordBatch, RecordBatchOptions};
 use arrow_schema::{DataType, Schema, SchemaRef};
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
+use datafusion_comet_spark_expr::EvalMode;
 use datafusion_common::plan_err;
 use datafusion_expr::ColumnarValue;
 use std::collections::HashMap;
@@ -306,22 +306,22 @@ fn cast_supported(from_type: &DataType, to_type: &DataType, options: &SparkParqu
     }
 
     match (from_type, to_type) {
-        (Boolean, _) => can_cast_from_boolean(to_type, options),
+        (Boolean, _) => can_convert_from_boolean(to_type, options),
         (UInt8 | UInt16 | UInt32 | UInt64, Int8 | Int16 | Int32 | Int64)
             if options.allow_cast_unsigned_ints =>
         {
             true
         }
-        (Int8, _) => can_cast_from_byte(to_type, options),
-        (Int16, _) => can_cast_from_short(to_type, options),
-        (Int32, _) => can_cast_from_int(to_type, options),
-        (Int64, _) => can_cast_from_long(to_type, options),
-        (Float32, _) => can_cast_from_float(to_type, options),
-        (Float64, _) => can_cast_from_double(to_type, options),
-        (Decimal128(p, s), _) => can_cast_from_decimal(p, s, to_type, options),
-        (Timestamp(_, None), _) => can_cast_from_timestamp_ntz(to_type, options),
-        (Timestamp(_, Some(_)), _) => can_cast_from_timestamp(to_type, options),
-        (Utf8 | LargeUtf8, _) => can_cast_from_string(to_type, options),
+        (Int8, _) => can_convert_from_byte(to_type, options),
+        (Int16, _) => can_convert_from_short(to_type, options),
+        (Int32, _) => can_convert_from_int(to_type, options),
+        (Int64, _) => can_convert_from_long(to_type, options),
+        (Float32, _) => can_convert_from_float(to_type, options),
+        (Float64, _) => can_convert_from_double(to_type, options),
+        (Decimal128(p, s), _) => can_convert_from_decimal(p, s, to_type, options),
+        (Timestamp(_, None), _) => can_convert_from_timestamp_ntz(to_type, options),
+        (Timestamp(_, Some(_)), _) => can_convert_from_timestamp(to_type, options),
+        (Utf8 | LargeUtf8, _) => can_convert_from_string(to_type, options),
         (_, Utf8 | LargeUtf8) => can_cast_to_string(from_type, options),
         (Struct(from_fields), Struct(to_fields)) => {
             // TODO some of this logic may be specific to converting Parquet to Spark
@@ -347,7 +347,7 @@ fn cast_supported(from_type: &DataType, to_type: &DataType, options: &SparkParqu
     }
 }
 
-fn can_cast_from_string(to_type: &DataType, options: &SparkParquetOptions) -> bool {
+fn can_convert_from_string(to_type: &DataType, options: &SparkParquetOptions) -> bool {
     use DataType::*;
     match to_type {
         Boolean | Int8 | Int16 | Int32 | Int64 | Binary => true,
@@ -414,7 +414,7 @@ fn can_cast_to_string(from_type: &DataType, options: &SparkParquetOptions) -> bo
     }
 }
 
-fn can_cast_from_timestamp_ntz(to_type: &DataType, options: &SparkParquetOptions) -> bool {
+fn can_convert_from_timestamp_ntz(to_type: &DataType, options: &SparkParquetOptions) -> bool {
     use DataType::*;
     match to_type {
         Timestamp(_, _) | Date32 | Date64 | Utf8 => {
@@ -428,7 +428,7 @@ fn can_cast_from_timestamp_ntz(to_type: &DataType, options: &SparkParquetOptions
     }
 }
 
-fn can_cast_from_timestamp(to_type: &DataType, _options: &SparkParquetOptions) -> bool {
+fn can_convert_from_timestamp(to_type: &DataType, _options: &SparkParquetOptions) -> bool {
     use DataType::*;
     match to_type {
         Timestamp(_, _) => true,
@@ -449,12 +449,12 @@ fn can_cast_from_timestamp(to_type: &DataType, _options: &SparkParquetOptions) -
     }
 }
 
-fn can_cast_from_boolean(to_type: &DataType, _: &SparkParquetOptions) -> bool {
+fn can_convert_from_boolean(to_type: &DataType, _: &SparkParquetOptions) -> bool {
     use DataType::*;
     matches!(to_type, Int8 | Int16 | Int32 | Int64 | Float32 | Float64)
 }
 
-fn can_cast_from_byte(to_type: &DataType, _: &SparkParquetOptions) -> bool {
+fn can_convert_from_byte(to_type: &DataType, _: &SparkParquetOptions) -> bool {
     use DataType::*;
     matches!(
         to_type,
@@ -462,7 +462,7 @@ fn can_cast_from_byte(to_type: &DataType, _: &SparkParquetOptions) -> bool {
     )
 }
 
-fn can_cast_from_short(to_type: &DataType, _: &SparkParquetOptions) -> bool {
+fn can_convert_from_short(to_type: &DataType, _: &SparkParquetOptions) -> bool {
     use DataType::*;
     matches!(
         to_type,
@@ -470,7 +470,7 @@ fn can_cast_from_short(to_type: &DataType, _: &SparkParquetOptions) -> bool {
     )
 }
 
-fn can_cast_from_int(to_type: &DataType, options: &SparkParquetOptions) -> bool {
+fn can_convert_from_int(to_type: &DataType, options: &SparkParquetOptions) -> bool {
     use DataType::*;
     match to_type {
         Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Utf8 => true,
@@ -482,7 +482,7 @@ fn can_cast_from_int(to_type: &DataType, options: &SparkParquetOptions) -> bool 
     }
 }
 
-fn can_cast_from_long(to_type: &DataType, options: &SparkParquetOptions) -> bool {
+fn can_convert_from_long(to_type: &DataType, options: &SparkParquetOptions) -> bool {
     use DataType::*;
     match to_type {
         Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 => true,
@@ -494,7 +494,7 @@ fn can_cast_from_long(to_type: &DataType, options: &SparkParquetOptions) -> bool
     }
 }
 
-fn can_cast_from_float(to_type: &DataType, _: &SparkParquetOptions) -> bool {
+fn can_convert_from_float(to_type: &DataType, _: &SparkParquetOptions) -> bool {
     use DataType::*;
     matches!(
         to_type,
@@ -502,7 +502,7 @@ fn can_cast_from_float(to_type: &DataType, _: &SparkParquetOptions) -> bool {
     )
 }
 
-fn can_cast_from_double(to_type: &DataType, _: &SparkParquetOptions) -> bool {
+fn can_convert_from_double(to_type: &DataType, _: &SparkParquetOptions) -> bool {
     use DataType::*;
     matches!(
         to_type,
@@ -510,7 +510,7 @@ fn can_cast_from_double(to_type: &DataType, _: &SparkParquetOptions) -> bool {
     )
 }
 
-fn can_cast_from_decimal(
+fn can_convert_from_decimal(
     p1: &u8,
     _s1: &i8,
     to_type: &DataType,
@@ -534,9 +534,8 @@ fn can_cast_from_decimal(
 
 #[cfg(test)]
 mod test {
-    use crate::parquet_support::SparkParquetOptions;
-    use crate::test_common::file_util::get_temp_filename;
-    use crate::{EvalMode, SparkParquetOptions, SparkSchemaAdapterFactory};
+    use crate::parquet::parquet_support::SparkParquetOptions;
+    use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
@@ -547,6 +546,8 @@ mod test {
     use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::execution::TaskContext;
     use datafusion::physical_plan::ExecutionPlan;
+    use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
+    use datafusion_comet_spark_expr::EvalMode;
     use datafusion_common::DataFusionError;
     use futures::StreamExt;
     use parquet::arrow::ArrowWriter;

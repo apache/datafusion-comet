@@ -21,7 +21,9 @@ pub use mutable_vector::*;
 
 #[macro_use]
 pub mod util;
+pub mod parquet_support;
 pub mod read;
+pub mod schema_adapter;
 
 use std::task::Poll;
 use std::{boxed::Box, ptr::NonNull, sync::Arc};
@@ -40,27 +42,27 @@ use jni::{
     },
 };
 
+use self::util::jni::TypePromotionInfo;
 use crate::execution::operators::ExecutionError;
 use crate::execution::utils::SparkArrowConvert;
 use crate::parquet::data_type::AsBytes;
+use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
 use arrow::buffer::{Buffer, MutableBuffer};
 use arrow_array::{Array, RecordBatch};
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
 use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_comet_spark_expr::parquet_support::SparkParquetOptions;
-use datafusion_comet_spark_expr::{EvalMode, SparkSchemaAdapterFactory};
+use datafusion_comet_spark_expr::EvalMode;
 use datafusion_common::config::TableParquetOptions;
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use futures::{poll, StreamExt};
 use jni::objects::{JBooleanArray, JByteArray, JLongArray, JPrimitiveArray, JString, ReleaseMode};
 use jni::sys::jstring;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
+use parquet_support::SparkParquetOptions;
 use read::ColumnReader;
 use util::jni::{convert_column_descriptor, convert_encoding, deserialize_schema, get_file_path};
-
-use self::util::jni::TypePromotionInfo;
 
 /// Parquet read context maintained across multiple JNI calls.
 struct Context {

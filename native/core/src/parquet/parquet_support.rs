@@ -15,9 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::timezone;
-use crate::utils::array_with_timezone;
-use crate::{EvalMode, SparkError, SparkResult};
 use arrow::{
     array::{
         cast::AsArray,
@@ -38,6 +35,8 @@ use arrow_array::builder::StringBuilder;
 use arrow_array::{DictionaryArray, StringArray, StructArray};
 use arrow_schema::DataType;
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
+use datafusion_comet_spark_expr::utils::array_with_timezone;
+use datafusion_comet_spark_expr::{timezone, EvalMode, SparkError, SparkResult};
 use datafusion_common::{cast::as_generic_string_array, Result as DataFusionResult, ScalarValue};
 use datafusion_expr::ColumnarValue;
 // use datafusion_physical_expr::PhysicalExpr;
