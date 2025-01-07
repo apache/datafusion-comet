@@ -87,6 +87,7 @@ use datafusion_comet_proto::{
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
+use datafusion_comet_spark_expr::parquet_support::SparkParquetOptions;
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, BitwiseNotExpr, Cast, CheckOverflow, Contains, Correlation,
     Covariance, CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields, GetStructField,
@@ -1156,13 +1157,14 @@ impl PhysicalPlanner {
                 table_parquet_options.global.pushdown_filters = true;
                 table_parquet_options.global.reorder_filters = true;
 
-                let mut spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
-                spark_cast_options.allow_cast_unsigned_ints = true;
+                let mut spark_parquet_options =
+                    SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+                spark_parquet_options.allow_cast_unsigned_ints = true;
 
                 let mut builder = ParquetExecBuilder::new(file_scan_config)
                     .with_table_parquet_options(table_parquet_options)
                     .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
-                        spark_cast_options,
+                        spark_parquet_options,
                     )));
 
                 if let Some(filter) = cnf_data_filters {

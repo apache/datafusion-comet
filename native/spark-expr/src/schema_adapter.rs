@@ -15,9 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Custom schema adapter that uses Spark-compatible casts
+//! Custom schema adapter that uses Spark-compatible conversions
 
-use crate::{spark_cast, EvalMode, SparkCastOptions};
+use crate::parquet_support::{spark_parquet_convert, SparkParquetOptions};
+use crate::EvalMode;
 use arrow_array::{new_null_array, Array, RecordBatch, RecordBatchOptions};
 use arrow_schema::{DataType, Schema, SchemaRef};
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
@@ -31,13 +32,13 @@ use std::sync::Arc;
 #[derive(Clone, Debug)]
 pub struct SparkSchemaAdapterFactory {
     /// Spark cast options
-    cast_options: SparkCastOptions,
+    parquet_options: SparkParquetOptions,
 }
 
 impl SparkSchemaAdapterFactory {
-    pub fn new(options: SparkCastOptions) -> Self {
+    pub fn new(options: SparkParquetOptions) -> Self {
         Self {
-            cast_options: options,
+            parquet_options: options,
         }
     }
 }
@@ -57,7 +58,7 @@ impl SchemaAdapterFactory for SparkSchemaAdapterFactory {
         Box::new(SparkSchemaAdapter {
             required_schema,
             table_schema,
-            cast_options: self.cast_options.clone(),
+            parquet_options: self.parquet_options.clone(),
         })
     }
 }
@@ -76,7 +77,7 @@ pub struct SparkSchemaAdapter {
     /// else in the plan.
     table_schema: SchemaRef,
     /// Spark cast options
-    cast_options: SparkCastOptions,
+    parquet_options: SparkParquetOptions,
 }
 
 impl SchemaAdapter for SparkSchemaAdapter {
@@ -112,7 +113,7 @@ impl SchemaAdapter for SparkSchemaAdapter {
                 if cast_supported(
                     file_field.data_type(),
                     table_field.data_type(),
-                    &self.cast_options,
+                    &self.parquet_options,
                 ) {
                     field_mappings[table_idx] = Some(projection.len());
                     projection.push(file_idx);
@@ -132,7 +133,7 @@ impl SchemaAdapter for SparkSchemaAdapter {
                 required_schema: Arc::<Schema>::clone(&self.required_schema),
                 field_mappings,
                 table_schema: Arc::<Schema>::clone(&self.table_schema),
-                cast_options: self.cast_options.clone(),
+                parquet_options: self.parquet_options.clone(),
             }),
             projection,
         ))
@@ -184,7 +185,7 @@ pub struct SchemaMapping {
     /// projected out or not.
     table_schema: SchemaRef,
     /// Spark cast options
-    cast_options: SparkCastOptions,
+    parquet_options: SparkParquetOptions,
 }
 
 impl SchemaMapper for SchemaMapping {
@@ -213,10 +214,10 @@ impl SchemaMapper for SchemaMapping {
                     // However, if it does exist in both, then try to cast it to the correct output
                     // type
                     |batch_idx| {
-                        spark_cast(
+                        spark_parquet_convert(
                             ColumnarValue::Array(Arc::clone(&batch_cols[batch_idx])),
                             field.data_type(),
-                            &self.cast_options,
+                            &self.parquet_options,
                         )?
                         .into_array(batch_rows)
                     },
@@ -261,10 +262,10 @@ impl SchemaMapper for SchemaMapping {
                     .map(|table_field| {
                         // try to cast it into the correct output type. we don't want to ignore this
                         // error, though, so it's propagated.
-                        spark_cast(
+                        spark_parquet_convert(
                             ColumnarValue::Array(Arc::clone(batch_col)),
                             table_field.data_type(),
-                            &self.cast_options,
+                            &self.parquet_options,
                         )?
                         .into_array(batch_col.len())
                         // and if that works, return the field and column.
@@ -285,7 +286,7 @@ impl SchemaMapper for SchemaMapping {
 }
 
 /// Determine if Comet supports a cast, taking options such as EvalMode and Timezone into account.
-fn cast_supported(from_type: &DataType, to_type: &DataType, options: &SparkCastOptions) -> bool {
+fn cast_supported(from_type: &DataType, to_type: &DataType, options: &SparkParquetOptions) -> bool {
     use DataType::*;
 
     let from_type = if let Dictionary(_, dt) = from_type {
@@ -346,7 +347,7 @@ fn cast_supported(from_type: &DataType, to_type: &DataType, options: &SparkCastO
     }
 }
 
-fn can_cast_from_string(to_type: &DataType, options: &SparkCastOptions) -> bool {
+fn can_cast_from_string(to_type: &DataType, options: &SparkParquetOptions) -> bool {
     use DataType::*;
     match to_type {
         Boolean | Int8 | Int16 | Int32 | Int64 | Binary => true,
@@ -385,7 +386,7 @@ fn can_cast_from_string(to_type: &DataType, options: &SparkCastOptions) -> bool 
     }
 }
 
-fn can_cast_to_string(from_type: &DataType, options: &SparkCastOptions) -> bool {
+fn can_cast_to_string(from_type: &DataType, options: &SparkParquetOptions) -> bool {
     use DataType::*;
     match from_type {
         Boolean | Int8 | Int16 | Int32 | Int64 | Date32 | Date64 | Timestamp(_, _) => true,
@@ -413,7 +414,7 @@ fn can_cast_to_string(from_type: &DataType, options: &SparkCastOptions) -> bool 
     }
 }
 
-fn can_cast_from_timestamp_ntz(to_type: &DataType, options: &SparkCastOptions) -> bool {
+fn can_cast_from_timestamp_ntz(to_type: &DataType, options: &SparkParquetOptions) -> bool {
     use DataType::*;
     match to_type {
         Timestamp(_, _) | Date32 | Date64 | Utf8 => {
@@ -427,7 +428,7 @@ fn can_cast_from_timestamp_ntz(to_type: &DataType, options: &SparkCastOptions) -
     }
 }
 
-fn can_cast_from_timestamp(to_type: &DataType, _options: &SparkCastOptions) -> bool {
+fn can_cast_from_timestamp(to_type: &DataType, _options: &SparkParquetOptions) -> bool {
     use DataType::*;
     match to_type {
         Timestamp(_, _) => true,
@@ -448,12 +449,12 @@ fn can_cast_from_timestamp(to_type: &DataType, _options: &SparkCastOptions) -> b
     }
 }
 
-fn can_cast_from_boolean(to_type: &DataType, _: &SparkCastOptions) -> bool {
+fn can_cast_from_boolean(to_type: &DataType, _: &SparkParquetOptions) -> bool {
     use DataType::*;
     matches!(to_type, Int8 | Int16 | Int32 | Int64 | Float32 | Float64)
 }
 
-fn can_cast_from_byte(to_type: &DataType, _: &SparkCastOptions) -> bool {
+fn can_cast_from_byte(to_type: &DataType, _: &SparkParquetOptions) -> bool {
     use DataType::*;
     matches!(
         to_type,
@@ -461,7 +462,7 @@ fn can_cast_from_byte(to_type: &DataType, _: &SparkCastOptions) -> bool {
     )
 }
 
-fn can_cast_from_short(to_type: &DataType, _: &SparkCastOptions) -> bool {
+fn can_cast_from_short(to_type: &DataType, _: &SparkParquetOptions) -> bool {
     use DataType::*;
     matches!(
         to_type,
@@ -469,7 +470,7 @@ fn can_cast_from_short(to_type: &DataType, _: &SparkCastOptions) -> bool {
     )
 }
 
-fn can_cast_from_int(to_type: &DataType, options: &SparkCastOptions) -> bool {
+fn can_cast_from_int(to_type: &DataType, options: &SparkParquetOptions) -> bool {
     use DataType::*;
     match to_type {
         Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Utf8 => true,
@@ -481,7 +482,7 @@ fn can_cast_from_int(to_type: &DataType, options: &SparkCastOptions) -> bool {
     }
 }
 
-fn can_cast_from_long(to_type: &DataType, options: &SparkCastOptions) -> bool {
+fn can_cast_from_long(to_type: &DataType, options: &SparkParquetOptions) -> bool {
     use DataType::*;
     match to_type {
         Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 => true,
@@ -493,7 +494,7 @@ fn can_cast_from_long(to_type: &DataType, options: &SparkCastOptions) -> bool {
     }
 }
 
-fn can_cast_from_float(to_type: &DataType, _: &SparkCastOptions) -> bool {
+fn can_cast_from_float(to_type: &DataType, _: &SparkParquetOptions) -> bool {
     use DataType::*;
     matches!(
         to_type,
@@ -501,7 +502,7 @@ fn can_cast_from_float(to_type: &DataType, _: &SparkCastOptions) -> bool {
     )
 }
 
-fn can_cast_from_double(to_type: &DataType, _: &SparkCastOptions) -> bool {
+fn can_cast_from_double(to_type: &DataType, _: &SparkParquetOptions) -> bool {
     use DataType::*;
     matches!(
         to_type,
@@ -513,7 +514,7 @@ fn can_cast_from_decimal(
     p1: &u8,
     _s1: &i8,
     to_type: &DataType,
-    options: &SparkCastOptions,
+    options: &SparkParquetOptions,
 ) -> bool {
     use DataType::*;
     match to_type {
@@ -533,8 +534,9 @@ fn can_cast_from_decimal(
 
 #[cfg(test)]
 mod test {
+    use crate::parquet_support::SparkParquetOptions;
     use crate::test_common::file_util::get_temp_filename;
-    use crate::{EvalMode, SparkCastOptions, SparkSchemaAdapterFactory};
+    use crate::{EvalMode, SparkParquetOptions, SparkSchemaAdapterFactory};
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
@@ -606,12 +608,12 @@ mod test {
                 filename.to_string(),
             )?]]);
 
-        let mut spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
-        spark_cast_options.allow_cast_unsigned_ints = true;
+        let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        spark_parquet_options.allow_cast_unsigned_ints = true;
 
         let parquet_exec = ParquetExec::builder(file_scan_config)
             .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
-                spark_cast_options,
+                spark_parquet_options,
             )))
             .build();
 

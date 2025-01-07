@@ -66,6 +66,8 @@ pub use normalize_nan::NormalizeNaNAndZero;
 mod variance;
 pub use variance::Variance;
 mod comet_scalar_funcs;
+pub mod parquet_support; // TODO: Do `pub use` below to expose only what we need.
+
 pub use cast::{spark_cast, Cast, SparkCastOptions};
 pub use comet_scalar_funcs::create_comet_physical_fun;
 pub use error::{SparkError, SparkResult};

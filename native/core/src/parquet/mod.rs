@@ -49,7 +49,8 @@ use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
 use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_comet_spark_expr::{EvalMode, SparkCastOptions, SparkSchemaAdapterFactory};
+use datafusion_comet_spark_expr::parquet_support::SparkParquetOptions;
+use datafusion_comet_spark_expr::{EvalMode, SparkSchemaAdapterFactory};
 use datafusion_common::config::TableParquetOptions;
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use futures::{poll, StreamExt};
@@ -679,13 +680,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         table_parquet_options.global.pushdown_filters = true;
         table_parquet_options.global.reorder_filters = true;
 
-        let mut spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
-        spark_cast_options.allow_cast_unsigned_ints = true;
+        let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        spark_parquet_options.allow_cast_unsigned_ints = true;
 
         let builder2 = ParquetExecBuilder::new(file_scan_config)
             .with_table_parquet_options(table_parquet_options)
             .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
-                spark_cast_options,
+                spark_parquet_options,
             )));
 
         //TODO: (ARROW NATIVE) - predicate pushdown??
