@@ -764,7 +764,6 @@ impl PhysicalPlanner {
                 )?;
 
                 Ok(Arc::new(case_expr))
-                // Ok(array_remove_expr)
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
