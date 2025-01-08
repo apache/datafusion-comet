@@ -3297,6 +3297,7 @@ pub fn process_sorted_row_partition(
     // this is the initial checksum for this method, as it also gets updated iteratively
     // inside the loop within the method across batches.
     initial_checksum: Option<u32>,
+    codec: &CompressionCodec,
 ) -> Result<(i64, Option<u32>), CometError> {
     // TODO: We can tune this parameter automatically based on row size and cache size.
     let row_step = 10;
@@ -3359,9 +3360,7 @@ pub fn process_sorted_row_partition(
 
         // we do not collect metrics in Native_writeSortedFileNative
         let ipc_time = Time::default();
-        // compression codec is not configurable for CometBypassMergeSortShuffleWriter
-        let codec = CompressionCodec::Zstd(1);
-        written += write_ipc_compressed(&batch, &mut cursor, &codec, &ipc_time)?;
+        written += write_ipc_compressed(&batch, &mut cursor, codec, &ipc_time)?;
 
         if let Some(checksum) = &mut current_checksum {
             checksum.update(&mut cursor)?;
