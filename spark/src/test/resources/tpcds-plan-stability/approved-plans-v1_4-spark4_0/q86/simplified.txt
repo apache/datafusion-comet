@@ -13,7 +13,7 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
                         Exchange [i_category,i_class,spark_grouping_id] #2
                           WholeStageCodegen (1)
                             HashAggregate [i_category,i_class,spark_grouping_id,ws_net_paid] [sum,sum]
-                              ColumnarToRow
+                              CometColumnarToRow
                                 InputAdapter
                                   CometExpand [i_category,i_class] [ws_net_paid,i_category,i_class,spark_grouping_id]
                                     CometProject [ws_net_paid,i_category,i_class]
@@ -25,7 +25,7 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
                                                 SubqueryBroadcast [d_date_sk] #1
                                                   BroadcastExchange #3
                                                     WholeStageCodegen (1)
-                                                      ColumnarToRow
+                                                      CometColumnarToRow
                                                         InputAdapter
                                                           CometProject [d_date_sk]
                                                             CometFilter [d_date_sk,d_month_seq]

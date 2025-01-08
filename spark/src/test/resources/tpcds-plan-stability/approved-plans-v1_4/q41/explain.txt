@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (19)
+* CometColumnarToRow (19)
 +- CometTakeOrderedAndProject (18)
    +- CometHashAggregate (17)
       +- CometExchange (16)
@@ -103,6 +103,6 @@ Functions: []
 Input [1]: [i_product_name#3]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_product_name#3 ASC NULLS FIRST], output=[i_product_name#3]), [i_product_name#3], 100, [i_product_name#3 ASC NULLS FIRST], [i_product_name#3]
 
-(19) ColumnarToRow [codegen id : 1]
+(19) CometColumnarToRow [codegen id : 1]
 Input [1]: [i_product_name#3]
 

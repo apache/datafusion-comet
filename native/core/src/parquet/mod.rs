@@ -541,7 +541,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_currentBatch(
     try_unwrap_or_throw(&e, |_env| {
         let ctx = get_context(handle)?;
         let reader = &mut ctx.column_reader;
-        let data = reader.current_batch();
+        let data = reader.current_batch()?;
         data.move_to_spark(array_addr, schema_addr)
             .map_err(|e| e.into())
     })

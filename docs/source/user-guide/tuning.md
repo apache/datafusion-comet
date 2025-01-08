@@ -23,11 +23,52 @@ Comet provides some tuning options to help you get the best performance from you
 
 ## Memory Tuning
 
-Comet shares an off-heap memory pool between Spark and Comet. This requires setting `spark.memory.offHeap.enabled=true`.
-If this setting is not enabled, Comet will not accelerate queries and will fall back to Spark.
+### Unified Memory Management with Off-Heap Memory
 
-Each executor will have a single memory pool which will be shared by all native plans being executed within that
-process, and by Spark itself. The size of the pool is specified by `spark.memory.offHeap.size`.
+The recommended way to share memory between Spark and Comet is to set `spark.memory.offHeap.enabled=true`. This allows
+Comet to share an off-heap memory pool with Spark. The size of the pool is specified by `spark.memory.offHeap.size`. For more details about Spark off-heap memory mode, please refer to Spark documentation: https://spark.apache.org/docs/latest/configuration.html.
+
+### Dedicated Comet Memory Pools
+
+Spark uses on-heap memory mode by default, i.e., the `spark.memory.offHeap.enabled` setting is not enabled. If Spark is under on-heap memory mode, Comet will use its own dedicated memory pools that
+are not shared with Spark. This requires additional configuration settings to be specified to set the size and type of
+memory pool to use.
+
+The size of the pool can be set explicitly with `spark.comet.memoryOverhead`. If this setting is not specified then
+the memory overhead will be calculated by multiplying the executor memory by `spark.comet.memory.overhead.factor`
+(defaults to `0.2`).
+
+The type of pool can be specified with `spark.comet.exec.memoryPool`. The default setting is `greedy_task_shared`.
+
+The valid pool types are:
+
+- `greedy`
+- `greedy_global`
+- `greedy_task_shared`
+- `fair_spill`
+- `fair_spill_global`
+- `fair_spill_task_shared`
+
+Pool types ending with `_global` use a single global memory pool between all tasks on same executor.
+
+Pool types ending with `_task_shared` share a single memory pool across all attempts for a single task.
+
+Other pool types create a dedicated pool per native query plan using a fraction of the available pool size based on number of cores 
+and cores per task.
+
+The `greedy*` pool types use DataFusion's [GreedyMemoryPool], which implements a greedy first-come first-serve limit. This
+pool works well for queries that do not need to spill or have a single spillable operator.
+
+The `fair_spill*` pool types use DataFusion's [FairSpillPool], which prevents spillable reservations from using more
+than an even fraction of the available memory sans any unspillable reservations
+(i.e. `(pool_size - unspillable_memory) / num_spillable_reservations)`). This pool works best when you know beforehand
+the query has multiple spillable operators that will likely all need to spill. Sometimes it will cause spills even
+when there was sufficient memory (reserved for other operators) to avoid doing so. Unspillable memory is allocated in
+a first-come, first-serve fashion
+
+[GreedyMemoryPool]: https://docs.rs/datafusion/latest/datafusion/execution/memory_pool/struct.GreedyMemoryPool.html
+[FairSpillPool]: https://docs.rs/datafusion/latest/datafusion/execution/memory_pool/struct.FairSpillPool.html
+
 
 ### Determining How Much Memory to Allocate
 
@@ -91,7 +132,7 @@ are supported for partitioning expressions (`Boolean`, `Byte`, `Short`, `Integer
 
 Native shuffle is enabled by default and can be disabled by setting `spark.comet.exec.shuffle.native.enabled=false`.
 
-#### Columnar (JVM) Shuffle
+#### Columnar Shuffle
 
 Comet Columnar Shuffle is used for cases where Native Shuffle is not supported. Columnar Shuffle supports
 `HashPartitioning`, `RangePartitioning`, `RoundRobinPartitioning` and `SinglePartition` and supports complex
@@ -105,7 +146,13 @@ Columnar shuffle is enabled by default and can be disabled by setting `spark.com
 
 ### Shuffle Compression
 
-By default, Spark compresses shuffle files using LZ4 compression. Comet overrides this behavior with ZSTD compression.
+By default, Comet compresses shuffle files using `lz4` compression. Comet also supports `zstd` and `snappy` 
+compression. Different compression algorithms have different trade-offs between CPU overhead and compression ratio.
+The compression algorithm can be specified by setting `spark.comet.exec.shuffle.compression.codec` to `lz4`, `zstd`, 
+or `snappy`. 
+
+When using `zstd`, the compression level can be specified with `spark.comet.exec.shuffle.compression.zstd.level`.
+
 Compression can be disabled by setting `spark.shuffle.compress=false`, which may result in faster shuffle times in
 certain environments, such as single-node setups with fast NVMe drives, at the expense of increased disk space usage.
 

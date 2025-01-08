@@ -172,28 +172,6 @@ public class ColumnReader extends AbstractColumnReader {
 
   /** Returns a decoded {@link CometDecodedVector Comet vector}. */
   public CometDecodedVector loadVector() {
-    // Only re-use Comet vector iff:
-    //   1. if we're not using dictionary encoding, since with dictionary encoding, the native
-    //      side may fallback to plain encoding and the underlying memory address for the vector
-    //      will change as result.
-    //   2. if the column type is of fixed width, in other words, string/binary are not supported
-    //      since the native side may resize the vector and therefore change memory address.
-    //   3. if the last loaded vector contains null values: if values of last vector are all not
-    //      null, Arrow C data API will skip loading the native validity buffer, therefore we
-    //      should not re-use the vector in that case.
-    //   4. if the last loaded vector doesn't contain any null value, but the current vector also
-    //      are all not null, which means we can also re-use the loaded vector.
-    //   5. if the new number of value is the same or smaller
-    if ((hadNull || currentNumNulls == 0)
-        && currentVector != null
-        && dictionary == null
-        && currentVector.isFixedLength()
-        && currentVector.numValues() >= currentNumValues) {
-      currentVector.setNumNulls(currentNumNulls);
-      currentVector.setNumValues(currentNumValues);
-      return currentVector;
-    }
-
     LOG.debug("Reloading vector");
 
     // Close the previous vector first to release struct memory allocated to import Arrow array &

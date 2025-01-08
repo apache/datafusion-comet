@@ -70,6 +70,7 @@ use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctio
 
 use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
+use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion_comet_proto::{
     spark_expression::{
         self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
@@ -98,6 +99,7 @@ use datafusion_expr::{
     AggregateUDF, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
     WindowFunctionDefinition,
 };
+use datafusion_functions_nested::array_has::ArrayHas;
 use datafusion_physical_expr::expressions::{Literal, StatsType};
 use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr::LexOrdering;
@@ -719,6 +721,20 @@ impl PhysicalPlanner {
                     expr.legacy_negative_index,
                 )))
             }
+            ExprStruct::ArrayContains(expr) => {
+                let src_array_expr =
+                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let key_expr =
+                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let args = vec![Arc::clone(&src_array_expr), key_expr];
+                let array_has_expr = Arc::new(ScalarFunctionExpr::new(
+                    "array_has",
+                    Arc::new(ScalarUDF::new_from_impl(ArrayHas::new())),
+                    args,
+                    DataType::Boolean,
+                ));
+                Ok(array_has_expr)
+            }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
                 expr
@@ -1051,9 +1067,11 @@ impl PhysicalPlanner {
 
                 let codec = match writer.codec.try_into() {
                     Ok(SparkCompressionCodec::None) => Ok(CompressionCodec::None),
+                    Ok(SparkCompressionCodec::Snappy) => Ok(CompressionCodec::Snappy),
                     Ok(SparkCompressionCodec::Zstd) => {
                         Ok(CompressionCodec::Zstd(writer.compression_level))
                     }
+                    Ok(SparkCompressionCodec::Lz4) => Ok(CompressionCodec::Lz4Frame),
                     _ => Err(ExecutionError::GeneralError(format!(
                         "Unsupported shuffle compression codec: {:?}",
                         writer.codec
@@ -1168,17 +1186,42 @@ impl PhysicalPlanner {
                     false,
                 )?);
 
-                Ok((
-                    scans,
-                    Arc::new(SparkPlan::new(
-                        spark_plan.plan_id,
-                        join,
-                        vec![
-                            Arc::clone(&join_params.left),
-                            Arc::clone(&join_params.right),
-                        ],
-                    )),
-                ))
+                if join.filter.is_some() {
+                    // SMJ with join filter produces lots of tiny batches
+                    let coalesce_batches: Arc<dyn ExecutionPlan> =
+                        Arc::new(CoalesceBatchesExec::new(
+                            Arc::<SortMergeJoinExec>::clone(&join),
+                            self.session_ctx
+                                .state()
+                                .config_options()
+                                .execution
+                                .batch_size,
+                        ));
+                    Ok((
+                        scans,
+                        Arc::new(SparkPlan::new_with_additional(
+                            spark_plan.plan_id,
+                            coalesce_batches,
+                            vec![
+                                Arc::clone(&join_params.left),
+                                Arc::clone(&join_params.right),
+                            ],
+                            vec![join],
+                        )),
+                    ))
+                } else {
+                    Ok((
+                        scans,
+                        Arc::new(SparkPlan::new(
+                            spark_plan.plan_id,
+                            join,
+                            vec![
+                                Arc::clone(&join_params.left),
+                                Arc::clone(&join_params.right),
+                            ],
+                        )),
+                    ))
+                }
             }
             OpStruct::HashJoin(join) => {
                 let (join_params, scans) = self.parse_join_parameters(

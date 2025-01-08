@@ -1,5 +1,5 @@
 WholeStageCodegen (1)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [customer_id,customer_first_name,customer_last_name,customer_preferred_cust_flag,customer_birth_country,customer_login,customer_email_address]
         CometProject [customer_id,customer_first_name,customer_last_name,customer_preferred_cust_flag,customer_birth_country,customer_login,customer_email_address]
@@ -27,7 +27,7 @@ WholeStageCodegen (1)
                                                 SubqueryBroadcast [d_date_sk] #1
                                                   BroadcastExchange #3
                                                     WholeStageCodegen (1)
-                                                      ColumnarToRow
+                                                      CometColumnarToRow
                                                         InputAdapter
                                                           CometFilter [d_date_sk,d_year]
                                                             CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
@@ -50,7 +50,7 @@ WholeStageCodegen (1)
                                                 SubqueryBroadcast [d_date_sk] #2
                                                   BroadcastExchange #8
                                                     WholeStageCodegen (1)
-                                                      ColumnarToRow
+                                                      CometColumnarToRow
                                                         InputAdapter
                                                           CometFilter [d_date_sk,d_year]
                                                             CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]

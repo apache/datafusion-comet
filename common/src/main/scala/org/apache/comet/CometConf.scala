@@ -271,18 +271,19 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] = conf(
-    s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
-    .doc(
-      "The codec of Comet native shuffle used to compress shuffle data. Only zstd is supported. " +
-        "Compression can be disabled by setting spark.shuffle.compress=false.")
-    .stringConf
-    .checkValues(Set("zstd"))
-    .createWithDefault("zstd")
+  val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
+      .doc(
+        "The codec of Comet native shuffle used to compress shuffle data. lz4, zstd, and " +
+          "snappy are supported. Compression can be disabled by setting " +
+          "spark.shuffle.compress=false.")
+      .stringConf
+      .checkValues(Set("zstd", "lz4", "snappy"))
+      .createWithDefault("lz4")
 
-  val COMET_EXEC_SHUFFLE_COMPRESSION_LEVEL: ConfigEntry[Int] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.level")
-      .doc("The compression level to use when compression shuffle files.")
+  val COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL: ConfigEntry[Int] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.zstd.level")
+      .doc("The compression level to use when compressing shuffle files with zstd.")
       .intConf
       .createWithDefault(1)
 
@@ -450,20 +451,20 @@ object CometConf extends ShimCometConf {
     .intConf
     .createWithDefault(8192)
 
-  val COMET_EXEC_MEMORY_FRACTION: ConfigEntry[Double] = conf("spark.comet.exec.memoryFraction")
-    .doc(
-      "The fraction of memory from Comet memory overhead that the native memory " +
-        "manager can use for execution. The purpose of this config is to set aside memory for " +
-        "untracked data structures, as well as imprecise size estimation during memory " +
-        "acquisition.")
-    .doubleConf
-    .createWithDefault(0.7)
-
   val COMET_PARQUET_ENABLE_DIRECT_BUFFER: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.enable.directBuffer")
       .doc("Whether to use Java direct byte buffer when reading Parquet.")
       .booleanConf
       .createWithDefault(false)
+
+  val COMET_EXEC_MEMORY_POOL_TYPE: ConfigEntry[String] = conf("spark.comet.exec.memoryPool")
+    .doc(
+      "The type of memory pool to be used for Comet native execution. " +
+        "Available memory pool types are 'greedy', 'fair_spill', 'greedy_task_shared', " +
+        "'fair_spill_task_shared', 'greedy_global' and 'fair_spill_global', By default, " +
+        "this config is 'greedy_task_shared'.")
+    .stringConf
+    .createWithDefault("greedy_task_shared")
 
   val COMET_SCAN_PREFETCH_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.preFetch.enabled")
