@@ -15,10 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow_array::builder::Int32Builder;
+use arrow_array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
 use arrow_array::{builder::StringBuilder, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use comet::execution::shuffle::{write_ipc_compressed, CompressionCodec, ShuffleWriterExec};
+use comet::execution::shuffle::{CompressionCodec, ShuffleBlockWriter, ShuffleWriterExec};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::physical_plan::metrics::Time;
 use datafusion::{
@@ -31,67 +31,52 @@ use std::sync::Arc;
 use tokio::runtime::Runtime;
 
 fn criterion_benchmark(c: &mut Criterion) {
+    let batch = create_batch(8192, true);
     let mut group = c.benchmark_group("shuffle_writer");
-    group.bench_function("shuffle_writer: encode (no compression))", |b| {
-        let batch = create_batch(8192, true);
-        let mut buffer = vec![];
-        let ipc_time = Time::default();
-        b.iter(|| {
-            buffer.clear();
-            let mut cursor = Cursor::new(&mut buffer);
-            write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::None, &ipc_time)
-        });
-    });
-    group.bench_function("shuffle_writer: encode and compress (snappy)", |b| {
-        let batch = create_batch(8192, true);
-        let mut buffer = vec![];
-        let ipc_time = Time::default();
-        b.iter(|| {
-            buffer.clear();
-            let mut cursor = Cursor::new(&mut buffer);
-            write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::Snappy, &ipc_time)
-        });
-    });
-    group.bench_function("shuffle_writer: encode and compress (lz4)", |b| {
-        let batch = create_batch(8192, true);
-        let mut buffer = vec![];
-        let ipc_time = Time::default();
-        b.iter(|| {
-            buffer.clear();
-            let mut cursor = Cursor::new(&mut buffer);
-            write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::Lz4Frame, &ipc_time)
-        });
-    });
-    group.bench_function("shuffle_writer: encode and compress (zstd level 1)", |b| {
-        let batch = create_batch(8192, true);
-        let mut buffer = vec![];
-        let ipc_time = Time::default();
-        b.iter(|| {
-            buffer.clear();
-            let mut cursor = Cursor::new(&mut buffer);
-            write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::Zstd(1), &ipc_time)
-        });
-    });
-    group.bench_function("shuffle_writer: encode and compress (zstd level 6)", |b| {
-        let batch = create_batch(8192, true);
-        let mut buffer = vec![];
-        let ipc_time = Time::default();
-        b.iter(|| {
-            buffer.clear();
-            let mut cursor = Cursor::new(&mut buffer);
-            write_ipc_compressed(&batch, &mut cursor, &CompressionCodec::Zstd(6), &ipc_time)
-        });
-    });
-    group.bench_function("shuffle_writer: end to end", |b| {
-        let ctx = SessionContext::new();
-        let exec = create_shuffle_writer_exec(CompressionCodec::Zstd(1));
-        b.iter(|| {
-            let task_ctx = ctx.task_ctx();
-            let stream = exec.execute(0, task_ctx).unwrap();
-            let rt = Runtime::new().unwrap();
-            criterion::black_box(rt.block_on(collect(stream)).unwrap());
-        });
-    });
+    for compression_codec in &[
+        CompressionCodec::None,
+        CompressionCodec::Lz4Frame,
+        CompressionCodec::Zstd(1),
+    ] {
+        for enable_fast_encoding in [true, false] {
+            let name = format!("shuffle_writer: write encoded (enable_fast_encoding={enable_fast_encoding}, compression={compression_codec:?})");
+            group.bench_function(name, |b| {
+                let mut buffer = vec![];
+                let ipc_time = Time::default();
+                let w = ShuffleBlockWriter::try_new(
+                    &batch.schema(),
+                    enable_fast_encoding,
+                    compression_codec.clone(),
+                )
+                .unwrap();
+                b.iter(|| {
+                    buffer.clear();
+                    let mut cursor = Cursor::new(&mut buffer);
+                    w.write_batch(&batch, &mut cursor, &ipc_time).unwrap();
+                });
+            });
+        }
+    }
+
+    for compression_codec in [
+        CompressionCodec::None,
+        CompressionCodec::Lz4Frame,
+        CompressionCodec::Zstd(1),
+    ] {
+        group.bench_function(
+            format!("shuffle_writer: end to end (compression = {compression_codec:?}"),
+            |b| {
+                let ctx = SessionContext::new();
+                let exec = create_shuffle_writer_exec(compression_codec.clone());
+                b.iter(|| {
+                    let task_ctx = ctx.task_ctx();
+                    let stream = exec.execute(0, task_ctx).unwrap();
+                    let rt = Runtime::new().unwrap();
+                    rt.block_on(collect(stream)).unwrap();
+                });
+            },
+        );
+    }
 }
 
 fn create_shuffle_writer_exec(compression_codec: CompressionCodec) -> ShuffleWriterExec {
@@ -104,6 +89,7 @@ fn create_shuffle_writer_exec(compression_codec: CompressionCodec) -> ShuffleWri
         compression_codec,
         "/tmp/data.out".to_string(),
         "/tmp/index.out".to_string(),
+        true,
     )
     .unwrap()
 }
@@ -121,11 +107,19 @@ fn create_batch(num_rows: usize, allow_nulls: bool) -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![
         Field::new("c0", DataType::Int32, true),
         Field::new("c1", DataType::Utf8, true),
+        Field::new("c2", DataType::Date32, true),
+        Field::new("c3", DataType::Decimal128(11, 2), true),
     ]));
     let mut a = Int32Builder::new();
     let mut b = StringBuilder::new();
+    let mut c = Date32Builder::new();
+    let mut d = Decimal128Builder::new()
+        .with_precision_and_scale(11, 2)
+        .unwrap();
     for i in 0..num_rows {
         a.append_value(i as i32);
+        c.append_value(i as i32);
+        d.append_value((i * 1000000) as i128);
         if allow_nulls && i % 10 == 0 {
             b.append_null();
         } else {
@@ -134,7 +128,13 @@ fn create_batch(num_rows: usize, allow_nulls: bool) -> RecordBatch {
     }
     let a = a.finish();
     let b = b.finish();
-    RecordBatch::try_new(schema.clone(), vec![Arc::new(a), Arc::new(b)]).unwrap()
+    let c = c.finish();
+    let d = d.finish();
+    RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(a), Arc::new(b), Arc::new(c), Arc::new(d)],
+    )
+    .unwrap()
 }
 
 fn config() -> Criterion {

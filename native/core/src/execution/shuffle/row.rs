@@ -23,7 +23,7 @@ use crate::{
         shuffle::{
             list::{append_list_element, SparkUnsafeArray},
             map::{append_map_elements, get_map_key_value_dt, SparkUnsafeMap},
-            shuffle_writer::{write_ipc_compressed, Checksum},
+            shuffle_writer::{Checksum, ShuffleBlockWriter},
         },
         utils::bytes_to_i128,
     },
@@ -3360,7 +3360,10 @@ pub fn process_sorted_row_partition(
 
         // we do not collect metrics in Native_writeSortedFileNative
         let ipc_time = Time::default();
-        written += write_ipc_compressed(&batch, &mut cursor, codec, &ipc_time)?;
+        // compression codec is not configurable for CometBypassMergeSortShuffleWriter
+        let block_writer =
+            ShuffleBlockWriter::try_new(batch.schema().as_ref(), false, codec.clone())?;
+        written += block_writer.write_batch(&batch, &mut cursor, &ipc_time)?;
 
         if let Some(checksum) = &mut current_checksum {
             checksum.update(&mut cursor)?;
