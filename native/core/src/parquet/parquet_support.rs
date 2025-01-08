@@ -532,6 +532,10 @@ pub struct SparkParquetOptions {
     /// We also use the cast logic for adapting Parquet schemas, so this flag is used
     /// for that use case
     pub is_adapting_schema: bool,
+    /// Whether to always represent decimals using 128 bits. If false, the native reader may represent decimals using 32 or 64 bits, depending on the precision.
+    pub use_decimal_128: bool,
+    /// Whether to read dates/timestamps that were written in the legacy hybrid Julian + Gregorian calendar as it is. If false, throw exceptions instead. If the spark type is TimestampNTZ, this should be true.
+    pub use_legacy_date_timestamp_or_ntz: bool,
 }
 
 impl SparkParquetOptions {
@@ -542,6 +546,8 @@ impl SparkParquetOptions {
             allow_incompat,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
+            use_decimal_128: false,
+            use_legacy_date_timestamp_or_ntz: false,
         }
     }
 
@@ -552,6 +558,8 @@ impl SparkParquetOptions {
             allow_incompat,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
+            use_decimal_128: false,
+            use_legacy_date_timestamp_or_ntz: false,
         }
     }
 }
