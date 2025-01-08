@@ -2278,6 +2278,26 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             expr.children(1),
             inputs,
             (builder, binaryExpr) => builder.setArrayAppend(binaryExpr))
+
+        case CreateMap(children, _) =>
+          val childExprs = children.map(exprToProto(_, inputs, binding))
+
+          if (childExprs.forall(_.isDefined)) {
+            scalarExprToProto("map", childExprs: _*)
+          } else {
+            withInfo(expr, "unsupported arguments for CreateMap", children: _*)
+            None
+          }
+        case _ if expr.prettyName == "map_keys" =>
+          createUnaryExpr(
+            expr.children.head,
+            inputs,
+            (builder, unaryExpr) => builder.setMapKeys(unaryExpr))
+        case _ if expr.prettyName == "map_values" =>
+          createUnaryExpr(
+            expr.children.head,
+            inputs,
+            (builder, unaryExpr) => builder.setMapValues(unaryExpr))
         case _ =>
           withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
           None

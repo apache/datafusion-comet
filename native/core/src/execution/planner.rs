@@ -32,7 +32,7 @@ use crate::{
     },
 };
 use arrow::compute::CastOptions;
-use arrow_schema::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
+use arrow_schema::{DataType, Field, Schema, SchemaBuilder, TimeUnit, DECIMAL128_MAX_PRECISION};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
@@ -95,17 +95,23 @@ use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
 };
+use datafusion_expr::Expr::ScalarSubquery;
 use datafusion_expr::{
     AggregateUDF, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
     WindowFunctionDefinition,
 };
 use datafusion_functions_nested::array_has::ArrayHas;
+use datafusion_functions_nested::make_array::make_array_udf;
+use datafusion_functions_nested::map::map_udf;
+use datafusion_functions_nested::map_keys::map_keys_udf;
+use datafusion_functions_nested::map_values::map_values_udf;
 use datafusion_physical_expr::expressions::{Literal, StatsType};
 use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr::LexOrdering;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
+use parquet::data_type::Int32Type;
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
 
@@ -734,6 +740,46 @@ impl PhysicalPlanner {
                     DataType::Boolean,
                 ));
                 Ok(array_has_expr)
+            }
+            ExprStruct::MapKeys(expr) => {
+                let map_expr =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let return_type =
+                    if let DataType::Map(field, _) = map_expr.data_type(&input_schema)? {
+                        if let DataType::Struct(fields) = field.data_type() {
+                            fields[0].data_type().clone()
+                        } else {
+                            unreachable!()
+                        }
+                    } else {
+                        unreachable!()
+                    };
+                Ok(Arc::new(ScalarFunctionExpr::new(
+                    "map_keys",
+                    map_keys_udf(),
+                    vec![map_expr],
+                    return_type,
+                )))
+            }
+            ExprStruct::MapValues(expr) => {
+                let map_expr =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let return_type =
+                    if let DataType::Map(field, _) = map_expr.data_type(&input_schema)? {
+                        if let DataType::Struct(fields) = field.data_type() {
+                            fields[0].data_type().clone()
+                        } else {
+                            unreachable!()
+                        }
+                    } else {
+                        unreachable!()
+                    };
+                Ok(Arc::new(ScalarFunctionExpr::new(
+                    "map_values",
+                    map_values_udf(),
+                    vec![map_expr],
+                    return_type,
+                )))
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
@@ -2041,18 +2087,59 @@ impl PhysicalPlanner {
         expr: &ScalarFunc,
         input_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        println!("create_scalar_function_expr {:?}", expr);
         let args = expr
             .args
             .iter()
             .map(|x| self.create_expr(x, Arc::clone(&input_schema)))
             .collect::<Result<Vec<_>, _>>()?;
+        println!("create_scalar_function_expr args len {:?}", args.len());
 
         let fun_name = &expr.func;
+        println!("create_scalar_function_expr fun_name {:?}", fun_name);
         let input_expr_types = args
             .iter()
             .map(|x| x.data_type(input_schema.as_ref()))
             .collect::<Result<Vec<_>, _>>()?;
+        println!(
+            "create_scalar_function_expr input_expr_types {:?}",
+            input_expr_types
+        );
 
+        if fun_name == "map" {
+            let keys = args.clone().into_iter().step_by(2).collect::<Vec<_>>();
+            let values = args.into_iter().skip(1).step_by(2).collect::<Vec<_>>();
+            println!("create_scalar_function_expr keys {:?}", keys.len());
+            println!("create_scalar_function_expr value {:?}", values.len());
+            let keys_expr = Arc::new(ScalarFunctionExpr::new(
+                "make_array",
+                make_array_udf(),
+                keys.clone(),
+                DataType::List(Arc::new(Field::new("key", DataType::Int32, false))),
+            ));
+            let values_expr = Arc::new(ScalarFunctionExpr::new(
+                "make_array",
+                make_array_udf(),
+                keys.clone(),
+                DataType::List(Arc::new(Field::new("value", DataType::Int32, true))),
+            ));
+
+            let mut builder = SchemaBuilder::new();
+            builder.push(Field::new("key", DataType::Int32, false));
+            builder.push(Field::new("value", DataType::Int32, true));
+            let fields = builder.finish().fields;
+
+            return Ok(Arc::new(ScalarFunctionExpr::new(
+                fun_name,
+                map_udf(),
+                vec![keys_expr, values_expr],
+                DataType::Map(
+                    Arc::new(Field::new("entries", DataType::Struct(fields), false)),
+                    false,
+                ),
+            )));
+        }
+        println!("create_scalar_function_expr args {:?}", args);
         let (data_type, coerced_input_types) =
             match expr.return_type.as_ref().map(to_arrow_datatype) {
                 Some(t) => (t, input_expr_types.clone()),
@@ -2080,11 +2167,15 @@ impl PhysicalPlanner {
                     (data_type, coerced_types)
                 }
             };
+        println!(
+            "create_scalar_function_expr coerced {:?} data_type {:?}",
+            coerced_input_types, data_type
+        );
 
         let fun_expr =
             create_comet_physical_fun(fun_name, data_type.clone(), &self.session_ctx.state())?;
 
-        let args = args
+        let mut args = args
             .into_iter()
             .zip(input_expr_types.into_iter().zip(coerced_input_types))
             .map(|(expr, (from_type, to_type))| {
@@ -2102,7 +2193,6 @@ impl PhysicalPlanner {
                 }
             })
             .collect::<Vec<_>>();
-
         let scalar_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
             fun_name,
             fun_expr,
