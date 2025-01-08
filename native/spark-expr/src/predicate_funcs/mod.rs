@@ -15,10 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod list;
-mod map;
-pub mod row;
-mod shuffle_writer;
-pub use shuffle_writer::{
-    read_ipc_compressed, write_ipc_compressed, CompressionCodec, ShuffleWriterExec,
-};
+mod is_nan;
+mod rlike;
+
+pub use is_nan::spark_isnan;
+pub use rlike::RLike;
