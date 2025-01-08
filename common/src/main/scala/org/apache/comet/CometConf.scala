@@ -94,7 +94,7 @@ object CometConf extends ShimCometConf {
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
     .checkValues(Set(SCAN_NATIVE, SCAN_NATIVE_FULL, SCAN_NATIVE_RECORDBATCH))
-    .createWithDefault(SCAN_NATIVE_FULL)
+    .createWithDefault(sys.env.getOrElse("NATIVE_SCAN_IMPL", SCAN_NATIVE_FULL))
 
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.parallel.io.enabled")
