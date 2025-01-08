@@ -472,6 +472,19 @@ case class CometScanExec(
 }
 
 object CometScanExec extends DataTypeSupport {
+
+  override def isAdditionallySupported(dt: DataType): Boolean = {
+    if (CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_RECORDBATCH) {
+      // TODO add array and map
+      dt match {
+        case s: StructType => s.fields.map(_.dataType).forall(isTypeSupported)
+        case _ => false
+      }
+    } else {
+      false
+    }
+  }
+
   def apply(scanExec: FileSourceScanExec, session: SparkSession): CometScanExec = {
     // TreeNode.mapProductIterator is protected method.
     def mapProductIterator[B: ClassTag](product: Product, f: Any => B): Array[B] = {
