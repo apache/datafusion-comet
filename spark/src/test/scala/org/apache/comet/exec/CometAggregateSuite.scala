@@ -19,18 +19,18 @@
 
 package org.apache.comet.exec
 
+import scala.collection.immutable.Seq
 import scala.util.Random
-
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
-
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
+import org.apache.spark.sql.expressions.Window
 
 /**
  * Test suite dedicated to Comet native aggregate operator
@@ -53,6 +53,44 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         }
       }
     }
+  }
+
+  test("SPARK-32038: NormalizeFloatingNumbers should work on distinct aggregate") {
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      val nan1 = java.lang.Float.intBitsToFloat(0x7f800001)
+      val nan2 = java.lang.Float.intBitsToFloat(0x7fffffff)
+
+      val df = Seq(
+        ("mithunr", Float.NaN),
+        ("mithunr", nan1),
+        ("mithunr", nan2),
+        ("abellina", 1.0f),
+        ("abellina", 2.0f)).toDF("uid", "score")
+
+      df.write.mode(SaveMode.Overwrite).parquet("test.parquet")
+    }
+
+    withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "auto") {
+      spark.read.parquet("test.parquet").createOrReplaceTempView("view")
+      val df =
+        spark.sql("select uid, count(distinct score) from view group by 1 order by 1 asc")
+      checkSparkAnswer /*AndOperator*/ (df)
+    }
+  }
+
+  test("reverse preceding/following range between with aggregation") {
+    val df = Seq(1, 2, 4, 3, 2, 1).toDF("value")
+    val window = Window.orderBy($"value".desc)
+
+    df.write.mode(SaveMode.Overwrite).parquet("test.parquet")
+    val df2 = spark.read.parquet("test.parquet")
+
+    val df3 = df2.select(
+      $"value",
+      sum($"value").over(window.rangeBetween(Window.unboundedPreceding, 1)),
+      sum($"value").over(window.rangeBetween(1, Window.unboundedFollowing)))
+
+    checkSparkAnswer(df3)
   }
 
   test("count with aggregation filter") {
