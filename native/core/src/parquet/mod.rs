@@ -725,7 +725,6 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_readNextRecordBatch(
         let batch_stream = context.batch_stream.as_mut().unwrap();
         let runtime = &context.runtime;
 
-        // let mut stream = batch_stream.as_mut();
         loop {
             let next_item = batch_stream.next();
             let poll_batch: Poll<Option<datafusion_common::Result<RecordBatch>>> =
