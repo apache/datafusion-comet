@@ -169,86 +169,61 @@ impl<W: Write> BatchWriter<W> {
         match col.data_type() {
             DataType::Boolean => {
                 let arr = col.as_any().downcast_ref::<BooleanArray>().unwrap();
-
                 // boolean array is the only type we write the array length because it cannot
-                // be determined from the data buffer size
+                // be determined from the data buffer size (length is in bits rather than bytes)
                 self.write_all(&arr.len().to_le_bytes())?;
-
                 // write data buffer
-                let buffer = arr.values();
-                let buffer = buffer.inner();
-                self.write_buffer(buffer)?;
-
+                self.write_buffer(arr.values().inner())?;
+                // write null buffer
                 self.write_null_buffer(arr.nulls())?;
             }
             DataType::Int8 => {
                 let arr = col.as_any().downcast_ref::<Int8Array>().unwrap();
-
                 // write data buffer
-                let buffer = arr.values();
-                let buffer = buffer.inner();
-                self.write_buffer(buffer)?;
-
+                self.write_buffer(arr.values().inner())?;
+                // write null buffer
                 self.write_null_buffer(arr.nulls())?;
             }
             DataType::Int16 => {
                 let arr = col.as_any().downcast_ref::<Int16Array>().unwrap();
-
                 // write data buffer
-                let buffer = arr.values();
-                let buffer = buffer.inner();
-                self.write_buffer(buffer)?;
-
+                self.write_buffer(arr.values().inner())?;
+                // write null buffer
                 self.write_null_buffer(arr.nulls())?;
             }
             DataType::Int32 => {
                 let arr = col.as_any().downcast_ref::<Int32Array>().unwrap();
-
                 // write data buffer
-                let buffer = arr.values();
-                let buffer = buffer.inner();
-                self.write_buffer(buffer)?;
-
+                self.write_buffer(arr.values().inner())?;
+                // write null buffer
                 self.write_null_buffer(arr.nulls())?;
             }
             DataType::Int64 => {
                 let arr = col.as_any().downcast_ref::<Int64Array>().unwrap();
-
                 // write data buffer
-                let buffer = arr.values();
-                let buffer = buffer.inner();
-                self.write_buffer(buffer)?;
-
+                self.write_buffer(arr.values().inner())?;
+                // write null buffer
                 self.write_null_buffer(arr.nulls())?;
             }
             DataType::Float32 => {
                 let arr = col.as_any().downcast_ref::<Float32Array>().unwrap();
-
                 // write data buffer
-                let buffer = arr.values();
-                let buffer = buffer.inner();
-                self.write_buffer(buffer)?;
-
+                self.write_buffer(arr.values().inner())?;
+                // write null buffer
                 self.write_null_buffer(arr.nulls())?;
             }
             DataType::Float64 => {
                 let arr = col.as_any().downcast_ref::<Float64Array>().unwrap();
-
                 // write data buffer
-                let buffer = arr.values();
-                let buffer = buffer.inner();
-                self.write_buffer(buffer)?;
-
+                self.write_buffer(arr.values().inner())?;
+                // write null buffer
                 self.write_null_buffer(arr.nulls())?;
             }
             DataType::Date32 => {
                 let arr = col.as_any().downcast_ref::<Date32Array>().unwrap();
-
                 // write data buffer
-                let buffer = arr.values();
-                let buffer = buffer.inner();
-                self.write_buffer(buffer)?;
-
+                self.write_buffer(arr.values().inner())?;
+                // write null buffer
                 self.write_null_buffer(arr.nulls())?;
             }
             DataType::Timestamp(TimeUnit::Microsecond, _) => {
@@ -256,52 +231,39 @@ impl<W: Write> BatchWriter<W> {
                     .as_any()
                     .downcast_ref::<TimestampMicrosecondArray>()
                     .unwrap();
-
                 // write data buffer
-                let buffer = arr.values();
-                let buffer = buffer.inner();
-                self.write_buffer(buffer)?;
-
+                self.write_buffer(arr.values().inner())?;
+                // write null buffer
                 self.write_null_buffer(arr.nulls())?;
             }
             DataType::Decimal128(_, _) => {
                 let arr = col.as_any().downcast_ref::<Decimal128Array>().unwrap();
-
                 // write data buffer
-                let buffer = arr.values();
-                let buffer = buffer.inner();
-                self.write_buffer(buffer)?;
-
+                self.write_buffer(arr.values().inner())?;
+                // write null buffer
                 self.write_null_buffer(arr.nulls())?;
             }
             DataType::Utf8 => {
                 let arr = col.as_any().downcast_ref::<StringArray>().unwrap();
-
                 // write data buffer
-                let buffer = arr.values();
-                self.write_buffer(buffer)?;
-
+                self.write_buffer(arr.values())?;
                 // write offset buffer
                 let offsets = arr.offsets();
                 let scalar_buffer = offsets.inner();
-                let buffer = scalar_buffer.inner();
-                self.write_buffer(buffer)?;
-
+                self.write_buffer(scalar_buffer.inner())?;
+                // write null buffer
                 self.write_null_buffer(arr.nulls())?;
             }
             DataType::Binary => {
                 let arr = col.as_any().downcast_ref::<BinaryArray>().unwrap();
-
                 // write data buffer
-                let buffer = arr.values();
-                self.write_buffer(buffer)?;
-
+                self.write_buffer(arr.values())?;
                 // write offset buffer
                 let offsets = arr.offsets();
                 let scalar_buffer = offsets.inner();
                 let buffer = scalar_buffer.inner();
                 self.write_buffer(buffer)?;
-
+                // write null buffer
                 self.write_null_buffer(arr.nulls())?;
             }
             DataType::Dictionary(k, _) if **k == DataType::Int32 => {
@@ -327,10 +289,8 @@ impl<W: Write> BatchWriter<W> {
     ) -> Result<(), DataFusionError> {
         if let Some(nulls) = null_buffer {
             let buffer = nulls.inner();
-
             // write null buffer length in bits
             self.write_all(&buffer.len().to_le_bytes())?;
-
             // write null buffer
             let buffer = buffer.inner();
             self.write_buffer(buffer)?;
