@@ -204,7 +204,7 @@ class CometSparkSessionExtensions
                 // TODO we only enable full native scan if COMET_EXEC_ENABLED is enabled
                 // but this is not really what we want .. we currently insert `CometScanExec`
                 // here and then it gets replaced with `CometNativeScanExec` in `CometExecRule`
-                // but that happens if `COMET_EXEC_ENABLED` is enabled
+                // but that only happens if `COMET_EXEC_ENABLED` is enabled
                 && COMET_EXEC_ENABLED.get()
                 && COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_FULL =>
             logInfo("Comet extension enabled for v1 full native Scan")
