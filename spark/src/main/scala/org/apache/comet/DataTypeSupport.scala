@@ -38,13 +38,8 @@ trait DataTypeSupport {
     case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
         BinaryType | StringType | _: DecimalType | DateType | TimestampType =>
       true
-    case t: DataType if t.typeName == "timestamp_ntz" => true
-    case _: StructType
-        if CometConf.COMET_NATIVE_SCAN_IMPL
-          .get()
-          .equals(CometConf.SCAN_NATIVE_FULL) || CometConf.COMET_NATIVE_SCAN_IMPL
-          .get()
-          .equals(CometConf.SCAN_NATIVE_RECORDBATCH) =>
+    case t: DataType if t.typeName == "timestamp_ntz" =>
+      true
       true
     case _ => false
   }
