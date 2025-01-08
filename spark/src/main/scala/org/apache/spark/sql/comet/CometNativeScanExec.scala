@@ -120,4 +120,11 @@ object CometNativeScanExec extends DataTypeSupport {
     scanExec.logicalLink.foreach(batchScanExec.setLogicalLink)
     batchScanExec
   }
+
+  override def isAdditionallySupported(dt: DataType): Boolean = {
+    dt match {
+      case s: StructType => s.fields.map(_.dataType).forall(isTypeSupported)
+      case _ => false
+    }
+  }
 }

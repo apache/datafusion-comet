@@ -2518,7 +2518,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       // Fully native scan for V1
       case scan: CometScanExec
           if CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_FULL =>
-
         val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
         nativeScanBuilder.setSource(op.simpleStringWithNodeId())
 
