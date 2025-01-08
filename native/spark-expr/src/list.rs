@@ -18,12 +18,18 @@
 use arrow::{
     array::{as_primitive_array, Capacities, MutableArrayData},
     buffer::{NullBuffer, OffsetBuffer},
+    compute,
     datatypes::ArrowNativeType,
     record_batch::RecordBatch,
 };
+use arrow_array::builder::PrimitiveBuilder;
+use arrow_array::cast::AsArray;
+use arrow_array::types::Int32Type;
 use arrow_array::{
-    make_array, Array, ArrayRef, GenericListArray, Int32Array, OffsetSizeTrait, StructArray,
+    make_array, Array, ArrayRef, ArrowNumericType, ArrowPrimitiveType, GenericListArray,
+    Int32Array, OffsetSizeTrait, PrimitiveArray, StructArray,
 };
+use arrow_data::ArrayData;
 use arrow_schema::{DataType, Field, FieldRef, Schema};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion_common::{
@@ -686,121 +692,141 @@ impl Display for ArrayInsert {
 }
 
 #[derive(Debug, Eq)]
-struct ArrayMin {
+pub struct ArrayMinMax {
     src_array_expr: Arc<dyn PhysicalExpr>,
     legacy_negative_index: bool,
+    is_min: bool,
 }
 
-impl Hash for ArrayMin {
+impl ArrayMinMax {
+    pub fn new(
+        src_array_expr: Arc<dyn PhysicalExpr>,
+        legacy_negative_index: bool,
+        is_min: bool,
+    ) -> Self {
+        Self {
+            src_array_expr,
+            legacy_negative_index,
+            is_min,
+        }
+    }
+    pub fn array_type(&self, data_type: &DataType) -> DataFusionResult<DataType> {
+        match data_type {
+            DataType::List(field) => Ok(field.data_type().clone()),
+            DataType::LargeList(field) => Ok(field.data_type().clone()),
+            data_type => Err(DataFusionError::Internal(format!(
+                "Unexpected src array type in ArrayMin / ArrayMax: {:?}",
+                data_type
+            ))),
+        }
+    }
+}
+
+impl Hash for ArrayMinMax {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.src_array_expr.hash(state);
         self.legacy_negative_index.hash(state);
+        self.is_min.hash(state);
     }
 }
 
-impl PartialEq for ArrayMin {
+impl PartialEq for ArrayMinMax {
     fn eq(&self, other: &Self) -> bool {
         self.src_array_expr.eq(&other.src_array_expr)
             && self.legacy_negative_index.eq(&other.legacy_negative_index)
+            && self.is_min.eq(&other.is_min)
     }
 }
 
-impl Display for ArrayMin {
+impl Display for ArrayMinMax {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "ArrayMin [array: {:?}, legacy_negative_index: {:?}]",
+            "ArrayMin / ArrayMax [array: {:?}, legacy_negative_index: {:?}]",
             self.src_array_expr, self.legacy_negative_index
         )
     }
 }
 
-impl PhysicalExpr for ArrayMin {
+impl PhysicalExpr for ArrayMinMax {
     fn as_any(&self) -> &dyn Any {
-        todo!()
+        self
     }
 
     fn data_type(&self, input_schema: &Schema) -> DataFusionResult<DataType> {
-        todo!()
+        self.array_type(&self.src_array_expr.data_type(input_schema)?)
     }
 
     fn nullable(&self, input_schema: &Schema) -> DataFusionResult<bool> {
-        todo!()
+        self.src_array_expr.nullable(input_schema)
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
-        todo!()
+        let array = self
+            .src_array_expr
+            .evaluate(batch)?
+            .into_array(batch.num_rows())?;
+
+        let array_element_type = self.array_type(array.data_type())?;
+
+        match array.data_type() {
+            DataType::List(_) if array_element_type.is_primitive() => {
+                let list_array = as_list_array(&array)?;
+                array_min_max::<Int32Type, _>(&list_array, &array_element_type, self.is_min)
+            }
+            DataType::LargeList(_) if array_element_type.is_primitive() => {
+                let list_array = as_large_list_array(&array)?;
+                array_min_max::<Int32Type, _>(&list_array, &array_element_type, self.is_min)
+            }
+            _ => unimplemented!("ArrayMin / ArrayMax is not implemented yet"),
+        }
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
-        todo!()
+        vec![&self.src_array_expr]
     }
 
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
-        todo!()
+        Ok(Arc::new(ArrayMinMax::new(
+            Arc::clone(&children[0]),
+            self.legacy_negative_index,
+            self.is_min,
+        )))
     }
 }
 
-#[derive(Debug, Eq)]
-struct ArrayMax {
-    src_array_expr: Arc<dyn PhysicalExpr>,
-    legacy_negative_index: bool,
-}
-
-impl Hash for ArrayMax {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.src_array_expr.hash(state);
-        self.legacy_negative_index.hash(state);
+fn array_min_max<T, O: OffsetSizeTrait>(
+    list_array: &GenericListArray<O>,
+    _element_type: &DataType,
+    is_min: bool,
+) -> DataFusionResult<ColumnarValue>
+where
+    T: ArrowNumericType,
+{
+    let mut builder = PrimitiveBuilder::<T>::with_capacity(list_array.len());
+    for array in list_array.iter() {
+        match array {
+            Some(a) => {
+                let primitive_array = a.as_primitive::<T>();
+                let value = if is_min {
+                    compute::min(primitive_array)
+                } else {
+                    compute::max(primitive_array)
+                };
+                match value {
+                    Some(v) => builder.append_value(v),
+                    None => builder.append_null(),
+                }
+            }
+            None => {
+                builder.append_null();
+            }
+        }
     }
-}
-
-impl PartialEq for ArrayMax {
-    fn eq(&self, other: &Self) -> bool {
-        self.src_array_expr.eq(&other.src_array_expr)
-            && self.legacy_negative_index.eq(&other.legacy_negative_index)
-    }
-}
-
-impl Display for ArrayMax {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "ArrayMin [array: {:?}, legacy_negative_index: {:?}]",
-            self.src_array_expr, self.legacy_negative_index
-        )
-    }
-}
-
-impl PhysicalExpr for ArrayMax {
-    fn as_any(&self) -> &dyn Any {
-        todo!()
-    }
-
-    fn data_type(&self, input_schema: &Schema) -> DataFusionResult<DataType> {
-        todo!()
-    }
-
-    fn nullable(&self, input_schema: &Schema) -> DataFusionResult<bool> {
-        todo!()
-    }
-
-    fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
-        todo!()
-    }
-
-    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
-        todo!()
-    }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn PhysicalExpr>>,
-    ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
-        todo!()
-    }
+    Ok(ColumnarValue::Array(Arc::new(builder.finish())))
 }
 
 #[cfg(test)]

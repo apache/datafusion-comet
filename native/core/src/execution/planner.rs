@@ -84,10 +84,10 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, BitwiseNotExpr, Cast, CheckOverflow, Contains, Correlation,
-    Covariance, CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields, GetStructField,
-    HourExpr, IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike, SecondExpr,
-    SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
+    ArrayInsert, ArrayMinMax, Avg, AvgDecimal, BitwiseNotExpr, Cast, CheckOverflow, Contains,
+    Correlation, Covariance, CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields,
+    GetStructField, HourExpr, IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike,
+    SecondExpr, SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
     TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
 use datafusion_common::scalar::ScalarStructBuilder;
@@ -738,10 +738,14 @@ impl PhysicalPlanner {
                 Ok(array_has_expr)
             }
             ExprStruct::ArrayMin(expr) => {
-                unimplemented!()
+                let src_array_expr =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                Ok(Arc::new(ArrayMinMax::new(src_array_expr, false, true)))
             }
             ExprStruct::ArrayMax(expr) => {
-                unimplemented!()
+                let src_array_expr =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                Ok(Arc::new(ArrayMinMax::new(src_array_expr, false, true)))
             }
             ExprStruct::SortArray(expr) => {
                 let array_expr =

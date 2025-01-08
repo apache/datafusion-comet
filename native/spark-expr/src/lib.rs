@@ -72,7 +72,7 @@ pub use cast::{spark_cast, Cast, SparkCastOptions};
 pub use comet_scalar_funcs::create_comet_physical_fun;
 pub use error::{SparkError, SparkResult};
 pub use if_expr::IfExpr;
-pub use list::{ArrayInsert, GetArrayStructFields, ListExtract};
+pub use list::{ArrayInsert, ArrayMinMax, GetArrayStructFields, ListExtract};
 pub use regexp::RLike;
 pub use struct_funcs::*;
 
