@@ -1,0 +1,48 @@
+WholeStageCodegen (1)
+  ColumnarToRow
+    InputAdapter
+      CometTakeOrderedAndProject [i_product_name,i_brand,i_class,i_category,qoh]
+        CometUnion [i_product_name,i_brand,i_class,i_category,qoh]
+          CometHashAggregate [i_product_name,i_brand,i_class,i_category,qoh,sum,count,avg(qoh)]
+            CometHashAggregate [i_product_name,i_brand,i_class,i_category,sum,count,qoh]
+              CometHashAggregate [i_product_name,i_brand,i_class,i_category,qoh,sum,count,avg(inv_quantity_on_hand)]
+                CometExchange [i_product_name,i_brand,i_class,i_category] #1
+                  CometHashAggregate [i_product_name,i_brand,i_class,i_category,sum,count,inv_quantity_on_hand]
+                    CometProject [inv_quantity_on_hand,i_brand,i_class,i_category,i_product_name]
+                      CometBroadcastHashJoin [inv_warehouse_sk,inv_quantity_on_hand,i_brand,i_class,i_category,i_product_name,w_warehouse_sk]
+                        CometProject [inv_warehouse_sk,inv_quantity_on_hand,i_brand,i_class,i_category,i_product_name]
+                          CometBroadcastHashJoin [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,i_item_sk,i_brand,i_class,i_category,i_product_name]
+                            CometProject [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand]
+                              CometBroadcastHashJoin [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk,d_date_sk]
+                                CometFilter [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]
+                                  CometNativeScan: `spark_catalog`.`default`.`inventory` [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]
+                                CometBroadcastExchange [d_date_sk] #2
+                                  CometProject [d_date_sk]
+                                    CometFilter [d_date_sk,d_month_seq]
+                                      CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_month_seq]
+                            CometBroadcastExchange [i_item_sk,i_brand,i_class,i_category,i_product_name] #3
+                              CometFilter [i_item_sk,i_brand,i_class,i_category,i_product_name]
+                                CometNativeScan: `spark_catalog`.`default`.`item` [i_item_sk,i_brand,i_class,i_category,i_product_name]
+                        CometBroadcastExchange [w_warehouse_sk] #4
+                          CometFilter [w_warehouse_sk]
+                            CometNativeScan: `spark_catalog`.`default`.`warehouse` [w_warehouse_sk]
+          CometHashAggregate [i_product_name,i_brand,i_class,i_category,qoh,sum,count,avg(qoh)]
+            CometExchange [i_product_name,i_brand,i_class] #5
+              CometHashAggregate [i_product_name,i_brand,i_class,sum,count,qoh]
+                CometHashAggregate [i_product_name,i_brand,i_class,qoh,i_category,sum,count,avg(inv_quantity_on_hand)]
+                  ReusedExchange [i_product_name,i_brand,i_class,i_category,sum,count] #1
+          CometHashAggregate [i_product_name,i_brand,i_class,i_category,qoh,sum,count,avg(qoh)]
+            CometExchange [i_product_name,i_brand] #6
+              CometHashAggregate [i_product_name,i_brand,sum,count,qoh]
+                CometHashAggregate [i_product_name,i_brand,qoh,i_class,i_category,sum,count,avg(inv_quantity_on_hand)]
+                  ReusedExchange [i_product_name,i_brand,i_class,i_category,sum,count] #1
+          CometHashAggregate [i_product_name,i_brand,i_class,i_category,qoh,sum,count,avg(qoh)]
+            CometExchange [i_product_name] #7
+              CometHashAggregate [i_product_name,sum,count,qoh]
+                CometHashAggregate [i_product_name,qoh,i_brand,i_class,i_category,sum,count,avg(inv_quantity_on_hand)]
+                  ReusedExchange [i_product_name,i_brand,i_class,i_category,sum,count] #1
+          CometHashAggregate [i_product_name,i_brand,i_class,i_category,qoh,sum,count,avg(qoh)]
+            CometExchange #8
+              CometHashAggregate [sum,count,qoh]
+                CometHashAggregate [qoh,i_product_name,i_brand,i_class,i_category,sum,count,avg(inv_quantity_on_hand)]
+                  ReusedExchange [i_product_name,i_brand,i_class,i_category,sum,count] #1

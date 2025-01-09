@@ -13,27 +13,37 @@ WholeStageCodegen (1)
                         CometBroadcastExchange [i_item_sk,i_brand_id,i_brand] #3
                           CometProject [i_item_sk,i_brand_id,i_brand]
                             CometFilter [i_item_sk,i_brand_id,i_brand,i_manager_id]
-                              CometNativeScan: `spark_catalog`.`default`.`item` [i_item_sk,i_brand_id,i_brand,i_manager_id]
+                              CometScan parquet spark_catalog.default.item [i_item_sk,i_brand_id,i_brand,i_manager_id]
                         CometUnion [ext_price,sold_item_sk,time_sk]
                           CometProject [ws_ext_sales_price,ws_item_sk,ws_sold_time_sk] [ext_price,sold_item_sk,time_sk]
                             CometBroadcastHashJoin [ws_sold_time_sk,ws_item_sk,ws_ext_sales_price,ws_sold_date_sk,d_date_sk]
                               CometFilter [ws_sold_time_sk,ws_item_sk,ws_ext_sales_price,ws_sold_date_sk]
-                                CometNativeScan: `spark_catalog`.`default`.`web_sales` [ws_sold_time_sk,ws_item_sk,ws_ext_sales_price,ws_sold_date_sk]
-                              CometBroadcastExchange [d_date_sk] #4
+                                CometScan parquet spark_catalog.default.web_sales [ws_sold_time_sk,ws_item_sk,ws_ext_sales_price,ws_sold_date_sk]
+                                  SubqueryBroadcast [d_date_sk] #1
+                                    BroadcastExchange #4
+                                      WholeStageCodegen (1)
+                                        ColumnarToRow
+                                          InputAdapter
+                                            CometProject [d_date_sk]
+                                              CometFilter [d_date_sk,d_year,d_moy]
+                                                CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
+                              CometBroadcastExchange [d_date_sk] #5
                                 CometProject [d_date_sk]
                                   CometFilter [d_date_sk,d_year,d_moy]
-                                    CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_year,d_moy]
+                                    CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
                           CometProject [cs_ext_sales_price,cs_item_sk,cs_sold_time_sk] [ext_price,sold_item_sk,time_sk]
                             CometBroadcastHashJoin [cs_sold_time_sk,cs_item_sk,cs_ext_sales_price,cs_sold_date_sk,d_date_sk]
                               CometFilter [cs_sold_time_sk,cs_item_sk,cs_ext_sales_price,cs_sold_date_sk]
-                                CometNativeScan: `spark_catalog`.`default`.`catalog_sales` [cs_sold_time_sk,cs_item_sk,cs_ext_sales_price,cs_sold_date_sk]
-                              ReusedExchange [d_date_sk] #4
+                                CometScan parquet spark_catalog.default.catalog_sales [cs_sold_time_sk,cs_item_sk,cs_ext_sales_price,cs_sold_date_sk]
+                                  ReusedSubquery [d_date_sk] #1
+                              ReusedExchange [d_date_sk] #5
                           CometProject [ss_ext_sales_price,ss_item_sk,ss_sold_time_sk] [ext_price,sold_item_sk,time_sk]
                             CometBroadcastHashJoin [ss_sold_time_sk,ss_item_sk,ss_ext_sales_price,ss_sold_date_sk,d_date_sk]
                               CometFilter [ss_sold_time_sk,ss_item_sk,ss_ext_sales_price,ss_sold_date_sk]
-                                CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_sold_time_sk,ss_item_sk,ss_ext_sales_price,ss_sold_date_sk]
-                              ReusedExchange [d_date_sk] #4
-                    CometBroadcastExchange [t_time_sk,t_hour,t_minute] #5
+                                CometScan parquet spark_catalog.default.store_sales [ss_sold_time_sk,ss_item_sk,ss_ext_sales_price,ss_sold_date_sk]
+                                  ReusedSubquery [d_date_sk] #1
+                              ReusedExchange [d_date_sk] #5
+                    CometBroadcastExchange [t_time_sk,t_hour,t_minute] #6
                       CometProject [t_time_sk,t_hour,t_minute]
                         CometFilter [t_time_sk,t_hour,t_minute,t_meal_time]
-                          CometNativeScan: `spark_catalog`.`default`.`time_dim` [t_time_sk,t_hour,t_minute,t_meal_time]
+                          CometScan parquet spark_catalog.default.time_dim [t_time_sk,t_hour,t_minute,t_meal_time]

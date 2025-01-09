@@ -16,25 +16,33 @@ WholeStageCodegen (1)
                               CometProject [ss_item_sk,ss_addr_sk,ss_ext_sales_price]
                                 CometBroadcastHashJoin [ss_item_sk,ss_addr_sk,ss_ext_sales_price,ss_sold_date_sk,d_date_sk]
                                   CometFilter [ss_item_sk,ss_addr_sk,ss_ext_sales_price,ss_sold_date_sk]
-                                    CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_item_sk,ss_addr_sk,ss_ext_sales_price,ss_sold_date_sk]
-                                  CometBroadcastExchange [d_date_sk] #3
+                                    CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_addr_sk,ss_ext_sales_price,ss_sold_date_sk]
+                                      SubqueryBroadcast [d_date_sk] #1
+                                        BroadcastExchange #3
+                                          WholeStageCodegen (1)
+                                            ColumnarToRow
+                                              InputAdapter
+                                                CometProject [d_date_sk]
+                                                  CometFilter [d_date_sk,d_year,d_moy]
+                                                    CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
+                                  CometBroadcastExchange [d_date_sk] #4
                                     CometProject [d_date_sk]
                                       CometFilter [d_date_sk,d_year,d_moy]
-                                        CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_year,d_moy]
-                              CometBroadcastExchange [ca_address_sk] #4
+                                        CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
+                              CometBroadcastExchange [ca_address_sk] #5
                                 CometProject [ca_address_sk]
                                   CometFilter [ca_address_sk,ca_gmt_offset]
-                                    CometNativeScan: `spark_catalog`.`default`.`customer_address` [ca_address_sk,ca_gmt_offset]
-                          CometBroadcastExchange [i_item_sk,i_item_id] #5
+                                    CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_gmt_offset]
+                          CometBroadcastExchange [i_item_sk,i_item_id] #6
                             CometBroadcastHashJoin [i_item_sk,i_item_id,i_item_id]
                               CometFilter [i_item_sk,i_item_id]
-                                CometNativeScan: `spark_catalog`.`default`.`item` [i_item_sk,i_item_id]
-                              CometBroadcastExchange [i_item_id] #6
+                                CometScan parquet spark_catalog.default.item [i_item_sk,i_item_id]
+                              CometBroadcastExchange [i_item_id] #7
                                 CometProject [i_item_id]
                                   CometFilter [i_item_id,i_color]
-                                    CometNativeScan: `spark_catalog`.`default`.`item` [i_item_id,i_color]
+                                    CometScan parquet spark_catalog.default.item [i_item_id,i_color]
                 CometHashAggregate [i_item_id,total_sales,sum,sum(UnscaledValue(cs_ext_sales_price))]
-                  CometExchange [i_item_id] #7
+                  CometExchange [i_item_id] #8
                     CometHashAggregate [i_item_id,sum,cs_ext_sales_price]
                       CometProject [cs_ext_sales_price,i_item_id]
                         CometBroadcastHashJoin [cs_item_sk,cs_ext_sales_price,i_item_sk,i_item_id]
@@ -43,9 +51,23 @@ WholeStageCodegen (1)
                               CometProject [cs_bill_addr_sk,cs_item_sk,cs_ext_sales_price]
                                 CometBroadcastHashJoin [cs_bill_addr_sk,cs_item_sk,cs_ext_sales_price,cs_sold_date_sk,d_date_sk]
                                   CometFilter [cs_bill_addr_sk,cs_item_sk,cs_ext_sales_price,cs_sold_date_sk]
-                                    CometNativeScan: `spark_catalog`.`default`.`catalog_sales` [cs_bill_addr_sk,cs_item_sk,cs_ext_sales_price,cs_sold_date_sk]
-                                  ReusedExchange [d_date_sk] #3
-                              ReusedExchange [ca_address_sk] #4
-                          ReusedExchange [i_item_sk,i_item_id] #5
+                                    CometScan parquet spark_catalog.default.catalog_sales [cs_bill_addr_sk,cs_item_sk,cs_ext_sales_price,cs_sold_date_sk]
+                                      ReusedSubquery [d_date_sk] #1
+                                  ReusedExchange [d_date_sk] #4
+                              ReusedExchange [ca_address_sk] #5
+                          ReusedExchange [i_item_sk,i_item_id] #6
                 CometHashAggregate [i_item_id,total_sales,sum,sum(UnscaledValue(ws_ext_sales_price))]
-                  ReusedExchange [i_item_id,sum] #2
+                  CometExchange [i_item_id] #9
+                    CometHashAggregate [i_item_id,sum,ws_ext_sales_price]
+                      CometProject [ws_ext_sales_price,i_item_id]
+                        CometBroadcastHashJoin [ws_item_sk,ws_ext_sales_price,i_item_sk,i_item_id]
+                          CometProject [ws_item_sk,ws_ext_sales_price]
+                            CometBroadcastHashJoin [ws_item_sk,ws_bill_addr_sk,ws_ext_sales_price,ca_address_sk]
+                              CometProject [ws_item_sk,ws_bill_addr_sk,ws_ext_sales_price]
+                                CometBroadcastHashJoin [ws_item_sk,ws_bill_addr_sk,ws_ext_sales_price,ws_sold_date_sk,d_date_sk]
+                                  CometFilter [ws_item_sk,ws_bill_addr_sk,ws_ext_sales_price,ws_sold_date_sk]
+                                    CometScan parquet spark_catalog.default.web_sales [ws_item_sk,ws_bill_addr_sk,ws_ext_sales_price,ws_sold_date_sk]
+                                      ReusedSubquery [d_date_sk] #1
+                                  ReusedExchange [d_date_sk] #4
+                              ReusedExchange [ca_address_sk] #5
+                          ReusedExchange [i_item_sk,i_item_id] #6
