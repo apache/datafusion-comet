@@ -20,7 +20,6 @@
 package org.apache.spark.sql.comet.execution.shuffle
 
 import java.util.Collections
-import java.util.concurrent.ConcurrentHashMap
 
 import scala.collection.JavaConverters._
 
@@ -38,6 +37,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.util.collection.OpenHashSet
 
 import org.apache.comet.CometConf
+import org.apache.comet.util.JavaUtils
 
 /**
  * A [[ShuffleManager]] that uses Arrow format to shuffle data.
@@ -58,7 +58,8 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
   /**
    * A mapping from shuffle ids to the task ids of mappers producing output for those shuffles.
    */
-  private[this] val taskIdMapsForShuffle = new ConcurrentHashMap[Int, OpenHashSet[Long]]()
+  private[this] val taskIdMapsForShuffle =
+    JavaUtils.newConcurrentHashMap[Int, OpenHashSet[Long]]()
 
   private lazy val shuffleExecutorComponents = loadShuffleExecutorComponents(conf)
 

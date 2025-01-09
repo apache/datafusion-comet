@@ -23,7 +23,6 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.parquet.ParquetReadOptions;
 import org.apache.parquet.bytes.BytesInput;
@@ -44,6 +43,8 @@ import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
 import org.apache.parquet.io.ParquetDecodingException;
 import org.apache.parquet.io.SeekableInputStream;
 
+import org.apache.comet.util.JavaUtils;
+
 public class DictionaryPageReader implements DictionaryPageReadStore {
   private final Map<String, Optional<DictionaryPage>> cache;
   private final InternalFileDecryptor fileDecryptor;
@@ -57,7 +58,7 @@ public class DictionaryPageReader implements DictionaryPageReadStore {
       SeekableInputStream inputStream,
       ParquetReadOptions options) {
     this.columns = new HashMap<>();
-    this.cache = new ConcurrentHashMap<>();
+    this.cache = JavaUtils.newConcurrentHashMap();
     this.fileDecryptor = fileDecryptor;
     this.inputStream = inputStream;
     this.options = options;
