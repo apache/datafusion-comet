@@ -23,9 +23,9 @@ inputs:
     required: true
     default: '3.4'
   spark-version:
-    description: 'The Apache Spark version (e.g., 3.4.3) to build'
+    description: 'The Apache Spark version (e.g., 3.4.4) to build'
     required: true
-    default: '3.4.3'
+    default: '3.4.4'
   comet-version:
     description: 'The Comet version to use for Spark'
     required: true
