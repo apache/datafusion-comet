@@ -2541,6 +2541,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           sql("SELECT array_remove(array(_2, _3,_4), _3) from t1 where _3 is not null"))
         checkSparkAnswerAndOperator(sql(
           "SELECT array_remove(case when _2 = _3 THEN array(_2, _3,_4) ELSE null END, _3) from t1"))
+        checkSparkAnswerAndOperator(sql(
+          "SELECT array_remove(case when _2 = _3 THEN array(_2, _3,_4) ELSE array() END, _3) FROM t1"))
       }
     }
   }
