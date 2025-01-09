@@ -1,26 +1,26 @@
-TakeOrderedAndProject [rnk,best_performing,worst_performing]
-  WholeStageCodegen (13)
-    Project [rnk,i_product_name,i_product_name]
-      BroadcastHashJoin [item_sk,i_item_sk]
-        Project [rnk,item_sk,i_product_name]
-          BroadcastHashJoin [item_sk,i_item_sk]
-            Project [item_sk,rnk,item_sk]
-              SortMergeJoin [rnk,rnk]
-                InputAdapter
-                  WholeStageCodegen (5)
-                    Sort [rnk]
-                      InputAdapter
-                        Exchange [rnk] #1
-                          WholeStageCodegen (4)
-                            Project [item_sk,rnk]
-                              Filter [rnk,item_sk]
-                                InputAdapter
-                                  Window [rank_col]
-                                    WindowGroupLimit [rank_col]
-                                      WholeStageCodegen (3)
-                                        Sort [rank_col]
-                                          InputAdapter
-                                            Exchange #2
+WholeStageCodegen (9)
+  CometColumnarToRow
+    InputAdapter
+      CometTakeOrderedAndProject [rnk,best_performing,worst_performing]
+        CometProject [i_product_name,i_product_name] [rnk,best_performing,worst_performing]
+          CometBroadcastHashJoin [rnk,item_sk,i_product_name,i_item_sk,i_product_name]
+            CometProject [rnk,item_sk,i_product_name]
+              CometBroadcastHashJoin [item_sk,rnk,item_sk,i_item_sk,i_product_name]
+                CometProject [item_sk,rnk,item_sk]
+                  CometSortMergeJoin [item_sk,rnk,item_sk,rnk]
+                    CometSort [item_sk,rnk]
+                      CometColumnarExchange [rnk] #1
+                        WholeStageCodegen (4)
+                          Project [item_sk,rnk]
+                            Filter [rnk,item_sk]
+                              InputAdapter
+                                Window [rank_col]
+                                  WindowGroupLimit [rank_col]
+                                    WholeStageCodegen (3)
+                                      CometColumnarToRow
+                                        InputAdapter
+                                          CometSort [item_sk,rank_col]
+                                            CometColumnarExchange #2
                                               WindowGroupLimit [rank_col]
                                                 WholeStageCodegen (2)
                                                   Sort [rank_col]
@@ -28,54 +28,50 @@ TakeOrderedAndProject [rnk,best_performing,worst_performing]
                                                       Subquery #1
                                                         WholeStageCodegen (2)
                                                           HashAggregate [ss_store_sk,sum,count] [avg(UnscaledValue(ss_net_profit)),rank_col,sum,count]
-                                                            InputAdapter
-                                                              Exchange [ss_store_sk] #4
-                                                                WholeStageCodegen (1)
-                                                                  HashAggregate [ss_store_sk,ss_net_profit] [sum,count,sum,count]
-                                                                    CometColumnarToRow
-                                                                      InputAdapter
-                                                                        CometProject [ss_store_sk,ss_net_profit]
-                                                                          CometFilter [ss_addr_sk,ss_store_sk,ss_net_profit,ss_sold_date_sk]
-                                                                            CometScan parquet spark_catalog.default.store_sales [ss_addr_sk,ss_store_sk,ss_net_profit,ss_sold_date_sk]
+                                                            CometColumnarToRow
+                                                              InputAdapter
+                                                                CometColumnarExchange [ss_store_sk] #4
+                                                                  WholeStageCodegen (1)
+                                                                    HashAggregate [ss_store_sk,ss_net_profit] [sum,count,sum,count]
+                                                                      CometColumnarToRow
+                                                                        InputAdapter
+                                                                          CometProject [ss_store_sk,ss_net_profit]
+                                                                            CometFilter [ss_addr_sk,ss_store_sk,ss_net_profit,ss_sold_date_sk]
+                                                                              CometScan parquet spark_catalog.default.store_sales [ss_addr_sk,ss_store_sk,ss_net_profit,ss_sold_date_sk]
                                                       HashAggregate [ss_item_sk,sum,count] [avg(UnscaledValue(ss_net_profit)),item_sk,rank_col,sum,count]
-                                                        InputAdapter
-                                                          Exchange [ss_item_sk] #3
-                                                            WholeStageCodegen (1)
-                                                              HashAggregate [ss_item_sk,ss_net_profit] [sum,count,sum,count]
-                                                                CometColumnarToRow
-                                                                  InputAdapter
-                                                                    CometProject [ss_item_sk,ss_net_profit]
-                                                                      CometFilter [ss_item_sk,ss_store_sk,ss_net_profit,ss_sold_date_sk]
-                                                                        CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_store_sk,ss_net_profit,ss_sold_date_sk]
-                InputAdapter
-                  WholeStageCodegen (10)
-                    Sort [rnk]
-                      InputAdapter
-                        Exchange [rnk] #5
-                          WholeStageCodegen (9)
-                            Project [item_sk,rnk]
-                              Filter [rnk,item_sk]
-                                InputAdapter
-                                  Window [rank_col]
-                                    WindowGroupLimit [rank_col]
-                                      WholeStageCodegen (8)
-                                        Sort [rank_col]
-                                          InputAdapter
-                                            Exchange #6
+                                                        CometColumnarToRow
+                                                          InputAdapter
+                                                            CometColumnarExchange [ss_item_sk] #3
+                                                              WholeStageCodegen (1)
+                                                                HashAggregate [ss_item_sk,ss_net_profit] [sum,count,sum,count]
+                                                                  CometColumnarToRow
+                                                                    InputAdapter
+                                                                      CometProject [ss_item_sk,ss_net_profit]
+                                                                        CometFilter [ss_item_sk,ss_store_sk,ss_net_profit,ss_sold_date_sk]
+                                                                          CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_store_sk,ss_net_profit,ss_sold_date_sk]
+                    CometSort [item_sk,rnk]
+                      CometColumnarExchange [rnk] #5
+                        WholeStageCodegen (8)
+                          Project [item_sk,rnk]
+                            Filter [rnk,item_sk]
+                              InputAdapter
+                                Window [rank_col]
+                                  WindowGroupLimit [rank_col]
+                                    WholeStageCodegen (7)
+                                      CometColumnarToRow
+                                        InputAdapter
+                                          CometSort [item_sk,rank_col]
+                                            CometColumnarExchange #6
                                               WindowGroupLimit [rank_col]
-                                                WholeStageCodegen (7)
+                                                WholeStageCodegen (6)
                                                   Sort [rank_col]
                                                     Filter [rank_col]
                                                       ReusedSubquery [rank_col] #1
                                                       HashAggregate [ss_item_sk,sum,count] [avg(UnscaledValue(ss_net_profit)),item_sk,rank_col,sum,count]
-                                                        InputAdapter
-                                                          ReusedExchange [ss_item_sk,sum,count] #3
-            InputAdapter
-              BroadcastExchange #7
-                WholeStageCodegen (11)
-                  CometColumnarToRow
-                    InputAdapter
-                      CometFilter [i_item_sk,i_product_name]
-                        CometScan parquet spark_catalog.default.item [i_item_sk,i_product_name]
-        InputAdapter
-          ReusedExchange [i_item_sk,i_product_name] #7
+                                                        CometColumnarToRow
+                                                          InputAdapter
+                                                            ReusedExchange [ss_item_sk,sum,count] #3
+                CometBroadcastExchange [i_item_sk,i_product_name] #7
+                  CometFilter [i_item_sk,i_product_name]
+                    CometScan parquet spark_catalog.default.item [i_item_sk,i_product_name]
+            ReusedExchange [i_item_sk,i_product_name] #7

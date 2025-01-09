@@ -1,24 +1,24 @@
 TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_class]
-  WholeStageCodegen (12)
+  WholeStageCodegen (11)
     Project [total_sum,i_category,i_class,lochierarchy,rank_within_parent]
       InputAdapter
         Window [total_sum,lochierarchy,_w0]
-          WholeStageCodegen (11)
-            Sort [lochierarchy,_w0,total_sum]
+          WholeStageCodegen (10)
+            CometColumnarToRow
               InputAdapter
-                Exchange [lochierarchy,_w0] #1
-                  WholeStageCodegen (10)
-                    HashAggregate [total_sum,i_category,i_class,g_category,g_class,lochierarchy] [_w0]
-                      InputAdapter
-                        Exchange [total_sum,i_category,i_class,g_category,g_class,lochierarchy] #2
-                          WholeStageCodegen (9)
-                            HashAggregate [total_sum,i_category,i_class,g_category,g_class,lochierarchy]
-                              InputAdapter
-                                Union
-                                  WholeStageCodegen (2)
-                                    HashAggregate [i_category,i_class,sum] [sum(UnscaledValue(ws_net_paid)),total_sum,g_category,g_class,lochierarchy,sum]
+                CometSort [total_sum,i_category,i_class,lochierarchy,_w0]
+                  CometExchange [lochierarchy,_w0] #1
+                    CometHashAggregate [total_sum,i_category,i_class,lochierarchy,_w0,g_category,g_class]
+                      CometColumnarExchange [total_sum,i_category,i_class,g_category,g_class,lochierarchy] #2
+                        WholeStageCodegen (9)
+                          HashAggregate [total_sum,i_category,i_class,g_category,g_class,lochierarchy]
+                            InputAdapter
+                              Union
+                                WholeStageCodegen (2)
+                                  HashAggregate [i_category,i_class,sum] [sum(UnscaledValue(ws_net_paid)),total_sum,g_category,g_class,lochierarchy,sum]
+                                    CometColumnarToRow
                                       InputAdapter
-                                        Exchange [i_category,i_class] #3
+                                        CometColumnarExchange [i_category,i_class] #3
                                           WholeStageCodegen (1)
                                             HashAggregate [i_category,i_class,ws_net_paid] [sum,sum]
                                               CometColumnarToRow
@@ -44,21 +44,25 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
                                                       CometBroadcastExchange [i_item_sk,i_class,i_category] #6
                                                         CometFilter [i_item_sk,i_class,i_category]
                                                           CometScan parquet spark_catalog.default.item [i_item_sk,i_class,i_category]
-                                  WholeStageCodegen (5)
-                                    HashAggregate [i_category,sum,isEmpty] [sum(total_sum),total_sum,i_class,g_category,g_class,lochierarchy,sum,isEmpty]
+                                WholeStageCodegen (5)
+                                  HashAggregate [i_category,sum,isEmpty] [sum(total_sum),total_sum,i_class,g_category,g_class,lochierarchy,sum,isEmpty]
+                                    CometColumnarToRow
                                       InputAdapter
-                                        Exchange [i_category] #7
+                                        CometColumnarExchange [i_category] #7
                                           WholeStageCodegen (4)
                                             HashAggregate [i_category,total_sum] [sum,isEmpty,sum,isEmpty]
                                               HashAggregate [i_category,i_class,sum] [sum(UnscaledValue(ws_net_paid)),total_sum,sum]
-                                                InputAdapter
-                                                  ReusedExchange [i_category,i_class,sum] #3
-                                  WholeStageCodegen (8)
-                                    HashAggregate [sum,isEmpty] [sum(total_sum),total_sum,i_category,i_class,g_category,g_class,lochierarchy,sum,isEmpty]
+                                                CometColumnarToRow
+                                                  InputAdapter
+                                                    ReusedExchange [i_category,i_class,sum] #3
+                                WholeStageCodegen (8)
+                                  HashAggregate [sum,isEmpty] [sum(total_sum),total_sum,i_category,i_class,g_category,g_class,lochierarchy,sum,isEmpty]
+                                    CometColumnarToRow
                                       InputAdapter
-                                        Exchange #8
+                                        CometColumnarExchange #8
                                           WholeStageCodegen (7)
                                             HashAggregate [total_sum] [sum,isEmpty,sum,isEmpty]
                                               HashAggregate [i_category,i_class,sum] [sum(UnscaledValue(ws_net_paid)),total_sum,sum]
-                                                InputAdapter
-                                                  ReusedExchange [i_category,i_class,sum] #3
+                                                CometColumnarToRow
+                                                  InputAdapter
+                                                    ReusedExchange [i_category,i_class,sum] #3
