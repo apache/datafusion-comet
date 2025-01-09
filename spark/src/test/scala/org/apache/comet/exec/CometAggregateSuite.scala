@@ -25,7 +25,6 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
-import org.apache.spark.sql.execution.WindowData
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
@@ -94,13 +93,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("window function: partition and order expressions") {
     for (shuffleMode <- Seq("auto", "native", "jvm")) {
       withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> shuffleMode) {
-        val df = Seq(
-          (1, "a", 5),
-          (2, "a", 6),
-          (3, "b", 7),
-          (4, "b", 8),
-          (5, "c", 9),
-          (6, "c", 10)).toDF("month", "area", "product")
+        val df =
+          Seq((1, "a", 5), (2, "a", 6), (3, "b", 7), (4, "b", 8), (5, "c", 9), (6, "c", 10)).toDF(
+            "month",
+            "area",
+            "product")
         df.createOrReplaceTempView("windowData")
         checkSparkAnswer(sql("""
              |select month, area, product, sum(product + 1) over (partition by 1 order by 2)
