@@ -1,0 +1,40 @@
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
+index b14f4a405f6..ab7baf434a5 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
+@@ -23,6 +23,7 @@ import org.apache.spark.sql.QueryTest
+ import org.apache.spark.sql.catalyst.InternalRow
+ import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
+ import org.apache.spark.sql.catalyst.plans.logical.Deduplicate
++import org.apache.spark.sql.comet.CometColumnarToRowExec
+ import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
+ import org.apache.spark.sql.internal.SQLConf
+ import org.apache.spark.sql.test.SharedSparkSession
+@@ -131,7 +132,10 @@ class SparkPlanSuite extends QueryTest with SharedSparkSession {
+         spark.range(1).write.parquet(path.getAbsolutePath)
+         val df = spark.read.parquet(path.getAbsolutePath)
+         val columnarToRowExec =
+-          df.queryExecution.executedPlan.collectFirst { case p: ColumnarToRowExec => p }.get
++          df.queryExecution.executedPlan.collectFirst {
++            case p: ColumnarToRowExec => p
++            case p: CometColumnarToRowExec => p
++          }.get
+         try {
+           spark.range(1).foreach { _ =>
+             columnarToRowExec.canonicalized
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
+index 2272d0f3142..833479ae148 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
+@@ -480,6 +480,11 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+                 case s: SortMergeJoinExec => s
+                 case o => fail(s"expected SortMergeJoinExec, but found\n$o")
+               }
++            case CometColumnarToRowExec(child) =>
++              child.asInstanceOf[CometSortMergeJoinExec].originalPlan match {
++                case s: SortMergeJoinExec => s
++                case o => fail(s"expected SortMergeJoinExec, but found\n$o")
++              }
+             case o => fail(s"expected SortMergeJoinExec, but found\n$o")
+           }
+         }
