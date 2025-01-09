@@ -59,6 +59,7 @@ use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use futures::{poll, StreamExt};
 use jni::objects::{JBooleanArray, JByteArray, JLongArray, JPrimitiveArray, JString, ReleaseMode};
 use jni::sys::jstring;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
 use read::ColumnReader;
 use util::jni::{convert_column_descriptor, convert_encoding, deserialize_schema, get_file_path};
 
@@ -606,6 +607,7 @@ enum ParquetReaderState {
 struct BatchContext {
     runtime: tokio::runtime::Runtime,
     batch_stream: Option<SendableRecordBatchStream>,
+    batch_reader: Option<ParquetRecordBatchReader>,
     current_batch: Option<RecordBatch>,
     reader_state: ParquetReaderState,
 }
@@ -637,7 +639,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     start: jlong,
     length: jlong,
     required_schema: jbyteArray,
-    session_timezone: jstring,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| unsafe {
         let path: String = env
@@ -645,6 +646,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             .unwrap()
             .into();
         let batch_stream: Option<SendableRecordBatchStream>;
+        let batch_reader: Option<ParquetRecordBatchReader> = None;
         // TODO: (ARROW NATIVE) Use the common global runtime
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -678,10 +680,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         // TODO: Maybe these are configs?
         table_parquet_options.global.pushdown_filters = true;
         table_parquet_options.global.reorder_filters = true;
-        let session_timezone: String = env
-            .get_string(&JString::from_raw(session_timezone))
-            .unwrap()
-            .into();
 
         let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
         spark_parquet_options.allow_cast_unsigned_ints = true;
@@ -705,6 +703,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         let ctx = BatchContext {
             runtime,
             batch_stream,
+            batch_reader,
             current_batch: None,
             reader_state: ParquetReaderState::Init,
         };

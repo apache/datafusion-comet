@@ -2578,7 +2578,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           nativeScanBuilder.addAllDataSchema(dataSchema.toIterable.asJava)
           nativeScanBuilder.addAllRequiredSchema(requiredSchema.toIterable.asJava)
           nativeScanBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
-          nativeScanBuilder.setSessionTimezone(conf.getConfString("spark.sql.session.timeZone"))
 
           Some(result.setNativeScan(nativeScanBuilder).build())
 

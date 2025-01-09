@@ -249,12 +249,7 @@ public final class Native extends NativeBase {
    * @return a handle to the record batch reader, used in subsequent calls.
    */
   public static native long initRecordBatchReader(
-      String filePath,
-      long fileSize,
-      long start,
-      long length,
-      byte[] requiredSchema,
-      String sessionTimezone);
+      String filePath, long fileSize, long start, long length, byte[] requiredSchema);
 
   // arrow native version of read batch
   /**
