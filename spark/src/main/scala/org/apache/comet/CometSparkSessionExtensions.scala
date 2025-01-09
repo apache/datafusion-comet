@@ -814,8 +814,8 @@ class CometSparkSessionExtensions
           // when we enable COMET_SHUFFLE_FALLBACK_TO_COLUMNAR due to valid bugs
           // that we had not previously seen
           val tryColumnarNext =
-            !nativePrecondition || (nativePrecondition && nativeShuffle.isEmpty && COMET_SHUFFLE_FALLBACK_TO_COLUMNAR
-              .get(conf))
+            !nativePrecondition || (nativePrecondition && nativeShuffle.isEmpty &&
+              COMET_SHUFFLE_FALLBACK_TO_COLUMNAR.get(conf))
 
           val nativeOrColumnarShuffle = if (nativeShuffle.isDefined) {
             nativeShuffle
