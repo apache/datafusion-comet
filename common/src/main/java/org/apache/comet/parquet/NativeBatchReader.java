@@ -257,7 +257,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       }
     } ////// End get requested schema
 
-    Schema arrowSchema = CometArrowUtils.toArrowSchema(sparkSchema, "UTC");
+    String timeZoneId = conf.get("spark.sql.session.timeZone");
+    Schema arrowSchema = CometArrowUtils.toArrowSchema(sparkSchema, timeZoneId);
     ByteArrayOutputStream out = new ByteArrayOutputStream();
     WriteChannel writeChannel = new WriteChannel(Channels.newChannel(out));
     MessageSerializer.serialize(writeChannel, arrowSchema);
