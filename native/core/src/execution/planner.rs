@@ -2097,76 +2097,25 @@ impl PhysicalPlanner {
 
         let fun_name = &expr.func;
         println!("create_scalar_function_expr fun_name {:?}", fun_name);
-        let input_expr_types = args
-            .iter()
-            .map(|x| x.data_type(input_schema.as_ref()))
-            .collect::<Result<Vec<_>, _>>()?;
+        let input_expr_types = if fun_name != "map" {
+            args
+                .iter()
+                .map(|x| x.data_type(input_schema.as_ref()))
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            args
+                .iter()
+                .map(|x| x.data_type(input_schema.as_ref())).take(2)
+                .collect::<Result<Vec<_>, _>>()?
+        };
         println!(
             "create_scalar_function_expr input_expr_types {:?}",
             input_expr_types
         );
 
-        if fun_name == "map" {
-            let keys = args.clone().into_iter().step_by(2).collect::<Vec<_>>();
-            let values = args.into_iter().skip(1).step_by(2).collect::<Vec<_>>();
-            println!("create_scalar_function_expr keys {:?}", keys.len());
-            println!("create_scalar_function_expr value {:?}", values.len());
-            let keys_expr = Arc::new(ScalarFunctionExpr::new(
-                "make_array",
-                make_array_udf(),
-                keys.clone(),
-                DataType::List(Arc::new(Field::new("key", DataType::Int32, false))),
-            ));
-            let values_expr = Arc::new(ScalarFunctionExpr::new(
-                "make_array",
-                make_array_udf(),
-                keys.clone(),
-                DataType::List(Arc::new(Field::new("value", DataType::Int32, true))),
-            ));
-
-            let mut builder = SchemaBuilder::new();
-            builder.push(Field::new("key", DataType::Int32, false));
-            builder.push(Field::new("value", DataType::Int32, true));
-            let fields = builder.finish().fields;
-
-            return Ok(Arc::new(ScalarFunctionExpr::new(
-                fun_name,
-                map_udf(),
-                vec![keys_expr, values_expr],
-                DataType::Map(
-                    Arc::new(Field::new("entries", DataType::Struct(fields), false)),
-                    false,
-                ),
-            )));
-        }
         println!("create_scalar_function_expr args {:?}", args);
         let (data_type, coerced_input_types) =
-            match expr.return_type.as_ref().map(to_arrow_datatype) {
-                Some(t) => (t, input_expr_types.clone()),
-                None => {
-                    let fun_name = match fun_name.as_ref() {
-                        "read_side_padding" => "rpad", // use the same return type as rpad
-                        other => other,
-                    };
-                    let func = self.session_ctx.udf(fun_name)?;
-
-                    let coerced_types = func
-                        .coerce_types(&input_expr_types)
-                        .unwrap_or_else(|_| input_expr_types.clone());
-
-                    let data_type = match fun_name {
-                        // workaround for https://github.com/apache/datafusion/issues/13716
-                        "datepart" => DataType::Int32,
-                        _ => {
-                            // TODO need to call `return_type_from_exprs` instead
-                            #[allow(deprecated)]
-                            func.inner().return_type(&coerced_types)?
-                        }
-                    };
-
-                    (data_type, coerced_types)
-                }
-            };
+            self.get_data_type_and_coerced_type(expr, fun_name, &input_expr_types)?;
         println!(
             "create_scalar_function_expr coerced {:?} data_type {:?}",
             coerced_input_types, data_type
@@ -2193,6 +2142,32 @@ impl PhysicalPlanner {
                 }
             })
             .collect::<Vec<_>>();
+        if fun_name == "map" {
+            let keys = args.clone().into_iter().step_by(2).collect::<Vec<_>>();
+            let values = args.into_iter().skip(1).step_by(2).collect::<Vec<_>>();
+            println!("create_scalar_function_expr keys {:?}", keys.len());
+            println!("create_scalar_function_expr value {:?}", values.len());
+
+            let keys_expr = Arc::new(ScalarFunctionExpr::new(
+                "make_array",
+                make_array_udf(),
+                keys.clone(),
+                DataType::List(Arc::new(Field::new("key", keys[0].data_type(&input_schema)?, keys[0].nullable(&input_schema)?))),
+            ));
+            let values_expr = Arc::new(ScalarFunctionExpr::new(
+                "make_array",
+                make_array_udf(),
+                keys.clone(),
+                DataType::List(Arc::new(Field::new("value", values[0].data_type(&input_schema)?, values[0].nullable(&input_schema)?))),
+            ));
+
+            return Ok(Arc::new(ScalarFunctionExpr::new(
+                fun_name,
+                map_udf(),
+                vec![keys_expr, values_expr],
+                data_type,
+            )));
+        }
         let scalar_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
             fun_name,
             fun_expr,
@@ -2201,6 +2176,35 @@ impl PhysicalPlanner {
         ));
 
         Ok(scalar_expr)
+    }
+
+    fn get_data_type_and_coerced_type(&self, expr: &ScalarFunc, fun_name: &String, input_expr_types: &Vec<DataType>) -> Result<(DataType, Vec<DataType>), ExecutionError> {
+        Ok(match expr.return_type.as_ref().map(to_arrow_datatype) {
+            Some(t) => (t, input_expr_types.clone()),
+            None => {
+                let fun_name = match fun_name.as_ref() {
+                    "read_side_padding" => "rpad", // use the same return type as rpad
+                    other => other,
+                };
+                let func = self.session_ctx.udf(fun_name)?;
+
+                let coerced_types = func
+                    .coerce_types(&input_expr_types)
+                    .unwrap_or_else(|_| input_expr_types.clone());
+
+                let data_type = match fun_name {
+                    // workaround for https://github.com/apache/datafusion/issues/13716
+                    "datepart" => DataType::Int32,
+                    _ => {
+                        // TODO need to call `return_type_from_exprs` instead
+                        #[allow(deprecated)]
+                        func.inner().return_type(&coerced_types)?
+                    }
+                };
+
+                (data_type, coerced_types)
+            }
+        })
     }
 
     fn create_aggr_func_expr(
