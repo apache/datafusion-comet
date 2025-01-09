@@ -810,6 +810,9 @@ class CometSparkSessionExtensions
               None
             }
 
+          // this is a temporary workaround because some Spark SQL tests fail
+          // when we enable COMET_SHUFFLE_FALLBACK_TO_COLUMNAR due to valid bugs
+          // that we had not previously seen
           val tryColumnarNext =
             !nativePrecondition || (nativePrecondition && nativeShuffle.isEmpty && COMET_SHUFFLE_FALLBACK_TO_COLUMNAR
               .get(conf))
