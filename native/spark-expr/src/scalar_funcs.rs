@@ -15,30 +15,27 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::compute::kernels::numeric::{add, sub};
-use arrow::datatypes::IntervalDayTime;
 use arrow::{
     array::{
         ArrayRef, AsArray, Decimal128Builder, Float32Array, Float64Array, Int16Array, Int32Array,
-        Int64Array, Int64Builder, Int8Array, OffsetSizeTrait,
+        Int64Array, Int64Builder, Int8Array,
     },
+    compute::kernels::numeric::{add, sub},
     datatypes::{validate_decimal_precision, Decimal128Type, Int64Type},
 };
-use arrow_array::builder::{GenericStringBuilder, IntervalDayTimeBuilder};
-use arrow_array::types::{Int16Type, Int32Type, Int8Type};
+use arrow_array::builder::IntervalDayTimeBuilder;
+use arrow_array::types::{Int16Type, Int32Type, Int8Type, IntervalDayTime};
 use arrow_array::{Array, ArrowNativeTypeOp, BooleanArray, Datum, Decimal128Array};
 use arrow_schema::{ArrowError, DataType, DECIMAL128_MAX_PRECISION};
 use datafusion::physical_expr_common::datum;
 use datafusion::{functions::math::round::round, physical_plan::ColumnarValue};
 use datafusion_common::{
-    cast::as_generic_string_array, exec_err, internal_err, DataFusionError,
-    Result as DataFusionResult, ScalarValue,
+    exec_err, internal_err, DataFusionError, Result as DataFusionResult, ScalarValue,
 };
 use num::{
     integer::{div_ceil, div_floor},
     BigInt, Signed, ToPrimitive,
 };
-use std::fmt::Write;
 use std::{cmp::min, sync::Arc};
 
 mod unhex;
@@ -390,57 +387,6 @@ pub fn spark_round(
     }
 }
 
-/// Similar to DataFusion `rpad`, but not to truncate when the string is already longer than length
-pub fn spark_read_side_padding(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
-    match args {
-        [ColumnarValue::Array(array), ColumnarValue::Scalar(ScalarValue::Int32(Some(length)))] => {
-            match array.data_type() {
-                DataType::Utf8 => spark_read_side_padding_internal::<i32>(array, *length),
-                DataType::LargeUtf8 => spark_read_side_padding_internal::<i64>(array, *length),
-                // TODO: handle Dictionary types
-                other => Err(DataFusionError::Internal(format!(
-                    "Unsupported data type {other:?} for function read_side_padding",
-                ))),
-            }
-        }
-        other => Err(DataFusionError::Internal(format!(
-            "Unsupported arguments {other:?} for function read_side_padding",
-        ))),
-    }
-}
-
-fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
-    array: &ArrayRef,
-    length: i32,
-) -> Result<ColumnarValue, DataFusionError> {
-    let string_array = as_generic_string_array::<T>(array)?;
-    let length = 0.max(length) as usize;
-    let space_string = " ".repeat(length);
-
-    let mut builder =
-        GenericStringBuilder::<T>::with_capacity(string_array.len(), string_array.len() * length);
-
-    for string in string_array.iter() {
-        match string {
-            Some(string) => {
-                // It looks Spark's UTF8String is closer to chars rather than graphemes
-                // https://stackoverflow.com/a/46290728
-                let char_len = string.chars().count();
-                if length <= char_len {
-                    builder.append_value(string);
-                } else {
-                    // write_str updates only the value buffer, not null nor offset buffer
-                    // This is convenient for concatenating str(s)
-                    builder.write_str(string)?;
-                    builder.append_value(&space_string[char_len..]);
-                }
-            }
-            _ => builder.append_null(),
-        }
-    }
-    Ok(ColumnarValue::Array(Arc::new(builder.finish())))
-}
-
 // Let Decimal(p3, s3) as return type i.e. Decimal(p1, s1) / Decimal(p2, s2) = Decimal(p3, s3).
 // Conversely, Decimal(p1, s1) = Decimal(p2, s2) * Decimal(p3, s3). This means that, in order to
 // get enough scale that matches with Spark behavior, it requires to widen s1 to s2 + s3 + 1. Since
@@ -503,53 +449,6 @@ pub fn spark_decimal_div(
     };
     let result = result.with_data_type(DataType::Decimal128(p3, s3));
     Ok(ColumnarValue::Array(Arc::new(result)))
-}
-
-/// Spark-compatible `isnan` expression
-pub fn spark_isnan(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
-    fn set_nulls_to_false(is_nan: BooleanArray) -> ColumnarValue {
-        match is_nan.nulls() {
-            Some(nulls) => {
-                let is_not_null = nulls.inner();
-                ColumnarValue::Array(Arc::new(BooleanArray::new(
-                    is_nan.values() & is_not_null,
-                    None,
-                )))
-            }
-            None => ColumnarValue::Array(Arc::new(is_nan)),
-        }
-    }
-    let value = &args[0];
-    match value {
-        ColumnarValue::Array(array) => match array.data_type() {
-            DataType::Float64 => {
-                let array = array.as_any().downcast_ref::<Float64Array>().unwrap();
-                let is_nan = BooleanArray::from_unary(array, |x| x.is_nan());
-                Ok(set_nulls_to_false(is_nan))
-            }
-            DataType::Float32 => {
-                let array = array.as_any().downcast_ref::<Float32Array>().unwrap();
-                let is_nan = BooleanArray::from_unary(array, |x| x.is_nan());
-                Ok(set_nulls_to_false(is_nan))
-            }
-            other => Err(DataFusionError::Internal(format!(
-                "Unsupported data type {:?} for function isnan",
-                other,
-            ))),
-        },
-        ColumnarValue::Scalar(a) => match a {
-            ScalarValue::Float64(a) => Ok(ColumnarValue::Scalar(ScalarValue::Boolean(Some(
-                a.map(|x| x.is_nan()).unwrap_or(false),
-            )))),
-            ScalarValue::Float32(a) => Ok(ColumnarValue::Scalar(ScalarValue::Boolean(Some(
-                a.map(|x| x.is_nan()).unwrap_or(false),
-            )))),
-            _ => Err(DataFusionError::Internal(format!(
-                "Unsupported data type {:?} for function isnan",
-                value.data_type(),
-            ))),
-        },
-    }
 }
 
 macro_rules! scalar_date_arithmetic {
@@ -623,4 +522,51 @@ pub fn spark_date_add(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
 
 pub fn spark_date_sub(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     spark_date_arithmetic(args, sub)
+}
+
+/// Spark-compatible `isnan` expression
+pub fn spark_isnan(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+    fn set_nulls_to_false(is_nan: BooleanArray) -> ColumnarValue {
+        match is_nan.nulls() {
+            Some(nulls) => {
+                let is_not_null = nulls.inner();
+                ColumnarValue::Array(Arc::new(BooleanArray::new(
+                    is_nan.values() & is_not_null,
+                    None,
+                )))
+            }
+            None => ColumnarValue::Array(Arc::new(is_nan)),
+        }
+    }
+    let value = &args[0];
+    match value {
+        ColumnarValue::Array(array) => match array.data_type() {
+            DataType::Float64 => {
+                let array = array.as_any().downcast_ref::<Float64Array>().unwrap();
+                let is_nan = BooleanArray::from_unary(array, |x| x.is_nan());
+                Ok(set_nulls_to_false(is_nan))
+            }
+            DataType::Float32 => {
+                let array = array.as_any().downcast_ref::<Float32Array>().unwrap();
+                let is_nan = BooleanArray::from_unary(array, |x| x.is_nan());
+                Ok(set_nulls_to_false(is_nan))
+            }
+            other => Err(DataFusionError::Internal(format!(
+                "Unsupported data type {:?} for function isnan",
+                other,
+            ))),
+        },
+        ColumnarValue::Scalar(a) => match a {
+            ScalarValue::Float64(a) => Ok(ColumnarValue::Scalar(ScalarValue::Boolean(Some(
+                a.map(|x| x.is_nan()).unwrap_or(false),
+            )))),
+            ScalarValue::Float32(a) => Ok(ColumnarValue::Scalar(ScalarValue::Boolean(Some(
+                a.map(|x| x.is_nan()).unwrap_or(false),
+            )))),
+            _ => Err(DataFusionError::Internal(format!(
+                "Unsupported data type {:?} for function isnan",
+                value.data_type(),
+            ))),
+        },
+    }
 }

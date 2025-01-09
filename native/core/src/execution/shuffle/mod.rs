@@ -19,4 +19,6 @@ mod list;
 mod map;
 pub mod row;
 mod shuffle_writer;
-pub use shuffle_writer::{write_ipc_compressed, CompressionCodec, ShuffleWriterExec};
+pub use shuffle_writer::{
+    read_ipc_compressed, write_ipc_compressed, CompressionCodec, ShuffleWriterExec,
+};

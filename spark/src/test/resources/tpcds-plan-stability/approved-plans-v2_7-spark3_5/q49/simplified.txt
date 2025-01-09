@@ -1,110 +1,109 @@
-WholeStageCodegen (11)
-  ColumnarToRow
-    InputAdapter
-      CometTakeOrderedAndProject [channel,item,return_ratio,return_rank,currency_rank]
-        CometHashAggregate [channel,item,return_ratio,return_rank,currency_rank]
-          CometColumnarExchange [channel,item,return_ratio,return_rank,currency_rank] #1
-            WholeStageCodegen (10)
-              HashAggregate [channel,item,return_ratio,return_rank,currency_rank]
-                InputAdapter
-                  Union
-                    WholeStageCodegen (3)
-                      Project [item,return_ratio,return_rank,currency_rank]
-                        Filter [return_rank,currency_rank]
-                          InputAdapter
-                            Window [currency_ratio]
-                              WholeStageCodegen (2)
-                                Sort [currency_ratio]
-                                  InputAdapter
-                                    Window [return_ratio]
-                                      WholeStageCodegen (1)
-                                        ColumnarToRow
-                                          InputAdapter
-                                            CometSort [item,return_ratio,currency_ratio]
-                                              CometExchange #2
-                                                CometHashAggregate [item,return_ratio,currency_ratio,ws_item_sk,sum,sum,sum,isEmpty,sum,isEmpty,sum(coalesce(wr_return_quantity, 0)),sum(coalesce(ws_quantity, 0)),sum(coalesce(cast(wr_return_amt as decimal(12,2)), 0.00)),sum(coalesce(cast(ws_net_paid as decimal(12,2)), 0.00))]
-                                                  CometExchange [ws_item_sk] #3
-                                                    CometHashAggregate [ws_item_sk,sum,sum,sum,isEmpty,sum,isEmpty,wr_return_quantity,ws_quantity,wr_return_amt,ws_net_paid]
-                                                      CometProject [ws_item_sk,ws_quantity,ws_net_paid,wr_return_quantity,wr_return_amt]
-                                                        CometBroadcastHashJoin [ws_item_sk,ws_quantity,ws_net_paid,ws_sold_date_sk,wr_return_quantity,wr_return_amt,d_date_sk]
-                                                          CometProject [ws_item_sk,ws_quantity,ws_net_paid,ws_sold_date_sk,wr_return_quantity,wr_return_amt]
-                                                            CometBroadcastHashJoin [ws_item_sk,ws_order_number,ws_quantity,ws_net_paid,ws_sold_date_sk,wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt]
-                                                              CometBroadcastExchange [ws_item_sk,ws_order_number,ws_quantity,ws_net_paid,ws_sold_date_sk] #4
-                                                                CometProject [ws_item_sk,ws_order_number,ws_quantity,ws_net_paid,ws_sold_date_sk]
-                                                                  CometFilter [ws_item_sk,ws_order_number,ws_quantity,ws_net_paid,ws_net_profit,ws_sold_date_sk]
-                                                                    CometScan parquet spark_catalog.default.web_sales [ws_item_sk,ws_order_number,ws_quantity,ws_net_paid,ws_net_profit,ws_sold_date_sk]
-                                                                      SubqueryBroadcast [d_date_sk] #1
-                                                                        BroadcastExchange #5
-                                                                          WholeStageCodegen (1)
-                                                                            ColumnarToRow
-                                                                              InputAdapter
-                                                                                CometProject [d_date_sk]
-                                                                                  CometFilter [d_date_sk,d_year,d_moy]
-                                                                                    CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
-                                                              CometProject [wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt]
-                                                                CometFilter [wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt,wr_returned_date_sk]
-                                                                  CometScan parquet spark_catalog.default.web_returns [wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt,wr_returned_date_sk]
-                                                          CometBroadcastExchange [d_date_sk] #6
-                                                            CometProject [d_date_sk]
-                                                              CometFilter [d_date_sk,d_year,d_moy]
-                                                                CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
-                    WholeStageCodegen (6)
-                      Project [item,return_ratio,return_rank,currency_rank]
-                        Filter [return_rank,currency_rank]
-                          InputAdapter
-                            Window [currency_ratio]
-                              WholeStageCodegen (5)
-                                Sort [currency_ratio]
-                                  InputAdapter
-                                    Window [return_ratio]
-                                      WholeStageCodegen (4)
-                                        ColumnarToRow
-                                          InputAdapter
-                                            CometSort [item,return_ratio,currency_ratio]
-                                              CometExchange #7
-                                                CometHashAggregate [item,return_ratio,currency_ratio,cs_item_sk,sum,sum,sum,isEmpty,sum,isEmpty,sum(coalesce(cr_return_quantity, 0)),sum(coalesce(cs_quantity, 0)),sum(coalesce(cast(cr_return_amount as decimal(12,2)), 0.00)),sum(coalesce(cast(cs_net_paid as decimal(12,2)), 0.00))]
-                                                  CometExchange [cs_item_sk] #8
-                                                    CometHashAggregate [cs_item_sk,sum,sum,sum,isEmpty,sum,isEmpty,cr_return_quantity,cs_quantity,cr_return_amount,cs_net_paid]
-                                                      CometProject [cs_item_sk,cs_quantity,cs_net_paid,cr_return_quantity,cr_return_amount]
-                                                        CometBroadcastHashJoin [cs_item_sk,cs_quantity,cs_net_paid,cs_sold_date_sk,cr_return_quantity,cr_return_amount,d_date_sk]
-                                                          CometProject [cs_item_sk,cs_quantity,cs_net_paid,cs_sold_date_sk,cr_return_quantity,cr_return_amount]
-                                                            CometBroadcastHashJoin [cs_item_sk,cs_order_number,cs_quantity,cs_net_paid,cs_sold_date_sk,cr_item_sk,cr_order_number,cr_return_quantity,cr_return_amount]
-                                                              CometBroadcastExchange [cs_item_sk,cs_order_number,cs_quantity,cs_net_paid,cs_sold_date_sk] #9
-                                                                CometProject [cs_item_sk,cs_order_number,cs_quantity,cs_net_paid,cs_sold_date_sk]
-                                                                  CometFilter [cs_item_sk,cs_order_number,cs_quantity,cs_net_paid,cs_net_profit,cs_sold_date_sk]
-                                                                    CometScan parquet spark_catalog.default.catalog_sales [cs_item_sk,cs_order_number,cs_quantity,cs_net_paid,cs_net_profit,cs_sold_date_sk]
-                                                                      ReusedSubquery [d_date_sk] #1
-                                                              CometProject [cr_item_sk,cr_order_number,cr_return_quantity,cr_return_amount]
-                                                                CometFilter [cr_item_sk,cr_order_number,cr_return_quantity,cr_return_amount,cr_returned_date_sk]
-                                                                  CometScan parquet spark_catalog.default.catalog_returns [cr_item_sk,cr_order_number,cr_return_quantity,cr_return_amount,cr_returned_date_sk]
-                                                          ReusedExchange [d_date_sk] #6
-                    WholeStageCodegen (9)
-                      Project [item,return_ratio,return_rank,currency_rank]
-                        Filter [return_rank,currency_rank]
-                          InputAdapter
-                            Window [currency_ratio]
-                              WholeStageCodegen (8)
-                                Sort [currency_ratio]
-                                  InputAdapter
-                                    Window [return_ratio]
-                                      WholeStageCodegen (7)
-                                        ColumnarToRow
-                                          InputAdapter
-                                            CometSort [item,return_ratio,currency_ratio]
-                                              CometExchange #10
-                                                CometHashAggregate [item,return_ratio,currency_ratio,ss_item_sk,sum,sum,sum,isEmpty,sum,isEmpty,sum(coalesce(sr_return_quantity, 0)),sum(coalesce(ss_quantity, 0)),sum(coalesce(cast(sr_return_amt as decimal(12,2)), 0.00)),sum(coalesce(cast(ss_net_paid as decimal(12,2)), 0.00))]
-                                                  CometExchange [ss_item_sk] #11
-                                                    CometHashAggregate [ss_item_sk,sum,sum,sum,isEmpty,sum,isEmpty,sr_return_quantity,ss_quantity,sr_return_amt,ss_net_paid]
-                                                      CometProject [ss_item_sk,ss_quantity,ss_net_paid,sr_return_quantity,sr_return_amt]
-                                                        CometBroadcastHashJoin [ss_item_sk,ss_quantity,ss_net_paid,ss_sold_date_sk,sr_return_quantity,sr_return_amt,d_date_sk]
-                                                          CometProject [ss_item_sk,ss_quantity,ss_net_paid,ss_sold_date_sk,sr_return_quantity,sr_return_amt]
-                                                            CometBroadcastHashJoin [ss_item_sk,ss_ticket_number,ss_quantity,ss_net_paid,ss_sold_date_sk,sr_item_sk,sr_ticket_number,sr_return_quantity,sr_return_amt]
-                                                              CometBroadcastExchange [ss_item_sk,ss_ticket_number,ss_quantity,ss_net_paid,ss_sold_date_sk] #12
-                                                                CometProject [ss_item_sk,ss_ticket_number,ss_quantity,ss_net_paid,ss_sold_date_sk]
-                                                                  CometFilter [ss_item_sk,ss_ticket_number,ss_quantity,ss_net_paid,ss_net_profit,ss_sold_date_sk]
-                                                                    CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_ticket_number,ss_quantity,ss_net_paid,ss_net_profit,ss_sold_date_sk]
-                                                                      ReusedSubquery [d_date_sk] #1
-                                                              CometProject [sr_item_sk,sr_ticket_number,sr_return_quantity,sr_return_amt]
-                                                                CometFilter [sr_item_sk,sr_ticket_number,sr_return_quantity,sr_return_amt,sr_returned_date_sk]
-                                                                  CometScan parquet spark_catalog.default.store_returns [sr_item_sk,sr_ticket_number,sr_return_quantity,sr_return_amt,sr_returned_date_sk]
-                                                          ReusedExchange [d_date_sk] #6
+TakeOrderedAndProject [channel,return_rank,currency_rank,item,return_ratio]
+  WholeStageCodegen (11)
+    HashAggregate [channel,item,return_ratio,return_rank,currency_rank]
+      InputAdapter
+        Exchange [channel,item,return_ratio,return_rank,currency_rank] #1
+          WholeStageCodegen (10)
+            HashAggregate [channel,item,return_ratio,return_rank,currency_rank]
+              InputAdapter
+                Union
+                  WholeStageCodegen (3)
+                    Project [item,return_ratio,return_rank,currency_rank]
+                      Filter [return_rank,currency_rank]
+                        InputAdapter
+                          Window [currency_ratio]
+                            WholeStageCodegen (2)
+                              Sort [currency_ratio]
+                                InputAdapter
+                                  Window [return_ratio]
+                                    WholeStageCodegen (1)
+                                      CometColumnarToRow
+                                        InputAdapter
+                                          CometSort [item,return_ratio,currency_ratio]
+                                            CometExchange #2
+                                              CometHashAggregate [item,return_ratio,currency_ratio,ws_item_sk,sum,sum,sum,isEmpty,sum,isEmpty,sum(coalesce(wr_return_quantity, 0)),sum(coalesce(ws_quantity, 0)),sum(coalesce(cast(wr_return_amt as decimal(12,2)), 0.00)),sum(coalesce(cast(ws_net_paid as decimal(12,2)), 0.00))]
+                                                CometExchange [ws_item_sk] #3
+                                                  CometHashAggregate [ws_item_sk,sum,sum,sum,isEmpty,sum,isEmpty,wr_return_quantity,ws_quantity,wr_return_amt,ws_net_paid]
+                                                    CometProject [ws_item_sk,ws_quantity,ws_net_paid,wr_return_quantity,wr_return_amt]
+                                                      CometBroadcastHashJoin [ws_item_sk,ws_quantity,ws_net_paid,ws_sold_date_sk,wr_return_quantity,wr_return_amt,d_date_sk]
+                                                        CometProject [ws_item_sk,ws_quantity,ws_net_paid,ws_sold_date_sk,wr_return_quantity,wr_return_amt]
+                                                          CometBroadcastHashJoin [ws_item_sk,ws_order_number,ws_quantity,ws_net_paid,ws_sold_date_sk,wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt]
+                                                            CometBroadcastExchange [ws_item_sk,ws_order_number,ws_quantity,ws_net_paid,ws_sold_date_sk] #4
+                                                              CometProject [ws_item_sk,ws_order_number,ws_quantity,ws_net_paid,ws_sold_date_sk]
+                                                                CometFilter [ws_item_sk,ws_order_number,ws_quantity,ws_net_paid,ws_net_profit,ws_sold_date_sk]
+                                                                  CometScan parquet spark_catalog.default.web_sales [ws_item_sk,ws_order_number,ws_quantity,ws_net_paid,ws_net_profit,ws_sold_date_sk]
+                                                                    SubqueryBroadcast [d_date_sk] #1
+                                                                      BroadcastExchange #5
+                                                                        WholeStageCodegen (1)
+                                                                          CometColumnarToRow
+                                                                            InputAdapter
+                                                                              CometProject [d_date_sk]
+                                                                                CometFilter [d_date_sk,d_year,d_moy]
+                                                                                  CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
+                                                            CometProject [wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt]
+                                                              CometFilter [wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt,wr_returned_date_sk]
+                                                                CometScan parquet spark_catalog.default.web_returns [wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt,wr_returned_date_sk]
+                                                        CometBroadcastExchange [d_date_sk] #6
+                                                          CometProject [d_date_sk]
+                                                            CometFilter [d_date_sk,d_year,d_moy]
+                                                              CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
+                  WholeStageCodegen (6)
+                    Project [item,return_ratio,return_rank,currency_rank]
+                      Filter [return_rank,currency_rank]
+                        InputAdapter
+                          Window [currency_ratio]
+                            WholeStageCodegen (5)
+                              Sort [currency_ratio]
+                                InputAdapter
+                                  Window [return_ratio]
+                                    WholeStageCodegen (4)
+                                      CometColumnarToRow
+                                        InputAdapter
+                                          CometSort [item,return_ratio,currency_ratio]
+                                            CometExchange #7
+                                              CometHashAggregate [item,return_ratio,currency_ratio,cs_item_sk,sum,sum,sum,isEmpty,sum,isEmpty,sum(coalesce(cr_return_quantity, 0)),sum(coalesce(cs_quantity, 0)),sum(coalesce(cast(cr_return_amount as decimal(12,2)), 0.00)),sum(coalesce(cast(cs_net_paid as decimal(12,2)), 0.00))]
+                                                CometExchange [cs_item_sk] #8
+                                                  CometHashAggregate [cs_item_sk,sum,sum,sum,isEmpty,sum,isEmpty,cr_return_quantity,cs_quantity,cr_return_amount,cs_net_paid]
+                                                    CometProject [cs_item_sk,cs_quantity,cs_net_paid,cr_return_quantity,cr_return_amount]
+                                                      CometBroadcastHashJoin [cs_item_sk,cs_quantity,cs_net_paid,cs_sold_date_sk,cr_return_quantity,cr_return_amount,d_date_sk]
+                                                        CometProject [cs_item_sk,cs_quantity,cs_net_paid,cs_sold_date_sk,cr_return_quantity,cr_return_amount]
+                                                          CometBroadcastHashJoin [cs_item_sk,cs_order_number,cs_quantity,cs_net_paid,cs_sold_date_sk,cr_item_sk,cr_order_number,cr_return_quantity,cr_return_amount]
+                                                            CometBroadcastExchange [cs_item_sk,cs_order_number,cs_quantity,cs_net_paid,cs_sold_date_sk] #9
+                                                              CometProject [cs_item_sk,cs_order_number,cs_quantity,cs_net_paid,cs_sold_date_sk]
+                                                                CometFilter [cs_item_sk,cs_order_number,cs_quantity,cs_net_paid,cs_net_profit,cs_sold_date_sk]
+                                                                  CometScan parquet spark_catalog.default.catalog_sales [cs_item_sk,cs_order_number,cs_quantity,cs_net_paid,cs_net_profit,cs_sold_date_sk]
+                                                                    ReusedSubquery [d_date_sk] #1
+                                                            CometProject [cr_item_sk,cr_order_number,cr_return_quantity,cr_return_amount]
+                                                              CometFilter [cr_item_sk,cr_order_number,cr_return_quantity,cr_return_amount,cr_returned_date_sk]
+                                                                CometScan parquet spark_catalog.default.catalog_returns [cr_item_sk,cr_order_number,cr_return_quantity,cr_return_amount,cr_returned_date_sk]
+                                                        ReusedExchange [d_date_sk] #6
+                  WholeStageCodegen (9)
+                    Project [item,return_ratio,return_rank,currency_rank]
+                      Filter [return_rank,currency_rank]
+                        InputAdapter
+                          Window [currency_ratio]
+                            WholeStageCodegen (8)
+                              Sort [currency_ratio]
+                                InputAdapter
+                                  Window [return_ratio]
+                                    WholeStageCodegen (7)
+                                      CometColumnarToRow
+                                        InputAdapter
+                                          CometSort [item,return_ratio,currency_ratio]
+                                            CometExchange #10
+                                              CometHashAggregate [item,return_ratio,currency_ratio,ss_item_sk,sum,sum,sum,isEmpty,sum,isEmpty,sum(coalesce(sr_return_quantity, 0)),sum(coalesce(ss_quantity, 0)),sum(coalesce(cast(sr_return_amt as decimal(12,2)), 0.00)),sum(coalesce(cast(ss_net_paid as decimal(12,2)), 0.00))]
+                                                CometExchange [ss_item_sk] #11
+                                                  CometHashAggregate [ss_item_sk,sum,sum,sum,isEmpty,sum,isEmpty,sr_return_quantity,ss_quantity,sr_return_amt,ss_net_paid]
+                                                    CometProject [ss_item_sk,ss_quantity,ss_net_paid,sr_return_quantity,sr_return_amt]
+                                                      CometBroadcastHashJoin [ss_item_sk,ss_quantity,ss_net_paid,ss_sold_date_sk,sr_return_quantity,sr_return_amt,d_date_sk]
+                                                        CometProject [ss_item_sk,ss_quantity,ss_net_paid,ss_sold_date_sk,sr_return_quantity,sr_return_amt]
+                                                          CometBroadcastHashJoin [ss_item_sk,ss_ticket_number,ss_quantity,ss_net_paid,ss_sold_date_sk,sr_item_sk,sr_ticket_number,sr_return_quantity,sr_return_amt]
+                                                            CometBroadcastExchange [ss_item_sk,ss_ticket_number,ss_quantity,ss_net_paid,ss_sold_date_sk] #12
+                                                              CometProject [ss_item_sk,ss_ticket_number,ss_quantity,ss_net_paid,ss_sold_date_sk]
+                                                                CometFilter [ss_item_sk,ss_ticket_number,ss_quantity,ss_net_paid,ss_net_profit,ss_sold_date_sk]
+                                                                  CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_ticket_number,ss_quantity,ss_net_paid,ss_net_profit,ss_sold_date_sk]
+                                                                    ReusedSubquery [d_date_sk] #1
+                                                            CometProject [sr_item_sk,sr_ticket_number,sr_return_quantity,sr_return_amt]
+                                                              CometFilter [sr_item_sk,sr_ticket_number,sr_return_quantity,sr_return_amt,sr_returned_date_sk]
+                                                                CometScan parquet spark_catalog.default.store_returns [sr_item_sk,sr_ticket_number,sr_return_quantity,sr_return_amt,sr_returned_date_sk]
+                                                        ReusedExchange [d_date_sk] #6

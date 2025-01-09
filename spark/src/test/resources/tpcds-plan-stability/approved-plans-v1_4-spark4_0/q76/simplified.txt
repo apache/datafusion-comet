@@ -5,7 +5,7 @@ TakeOrderedAndProject [channel,col_name,d_year,d_qoy,i_category,sales_cnt,sales_
         Exchange [channel,col_name,d_year,d_qoy,i_category] #1
           WholeStageCodegen (1)
             HashAggregate [channel,col_name,d_year,d_qoy,i_category,ext_sales_price] [count,sum,count,sum]
-              ColumnarToRow
+              CometColumnarToRow
                 InputAdapter
                   CometUnion [channel,col_name,d_year,d_qoy,i_category,ext_sales_price]
                     CometProject [ss_store_sk,ss_ext_sales_price] [channel,col_name,d_year,d_qoy,i_category,ext_sales_price]

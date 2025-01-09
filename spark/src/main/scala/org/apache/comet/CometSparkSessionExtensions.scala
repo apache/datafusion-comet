@@ -53,7 +53,7 @@ import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isOffHeapEnabled, isSpark34Plus, isSpark40Plus, isTesting, shouldApplySparkToColumnar, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark34Plus, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.rules.RewriteJoin
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -567,7 +567,7 @@ class CometSparkSessionExtensions
 
         case op: SortMergeJoinExec
             if CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) &&
-              op.children.forall(isCometNative(_)) =>
+              op.children.forall(isCometNative) =>
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
@@ -789,10 +789,12 @@ class CometSparkSessionExtensions
 
         // Native shuffle for Comet operators
         case s: ShuffleExchangeExec =>
+          val nativePrecondition = isCometShuffleEnabled(conf) &&
+            isCometNativeShuffleMode(conf) &&
+            QueryPlanSerde.supportPartitioning(s.child.output, s.outputPartitioning)._1
+
           val nativeShuffle: Option[SparkPlan] =
-            if (isCometShuffleEnabled(conf) &&
-              isCometNativeShuffleMode(conf) &&
-              QueryPlanSerde.supportPartitioning(s.child.output, s.outputPartitioning)._1) {
+            if (nativePrecondition) {
               val newOp = transform1(s)
               newOp match {
                 case Some(nativeOp) =>
@@ -808,9 +810,13 @@ class CometSparkSessionExtensions
               None
             }
 
+          val tryColumnarNext =
+            !nativePrecondition || (nativePrecondition && nativeShuffle.isEmpty && COMET_SHUFFLE_FALLBACK_TO_COLUMNAR
+              .get(conf))
+
           val nativeOrColumnarShuffle = if (nativeShuffle.isDefined) {
             nativeShuffle
-          } else {
+          } else if (tryColumnarNext) {
             // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
             // (if configured).
             // If the child of ShuffleExchangeExec is also a ShuffleExchangeExec, we should not
@@ -836,6 +842,8 @@ class CometSparkSessionExtensions
             } else {
               None
             }
+          } else {
+            None
           }
 
           if (nativeOrColumnarShuffle.isDefined) {
@@ -933,14 +941,6 @@ class CometSparkSessionExtensions
     }
 
     override def apply(plan: SparkPlan): SparkPlan = {
-
-      // Comet required off-heap memory to be enabled
-      if (!isOffHeapEnabled(conf) && !isTesting) {
-        logWarning("Comet native exec disabled because spark.memory.offHeap.enabled=false")
-        withInfo(plan, "Comet native exec disabled because spark.memory.offHeap.enabled=false")
-        return plan
-      }
-
       // DataFusion doesn't have ANSI mode. For now we just disable CometExec if ANSI mode is
       // enabled.
       if (isANSIEnabled(conf)) {
@@ -1099,6 +1099,17 @@ class CometSparkSessionExtensions
     override def apply(plan: SparkPlan): SparkPlan = {
       val eliminatedPlan = plan transformUp {
         case ColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) => sparkToColumnar.child
+        case c @ ColumnarToRowExec(child) if child.exists(_.isInstanceOf[CometPlan]) =>
+          val op = CometColumnarToRowExec(child)
+          if (c.logicalLink.isEmpty) {
+            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
+          } else {
+            c.logicalLink.foreach(op.setLogicalLink)
+          }
+          op
+        case CometColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
+          sparkToColumnar.child
         case CometSparkToColumnarExec(child: CometSparkToColumnarExec) => child
         // Spark adds `RowToColumnar` under Comet columnar shuffle. But it's redundant as the
         // shuffle takes row-based input.
@@ -1114,6 +1125,8 @@ class CometSparkSessionExtensions
 
       eliminatedPlan match {
         case ColumnarToRowExec(child: CometCollectLimitExec) =>
+          child
+        case CometColumnarToRowExec(child: CometCollectLimitExec) =>
           child
         case other =>
           other
@@ -1188,21 +1201,12 @@ object CometSparkSessionExtensions extends Logging {
     }
   }
 
-  private[comet] def isOffHeapEnabled(conf: SQLConf): Boolean =
-    conf.getConfString("spark.memory.offHeap.enabled", "false").toBoolean
-
-  // Copied from org.apache.spark.util.Utils which is private to Spark.
-  private[comet] def isTesting: Boolean = {
-    System.getenv("SPARK_TESTING") != null || System.getProperty("spark.testing") != null
-  }
-
   // Check whether Comet shuffle is enabled:
   // 1. `COMET_EXEC_SHUFFLE_ENABLED` is true
   // 2. `spark.shuffle.manager` is set to `CometShuffleManager`
   // 3. Off-heap memory is enabled || Spark/Comet unit testing
   private[comet] def isCometShuffleEnabled(conf: SQLConf): Boolean =
-    COMET_EXEC_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf) &&
-      (isOffHeapEnabled(conf) || isTesting)
+    COMET_EXEC_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf)
 
   private[comet] def getCometShuffleNotEnabledReason(conf: SQLConf): Option[String] = {
     if (!COMET_EXEC_SHUFFLE_ENABLED.get(conf)) {

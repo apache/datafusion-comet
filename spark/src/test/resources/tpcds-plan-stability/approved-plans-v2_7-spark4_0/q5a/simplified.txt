@@ -21,7 +21,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                         Exchange [s_store_id] #3
                                           WholeStageCodegen (1)
                                             HashAggregate [s_store_id,sales_price,return_amt,profit,net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
-                                              ColumnarToRow
+                                              CometColumnarToRow
                                                 InputAdapter
                                                   CometProject [sales_price,profit,return_amt,net_loss,s_store_id]
                                                     CometBroadcastHashJoin [store_sk,sales_price,profit,return_amt,net_loss,s_store_sk,s_store_id]
@@ -34,7 +34,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                                   SubqueryBroadcast [d_date_sk] #1
                                                                     BroadcastExchange #4
                                                                       WholeStageCodegen (1)
-                                                                        ColumnarToRow
+                                                                        CometColumnarToRow
                                                                           InputAdapter
                                                                             CometProject [d_date_sk]
                                                                               CometFilter [d_date_sk,d_date]
@@ -56,7 +56,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                         Exchange [cp_catalog_page_id] #7
                                           WholeStageCodegen (3)
                                             HashAggregate [cp_catalog_page_id,sales_price,return_amt,profit,net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
-                                              ColumnarToRow
+                                              CometColumnarToRow
                                                 InputAdapter
                                                   CometProject [sales_price,profit,return_amt,net_loss,cp_catalog_page_id]
                                                     CometBroadcastHashJoin [page_sk,sales_price,profit,return_amt,net_loss,cp_catalog_page_sk,cp_catalog_page_id]
@@ -81,7 +81,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                         Exchange [web_site_id] #9
                                           WholeStageCodegen (5)
                                             HashAggregate [web_site_id,sales_price,return_amt,profit,net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
-                                              ColumnarToRow
+                                              CometColumnarToRow
                                                 InputAdapter
                                                   CometProject [sales_price,profit,return_amt,net_loss,web_site_id]
                                                     CometBroadcastHashJoin [wsr_web_site_sk,sales_price,profit,return_amt,net_loss,web_site_sk,web_site_id]

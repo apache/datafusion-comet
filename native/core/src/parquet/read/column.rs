@@ -39,6 +39,7 @@ use super::{
 };
 
 use crate::common::{bit, bit::log2};
+use crate::execution::operators::ExecutionError;
 
 /// Maximum number of decimal digits an i32 can represent
 const DECIMAL_MAX_INT_DIGITS: i32 = 9;
@@ -601,7 +602,7 @@ impl ColumnReader {
     }
 
     #[inline]
-    pub fn current_batch(&mut self) -> ArrayData {
+    pub fn current_batch(&mut self) -> Result<ArrayData, ExecutionError> {
         make_func_mut!(self, current_batch)
     }
 
@@ -684,7 +685,7 @@ impl<T: DataType> TypedColumnReader<T> {
     /// Note: the caller must make sure the returned Arrow vector is fully consumed before calling
     /// `read_batch` again.
     #[inline]
-    pub fn current_batch(&mut self) -> ArrayData {
+    pub fn current_batch(&mut self) -> Result<ArrayData, ExecutionError> {
         self.vector.get_array_data()
     }
 
