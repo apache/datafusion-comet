@@ -3149,19 +3149,22 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       orderSpec: Seq[SortOrder],
       op: SparkPlan): Boolean = {
     if (partitionSpec.length != orderSpec.length) {
-      withInfo(op, "Partitioning and sorting specifications do not match")
       return false
     }
 
     val partitionColumnNames = partitionSpec.collect {
       case a: AttributeReference => a.name
-      case _ => return false
+      case other =>
+        withInfo(op, s"Unsupported partition expression: ${other.getClass.getSimpleName}")
+        return false
     }
 
     val orderColumnNames = orderSpec.collect { case s: SortOrder =>
       s.child match {
         case a: AttributeReference => a.name
-        case _ => return false
+        case other =>
+          withInfo(op, s"Unsupported sort expression: ${other.getClass.getSimpleName}")
+          return false
       }
     }
 
