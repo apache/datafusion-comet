@@ -15,10 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod list;
-mod map;
-pub mod row;
-mod shuffle_writer;
-pub use shuffle_writer::{
-    read_ipc_compressed, write_ipc_compressed, CompressionCodec, ShuffleWriterExec,
-};
+mod date_arithmetic;
+mod date_trunc;
+mod hour;
+mod minute;
+mod second;
+mod timestamp_trunc;
+
+pub use date_arithmetic::{spark_date_add, spark_date_sub};
+pub use date_trunc::DateTruncExpr;
+pub use hour::HourExpr;
+pub use minute::MinuteExpr;
+pub use second::SecondExpr;
+pub use timestamp_trunc::TimestampTruncExpr;
