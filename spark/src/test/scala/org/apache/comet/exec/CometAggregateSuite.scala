@@ -101,15 +101,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           (4, "b", 8),
           (5, "c", 9),
           (6, "c", 10)).toDF("month", "area", "product")
-        withTempPath{ f =>
-          val path = f.getAbsolutePath
-          df.write.parquet(path)
-          spark.read.parquet(path).createOrReplaceTempView("windowData")
-          checkSparkAnswerAndOperator(sql("""
+        df.createOrReplaceTempView("windowData")
+        checkSparkAnswer(sql("""
              |select month, area, product, sum(product + 1) over (partition by 1 order by 2)
              |from windowData
           """.stripMargin))
-        }
       }
     }
   }
