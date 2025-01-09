@@ -77,8 +77,14 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
   private val approvedAnsiPlans: Seq[String] = Seq("q83", "q83.sf100")
 
   private def getDirForTest(name: String): File = {
-    val goldenFileName = if (SQLConf.get.ansiEnabled && approvedAnsiPlans.contains(name)) {
+    var goldenFileName = if (SQLConf.get.ansiEnabled && approvedAnsiPlans.contains(name)) {
       name + ".ansi"
+    } else {
+      name
+    }
+    val scan_impl = CometConf.COMET_NATIVE_SCAN_IMPL.get(SQLConf.get)
+    goldenFileName = if (scan_impl.equals(CometConf.SCAN_NATIVE_FULL)) {
+      name + ".native"
     } else {
       name
     }
@@ -90,13 +96,9 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       actualSimplifiedPlan: String,
       actualExplain: String): Boolean = {
     val simplifiedFile = new File(dir, "simplified.txt")
-    var expectedSimplified = FileUtils.readFileToString(simplifiedFile, StandardCharsets.UTF_8)
+    val expectedSimplified = FileUtils.readFileToString(simplifiedFile, StandardCharsets.UTF_8)
     val explainFile = new File(dir, "explain.txt")
-    var expectedExplain = FileUtils.readFileToString(explainFile, StandardCharsets.UTF_8)
-    if (!CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_FULL)) {
-      expectedExplain = expectedExplain.replace("CometNativeScan", "CometScan")
-      expectedSimplified = expectedSimplified.replace("CometNativeScan", "CometScan")
-    }
+    val expectedExplain = FileUtils.readFileToString(explainFile, StandardCharsets.UTF_8)
     expectedSimplified == actualSimplifiedPlan && expectedExplain == actualExplain
   }
 
