@@ -2632,7 +2632,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
         if (partitionSpec.nonEmpty && orderSpec.nonEmpty &&
           !validatePartitionAndSortSpecsForWindowFunc(partitionSpec, orderSpec, op)) {
-          withInfo(op, "Unsupported partition or sort expression(s)")
           return None
         }
 
