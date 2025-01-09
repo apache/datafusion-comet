@@ -2632,6 +2632,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
         if (partitionSpec.nonEmpty && orderSpec.nonEmpty &&
           !validatePartitionAndSortSpecsForWindowFunc(partitionSpec, orderSpec, op)) {
+          withInfo(op, "Unsupported partition or sort expression(s)")
           return None
         }
 
@@ -3152,13 +3153,15 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       return false
     }
 
-    val partitionColumnNames = partitionSpec.collect { case a: AttributeReference =>
-      a.name
+    val partitionColumnNames = partitionSpec.collect {
+      case a: AttributeReference => a.name
+      case _ => return false
     }
 
     val orderColumnNames = orderSpec.collect { case s: SortOrder =>
       s.child match {
         case a: AttributeReference => a.name
+        case _ => return false
       }
     }
 
