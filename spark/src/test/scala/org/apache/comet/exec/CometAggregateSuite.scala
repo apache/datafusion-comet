@@ -609,7 +609,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 sql("CREATE TEMP VIEW v AS SELECT _1, _2 FROM tbl ORDER BY _1")
                 checkSparkAnswer(
                   "SELECT _2, SUM(_1), SUM(DISTINCT _1), MIN(_1), MAX(_1), COUNT(_1)," +
-                    " COUNT(DISTINCT _1), AVG(_1), FIRST(_1), LAST(_1) FROM v GROUP BY _2")
+                    " COUNT(DISTINCT _2), AVG(_1), FIRST(_1), LAST(_1) FROM v GROUP BY _2 ORDER BY _2")
               }
             }
           }

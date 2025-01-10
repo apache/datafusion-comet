@@ -386,6 +386,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             ExprOuterClass.AggExpr
               .newBuilder()
               .setSum(sumBuilder)
+              .setDistinct(aggExpr.isDistinct)
               .build())
         } else {
           if (dataType.isEmpty) {
@@ -442,6 +443,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             ExprOuterClass.AggExpr
               .newBuilder()
               .setCount(countBuilder)
+              .setDistinct(aggExpr.isDistinct)
               .build())
         } else {
           withInfo(aggExpr, children: _*)

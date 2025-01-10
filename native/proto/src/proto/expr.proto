@@ -89,6 +89,7 @@ message Expr {
 }
 
 message AggExpr {
+  bool distinct = 1;
   oneof expr_struct {
     Count count = 2;
     Sum sum = 3;
