@@ -1,0 +1,97 @@
+{
+    "engine": "datafusion-comet",
+    "benchmark": "tpch",
+    "data_path": "/mnt/bigdata/tpch/sf100/",
+    "query_path": "/home/andy/git/apache/datafusion-benchmarks/tpch/queries",
+    "spark_conf": {
+        "spark.eventLog.enabled": "true",
+        "spark.driver.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
+        "spark.app.submitTime": "1735426784113",
+        "spark.sql.warehouse.dir": "file:/home/andy/git/personal/research/benchmarks/spark-standalone/spark-warehouse",
+        "spark.executor.id": "driver",
+        "spark.master": "spark://woody:7077",
+        "spark.driver.memory": "8G",
+        "spark.memory.offHeap.enabled": "true",
+        "spark.executor.memory": "16g",
+        "spark.rdd.compress": "True",
+        "spark.app.name": "spark benchmark derived from tpch",
+        "spark.executor.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
+        "spark.serializer.objectStreamReset": "100",
+        "spark.driver.host": "10.0.0.118",
+        "spark.executor.instances": "1",
+        "spark.cores.max": "8",
+        "spark.submit.pyFiles": "",
+        "spark.submit.deployMode": "client",
+        "spark.app.id": "app-20241228155944-0046",
+        "spark.driver.port": "34081",
+        "spark.app.startTime": "1735426784393",
+        "spark.executor.cores": "8",
+        "spark.memory.offHeap.size": "16g"
+    },
+    "1": [
+        80.63448405265808
+    ],
+    "2": [
+        12.81693172454834
+    ],
+    "3": [
+        24.963571310043335
+    ],
+    "4": [
+        21.567469358444214
+    ],
+    "5": [
+        50.35770893096924
+    ],
+    "6": [
+        3.3034610748291016
+    ],
+    "7": [
+        21.25043296813965
+    ],
+    "8": [
+        33.40748190879822
+    ],
+    "9": [
+        75.1117000579834
+    ],
+    "10": [
+        19.94579839706421
+    ],
+    "11": [
+        12.935089588165283
+    ],
+    "12": [
+        14.097134351730347
+    ],
+    "13": [
+        22.793055772781372
+    ],
+    "14": [
+        5.693503141403198
+    ],
+    "15": [
+        14.863290548324585
+    ],
+    "16": [
+        7.105914354324341
+    ],
+    "17": [
+        59.69488859176636
+    ],
+    "18": [
+        71.94270491600037
+    ],
+    "19": [
+        6.8030900955200195
+    ],
+    "20": [
+        9.835478067398071
+    ],
+    "21": [
+        66.12965321540833
+    ],
+    "22": [
+        9.343550443649292
+    ]
+}
