@@ -15,17 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::compute::kernels::numeric::{add, sub};
-use arrow::datatypes::IntervalDayTime;
 use arrow::{
     array::{
         ArrayRef, AsArray, Decimal128Builder, Float32Array, Float64Array, Int16Array, Int32Array,
         Int64Array, Int64Builder, Int8Array,
     },
+    compute::kernels::numeric::{add, sub},
     datatypes::{validate_decimal_precision, Decimal128Type, Int64Type},
 };
 use arrow_array::builder::IntervalDayTimeBuilder;
-use arrow_array::types::{Int16Type, Int32Type, Int8Type};
+use arrow_array::types::{Int16Type, Int32Type, Int8Type, IntervalDayTime};
 use arrow_array::{Array, ArrowNativeTypeOp, BooleanArray, Datum, Decimal128Array};
 use arrow_schema::{ArrowError, DataType, DECIMAL128_MAX_PRECISION};
 use datafusion::physical_expr_common::datum;
@@ -452,53 +451,6 @@ pub fn spark_decimal_div(
     Ok(ColumnarValue::Array(Arc::new(result)))
 }
 
-/// Spark-compatible `isnan` expression
-pub fn spark_isnan(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
-    fn set_nulls_to_false(is_nan: BooleanArray) -> ColumnarValue {
-        match is_nan.nulls() {
-            Some(nulls) => {
-                let is_not_null = nulls.inner();
-                ColumnarValue::Array(Arc::new(BooleanArray::new(
-                    is_nan.values() & is_not_null,
-                    None,
-                )))
-            }
-            None => ColumnarValue::Array(Arc::new(is_nan)),
-        }
-    }
-    let value = &args[0];
-    match value {
-        ColumnarValue::Array(array) => match array.data_type() {
-            DataType::Float64 => {
-                let array = array.as_any().downcast_ref::<Float64Array>().unwrap();
-                let is_nan = BooleanArray::from_unary(array, |x| x.is_nan());
-                Ok(set_nulls_to_false(is_nan))
-            }
-            DataType::Float32 => {
-                let array = array.as_any().downcast_ref::<Float32Array>().unwrap();
-                let is_nan = BooleanArray::from_unary(array, |x| x.is_nan());
-                Ok(set_nulls_to_false(is_nan))
-            }
-            other => Err(DataFusionError::Internal(format!(
-                "Unsupported data type {:?} for function isnan",
-                other,
-            ))),
-        },
-        ColumnarValue::Scalar(a) => match a {
-            ScalarValue::Float64(a) => Ok(ColumnarValue::Scalar(ScalarValue::Boolean(Some(
-                a.map(|x| x.is_nan()).unwrap_or(false),
-            )))),
-            ScalarValue::Float32(a) => Ok(ColumnarValue::Scalar(ScalarValue::Boolean(Some(
-                a.map(|x| x.is_nan()).unwrap_or(false),
-            )))),
-            _ => Err(DataFusionError::Internal(format!(
-                "Unsupported data type {:?} for function isnan",
-                value.data_type(),
-            ))),
-        },
-    }
-}
-
 macro_rules! scalar_date_arithmetic {
     ($start:expr, $days:expr, $op:expr) => {{
         let interval = IntervalDayTime::new(*$days as i32, 0);
@@ -570,4 +522,51 @@ pub fn spark_date_add(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
 
 pub fn spark_date_sub(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     spark_date_arithmetic(args, sub)
+}
+
+/// Spark-compatible `isnan` expression
+pub fn spark_isnan(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+    fn set_nulls_to_false(is_nan: BooleanArray) -> ColumnarValue {
+        match is_nan.nulls() {
+            Some(nulls) => {
+                let is_not_null = nulls.inner();
+                ColumnarValue::Array(Arc::new(BooleanArray::new(
+                    is_nan.values() & is_not_null,
+                    None,
+                )))
+            }
+            None => ColumnarValue::Array(Arc::new(is_nan)),
+        }
+    }
+    let value = &args[0];
+    match value {
+        ColumnarValue::Array(array) => match array.data_type() {
+            DataType::Float64 => {
+                let array = array.as_any().downcast_ref::<Float64Array>().unwrap();
+                let is_nan = BooleanArray::from_unary(array, |x| x.is_nan());
+                Ok(set_nulls_to_false(is_nan))
+            }
+            DataType::Float32 => {
+                let array = array.as_any().downcast_ref::<Float32Array>().unwrap();
+                let is_nan = BooleanArray::from_unary(array, |x| x.is_nan());
+                Ok(set_nulls_to_false(is_nan))
+            }
+            other => Err(DataFusionError::Internal(format!(
+                "Unsupported data type {:?} for function isnan",
+                other,
+            ))),
+        },
+        ColumnarValue::Scalar(a) => match a {
+            ScalarValue::Float64(a) => Ok(ColumnarValue::Scalar(ScalarValue::Boolean(Some(
+                a.map(|x| x.is_nan()).unwrap_or(false),
+            )))),
+            ScalarValue::Float32(a) => Ok(ColumnarValue::Scalar(ScalarValue::Boolean(Some(
+                a.map(|x| x.is_nan()).unwrap_or(false),
+            )))),
+            _ => Err(DataFusionError::Internal(format!(
+                "Unsupported data type {:?} for function isnan",
+                value.data_type(),
+            ))),
+        },
+    }
 }
