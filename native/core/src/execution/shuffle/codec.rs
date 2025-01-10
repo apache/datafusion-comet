@@ -583,10 +583,7 @@ impl<'a> BatchReader<'a> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow_array::builder::{
-        BooleanBuilder, Date32Builder, Decimal128Builder, Int16Builder, Int32Builder, Int64Builder,
-        Int8Builder, StringDictionaryBuilder, TimestampMicrosecondBuilder,
-    };
+    use arrow_array::builder::*;
     use std::sync::Arc;
 
     #[test]
@@ -605,14 +602,8 @@ mod test {
 
     fn create_batch(num_rows: usize, allow_nulls: bool) -> RecordBatch {
         /*
-        | DataType::Float32
-        | DataType::Float64
-        | DataType::Date32
-        | DataType::Timestamp(TimeUnit::Microsecond, _)
-        | DataType::Utf8
+       | DataType::Utf8
         | DataType::Binary => true,
-        DataType::Decimal128(_, s) if *s >= 0 => true,
-        DataType::Dictionary(k, v) if **k == DataType::Int32 => fast_codec_supports_type(v),
          */
         let schema = Arc::new(Schema::new(vec![
             Field::new("bool", DataType::Boolean, true),
@@ -620,6 +611,8 @@ mod test {
             Field::new("int16", DataType::Int16, true),
             Field::new("int32", DataType::Int32, true),
             Field::new("int64", DataType::Int64, true),
+            Field::new("float32", DataType::Float32, true),
+            Field::new("float64", DataType::Float64, true),
             Field::new(
                 "utf8_dict",
                 DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
@@ -643,6 +636,8 @@ mod test {
         let mut col_i16 = Int16Builder::new();
         let mut col_i32 = Int32Builder::new();
         let mut col_i64 = Int64Builder::new();
+        let mut col_f32 = Float32Builder::new();
+        let mut col_f64 = Float64Builder::new();
         let mut col_utf8_dict: StringDictionaryBuilder<Int32Type> = StringDictionaryBuilder::new();
         let mut col_date32 = Date32Builder::new();
         let mut col_decimal128 = Decimal128Builder::new()
@@ -656,6 +651,8 @@ mod test {
             col_i16.append_value(i as i16);
             col_i32.append_value(i as i32);
             col_i64.append_value(i as i64);
+            col_f32.append_value(i as f32 * 1.23_f32);
+            col_f64.append_value(i as f64 * 1.23_f64);
             col_date32.append_value(i as i32);
             col_decimal128.append_value((i * 1000000) as i128);
             if allow_nulls && i % 10 == 0 {
@@ -679,6 +676,8 @@ mod test {
                 Arc::new(col_i16.finish()),
                 Arc::new(col_i32.finish()),
                 Arc::new(col_i64.finish()),
+                Arc::new(col_f32.finish()),
+                Arc::new(col_f64.finish()),
                 Arc::new(col_utf8_dict.finish()),
                 Arc::new(col_date32.finish()),
                 Arc::new(col_decimal128.finish()),
