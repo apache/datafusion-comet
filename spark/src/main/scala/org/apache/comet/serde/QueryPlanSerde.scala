@@ -433,6 +433,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
       case Count(children) =>
+        if (children.length > 1 && aggExpr.isDistinct) {
+          withInfo(aggExpr, "no support for count distinct with multiple expressions")
+          return None
+        }
+
         val exprChildren = children.map(exprToProto(_, inputs, binding))
 
         if (exprChildren.forall(_.isDefined)) {

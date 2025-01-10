@@ -108,7 +108,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val cometShuffles = collect(df2.queryExecution.executedPlan) {
           case _: CometShuffleExchangeExec => true
         }
-        if (shuffleMode == "jvm") {
+        if (shuffleMode == "jvm" || shuffleMode == "auto") {
           assert(cometShuffles.length == 1)
         } else {
           // we fall back to Spark for shuffle because we do not support
@@ -608,7 +608,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               withView("v") {
                 sql("CREATE TEMP VIEW v AS SELECT _1, _2 FROM tbl ORDER BY _1")
                 checkSparkAnswer(
-                  "SELECT _2, SUM(_1), SUM(DISTINCT _1), MIN(_1), MAX(_1), COUNT(_1)," +
+                  "SELECT _2, SUM(_1), SUM(DISTINCT _2), MIN(_1), MAX(_1), COUNT(_1)," +
                     " COUNT(DISTINCT _2), AVG(_1), FIRST(_1), LAST(_1) FROM v GROUP BY _2 ORDER BY _2")
               }
             }

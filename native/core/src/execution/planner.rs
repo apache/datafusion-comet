@@ -108,6 +108,7 @@ use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
+use datafusion_expr::test::function_stub::count_udaf;
 
 // For clippy error on type_complexity.
 type PhyAggResult = Result<Vec<AggregateFunctionExpr>, ExecutionError>;
