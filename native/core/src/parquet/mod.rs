@@ -684,7 +684,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             .unwrap()
             .into();
 
-        let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut spark_parquet_options =
+            SparkParquetOptions::new(EvalMode::Legacy, session_timezone.as_str(), false);
         spark_parquet_options.allow_cast_unsigned_ints = true;
 
         let builder2 = ParquetExecBuilder::new(file_scan_config)
