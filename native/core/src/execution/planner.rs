@@ -1157,7 +1157,7 @@ impl PhysicalPlanner {
                 table_parquet_options.global.reorder_filters = true;
 
                 let mut spark_parquet_options =
-                    SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+                    SparkParquetOptions::new(EvalMode::Legacy, scan.session_timezone.as_str(),, false);
                 spark_parquet_options.allow_cast_unsigned_ints = true;
 
                 let mut builder = ParquetExecBuilder::new(file_scan_config)
