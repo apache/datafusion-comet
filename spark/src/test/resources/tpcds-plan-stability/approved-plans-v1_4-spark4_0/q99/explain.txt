@@ -1,32 +1,33 @@
 == Physical Plan ==
-TakeOrderedAndProject (28)
-+- * HashAggregate (27)
-   +- Exchange (26)
-      +- * HashAggregate (25)
-         +- * CometColumnarToRow (24)
-            +- CometProject (23)
-               +- CometBroadcastHashJoin (22)
-                  :- CometProject (17)
-                  :  +- CometBroadcastHashJoin (16)
-                  :     :- CometProject (12)
-                  :     :  +- CometBroadcastHashJoin (11)
-                  :     :     :- CometProject (7)
-                  :     :     :  +- CometBroadcastHashJoin (6)
-                  :     :     :     :- CometFilter (2)
-                  :     :     :     :  +- CometScan parquet spark_catalog.default.catalog_sales (1)
-                  :     :     :     +- CometBroadcastExchange (5)
-                  :     :     :        +- CometFilter (4)
-                  :     :     :           +- CometScan parquet spark_catalog.default.warehouse (3)
-                  :     :     +- CometBroadcastExchange (10)
-                  :     :        +- CometFilter (9)
-                  :     :           +- CometScan parquet spark_catalog.default.ship_mode (8)
-                  :     +- CometBroadcastExchange (15)
-                  :        +- CometFilter (14)
-                  :           +- CometScan parquet spark_catalog.default.call_center (13)
-                  +- CometBroadcastExchange (21)
-                     +- CometProject (20)
-                        +- CometFilter (19)
-                           +- CometScan parquet spark_catalog.default.date_dim (18)
+TakeOrderedAndProject (29)
++- * HashAggregate (28)
+   +- * CometColumnarToRow (27)
+      +- CometColumnarExchange (26)
+         +- * HashAggregate (25)
+            +- * CometColumnarToRow (24)
+               +- CometProject (23)
+                  +- CometBroadcastHashJoin (22)
+                     :- CometProject (17)
+                     :  +- CometBroadcastHashJoin (16)
+                     :     :- CometProject (12)
+                     :     :  +- CometBroadcastHashJoin (11)
+                     :     :     :- CometProject (7)
+                     :     :     :  +- CometBroadcastHashJoin (6)
+                     :     :     :     :- CometFilter (2)
+                     :     :     :     :  +- CometScan parquet spark_catalog.default.catalog_sales (1)
+                     :     :     :     +- CometBroadcastExchange (5)
+                     :     :     :        +- CometFilter (4)
+                     :     :     :           +- CometScan parquet spark_catalog.default.warehouse (3)
+                     :     :     +- CometBroadcastExchange (10)
+                     :     :        +- CometFilter (9)
+                     :     :           +- CometScan parquet spark_catalog.default.ship_mode (8)
+                     :     +- CometBroadcastExchange (15)
+                     :        +- CometFilter (14)
+                     :           +- CometScan parquet spark_catalog.default.call_center (13)
+                     +- CometBroadcastExchange (21)
+                        +- CometProject (20)
+                           +- CometFilter (19)
+                              +- CometScan parquet spark_catalog.default.date_dim (18)
 
 
 (1) CometScan parquet spark_catalog.default.catalog_sales
@@ -150,18 +151,21 @@ Functions [5]: [partial_sum(CASE WHEN ((cs_ship_date_sk#1 - cs_sold_date_sk#5) <
 Aggregate Attributes [5]: [sum#15, sum#16, sum#17, sum#18, sum#19]
 Results [8]: [_groupingexpression#14, sm_type#9, cc_name#11, sum#20, sum#21, sum#22, sum#23, sum#24]
 
-(26) Exchange
+(26) CometColumnarExchange
 Input [8]: [_groupingexpression#14, sm_type#9, cc_name#11, sum#20, sum#21, sum#22, sum#23, sum#24]
-Arguments: hashpartitioning(_groupingexpression#14, sm_type#9, cc_name#11, 5), ENSURE_REQUIREMENTS, [plan_id=1]
+Arguments: hashpartitioning(_groupingexpression#14, sm_type#9, cc_name#11, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
-(27) HashAggregate [codegen id : 2]
+(27) CometColumnarToRow [codegen id : 2]
+Input [8]: [_groupingexpression#14, sm_type#9, cc_name#11, sum#20, sum#21, sum#22, sum#23, sum#24]
+
+(28) HashAggregate [codegen id : 2]
 Input [8]: [_groupingexpression#14, sm_type#9, cc_name#11, sum#20, sum#21, sum#22, sum#23, sum#24]
 Keys [3]: [_groupingexpression#14, sm_type#9, cc_name#11]
 Functions [5]: [sum(CASE WHEN ((cs_ship_date_sk#1 - cs_sold_date_sk#5) <= 30) THEN 1 ELSE 0 END), sum(CASE WHEN (((cs_ship_date_sk#1 - cs_sold_date_sk#5) > 30) AND ((cs_ship_date_sk#1 - cs_sold_date_sk#5) <= 60)) THEN 1 ELSE 0 END), sum(CASE WHEN (((cs_ship_date_sk#1 - cs_sold_date_sk#5) > 60) AND ((cs_ship_date_sk#1 - cs_sold_date_sk#5) <= 90)) THEN 1 ELSE 0 END), sum(CASE WHEN (((cs_ship_date_sk#1 - cs_sold_date_sk#5) > 90) AND ((cs_ship_date_sk#1 - cs_sold_date_sk#5) <= 120)) THEN 1 ELSE 0 END), sum(CASE WHEN ((cs_ship_date_sk#1 - cs_sold_date_sk#5) > 120) THEN 1 ELSE 0 END)]
 Aggregate Attributes [5]: [sum(CASE WHEN ((cs_ship_date_sk#1 - cs_sold_date_sk#5) <= 30) THEN 1 ELSE 0 END)#25, sum(CASE WHEN (((cs_ship_date_sk#1 - cs_sold_date_sk#5) > 30) AND ((cs_ship_date_sk#1 - cs_sold_date_sk#5) <= 60)) THEN 1 ELSE 0 END)#26, sum(CASE WHEN (((cs_ship_date_sk#1 - cs_sold_date_sk#5) > 60) AND ((cs_ship_date_sk#1 - cs_sold_date_sk#5) <= 90)) THEN 1 ELSE 0 END)#27, sum(CASE WHEN (((cs_ship_date_sk#1 - cs_sold_date_sk#5) > 90) AND ((cs_ship_date_sk#1 - cs_sold_date_sk#5) <= 120)) THEN 1 ELSE 0 END)#28, sum(CASE WHEN ((cs_ship_date_sk#1 - cs_sold_date_sk#5) > 120) THEN 1 ELSE 0 END)#29]
 Results [8]: [_groupingexpression#14 AS substr(w_warehouse_name, 1, 20)#30, sm_type#9, cc_name#11, sum(CASE WHEN ((cs_ship_date_sk#1 - cs_sold_date_sk#5) <= 30) THEN 1 ELSE 0 END)#25 AS 30 days #31, sum(CASE WHEN (((cs_ship_date_sk#1 - cs_sold_date_sk#5) > 30) AND ((cs_ship_date_sk#1 - cs_sold_date_sk#5) <= 60)) THEN 1 ELSE 0 END)#26 AS 31 - 60 days #32, sum(CASE WHEN (((cs_ship_date_sk#1 - cs_sold_date_sk#5) > 60) AND ((cs_ship_date_sk#1 - cs_sold_date_sk#5) <= 90)) THEN 1 ELSE 0 END)#27 AS 61 - 90 days #33, sum(CASE WHEN (((cs_ship_date_sk#1 - cs_sold_date_sk#5) > 90) AND ((cs_ship_date_sk#1 - cs_sold_date_sk#5) <= 120)) THEN 1 ELSE 0 END)#28 AS 91 - 120 days #34, sum(CASE WHEN ((cs_ship_date_sk#1 - cs_sold_date_sk#5) > 120) THEN 1 ELSE 0 END)#29 AS >120 days #35]
 
-(28) TakeOrderedAndProject
+(29) TakeOrderedAndProject
 Input [8]: [substr(w_warehouse_name, 1, 20)#30, sm_type#9, cc_name#11, 30 days #31, 31 - 60 days #32, 61 - 90 days #33, 91 - 120 days #34, >120 days #35]
 Arguments: 100, [substr(w_warehouse_name, 1, 20)#30 ASC NULLS FIRST, sm_type#9 ASC NULLS FIRST, cc_name#11 ASC NULLS FIRST], [substr(w_warehouse_name, 1, 20)#30, sm_type#9, cc_name#11, 30 days #31, 31 - 60 days #32, 61 - 90 days #33, 91 - 120 days #34, >120 days #35]
 
