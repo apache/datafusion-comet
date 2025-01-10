@@ -82,9 +82,10 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     } else {
       name
     }
-    val s = CometConf.COMET_NATIVE_SCAN_IMPL.get()
     if (CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_FULL)) {
       goldenFileName = goldenFileName + ".native"
+    } else if (CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_RECORDBATCH)) {
+      goldenFileName = goldenFileName + ".native_recordbatch"
     }
     new File(goldenFilePath, goldenFileName)
   }
