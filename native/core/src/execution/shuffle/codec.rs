@@ -601,10 +601,6 @@ mod test {
     }
 
     fn create_batch(num_rows: usize, allow_nulls: bool) -> RecordBatch {
-        /*
-       | DataType::Utf8
-        | DataType::Binary => true,
-         */
         let schema = Arc::new(Schema::new(vec![
             Field::new("bool", DataType::Boolean, true),
             Field::new("int8", DataType::Int8, true),
@@ -613,6 +609,8 @@ mod test {
             Field::new("int64", DataType::Int64, true),
             Field::new("float32", DataType::Float32, true),
             Field::new("float64", DataType::Float64, true),
+            Field::new("binary", DataType::Binary, true),
+            Field::new("utf8", DataType::Utf8, true),
             Field::new(
                 "utf8_dict",
                 DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
@@ -638,6 +636,8 @@ mod test {
         let mut col_i64 = Int64Builder::new();
         let mut col_f32 = Float32Builder::new();
         let mut col_f64 = Float64Builder::new();
+        let mut col_binary = BinaryBuilder::new();
+        let mut col_utf8 = StringBuilder::new();
         let mut col_utf8_dict: StringDictionaryBuilder<Int32Type> = StringDictionaryBuilder::new();
         let mut col_date32 = Date32Builder::new();
         let mut col_decimal128 = Decimal128Builder::new()
@@ -655,13 +655,16 @@ mod test {
             col_f64.append_value(i as f64 * 1.23_f64);
             col_date32.append_value(i as i32);
             col_decimal128.append_value((i * 1000000) as i128);
+            col_binary.append_value(format!("{i}").as_bytes());
             if allow_nulls && i % 10 == 0 {
+                col_utf8.append_null();
                 col_utf8_dict.append_null();
                 col_bool.append_null();
                 col_timestamp_ntz.append_null();
                 col_timestamp.append_null();
             } else {
                 // test for dictionary-encoded strings
+                col_utf8.append_value(format!("this is string {i}"));
                 col_utf8_dict.append_value("this string is repeated a lot");
                 col_bool.append_value(i % 2 == 0);
                 col_timestamp_ntz.append_value((i * 100000000) as i64);
@@ -678,6 +681,8 @@ mod test {
                 Arc::new(col_i64.finish()),
                 Arc::new(col_f32.finish()),
                 Arc::new(col_f64.finish()),
+                Arc::new(col_binary.finish()),
+                Arc::new(col_utf8.finish()),
                 Arc::new(col_utf8_dict.finish()),
                 Arc::new(col_date32.finish()),
                 Arc::new(col_decimal128.finish()),
