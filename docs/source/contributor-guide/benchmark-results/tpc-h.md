@@ -27,7 +27,7 @@ The tracking issue for improving TPC-H performance is [#391](https://github.com/
 
 ![](../../_static/images/benchmark-results/0.5.0-SNAPSHOT-2025-01-09/tpch_allqueries.png)
 
-Here is a breakdown showing relative performance of Spark, Comet, and DataFusion for each query.
+Here is a breakdown showing relative performance of Spark and Comet for each query.
 
 ![](../../_static/images/benchmark-results/0.5.0-SNAPSHOT-2025-01-09/tpch_queries_compare.png)
 

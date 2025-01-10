@@ -50,7 +50,7 @@ When using Comet, the overall run time is reduced from 645 seconds to 330 second
 
 ![](docs/source/_static/images/benchmark-results/0.5.0-SNAPSHOT-2025-01-09/tpch_allqueries.png)
 
-Here is a breakdown showing relative performance of Spark, Comet, and DataFusion for each TPC-H query.
+Here is a breakdown showing relative performance of Spark and Comet for each TPC-H query.
 
 ![](docs/source/_static/images/benchmark-results/0.5.0-SNAPSHOT-2025-01-09/tpch_queries_compare.png)
 
