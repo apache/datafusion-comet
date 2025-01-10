@@ -36,7 +36,9 @@ fn criterion_benchmark(c: &mut Criterion) {
     for compression_codec in &[
         CompressionCodec::None,
         CompressionCodec::Lz4Frame,
+        CompressionCodec::Snappy,
         CompressionCodec::Zstd(1),
+        CompressionCodec::Zstd(6),
     ] {
         for enable_fast_encoding in [true, false] {
             let name = format!("shuffle_writer: write encoded (enable_fast_encoding={enable_fast_encoding}, compression={compression_codec:?})");
