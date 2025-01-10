@@ -82,10 +82,9 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     } else {
       name
     }
-    if (CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_FULL)) {
-      goldenFileName = goldenFileName + ".native"
-    } else if (CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_RECORDBATCH)) {
-      goldenFileName = goldenFileName + ".native_recordbatch"
+    val nativeImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
+    if (!nativeImpl.equals(CometConf.SCAN_NATIVE_COMET)) {
+      goldenFileName = s"$goldenFileName.$nativeImpl"
     }
     new File(goldenFilePath, goldenFileName)
   }
@@ -265,7 +264,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
 
     // Comet does not yet support DPP yet with full native scan enabled
     // https://github.com/apache/datafusion-comet/issues/121
-    val dppEnabled = CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE
+    val dppEnabled = CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_COMET
 
     // Disable char/varchar read-side handling for better performance.
     withSQLConf(
