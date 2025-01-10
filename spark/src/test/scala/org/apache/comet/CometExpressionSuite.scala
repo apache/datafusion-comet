@@ -2207,9 +2207,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         df.write.parquet(dir.toString())
       }
-
-      val df = spark.read.parquet(dir.toString())
-      checkSparkAnswerAndOperator(df.select("nested1.id"))
+      val df = spark.read.parquet(dir.toString()).select("nested1.id")
+      // Comet's original scan does not support structs.
+      // The plan will have a Comet Scan only if scan impl is native_full or native_recordbatch
+      if (!CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE)) {
+        checkSparkAnswerAndOperator(df)
+      } else {
+        checkSparkAnswer(df)
+      }
     }
   }
 
@@ -2233,10 +2238,19 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
 
       val df = spark.read.parquet(dir.toString())
-      checkSparkAnswerAndOperator(df.select("nested1.id"))
-      checkSparkAnswerAndOperator(df.select("nested1.nested2"))
-      checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
-      checkSparkAnswerAndOperator(df.select("nested1.id", "nested1.nested2.id"))
+      // Comet's original scan does not support structs.
+      // The plan will have a Comet Scan only if scan impl is native_full or native_recordbatch
+      if (!CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE)) {
+        checkSparkAnswerAndOperator(df.select("nested1.id"))
+        checkSparkAnswerAndOperator(df.select("nested1.nested2"))
+        checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
+        checkSparkAnswerAndOperator(df.select("nested1.id", "nested1.nested2.id"))
+      } else {
+        checkSparkAnswer(df.select("nested1.id"))
+        checkSparkAnswer(df.select("nested1.nested2"))
+        checkSparkAnswer(df.select("nested1.nested2.id"))
+        checkSparkAnswer(df.select("nested1.id", "nested1.nested2.id"))
+      }
     }
   }
 
@@ -2259,8 +2273,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         df.write.parquet(dir.toString())
       }
 
-      val df = spark.read.parquet(dir.toString())
-      checkSparkAnswerAndOperator(df.select("nested1"))
+      val df = spark.read.parquet(dir.toString()).select("nested1.id")
+      // Comet's original scan does not support structs.
+      // The plan will have a Comet Scan only if scan impl is native_full or native_recordbatch
+      if (!CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE)) {
+        checkSparkAnswerAndOperator(df)
+      } else {
+        checkSparkAnswer(df)
+      }
     }
   }
 
