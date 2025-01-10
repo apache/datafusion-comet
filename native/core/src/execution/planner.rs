@@ -1521,7 +1521,7 @@ impl PhysicalPlanner {
                     .schema(schema)
                     .alias("count")
                     .with_ignore_nulls(false)
-                    .with_distinct(spark_expr.distinct.clone())
+                    .with_distinct(spark_expr.distinct)
                     .build()
                     .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
             }
@@ -1534,7 +1534,7 @@ impl PhysicalPlanner {
                     .schema(schema)
                     .alias("min")
                     .with_ignore_nulls(false)
-                    .with_distinct(false)
+                    .with_distinct(spark_expr.distinct)
                     .build()
                     .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
             }
@@ -1547,7 +1547,7 @@ impl PhysicalPlanner {
                     .schema(schema)
                     .alias("max")
                     .with_ignore_nulls(false)
-                    .with_distinct(false)
+                    .with_distinct(spark_expr.distinct)
                     .build()
                     .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
             }
@@ -1572,7 +1572,7 @@ impl PhysicalPlanner {
                     .schema(schema)
                     .alias("sum")
                     .with_ignore_nulls(false)
-                    .with_distinct(spark_expr.distinct.clone())
+                    .with_distinct(spark_expr.distinct)
                     .build()
                     .map_err(|e| e.into())
             }
@@ -1600,7 +1600,7 @@ impl PhysicalPlanner {
                     .schema(schema)
                     .alias("avg")
                     .with_ignore_nulls(false)
-                    .with_distinct(false)
+                    .with_distinct(spark_expr.distinct)
                     .build()
                     .map_err(|e| e.into())
             }
@@ -1612,7 +1612,7 @@ impl PhysicalPlanner {
                     .schema(schema)
                     .alias("first")
                     .with_ignore_nulls(false)
-                    .with_distinct(spark_expr.distinct.clone())
+                    .with_distinct(spark_expr.distinct)
                     .build()
                     .map_err(|e| e.into())
             }
@@ -1624,7 +1624,7 @@ impl PhysicalPlanner {
                     .schema(schema)
                     .alias("last")
                     .with_ignore_nulls(false)
-                    .with_distinct(spark_expr.distinct.clone())
+                    .with_distinct(spark_expr.distinct)
                     .build()
                     .map_err(|e| e.into())
             }
@@ -1635,7 +1635,7 @@ impl PhysicalPlanner {
                     .schema(schema)
                     .alias("bit_and")
                     .with_ignore_nulls(false)
-                    .with_distinct(spark_expr.distinct.clone())
+                    .with_distinct(spark_expr.distinct)
                     .build()
                     .map_err(|e| e.into())
             }
@@ -1646,7 +1646,7 @@ impl PhysicalPlanner {
                     .schema(schema)
                     .alias("bit_or")
                     .with_ignore_nulls(false)
-                    .with_distinct(spark_expr.distinct.clone())
+                    .with_distinct(spark_expr.distinct)
                     .build()
                     .map_err(|e| e.into())
             }
@@ -1657,7 +1657,7 @@ impl PhysicalPlanner {
                     .schema(schema)
                     .alias("bit_xor")
                     .with_ignore_nulls(false)
-                    .with_distinct(spark_expr.distinct.clone())
+                    .with_distinct(spark_expr.distinct)
                     .build()
                     .map_err(|e| e.into())
             }
