@@ -89,7 +89,7 @@ object CometConf extends ShimCometConf {
         "parquet file reader and native column decoding. Supports simple types only " +
         s"'$SCAN_NATIVE_DATAFUSION' is a fully native implementation of scan based on DataFusion" +
         s"'$SCAN_NATIVE_ICEBERG_COMPAT' is a native implementation that exposes apis to read " +
-        s"parquet columns natively.")
+        "parquet columns natively.")
     .internal()
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))

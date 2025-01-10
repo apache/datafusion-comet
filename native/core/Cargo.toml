@@ -40,8 +40,6 @@ arrow-array = { workspace = true }
 arrow-buffer = { workspace = true }
 arrow-data = { workspace = true }
 arrow-schema = { workspace = true }
-arrow-ipc = { workspace = true }
-flatbuffers = { workspace = true }
 parquet = { workspace = true, default-features = false, features = ["experimental"] }
 futures = { workspace = true }
 mimalloc = { version = "*", default-features = false, optional = true }

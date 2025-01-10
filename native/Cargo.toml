@@ -37,9 +37,7 @@ arrow = { version = "53.2.0", features = ["prettyprint", "ffi", "chrono-tz"] }
 arrow-array = { version = "53.2.0" }
 arrow-buffer = { version = "53.2.0" }
 arrow-data = { version = "53.2.0" }
-arrow-ipc = { version = "53.2.0" }
 arrow-schema = { version = "53.2.0" }
-flatbuffers = { version = "24.3.25" }
 parquet = { version = "53.2.0", default-features = false, features = ["experimental"] }
 datafusion = { version = "43.0.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "parquet"] }
 datafusion-common = { version = "43.0.0" }
