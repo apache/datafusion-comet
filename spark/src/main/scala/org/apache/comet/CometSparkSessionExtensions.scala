@@ -206,7 +206,7 @@ class CometSparkSessionExtensions
                 // here and then it gets replaced with `CometNativeScanExec` in `CometExecRule`
                 // but that only happens if `COMET_EXEC_ENABLED` is enabled
                 && COMET_EXEC_ENABLED.get()
-                && COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_FULL =>
+                && COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_DATAFUSION =>
             logInfo("Comet extension enabled for v1 full native Scan")
             CometScanExec(scanExec, session)
 
@@ -377,7 +377,7 @@ class CometSparkSessionExtensions
       plan.transformUp {
         // Fully native scan for V1
         case scan: CometScanExec
-            if COMET_NATIVE_SCAN_IMPL.get.equals(CometConf.SCAN_NATIVE_FULL) =>
+            if COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_DATAFUSION) =>
           val nativeOp = QueryPlanSerde.operator2Proto(scan).get
           CometNativeScanExec(nativeOp, scan.wrapped, scan.session)
 
