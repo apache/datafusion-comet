@@ -1,17 +1,17 @@
-TakeOrderedAndProject [sales_cnt_diff,prev_year,year,i_brand_id,i_class_id,i_category_id,i_manufact_id,prev_yr_cnt,curr_yr_cnt,sales_amt_diff]
-  WholeStageCodegen (7)
-    Project [d_year,d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_cnt,sales_amt,sales_amt]
-      SortMergeJoin [i_brand_id,i_class_id,i_category_id,i_manufact_id,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_cnt]
-        InputAdapter
-          WholeStageCodegen (3)
-            Sort [i_brand_id,i_class_id,i_category_id,i_manufact_id]
-              InputAdapter
-                Exchange [i_brand_id,i_class_id,i_category_id,i_manufact_id] #1
-                  WholeStageCodegen (2)
-                    Filter [sales_cnt]
-                      HashAggregate [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sum,sum] [sum(sales_cnt),sum(UnscaledValue(sales_amt)),sales_cnt,sales_amt,sum,sum]
+WholeStageCodegen (5)
+  CometColumnarToRow
+    InputAdapter
+      CometTakeOrderedAndProject [prev_year,year,i_brand_id,i_class_id,i_category_id,i_manufact_id,prev_yr_cnt,curr_yr_cnt,sales_cnt_diff,sales_amt_diff]
+        CometProject [d_year,d_year,sales_cnt,sales_cnt,sales_amt,sales_amt] [prev_year,year,i_brand_id,i_class_id,i_category_id,i_manufact_id,prev_yr_cnt,curr_yr_cnt,sales_cnt_diff,sales_amt_diff]
+          CometSortMergeJoin [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt,d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt]
+            CometSort [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt]
+              CometColumnarExchange [i_brand_id,i_class_id,i_category_id,i_manufact_id] #1
+                WholeStageCodegen (2)
+                  Filter [sales_cnt]
+                    HashAggregate [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sum,sum] [sum(sales_cnt),sum(UnscaledValue(sales_amt)),sales_cnt,sales_amt,sum,sum]
+                      CometColumnarToRow
                         InputAdapter
-                          Exchange [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id] #2
+                          CometColumnarExchange [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id] #2
                             WholeStageCodegen (1)
                               HashAggregate [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt] [sum,sum,sum,sum]
                                 CometColumnarToRow
@@ -85,17 +85,15 @@ TakeOrderedAndProject [sales_cnt_diff,prev_year,year,i_brand_id,i_class_id,i_cat
                                                     CometProject [wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt]
                                                       CometFilter [wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt,wr_returned_date_sk]
                                                         CometScan parquet spark_catalog.default.web_returns [wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt,wr_returned_date_sk]
-        InputAdapter
-          WholeStageCodegen (6)
-            Sort [i_brand_id,i_class_id,i_category_id,i_manufact_id]
-              InputAdapter
-                Exchange [i_brand_id,i_class_id,i_category_id,i_manufact_id] #13
-                  WholeStageCodegen (5)
-                    Filter [sales_cnt]
-                      HashAggregate [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sum,sum] [sum(sales_cnt),sum(UnscaledValue(sales_amt)),sales_cnt,sales_amt,sum,sum]
+            CometSort [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt]
+              CometColumnarExchange [i_brand_id,i_class_id,i_category_id,i_manufact_id] #13
+                WholeStageCodegen (4)
+                  Filter [sales_cnt]
+                    HashAggregate [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sum,sum] [sum(sales_cnt),sum(UnscaledValue(sales_amt)),sales_cnt,sales_amt,sum,sum]
+                      CometColumnarToRow
                         InputAdapter
-                          Exchange [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id] #14
-                            WholeStageCodegen (4)
+                          CometColumnarExchange [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id] #14
+                            WholeStageCodegen (3)
                               HashAggregate [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt] [sum,sum,sum,sum]
                                 CometColumnarToRow
                                   InputAdapter
