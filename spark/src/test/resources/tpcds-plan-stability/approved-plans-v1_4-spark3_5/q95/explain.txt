@@ -1,57 +1,58 @@
 == Physical Plan ==
-* HashAggregate (53)
-+- Exchange (52)
-   +- * HashAggregate (51)
-      +- * HashAggregate (50)
-         +- * CometColumnarToRow (49)
-            +- CometHashAggregate (48)
-               +- CometProject (47)
-                  +- CometBroadcastHashJoin (46)
-                     :- CometProject (41)
-                     :  +- CometBroadcastHashJoin (40)
-                     :     :- CometProject (35)
-                     :     :  +- CometBroadcastHashJoin (34)
-                     :     :     :- CometSortMergeJoin (29)
-                     :     :     :  :- CometSortMergeJoin (15)
-                     :     :     :  :  :- CometSort (5)
-                     :     :     :  :  :  +- CometExchange (4)
-                     :     :     :  :  :     +- CometProject (3)
-                     :     :     :  :  :        +- CometFilter (2)
-                     :     :     :  :  :           +- CometScan parquet spark_catalog.default.web_sales (1)
-                     :     :     :  :  +- CometProject (14)
-                     :     :     :  :     +- CometSortMergeJoin (13)
-                     :     :     :  :        :- CometSort (10)
-                     :     :     :  :        :  +- CometExchange (9)
-                     :     :     :  :        :     +- CometProject (8)
-                     :     :     :  :        :        +- CometFilter (7)
-                     :     :     :  :        :           +- CometScan parquet spark_catalog.default.web_sales (6)
-                     :     :     :  :        +- CometSort (12)
-                     :     :     :  :           +- ReusedExchange (11)
-                     :     :     :  +- CometProject (28)
-                     :     :     :     +- CometSortMergeJoin (27)
-                     :     :     :        :- CometSort (20)
-                     :     :     :        :  +- CometExchange (19)
-                     :     :     :        :     +- CometProject (18)
-                     :     :     :        :        +- CometFilter (17)
-                     :     :     :        :           +- CometScan parquet spark_catalog.default.web_returns (16)
-                     :     :     :        +- CometProject (26)
-                     :     :     :           +- CometSortMergeJoin (25)
-                     :     :     :              :- CometSort (22)
-                     :     :     :              :  +- ReusedExchange (21)
-                     :     :     :              +- CometSort (24)
-                     :     :     :                 +- ReusedExchange (23)
-                     :     :     +- CometBroadcastExchange (33)
-                     :     :        +- CometProject (32)
-                     :     :           +- CometFilter (31)
-                     :     :              +- CometScan parquet spark_catalog.default.date_dim (30)
-                     :     +- CometBroadcastExchange (39)
-                     :        +- CometProject (38)
-                     :           +- CometFilter (37)
-                     :              +- CometScan parquet spark_catalog.default.customer_address (36)
-                     +- CometBroadcastExchange (45)
-                        +- CometProject (44)
-                           +- CometFilter (43)
-                              +- CometScan parquet spark_catalog.default.web_site (42)
+* CometColumnarToRow (54)
++- CometHashAggregate (53)
+   +- CometColumnarExchange (52)
+      +- * HashAggregate (51)
+         +- * HashAggregate (50)
+            +- * CometColumnarToRow (49)
+               +- CometHashAggregate (48)
+                  +- CometProject (47)
+                     +- CometBroadcastHashJoin (46)
+                        :- CometProject (41)
+                        :  +- CometBroadcastHashJoin (40)
+                        :     :- CometProject (35)
+                        :     :  +- CometBroadcastHashJoin (34)
+                        :     :     :- CometSortMergeJoin (29)
+                        :     :     :  :- CometSortMergeJoin (15)
+                        :     :     :  :  :- CometSort (5)
+                        :     :     :  :  :  +- CometExchange (4)
+                        :     :     :  :  :     +- CometProject (3)
+                        :     :     :  :  :        +- CometFilter (2)
+                        :     :     :  :  :           +- CometScan parquet spark_catalog.default.web_sales (1)
+                        :     :     :  :  +- CometProject (14)
+                        :     :     :  :     +- CometSortMergeJoin (13)
+                        :     :     :  :        :- CometSort (10)
+                        :     :     :  :        :  +- CometExchange (9)
+                        :     :     :  :        :     +- CometProject (8)
+                        :     :     :  :        :        +- CometFilter (7)
+                        :     :     :  :        :           +- CometScan parquet spark_catalog.default.web_sales (6)
+                        :     :     :  :        +- CometSort (12)
+                        :     :     :  :           +- ReusedExchange (11)
+                        :     :     :  +- CometProject (28)
+                        :     :     :     +- CometSortMergeJoin (27)
+                        :     :     :        :- CometSort (20)
+                        :     :     :        :  +- CometExchange (19)
+                        :     :     :        :     +- CometProject (18)
+                        :     :     :        :        +- CometFilter (17)
+                        :     :     :        :           +- CometScan parquet spark_catalog.default.web_returns (16)
+                        :     :     :        +- CometProject (26)
+                        :     :     :           +- CometSortMergeJoin (25)
+                        :     :     :              :- CometSort (22)
+                        :     :     :              :  +- ReusedExchange (21)
+                        :     :     :              +- CometSort (24)
+                        :     :     :                 +- ReusedExchange (23)
+                        :     :     +- CometBroadcastExchange (33)
+                        :     :        +- CometProject (32)
+                        :     :           +- CometFilter (31)
+                        :     :              +- CometScan parquet spark_catalog.default.date_dim (30)
+                        :     +- CometBroadcastExchange (39)
+                        :        +- CometProject (38)
+                        :           +- CometFilter (37)
+                        :              +- CometScan parquet spark_catalog.default.customer_address (36)
+                        +- CometBroadcastExchange (45)
+                           +- CometProject (44)
+                              +- CometFilter (43)
+                                 +- CometScan parquet spark_catalog.default.web_site (42)
 
 
 (1) CometScan parquet spark_catalog.default.web_sales
@@ -287,14 +288,15 @@ Functions [3]: [merge_sum(UnscaledValue(ws_ext_ship_cost#5)), merge_sum(Unscaled
 Aggregate Attributes [3]: [sum(UnscaledValue(ws_ext_ship_cost#5))#27, sum(UnscaledValue(ws_net_profit#6))#28, count(ws_order_number#4)#29]
 Results [3]: [sum#25, sum#26, count#30]
 
-(52) Exchange
+(52) CometColumnarExchange
 Input [3]: [sum#25, sum#26, count#30]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=4]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
 
-(53) HashAggregate [codegen id : 2]
+(53) CometHashAggregate
 Input [3]: [sum#25, sum#26, count#30]
 Keys: []
 Functions [3]: [sum(UnscaledValue(ws_ext_ship_cost#5)), sum(UnscaledValue(ws_net_profit#6)), count(distinct ws_order_number#4)]
-Aggregate Attributes [3]: [sum(UnscaledValue(ws_ext_ship_cost#5))#27, sum(UnscaledValue(ws_net_profit#6))#28, count(ws_order_number#4)#29]
-Results [3]: [count(ws_order_number#4)#29 AS order count #31, MakeDecimal(sum(UnscaledValue(ws_ext_ship_cost#5))#27,17,2) AS total shipping cost #32, MakeDecimal(sum(UnscaledValue(ws_net_profit#6))#28,17,2) AS total net profit #33]
+
+(54) CometColumnarToRow [codegen id : 2]
+Input [3]: [order count #31, total shipping cost #32, total net profit #33]
 
