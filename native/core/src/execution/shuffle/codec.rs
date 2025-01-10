@@ -43,11 +43,7 @@ pub fn fast_codec_supports_type(data_type: &DataType) -> bool {
         | DataType::Binary => true,
         DataType::Decimal128(_, s) if *s >= 0 => true,
         DataType::Dictionary(k, v) if **k == DataType::Int32 => fast_codec_supports_type(v),
-        _ => {
-            // TODO remove this temp debug logging before merging
-            println!("Native shuffle fast codec does not support data type: {data_type:?}");
-            false
-        }
+        _ => false,
     }
 }
 
@@ -588,8 +584,8 @@ impl<'a> BatchReader<'a> {
 mod test {
     use super::*;
     use arrow_array::builder::{
-        BooleanBuilder, Date32Builder, Decimal128Builder, Int32Builder, StringDictionaryBuilder,
-        TimestampMicrosecondBuilder,
+        BooleanBuilder, Date32Builder, Decimal128Builder, Int16Builder, Int32Builder, Int64Builder,
+        Int8Builder, StringDictionaryBuilder, TimestampMicrosecondBuilder,
     };
     use std::sync::Arc;
 
@@ -608,66 +604,86 @@ mod test {
     }
 
     fn create_batch(num_rows: usize, allow_nulls: bool) -> RecordBatch {
+        /*
+        | DataType::Float32
+        | DataType::Float64
+        | DataType::Date32
+        | DataType::Timestamp(TimeUnit::Microsecond, _)
+        | DataType::Utf8
+        | DataType::Binary => true,
+        DataType::Decimal128(_, s) if *s >= 0 => true,
+        DataType::Dictionary(k, v) if **k == DataType::Int32 => fast_codec_supports_type(v),
+         */
         let schema = Arc::new(Schema::new(vec![
-            Field::new("a", DataType::Int32, true),
+            Field::new("bool", DataType::Boolean, true),
+            Field::new("int8", DataType::Int8, true),
+            Field::new("int16", DataType::Int16, true),
+            Field::new("int32", DataType::Int32, true),
+            Field::new("int64", DataType::Int64, true),
             Field::new(
-                "b",
+                "utf8_dict",
                 DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
                 true,
             ),
-            Field::new("c", DataType::Date32, true),
-            Field::new("d", DataType::Decimal128(11, 2), true),
-            Field::new("e", DataType::Boolean, true),
-            Field::new("f", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+            Field::new("date32", DataType::Date32, true),
+            Field::new("decimal128", DataType::Decimal128(11, 2), true),
             Field::new(
-                "g",
+                "timestamp_ntz",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                true,
+            ),
+            Field::new(
+                "timestamp",
                 DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
                 true,
             ),
         ]));
-        let mut a = Int32Builder::new();
-        let mut b = StringDictionaryBuilder::new();
-        let mut c = Date32Builder::new();
-        let mut d = Decimal128Builder::new()
+        let mut col_bool = BooleanBuilder::with_capacity(num_rows);
+        let mut col_i8 = Int8Builder::new();
+        let mut col_i16 = Int16Builder::new();
+        let mut col_i32 = Int32Builder::new();
+        let mut col_i64 = Int64Builder::new();
+        let mut col_utf8_dict: StringDictionaryBuilder<Int32Type> = StringDictionaryBuilder::new();
+        let mut col_date32 = Date32Builder::new();
+        let mut col_decimal128 = Decimal128Builder::new()
             .with_precision_and_scale(11, 2)
             .unwrap();
-        let mut e = BooleanBuilder::with_capacity(num_rows);
-        let mut f = TimestampMicrosecondBuilder::with_capacity(num_rows);
-        let mut g = TimestampMicrosecondBuilder::with_capacity(num_rows).with_timezone("UTC");
+        let mut col_timestamp_ntz = TimestampMicrosecondBuilder::with_capacity(num_rows);
+        let mut col_timestamp =
+            TimestampMicrosecondBuilder::with_capacity(num_rows).with_timezone("UTC");
         for i in 0..num_rows {
-            a.append_value(i as i32);
-            c.append_value(i as i32);
-            d.append_value((i * 1000000) as i128);
+            col_i8.append_value(i as i8);
+            col_i16.append_value(i as i16);
+            col_i32.append_value(i as i32);
+            col_i64.append_value(i as i64);
+            col_date32.append_value(i as i32);
+            col_decimal128.append_value((i * 1000000) as i128);
             if allow_nulls && i % 10 == 0 {
-                b.append_null();
-                e.append_null();
-                f.append_null();
-                g.append_null();
+                col_utf8_dict.append_null();
+                col_bool.append_null();
+                col_timestamp_ntz.append_null();
+                col_timestamp.append_null();
             } else {
                 // test for dictionary-encoded strings
-                b.append_value("this string is repeated a lot");
-                e.append_value(i % 2 == 0);
-                f.append_value((i * 100000000) as i64);
-                g.append_value((i * 100000000) as i64);
+                col_utf8_dict.append_value("this string is repeated a lot");
+                col_bool.append_value(i % 2 == 0);
+                col_timestamp_ntz.append_value((i * 100000000) as i64);
+                col_timestamp.append_value((i * 100000000) as i64);
             }
         }
-        let a = a.finish();
-        let b: DictionaryArray<Int32Type> = b.finish();
-        let c = c.finish();
-        let d = d.finish();
-        let e = e.finish();
-        let f = f.finish();
-        let g = g.finish();
         RecordBatch::try_new(
             Arc::clone(&schema),
             vec![
-                Arc::new(a),
-                Arc::new(b),
-                Arc::new(c),
-                Arc::new(d),
-                Arc::new(e),
-                Arc::new(f),
-                Arc::new(g),
+                Arc::new(col_bool.finish()),
+                Arc::new(col_i8.finish()),
+                Arc::new(col_i16.finish()),
+                Arc::new(col_i32.finish()),
+                Arc::new(col_i64.finish()),
+                Arc::new(col_utf8_dict.finish()),
+                Arc::new(col_date32.finish()),
+                Arc::new(col_decimal128.finish()),
+                Arc::new(col_timestamp_ntz.finish()),
+                Arc::new(col_timestamp.finish()),
             ],
         )
         .unwrap()
