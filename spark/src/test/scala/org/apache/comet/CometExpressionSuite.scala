@@ -2529,4 +2529,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         spark.sql("SELECT array_contains((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
     }
   }
+
+  test("CreateMap") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      makeParquetFileAllTypes(path, dictionaryEnabled = false, n = 10000)
+      spark.read.parquet(path.toString).createOrReplaceTempView("t1");
+      val q = spark.sql("SELECT map(1, _3, 2, _2) FROM t1 LIMIT 1")
+      q.explain(true)
+      q.show(false)
+      println(q.queryExecution.executedPlan)
+    }
+  }
 }
