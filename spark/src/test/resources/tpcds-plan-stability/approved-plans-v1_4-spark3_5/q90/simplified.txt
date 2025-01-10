@@ -1,7 +1,7 @@
 WholeStageCodegen (2)
   Project [amc,pmc]
     BroadcastNestedLoopJoin
-      ColumnarToRow
+      CometColumnarToRow
         InputAdapter
           CometHashAggregate [amc,count,count(1)]
             CometExchange #1
@@ -30,7 +30,7 @@ WholeStageCodegen (2)
       InputAdapter
         BroadcastExchange #5
           WholeStageCodegen (1)
-            ColumnarToRow
+            CometColumnarToRow
               InputAdapter
                 CometHashAggregate [pmc,count,count(1)]
                   CometExchange #6

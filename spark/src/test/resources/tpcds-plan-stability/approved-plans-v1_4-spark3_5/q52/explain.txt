@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (19)
+* CometColumnarToRow (19)
 +- CometTakeOrderedAndProject (18)
    +- CometHashAggregate (17)
       +- CometExchange (16)
@@ -106,6 +106,6 @@ Functions [1]: [sum(UnscaledValue(ss_ext_sales_price#5))]
 Input [4]: [d_year#2, brand_id#12, brand#13, ext_price#14]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[d_year#2 ASC NULLS FIRST,ext_price#14 DESC NULLS LAST,brand_id#12 ASC NULLS FIRST], output=[d_year#2,brand_id#12,brand#13,ext_price#14]), [d_year#2, brand_id#12, brand#13, ext_price#14], 100, [d_year#2 ASC NULLS FIRST, ext_price#14 DESC NULLS LAST, brand_id#12 ASC NULLS FIRST], [d_year#2, brand_id#12, brand#13, ext_price#14]
 
-(19) ColumnarToRow [codegen id : 1]
+(19) CometColumnarToRow [codegen id : 1]
 Input [4]: [d_year#2, brand_id#12, brand#13, ext_price#14]
 

@@ -2266,18 +2266,24 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             withInfo(expr, "unsupported arguments for GetArrayStructFields", child)
             None
           }
-        case expr if expr.prettyName == "array_repeat" =>
+        case expr if expr.prettyName == "array_contains" =>
           createBinaryExpr(
             expr.children(0),
             expr.children(1),
             inputs,
-            (builder, binaryExpr) => builder.setArrayRepeat(binaryExpr))
+            (builder, binaryExpr) => builder.setArrayContains(binaryExpr))
         case _ if expr.prettyName == "array_append" =>
           createBinaryExpr(
             expr.children(0),
             expr.children(1),
             inputs,
             (builder, binaryExpr) => builder.setArrayAppend(binaryExpr))
+        case expr if expr.prettyName == "array_repeat" =>
+          createBinaryExpr(
+            expr.children(0),
+            expr.children(1),
+            inputs,
+            (builder, binaryExpr) => builder.setArrayRepeat(binaryExpr))
         case _ =>
           withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
           None
@@ -2859,11 +2865,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           case RightOuter => JoinType.RightOuter
           case FullOuter => JoinType.FullOuter
           case LeftSemi => JoinType.LeftSemi
-          // TODO: DF SMJ with join condition fails TPCH q21
-          case LeftAnti if condition.isEmpty => JoinType.LeftAnti
-          case LeftAnti =>
-            withInfo(join, "LeftAnti SMJ join with condition is not supported")
-            return None
+          case LeftAnti => JoinType.LeftAnti
           case _ =>
             // Spark doesn't support other join types
             withInfo(op, s"Unsupported join type ${join.joinType}")

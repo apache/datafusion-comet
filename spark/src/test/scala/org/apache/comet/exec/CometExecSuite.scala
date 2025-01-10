@@ -66,8 +66,10 @@ class CometExecSuite extends CometTestBase {
   test("TopK operator should return correct results on dictionary column with nulls") {
     withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") {
       withTable("test_data") {
+        val data = (0 to 8000)
+          .flatMap(_ => Seq((1, null, "A"), (2, "BBB", "B"), (3, "BBB", "B"), (4, "BBB", "B")))
         val tableDF = spark.sparkContext
-          .parallelize(Seq((1, null, "A"), (2, "BBB", "B"), (3, "BBB", "B"), (4, "BBB", "B")), 3)
+          .parallelize(data, 3)
           .toDF("c1", "c2", "c3")
         tableDF
           .coalesce(1)
