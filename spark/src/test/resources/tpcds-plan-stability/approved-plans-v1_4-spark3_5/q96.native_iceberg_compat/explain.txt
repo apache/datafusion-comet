@@ -1,0 +1,143 @@
+== Physical Plan ==
+* ColumnarToRow (25)
++- CometHashAggregate (24)
+   +- CometExchange (23)
+      +- CometHashAggregate (22)
+         +- CometProject (21)
+            +- CometBroadcastHashJoin (20)
+               :- CometProject (15)
+               :  +- CometBroadcastHashJoin (14)
+               :     :- CometProject (9)
+               :     :  +- CometBroadcastHashJoin (8)
+               :     :     :- CometProject (3)
+               :     :     :  +- CometFilter (2)
+               :     :     :     +- CometScan parquet spark_catalog.default.store_sales (1)
+               :     :     +- CometBroadcastExchange (7)
+               :     :        +- CometProject (6)
+               :     :           +- CometFilter (5)
+               :     :              +- CometScan parquet spark_catalog.default.household_demographics (4)
+               :     +- CometBroadcastExchange (13)
+               :        +- CometProject (12)
+               :           +- CometFilter (11)
+               :              +- CometScan parquet spark_catalog.default.time_dim (10)
+               +- CometBroadcastExchange (19)
+                  +- CometProject (18)
+                     +- CometFilter (17)
+                        +- CometScan parquet spark_catalog.default.store (16)
+
+
+(1) CometScan parquet spark_catalog.default.store_sales
+Output [4]: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3, ss_sold_date_sk#4]
+Batched: true
+Location [not included in comparison]/{warehouse_dir}/store_sales]
+PushedFilters: [IsNotNull(ss_hdemo_sk), IsNotNull(ss_sold_time_sk), IsNotNull(ss_store_sk)]
+ReadSchema: struct<ss_sold_time_sk:int,ss_hdemo_sk:int,ss_store_sk:int>
+
+(2) CometFilter
+Input [4]: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3, ss_sold_date_sk#4]
+Condition : ((isnotnull(ss_hdemo_sk#2) AND isnotnull(ss_sold_time_sk#1)) AND isnotnull(ss_store_sk#3))
+
+(3) CometProject
+Input [4]: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3, ss_sold_date_sk#4]
+Arguments: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3], [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3]
+
+(4) CometScan parquet spark_catalog.default.household_demographics
+Output [2]: [hd_demo_sk#5, hd_dep_count#6]
+Batched: true
+Location [not included in comparison]/{warehouse_dir}/household_demographics]
+PushedFilters: [IsNotNull(hd_dep_count), EqualTo(hd_dep_count,7), IsNotNull(hd_demo_sk)]
+ReadSchema: struct<hd_demo_sk:int,hd_dep_count:int>
+
+(5) CometFilter
+Input [2]: [hd_demo_sk#5, hd_dep_count#6]
+Condition : ((isnotnull(hd_dep_count#6) AND (hd_dep_count#6 = 7)) AND isnotnull(hd_demo_sk#5))
+
+(6) CometProject
+Input [2]: [hd_demo_sk#5, hd_dep_count#6]
+Arguments: [hd_demo_sk#5], [hd_demo_sk#5]
+
+(7) CometBroadcastExchange
+Input [1]: [hd_demo_sk#5]
+Arguments: [hd_demo_sk#5]
+
+(8) CometBroadcastHashJoin
+Left output [3]: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3]
+Right output [1]: [hd_demo_sk#5]
+Arguments: [ss_hdemo_sk#2], [hd_demo_sk#5], Inner, BuildRight
+
+(9) CometProject
+Input [4]: [ss_sold_time_sk#1, ss_hdemo_sk#2, ss_store_sk#3, hd_demo_sk#5]
+Arguments: [ss_sold_time_sk#1, ss_store_sk#3], [ss_sold_time_sk#1, ss_store_sk#3]
+
+(10) CometScan parquet spark_catalog.default.time_dim
+Output [3]: [t_time_sk#7, t_hour#8, t_minute#9]
+Batched: true
+Location [not included in comparison]/{warehouse_dir}/time_dim]
+PushedFilters: [IsNotNull(t_hour), IsNotNull(t_minute), EqualTo(t_hour,20), GreaterThanOrEqual(t_minute,30), IsNotNull(t_time_sk)]
+ReadSchema: struct<t_time_sk:int,t_hour:int,t_minute:int>
+
+(11) CometFilter
+Input [3]: [t_time_sk#7, t_hour#8, t_minute#9]
+Condition : ((((isnotnull(t_hour#8) AND isnotnull(t_minute#9)) AND (t_hour#8 = 20)) AND (t_minute#9 >= 30)) AND isnotnull(t_time_sk#7))
+
+(12) CometProject
+Input [3]: [t_time_sk#7, t_hour#8, t_minute#9]
+Arguments: [t_time_sk#7], [t_time_sk#7]
+
+(13) CometBroadcastExchange
+Input [1]: [t_time_sk#7]
+Arguments: [t_time_sk#7]
+
+(14) CometBroadcastHashJoin
+Left output [2]: [ss_sold_time_sk#1, ss_store_sk#3]
+Right output [1]: [t_time_sk#7]
+Arguments: [ss_sold_time_sk#1], [t_time_sk#7], Inner, BuildRight
+
+(15) CometProject
+Input [3]: [ss_sold_time_sk#1, ss_store_sk#3, t_time_sk#7]
+Arguments: [ss_store_sk#3], [ss_store_sk#3]
+
+(16) CometScan parquet spark_catalog.default.store
+Output [2]: [s_store_sk#10, s_store_name#11]
+Batched: true
+Location [not included in comparison]/{warehouse_dir}/store]
+PushedFilters: [IsNotNull(s_store_name), EqualTo(s_store_name,ese), IsNotNull(s_store_sk)]
+ReadSchema: struct<s_store_sk:int,s_store_name:string>
+
+(17) CometFilter
+Input [2]: [s_store_sk#10, s_store_name#11]
+Condition : ((isnotnull(s_store_name#11) AND (s_store_name#11 = ese)) AND isnotnull(s_store_sk#10))
+
+(18) CometProject
+Input [2]: [s_store_sk#10, s_store_name#11]
+Arguments: [s_store_sk#10], [s_store_sk#10]
+
+(19) CometBroadcastExchange
+Input [1]: [s_store_sk#10]
+Arguments: [s_store_sk#10]
+
+(20) CometBroadcastHashJoin
+Left output [1]: [ss_store_sk#3]
+Right output [1]: [s_store_sk#10]
+Arguments: [ss_store_sk#3], [s_store_sk#10], Inner, BuildRight
+
+(21) CometProject
+Input [2]: [ss_store_sk#3, s_store_sk#10]
+
+(22) CometHashAggregate
+Input: []
+Keys: []
+Functions [1]: [partial_count(1)]
+
+(23) CometExchange
+Input [1]: [count#12]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+
+(24) CometHashAggregate
+Input [1]: [count#12]
+Keys: []
+Functions [1]: [count(1)]
+
+(25) ColumnarToRow [codegen id : 1]
+Input [1]: [count(1)#13]
+

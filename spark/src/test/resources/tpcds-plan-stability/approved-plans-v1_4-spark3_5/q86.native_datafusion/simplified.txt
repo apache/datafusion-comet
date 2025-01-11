@@ -1,0 +1,27 @@
+TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_class]
+  WholeStageCodegen (2)
+    Project [total_sum,i_category,i_class,lochierarchy,rank_within_parent]
+      InputAdapter
+        Window [_w0,_w1,_w2]
+          WholeStageCodegen (1)
+            ColumnarToRow
+              InputAdapter
+                CometSort [total_sum,i_category,i_class,lochierarchy,_w0,_w1,_w2]
+                  CometExchange [_w1,_w2] #1
+                    CometHashAggregate [total_sum,i_category,i_class,lochierarchy,_w0,_w1,_w2,spark_grouping_id,sum,sum(UnscaledValue(ws_net_paid))]
+                      CometExchange [i_category,i_class,spark_grouping_id] #2
+                        CometHashAggregate [i_category,i_class,spark_grouping_id,sum,ws_net_paid]
+                          CometExpand [i_category,i_class] [ws_net_paid,i_category,i_class,spark_grouping_id]
+                            CometProject [ws_net_paid,i_category,i_class]
+                              CometBroadcastHashJoin [ws_item_sk,ws_net_paid,i_item_sk,i_class,i_category]
+                                CometProject [ws_item_sk,ws_net_paid]
+                                  CometBroadcastHashJoin [ws_item_sk,ws_net_paid,ws_sold_date_sk,d_date_sk]
+                                    CometFilter [ws_item_sk,ws_net_paid,ws_sold_date_sk]
+                                      CometNativeScan: `spark_catalog`.`default`.`web_sales` [ws_item_sk,ws_net_paid,ws_sold_date_sk]
+                                    CometBroadcastExchange [d_date_sk] #3
+                                      CometProject [d_date_sk]
+                                        CometFilter [d_date_sk,d_month_seq]
+                                          CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_month_seq]
+                                CometBroadcastExchange [i_item_sk,i_class,i_category] #4
+                                  CometFilter [i_item_sk,i_class,i_category]
+                                    CometNativeScan: `spark_catalog`.`default`.`item` [i_item_sk,i_class,i_category]

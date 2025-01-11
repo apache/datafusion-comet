@@ -1,0 +1,21 @@
+WholeStageCodegen (1)
+  ColumnarToRow
+    InputAdapter
+      CometTakeOrderedAndProject [i_product_name]
+        CometHashAggregate [i_product_name]
+          CometExchange [i_product_name] #1
+            CometHashAggregate [i_product_name]
+              CometProject [i_product_name]
+                CometBroadcastHashJoin [i_manufact,i_product_name,i_manufact]
+                  CometProject [i_manufact,i_product_name]
+                    CometFilter [i_manufact_id,i_manufact,i_product_name]
+                      CometScan parquet spark_catalog.default.item [i_manufact_id,i_manufact,i_product_name]
+                  CometBroadcastExchange [i_manufact] #2
+                    CometProject [i_manufact]
+                      CometFilter [item_cnt,i_manufact]
+                        CometHashAggregate [item_cnt,i_manufact,count,count(1)]
+                          CometExchange [i_manufact] #3
+                            CometHashAggregate [i_manufact,count]
+                              CometProject [i_manufact]
+                                CometFilter [i_category,i_manufact,i_size,i_color,i_units]
+                                  CometScan parquet spark_catalog.default.item [i_category,i_manufact,i_size,i_color,i_units]

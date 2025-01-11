@@ -1,0 +1,160 @@
+== Physical Plan ==
+TakeOrderedAndProject (28)
++- * Project (27)
+   +- * Filter (26)
+      +- Window (25)
+         +- * ColumnarToRow (24)
+            +- CometSort (23)
+               +- CometExchange (22)
+                  +- CometHashAggregate (21)
+                     +- CometExchange (20)
+                        +- CometHashAggregate (19)
+                           +- CometProject (18)
+                              +- CometBroadcastHashJoin (17)
+                                 :- CometProject (13)
+                                 :  +- CometBroadcastHashJoin (12)
+                                 :     :- CometProject (7)
+                                 :     :  +- CometBroadcastHashJoin (6)
+                                 :     :     :- CometFilter (2)
+                                 :     :     :  +- CometScan parquet spark_catalog.default.item (1)
+                                 :     :     +- CometBroadcastExchange (5)
+                                 :     :        +- CometFilter (4)
+                                 :     :           +- CometScan parquet spark_catalog.default.store_sales (3)
+                                 :     +- CometBroadcastExchange (11)
+                                 :        +- CometProject (10)
+                                 :           +- CometFilter (9)
+                                 :              +- CometScan parquet spark_catalog.default.date_dim (8)
+                                 +- CometBroadcastExchange (16)
+                                    +- CometFilter (15)
+                                       +- CometScan parquet spark_catalog.default.store (14)
+
+
+(1) CometScan parquet spark_catalog.default.item
+Output [4]: [i_item_sk#1, i_brand#2, i_class#3, i_category#4]
+Batched: true
+Location [not included in comparison]/{warehouse_dir}/item]
+PushedFilters: [Or(And(In(i_category, [Books                                             ,Electronics                                       ,Sports                                            ]),In(i_class, [computers                                         ,football                                          ,stereo                                            ])),And(In(i_category, [Jewelry                                           ,Men                                               ,Women                                             ]),In(i_class, [birdal                                            ,dresses                                           ,shirts                                            ]))), IsNotNull(i_item_sk)]
+ReadSchema: struct<i_item_sk:int,i_brand:string,i_class:string,i_category:string>
+
+(2) CometFilter
+Input [4]: [i_item_sk#1, i_brand#2, i_class#3, i_category#4]
+Condition : (((i_category#4 IN (Books                                             ,Electronics                                       ,Sports                                            ) AND i_class#3 IN (computers                                         ,stereo                                            ,football                                          )) OR (i_category#4 IN (Men                                               ,Jewelry                                           ,Women                                             ) AND i_class#3 IN (shirts                                            ,birdal                                            ,dresses                                           ))) AND isnotnull(i_item_sk#1))
+
+(3) CometScan parquet spark_catalog.default.store_sales
+Output [4]: [ss_item_sk#5, ss_store_sk#6, ss_sales_price#7, ss_sold_date_sk#8]
+Batched: true
+Location: InMemoryFileIndex []
+PartitionFilters: [isnotnull(ss_sold_date_sk#8)]
+PushedFilters: [IsNotNull(ss_item_sk), IsNotNull(ss_store_sk)]
+ReadSchema: struct<ss_item_sk:int,ss_store_sk:int,ss_sales_price:decimal(7,2)>
+
+(4) CometFilter
+Input [4]: [ss_item_sk#5, ss_store_sk#6, ss_sales_price#7, ss_sold_date_sk#8]
+Condition : (isnotnull(ss_item_sk#5) AND isnotnull(ss_store_sk#6))
+
+(5) CometBroadcastExchange
+Input [4]: [ss_item_sk#5, ss_store_sk#6, ss_sales_price#7, ss_sold_date_sk#8]
+Arguments: [ss_item_sk#5, ss_store_sk#6, ss_sales_price#7, ss_sold_date_sk#8]
+
+(6) CometBroadcastHashJoin
+Left output [4]: [i_item_sk#1, i_brand#2, i_class#3, i_category#4]
+Right output [4]: [ss_item_sk#5, ss_store_sk#6, ss_sales_price#7, ss_sold_date_sk#8]
+Arguments: [i_item_sk#1], [ss_item_sk#5], Inner, BuildRight
+
+(7) CometProject
+Input [8]: [i_item_sk#1, i_brand#2, i_class#3, i_category#4, ss_item_sk#5, ss_store_sk#6, ss_sales_price#7, ss_sold_date_sk#8]
+Arguments: [i_brand#2, i_class#3, i_category#4, ss_store_sk#6, ss_sales_price#7, ss_sold_date_sk#8], [i_brand#2, i_class#3, i_category#4, ss_store_sk#6, ss_sales_price#7, ss_sold_date_sk#8]
+
+(8) CometScan parquet spark_catalog.default.date_dim
+Output [3]: [d_date_sk#9, d_year#10, d_moy#11]
+Batched: true
+Location [not included in comparison]/{warehouse_dir}/date_dim]
+PushedFilters: [IsNotNull(d_year), EqualTo(d_year,1999), IsNotNull(d_date_sk)]
+ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
+
+(9) CometFilter
+Input [3]: [d_date_sk#9, d_year#10, d_moy#11]
+Condition : ((isnotnull(d_year#10) AND (d_year#10 = 1999)) AND isnotnull(d_date_sk#9))
+
+(10) CometProject
+Input [3]: [d_date_sk#9, d_year#10, d_moy#11]
+Arguments: [d_date_sk#9, d_moy#11], [d_date_sk#9, d_moy#11]
+
+(11) CometBroadcastExchange
+Input [2]: [d_date_sk#9, d_moy#11]
+Arguments: [d_date_sk#9, d_moy#11]
+
+(12) CometBroadcastHashJoin
+Left output [6]: [i_brand#2, i_class#3, i_category#4, ss_store_sk#6, ss_sales_price#7, ss_sold_date_sk#8]
+Right output [2]: [d_date_sk#9, d_moy#11]
+Arguments: [ss_sold_date_sk#8], [d_date_sk#9], Inner, BuildRight
+
+(13) CometProject
+Input [8]: [i_brand#2, i_class#3, i_category#4, ss_store_sk#6, ss_sales_price#7, ss_sold_date_sk#8, d_date_sk#9, d_moy#11]
+Arguments: [i_brand#2, i_class#3, i_category#4, ss_store_sk#6, ss_sales_price#7, d_moy#11], [i_brand#2, i_class#3, i_category#4, ss_store_sk#6, ss_sales_price#7, d_moy#11]
+
+(14) CometScan parquet spark_catalog.default.store
+Output [3]: [s_store_sk#12, s_store_name#13, s_company_name#14]
+Batched: true
+Location [not included in comparison]/{warehouse_dir}/store]
+PushedFilters: [IsNotNull(s_store_sk)]
+ReadSchema: struct<s_store_sk:int,s_store_name:string,s_company_name:string>
+
+(15) CometFilter
+Input [3]: [s_store_sk#12, s_store_name#13, s_company_name#14]
+Condition : isnotnull(s_store_sk#12)
+
+(16) CometBroadcastExchange
+Input [3]: [s_store_sk#12, s_store_name#13, s_company_name#14]
+Arguments: [s_store_sk#12, s_store_name#13, s_company_name#14]
+
+(17) CometBroadcastHashJoin
+Left output [6]: [i_brand#2, i_class#3, i_category#4, ss_store_sk#6, ss_sales_price#7, d_moy#11]
+Right output [3]: [s_store_sk#12, s_store_name#13, s_company_name#14]
+Arguments: [ss_store_sk#6], [s_store_sk#12], Inner, BuildRight
+
+(18) CometProject
+Input [9]: [i_brand#2, i_class#3, i_category#4, ss_store_sk#6, ss_sales_price#7, d_moy#11, s_store_sk#12, s_store_name#13, s_company_name#14]
+Arguments: [i_brand#2, i_class#3, i_category#4, ss_sales_price#7, d_moy#11, s_store_name#13, s_company_name#14], [i_brand#2, i_class#3, i_category#4, ss_sales_price#7, d_moy#11, s_store_name#13, s_company_name#14]
+
+(19) CometHashAggregate
+Input [7]: [i_brand#2, i_class#3, i_category#4, ss_sales_price#7, d_moy#11, s_store_name#13, s_company_name#14]
+Keys [6]: [i_category#4, i_class#3, i_brand#2, s_store_name#13, s_company_name#14, d_moy#11]
+Functions [1]: [partial_sum(UnscaledValue(ss_sales_price#7))]
+
+(20) CometExchange
+Input [7]: [i_category#4, i_class#3, i_brand#2, s_store_name#13, s_company_name#14, d_moy#11, sum#15]
+Arguments: hashpartitioning(i_category#4, i_class#3, i_brand#2, s_store_name#13, s_company_name#14, d_moy#11, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+
+(21) CometHashAggregate
+Input [7]: [i_category#4, i_class#3, i_brand#2, s_store_name#13, s_company_name#14, d_moy#11, sum#15]
+Keys [6]: [i_category#4, i_class#3, i_brand#2, s_store_name#13, s_company_name#14, d_moy#11]
+Functions [1]: [sum(UnscaledValue(ss_sales_price#7))]
+
+(22) CometExchange
+Input [8]: [i_category#4, i_class#3, i_brand#2, s_store_name#13, s_company_name#14, d_moy#11, sum_sales#16, _w0#17]
+Arguments: hashpartitioning(i_category#4, i_brand#2, s_store_name#13, s_company_name#14, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+
+(23) CometSort
+Input [8]: [i_category#4, i_class#3, i_brand#2, s_store_name#13, s_company_name#14, d_moy#11, sum_sales#16, _w0#17]
+Arguments: [i_category#4, i_class#3, i_brand#2, s_store_name#13, s_company_name#14, d_moy#11, sum_sales#16, _w0#17], [i_category#4 ASC NULLS FIRST, i_brand#2 ASC NULLS FIRST, s_store_name#13 ASC NULLS FIRST, s_company_name#14 ASC NULLS FIRST]
+
+(24) ColumnarToRow [codegen id : 1]
+Input [8]: [i_category#4, i_class#3, i_brand#2, s_store_name#13, s_company_name#14, d_moy#11, sum_sales#16, _w0#17]
+
+(25) Window
+Input [8]: [i_category#4, i_class#3, i_brand#2, s_store_name#13, s_company_name#14, d_moy#11, sum_sales#16, _w0#17]
+Arguments: [avg(_w0#17) windowspecdefinition(i_category#4, i_brand#2, s_store_name#13, s_company_name#14, specifiedwindowframe(RowFrame, unboundedpreceding$(), unboundedfollowing$())) AS avg_monthly_sales#18], [i_category#4, i_brand#2, s_store_name#13, s_company_name#14]
+
+(26) Filter [codegen id : 2]
+Input [9]: [i_category#4, i_class#3, i_brand#2, s_store_name#13, s_company_name#14, d_moy#11, sum_sales#16, _w0#17, avg_monthly_sales#18]
+Condition : CASE WHEN NOT (avg_monthly_sales#18 = 0.000000) THEN ((abs((sum_sales#16 - avg_monthly_sales#18)) / avg_monthly_sales#18) > 0.1000000000000000) END
+
+(27) Project [codegen id : 2]
+Output [8]: [i_category#4, i_class#3, i_brand#2, s_store_name#13, s_company_name#14, d_moy#11, sum_sales#16, avg_monthly_sales#18]
+Input [9]: [i_category#4, i_class#3, i_brand#2, s_store_name#13, s_company_name#14, d_moy#11, sum_sales#16, _w0#17, avg_monthly_sales#18]
+
+(28) TakeOrderedAndProject
+Input [8]: [i_category#4, i_class#3, i_brand#2, s_store_name#13, s_company_name#14, d_moy#11, sum_sales#16, avg_monthly_sales#18]
+Arguments: 100, [(sum_sales#16 - avg_monthly_sales#18) ASC NULLS FIRST, s_store_name#13 ASC NULLS FIRST], [i_category#4, i_class#3, i_brand#2, s_store_name#13, s_company_name#14, d_moy#11, sum_sales#16, avg_monthly_sales#18]
+

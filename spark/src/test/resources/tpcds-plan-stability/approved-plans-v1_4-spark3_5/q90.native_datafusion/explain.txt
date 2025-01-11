@@ -1,0 +1,242 @@
+== Physical Plan ==
+* Project (47)
++- * BroadcastNestedLoopJoin Inner BuildRight (46)
+   :- * ColumnarToRow (25)
+   :  +- CometHashAggregate (24)
+   :     +- CometExchange (23)
+   :        +- CometHashAggregate (22)
+   :           +- CometProject (21)
+   :              +- CometBroadcastHashJoin (20)
+   :                 :- CometProject (15)
+   :                 :  +- CometBroadcastHashJoin (14)
+   :                 :     :- CometProject (9)
+   :                 :     :  +- CometBroadcastHashJoin (8)
+   :                 :     :     :- CometProject (3)
+   :                 :     :     :  +- CometFilter (2)
+   :                 :     :     :     +- CometNativeScan: `spark_catalog`.`default`.`web_sales` (1)
+   :                 :     :     +- CometBroadcastExchange (7)
+   :                 :     :        +- CometProject (6)
+   :                 :     :           +- CometFilter (5)
+   :                 :     :              +- CometNativeScan: `spark_catalog`.`default`.`household_demographics` (4)
+   :                 :     +- CometBroadcastExchange (13)
+   :                 :        +- CometProject (12)
+   :                 :           +- CometFilter (11)
+   :                 :              +- CometNativeScan: `spark_catalog`.`default`.`time_dim` (10)
+   :                 +- CometBroadcastExchange (19)
+   :                    +- CometProject (18)
+   :                       +- CometFilter (17)
+   :                          +- CometNativeScan: `spark_catalog`.`default`.`web_page` (16)
+   +- BroadcastExchange (45)
+      +- * ColumnarToRow (44)
+         +- CometHashAggregate (43)
+            +- CometExchange (42)
+               +- CometHashAggregate (41)
+                  +- CometProject (40)
+                     +- CometBroadcastHashJoin (39)
+                        :- CometProject (37)
+                        :  +- CometBroadcastHashJoin (36)
+                        :     :- CometProject (31)
+                        :     :  +- CometBroadcastHashJoin (30)
+                        :     :     :- CometProject (28)
+                        :     :     :  +- CometFilter (27)
+                        :     :     :     +- CometNativeScan: `spark_catalog`.`default`.`web_sales` (26)
+                        :     :     +- ReusedExchange (29)
+                        :     +- CometBroadcastExchange (35)
+                        :        +- CometProject (34)
+                        :           +- CometFilter (33)
+                        :              +- CometNativeScan: `spark_catalog`.`default`.`time_dim` (32)
+                        +- ReusedExchange (38)
+
+
+(1) CometNativeScan: `spark_catalog`.`default`.`web_sales`
+Output [4]: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, ws_web_page_sk#3, ws_sold_date_sk#4]
+Arguments: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, ws_web_page_sk#3, ws_sold_date_sk#4]
+
+(2) CometFilter
+Input [4]: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, ws_web_page_sk#3, ws_sold_date_sk#4]
+Condition : ((isnotnull(ws_ship_hdemo_sk#2) AND isnotnull(ws_sold_time_sk#1)) AND isnotnull(ws_web_page_sk#3))
+
+(3) CometProject
+Input [4]: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, ws_web_page_sk#3, ws_sold_date_sk#4]
+Arguments: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, ws_web_page_sk#3], [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, ws_web_page_sk#3]
+
+(4) CometNativeScan: `spark_catalog`.`default`.`household_demographics`
+Output [2]: [hd_demo_sk#5, hd_dep_count#6]
+Arguments: [hd_demo_sk#5, hd_dep_count#6]
+
+(5) CometFilter
+Input [2]: [hd_demo_sk#5, hd_dep_count#6]
+Condition : ((isnotnull(hd_dep_count#6) AND (hd_dep_count#6 = 6)) AND isnotnull(hd_demo_sk#5))
+
+(6) CometProject
+Input [2]: [hd_demo_sk#5, hd_dep_count#6]
+Arguments: [hd_demo_sk#5], [hd_demo_sk#5]
+
+(7) CometBroadcastExchange
+Input [1]: [hd_demo_sk#5]
+Arguments: [hd_demo_sk#5]
+
+(8) CometBroadcastHashJoin
+Left output [3]: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, ws_web_page_sk#3]
+Right output [1]: [hd_demo_sk#5]
+Arguments: [ws_ship_hdemo_sk#2], [hd_demo_sk#5], Inner, BuildRight
+
+(9) CometProject
+Input [4]: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, ws_web_page_sk#3, hd_demo_sk#5]
+Arguments: [ws_sold_time_sk#1, ws_web_page_sk#3], [ws_sold_time_sk#1, ws_web_page_sk#3]
+
+(10) CometNativeScan: `spark_catalog`.`default`.`time_dim`
+Output [2]: [t_time_sk#7, t_hour#8]
+Arguments: [t_time_sk#7, t_hour#8]
+
+(11) CometFilter
+Input [2]: [t_time_sk#7, t_hour#8]
+Condition : (((isnotnull(t_hour#8) AND (t_hour#8 >= 8)) AND (t_hour#8 <= 9)) AND isnotnull(t_time_sk#7))
+
+(12) CometProject
+Input [2]: [t_time_sk#7, t_hour#8]
+Arguments: [t_time_sk#7], [t_time_sk#7]
+
+(13) CometBroadcastExchange
+Input [1]: [t_time_sk#7]
+Arguments: [t_time_sk#7]
+
+(14) CometBroadcastHashJoin
+Left output [2]: [ws_sold_time_sk#1, ws_web_page_sk#3]
+Right output [1]: [t_time_sk#7]
+Arguments: [ws_sold_time_sk#1], [t_time_sk#7], Inner, BuildRight
+
+(15) CometProject
+Input [3]: [ws_sold_time_sk#1, ws_web_page_sk#3, t_time_sk#7]
+Arguments: [ws_web_page_sk#3], [ws_web_page_sk#3]
+
+(16) CometNativeScan: `spark_catalog`.`default`.`web_page`
+Output [2]: [wp_web_page_sk#9, wp_char_count#10]
+Arguments: [wp_web_page_sk#9, wp_char_count#10]
+
+(17) CometFilter
+Input [2]: [wp_web_page_sk#9, wp_char_count#10]
+Condition : (((isnotnull(wp_char_count#10) AND (wp_char_count#10 >= 5000)) AND (wp_char_count#10 <= 5200)) AND isnotnull(wp_web_page_sk#9))
+
+(18) CometProject
+Input [2]: [wp_web_page_sk#9, wp_char_count#10]
+Arguments: [wp_web_page_sk#9], [wp_web_page_sk#9]
+
+(19) CometBroadcastExchange
+Input [1]: [wp_web_page_sk#9]
+Arguments: [wp_web_page_sk#9]
+
+(20) CometBroadcastHashJoin
+Left output [1]: [ws_web_page_sk#3]
+Right output [1]: [wp_web_page_sk#9]
+Arguments: [ws_web_page_sk#3], [wp_web_page_sk#9], Inner, BuildRight
+
+(21) CometProject
+Input [2]: [ws_web_page_sk#3, wp_web_page_sk#9]
+
+(22) CometHashAggregate
+Input: []
+Keys: []
+Functions [1]: [partial_count(1)]
+
+(23) CometExchange
+Input [1]: [count#11]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+
+(24) CometHashAggregate
+Input [1]: [count#11]
+Keys: []
+Functions [1]: [count(1)]
+
+(25) ColumnarToRow [codegen id : 2]
+Input [1]: [amc#12]
+
+(26) CometNativeScan: `spark_catalog`.`default`.`web_sales`
+Output [4]: [ws_sold_time_sk#13, ws_ship_hdemo_sk#14, ws_web_page_sk#15, ws_sold_date_sk#16]
+Arguments: [ws_sold_time_sk#13, ws_ship_hdemo_sk#14, ws_web_page_sk#15, ws_sold_date_sk#16]
+
+(27) CometFilter
+Input [4]: [ws_sold_time_sk#13, ws_ship_hdemo_sk#14, ws_web_page_sk#15, ws_sold_date_sk#16]
+Condition : ((isnotnull(ws_ship_hdemo_sk#14) AND isnotnull(ws_sold_time_sk#13)) AND isnotnull(ws_web_page_sk#15))
+
+(28) CometProject
+Input [4]: [ws_sold_time_sk#13, ws_ship_hdemo_sk#14, ws_web_page_sk#15, ws_sold_date_sk#16]
+Arguments: [ws_sold_time_sk#13, ws_ship_hdemo_sk#14, ws_web_page_sk#15], [ws_sold_time_sk#13, ws_ship_hdemo_sk#14, ws_web_page_sk#15]
+
+(29) ReusedExchange [Reuses operator id: 7]
+Output [1]: [hd_demo_sk#17]
+
+(30) CometBroadcastHashJoin
+Left output [3]: [ws_sold_time_sk#13, ws_ship_hdemo_sk#14, ws_web_page_sk#15]
+Right output [1]: [hd_demo_sk#17]
+Arguments: [ws_ship_hdemo_sk#14], [hd_demo_sk#17], Inner, BuildRight
+
+(31) CometProject
+Input [4]: [ws_sold_time_sk#13, ws_ship_hdemo_sk#14, ws_web_page_sk#15, hd_demo_sk#17]
+Arguments: [ws_sold_time_sk#13, ws_web_page_sk#15], [ws_sold_time_sk#13, ws_web_page_sk#15]
+
+(32) CometNativeScan: `spark_catalog`.`default`.`time_dim`
+Output [2]: [t_time_sk#18, t_hour#19]
+Arguments: [t_time_sk#18, t_hour#19]
+
+(33) CometFilter
+Input [2]: [t_time_sk#18, t_hour#19]
+Condition : (((isnotnull(t_hour#19) AND (t_hour#19 >= 19)) AND (t_hour#19 <= 20)) AND isnotnull(t_time_sk#18))
+
+(34) CometProject
+Input [2]: [t_time_sk#18, t_hour#19]
+Arguments: [t_time_sk#18], [t_time_sk#18]
+
+(35) CometBroadcastExchange
+Input [1]: [t_time_sk#18]
+Arguments: [t_time_sk#18]
+
+(36) CometBroadcastHashJoin
+Left output [2]: [ws_sold_time_sk#13, ws_web_page_sk#15]
+Right output [1]: [t_time_sk#18]
+Arguments: [ws_sold_time_sk#13], [t_time_sk#18], Inner, BuildRight
+
+(37) CometProject
+Input [3]: [ws_sold_time_sk#13, ws_web_page_sk#15, t_time_sk#18]
+Arguments: [ws_web_page_sk#15], [ws_web_page_sk#15]
+
+(38) ReusedExchange [Reuses operator id: 19]
+Output [1]: [wp_web_page_sk#20]
+
+(39) CometBroadcastHashJoin
+Left output [1]: [ws_web_page_sk#15]
+Right output [1]: [wp_web_page_sk#20]
+Arguments: [ws_web_page_sk#15], [wp_web_page_sk#20], Inner, BuildRight
+
+(40) CometProject
+Input [2]: [ws_web_page_sk#15, wp_web_page_sk#20]
+
+(41) CometHashAggregate
+Input: []
+Keys: []
+Functions [1]: [partial_count(1)]
+
+(42) CometExchange
+Input [1]: [count#21]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+
+(43) CometHashAggregate
+Input [1]: [count#21]
+Keys: []
+Functions [1]: [count(1)]
+
+(44) ColumnarToRow [codegen id : 1]
+Input [1]: [pmc#22]
+
+(45) BroadcastExchange
+Input [1]: [pmc#22]
+Arguments: IdentityBroadcastMode, [plan_id=3]
+
+(46) BroadcastNestedLoopJoin [codegen id : 2]
+Join type: Inner
+Join condition: None
+
+(47) Project [codegen id : 2]
+Output [1]: [(cast(amc#12 as decimal(15,4)) / cast(pmc#22 as decimal(15,4))) AS am_pm_ratio#23]
+Input [2]: [amc#12, pmc#22]
+

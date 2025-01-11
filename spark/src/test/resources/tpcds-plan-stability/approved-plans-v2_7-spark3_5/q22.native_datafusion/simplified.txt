@@ -1,0 +1,31 @@
+TakeOrderedAndProject [qoh,i_product_name,i_brand,i_class,i_category]
+  WholeStageCodegen (3)
+    HashAggregate [i_product_name,i_brand,i_class,i_category,spark_grouping_id,sum,count] [avg(inv_quantity_on_hand),qoh,sum,count]
+      InputAdapter
+        Exchange [i_product_name,i_brand,i_class,i_category,spark_grouping_id] #1
+          WholeStageCodegen (2)
+            HashAggregate [i_product_name,i_brand,i_class,i_category,spark_grouping_id,inv_quantity_on_hand] [sum,count,sum,count]
+              Expand [inv_quantity_on_hand,i_product_name,i_brand,i_class,i_category]
+                Project [inv_quantity_on_hand,i_product_name,i_brand,i_class,i_category]
+                  BroadcastNestedLoopJoin
+                    ColumnarToRow
+                      InputAdapter
+                        CometProject [inv_quantity_on_hand,i_brand,i_class,i_category,i_product_name]
+                          CometBroadcastHashJoin [inv_item_sk,inv_quantity_on_hand,i_item_sk,i_brand,i_class,i_category,i_product_name]
+                            CometProject [inv_item_sk,inv_quantity_on_hand]
+                              CometBroadcastHashJoin [inv_item_sk,inv_quantity_on_hand,inv_date_sk,d_date_sk]
+                                CometFilter [inv_item_sk,inv_quantity_on_hand,inv_date_sk]
+                                  CometNativeScan: `spark_catalog`.`default`.`inventory` [inv_item_sk,inv_quantity_on_hand,inv_date_sk]
+                                CometBroadcastExchange [d_date_sk] #2
+                                  CometProject [d_date_sk]
+                                    CometFilter [d_date_sk,d_month_seq]
+                                      CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_month_seq]
+                            CometBroadcastExchange [i_item_sk,i_brand,i_class,i_category,i_product_name] #3
+                              CometFilter [i_item_sk,i_brand,i_class,i_category,i_product_name]
+                                CometNativeScan: `spark_catalog`.`default`.`item` [i_item_sk,i_brand,i_class,i_category,i_product_name]
+                    InputAdapter
+                      BroadcastExchange #4
+                        WholeStageCodegen (1)
+                          ColumnarToRow
+                            InputAdapter
+                              CometNativeScan: `spark_catalog`.`default`.`warehouse`
