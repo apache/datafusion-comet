@@ -28,21 +28,29 @@ TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_count
                                                       CometProject [ss_store_sk,ss_net_profit]
                                                         CometBroadcastHashJoin [ss_store_sk,ss_net_profit,ss_sold_date_sk,d_date_sk]
                                                           CometFilter [ss_store_sk,ss_net_profit,ss_sold_date_sk]
-                                                            CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_store_sk,ss_net_profit,ss_sold_date_sk]
-                                                          CometBroadcastExchange [d_date_sk] #4
+                                                            CometScan parquet spark_catalog.default.store_sales [ss_store_sk,ss_net_profit,ss_sold_date_sk]
+                                                              SubqueryBroadcast [d_date_sk] #1
+                                                                BroadcastExchange #4
+                                                                  WholeStageCodegen (1)
+                                                                    ColumnarToRow
+                                                                      InputAdapter
+                                                                        CometProject [d_date_sk]
+                                                                          CometFilter [d_date_sk,d_month_seq]
+                                                                            CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
+                                                          CometBroadcastExchange [d_date_sk] #5
                                                             CometProject [d_date_sk]
                                                               CometFilter [d_date_sk,d_month_seq]
-                                                                CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_month_seq]
+                                                                CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
                                                   InputAdapter
-                                                    BroadcastExchange #5
+                                                    BroadcastExchange #6
                                                       WholeStageCodegen (3)
                                                         BroadcastHashJoin [s_state,s_state]
                                                           ColumnarToRow
                                                             InputAdapter
                                                               CometFilter [s_store_sk,s_county,s_state]
-                                                                CometNativeScan: `spark_catalog`.`default`.`store` [s_store_sk,s_county,s_state]
+                                                                CometScan parquet spark_catalog.default.store [s_store_sk,s_county,s_state]
                                                           InputAdapter
-                                                            BroadcastExchange #6
+                                                            BroadcastExchange #7
                                                               WholeStageCodegen (2)
                                                                 Project [s_state]
                                                                   Filter [ranking]
@@ -54,22 +62,23 @@ TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_count
                                                                               InputAdapter
                                                                                 CometSort [s_state,_w0]
                                                                                   CometHashAggregate [s_state,_w0,sum,sum(UnscaledValue(ss_net_profit))]
-                                                                                    CometExchange [s_state] #7
+                                                                                    CometExchange [s_state] #8
                                                                                       CometHashAggregate [s_state,sum,ss_net_profit]
                                                                                         CometProject [ss_net_profit,s_state]
                                                                                           CometBroadcastHashJoin [ss_net_profit,ss_sold_date_sk,s_state,d_date_sk]
                                                                                             CometProject [ss_net_profit,ss_sold_date_sk,s_state]
                                                                                               CometBroadcastHashJoin [ss_store_sk,ss_net_profit,ss_sold_date_sk,s_store_sk,s_state]
                                                                                                 CometFilter [ss_store_sk,ss_net_profit,ss_sold_date_sk]
-                                                                                                  CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_store_sk,ss_net_profit,ss_sold_date_sk]
-                                                                                                CometBroadcastExchange [s_store_sk,s_state] #8
+                                                                                                  CometScan parquet spark_catalog.default.store_sales [ss_store_sk,ss_net_profit,ss_sold_date_sk]
+                                                                                                    ReusedSubquery [d_date_sk] #1
+                                                                                                CometBroadcastExchange [s_store_sk,s_state] #9
                                                                                                   CometFilter [s_store_sk,s_state]
-                                                                                                    CometNativeScan: `spark_catalog`.`default`.`store` [s_store_sk,s_state]
-                                                                                            ReusedExchange [d_date_sk] #4
+                                                                                                    CometScan parquet spark_catalog.default.store [s_store_sk,s_state]
+                                                                                            ReusedExchange [d_date_sk] #5
                                   WholeStageCodegen (11)
                                     HashAggregate [s_state,sum,isEmpty] [sum(total_sum),total_sum,s_county,g_state,g_county,lochierarchy,sum,isEmpty]
                                       InputAdapter
-                                        Exchange [s_state] #9
+                                        Exchange [s_state] #10
                                           WholeStageCodegen (10)
                                             HashAggregate [s_state,total_sum] [sum,isEmpty,sum,isEmpty]
                                               HashAggregate [s_state,s_county,sum] [sum(UnscaledValue(ss_net_profit)),total_sum,sum]
@@ -78,7 +87,7 @@ TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_count
                                   WholeStageCodegen (17)
                                     HashAggregate [sum,isEmpty] [sum(total_sum),total_sum,s_state,s_county,g_state,g_county,lochierarchy,sum,isEmpty]
                                       InputAdapter
-                                        Exchange #10
+                                        Exchange #11
                                           WholeStageCodegen (16)
                                             HashAggregate [total_sum] [sum,isEmpty,sum,isEmpty]
                                               HashAggregate [s_state,s_county,sum] [sum(UnscaledValue(ss_net_profit)),total_sum,sum]
