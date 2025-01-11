@@ -544,7 +544,6 @@ impl<'a> BatchReader<'a> {
         self.offset += 8;
 
         // read data buffer
-        // println!("reading data buffer with {buffer_len} bytes");
         let buffer = Buffer::from(&self.input[self.offset..self.offset + buffer_len]);
         self.offset += buffer_len;
         buffer
