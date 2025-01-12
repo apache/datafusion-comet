@@ -108,7 +108,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val cometShuffles = collect(df2.queryExecution.executedPlan) {
           case _: CometShuffleExchangeExec => true
         }
-        if (shuffleMode == "jvm") {
+        if (shuffleMode == "jvm" || shuffleMode == "auto") {
           assert(cometShuffles.length == 1)
         } else {
           // we fall back to Spark for shuffle because we do not support
