@@ -737,24 +737,22 @@ impl PhysicalPlanner {
                 Ok(array_has_expr)
             }
             ExprStruct::ArrayRepeat(expr) => {
-                let value =
+                let src_expr =
                     self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let count =
+                let count_expr =
                     self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                println!("value {:?}", value);
-                println!("count {:?}", count);
-                let return_type = value.data_type(&input_schema)?;
-                let args = vec![Arc::clone(&value), Arc::clone(&count)];
+                let return_type = src_expr.data_type(&input_schema)?;
+                let args = vec![Arc::clone(&src_expr), Arc::clone(&count_expr)];
 
                 let datafusion_array_repeat = array_repeat_udf();
                 let array_repeat_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
-                    "array_repat",
+                    "array_repeat",
                     datafusion_array_repeat,
                     args,
                     return_type,
                 ));
 
-                let is_null_expr: Arc<dyn PhysicalExpr> = Arc::new(IsNullExpr::new(count));
+                let is_null_expr: Arc<dyn PhysicalExpr> = Arc::new(IsNullExpr::new(count_expr));
                 let null_literal_expr: Arc<dyn PhysicalExpr> =
                     Arc::new(Literal::new(ScalarValue::Null));
 
