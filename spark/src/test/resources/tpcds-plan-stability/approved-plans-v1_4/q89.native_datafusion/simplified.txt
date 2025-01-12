@@ -1,32 +1,48 @@
 TakeOrderedAndProject [sum_sales,avg_monthly_sales,s_store_name,i_category,i_class,i_brand,s_company_name,d_moy]
-  WholeStageCodegen (2)
+  WholeStageCodegen (7)
     Project [i_category,i_class,i_brand,s_store_name,s_company_name,d_moy,sum_sales,avg_monthly_sales]
       Filter [avg_monthly_sales,sum_sales]
         InputAdapter
           Window [_w0,i_category,i_brand,s_store_name,s_company_name]
-            WholeStageCodegen (1)
-              ColumnarToRow
+            WholeStageCodegen (6)
+              Sort [i_category,i_brand,s_store_name,s_company_name]
                 InputAdapter
-                  CometSort [i_category,i_class,i_brand,s_store_name,s_company_name,d_moy,sum_sales,_w0]
-                    CometExchange [i_category,i_brand,s_store_name,s_company_name] #1
-                      CometHashAggregate [i_category,i_class,i_brand,s_store_name,s_company_name,d_moy,sum_sales,_w0,sum,sum(UnscaledValue(ss_sales_price))]
-                        CometExchange [i_category,i_class,i_brand,s_store_name,s_company_name,d_moy] #2
-                          CometHashAggregate [i_category,i_class,i_brand,s_store_name,s_company_name,d_moy,sum,ss_sales_price]
-                            CometProject [i_brand,i_class,i_category,ss_sales_price,d_moy,s_store_name,s_company_name]
-                              CometBroadcastHashJoin [i_brand,i_class,i_category,ss_store_sk,ss_sales_price,d_moy,s_store_sk,s_store_name,s_company_name]
-                                CometProject [i_brand,i_class,i_category,ss_store_sk,ss_sales_price,d_moy]
-                                  CometBroadcastHashJoin [i_brand,i_class,i_category,ss_store_sk,ss_sales_price,ss_sold_date_sk,d_date_sk,d_moy]
-                                    CometProject [i_brand,i_class,i_category,ss_store_sk,ss_sales_price,ss_sold_date_sk]
-                                      CometBroadcastHashJoin [i_item_sk,i_brand,i_class,i_category,ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk]
-                                        CometFilter [i_item_sk,i_brand,i_class,i_category]
-                                          CometNativeScan: `spark_catalog`.`default`.`item` [i_item_sk,i_brand,i_class,i_category]
-                                        CometBroadcastExchange [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk] #3
-                                          CometFilter [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk]
-                                            CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk]
-                                    CometBroadcastExchange [d_date_sk,d_moy] #4
-                                      CometProject [d_date_sk,d_moy]
-                                        CometFilter [d_date_sk,d_year,d_moy]
-                                          CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_year,d_moy]
-                                CometBroadcastExchange [s_store_sk,s_store_name,s_company_name] #5
-                                  CometFilter [s_store_sk,s_store_name,s_company_name]
-                                    CometNativeScan: `spark_catalog`.`default`.`store` [s_store_sk,s_store_name,s_company_name]
+                  Exchange [i_category,i_brand,s_store_name,s_company_name] #1
+                    WholeStageCodegen (5)
+                      HashAggregate [i_category,i_class,i_brand,s_store_name,s_company_name,d_moy,sum] [sum(UnscaledValue(ss_sales_price)),sum_sales,_w0,sum]
+                        InputAdapter
+                          Exchange [i_category,i_class,i_brand,s_store_name,s_company_name,d_moy] #2
+                            WholeStageCodegen (4)
+                              HashAggregate [i_category,i_class,i_brand,s_store_name,s_company_name,d_moy,ss_sales_price] [sum,sum]
+                                Project [i_brand,i_class,i_category,ss_sales_price,d_moy,s_store_name,s_company_name]
+                                  BroadcastHashJoin [ss_store_sk,s_store_sk]
+                                    Project [i_brand,i_class,i_category,ss_store_sk,ss_sales_price,d_moy]
+                                      BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
+                                        Project [i_brand,i_class,i_category,ss_store_sk,ss_sales_price,ss_sold_date_sk]
+                                          BroadcastHashJoin [i_item_sk,ss_item_sk]
+                                            Filter [i_category,i_class,i_item_sk]
+                                              ColumnarToRow
+                                                InputAdapter
+                                                  Scan parquet spark_catalog.default.item [i_item_sk,i_brand,i_class,i_category]
+                                            InputAdapter
+                                              BroadcastExchange #3
+                                                WholeStageCodegen (1)
+                                                  Filter [ss_item_sk,ss_store_sk]
+                                                    ColumnarToRow
+                                                      InputAdapter
+                                                        Scan parquet spark_catalog.default.store_sales [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk]
+                                        InputAdapter
+                                          BroadcastExchange #4
+                                            WholeStageCodegen (2)
+                                              Project [d_date_sk,d_moy]
+                                                Filter [d_year,d_date_sk]
+                                                  ColumnarToRow
+                                                    InputAdapter
+                                                      Scan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
+                                    InputAdapter
+                                      BroadcastExchange #5
+                                        WholeStageCodegen (3)
+                                          Filter [s_store_sk]
+                                            ColumnarToRow
+                                              InputAdapter
+                                                Scan parquet spark_catalog.default.store [s_store_sk,s_store_name,s_company_name]

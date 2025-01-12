@@ -1,84 +1,88 @@
 == Physical Plan ==
-TakeOrderedAndProject (77)
-+- * HashAggregate (76)
-   +- Exchange (75)
-      +- * HashAggregate (74)
-         +- Union (73)
-            :- * Project (26)
-            :  +- * Filter (25)
-            :     +- Window (24)
-            :        +- * Sort (23)
-            :           +- Window (22)
-            :              +- * ColumnarToRow (21)
-            :                 +- CometSort (20)
-            :                    +- CometExchange (19)
-            :                       +- CometHashAggregate (18)
-            :                          +- CometExchange (17)
-            :                             +- CometHashAggregate (16)
-            :                                +- CometProject (15)
-            :                                   +- CometBroadcastHashJoin (14)
-            :                                      :- CometProject (9)
-            :                                      :  +- CometBroadcastHashJoin (8)
-            :                                      :     :- CometBroadcastExchange (4)
-            :                                      :     :  +- CometProject (3)
-            :                                      :     :     +- CometFilter (2)
-            :                                      :     :        +- CometScan parquet spark_catalog.default.web_sales (1)
-            :                                      :     +- CometProject (7)
-            :                                      :        +- CometFilter (6)
-            :                                      :           +- CometScan parquet spark_catalog.default.web_returns (5)
-            :                                      +- CometBroadcastExchange (13)
-            :                                         +- CometProject (12)
-            :                                            +- CometFilter (11)
-            :                                               +- CometScan parquet spark_catalog.default.date_dim (10)
-            :- * Project (49)
-            :  +- * Filter (48)
-            :     +- Window (47)
-            :        +- * Sort (46)
-            :           +- Window (45)
-            :              +- * ColumnarToRow (44)
-            :                 +- CometSort (43)
-            :                    +- CometExchange (42)
-            :                       +- CometHashAggregate (41)
-            :                          +- CometExchange (40)
-            :                             +- CometHashAggregate (39)
-            :                                +- CometProject (38)
-            :                                   +- CometBroadcastHashJoin (37)
-            :                                      :- CometProject (35)
-            :                                      :  +- CometBroadcastHashJoin (34)
-            :                                      :     :- CometBroadcastExchange (30)
-            :                                      :     :  +- CometProject (29)
-            :                                      :     :     +- CometFilter (28)
-            :                                      :     :        +- CometScan parquet spark_catalog.default.catalog_sales (27)
-            :                                      :     +- CometProject (33)
-            :                                      :        +- CometFilter (32)
-            :                                      :           +- CometScan parquet spark_catalog.default.catalog_returns (31)
-            :                                      +- ReusedExchange (36)
-            +- * Project (72)
-               +- * Filter (71)
-                  +- Window (70)
-                     +- * Sort (69)
-                        +- Window (68)
-                           +- * ColumnarToRow (67)
-                              +- CometSort (66)
-                                 +- CometExchange (65)
-                                    +- CometHashAggregate (64)
-                                       +- CometExchange (63)
-                                          +- CometHashAggregate (62)
-                                             +- CometProject (61)
-                                                +- CometBroadcastHashJoin (60)
-                                                   :- CometProject (58)
-                                                   :  +- CometBroadcastHashJoin (57)
-                                                   :     :- CometBroadcastExchange (53)
-                                                   :     :  +- CometProject (52)
-                                                   :     :     +- CometFilter (51)
-                                                   :     :        +- CometScan parquet spark_catalog.default.store_sales (50)
-                                                   :     +- CometProject (56)
-                                                   :        +- CometFilter (55)
-                                                   :           +- CometScan parquet spark_catalog.default.store_returns (54)
-                                                   +- ReusedExchange (59)
+TakeOrderedAndProject (81)
++- * HashAggregate (80)
+   +- Exchange (79)
+      +- * HashAggregate (78)
+         +- Union (77)
+            :- * Project (28)
+            :  +- * Filter (27)
+            :     +- Window (26)
+            :        +- * Sort (25)
+            :           +- Window (24)
+            :              +- * Sort (23)
+            :                 +- Exchange (22)
+            :                    +- * HashAggregate (21)
+            :                       +- Exchange (20)
+            :                          +- * HashAggregate (19)
+            :                             +- * Project (18)
+            :                                +- * BroadcastHashJoin Inner BuildRight (17)
+            :                                   :- * Project (11)
+            :                                   :  +- * BroadcastHashJoin Inner BuildLeft (10)
+            :                                   :     :- BroadcastExchange (5)
+            :                                   :     :  +- * Project (4)
+            :                                   :     :     +- * Filter (3)
+            :                                   :     :        +- * ColumnarToRow (2)
+            :                                   :     :           +- Scan parquet spark_catalog.default.web_sales (1)
+            :                                   :     +- * Project (9)
+            :                                   :        +- * Filter (8)
+            :                                   :           +- * ColumnarToRow (7)
+            :                                   :              +- Scan parquet spark_catalog.default.web_returns (6)
+            :                                   +- BroadcastExchange (16)
+            :                                      +- * Project (15)
+            :                                         +- * Filter (14)
+            :                                            +- * ColumnarToRow (13)
+            :                                               +- Scan parquet spark_catalog.default.date_dim (12)
+            :- * Project (52)
+            :  +- * Filter (51)
+            :     +- Window (50)
+            :        +- * Sort (49)
+            :           +- Window (48)
+            :              +- * Sort (47)
+            :                 +- Exchange (46)
+            :                    +- * HashAggregate (45)
+            :                       +- Exchange (44)
+            :                          +- * HashAggregate (43)
+            :                             +- * Project (42)
+            :                                +- * BroadcastHashJoin Inner BuildRight (41)
+            :                                   :- * Project (39)
+            :                                   :  +- * BroadcastHashJoin Inner BuildLeft (38)
+            :                                   :     :- BroadcastExchange (33)
+            :                                   :     :  +- * Project (32)
+            :                                   :     :     +- * Filter (31)
+            :                                   :     :        +- * ColumnarToRow (30)
+            :                                   :     :           +- Scan parquet spark_catalog.default.catalog_sales (29)
+            :                                   :     +- * Project (37)
+            :                                   :        +- * Filter (36)
+            :                                   :           +- * ColumnarToRow (35)
+            :                                   :              +- Scan parquet spark_catalog.default.catalog_returns (34)
+            :                                   +- ReusedExchange (40)
+            +- * Project (76)
+               +- * Filter (75)
+                  +- Window (74)
+                     +- * Sort (73)
+                        +- Window (72)
+                           +- * Sort (71)
+                              +- Exchange (70)
+                                 +- * HashAggregate (69)
+                                    +- Exchange (68)
+                                       +- * HashAggregate (67)
+                                          +- * Project (66)
+                                             +- * BroadcastHashJoin Inner BuildRight (65)
+                                                :- * Project (63)
+                                                :  +- * BroadcastHashJoin Inner BuildLeft (62)
+                                                :     :- BroadcastExchange (57)
+                                                :     :  +- * Project (56)
+                                                :     :     +- * Filter (55)
+                                                :     :        +- * ColumnarToRow (54)
+                                                :     :           +- Scan parquet spark_catalog.default.store_sales (53)
+                                                :     +- * Project (61)
+                                                :        +- * Filter (60)
+                                                :           +- * ColumnarToRow (59)
+                                                :              +- Scan parquet spark_catalog.default.store_returns (58)
+                                                +- ReusedExchange (64)
 
 
-(1) CometScan parquet spark_catalog.default.web_sales
+(1) Scan parquet spark_catalog.default.web_sales
 Output [6]: [ws_item_sk#1, ws_order_number#2, ws_quantity#3, ws_net_paid#4, ws_net_profit#5, ws_sold_date_sk#6]
 Batched: true
 Location: InMemoryFileIndex []
@@ -86,338 +90,368 @@ PartitionFilters: [isnotnull(ws_sold_date_sk#6)]
 PushedFilters: [IsNotNull(ws_net_profit), IsNotNull(ws_net_paid), IsNotNull(ws_quantity), GreaterThan(ws_net_profit,1.00), GreaterThan(ws_net_paid,0.00), GreaterThan(ws_quantity,0), IsNotNull(ws_order_number), IsNotNull(ws_item_sk)]
 ReadSchema: struct<ws_item_sk:int,ws_order_number:int,ws_quantity:int,ws_net_paid:decimal(7,2),ws_net_profit:decimal(7,2)>
 
-(2) CometFilter
+(2) ColumnarToRow [codegen id : 1]
+Input [6]: [ws_item_sk#1, ws_order_number#2, ws_quantity#3, ws_net_paid#4, ws_net_profit#5, ws_sold_date_sk#6]
+
+(3) Filter [codegen id : 1]
 Input [6]: [ws_item_sk#1, ws_order_number#2, ws_quantity#3, ws_net_paid#4, ws_net_profit#5, ws_sold_date_sk#6]
 Condition : (((((((isnotnull(ws_net_profit#5) AND isnotnull(ws_net_paid#4)) AND isnotnull(ws_quantity#3)) AND (ws_net_profit#5 > 1.00)) AND (ws_net_paid#4 > 0.00)) AND (ws_quantity#3 > 0)) AND isnotnull(ws_order_number#2)) AND isnotnull(ws_item_sk#1))
 
-(3) CometProject
+(4) Project [codegen id : 1]
+Output [5]: [ws_item_sk#1, ws_order_number#2, ws_quantity#3, ws_net_paid#4, ws_sold_date_sk#6]
 Input [6]: [ws_item_sk#1, ws_order_number#2, ws_quantity#3, ws_net_paid#4, ws_net_profit#5, ws_sold_date_sk#6]
-Arguments: [ws_item_sk#1, ws_order_number#2, ws_quantity#3, ws_net_paid#4, ws_sold_date_sk#6], [ws_item_sk#1, ws_order_number#2, ws_quantity#3, ws_net_paid#4, ws_sold_date_sk#6]
 
-(4) CometBroadcastExchange
+(5) BroadcastExchange
 Input [5]: [ws_item_sk#1, ws_order_number#2, ws_quantity#3, ws_net_paid#4, ws_sold_date_sk#6]
-Arguments: [ws_item_sk#1, ws_order_number#2, ws_quantity#3, ws_net_paid#4, ws_sold_date_sk#6]
+Arguments: HashedRelationBroadcastMode(List((shiftleft(cast(input[1, int, true] as bigint), 32) | (cast(input[0, int, true] as bigint) & 4294967295))),false), [plan_id=1]
 
-(5) CometScan parquet spark_catalog.default.web_returns
+(6) Scan parquet spark_catalog.default.web_returns
 Output [5]: [wr_item_sk#7, wr_order_number#8, wr_return_quantity#9, wr_return_amt#10, wr_returned_date_sk#11]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_returns]
 PushedFilters: [IsNotNull(wr_return_amt), GreaterThan(wr_return_amt,10000.00), IsNotNull(wr_order_number), IsNotNull(wr_item_sk)]
 ReadSchema: struct<wr_item_sk:int,wr_order_number:int,wr_return_quantity:int,wr_return_amt:decimal(7,2)>
 
-(6) CometFilter
+(7) ColumnarToRow
+Input [5]: [wr_item_sk#7, wr_order_number#8, wr_return_quantity#9, wr_return_amt#10, wr_returned_date_sk#11]
+
+(8) Filter
 Input [5]: [wr_item_sk#7, wr_order_number#8, wr_return_quantity#9, wr_return_amt#10, wr_returned_date_sk#11]
 Condition : (((isnotnull(wr_return_amt#10) AND (wr_return_amt#10 > 10000.00)) AND isnotnull(wr_order_number#8)) AND isnotnull(wr_item_sk#7))
 
-(7) CometProject
+(9) Project
+Output [4]: [wr_item_sk#7, wr_order_number#8, wr_return_quantity#9, wr_return_amt#10]
 Input [5]: [wr_item_sk#7, wr_order_number#8, wr_return_quantity#9, wr_return_amt#10, wr_returned_date_sk#11]
-Arguments: [wr_item_sk#7, wr_order_number#8, wr_return_quantity#9, wr_return_amt#10], [wr_item_sk#7, wr_order_number#8, wr_return_quantity#9, wr_return_amt#10]
 
-(8) CometBroadcastHashJoin
-Left output [5]: [ws_item_sk#1, ws_order_number#2, ws_quantity#3, ws_net_paid#4, ws_sold_date_sk#6]
-Right output [4]: [wr_item_sk#7, wr_order_number#8, wr_return_quantity#9, wr_return_amt#10]
-Arguments: [ws_order_number#2, ws_item_sk#1], [wr_order_number#8, wr_item_sk#7], Inner, BuildLeft
+(10) BroadcastHashJoin [codegen id : 3]
+Left keys [2]: [ws_order_number#2, ws_item_sk#1]
+Right keys [2]: [wr_order_number#8, wr_item_sk#7]
+Join type: Inner
+Join condition: None
 
-(9) CometProject
+(11) Project [codegen id : 3]
+Output [6]: [ws_item_sk#1, ws_quantity#3, ws_net_paid#4, ws_sold_date_sk#6, wr_return_quantity#9, wr_return_amt#10]
 Input [9]: [ws_item_sk#1, ws_order_number#2, ws_quantity#3, ws_net_paid#4, ws_sold_date_sk#6, wr_item_sk#7, wr_order_number#8, wr_return_quantity#9, wr_return_amt#10]
-Arguments: [ws_item_sk#1, ws_quantity#3, ws_net_paid#4, ws_sold_date_sk#6, wr_return_quantity#9, wr_return_amt#10], [ws_item_sk#1, ws_quantity#3, ws_net_paid#4, ws_sold_date_sk#6, wr_return_quantity#9, wr_return_amt#10]
 
-(10) CometScan parquet spark_catalog.default.date_dim
+(12) Scan parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#12, d_year#13, d_moy#14]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), IsNotNull(d_moy), EqualTo(d_year,2001), EqualTo(d_moy,12), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
-(11) CometFilter
+(13) ColumnarToRow [codegen id : 2]
+Input [3]: [d_date_sk#12, d_year#13, d_moy#14]
+
+(14) Filter [codegen id : 2]
 Input [3]: [d_date_sk#12, d_year#13, d_moy#14]
 Condition : ((((isnotnull(d_year#13) AND isnotnull(d_moy#14)) AND (d_year#13 = 2001)) AND (d_moy#14 = 12)) AND isnotnull(d_date_sk#12))
 
-(12) CometProject
+(15) Project [codegen id : 2]
+Output [1]: [d_date_sk#12]
 Input [3]: [d_date_sk#12, d_year#13, d_moy#14]
-Arguments: [d_date_sk#12], [d_date_sk#12]
 
-(13) CometBroadcastExchange
+(16) BroadcastExchange
 Input [1]: [d_date_sk#12]
-Arguments: [d_date_sk#12]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=2]
 
-(14) CometBroadcastHashJoin
-Left output [6]: [ws_item_sk#1, ws_quantity#3, ws_net_paid#4, ws_sold_date_sk#6, wr_return_quantity#9, wr_return_amt#10]
-Right output [1]: [d_date_sk#12]
-Arguments: [ws_sold_date_sk#6], [d_date_sk#12], Inner, BuildRight
+(17) BroadcastHashJoin [codegen id : 3]
+Left keys [1]: [ws_sold_date_sk#6]
+Right keys [1]: [d_date_sk#12]
+Join type: Inner
+Join condition: None
 
-(15) CometProject
+(18) Project [codegen id : 3]
+Output [5]: [ws_item_sk#1, ws_quantity#3, ws_net_paid#4, wr_return_quantity#9, wr_return_amt#10]
 Input [7]: [ws_item_sk#1, ws_quantity#3, ws_net_paid#4, ws_sold_date_sk#6, wr_return_quantity#9, wr_return_amt#10, d_date_sk#12]
-Arguments: [ws_item_sk#1, ws_quantity#3, ws_net_paid#4, wr_return_quantity#9, wr_return_amt#10], [ws_item_sk#1, ws_quantity#3, ws_net_paid#4, wr_return_quantity#9, wr_return_amt#10]
 
-(16) CometHashAggregate
+(19) HashAggregate [codegen id : 3]
 Input [5]: [ws_item_sk#1, ws_quantity#3, ws_net_paid#4, wr_return_quantity#9, wr_return_amt#10]
 Keys [1]: [ws_item_sk#1]
 Functions [4]: [partial_sum(coalesce(wr_return_quantity#9, 0)), partial_sum(coalesce(ws_quantity#3, 0)), partial_sum(coalesce(cast(wr_return_amt#10 as decimal(12,2)), 0.00)), partial_sum(coalesce(cast(ws_net_paid#4 as decimal(12,2)), 0.00))]
+Aggregate Attributes [6]: [sum#15, sum#16, sum#17, isEmpty#18, sum#19, isEmpty#20]
+Results [7]: [ws_item_sk#1, sum#21, sum#22, sum#23, isEmpty#24, sum#25, isEmpty#26]
 
-(17) CometExchange
-Input [7]: [ws_item_sk#1, sum#15, sum#16, sum#17, isEmpty#18, sum#19, isEmpty#20]
-Arguments: hashpartitioning(ws_item_sk#1, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+(20) Exchange
+Input [7]: [ws_item_sk#1, sum#21, sum#22, sum#23, isEmpty#24, sum#25, isEmpty#26]
+Arguments: hashpartitioning(ws_item_sk#1, 5), ENSURE_REQUIREMENTS, [plan_id=3]
 
-(18) CometHashAggregate
-Input [7]: [ws_item_sk#1, sum#15, sum#16, sum#17, isEmpty#18, sum#19, isEmpty#20]
+(21) HashAggregate [codegen id : 4]
+Input [7]: [ws_item_sk#1, sum#21, sum#22, sum#23, isEmpty#24, sum#25, isEmpty#26]
 Keys [1]: [ws_item_sk#1]
 Functions [4]: [sum(coalesce(wr_return_quantity#9, 0)), sum(coalesce(ws_quantity#3, 0)), sum(coalesce(cast(wr_return_amt#10 as decimal(12,2)), 0.00)), sum(coalesce(cast(ws_net_paid#4 as decimal(12,2)), 0.00))]
+Aggregate Attributes [4]: [sum(coalesce(wr_return_quantity#9, 0))#27, sum(coalesce(ws_quantity#3, 0))#28, sum(coalesce(cast(wr_return_amt#10 as decimal(12,2)), 0.00))#29, sum(coalesce(cast(ws_net_paid#4 as decimal(12,2)), 0.00))#30]
+Results [3]: [ws_item_sk#1 AS item#31, (cast(sum(coalesce(wr_return_quantity#9, 0))#27 as decimal(15,4)) / cast(sum(coalesce(ws_quantity#3, 0))#28 as decimal(15,4))) AS return_ratio#32, (cast(sum(coalesce(cast(wr_return_amt#10 as decimal(12,2)), 0.00))#29 as decimal(15,4)) / cast(sum(coalesce(cast(ws_net_paid#4 as decimal(12,2)), 0.00))#30 as decimal(15,4))) AS currency_ratio#33]
 
-(19) CometExchange
-Input [3]: [item#21, return_ratio#22, currency_ratio#23]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+(22) Exchange
+Input [3]: [item#31, return_ratio#32, currency_ratio#33]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=4]
 
-(20) CometSort
-Input [3]: [item#21, return_ratio#22, currency_ratio#23]
-Arguments: [item#21, return_ratio#22, currency_ratio#23], [return_ratio#22 ASC NULLS FIRST]
-
-(21) ColumnarToRow [codegen id : 1]
-Input [3]: [item#21, return_ratio#22, currency_ratio#23]
-
-(22) Window
-Input [3]: [item#21, return_ratio#22, currency_ratio#23]
-Arguments: [rank(return_ratio#22) windowspecdefinition(return_ratio#22 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS return_rank#24], [return_ratio#22 ASC NULLS FIRST]
-
-(23) Sort [codegen id : 2]
-Input [4]: [item#21, return_ratio#22, currency_ratio#23, return_rank#24]
-Arguments: [currency_ratio#23 ASC NULLS FIRST], false, 0
+(23) Sort [codegen id : 5]
+Input [3]: [item#31, return_ratio#32, currency_ratio#33]
+Arguments: [return_ratio#32 ASC NULLS FIRST], false, 0
 
 (24) Window
-Input [4]: [item#21, return_ratio#22, currency_ratio#23, return_rank#24]
-Arguments: [rank(currency_ratio#23) windowspecdefinition(currency_ratio#23 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS currency_rank#25], [currency_ratio#23 ASC NULLS FIRST]
+Input [3]: [item#31, return_ratio#32, currency_ratio#33]
+Arguments: [rank(return_ratio#32) windowspecdefinition(return_ratio#32 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS return_rank#34], [return_ratio#32 ASC NULLS FIRST]
 
-(25) Filter [codegen id : 3]
-Input [5]: [item#21, return_ratio#22, currency_ratio#23, return_rank#24, currency_rank#25]
-Condition : ((return_rank#24 <= 10) OR (currency_rank#25 <= 10))
+(25) Sort [codegen id : 6]
+Input [4]: [item#31, return_ratio#32, currency_ratio#33, return_rank#34]
+Arguments: [currency_ratio#33 ASC NULLS FIRST], false, 0
 
-(26) Project [codegen id : 3]
-Output [5]: [web AS channel#26, item#21, return_ratio#22, return_rank#24, currency_rank#25]
-Input [5]: [item#21, return_ratio#22, currency_ratio#23, return_rank#24, currency_rank#25]
+(26) Window
+Input [4]: [item#31, return_ratio#32, currency_ratio#33, return_rank#34]
+Arguments: [rank(currency_ratio#33) windowspecdefinition(currency_ratio#33 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS currency_rank#35], [currency_ratio#33 ASC NULLS FIRST]
 
-(27) CometScan parquet spark_catalog.default.catalog_sales
-Output [6]: [cs_item_sk#27, cs_order_number#28, cs_quantity#29, cs_net_paid#30, cs_net_profit#31, cs_sold_date_sk#32]
+(27) Filter [codegen id : 7]
+Input [5]: [item#31, return_ratio#32, currency_ratio#33, return_rank#34, currency_rank#35]
+Condition : ((return_rank#34 <= 10) OR (currency_rank#35 <= 10))
+
+(28) Project [codegen id : 7]
+Output [5]: [web AS channel#36, item#31, return_ratio#32, return_rank#34, currency_rank#35]
+Input [5]: [item#31, return_ratio#32, currency_ratio#33, return_rank#34, currency_rank#35]
+
+(29) Scan parquet spark_catalog.default.catalog_sales
+Output [6]: [cs_item_sk#37, cs_order_number#38, cs_quantity#39, cs_net_paid#40, cs_net_profit#41, cs_sold_date_sk#42]
 Batched: true
 Location: InMemoryFileIndex []
-PartitionFilters: [isnotnull(cs_sold_date_sk#32)]
+PartitionFilters: [isnotnull(cs_sold_date_sk#42)]
 PushedFilters: [IsNotNull(cs_net_profit), IsNotNull(cs_net_paid), IsNotNull(cs_quantity), GreaterThan(cs_net_profit,1.00), GreaterThan(cs_net_paid,0.00), GreaterThan(cs_quantity,0), IsNotNull(cs_order_number), IsNotNull(cs_item_sk)]
 ReadSchema: struct<cs_item_sk:int,cs_order_number:int,cs_quantity:int,cs_net_paid:decimal(7,2),cs_net_profit:decimal(7,2)>
 
-(28) CometFilter
-Input [6]: [cs_item_sk#27, cs_order_number#28, cs_quantity#29, cs_net_paid#30, cs_net_profit#31, cs_sold_date_sk#32]
-Condition : (((((((isnotnull(cs_net_profit#31) AND isnotnull(cs_net_paid#30)) AND isnotnull(cs_quantity#29)) AND (cs_net_profit#31 > 1.00)) AND (cs_net_paid#30 > 0.00)) AND (cs_quantity#29 > 0)) AND isnotnull(cs_order_number#28)) AND isnotnull(cs_item_sk#27))
+(30) ColumnarToRow [codegen id : 8]
+Input [6]: [cs_item_sk#37, cs_order_number#38, cs_quantity#39, cs_net_paid#40, cs_net_profit#41, cs_sold_date_sk#42]
 
-(29) CometProject
-Input [6]: [cs_item_sk#27, cs_order_number#28, cs_quantity#29, cs_net_paid#30, cs_net_profit#31, cs_sold_date_sk#32]
-Arguments: [cs_item_sk#27, cs_order_number#28, cs_quantity#29, cs_net_paid#30, cs_sold_date_sk#32], [cs_item_sk#27, cs_order_number#28, cs_quantity#29, cs_net_paid#30, cs_sold_date_sk#32]
+(31) Filter [codegen id : 8]
+Input [6]: [cs_item_sk#37, cs_order_number#38, cs_quantity#39, cs_net_paid#40, cs_net_profit#41, cs_sold_date_sk#42]
+Condition : (((((((isnotnull(cs_net_profit#41) AND isnotnull(cs_net_paid#40)) AND isnotnull(cs_quantity#39)) AND (cs_net_profit#41 > 1.00)) AND (cs_net_paid#40 > 0.00)) AND (cs_quantity#39 > 0)) AND isnotnull(cs_order_number#38)) AND isnotnull(cs_item_sk#37))
 
-(30) CometBroadcastExchange
-Input [5]: [cs_item_sk#27, cs_order_number#28, cs_quantity#29, cs_net_paid#30, cs_sold_date_sk#32]
-Arguments: [cs_item_sk#27, cs_order_number#28, cs_quantity#29, cs_net_paid#30, cs_sold_date_sk#32]
+(32) Project [codegen id : 8]
+Output [5]: [cs_item_sk#37, cs_order_number#38, cs_quantity#39, cs_net_paid#40, cs_sold_date_sk#42]
+Input [6]: [cs_item_sk#37, cs_order_number#38, cs_quantity#39, cs_net_paid#40, cs_net_profit#41, cs_sold_date_sk#42]
 
-(31) CometScan parquet spark_catalog.default.catalog_returns
-Output [5]: [cr_item_sk#33, cr_order_number#34, cr_return_quantity#35, cr_return_amount#36, cr_returned_date_sk#37]
+(33) BroadcastExchange
+Input [5]: [cs_item_sk#37, cs_order_number#38, cs_quantity#39, cs_net_paid#40, cs_sold_date_sk#42]
+Arguments: HashedRelationBroadcastMode(List((shiftleft(cast(input[1, int, true] as bigint), 32) | (cast(input[0, int, true] as bigint) & 4294967295))),false), [plan_id=5]
+
+(34) Scan parquet spark_catalog.default.catalog_returns
+Output [5]: [cr_item_sk#43, cr_order_number#44, cr_return_quantity#45, cr_return_amount#46, cr_returned_date_sk#47]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/catalog_returns]
 PushedFilters: [IsNotNull(cr_return_amount), GreaterThan(cr_return_amount,10000.00), IsNotNull(cr_order_number), IsNotNull(cr_item_sk)]
 ReadSchema: struct<cr_item_sk:int,cr_order_number:int,cr_return_quantity:int,cr_return_amount:decimal(7,2)>
 
-(32) CometFilter
-Input [5]: [cr_item_sk#33, cr_order_number#34, cr_return_quantity#35, cr_return_amount#36, cr_returned_date_sk#37]
-Condition : (((isnotnull(cr_return_amount#36) AND (cr_return_amount#36 > 10000.00)) AND isnotnull(cr_order_number#34)) AND isnotnull(cr_item_sk#33))
+(35) ColumnarToRow
+Input [5]: [cr_item_sk#43, cr_order_number#44, cr_return_quantity#45, cr_return_amount#46, cr_returned_date_sk#47]
 
-(33) CometProject
-Input [5]: [cr_item_sk#33, cr_order_number#34, cr_return_quantity#35, cr_return_amount#36, cr_returned_date_sk#37]
-Arguments: [cr_item_sk#33, cr_order_number#34, cr_return_quantity#35, cr_return_amount#36], [cr_item_sk#33, cr_order_number#34, cr_return_quantity#35, cr_return_amount#36]
+(36) Filter
+Input [5]: [cr_item_sk#43, cr_order_number#44, cr_return_quantity#45, cr_return_amount#46, cr_returned_date_sk#47]
+Condition : (((isnotnull(cr_return_amount#46) AND (cr_return_amount#46 > 10000.00)) AND isnotnull(cr_order_number#44)) AND isnotnull(cr_item_sk#43))
 
-(34) CometBroadcastHashJoin
-Left output [5]: [cs_item_sk#27, cs_order_number#28, cs_quantity#29, cs_net_paid#30, cs_sold_date_sk#32]
-Right output [4]: [cr_item_sk#33, cr_order_number#34, cr_return_quantity#35, cr_return_amount#36]
-Arguments: [cs_order_number#28, cs_item_sk#27], [cr_order_number#34, cr_item_sk#33], Inner, BuildLeft
+(37) Project
+Output [4]: [cr_item_sk#43, cr_order_number#44, cr_return_quantity#45, cr_return_amount#46]
+Input [5]: [cr_item_sk#43, cr_order_number#44, cr_return_quantity#45, cr_return_amount#46, cr_returned_date_sk#47]
 
-(35) CometProject
-Input [9]: [cs_item_sk#27, cs_order_number#28, cs_quantity#29, cs_net_paid#30, cs_sold_date_sk#32, cr_item_sk#33, cr_order_number#34, cr_return_quantity#35, cr_return_amount#36]
-Arguments: [cs_item_sk#27, cs_quantity#29, cs_net_paid#30, cs_sold_date_sk#32, cr_return_quantity#35, cr_return_amount#36], [cs_item_sk#27, cs_quantity#29, cs_net_paid#30, cs_sold_date_sk#32, cr_return_quantity#35, cr_return_amount#36]
+(38) BroadcastHashJoin [codegen id : 10]
+Left keys [2]: [cs_order_number#38, cs_item_sk#37]
+Right keys [2]: [cr_order_number#44, cr_item_sk#43]
+Join type: Inner
+Join condition: None
 
-(36) ReusedExchange [Reuses operator id: 13]
-Output [1]: [d_date_sk#38]
+(39) Project [codegen id : 10]
+Output [6]: [cs_item_sk#37, cs_quantity#39, cs_net_paid#40, cs_sold_date_sk#42, cr_return_quantity#45, cr_return_amount#46]
+Input [9]: [cs_item_sk#37, cs_order_number#38, cs_quantity#39, cs_net_paid#40, cs_sold_date_sk#42, cr_item_sk#43, cr_order_number#44, cr_return_quantity#45, cr_return_amount#46]
 
-(37) CometBroadcastHashJoin
-Left output [6]: [cs_item_sk#27, cs_quantity#29, cs_net_paid#30, cs_sold_date_sk#32, cr_return_quantity#35, cr_return_amount#36]
-Right output [1]: [d_date_sk#38]
-Arguments: [cs_sold_date_sk#32], [d_date_sk#38], Inner, BuildRight
+(40) ReusedExchange [Reuses operator id: 16]
+Output [1]: [d_date_sk#48]
 
-(38) CometProject
-Input [7]: [cs_item_sk#27, cs_quantity#29, cs_net_paid#30, cs_sold_date_sk#32, cr_return_quantity#35, cr_return_amount#36, d_date_sk#38]
-Arguments: [cs_item_sk#27, cs_quantity#29, cs_net_paid#30, cr_return_quantity#35, cr_return_amount#36], [cs_item_sk#27, cs_quantity#29, cs_net_paid#30, cr_return_quantity#35, cr_return_amount#36]
+(41) BroadcastHashJoin [codegen id : 10]
+Left keys [1]: [cs_sold_date_sk#42]
+Right keys [1]: [d_date_sk#48]
+Join type: Inner
+Join condition: None
 
-(39) CometHashAggregate
-Input [5]: [cs_item_sk#27, cs_quantity#29, cs_net_paid#30, cr_return_quantity#35, cr_return_amount#36]
-Keys [1]: [cs_item_sk#27]
-Functions [4]: [partial_sum(coalesce(cr_return_quantity#35, 0)), partial_sum(coalesce(cs_quantity#29, 0)), partial_sum(coalesce(cast(cr_return_amount#36 as decimal(12,2)), 0.00)), partial_sum(coalesce(cast(cs_net_paid#30 as decimal(12,2)), 0.00))]
+(42) Project [codegen id : 10]
+Output [5]: [cs_item_sk#37, cs_quantity#39, cs_net_paid#40, cr_return_quantity#45, cr_return_amount#46]
+Input [7]: [cs_item_sk#37, cs_quantity#39, cs_net_paid#40, cs_sold_date_sk#42, cr_return_quantity#45, cr_return_amount#46, d_date_sk#48]
 
-(40) CometExchange
-Input [7]: [cs_item_sk#27, sum#39, sum#40, sum#41, isEmpty#42, sum#43, isEmpty#44]
-Arguments: hashpartitioning(cs_item_sk#27, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
+(43) HashAggregate [codegen id : 10]
+Input [5]: [cs_item_sk#37, cs_quantity#39, cs_net_paid#40, cr_return_quantity#45, cr_return_amount#46]
+Keys [1]: [cs_item_sk#37]
+Functions [4]: [partial_sum(coalesce(cr_return_quantity#45, 0)), partial_sum(coalesce(cs_quantity#39, 0)), partial_sum(coalesce(cast(cr_return_amount#46 as decimal(12,2)), 0.00)), partial_sum(coalesce(cast(cs_net_paid#40 as decimal(12,2)), 0.00))]
+Aggregate Attributes [6]: [sum#49, sum#50, sum#51, isEmpty#52, sum#53, isEmpty#54]
+Results [7]: [cs_item_sk#37, sum#55, sum#56, sum#57, isEmpty#58, sum#59, isEmpty#60]
 
-(41) CometHashAggregate
-Input [7]: [cs_item_sk#27, sum#39, sum#40, sum#41, isEmpty#42, sum#43, isEmpty#44]
-Keys [1]: [cs_item_sk#27]
-Functions [4]: [sum(coalesce(cr_return_quantity#35, 0)), sum(coalesce(cs_quantity#29, 0)), sum(coalesce(cast(cr_return_amount#36 as decimal(12,2)), 0.00)), sum(coalesce(cast(cs_net_paid#30 as decimal(12,2)), 0.00))]
+(44) Exchange
+Input [7]: [cs_item_sk#37, sum#55, sum#56, sum#57, isEmpty#58, sum#59, isEmpty#60]
+Arguments: hashpartitioning(cs_item_sk#37, 5), ENSURE_REQUIREMENTS, [plan_id=6]
 
-(42) CometExchange
-Input [3]: [item#45, return_ratio#46, currency_ratio#47]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
+(45) HashAggregate [codegen id : 11]
+Input [7]: [cs_item_sk#37, sum#55, sum#56, sum#57, isEmpty#58, sum#59, isEmpty#60]
+Keys [1]: [cs_item_sk#37]
+Functions [4]: [sum(coalesce(cr_return_quantity#45, 0)), sum(coalesce(cs_quantity#39, 0)), sum(coalesce(cast(cr_return_amount#46 as decimal(12,2)), 0.00)), sum(coalesce(cast(cs_net_paid#40 as decimal(12,2)), 0.00))]
+Aggregate Attributes [4]: [sum(coalesce(cr_return_quantity#45, 0))#61, sum(coalesce(cs_quantity#39, 0))#62, sum(coalesce(cast(cr_return_amount#46 as decimal(12,2)), 0.00))#63, sum(coalesce(cast(cs_net_paid#40 as decimal(12,2)), 0.00))#64]
+Results [3]: [cs_item_sk#37 AS item#65, (cast(sum(coalesce(cr_return_quantity#45, 0))#61 as decimal(15,4)) / cast(sum(coalesce(cs_quantity#39, 0))#62 as decimal(15,4))) AS return_ratio#66, (cast(sum(coalesce(cast(cr_return_amount#46 as decimal(12,2)), 0.00))#63 as decimal(15,4)) / cast(sum(coalesce(cast(cs_net_paid#40 as decimal(12,2)), 0.00))#64 as decimal(15,4))) AS currency_ratio#67]
 
-(43) CometSort
-Input [3]: [item#45, return_ratio#46, currency_ratio#47]
-Arguments: [item#45, return_ratio#46, currency_ratio#47], [return_ratio#46 ASC NULLS FIRST]
+(46) Exchange
+Input [3]: [item#65, return_ratio#66, currency_ratio#67]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=7]
 
-(44) ColumnarToRow [codegen id : 4]
-Input [3]: [item#45, return_ratio#46, currency_ratio#47]
+(47) Sort [codegen id : 12]
+Input [3]: [item#65, return_ratio#66, currency_ratio#67]
+Arguments: [return_ratio#66 ASC NULLS FIRST], false, 0
 
-(45) Window
-Input [3]: [item#45, return_ratio#46, currency_ratio#47]
-Arguments: [rank(return_ratio#46) windowspecdefinition(return_ratio#46 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS return_rank#48], [return_ratio#46 ASC NULLS FIRST]
+(48) Window
+Input [3]: [item#65, return_ratio#66, currency_ratio#67]
+Arguments: [rank(return_ratio#66) windowspecdefinition(return_ratio#66 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS return_rank#68], [return_ratio#66 ASC NULLS FIRST]
 
-(46) Sort [codegen id : 5]
-Input [4]: [item#45, return_ratio#46, currency_ratio#47, return_rank#48]
-Arguments: [currency_ratio#47 ASC NULLS FIRST], false, 0
+(49) Sort [codegen id : 13]
+Input [4]: [item#65, return_ratio#66, currency_ratio#67, return_rank#68]
+Arguments: [currency_ratio#67 ASC NULLS FIRST], false, 0
 
-(47) Window
-Input [4]: [item#45, return_ratio#46, currency_ratio#47, return_rank#48]
-Arguments: [rank(currency_ratio#47) windowspecdefinition(currency_ratio#47 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS currency_rank#49], [currency_ratio#47 ASC NULLS FIRST]
+(50) Window
+Input [4]: [item#65, return_ratio#66, currency_ratio#67, return_rank#68]
+Arguments: [rank(currency_ratio#67) windowspecdefinition(currency_ratio#67 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS currency_rank#69], [currency_ratio#67 ASC NULLS FIRST]
 
-(48) Filter [codegen id : 6]
-Input [5]: [item#45, return_ratio#46, currency_ratio#47, return_rank#48, currency_rank#49]
-Condition : ((return_rank#48 <= 10) OR (currency_rank#49 <= 10))
+(51) Filter [codegen id : 14]
+Input [5]: [item#65, return_ratio#66, currency_ratio#67, return_rank#68, currency_rank#69]
+Condition : ((return_rank#68 <= 10) OR (currency_rank#69 <= 10))
 
-(49) Project [codegen id : 6]
-Output [5]: [catalog AS channel#50, item#45, return_ratio#46, return_rank#48, currency_rank#49]
-Input [5]: [item#45, return_ratio#46, currency_ratio#47, return_rank#48, currency_rank#49]
+(52) Project [codegen id : 14]
+Output [5]: [catalog AS channel#70, item#65, return_ratio#66, return_rank#68, currency_rank#69]
+Input [5]: [item#65, return_ratio#66, currency_ratio#67, return_rank#68, currency_rank#69]
 
-(50) CometScan parquet spark_catalog.default.store_sales
-Output [6]: [ss_item_sk#51, ss_ticket_number#52, ss_quantity#53, ss_net_paid#54, ss_net_profit#55, ss_sold_date_sk#56]
+(53) Scan parquet spark_catalog.default.store_sales
+Output [6]: [ss_item_sk#71, ss_ticket_number#72, ss_quantity#73, ss_net_paid#74, ss_net_profit#75, ss_sold_date_sk#76]
 Batched: true
 Location: InMemoryFileIndex []
-PartitionFilters: [isnotnull(ss_sold_date_sk#56)]
+PartitionFilters: [isnotnull(ss_sold_date_sk#76)]
 PushedFilters: [IsNotNull(ss_net_profit), IsNotNull(ss_net_paid), IsNotNull(ss_quantity), GreaterThan(ss_net_profit,1.00), GreaterThan(ss_net_paid,0.00), GreaterThan(ss_quantity,0), IsNotNull(ss_ticket_number), IsNotNull(ss_item_sk)]
 ReadSchema: struct<ss_item_sk:int,ss_ticket_number:int,ss_quantity:int,ss_net_paid:decimal(7,2),ss_net_profit:decimal(7,2)>
 
-(51) CometFilter
-Input [6]: [ss_item_sk#51, ss_ticket_number#52, ss_quantity#53, ss_net_paid#54, ss_net_profit#55, ss_sold_date_sk#56]
-Condition : (((((((isnotnull(ss_net_profit#55) AND isnotnull(ss_net_paid#54)) AND isnotnull(ss_quantity#53)) AND (ss_net_profit#55 > 1.00)) AND (ss_net_paid#54 > 0.00)) AND (ss_quantity#53 > 0)) AND isnotnull(ss_ticket_number#52)) AND isnotnull(ss_item_sk#51))
+(54) ColumnarToRow [codegen id : 15]
+Input [6]: [ss_item_sk#71, ss_ticket_number#72, ss_quantity#73, ss_net_paid#74, ss_net_profit#75, ss_sold_date_sk#76]
 
-(52) CometProject
-Input [6]: [ss_item_sk#51, ss_ticket_number#52, ss_quantity#53, ss_net_paid#54, ss_net_profit#55, ss_sold_date_sk#56]
-Arguments: [ss_item_sk#51, ss_ticket_number#52, ss_quantity#53, ss_net_paid#54, ss_sold_date_sk#56], [ss_item_sk#51, ss_ticket_number#52, ss_quantity#53, ss_net_paid#54, ss_sold_date_sk#56]
+(55) Filter [codegen id : 15]
+Input [6]: [ss_item_sk#71, ss_ticket_number#72, ss_quantity#73, ss_net_paid#74, ss_net_profit#75, ss_sold_date_sk#76]
+Condition : (((((((isnotnull(ss_net_profit#75) AND isnotnull(ss_net_paid#74)) AND isnotnull(ss_quantity#73)) AND (ss_net_profit#75 > 1.00)) AND (ss_net_paid#74 > 0.00)) AND (ss_quantity#73 > 0)) AND isnotnull(ss_ticket_number#72)) AND isnotnull(ss_item_sk#71))
 
-(53) CometBroadcastExchange
-Input [5]: [ss_item_sk#51, ss_ticket_number#52, ss_quantity#53, ss_net_paid#54, ss_sold_date_sk#56]
-Arguments: [ss_item_sk#51, ss_ticket_number#52, ss_quantity#53, ss_net_paid#54, ss_sold_date_sk#56]
+(56) Project [codegen id : 15]
+Output [5]: [ss_item_sk#71, ss_ticket_number#72, ss_quantity#73, ss_net_paid#74, ss_sold_date_sk#76]
+Input [6]: [ss_item_sk#71, ss_ticket_number#72, ss_quantity#73, ss_net_paid#74, ss_net_profit#75, ss_sold_date_sk#76]
 
-(54) CometScan parquet spark_catalog.default.store_returns
-Output [5]: [sr_item_sk#57, sr_ticket_number#58, sr_return_quantity#59, sr_return_amt#60, sr_returned_date_sk#61]
+(57) BroadcastExchange
+Input [5]: [ss_item_sk#71, ss_ticket_number#72, ss_quantity#73, ss_net_paid#74, ss_sold_date_sk#76]
+Arguments: HashedRelationBroadcastMode(List((shiftleft(cast(input[1, int, true] as bigint), 32) | (cast(input[0, int, true] as bigint) & 4294967295))),false), [plan_id=8]
+
+(58) Scan parquet spark_catalog.default.store_returns
+Output [5]: [sr_item_sk#77, sr_ticket_number#78, sr_return_quantity#79, sr_return_amt#80, sr_returned_date_sk#81]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_returns]
 PushedFilters: [IsNotNull(sr_return_amt), GreaterThan(sr_return_amt,10000.00), IsNotNull(sr_ticket_number), IsNotNull(sr_item_sk)]
 ReadSchema: struct<sr_item_sk:int,sr_ticket_number:int,sr_return_quantity:int,sr_return_amt:decimal(7,2)>
 
-(55) CometFilter
-Input [5]: [sr_item_sk#57, sr_ticket_number#58, sr_return_quantity#59, sr_return_amt#60, sr_returned_date_sk#61]
-Condition : (((isnotnull(sr_return_amt#60) AND (sr_return_amt#60 > 10000.00)) AND isnotnull(sr_ticket_number#58)) AND isnotnull(sr_item_sk#57))
+(59) ColumnarToRow
+Input [5]: [sr_item_sk#77, sr_ticket_number#78, sr_return_quantity#79, sr_return_amt#80, sr_returned_date_sk#81]
 
-(56) CometProject
-Input [5]: [sr_item_sk#57, sr_ticket_number#58, sr_return_quantity#59, sr_return_amt#60, sr_returned_date_sk#61]
-Arguments: [sr_item_sk#57, sr_ticket_number#58, sr_return_quantity#59, sr_return_amt#60], [sr_item_sk#57, sr_ticket_number#58, sr_return_quantity#59, sr_return_amt#60]
+(60) Filter
+Input [5]: [sr_item_sk#77, sr_ticket_number#78, sr_return_quantity#79, sr_return_amt#80, sr_returned_date_sk#81]
+Condition : (((isnotnull(sr_return_amt#80) AND (sr_return_amt#80 > 10000.00)) AND isnotnull(sr_ticket_number#78)) AND isnotnull(sr_item_sk#77))
 
-(57) CometBroadcastHashJoin
-Left output [5]: [ss_item_sk#51, ss_ticket_number#52, ss_quantity#53, ss_net_paid#54, ss_sold_date_sk#56]
-Right output [4]: [sr_item_sk#57, sr_ticket_number#58, sr_return_quantity#59, sr_return_amt#60]
-Arguments: [ss_ticket_number#52, ss_item_sk#51], [sr_ticket_number#58, sr_item_sk#57], Inner, BuildLeft
+(61) Project
+Output [4]: [sr_item_sk#77, sr_ticket_number#78, sr_return_quantity#79, sr_return_amt#80]
+Input [5]: [sr_item_sk#77, sr_ticket_number#78, sr_return_quantity#79, sr_return_amt#80, sr_returned_date_sk#81]
 
-(58) CometProject
-Input [9]: [ss_item_sk#51, ss_ticket_number#52, ss_quantity#53, ss_net_paid#54, ss_sold_date_sk#56, sr_item_sk#57, sr_ticket_number#58, sr_return_quantity#59, sr_return_amt#60]
-Arguments: [ss_item_sk#51, ss_quantity#53, ss_net_paid#54, ss_sold_date_sk#56, sr_return_quantity#59, sr_return_amt#60], [ss_item_sk#51, ss_quantity#53, ss_net_paid#54, ss_sold_date_sk#56, sr_return_quantity#59, sr_return_amt#60]
+(62) BroadcastHashJoin [codegen id : 17]
+Left keys [2]: [ss_ticket_number#72, ss_item_sk#71]
+Right keys [2]: [sr_ticket_number#78, sr_item_sk#77]
+Join type: Inner
+Join condition: None
 
-(59) ReusedExchange [Reuses operator id: 13]
-Output [1]: [d_date_sk#62]
+(63) Project [codegen id : 17]
+Output [6]: [ss_item_sk#71, ss_quantity#73, ss_net_paid#74, ss_sold_date_sk#76, sr_return_quantity#79, sr_return_amt#80]
+Input [9]: [ss_item_sk#71, ss_ticket_number#72, ss_quantity#73, ss_net_paid#74, ss_sold_date_sk#76, sr_item_sk#77, sr_ticket_number#78, sr_return_quantity#79, sr_return_amt#80]
 
-(60) CometBroadcastHashJoin
-Left output [6]: [ss_item_sk#51, ss_quantity#53, ss_net_paid#54, ss_sold_date_sk#56, sr_return_quantity#59, sr_return_amt#60]
-Right output [1]: [d_date_sk#62]
-Arguments: [ss_sold_date_sk#56], [d_date_sk#62], Inner, BuildRight
+(64) ReusedExchange [Reuses operator id: 16]
+Output [1]: [d_date_sk#82]
 
-(61) CometProject
-Input [7]: [ss_item_sk#51, ss_quantity#53, ss_net_paid#54, ss_sold_date_sk#56, sr_return_quantity#59, sr_return_amt#60, d_date_sk#62]
-Arguments: [ss_item_sk#51, ss_quantity#53, ss_net_paid#54, sr_return_quantity#59, sr_return_amt#60], [ss_item_sk#51, ss_quantity#53, ss_net_paid#54, sr_return_quantity#59, sr_return_amt#60]
+(65) BroadcastHashJoin [codegen id : 17]
+Left keys [1]: [ss_sold_date_sk#76]
+Right keys [1]: [d_date_sk#82]
+Join type: Inner
+Join condition: None
 
-(62) CometHashAggregate
-Input [5]: [ss_item_sk#51, ss_quantity#53, ss_net_paid#54, sr_return_quantity#59, sr_return_amt#60]
-Keys [1]: [ss_item_sk#51]
-Functions [4]: [partial_sum(coalesce(sr_return_quantity#59, 0)), partial_sum(coalesce(ss_quantity#53, 0)), partial_sum(coalesce(cast(sr_return_amt#60 as decimal(12,2)), 0.00)), partial_sum(coalesce(cast(ss_net_paid#54 as decimal(12,2)), 0.00))]
+(66) Project [codegen id : 17]
+Output [5]: [ss_item_sk#71, ss_quantity#73, ss_net_paid#74, sr_return_quantity#79, sr_return_amt#80]
+Input [7]: [ss_item_sk#71, ss_quantity#73, ss_net_paid#74, ss_sold_date_sk#76, sr_return_quantity#79, sr_return_amt#80, d_date_sk#82]
 
-(63) CometExchange
-Input [7]: [ss_item_sk#51, sum#63, sum#64, sum#65, isEmpty#66, sum#67, isEmpty#68]
-Arguments: hashpartitioning(ss_item_sk#51, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=5]
+(67) HashAggregate [codegen id : 17]
+Input [5]: [ss_item_sk#71, ss_quantity#73, ss_net_paid#74, sr_return_quantity#79, sr_return_amt#80]
+Keys [1]: [ss_item_sk#71]
+Functions [4]: [partial_sum(coalesce(sr_return_quantity#79, 0)), partial_sum(coalesce(ss_quantity#73, 0)), partial_sum(coalesce(cast(sr_return_amt#80 as decimal(12,2)), 0.00)), partial_sum(coalesce(cast(ss_net_paid#74 as decimal(12,2)), 0.00))]
+Aggregate Attributes [6]: [sum#83, sum#84, sum#85, isEmpty#86, sum#87, isEmpty#88]
+Results [7]: [ss_item_sk#71, sum#89, sum#90, sum#91, isEmpty#92, sum#93, isEmpty#94]
 
-(64) CometHashAggregate
-Input [7]: [ss_item_sk#51, sum#63, sum#64, sum#65, isEmpty#66, sum#67, isEmpty#68]
-Keys [1]: [ss_item_sk#51]
-Functions [4]: [sum(coalesce(sr_return_quantity#59, 0)), sum(coalesce(ss_quantity#53, 0)), sum(coalesce(cast(sr_return_amt#60 as decimal(12,2)), 0.00)), sum(coalesce(cast(ss_net_paid#54 as decimal(12,2)), 0.00))]
+(68) Exchange
+Input [7]: [ss_item_sk#71, sum#89, sum#90, sum#91, isEmpty#92, sum#93, isEmpty#94]
+Arguments: hashpartitioning(ss_item_sk#71, 5), ENSURE_REQUIREMENTS, [plan_id=9]
 
-(65) CometExchange
-Input [3]: [item#69, return_ratio#70, currency_ratio#71]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=6]
+(69) HashAggregate [codegen id : 18]
+Input [7]: [ss_item_sk#71, sum#89, sum#90, sum#91, isEmpty#92, sum#93, isEmpty#94]
+Keys [1]: [ss_item_sk#71]
+Functions [4]: [sum(coalesce(sr_return_quantity#79, 0)), sum(coalesce(ss_quantity#73, 0)), sum(coalesce(cast(sr_return_amt#80 as decimal(12,2)), 0.00)), sum(coalesce(cast(ss_net_paid#74 as decimal(12,2)), 0.00))]
+Aggregate Attributes [4]: [sum(coalesce(sr_return_quantity#79, 0))#95, sum(coalesce(ss_quantity#73, 0))#96, sum(coalesce(cast(sr_return_amt#80 as decimal(12,2)), 0.00))#97, sum(coalesce(cast(ss_net_paid#74 as decimal(12,2)), 0.00))#98]
+Results [3]: [ss_item_sk#71 AS item#99, (cast(sum(coalesce(sr_return_quantity#79, 0))#95 as decimal(15,4)) / cast(sum(coalesce(ss_quantity#73, 0))#96 as decimal(15,4))) AS return_ratio#100, (cast(sum(coalesce(cast(sr_return_amt#80 as decimal(12,2)), 0.00))#97 as decimal(15,4)) / cast(sum(coalesce(cast(ss_net_paid#74 as decimal(12,2)), 0.00))#98 as decimal(15,4))) AS currency_ratio#101]
 
-(66) CometSort
-Input [3]: [item#69, return_ratio#70, currency_ratio#71]
-Arguments: [item#69, return_ratio#70, currency_ratio#71], [return_ratio#70 ASC NULLS FIRST]
+(70) Exchange
+Input [3]: [item#99, return_ratio#100, currency_ratio#101]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=10]
 
-(67) ColumnarToRow [codegen id : 7]
-Input [3]: [item#69, return_ratio#70, currency_ratio#71]
+(71) Sort [codegen id : 19]
+Input [3]: [item#99, return_ratio#100, currency_ratio#101]
+Arguments: [return_ratio#100 ASC NULLS FIRST], false, 0
 
-(68) Window
-Input [3]: [item#69, return_ratio#70, currency_ratio#71]
-Arguments: [rank(return_ratio#70) windowspecdefinition(return_ratio#70 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS return_rank#72], [return_ratio#70 ASC NULLS FIRST]
+(72) Window
+Input [3]: [item#99, return_ratio#100, currency_ratio#101]
+Arguments: [rank(return_ratio#100) windowspecdefinition(return_ratio#100 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS return_rank#102], [return_ratio#100 ASC NULLS FIRST]
 
-(69) Sort [codegen id : 8]
-Input [4]: [item#69, return_ratio#70, currency_ratio#71, return_rank#72]
-Arguments: [currency_ratio#71 ASC NULLS FIRST], false, 0
+(73) Sort [codegen id : 20]
+Input [4]: [item#99, return_ratio#100, currency_ratio#101, return_rank#102]
+Arguments: [currency_ratio#101 ASC NULLS FIRST], false, 0
 
-(70) Window
-Input [4]: [item#69, return_ratio#70, currency_ratio#71, return_rank#72]
-Arguments: [rank(currency_ratio#71) windowspecdefinition(currency_ratio#71 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS currency_rank#73], [currency_ratio#71 ASC NULLS FIRST]
+(74) Window
+Input [4]: [item#99, return_ratio#100, currency_ratio#101, return_rank#102]
+Arguments: [rank(currency_ratio#101) windowspecdefinition(currency_ratio#101 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS currency_rank#103], [currency_ratio#101 ASC NULLS FIRST]
 
-(71) Filter [codegen id : 9]
-Input [5]: [item#69, return_ratio#70, currency_ratio#71, return_rank#72, currency_rank#73]
-Condition : ((return_rank#72 <= 10) OR (currency_rank#73 <= 10))
+(75) Filter [codegen id : 21]
+Input [5]: [item#99, return_ratio#100, currency_ratio#101, return_rank#102, currency_rank#103]
+Condition : ((return_rank#102 <= 10) OR (currency_rank#103 <= 10))
 
-(72) Project [codegen id : 9]
-Output [5]: [store AS channel#74, item#69, return_ratio#70, return_rank#72, currency_rank#73]
-Input [5]: [item#69, return_ratio#70, currency_ratio#71, return_rank#72, currency_rank#73]
+(76) Project [codegen id : 21]
+Output [5]: [store AS channel#104, item#99, return_ratio#100, return_rank#102, currency_rank#103]
+Input [5]: [item#99, return_ratio#100, currency_ratio#101, return_rank#102, currency_rank#103]
 
-(73) Union
+(77) Union
 
-(74) HashAggregate [codegen id : 10]
-Input [5]: [channel#26, item#21, return_ratio#22, return_rank#24, currency_rank#25]
-Keys [5]: [channel#26, item#21, return_ratio#22, return_rank#24, currency_rank#25]
+(78) HashAggregate [codegen id : 22]
+Input [5]: [channel#36, item#31, return_ratio#32, return_rank#34, currency_rank#35]
+Keys [5]: [channel#36, item#31, return_ratio#32, return_rank#34, currency_rank#35]
 Functions: []
 Aggregate Attributes: []
-Results [5]: [channel#26, item#21, return_ratio#22, return_rank#24, currency_rank#25]
+Results [5]: [channel#36, item#31, return_ratio#32, return_rank#34, currency_rank#35]
 
-(75) Exchange
-Input [5]: [channel#26, item#21, return_ratio#22, return_rank#24, currency_rank#25]
-Arguments: hashpartitioning(channel#26, item#21, return_ratio#22, return_rank#24, currency_rank#25, 5), ENSURE_REQUIREMENTS, [plan_id=7]
+(79) Exchange
+Input [5]: [channel#36, item#31, return_ratio#32, return_rank#34, currency_rank#35]
+Arguments: hashpartitioning(channel#36, item#31, return_ratio#32, return_rank#34, currency_rank#35, 5), ENSURE_REQUIREMENTS, [plan_id=11]
 
-(76) HashAggregate [codegen id : 11]
-Input [5]: [channel#26, item#21, return_ratio#22, return_rank#24, currency_rank#25]
-Keys [5]: [channel#26, item#21, return_ratio#22, return_rank#24, currency_rank#25]
+(80) HashAggregate [codegen id : 23]
+Input [5]: [channel#36, item#31, return_ratio#32, return_rank#34, currency_rank#35]
+Keys [5]: [channel#36, item#31, return_ratio#32, return_rank#34, currency_rank#35]
 Functions: []
 Aggregate Attributes: []
-Results [5]: [channel#26, item#21, return_ratio#22, return_rank#24, currency_rank#25]
+Results [5]: [channel#36, item#31, return_ratio#32, return_rank#34, currency_rank#35]
 
-(77) TakeOrderedAndProject
-Input [5]: [channel#26, item#21, return_ratio#22, return_rank#24, currency_rank#25]
-Arguments: 100, [channel#26 ASC NULLS FIRST, return_rank#24 ASC NULLS FIRST, currency_rank#25 ASC NULLS FIRST], [channel#26, item#21, return_ratio#22, return_rank#24, currency_rank#25]
+(81) TakeOrderedAndProject
+Input [5]: [channel#36, item#31, return_ratio#32, return_rank#34, currency_rank#35]
+Arguments: 100, [channel#36 ASC NULLS FIRST, return_rank#34 ASC NULLS FIRST, currency_rank#35 ASC NULLS FIRST], [channel#36, item#31, return_ratio#32, return_rank#34, currency_rank#35]
 

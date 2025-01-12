@@ -1,4 +1,4 @@
-WholeStageCodegen (8)
+WholeStageCodegen (40)
   BroadcastNestedLoopJoin
     BroadcastNestedLoopJoin
       BroadcastNestedLoopJoin
@@ -6,190 +6,260 @@ WholeStageCodegen (8)
           BroadcastNestedLoopJoin
             BroadcastNestedLoopJoin
               BroadcastNestedLoopJoin
-                ColumnarToRow
+                HashAggregate [count] [count(1),h8_30_to_9,count]
                   InputAdapter
-                    CometHashAggregate [h8_30_to_9,count,count(1)]
-                      CometExchange #1
-                        CometHashAggregate [count]
-                          CometProject
-                            CometBroadcastHashJoin [ss_store_sk,s_store_sk]
-                              CometProject [ss_store_sk]
-                                CometBroadcastHashJoin [ss_sold_time_sk,ss_store_sk,t_time_sk]
-                                  CometProject [ss_sold_time_sk,ss_store_sk]
-                                    CometBroadcastHashJoin [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,hd_demo_sk]
-                                      CometProject [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
-                                        CometFilter [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                          CometScan parquet spark_catalog.default.store_sales [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                      CometBroadcastExchange [hd_demo_sk] #2
-                                        CometProject [hd_demo_sk]
-                                          CometFilter [hd_demo_sk,hd_dep_count,hd_vehicle_count]
-                                            CometScan parquet spark_catalog.default.household_demographics [hd_demo_sk,hd_dep_count,hd_vehicle_count]
-                                  CometBroadcastExchange [t_time_sk] #3
-                                    CometProject [t_time_sk]
-                                      CometFilter [t_time_sk,t_hour,t_minute]
-                                        CometScan parquet spark_catalog.default.time_dim [t_time_sk,t_hour,t_minute]
-                              CometBroadcastExchange [s_store_sk] #4
-                                CometProject [s_store_sk]
-                                  CometFilter [s_store_sk,s_store_name]
-                                    CometScan parquet spark_catalog.default.store [s_store_sk,s_store_name]
+                    Exchange #1
+                      WholeStageCodegen (4)
+                        HashAggregate [count,count]
+                          Project
+                            BroadcastHashJoin [ss_store_sk,s_store_sk]
+                              Project [ss_store_sk]
+                                BroadcastHashJoin [ss_sold_time_sk,t_time_sk]
+                                  Project [ss_sold_time_sk,ss_store_sk]
+                                    BroadcastHashJoin [ss_hdemo_sk,hd_demo_sk]
+                                      Project [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
+                                        Filter [ss_hdemo_sk,ss_sold_time_sk,ss_store_sk]
+                                          ColumnarToRow
+                                            InputAdapter
+                                              Scan parquet spark_catalog.default.store_sales [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
+                                      InputAdapter
+                                        BroadcastExchange #2
+                                          WholeStageCodegen (1)
+                                            Project [hd_demo_sk]
+                                              Filter [hd_dep_count,hd_vehicle_count,hd_demo_sk]
+                                                ColumnarToRow
+                                                  InputAdapter
+                                                    Scan parquet spark_catalog.default.household_demographics [hd_demo_sk,hd_dep_count,hd_vehicle_count]
+                                  InputAdapter
+                                    BroadcastExchange #3
+                                      WholeStageCodegen (2)
+                                        Project [t_time_sk]
+                                          Filter [t_hour,t_minute,t_time_sk]
+                                            ColumnarToRow
+                                              InputAdapter
+                                                Scan parquet spark_catalog.default.time_dim [t_time_sk,t_hour,t_minute]
+                              InputAdapter
+                                BroadcastExchange #4
+                                  WholeStageCodegen (3)
+                                    Project [s_store_sk]
+                                      Filter [s_store_name,s_store_sk]
+                                        ColumnarToRow
+                                          InputAdapter
+                                            Scan parquet spark_catalog.default.store [s_store_sk,s_store_name]
                 InputAdapter
                   BroadcastExchange #5
-                    WholeStageCodegen (1)
-                      ColumnarToRow
+                    WholeStageCodegen (9)
+                      HashAggregate [count] [count(1),h9_to_9_30,count]
                         InputAdapter
-                          CometHashAggregate [h9_to_9_30,count,count(1)]
-                            CometExchange #6
-                              CometHashAggregate [count]
-                                CometProject
-                                  CometBroadcastHashJoin [ss_store_sk,s_store_sk]
-                                    CometProject [ss_store_sk]
-                                      CometBroadcastHashJoin [ss_sold_time_sk,ss_store_sk,t_time_sk]
-                                        CometProject [ss_sold_time_sk,ss_store_sk]
-                                          CometBroadcastHashJoin [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,hd_demo_sk]
-                                            CometProject [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
-                                              CometFilter [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                                CometScan parquet spark_catalog.default.store_sales [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                            ReusedExchange [hd_demo_sk] #2
-                                        CometBroadcastExchange [t_time_sk] #7
-                                          CometProject [t_time_sk]
-                                            CometFilter [t_time_sk,t_hour,t_minute]
-                                              CometScan parquet spark_catalog.default.time_dim [t_time_sk,t_hour,t_minute]
-                                    ReusedExchange [s_store_sk] #4
+                          Exchange #6
+                            WholeStageCodegen (8)
+                              HashAggregate [count,count]
+                                Project
+                                  BroadcastHashJoin [ss_store_sk,s_store_sk]
+                                    Project [ss_store_sk]
+                                      BroadcastHashJoin [ss_sold_time_sk,t_time_sk]
+                                        Project [ss_sold_time_sk,ss_store_sk]
+                                          BroadcastHashJoin [ss_hdemo_sk,hd_demo_sk]
+                                            Project [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
+                                              Filter [ss_hdemo_sk,ss_sold_time_sk,ss_store_sk]
+                                                ColumnarToRow
+                                                  InputAdapter
+                                                    Scan parquet spark_catalog.default.store_sales [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
+                                            InputAdapter
+                                              ReusedExchange [hd_demo_sk] #2
+                                        InputAdapter
+                                          BroadcastExchange #7
+                                            WholeStageCodegen (6)
+                                              Project [t_time_sk]
+                                                Filter [t_hour,t_minute,t_time_sk]
+                                                  ColumnarToRow
+                                                    InputAdapter
+                                                      Scan parquet spark_catalog.default.time_dim [t_time_sk,t_hour,t_minute]
+                                    InputAdapter
+                                      ReusedExchange [s_store_sk] #4
               InputAdapter
                 BroadcastExchange #8
-                  WholeStageCodegen (2)
-                    ColumnarToRow
+                  WholeStageCodegen (14)
+                    HashAggregate [count] [count(1),h9_30_to_10,count]
                       InputAdapter
-                        CometHashAggregate [h9_30_to_10,count,count(1)]
-                          CometExchange #9
-                            CometHashAggregate [count]
-                              CometProject
-                                CometBroadcastHashJoin [ss_store_sk,s_store_sk]
-                                  CometProject [ss_store_sk]
-                                    CometBroadcastHashJoin [ss_sold_time_sk,ss_store_sk,t_time_sk]
-                                      CometProject [ss_sold_time_sk,ss_store_sk]
-                                        CometBroadcastHashJoin [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,hd_demo_sk]
-                                          CometProject [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
-                                            CometFilter [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                              CometScan parquet spark_catalog.default.store_sales [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                          ReusedExchange [hd_demo_sk] #2
-                                      CometBroadcastExchange [t_time_sk] #10
-                                        CometProject [t_time_sk]
-                                          CometFilter [t_time_sk,t_hour,t_minute]
-                                            CometScan parquet spark_catalog.default.time_dim [t_time_sk,t_hour,t_minute]
-                                  ReusedExchange [s_store_sk] #4
+                        Exchange #9
+                          WholeStageCodegen (13)
+                            HashAggregate [count,count]
+                              Project
+                                BroadcastHashJoin [ss_store_sk,s_store_sk]
+                                  Project [ss_store_sk]
+                                    BroadcastHashJoin [ss_sold_time_sk,t_time_sk]
+                                      Project [ss_sold_time_sk,ss_store_sk]
+                                        BroadcastHashJoin [ss_hdemo_sk,hd_demo_sk]
+                                          Project [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
+                                            Filter [ss_hdemo_sk,ss_sold_time_sk,ss_store_sk]
+                                              ColumnarToRow
+                                                InputAdapter
+                                                  Scan parquet spark_catalog.default.store_sales [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
+                                          InputAdapter
+                                            ReusedExchange [hd_demo_sk] #2
+                                      InputAdapter
+                                        BroadcastExchange #10
+                                          WholeStageCodegen (11)
+                                            Project [t_time_sk]
+                                              Filter [t_hour,t_minute,t_time_sk]
+                                                ColumnarToRow
+                                                  InputAdapter
+                                                    Scan parquet spark_catalog.default.time_dim [t_time_sk,t_hour,t_minute]
+                                  InputAdapter
+                                    ReusedExchange [s_store_sk] #4
             InputAdapter
               BroadcastExchange #11
-                WholeStageCodegen (3)
-                  ColumnarToRow
+                WholeStageCodegen (19)
+                  HashAggregate [count] [count(1),h10_to_10_30,count]
                     InputAdapter
-                      CometHashAggregate [h10_to_10_30,count,count(1)]
-                        CometExchange #12
-                          CometHashAggregate [count]
-                            CometProject
-                              CometBroadcastHashJoin [ss_store_sk,s_store_sk]
-                                CometProject [ss_store_sk]
-                                  CometBroadcastHashJoin [ss_sold_time_sk,ss_store_sk,t_time_sk]
-                                    CometProject [ss_sold_time_sk,ss_store_sk]
-                                      CometBroadcastHashJoin [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,hd_demo_sk]
-                                        CometProject [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
-                                          CometFilter [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                            CometScan parquet spark_catalog.default.store_sales [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                        ReusedExchange [hd_demo_sk] #2
-                                    CometBroadcastExchange [t_time_sk] #13
-                                      CometProject [t_time_sk]
-                                        CometFilter [t_time_sk,t_hour,t_minute]
-                                          CometScan parquet spark_catalog.default.time_dim [t_time_sk,t_hour,t_minute]
-                                ReusedExchange [s_store_sk] #4
+                      Exchange #12
+                        WholeStageCodegen (18)
+                          HashAggregate [count,count]
+                            Project
+                              BroadcastHashJoin [ss_store_sk,s_store_sk]
+                                Project [ss_store_sk]
+                                  BroadcastHashJoin [ss_sold_time_sk,t_time_sk]
+                                    Project [ss_sold_time_sk,ss_store_sk]
+                                      BroadcastHashJoin [ss_hdemo_sk,hd_demo_sk]
+                                        Project [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
+                                          Filter [ss_hdemo_sk,ss_sold_time_sk,ss_store_sk]
+                                            ColumnarToRow
+                                              InputAdapter
+                                                Scan parquet spark_catalog.default.store_sales [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
+                                        InputAdapter
+                                          ReusedExchange [hd_demo_sk] #2
+                                    InputAdapter
+                                      BroadcastExchange #13
+                                        WholeStageCodegen (16)
+                                          Project [t_time_sk]
+                                            Filter [t_hour,t_minute,t_time_sk]
+                                              ColumnarToRow
+                                                InputAdapter
+                                                  Scan parquet spark_catalog.default.time_dim [t_time_sk,t_hour,t_minute]
+                                InputAdapter
+                                  ReusedExchange [s_store_sk] #4
           InputAdapter
             BroadcastExchange #14
-              WholeStageCodegen (4)
-                ColumnarToRow
+              WholeStageCodegen (24)
+                HashAggregate [count] [count(1),h10_30_to_11,count]
                   InputAdapter
-                    CometHashAggregate [h10_30_to_11,count,count(1)]
-                      CometExchange #15
-                        CometHashAggregate [count]
-                          CometProject
-                            CometBroadcastHashJoin [ss_store_sk,s_store_sk]
-                              CometProject [ss_store_sk]
-                                CometBroadcastHashJoin [ss_sold_time_sk,ss_store_sk,t_time_sk]
-                                  CometProject [ss_sold_time_sk,ss_store_sk]
-                                    CometBroadcastHashJoin [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,hd_demo_sk]
-                                      CometProject [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
-                                        CometFilter [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                          CometScan parquet spark_catalog.default.store_sales [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                      ReusedExchange [hd_demo_sk] #2
-                                  CometBroadcastExchange [t_time_sk] #16
-                                    CometProject [t_time_sk]
-                                      CometFilter [t_time_sk,t_hour,t_minute]
-                                        CometScan parquet spark_catalog.default.time_dim [t_time_sk,t_hour,t_minute]
-                              ReusedExchange [s_store_sk] #4
+                    Exchange #15
+                      WholeStageCodegen (23)
+                        HashAggregate [count,count]
+                          Project
+                            BroadcastHashJoin [ss_store_sk,s_store_sk]
+                              Project [ss_store_sk]
+                                BroadcastHashJoin [ss_sold_time_sk,t_time_sk]
+                                  Project [ss_sold_time_sk,ss_store_sk]
+                                    BroadcastHashJoin [ss_hdemo_sk,hd_demo_sk]
+                                      Project [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
+                                        Filter [ss_hdemo_sk,ss_sold_time_sk,ss_store_sk]
+                                          ColumnarToRow
+                                            InputAdapter
+                                              Scan parquet spark_catalog.default.store_sales [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
+                                      InputAdapter
+                                        ReusedExchange [hd_demo_sk] #2
+                                  InputAdapter
+                                    BroadcastExchange #16
+                                      WholeStageCodegen (21)
+                                        Project [t_time_sk]
+                                          Filter [t_hour,t_minute,t_time_sk]
+                                            ColumnarToRow
+                                              InputAdapter
+                                                Scan parquet spark_catalog.default.time_dim [t_time_sk,t_hour,t_minute]
+                              InputAdapter
+                                ReusedExchange [s_store_sk] #4
         InputAdapter
           BroadcastExchange #17
-            WholeStageCodegen (5)
-              ColumnarToRow
+            WholeStageCodegen (29)
+              HashAggregate [count] [count(1),h11_to_11_30,count]
                 InputAdapter
-                  CometHashAggregate [h11_to_11_30,count,count(1)]
-                    CometExchange #18
-                      CometHashAggregate [count]
-                        CometProject
-                          CometBroadcastHashJoin [ss_store_sk,s_store_sk]
-                            CometProject [ss_store_sk]
-                              CometBroadcastHashJoin [ss_sold_time_sk,ss_store_sk,t_time_sk]
-                                CometProject [ss_sold_time_sk,ss_store_sk]
-                                  CometBroadcastHashJoin [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,hd_demo_sk]
-                                    CometProject [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
-                                      CometFilter [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                        CometScan parquet spark_catalog.default.store_sales [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                    ReusedExchange [hd_demo_sk] #2
-                                CometBroadcastExchange [t_time_sk] #19
-                                  CometProject [t_time_sk]
-                                    CometFilter [t_time_sk,t_hour,t_minute]
-                                      CometScan parquet spark_catalog.default.time_dim [t_time_sk,t_hour,t_minute]
-                            ReusedExchange [s_store_sk] #4
+                  Exchange #18
+                    WholeStageCodegen (28)
+                      HashAggregate [count,count]
+                        Project
+                          BroadcastHashJoin [ss_store_sk,s_store_sk]
+                            Project [ss_store_sk]
+                              BroadcastHashJoin [ss_sold_time_sk,t_time_sk]
+                                Project [ss_sold_time_sk,ss_store_sk]
+                                  BroadcastHashJoin [ss_hdemo_sk,hd_demo_sk]
+                                    Project [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
+                                      Filter [ss_hdemo_sk,ss_sold_time_sk,ss_store_sk]
+                                        ColumnarToRow
+                                          InputAdapter
+                                            Scan parquet spark_catalog.default.store_sales [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
+                                    InputAdapter
+                                      ReusedExchange [hd_demo_sk] #2
+                                InputAdapter
+                                  BroadcastExchange #19
+                                    WholeStageCodegen (26)
+                                      Project [t_time_sk]
+                                        Filter [t_hour,t_minute,t_time_sk]
+                                          ColumnarToRow
+                                            InputAdapter
+                                              Scan parquet spark_catalog.default.time_dim [t_time_sk,t_hour,t_minute]
+                            InputAdapter
+                              ReusedExchange [s_store_sk] #4
       InputAdapter
         BroadcastExchange #20
-          WholeStageCodegen (6)
-            ColumnarToRow
+          WholeStageCodegen (34)
+            HashAggregate [count] [count(1),h11_30_to_12,count]
               InputAdapter
-                CometHashAggregate [h11_30_to_12,count,count(1)]
-                  CometExchange #21
-                    CometHashAggregate [count]
-                      CometProject
-                        CometBroadcastHashJoin [ss_store_sk,s_store_sk]
-                          CometProject [ss_store_sk]
-                            CometBroadcastHashJoin [ss_sold_time_sk,ss_store_sk,t_time_sk]
-                              CometProject [ss_sold_time_sk,ss_store_sk]
-                                CometBroadcastHashJoin [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,hd_demo_sk]
-                                  CometProject [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
-                                    CometFilter [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                      CometScan parquet spark_catalog.default.store_sales [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                  ReusedExchange [hd_demo_sk] #2
-                              CometBroadcastExchange [t_time_sk] #22
-                                CometProject [t_time_sk]
-                                  CometFilter [t_time_sk,t_hour,t_minute]
-                                    CometScan parquet spark_catalog.default.time_dim [t_time_sk,t_hour,t_minute]
-                          ReusedExchange [s_store_sk] #4
+                Exchange #21
+                  WholeStageCodegen (33)
+                    HashAggregate [count,count]
+                      Project
+                        BroadcastHashJoin [ss_store_sk,s_store_sk]
+                          Project [ss_store_sk]
+                            BroadcastHashJoin [ss_sold_time_sk,t_time_sk]
+                              Project [ss_sold_time_sk,ss_store_sk]
+                                BroadcastHashJoin [ss_hdemo_sk,hd_demo_sk]
+                                  Project [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
+                                    Filter [ss_hdemo_sk,ss_sold_time_sk,ss_store_sk]
+                                      ColumnarToRow
+                                        InputAdapter
+                                          Scan parquet spark_catalog.default.store_sales [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
+                                  InputAdapter
+                                    ReusedExchange [hd_demo_sk] #2
+                              InputAdapter
+                                BroadcastExchange #22
+                                  WholeStageCodegen (31)
+                                    Project [t_time_sk]
+                                      Filter [t_hour,t_minute,t_time_sk]
+                                        ColumnarToRow
+                                          InputAdapter
+                                            Scan parquet spark_catalog.default.time_dim [t_time_sk,t_hour,t_minute]
+                          InputAdapter
+                            ReusedExchange [s_store_sk] #4
     InputAdapter
       BroadcastExchange #23
-        WholeStageCodegen (7)
-          ColumnarToRow
+        WholeStageCodegen (39)
+          HashAggregate [count] [count(1),h12_to_12_30,count]
             InputAdapter
-              CometHashAggregate [h12_to_12_30,count,count(1)]
-                CometExchange #24
-                  CometHashAggregate [count]
-                    CometProject
-                      CometBroadcastHashJoin [ss_store_sk,s_store_sk]
-                        CometProject [ss_store_sk]
-                          CometBroadcastHashJoin [ss_sold_time_sk,ss_store_sk,t_time_sk]
-                            CometProject [ss_sold_time_sk,ss_store_sk]
-                              CometBroadcastHashJoin [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,hd_demo_sk]
-                                CometProject [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
-                                  CometFilter [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                    CometScan parquet spark_catalog.default.store_sales [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
-                                ReusedExchange [hd_demo_sk] #2
-                            CometBroadcastExchange [t_time_sk] #25
-                              CometProject [t_time_sk]
-                                CometFilter [t_time_sk,t_hour,t_minute]
-                                  CometScan parquet spark_catalog.default.time_dim [t_time_sk,t_hour,t_minute]
-                        ReusedExchange [s_store_sk] #4
+              Exchange #24
+                WholeStageCodegen (38)
+                  HashAggregate [count,count]
+                    Project
+                      BroadcastHashJoin [ss_store_sk,s_store_sk]
+                        Project [ss_store_sk]
+                          BroadcastHashJoin [ss_sold_time_sk,t_time_sk]
+                            Project [ss_sold_time_sk,ss_store_sk]
+                              BroadcastHashJoin [ss_hdemo_sk,hd_demo_sk]
+                                Project [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk]
+                                  Filter [ss_hdemo_sk,ss_sold_time_sk,ss_store_sk]
+                                    ColumnarToRow
+                                      InputAdapter
+                                        Scan parquet spark_catalog.default.store_sales [ss_sold_time_sk,ss_hdemo_sk,ss_store_sk,ss_sold_date_sk]
+                                InputAdapter
+                                  ReusedExchange [hd_demo_sk] #2
+                            InputAdapter
+                              BroadcastExchange #25
+                                WholeStageCodegen (36)
+                                  Project [t_time_sk]
+                                    Filter [t_hour,t_minute,t_time_sk]
+                                      ColumnarToRow
+                                        InputAdapter
+                                          Scan parquet spark_catalog.default.time_dim [t_time_sk,t_hour,t_minute]
+                        InputAdapter
+                          ReusedExchange [s_store_sk] #4

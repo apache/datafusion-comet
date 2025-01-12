@@ -1,41 +1,66 @@
-WholeStageCodegen (1)
-  ColumnarToRow
-    InputAdapter
-      CometTakeOrderedAndProject [s_store_name1,s_store_id1,d_week_seq1,(sun_sales1 / sun_sales2),(mon_sales1 / mon_sales2),(tue_sales1 / tue_sales2),(wed_sales1 / wed_sales2),(thu_sales1 / thu_sales2),(fri_sales1 / fri_sales2),(sat_sales1 / sat_sales2)]
-        CometProject [sun_sales1,sun_sales2,mon_sales1,mon_sales2,tue_sales1,tue_sales2,wed_sales1,wed_sales2,thu_sales1,thu_sales2,fri_sales1,fri_sales2,sat_sales1,sat_sales2] [s_store_name1,s_store_id1,d_week_seq1,(sun_sales1 / sun_sales2),(mon_sales1 / mon_sales2),(tue_sales1 / tue_sales2),(wed_sales1 / wed_sales2),(thu_sales1 / thu_sales2),(fri_sales1 / fri_sales2),(sat_sales1 / sat_sales2)]
-          CometBroadcastHashJoin [s_store_name1,d_week_seq1,s_store_id1,sun_sales1,mon_sales1,tue_sales1,wed_sales1,thu_sales1,fri_sales1,sat_sales1,d_week_seq2,s_store_id2,sun_sales2,mon_sales2,tue_sales2,wed_sales2,thu_sales2,fri_sales2,sat_sales2]
-            CometProject [s_store_name,d_week_seq,s_store_id,sun_sales,mon_sales,tue_sales,wed_sales,thu_sales,fri_sales,sat_sales] [s_store_name1,d_week_seq1,s_store_id1,sun_sales1,mon_sales1,tue_sales1,wed_sales1,thu_sales1,fri_sales1,sat_sales1]
-              CometBroadcastHashJoin [d_week_seq,sun_sales,mon_sales,tue_sales,wed_sales,thu_sales,fri_sales,sat_sales,s_store_id,s_store_name,d_week_seq]
-                CometProject [d_week_seq,sun_sales,mon_sales,tue_sales,wed_sales,thu_sales,fri_sales,sat_sales,s_store_id,s_store_name]
-                  CometBroadcastHashJoin [d_week_seq,ss_store_sk,sun_sales,mon_sales,tue_sales,wed_sales,thu_sales,fri_sales,sat_sales,s_store_sk,s_store_id,s_store_name]
-                    CometHashAggregate [d_week_seq,ss_store_sk,sun_sales,mon_sales,tue_sales,wed_sales,thu_sales,fri_sales,sat_sales,sum,sum,sum,sum,sum,sum,sum,sum(UnscaledValue(CASE WHEN (d_day_name = Sunday   ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Monday   ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Tuesday  ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Wednesday) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Thursday ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Friday   ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Saturday ) THEN ss_sales_price END))]
-                      CometExchange [d_week_seq,ss_store_sk] #1
-                        CometHashAggregate [d_week_seq,ss_store_sk,sum,sum,sum,sum,sum,sum,sum,d_day_name,ss_sales_price]
-                          CometProject [ss_store_sk,ss_sales_price,d_week_seq,d_day_name]
-                            CometBroadcastHashJoin [ss_store_sk,ss_sales_price,ss_sold_date_sk,d_date_sk,d_week_seq,d_day_name]
-                              CometFilter [ss_store_sk,ss_sales_price,ss_sold_date_sk]
-                                CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_store_sk,ss_sales_price,ss_sold_date_sk]
-                              CometBroadcastExchange [d_date_sk,d_week_seq,d_day_name] #2
-                                CometFilter [d_date_sk,d_week_seq,d_day_name]
-                                  CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_week_seq,d_day_name]
-                    CometBroadcastExchange [s_store_sk,s_store_id,s_store_name] #3
-                      CometFilter [s_store_sk,s_store_id,s_store_name]
-                        CometNativeScan: `spark_catalog`.`default`.`store` [s_store_sk,s_store_id,s_store_name]
-                CometBroadcastExchange [d_week_seq] #4
-                  CometProject [d_week_seq]
-                    CometFilter [d_month_seq,d_week_seq]
-                      CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_month_seq,d_week_seq]
-            CometBroadcastExchange [d_week_seq2,s_store_id2,sun_sales2,mon_sales2,tue_sales2,wed_sales2,thu_sales2,fri_sales2,sat_sales2] #5
-              CometProject [d_week_seq,s_store_id,sun_sales,mon_sales,tue_sales,wed_sales,thu_sales,fri_sales,sat_sales] [d_week_seq2,s_store_id2,sun_sales2,mon_sales2,tue_sales2,wed_sales2,thu_sales2,fri_sales2,sat_sales2]
-                CometBroadcastHashJoin [d_week_seq,sun_sales,mon_sales,tue_sales,wed_sales,thu_sales,fri_sales,sat_sales,s_store_id,d_week_seq]
-                  CometProject [d_week_seq,sun_sales,mon_sales,tue_sales,wed_sales,thu_sales,fri_sales,sat_sales,s_store_id]
-                    CometBroadcastHashJoin [d_week_seq,ss_store_sk,sun_sales,mon_sales,tue_sales,wed_sales,thu_sales,fri_sales,sat_sales,s_store_sk,s_store_id]
-                      CometHashAggregate [d_week_seq,ss_store_sk,sun_sales,mon_sales,tue_sales,wed_sales,thu_sales,fri_sales,sat_sales,sum,sum,sum,sum,sum,sum,sum,sum(UnscaledValue(CASE WHEN (d_day_name = Sunday   ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Monday   ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Tuesday  ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Wednesday) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Thursday ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Friday   ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Saturday ) THEN ss_sales_price END))]
-                        ReusedExchange [d_week_seq,ss_store_sk,sum,sum,sum,sum,sum,sum,sum] #1
-                      CometBroadcastExchange [s_store_sk,s_store_id] #6
-                        CometFilter [s_store_sk,s_store_id]
-                          CometNativeScan: `spark_catalog`.`default`.`store` [s_store_sk,s_store_id]
-                  CometBroadcastExchange [d_week_seq] #7
-                    CometProject [d_week_seq]
-                      CometFilter [d_month_seq,d_week_seq]
-                        CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_month_seq,d_week_seq]
+TakeOrderedAndProject [s_store_name1,s_store_id1,d_week_seq1,(sun_sales1 / sun_sales2),(mon_sales1 / mon_sales2),(tue_sales1 / tue_sales2),(wed_sales1 / wed_sales2),(thu_sales1 / thu_sales2),(fri_sales1 / fri_sales2),(sat_sales1 / sat_sales2)]
+  WholeStageCodegen (10)
+    Project [s_store_name1,s_store_id1,d_week_seq1,sun_sales1,sun_sales2,mon_sales1,mon_sales2,tue_sales1,tue_sales2,wed_sales1,wed_sales2,thu_sales1,thu_sales2,fri_sales1,fri_sales2,sat_sales1,sat_sales2]
+      BroadcastHashJoin [s_store_id1,d_week_seq1,s_store_id2,d_week_seq2]
+        Project [s_store_name,d_week_seq,s_store_id,sun_sales,mon_sales,tue_sales,wed_sales,thu_sales,fri_sales,sat_sales]
+          BroadcastHashJoin [d_week_seq,d_week_seq]
+            Project [d_week_seq,sun_sales,mon_sales,tue_sales,wed_sales,thu_sales,fri_sales,sat_sales,s_store_id,s_store_name]
+              BroadcastHashJoin [ss_store_sk,s_store_sk]
+                HashAggregate [d_week_seq,ss_store_sk,sum,sum,sum,sum,sum,sum,sum] [sum(UnscaledValue(CASE WHEN (d_day_name = Sunday   ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Monday   ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Tuesday  ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Wednesday) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Thursday ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Friday   ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Saturday ) THEN ss_sales_price END)),sun_sales,mon_sales,tue_sales,wed_sales,thu_sales,fri_sales,sat_sales,sum,sum,sum,sum,sum,sum,sum]
+                  InputAdapter
+                    Exchange [d_week_seq,ss_store_sk] #1
+                      WholeStageCodegen (2)
+                        HashAggregate [d_week_seq,ss_store_sk,d_day_name,ss_sales_price] [sum,sum,sum,sum,sum,sum,sum,sum,sum,sum,sum,sum,sum,sum]
+                          Project [ss_store_sk,ss_sales_price,d_week_seq,d_day_name]
+                            BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
+                              Filter [ss_store_sk]
+                                ColumnarToRow
+                                  InputAdapter
+                                    Scan parquet spark_catalog.default.store_sales [ss_store_sk,ss_sales_price,ss_sold_date_sk]
+                              InputAdapter
+                                BroadcastExchange #2
+                                  WholeStageCodegen (1)
+                                    Filter [d_date_sk,d_week_seq]
+                                      ColumnarToRow
+                                        InputAdapter
+                                          Scan parquet spark_catalog.default.date_dim [d_date_sk,d_week_seq,d_day_name]
+                InputAdapter
+                  BroadcastExchange #3
+                    WholeStageCodegen (3)
+                      Filter [s_store_sk,s_store_id]
+                        ColumnarToRow
+                          InputAdapter
+                            Scan parquet spark_catalog.default.store [s_store_sk,s_store_id,s_store_name]
+            InputAdapter
+              BroadcastExchange #4
+                WholeStageCodegen (4)
+                  Project [d_week_seq]
+                    Filter [d_month_seq,d_week_seq]
+                      ColumnarToRow
+                        InputAdapter
+                          Scan parquet spark_catalog.default.date_dim [d_month_seq,d_week_seq]
+        InputAdapter
+          BroadcastExchange #5
+            WholeStageCodegen (9)
+              Project [d_week_seq,s_store_id,sun_sales,mon_sales,tue_sales,wed_sales,thu_sales,fri_sales,sat_sales]
+                BroadcastHashJoin [d_week_seq,d_week_seq]
+                  Project [d_week_seq,sun_sales,mon_sales,tue_sales,wed_sales,thu_sales,fri_sales,sat_sales,s_store_id]
+                    BroadcastHashJoin [ss_store_sk,s_store_sk]
+                      HashAggregate [d_week_seq,ss_store_sk,sum,sum,sum,sum,sum,sum,sum] [sum(UnscaledValue(CASE WHEN (d_day_name = Sunday   ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Monday   ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Tuesday  ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Wednesday) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Thursday ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Friday   ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Saturday ) THEN ss_sales_price END)),sun_sales,mon_sales,tue_sales,wed_sales,thu_sales,fri_sales,sat_sales,sum,sum,sum,sum,sum,sum,sum]
+                        InputAdapter
+                          ReusedExchange [d_week_seq,ss_store_sk,sum,sum,sum,sum,sum,sum,sum] #1
+                      InputAdapter
+                        BroadcastExchange #6
+                          WholeStageCodegen (7)
+                            Filter [s_store_sk,s_store_id]
+                              ColumnarToRow
+                                InputAdapter
+                                  Scan parquet spark_catalog.default.store [s_store_sk,s_store_id]
+                  InputAdapter
+                    BroadcastExchange #7
+                      WholeStageCodegen (8)
+                        Project [d_week_seq]
+                          Filter [d_month_seq,d_week_seq]
+                            ColumnarToRow
+                              InputAdapter
+                                Scan parquet spark_catalog.default.date_dim [d_month_seq,d_week_seq]
