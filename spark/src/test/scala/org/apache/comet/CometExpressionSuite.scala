@@ -20,22 +20,19 @@
 package org.apache.comet
 
 import java.time.{Duration, Period}
-
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 import scala.util.Random
-
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec}
-import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.{InputAdapter, LocalTableScanExec, ProjectExec, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType}
-
 import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark35Plus, isSpark40Plus}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -2543,6 +2540,20 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndOperator(sql(
           "SELECT array_remove(case when _2 = _3 THEN array(_2, _3,_4) ELSE null END, _3) from t1"))
       }
+    }
+    val values: Seq[Option[Array[Option[Int]]]] = Seq(
+      Some(Array(Some(1), Some(2), Some(3))),
+      Some(Array(Some(1), Some(2), Some(2))),
+      Some(Array(None, Some(2), Some(2))),
+      None,
+      Some(Array()),
+      Some(Array(None, None)),
+    )
+    values.toDF("a").createTempView("int_array")
+    withSQLConf(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+      CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key -> "LocalTableScan") {
+      checkSparkAnswerAndOperator(sql("select a, array_remove(a, 2) from int_array"), classOf[LocalTableScanExec])
+      checkSparkAnswerAndOperator(sql("select a, array_remove(a, null) from int_array"), classOf[LocalTableScanExec])
     }
   }
 }
