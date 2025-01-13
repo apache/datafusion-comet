@@ -371,6 +371,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[AggExpr] = {
+
+    if (aggExpr.isDistinct) {
+      // https://github.com/apache/datafusion-comet/issues/1260
+      withInfo(aggExpr, "distinct aggregates are not supported")
+      return None
+    }
+
     aggExpr.aggregateFunction match {
       case s @ Sum(child, _) if sumDataTypeSupported(s.dataType) && isLegacyMode(s) =>
         val childExpr = exprToProto(child, inputs, binding)
