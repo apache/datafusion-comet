@@ -41,5 +41,5 @@ The following chart shows how much Comet currently accelerates each query from t
 
 The raw results of these benchmarks in JSON format is available here:
 
-- [Spark](0.5.0-SNAPSHOT-2025-01-09/spark-tpch.json)
-- [Comet](0.5.0-SNAPSHOT-2025-01-09/comet-tpch.json)
+- [Spark](0.5.0/spark-tpch.json)
+- [Comet](0.5.0/comet-tpch.json)

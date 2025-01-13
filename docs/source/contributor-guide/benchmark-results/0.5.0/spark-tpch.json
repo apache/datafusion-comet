@@ -6,15 +6,18 @@
     "spark_conf": {
         "spark.eventLog.enabled": "true",
         "spark.driver.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
-        "spark.app.submitTime": "1735426784113",
         "spark.sql.warehouse.dir": "file:/home/andy/git/personal/research/benchmarks/spark-standalone/spark-warehouse",
         "spark.executor.id": "driver",
         "spark.master": "spark://woody:7077",
         "spark.driver.memory": "8G",
         "spark.memory.offHeap.enabled": "true",
+        "spark.driver.port": "34999",
         "spark.executor.memory": "16g",
+        "spark.app.id": "app-20250113143837-0059",
+        "spark.app.startTime": "1736804317132",
         "spark.rdd.compress": "True",
         "spark.app.name": "spark benchmark derived from tpch",
+        "spark.app.submitTime": "1736804316845",
         "spark.executor.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
         "spark.serializer.objectStreamReset": "100",
         "spark.driver.host": "10.0.0.118",
@@ -22,76 +25,161 @@
         "spark.cores.max": "8",
         "spark.submit.pyFiles": "",
         "spark.submit.deployMode": "client",
-        "spark.app.id": "app-20241228155944-0046",
-        "spark.driver.port": "34081",
-        "spark.app.startTime": "1735426784393",
         "spark.executor.cores": "8",
         "spark.memory.offHeap.size": "16g"
     },
     "1": [
-        80.63448405265808
+        80.39240145683289,
+        79.9300479888916,
+        80.08533000946045,
+        79.95083689689636,
+        79.85243964195251
     ],
     "2": [
-        12.81693172454834
+        12.361650466918945,
+        12.305850267410278,
+        12.250919818878174,
+        11.97881293296814,
+        11.725982427597046
     ],
     "3": [
-        24.963571310043335
+        24.618537187576294,
+        24.87288188934326,
+        24.59152317047119,
+        24.218815803527832,
+        24.44655966758728
     ],
     "4": [
-        21.567469358444214
+        22.427627086639404,
+        20.657840728759766,
+        21.091227531433105,
+        21.05953359603882,
+        20.46818709373474
     ],
     "5": [
-        50.35770893096924
+        50.51570105552673,
+        49.615350008010864,
+        49.8210015296936,
+        49.847323179244995,
+        49.476715087890625
     ],
     "6": [
-        3.3034610748291016
+        3.347008466720581,
+        3.21842360496521,
+        3.1940605640411377,
+        3.310222625732422,
+        3.24226713180542
     ],
     "7": [
-        21.25043296813965
+        21.848386764526367,
+        21.017245531082153,
+        21.077393054962158,
+        21.38729691505432,
+        21.2225079536438
     ],
     "8": [
-        33.40748190879822
+        32.984848499298096,
+        33.09590411186218,
+        32.93970465660095,
+        32.48174071311951,
+        32.516525983810425
     ],
     "9": [
-        75.1117000579834
+        76.0926308631897,
+        74.51611924171448,
+        74.34783029556274,
+        74.69494938850403,
+        74.43283152580261
     ],
     "10": [
-        19.94579839706421
+        19.82606053352356,
+        19.577861070632935,
+        19.701807498931885,
+        19.774757146835327,
+        19.246259689331055
     ],
     "11": [
-        12.935089588165283
+        12.777667760848999,
+        12.865848302841187,
+        12.908553838729858,
+        12.77224063873291,
+        12.639224767684937
     ],
     "12": [
-        14.097134351730347
+        13.610698223114014,
+        13.52022099494934,
+        13.459492206573486,
+        13.30645203590393,
+        13.632066011428833
     ],
     "13": [
-        22.793055772781372
+        22.276411771774292,
+        22.426157474517822,
+        22.358247995376587,
+        22.300530672073364,
+        22.17827558517456
     ],
     "14": [
-        5.693503141403198
+        5.936513662338257,
+        5.709101915359497,
+        5.788166046142578,
+        5.724794626235962,
+        5.8799731731414795
     ],
     "15": [
-        14.863290548324585
+        14.949971437454224,
+        14.810836553573608,
+        14.723956823348999,
+        14.827229738235474,
+        14.890477657318115
     ],
     "16": [
-        7.105914354324341
+        7.259998559951782,
+        6.874396324157715,
+        7.139331817626953,
+        7.010579586029053,
+        6.851199626922607
     ],
     "17": [
-        59.69488859176636
+        59.51790142059326,
+        61.10569620132446,
+        61.5246102809906,
+        62.90809988975525,
+        60.082926988601685
     ],
     "18": [
-        71.94270491600037
+        71.04480576515198,
+        71.47302889823914,
+        73.99175548553467,
+        70.6622040271759,
+        73.06630039215088
     ],
     "19": [
-        6.8030900955200195
+        6.902673006057739,
+        7.26209568977356,
+        6.773332357406616,
+        6.810155868530273,
+        6.643052577972412
     ],
     "20": [
-        9.835478067398071
+        10.397570133209229,
+        9.828125,
+        9.871150493621826,
+        9.73079776763916,
+        9.764204502105713
     ],
     "21": [
-        66.12965321540833
+        66.58646297454834,
+        65.52946162223816,
+        65.2813880443573,
+        67.38516497612,
+        68.25078797340393
     ],
     "22": [
-        9.343550443649292
+        9.243720531463623,
+        9.1110098361969,
+        9.128684282302856,
+        9.107020854949951,
+        9.347189903259277
     ]
 }
