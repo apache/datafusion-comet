@@ -1114,6 +1114,7 @@ impl PhysicalPlanner {
                     codec,
                     writer.output_data_file.clone(),
                     writer.output_index_file.clone(),
+                    writer.enable_fast_encoding,
                 )?);
 
                 Ok((

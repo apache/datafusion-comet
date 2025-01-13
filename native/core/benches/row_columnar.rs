@@ -79,6 +79,7 @@ fn benchmark(c: &mut Criterion) {
                 0,
                 None,
                 &CompressionCodec::Zstd(1),
+                true,
             )
             .unwrap();
         });
