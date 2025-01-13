@@ -17,10 +17,11 @@
 
 use arrow_array::{RecordBatch, RecordBatchOptions};
 use arrow_schema::SchemaRef;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::{
     execution::TaskContext,
     physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, Partitioning, PlanProperties,
+        DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
         RecordBatchStream, SendableRecordBatchStream,
     },
 };
@@ -54,7 +55,8 @@ impl ExpandExec {
         let cache = PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&schema)),
             Partitioning::UnknownPartitioning(1),
-            ExecutionMode::Bounded,
+            EmissionType::Final,
+            Boundedness::Bounded,
         );
 
         Self {

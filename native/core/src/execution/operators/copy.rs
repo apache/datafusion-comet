@@ -30,6 +30,7 @@ use arrow_array::{
 use arrow_data::transform::MutableArrayData;
 use arrow_schema::{ArrowError, DataType, Field, FieldRef, Schema, SchemaRef};
 
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::{execution::TaskContext, physical_expr::*, physical_plan::*};
 use datafusion_common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
@@ -78,7 +79,8 @@ impl CopyExec {
         let cache = PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&schema)),
             Partitioning::UnknownPartitioning(1),
-            ExecutionMode::Bounded,
+            EmissionType::Final,
+            Boundedness::Bounded,
         );
 
         Self {
