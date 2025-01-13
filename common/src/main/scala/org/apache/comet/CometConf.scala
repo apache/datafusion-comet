@@ -295,6 +295,14 @@ object CometConf extends ShimCometConf {
       .intConf
       .createWithDefault(1)
 
+  val COMET_SHUFFLE_ENABLE_FAST_ENCODING: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enableFastEncoding")
+      .doc("Whether to enable Comet's faster proprietary encoding for shuffle blocks " +
+        "rather than using Arrow IPC.")
+      .internal()
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.columnar.shuffle.async.enabled")
       .doc("Whether to enable asynchronous shuffle for Arrow-based shuffle.")
