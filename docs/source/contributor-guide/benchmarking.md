@@ -49,6 +49,8 @@ $SPARK_HOME/bin/spark-submit \
 
 ## Running Benchmarks Against Apache Spark with Apache DataFusion Comet Enabled
 
+### TPC-H
+
 ```shell
 $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
@@ -58,21 +60,29 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.executor.cores=8 \
     --conf spark.cores.max=8 \
     --conf spark.memory.offHeap.enabled=true \
-    --conf spark.memory.offHeap.size=32g \
+    --conf spark.memory.offHeap.size=16g \
     --jars $COMET_JAR \
     --conf spark.driver.extraClassPath=$COMET_JAR \
     --conf spark.executor.extraClassPath=$COMET_JAR \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.comet.cast.allowIncompatible=true \
     --conf spark.comet.exec.replaceSortMergeJoin=true \
-    --conf spark.comet.exec.shuffle.enabled=true \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
+    --conf spark.comet.exec.shuffle.enabled=true \
+    --conf spark.comet.exec.shuffle.mode=auto \
+    --conf spark.comet.exec.shuffle.enableFastEncoding=true \
+    --conf spark.comet.exec.shuffle.fallbackToColumnar=true \
+    --conf spark.comet.exec.shuffle.compression.codec=lz4 \
     tpcbench.py \
     --benchmark tpch \
     --data /mnt/bigdata/tpch/sf100/ \
     --queries ../../tpch/queries \
     --iterations 3
 ```
+
+### TPC-DS
+
+For TPC-DS, use `spark.comet.exec.replaceSortMergeJoin=false`.
 
 ## Current Benchmark Results
 
