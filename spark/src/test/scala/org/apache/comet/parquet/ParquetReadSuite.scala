@@ -1366,10 +1366,15 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  def testScanner(cometEnabled: String, scanner: String, v1: Option[String] = None): Unit = {
+  def testScanner(
+      cometEnabled: String,
+      cometNativeScanImpl: String,
+      scanner: String,
+      v1: Option[String] = None): Unit = {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> cometEnabled,
       CometConf.COMET_EXEC_ENABLED.key -> cometEnabled,
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> cometNativeScanImpl,
       SQLConf.USE_V1_SOURCE_LIST.key -> v1.getOrElse("")) {
       withParquetTable(Seq((Long.MaxValue, 1), (Long.MaxValue, 2)), "tbl") {
         val df = spark.sql("select * from tbl")
@@ -1428,9 +1433,17 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
   }
 
   test("Test V1 parquet scan uses respective scanner") {
-    Seq(("false", "FileScan parquet"), ("true", "CometScan parquet")).foreach {
-      case (cometEnabled, expectedScanner) =>
-        testScanner(cometEnabled, scanner = expectedScanner, v1 = Some("parquet"))
+    Seq(
+      ("false", CometConf.SCAN_NATIVE_COMET, "FileScan parquet"),
+      ("true", CometConf.SCAN_NATIVE_COMET, "CometScan parquet"),
+      ("true", CometConf.SCAN_NATIVE_DATAFUSION, "CometNativeScan"),
+      ("true", CometConf.SCAN_NATIVE_ICEBERG_COMPAT, "CometScan parquet")).foreach {
+      case (cometEnabled, cometNativeScanImpl, expectedScanner) =>
+        testScanner(
+          cometEnabled,
+          cometNativeScanImpl,
+          scanner = expectedScanner,
+          v1 = Some("parquet"))
     }
   }
 }
@@ -1461,7 +1474,11 @@ class ParquetReadV2Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
   test("Test V2 parquet scan uses respective scanner") {
     Seq(("false", "BatchScan"), ("true", "CometBatchScan")).foreach {
       case (cometEnabled, expectedScanner) =>
-        testScanner(cometEnabled, scanner = expectedScanner, v1 = None)
+        testScanner(
+          cometEnabled,
+          CometConf.SCAN_NATIVE_DATAFUSION,
+          scanner = expectedScanner,
+          v1 = None)
     }
   }
 }

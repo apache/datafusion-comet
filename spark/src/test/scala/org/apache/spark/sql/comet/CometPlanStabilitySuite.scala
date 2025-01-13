@@ -77,10 +77,14 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
   private val approvedAnsiPlans: Seq[String] = Seq("q83", "q83.sf100")
 
   private def getDirForTest(name: String): File = {
-    val goldenFileName = if (SQLConf.get.ansiEnabled && approvedAnsiPlans.contains(name)) {
+    var goldenFileName = if (SQLConf.get.ansiEnabled && approvedAnsiPlans.contains(name)) {
       name + ".ansi"
     } else {
       name
+    }
+    val nativeImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
+    if (!nativeImpl.equals(CometConf.SCAN_NATIVE_COMET)) {
+      goldenFileName = s"$goldenFileName.$nativeImpl"
     }
     new File(goldenFilePath, goldenFileName)
   }
@@ -90,13 +94,9 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       actualSimplifiedPlan: String,
       actualExplain: String): Boolean = {
     val simplifiedFile = new File(dir, "simplified.txt")
-    var expectedSimplified = FileUtils.readFileToString(simplifiedFile, StandardCharsets.UTF_8)
+    val expectedSimplified = FileUtils.readFileToString(simplifiedFile, StandardCharsets.UTF_8)
     val explainFile = new File(dir, "explain.txt")
-    var expectedExplain = FileUtils.readFileToString(explainFile, StandardCharsets.UTF_8)
-    if (!CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_FULL)) {
-      expectedExplain = expectedExplain.replace("CometNativeScan", "CometScan")
-      expectedSimplified = expectedSimplified.replace("CometNativeScan", "CometScan")
-    }
+    val expectedExplain = FileUtils.readFileToString(explainFile, StandardCharsets.UTF_8)
     expectedSimplified == actualSimplifiedPlan && expectedExplain == actualExplain
   }
 
@@ -264,7 +264,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
 
     // Comet does not yet support DPP yet with full native scan enabled
     // https://github.com/apache/datafusion-comet/issues/121
-    val dppEnabled = CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE
+    val dppEnabled = CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_COMET
 
     // Disable char/varchar read-side handling for better performance.
     withSQLConf(
@@ -272,6 +272,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "false",
+      SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> dppEnabled.toString,
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key -> "true",
       CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true", // needed for v1.4/q9, v1.4/q44, v2.7.0/q6, v2.7.0/q64

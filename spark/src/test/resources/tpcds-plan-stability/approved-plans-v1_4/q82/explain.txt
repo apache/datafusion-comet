@@ -13,23 +13,26 @@
                   :        :  +- CometBroadcastHashJoin (8)
                   :        :     :- CometProject (3)
                   :        :     :  +- CometFilter (2)
-                  :        :     :     +- CometNativeScan: `spark_catalog`.`default`.`item` (1)
+                  :        :     :     +- CometScan parquet spark_catalog.default.item (1)
                   :        :     +- CometBroadcastExchange (7)
                   :        :        +- CometProject (6)
                   :        :           +- CometFilter (5)
-                  :        :              +- CometNativeScan: `spark_catalog`.`default`.`inventory` (4)
+                  :        :              +- CometScan parquet spark_catalog.default.inventory (4)
                   :        +- CometBroadcastExchange (13)
                   :           +- CometProject (12)
                   :              +- CometFilter (11)
-                  :                 +- CometNativeScan: `spark_catalog`.`default`.`date_dim` (10)
+                  :                 +- CometScan parquet spark_catalog.default.date_dim (10)
                   +- CometProject (19)
                      +- CometFilter (18)
-                        +- CometNativeScan: `spark_catalog`.`default`.`store_sales` (17)
+                        +- CometScan parquet spark_catalog.default.store_sales (17)
 
 
-(1) CometNativeScan: `spark_catalog`.`default`.`item`
+(1) CometScan parquet spark_catalog.default.item
 Output [5]: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4, i_manufact_id#5]
-Arguments: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4, i_manufact_id#5]
+Batched: true
+Location [not included in comparison]/{warehouse_dir}/item]
+PushedFilters: [IsNotNull(i_current_price), GreaterThanOrEqual(i_current_price,62.00), LessThanOrEqual(i_current_price,92.00), In(i_manufact_id, [129,270,423,821]), IsNotNull(i_item_sk)]
+ReadSchema: struct<i_item_sk:int,i_item_id:string,i_item_desc:string,i_current_price:decimal(7,2),i_manufact_id:int>
 
 (2) CometFilter
 Input [5]: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4, i_manufact_id#5]
@@ -39,9 +42,13 @@ Condition : ((((isnotnull(i_current_price#4) AND (i_current_price#4 >= 62.00)) A
 Input [5]: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4, i_manufact_id#5]
 Arguments: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4], [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4]
 
-(4) CometNativeScan: `spark_catalog`.`default`.`inventory`
+(4) CometScan parquet spark_catalog.default.inventory
 Output [3]: [inv_item_sk#6, inv_quantity_on_hand#7, inv_date_sk#8]
-Arguments: [inv_item_sk#6, inv_quantity_on_hand#7, inv_date_sk#8]
+Batched: true
+Location: InMemoryFileIndex []
+PartitionFilters: [isnotnull(inv_date_sk#8), dynamicpruningexpression(inv_date_sk#8 IN dynamicpruning#9)]
+PushedFilters: [IsNotNull(inv_quantity_on_hand), GreaterThanOrEqual(inv_quantity_on_hand,100), LessThanOrEqual(inv_quantity_on_hand,500), IsNotNull(inv_item_sk)]
+ReadSchema: struct<inv_item_sk:int,inv_quantity_on_hand:int>
 
 (5) CometFilter
 Input [3]: [inv_item_sk#6, inv_quantity_on_hand#7, inv_date_sk#8]
@@ -64,54 +71,60 @@ Arguments: [i_item_sk#1], [inv_item_sk#6], Inner, BuildRight
 Input [6]: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4, inv_item_sk#6, inv_date_sk#8]
 Arguments: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4, inv_date_sk#8], [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4, inv_date_sk#8]
 
-(10) CometNativeScan: `spark_catalog`.`default`.`date_dim`
-Output [2]: [d_date_sk#9, d_date#10]
-Arguments: [d_date_sk#9, d_date#10]
+(10) CometScan parquet spark_catalog.default.date_dim
+Output [2]: [d_date_sk#10, d_date#11]
+Batched: true
+Location [not included in comparison]/{warehouse_dir}/date_dim]
+PushedFilters: [IsNotNull(d_date), GreaterThanOrEqual(d_date,2000-05-25), LessThanOrEqual(d_date,2000-07-24), IsNotNull(d_date_sk)]
+ReadSchema: struct<d_date_sk:int,d_date:date>
 
 (11) CometFilter
-Input [2]: [d_date_sk#9, d_date#10]
-Condition : (((isnotnull(d_date#10) AND (d_date#10 >= 2000-05-25)) AND (d_date#10 <= 2000-07-24)) AND isnotnull(d_date_sk#9))
+Input [2]: [d_date_sk#10, d_date#11]
+Condition : (((isnotnull(d_date#11) AND (d_date#11 >= 2000-05-25)) AND (d_date#11 <= 2000-07-24)) AND isnotnull(d_date_sk#10))
 
 (12) CometProject
-Input [2]: [d_date_sk#9, d_date#10]
-Arguments: [d_date_sk#9], [d_date_sk#9]
+Input [2]: [d_date_sk#10, d_date#11]
+Arguments: [d_date_sk#10], [d_date_sk#10]
 
 (13) CometBroadcastExchange
-Input [1]: [d_date_sk#9]
-Arguments: [d_date_sk#9]
+Input [1]: [d_date_sk#10]
+Arguments: [d_date_sk#10]
 
 (14) CometBroadcastHashJoin
 Left output [5]: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4, inv_date_sk#8]
-Right output [1]: [d_date_sk#9]
-Arguments: [inv_date_sk#8], [d_date_sk#9], Inner, BuildRight
+Right output [1]: [d_date_sk#10]
+Arguments: [inv_date_sk#8], [d_date_sk#10], Inner, BuildRight
 
 (15) CometProject
-Input [6]: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4, inv_date_sk#8, d_date_sk#9]
+Input [6]: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4, inv_date_sk#8, d_date_sk#10]
 Arguments: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4], [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4]
 
 (16) CometBroadcastExchange
 Input [4]: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4]
 Arguments: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4]
 
-(17) CometNativeScan: `spark_catalog`.`default`.`store_sales`
-Output [2]: [ss_item_sk#11, ss_sold_date_sk#12]
-Arguments: [ss_item_sk#11, ss_sold_date_sk#12]
+(17) CometScan parquet spark_catalog.default.store_sales
+Output [2]: [ss_item_sk#12, ss_sold_date_sk#13]
+Batched: true
+Location [not included in comparison]/{warehouse_dir}/store_sales]
+PushedFilters: [IsNotNull(ss_item_sk)]
+ReadSchema: struct<ss_item_sk:int>
 
 (18) CometFilter
-Input [2]: [ss_item_sk#11, ss_sold_date_sk#12]
-Condition : isnotnull(ss_item_sk#11)
+Input [2]: [ss_item_sk#12, ss_sold_date_sk#13]
+Condition : isnotnull(ss_item_sk#12)
 
 (19) CometProject
-Input [2]: [ss_item_sk#11, ss_sold_date_sk#12]
-Arguments: [ss_item_sk#11], [ss_item_sk#11]
+Input [2]: [ss_item_sk#12, ss_sold_date_sk#13]
+Arguments: [ss_item_sk#12], [ss_item_sk#12]
 
 (20) CometBroadcastHashJoin
 Left output [4]: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4]
-Right output [1]: [ss_item_sk#11]
-Arguments: [i_item_sk#1], [ss_item_sk#11], Inner, BuildLeft
+Right output [1]: [ss_item_sk#12]
+Arguments: [i_item_sk#1], [ss_item_sk#12], Inner, BuildLeft
 
 (21) CometProject
-Input [5]: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4, ss_item_sk#11]
+Input [5]: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4, ss_item_sk#12]
 Arguments: [i_item_id#2, i_item_desc#3, i_current_price#4], [i_item_id#2, i_item_desc#3, i_current_price#4]
 
 (22) CometHashAggregate
@@ -134,4 +147,37 @@ Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_item_id#2 ASC NULLS FIRST
 
 (26) ColumnarToRow [codegen id : 1]
 Input [3]: [i_item_id#2, i_item_desc#3, i_current_price#4]
+
+===== Subqueries =====
+
+Subquery:1 Hosting operator id = 4 Hosting Expression = inv_date_sk#8 IN dynamicpruning#9
+BroadcastExchange (31)
++- * ColumnarToRow (30)
+   +- CometProject (29)
+      +- CometFilter (28)
+         +- CometScan parquet spark_catalog.default.date_dim (27)
+
+
+(27) CometScan parquet spark_catalog.default.date_dim
+Output [2]: [d_date_sk#10, d_date#11]
+Batched: true
+Location [not included in comparison]/{warehouse_dir}/date_dim]
+PushedFilters: [IsNotNull(d_date), GreaterThanOrEqual(d_date,2000-05-25), LessThanOrEqual(d_date,2000-07-24), IsNotNull(d_date_sk)]
+ReadSchema: struct<d_date_sk:int,d_date:date>
+
+(28) CometFilter
+Input [2]: [d_date_sk#10, d_date#11]
+Condition : (((isnotnull(d_date#11) AND (d_date#11 >= 2000-05-25)) AND (d_date#11 <= 2000-07-24)) AND isnotnull(d_date_sk#10))
+
+(29) CometProject
+Input [2]: [d_date_sk#10, d_date#11]
+Arguments: [d_date_sk#10], [d_date_sk#10]
+
+(30) ColumnarToRow [codegen id : 1]
+Input [1]: [d_date_sk#10]
+
+(31) BroadcastExchange
+Input [1]: [d_date_sk#10]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=2]
+
 

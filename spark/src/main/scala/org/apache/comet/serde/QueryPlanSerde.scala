@@ -2517,7 +2517,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
       // Fully native scan for V1
       case scan: CometScanExec
-          if CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_FULL =>
+          if CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_DATAFUSION =>
         val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
         nativeScanBuilder.setSource(op.simpleStringWithNodeId())
 
@@ -2578,6 +2578,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           nativeScanBuilder.addAllDataSchema(dataSchema.toIterable.asJava)
           nativeScanBuilder.addAllRequiredSchema(requiredSchema.toIterable.asJava)
           nativeScanBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
+          nativeScanBuilder.setSessionTimezone(conf.getConfString("spark.sql.session.timeZone"))
 
           Some(result.setNativeScan(nativeScanBuilder).build())
 

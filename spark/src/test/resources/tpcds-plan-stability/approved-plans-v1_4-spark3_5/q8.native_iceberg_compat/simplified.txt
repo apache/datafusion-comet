@@ -1,0 +1,44 @@
+WholeStageCodegen (1)
+  ColumnarToRow
+    InputAdapter
+      CometTakeOrderedAndProject [s_store_name,sum(ss_net_profit)]
+        CometHashAggregate [s_store_name,sum(ss_net_profit),sum,sum(UnscaledValue(ss_net_profit))]
+          CometExchange [s_store_name] #1
+            CometHashAggregate [s_store_name,sum,ss_net_profit]
+              CometProject [ss_net_profit,s_store_name]
+                CometBroadcastHashJoin [ss_net_profit,s_store_name,s_zip,ca_zip]
+                  CometProject [ss_net_profit,s_store_name,s_zip]
+                    CometBroadcastHashJoin [ss_store_sk,ss_net_profit,s_store_sk,s_store_name,s_zip]
+                      CometProject [ss_store_sk,ss_net_profit]
+                        CometBroadcastHashJoin [ss_store_sk,ss_net_profit,ss_sold_date_sk,d_date_sk]
+                          CometFilter [ss_store_sk,ss_net_profit,ss_sold_date_sk]
+                            CometScan parquet spark_catalog.default.store_sales [ss_store_sk,ss_net_profit,ss_sold_date_sk]
+                          CometBroadcastExchange [d_date_sk] #2
+                            CometProject [d_date_sk]
+                              CometFilter [d_date_sk,d_year,d_qoy]
+                                CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_qoy]
+                      CometBroadcastExchange [s_store_sk,s_store_name,s_zip] #3
+                        CometFilter [s_store_sk,s_store_name,s_zip]
+                          CometScan parquet spark_catalog.default.store [s_store_sk,s_store_name,s_zip]
+                  CometBroadcastExchange [ca_zip] #4
+                    CometHashAggregate [ca_zip]
+                      CometExchange [ca_zip] #5
+                        CometHashAggregate [ca_zip]
+                          CometBroadcastHashJoin [ca_zip,ca_zip]
+                            CometProject [ca_zip] [ca_zip]
+                              CometFilter [ca_zip]
+                                CometScan parquet spark_catalog.default.customer_address [ca_zip]
+                            CometBroadcastExchange [ca_zip] #6
+                              CometProject [ca_zip]
+                                CometFilter [ca_zip,cnt]
+                                  CometHashAggregate [ca_zip,cnt,ca_zip,count,count(1)]
+                                    CometExchange [ca_zip] #7
+                                      CometHashAggregate [ca_zip,count]
+                                        CometProject [ca_zip]
+                                          CometBroadcastHashJoin [ca_address_sk,ca_zip,c_current_addr_sk]
+                                            CometFilter [ca_address_sk,ca_zip]
+                                              CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_zip]
+                                            CometBroadcastExchange [c_current_addr_sk] #8
+                                              CometProject [c_current_addr_sk]
+                                                CometFilter [c_current_addr_sk,c_preferred_cust_flag]
+                                                  CometScan parquet spark_catalog.default.customer [c_current_addr_sk,c_preferred_cust_flag]

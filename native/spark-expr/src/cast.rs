@@ -838,7 +838,7 @@ fn cast_struct_to_struct(
             Ok(Arc::new(StructArray::new(
                 to_fields.clone(),
                 cast_fields,
-                array.nulls().map(|nulls| nulls.clone()),
+                array.nulls().cloned(),
             )))
         }
         _ => unreachable!(),

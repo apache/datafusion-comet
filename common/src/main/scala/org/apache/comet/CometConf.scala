@@ -77,24 +77,26 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(false)
 
-  val SCAN_NATIVE = "native"
-  val SCAN_NATIVE_FULL = "native_full"
-  val SCAN_NATIVE_RECORDBATCH = "native_recordbatch"
+  val SCAN_NATIVE_COMET = "native_comet"
+  val SCAN_NATIVE_DATAFUSION = "native_datafusion"
+  val SCAN_NATIVE_ICEBERG_COMPAT = "native_iceberg_compat"
 
   val COMET_NATIVE_SCAN_IMPL: ConfigEntry[String] = conf("spark.comet.scan.impl")
     .doc(
-      "The implementation of Comet Native Scan to use. Available modes are 'native'," +
-        "'native_full', and 'native_recordbatch'. " +
-        "'native' is for the original Comet native scan which uses a jvm based parquet file " +
-        "reader and native column decoding. Supports simple types only " +
-        "'native_full' is a fully native implementation of scan based on DataFusion" +
-        "'native_recordbatch' is a native implementation that exposes apis to read parquet " +
-        "columns natively.")
+      s"The implementation of Comet Native Scan to use. Available modes are '$SCAN_NATIVE_COMET'," +
+        s"'$SCAN_NATIVE_DATAFUSION', and '$SCAN_NATIVE_ICEBERG_COMPAT'. " +
+        s"'$SCAN_NATIVE_COMET' is for the original Comet native scan which uses a jvm based " +
+        "parquet file reader and native column decoding. Supports simple types only " +
+        s"'$SCAN_NATIVE_DATAFUSION' is a fully native implementation of scan based on DataFusion" +
+        s"'$SCAN_NATIVE_ICEBERG_COMPAT' is a native implementation that exposes apis to read " +
+        "parquet columns natively.")
     .internal()
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
-    .checkValues(Set(SCAN_NATIVE, SCAN_NATIVE_FULL, SCAN_NATIVE_RECORDBATCH))
-    .createWithDefault(sys.env.getOrElse("NATIVE_SCAN_IMPL", SCAN_NATIVE_FULL))
+    .checkValues(Set(SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT))
+    .createWithDefault(sys.env
+      .getOrElse("COMET_PARQUET_SCAN_IMPL", SCAN_NATIVE_COMET)
+      .toLowerCase(Locale.ROOT))
 
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.parallel.io.enabled")

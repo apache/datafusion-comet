@@ -1,0 +1,63 @@
+TakeOrderedAndProject [sum_sales,avg_monthly_sales,d_year,i_category,i_brand,d_moy,psum,nsum]
+  WholeStageCodegen (7)
+    Project [i_category,i_brand,d_year,d_moy,avg_monthly_sales,sum_sales,sum_sales,sum_sales]
+      BroadcastHashJoin [i_category,i_brand,cc_name,rn,i_category,i_brand,cc_name,rn]
+        Project [i_category,i_brand,cc_name,d_year,d_moy,sum_sales,avg_monthly_sales,rn,sum_sales]
+          BroadcastHashJoin [i_category,i_brand,cc_name,rn,i_category,i_brand,cc_name,rn]
+            Project [i_category,i_brand,cc_name,d_year,d_moy,sum_sales,avg_monthly_sales,rn]
+              Filter [avg_monthly_sales,sum_sales]
+                InputAdapter
+                  Window [_w0,i_category,i_brand,cc_name,d_year]
+                    WholeStageCodegen (2)
+                      Filter [d_year]
+                        InputAdapter
+                          Window [d_year,d_moy,i_category,i_brand,cc_name]
+                            WholeStageCodegen (1)
+                              ColumnarToRow
+                                InputAdapter
+                                  CometSort [i_category,i_brand,cc_name,d_year,d_moy,sum_sales,_w0]
+                                    CometExchange [i_category,i_brand,cc_name] #1
+                                      CometHashAggregate [i_category,i_brand,cc_name,d_year,d_moy,sum_sales,_w0,sum,sum(UnscaledValue(cs_sales_price))]
+                                        CometExchange [i_category,i_brand,cc_name,d_year,d_moy] #2
+                                          CometHashAggregate [i_category,i_brand,cc_name,d_year,d_moy,sum,cs_sales_price]
+                                            CometProject [i_brand,i_category,cs_sales_price,d_year,d_moy,cc_name]
+                                              CometBroadcastHashJoin [i_brand,i_category,cs_call_center_sk,cs_sales_price,d_year,d_moy,cc_call_center_sk,cc_name]
+                                                CometProject [i_brand,i_category,cs_call_center_sk,cs_sales_price,d_year,d_moy]
+                                                  CometBroadcastHashJoin [i_brand,i_category,cs_call_center_sk,cs_sales_price,cs_sold_date_sk,d_date_sk,d_year,d_moy]
+                                                    CometProject [i_brand,i_category,cs_call_center_sk,cs_sales_price,cs_sold_date_sk]
+                                                      CometBroadcastHashJoin [i_item_sk,i_brand,i_category,cs_call_center_sk,cs_item_sk,cs_sales_price,cs_sold_date_sk]
+                                                        CometFilter [i_item_sk,i_brand,i_category]
+                                                          CometNativeScan: `spark_catalog`.`default`.`item` [i_item_sk,i_brand,i_category]
+                                                        CometBroadcastExchange [cs_call_center_sk,cs_item_sk,cs_sales_price,cs_sold_date_sk] #3
+                                                          CometFilter [cs_call_center_sk,cs_item_sk,cs_sales_price,cs_sold_date_sk]
+                                                            CometNativeScan: `spark_catalog`.`default`.`catalog_sales` [cs_call_center_sk,cs_item_sk,cs_sales_price,cs_sold_date_sk]
+                                                    CometBroadcastExchange [d_date_sk,d_year,d_moy] #4
+                                                      CometFilter [d_date_sk,d_year,d_moy]
+                                                        CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_year,d_moy]
+                                                CometBroadcastExchange [cc_call_center_sk,cc_name] #5
+                                                  CometFilter [cc_call_center_sk,cc_name]
+                                                    CometNativeScan: `spark_catalog`.`default`.`call_center` [cc_call_center_sk,cc_name]
+            InputAdapter
+              BroadcastExchange #6
+                WholeStageCodegen (4)
+                  Project [i_category,i_brand,cc_name,sum_sales,rn]
+                    InputAdapter
+                      Window [d_year,d_moy,i_category,i_brand,cc_name]
+                        WholeStageCodegen (3)
+                          ColumnarToRow
+                            InputAdapter
+                              CometSort [i_category,i_brand,cc_name,d_year,d_moy,sum_sales]
+                                CometExchange [i_category,i_brand,cc_name] #7
+                                  CometHashAggregate [i_category,i_brand,cc_name,d_year,d_moy,sum_sales,sum,sum(UnscaledValue(cs_sales_price))]
+                                    ReusedExchange [i_category,i_brand,cc_name,d_year,d_moy,sum] #2
+        InputAdapter
+          BroadcastExchange #8
+            WholeStageCodegen (6)
+              Project [i_category,i_brand,cc_name,sum_sales,rn]
+                InputAdapter
+                  Window [d_year,d_moy,i_category,i_brand,cc_name]
+                    WholeStageCodegen (5)
+                      ColumnarToRow
+                        InputAdapter
+                          CometSort [i_category,i_brand,cc_name,d_year,d_moy,sum_sales]
+                            ReusedExchange [i_category,i_brand,cc_name,d_year,d_moy,sum_sales] #7

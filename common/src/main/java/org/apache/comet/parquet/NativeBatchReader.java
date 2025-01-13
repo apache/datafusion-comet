@@ -346,7 +346,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
 
     this.handle =
         Native.initRecordBatchReader(
-            filePath, fileSize, start, length, serializedRequestedArrowSchema);
+            filePath, fileSize, start, length, serializedRequestedArrowSchema, timeZoneId);
     isInitialized = true;
   }
 
