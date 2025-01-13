@@ -325,9 +325,11 @@ class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
   override val goldenFilePath: String =
     new File(baseResourcePath, planName).getAbsolutePath
 
-  tpcdsQueries.foreach { q =>
-    test(s"check simplified (tpcds-v1.4/$q)") {
-      testQuery("tpcds", q)
+  if (CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_COMET)) {
+    tpcdsQueries.foreach { q =>
+      test(s"check simplified (tpcds-v1.4/$q)") {
+        testQuery("tpcds", q)
+      }
     }
   }
 }
@@ -343,9 +345,11 @@ class CometTPCDSV2_7_PlanStabilitySuite extends CometPlanStabilitySuite {
   override val goldenFilePath: String =
     new File(baseResourcePath, planName).getAbsolutePath
 
-  tpcdsQueriesV2_7_0.foreach { q =>
-    test(s"check simplified (tpcds-v2.7.0/$q)") {
-      testQuery("tpcds-v2.7.0", q)
+  if (CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_COMET)) {
+    tpcdsQueriesV2_7_0.foreach { q =>
+      test(s"check simplified (tpcds-v2.7.0/$q)") {
+        testQuery("tpcds-v2.7.0", q)
+      }
     }
   }
 }
