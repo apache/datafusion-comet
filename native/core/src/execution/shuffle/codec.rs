@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::parquet::data_type::AsBytes;
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int32Type;
 use arrow_array::{
@@ -76,14 +77,17 @@ impl<W: Write> BatchWriter<W> {
     /// Encode the schema (just column names because data types can vary per batch)
     pub fn write_partial_schema(&mut self, schema: &Schema) -> Result<(), DataFusionError> {
         let schema_len = schema.fields().len();
+        let mut null_bytes = Vec::with_capacity(schema_len);
         self.inner.write_all(&schema_len.to_le_bytes())?;
         for field in schema.fields() {
             // field name
             let field_name = field.name();
             self.inner.write_all(&field_name.len().to_le_bytes())?;
             self.inner.write_all(field_name.as_str().as_bytes())?;
-            // TODO nullable - assume all nullable for now
+            // nullable
+            null_bytes.push(field.is_nullable() as u8);
         }
+        self.inner.write_all(null_bytes.as_bytes())?;
         Ok(())
     }
 
@@ -331,8 +335,12 @@ impl<'a> BatchReader<'a> {
         let schema_len = usize::from_le_bytes(length);
 
         let mut field_names: Vec<String> = Vec::with_capacity(schema_len);
+        let mut nullable: Vec<bool> = Vec::with_capacity(schema_len);
         for _ in 0..schema_len {
             field_names.push(self.read_string());
+        }
+        for _ in 0..schema_len {
+            nullable.push(self.read_bool());
         }
 
         length.copy_from_slice(&self.input[self.offset..self.offset + 8]);
@@ -341,9 +349,9 @@ impl<'a> BatchReader<'a> {
 
         let mut fields: Vec<Arc<Field>> = Vec::with_capacity(schema_len);
         let mut arrays = Vec::with_capacity(schema_len);
-        for name in &field_names {
+        for (name, nullable) in field_names.into_iter().zip(&nullable) {
             let array = self.read_array()?;
-            let field = Arc::new(Field::new(name, array.data_type().clone(), true));
+            let field = Arc::new(Field::new(name, array.data_type().clone(), *nullable));
             arrays.push(array);
             fields.push(field);
         }
@@ -514,6 +522,12 @@ impl<'a> BatchReader<'a> {
             _ => self.offset += 1,
         }
         Ok(data_type)
+    }
+
+    fn read_bool(&mut self) -> bool {
+        let value = self.input[self.offset] != 0;
+        self.offset += 1;
+        value
     }
 
     fn read_string(&mut self) -> String {
