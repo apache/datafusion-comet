@@ -67,6 +67,7 @@ use datafusion::{
 use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr};
 use datafusion_functions_nested::concat::ArrayAppend;
 use datafusion_functions_nested::remove::array_remove_all_udf;
+use datafusion_functions_nested::string::array_to_string_udf;
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
 use crate::execution::shuffle::CompressionCodec;
@@ -764,6 +765,21 @@ impl PhysicalPlanner {
                 )?;
 
                 Ok(Arc::new(case_expr))
+            }
+            ExprStruct::ArrayJoin(expr) => {
+                let src_array_expr =
+                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let key_expr =
+                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let args = vec![Arc::clone(&src_array_expr), key_expr];
+                let datafusion_array_to_string = array_to_string_udf();
+                let array_intersect_expr = Arc::new(ScalarFunctionExpr::new(
+                    "array_join",
+                    datafusion_array_to_string,
+                    args,
+                    DataType::Utf8,
+                ));
+                Ok(array_intersect_expr)
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
