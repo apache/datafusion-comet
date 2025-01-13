@@ -63,7 +63,9 @@ fn criterion_benchmark(c: &mut Criterion) {
     for compression_codec in [
         CompressionCodec::None,
         CompressionCodec::Lz4Frame,
+        CompressionCodec::Snappy,
         CompressionCodec::Zstd(1),
+        CompressionCodec::Zstd(6),
     ] {
         group.bench_function(
             format!("shuffle_writer: end to end (compression = {compression_codec:?}"),
