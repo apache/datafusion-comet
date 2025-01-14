@@ -19,8 +19,8 @@ under the License.
 
 # Apache DataFusion Comet: Benchmarks Derived From TPC-DS
 
-The following benchmarks were performed on a two node Kubernetes cluster with
-data stored locally in Parquet format on NVMe storage. Performance characteristics will vary in different environments 
+The following benchmarks were performed on a Linux workstation with PCIe 5, AMD 7950X CPU (16 cores), 128 GB RAM, and
+data stored locally in Parquet format on NVMe storage. Performance characteristics will vary in different environments
 and we encourage you to run these benchmarks in your own environments.
 
 The tracking issue for improving TPC-DS performance is [#858](https://github.com/apache/datafusion-comet/issues/858).
