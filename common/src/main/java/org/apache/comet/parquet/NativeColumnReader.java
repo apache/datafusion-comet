@@ -27,12 +27,8 @@ import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.CometSchemaImporter;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
-import org.apache.arrow.vector.FieldVector;
-import org.apache.arrow.vector.dictionary.Dictionary;
-import org.apache.arrow.vector.types.pojo.DictionaryEncoding;
 import org.apache.parquet.column.ColumnDescriptor;
-import org.apache.parquet.column.page.*;
-import org.apache.parquet.schema.LogicalTypeAnnotation;
+import org.apache.parquet.schema.Type;
 import org.apache.spark.sql.types.DataType;
 
 import org.apache.comet.vector.*;
@@ -65,6 +61,7 @@ public class NativeColumnReader extends AbstractColumnReader {
   boolean hadNull;
 
   private final CometSchemaImporter importer;
+  private final NativeUtil nativeUtil;
 
   private ArrowArray array = null;
   private ArrowSchema schema = null;
@@ -76,14 +73,17 @@ public class NativeColumnReader extends AbstractColumnReader {
       long nativeBatchHandle,
       int columnNum,
       DataType type,
+      Type fieldType,
       ColumnDescriptor descriptor,
       CometSchemaImporter importer,
+      NativeUtil nativeUtil,
       int batchSize,
       boolean useDecimal128,
       boolean useLegacyDateTimestamp) {
-    super(type, descriptor, useDecimal128, useLegacyDateTimestamp);
+    super(type, fieldType, descriptor, useDecimal128, useLegacyDateTimestamp);
     assert batchSize > 0 : "Batch size must be positive, found " + batchSize;
     this.batchSize = batchSize;
+    this.nativeUtil = nativeUtil;
     this.importer = importer;
     this.nativeBatchHandle = nativeBatchHandle;
     this.columnNum = columnNum;
@@ -94,13 +94,13 @@ public class NativeColumnReader extends AbstractColumnReader {
   // Override in order to avoid creation of JVM side column readers
   protected void initNative() {
     LOG.debug(
-        "Native column reader " + String.join(".", this.descriptor.getPath()) + " is initialized");
+        "Native column reader {} is initialized", String.join(".", this.type.catalogString()));
     nativeHandle = 0;
   }
 
   @Override
   public void readBatch(int total) {
-    LOG.debug("Reading column batch of size = " + total);
+    LOG.debug("Reading column batch of size = {}", total);
 
     this.currentNumValues = total;
   }
@@ -131,10 +131,7 @@ public class NativeColumnReader extends AbstractColumnReader {
       currentVector.close();
     }
 
-    LogicalTypeAnnotation logicalTypeAnnotation =
-        descriptor.getPrimitiveType().getLogicalTypeAnnotation();
-    boolean isUuid =
-        logicalTypeAnnotation instanceof LogicalTypeAnnotation.UUIDLogicalTypeAnnotation;
+    // TODO: ARROW NATIVE : Handle Uuid?
 
     array = ArrowArray.allocateNew(ALLOCATOR);
     schema = ArrowSchema.allocateNew(ALLOCATOR);
@@ -144,47 +141,19 @@ public class NativeColumnReader extends AbstractColumnReader {
 
     Native.currentColumnBatch(nativeBatchHandle, columnNum, arrayAddr, schemaAddr);
 
-    FieldVector vector = importer.importVector(array, schema);
+    ArrowArray[] arrays = {array};
+    ArrowSchema[] schemas = {schema};
 
-    DictionaryEncoding dictionaryEncoding = vector.getField().getDictionary();
-
-    CometPlainVector cometVector = new CometPlainVector(vector, useDecimal128);
+    CometDecodedVector cometVector =
+        (CometDecodedVector)
+            scala.collection.JavaConverters.seqAsJavaList(nativeUtil.importVector(arrays, schemas))
+                .get(0);
 
     // Update whether the current vector contains any null values. This is used in the following
     // batch(s) to determine whether we can skip loading the native vector.
     hadNull = cometVector.hasNull();
 
-    if (dictionaryEncoding == null) {
-      if (dictionary != null) {
-        // This means the column was using dictionary encoding but now has fall-back to plain
-        // encoding, on the native side. Setting 'dictionary' to null here, so we can use it as
-        // a condition to check if we can re-use vector later.
-        dictionary = null;
-      }
-      // Either the column is not dictionary encoded, or it was using dictionary encoding but
-      // a new data page has switched back to use plain encoding. For both cases we should
-      // return plain vector.
-      currentVector = cometVector;
-      return currentVector;
-    }
-
-    // We should already re-initiate `CometDictionary` here because `Data.importVector` API will
-    // release the previous dictionary vector and create a new one.
-    Dictionary arrowDictionary = importer.getProvider().lookup(dictionaryEncoding.getId());
-    CometPlainVector dictionaryVector =
-        new CometPlainVector(arrowDictionary.getVector(), useDecimal128, isUuid);
-    if (dictionary != null) {
-      dictionary.setDictionaryVector(dictionaryVector);
-    } else {
-      dictionary = new CometDictionary(dictionaryVector);
-    }
-
-    currentVector =
-        new CometDictionaryVector(
-            cometVector, dictionary, importer.getProvider(), useDecimal128, false, isUuid);
-
-    currentVector =
-        new CometDictionaryVector(cometVector, dictionary, importer.getProvider(), useDecimal128);
+    currentVector = cometVector;
     return currentVector;
   }
 }
