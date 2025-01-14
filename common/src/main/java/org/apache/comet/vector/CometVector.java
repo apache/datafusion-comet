@@ -232,7 +232,7 @@ public abstract class CometVector extends ColumnVector {
    * @param useDecimal128 Whether to use Decimal128 for decimal column
    * @return `CometVector` implementation
    */
-  protected static CometVector getVector(
+  public static CometVector getVector(
       ValueVector vector, boolean useDecimal128, DictionaryProvider dictionaryProvider) {
     if (vector instanceof StructVector) {
       return new CometStructVector(vector, useDecimal128, dictionaryProvider);

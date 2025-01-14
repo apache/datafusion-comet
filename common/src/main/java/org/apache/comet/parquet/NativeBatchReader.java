@@ -72,6 +72,7 @@ import org.apache.comet.CometConf;
 import org.apache.comet.shims.ShimBatchReader;
 import org.apache.comet.shims.ShimFileFormat;
 import org.apache.comet.vector.CometVector;
+import org.apache.comet.vector.NativeUtil;
 
 /**
  * A vectorized Parquet reader that reads a Parquet file in a batched fashion.
@@ -94,6 +95,7 @@ import org.apache.comet.vector.CometVector;
 public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> implements Closeable {
   private static final Logger LOG = LoggerFactory.getLogger(NativeBatchReader.class);
   protected static final BufferAllocator ALLOCATOR = new RootAllocator();
+  private NativeUtil nativeUtil = new NativeUtil();
 
   private Configuration conf;
   private int capacity;
@@ -266,7 +268,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
 
     //// Create Column readers
     List<ColumnDescriptor> columns = requestedSchema.getColumns();
-    int numColumns = columns.size();
+    List<Type> fields = requestedSchema.getFields();
+    int numColumns = fields.size();
     if (partitionSchema != null) numColumns += partitionSchema.size();
     columnReaders = new AbstractColumnReader[numColumns];
 
@@ -454,6 +457,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       importer.close();
       importer = null;
     }
+    nativeUtil.close();
     Native.closeRecordBatchReader(this.handle);
   }
 
@@ -469,19 +473,23 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     importer = new CometSchemaImporter(ALLOCATOR);
 
     List<ColumnDescriptor> columns = requestedSchema.getColumns();
-    for (int i = 0; i < columns.size(); i++) {
+    List<Type> fields = requestedSchema.getFields();
+    for (int i = 0; i < fields.size(); i++) {
       // TODO: (ARROW NATIVE) check this. Currently not handling missing columns correctly?
       if (missingColumns[i]) continue;
       if (columnReaders[i] != null) columnReaders[i].close();
       // TODO: (ARROW NATIVE) handle tz, datetime & int96 rebase
       DataType dataType = sparkSchema.fields()[i].dataType();
+      Type field = fields.get(i);
       NativeColumnReader reader =
           new NativeColumnReader(
               this.handle,
               i,
               dataType,
-              columns.get(i),
+              field,
+              null,
               importer,
+              nativeUtil,
               capacity,
               useDecimal128,
               useLegacyDateTimestamp);
