@@ -1,6 +1,6 @@
 == Physical Plan ==
-* ColumnarToRow (4)
-+- CometProject (3)
+* Project (4)
++- * CometColumnarToRow (3)
    +- CometFilter (2)
       +- CometScan parquet spark_catalog.default.reason (1)
 
@@ -16,7 +16,7 @@ ReadSchema: struct<r_reason_sk:int>
 Input [1]: [r_reason_sk#1]
 Condition : (isnotnull(r_reason_sk#1) AND (r_reason_sk#1 = 1))
 
-(3) CometProject
+(3) CometColumnarToRow [codegen id : 1]
 Input [1]: [r_reason_sk#1]
 Arguments: [bucket1#2, bucket2#3, bucket3#4, bucket4#5, bucket5#6], [CASE WHEN (Subquery scalar-subquery#7, [id=#8].count(1) > 62316685) THEN ReusedSubquery Subquery scalar-subquery#7, [id=#8].avg(ss_ext_discount_amt) ELSE ReusedSubquery Subquery scalar-subquery#7, [id=#8].avg(ss_net_paid) END AS bucket1#2, CASE WHEN (Subquery scalar-subquery#9, [id=#10].count(1) > 19045798) THEN ReusedSubquery Subquery scalar-subquery#9, [id=#10].avg(ss_ext_discount_amt) ELSE ReusedSubquery Subquery scalar-subquery#9, [id=#10].avg(ss_net_paid) END AS bucket2#3, CASE WHEN (Subquery scalar-subquery#11, [id=#12].count(1) > 365541424) THEN ReusedSubquery Subquery scalar-subquery#11, [id=#12].avg(ss_ext_discount_amt) ELSE ReusedSubquery Subquery scalar-subquery#11, [id=#12].avg(ss_net_paid) END AS bucket3#4, CASE WHEN (Subquery scalar-subquery#13, [id=#14].count(1) > 216357808) THEN ReusedSubquery Subquery scalar-subquery#13, [id=#14].avg(ss_ext_discount_amt) ELSE ReusedSubquery Subquery scalar-subquery#13, [id=#14].avg(ss_net_paid) END AS bucket4#5, CASE WHEN (Subquery scalar-subquery#15, [id=#16].count(1) > 184483884) THEN ReusedSubquery Subquery scalar-subquery#15, [id=#16].avg(ss_ext_discount_amt) ELSE ReusedSubquery Subquery scalar-subquery#15, [id=#16].avg(ss_net_paid) END AS bucket5#6]
 
@@ -25,8 +25,8 @@ Input [5]: [bucket1#2, bucket2#3, bucket3#4, bucket4#5, bucket5#6]
 
 ===== Subqueries =====
 
-Subquery:1 Hosting operator id = 3 Hosting Expression = Subquery scalar-subquery#7, [id=#8]
-* ColumnarToRow (12)
+Subquery:1 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery#2, [id=#3]
+* CometColumnarToRow (12)
 +- CometProject (11)
    +- CometHashAggregate (10)
       +- CometExchange (9)
@@ -69,15 +69,15 @@ Functions [3]: [count(1), avg(UnscaledValue(ss_ext_discount_amt#18)), avg(Unscal
 Input [3]: [count(1)#26, avg(ss_ext_discount_amt)#27, avg(ss_net_paid)#28]
 Arguments: [mergedValue#29], [named_struct(count(1), count(1)#26, avg(ss_ext_discount_amt), avg(ss_ext_discount_amt)#27, avg(ss_net_paid), avg(ss_net_paid)#28) AS mergedValue#29]
 
-(12) ColumnarToRow [codegen id : 1]
+(12) CometColumnarToRow [codegen id : 1]
 Input [1]: [mergedValue#29]
 
 Subquery:2 Hosting operator id = 3 Hosting Expression = ReusedSubquery Subquery scalar-subquery#7, [id=#8]
 
 Subquery:3 Hosting operator id = 3 Hosting Expression = ReusedSubquery Subquery scalar-subquery#7, [id=#8]
 
-Subquery:4 Hosting operator id = 3 Hosting Expression = Subquery scalar-subquery#9, [id=#10]
-* ColumnarToRow (20)
+Subquery:4 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery#5, [id=#6]
+* CometColumnarToRow (20)
 +- CometProject (19)
    +- CometHashAggregate (18)
       +- CometExchange (17)
@@ -120,15 +120,15 @@ Functions [3]: [count(1), avg(UnscaledValue(ss_ext_discount_amt#31)), avg(Unscal
 Input [3]: [count(1)#39, avg(ss_ext_discount_amt)#40, avg(ss_net_paid)#41]
 Arguments: [mergedValue#42], [named_struct(count(1), count(1)#39, avg(ss_ext_discount_amt), avg(ss_ext_discount_amt)#40, avg(ss_net_paid), avg(ss_net_paid)#41) AS mergedValue#42]
 
-(20) ColumnarToRow [codegen id : 1]
+(20) CometColumnarToRow [codegen id : 1]
 Input [1]: [mergedValue#42]
 
 Subquery:5 Hosting operator id = 3 Hosting Expression = ReusedSubquery Subquery scalar-subquery#9, [id=#10]
 
 Subquery:6 Hosting operator id = 3 Hosting Expression = ReusedSubquery Subquery scalar-subquery#9, [id=#10]
 
-Subquery:7 Hosting operator id = 3 Hosting Expression = Subquery scalar-subquery#11, [id=#12]
-* ColumnarToRow (28)
+Subquery:7 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery#8, [id=#9]
+* CometColumnarToRow (28)
 +- CometProject (27)
    +- CometHashAggregate (26)
       +- CometExchange (25)
@@ -171,15 +171,15 @@ Functions [3]: [count(1), avg(UnscaledValue(ss_ext_discount_amt#44)), avg(Unscal
 Input [3]: [count(1)#52, avg(ss_ext_discount_amt)#53, avg(ss_net_paid)#54]
 Arguments: [mergedValue#55], [named_struct(count(1), count(1)#52, avg(ss_ext_discount_amt), avg(ss_ext_discount_amt)#53, avg(ss_net_paid), avg(ss_net_paid)#54) AS mergedValue#55]
 
-(28) ColumnarToRow [codegen id : 1]
+(28) CometColumnarToRow [codegen id : 1]
 Input [1]: [mergedValue#55]
 
 Subquery:8 Hosting operator id = 3 Hosting Expression = ReusedSubquery Subquery scalar-subquery#11, [id=#12]
 
 Subquery:9 Hosting operator id = 3 Hosting Expression = ReusedSubquery Subquery scalar-subquery#11, [id=#12]
 
-Subquery:10 Hosting operator id = 3 Hosting Expression = Subquery scalar-subquery#13, [id=#14]
-* ColumnarToRow (36)
+Subquery:10 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery#11, [id=#12]
+* CometColumnarToRow (36)
 +- CometProject (35)
    +- CometHashAggregate (34)
       +- CometExchange (33)
@@ -222,15 +222,15 @@ Functions [3]: [count(1), avg(UnscaledValue(ss_ext_discount_amt#57)), avg(Unscal
 Input [3]: [count(1)#65, avg(ss_ext_discount_amt)#66, avg(ss_net_paid)#67]
 Arguments: [mergedValue#68], [named_struct(count(1), count(1)#65, avg(ss_ext_discount_amt), avg(ss_ext_discount_amt)#66, avg(ss_net_paid), avg(ss_net_paid)#67) AS mergedValue#68]
 
-(36) ColumnarToRow [codegen id : 1]
+(36) CometColumnarToRow [codegen id : 1]
 Input [1]: [mergedValue#68]
 
 Subquery:11 Hosting operator id = 3 Hosting Expression = ReusedSubquery Subquery scalar-subquery#13, [id=#14]
 
 Subquery:12 Hosting operator id = 3 Hosting Expression = ReusedSubquery Subquery scalar-subquery#13, [id=#14]
 
-Subquery:13 Hosting operator id = 3 Hosting Expression = Subquery scalar-subquery#15, [id=#16]
-* ColumnarToRow (44)
+Subquery:13 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery#14, [id=#15]
+* CometColumnarToRow (44)
 +- CometProject (43)
    +- CometHashAggregate (42)
       +- CometExchange (41)
@@ -273,7 +273,7 @@ Functions [3]: [count(1), avg(UnscaledValue(ss_ext_discount_amt#70)), avg(Unscal
 Input [3]: [count(1)#78, avg(ss_ext_discount_amt)#79, avg(ss_net_paid)#80]
 Arguments: [mergedValue#81], [named_struct(count(1), count(1)#78, avg(ss_ext_discount_amt), avg(ss_ext_discount_amt)#79, avg(ss_net_paid), avg(ss_net_paid)#80) AS mergedValue#81]
 
-(44) ColumnarToRow [codegen id : 1]
+(44) CometColumnarToRow [codegen id : 1]
 Input [1]: [mergedValue#81]
 
 Subquery:14 Hosting operator id = 3 Hosting Expression = ReusedSubquery Subquery scalar-subquery#15, [id=#16]

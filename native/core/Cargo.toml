@@ -53,9 +53,8 @@ lazy_static = "1.4.0"
 prost = "0.12.1"
 jni = "0.21"
 snap = "1.1"
-brotli = "3.3"
-flate2 = "1.0"
-lz4 = "1.24"
+# we disable default features in lz4_flex to force the use of the faster unsafe encoding and decoding implementation
+lz4_flex = { version = "0.11.3", default-features = false }
 zstd = "0.11"
 rand = { workspace = true}
 num = { workspace = true }

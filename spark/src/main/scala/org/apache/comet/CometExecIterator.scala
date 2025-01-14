@@ -20,10 +20,11 @@
 package org.apache.comet
 
 import org.apache.spark._
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
 
-import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_BLOCKING_THREADS, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_FRACTION, COMET_EXPLAIN_NATIVE_ENABLED, COMET_WORKER_THREADS}
+import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_BLOCKING_THREADS, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_POOL_TYPE, COMET_EXPLAIN_NATIVE_ENABLED, COMET_WORKER_THREADS}
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -52,7 +53,8 @@ class CometExecIterator(
     nativeMetrics: CometMetricNode,
     numParts: Int,
     partitionIndex: Int)
-    extends Iterator[ColumnarBatch] {
+    extends Iterator[ColumnarBatch]
+    with Logging {
 
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
@@ -73,8 +75,10 @@ class CometExecIterator(
       new CometTaskMemoryManager(id),
       batchSize = COMET_BATCH_SIZE.get(),
       use_unified_memory_manager = conf.getBoolean("spark.memory.offHeap.enabled", false),
+      memory_pool_type = COMET_EXEC_MEMORY_POOL_TYPE.get(),
       memory_limit = CometSparkSessionExtensions.getCometMemoryOverhead(conf),
-      memory_fraction = COMET_EXEC_MEMORY_FRACTION.get(),
+      memory_limit_per_task = getMemoryLimitPerTask(conf),
+      task_attempt_id = TaskContext.get().taskAttemptId,
       debug = COMET_DEBUG_ENABLED.get(),
       explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
       workerThreads = COMET_WORKER_THREADS.get(),
@@ -82,8 +86,36 @@ class CometExecIterator(
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
+  private var prevBatch: ColumnarBatch = null
   private var currentBatch: ColumnarBatch = null
   private var closed: Boolean = false
+
+  private def getMemoryLimitPerTask(conf: SparkConf): Long = {
+    val numCores = numDriverOrExecutorCores(conf).toFloat
+    val maxMemory = CometSparkSessionExtensions.getCometMemoryOverhead(conf)
+    val coresPerTask = conf.get("spark.task.cpus", "1").toFloat
+    // example 16GB maxMemory * 16 cores with 4 cores per task results
+    // in memory_limit_per_task = 16 GB * 4 / 16 = 16 GB / 4 = 4GB
+    val limit = (maxMemory.toFloat * coresPerTask / numCores).toLong
+    logInfo(
+      s"Calculated per-task memory limit of $limit ($maxMemory * $coresPerTask / $numCores)")
+    limit
+  }
+
+  private def numDriverOrExecutorCores(conf: SparkConf): Int = {
+    def convertToInt(threads: String): Int = {
+      if (threads == "*") Runtime.getRuntime.availableProcessors() else threads.toInt
+    }
+    val LOCAL_N_REGEX = """local\[([0-9]+|\*)\]""".r
+    val LOCAL_N_FAILURES_REGEX = """local\[([0-9]+|\*)\s*,\s*([0-9]+)\]""".r
+    val master = conf.get("spark.master")
+    master match {
+      case "local" => 1
+      case LOCAL_N_REGEX(threads) => convertToInt(threads)
+      case LOCAL_N_FAILURES_REGEX(threads, _) => convertToInt(threads)
+      case _ => conf.get("spark.executor.cores", "1").toInt
+    }
+  }
 
   def getNextBatch(): Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
@@ -101,6 +133,14 @@ class CometExecIterator(
 
     if (nextBatch.isDefined) {
       return true
+    }
+
+    // Close previous batch if any.
+    // This is to guarantee safety at the native side before we overwrite the buffer memory
+    // shared across batches in the native side.
+    if (prevBatch != null) {
+      prevBatch.close()
+      prevBatch = null
     }
 
     nextBatch = getNextBatch()
@@ -125,6 +165,7 @@ class CometExecIterator(
     }
 
     currentBatch = nextBatch.get
+    prevBatch = currentBatch
     nextBatch = None
     currentBatch
   }

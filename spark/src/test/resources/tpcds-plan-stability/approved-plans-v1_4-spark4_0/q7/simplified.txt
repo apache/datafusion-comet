@@ -1,42 +1,43 @@
 TakeOrderedAndProject [i_item_id,agg1,agg2,agg3,agg4]
   WholeStageCodegen (2)
     HashAggregate [i_item_id,sum,count,sum,count,sum,count,sum,count] [avg(ss_quantity),avg(UnscaledValue(ss_list_price)),avg(UnscaledValue(ss_coupon_amt)),avg(UnscaledValue(ss_sales_price)),agg1,agg2,agg3,agg4,sum,count,sum,count,sum,count,sum,count]
-      InputAdapter
-        Exchange [i_item_id] #1
-          WholeStageCodegen (1)
-            HashAggregate [i_item_id,ss_quantity,ss_list_price,ss_coupon_amt,ss_sales_price] [sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count]
-              ColumnarToRow
-                InputAdapter
-                  CometProject [ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,i_item_id]
-                    CometBroadcastHashJoin [ss_promo_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,i_item_id,p_promo_sk]
-                      CometProject [ss_promo_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,i_item_id]
-                        CometBroadcastHashJoin [ss_item_sk,ss_promo_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,i_item_sk,i_item_id]
-                          CometProject [ss_item_sk,ss_promo_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt]
-                            CometBroadcastHashJoin [ss_item_sk,ss_promo_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,ss_sold_date_sk,d_date_sk]
-                              CometProject [ss_item_sk,ss_promo_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,ss_sold_date_sk]
-                                CometBroadcastHashJoin [ss_item_sk,ss_cdemo_sk,ss_promo_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,ss_sold_date_sk,cd_demo_sk]
-                                  CometFilter [ss_item_sk,ss_cdemo_sk,ss_promo_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,ss_sold_date_sk]
-                                    CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_cdemo_sk,ss_promo_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,ss_sold_date_sk]
-                                      SubqueryBroadcast [d_date_sk] #1
-                                        BroadcastExchange #2
-                                          WholeStageCodegen (1)
-                                            ColumnarToRow
-                                              InputAdapter
-                                                CometProject [d_date_sk]
-                                                  CometFilter [d_date_sk,d_year]
-                                                    CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
-                                  CometBroadcastExchange [cd_demo_sk] #3
-                                    CometProject [cd_demo_sk]
-                                      CometFilter [cd_demo_sk,cd_gender,cd_marital_status,cd_education_status]
-                                        CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_gender,cd_marital_status,cd_education_status]
-                              CometBroadcastExchange [d_date_sk] #4
-                                CometProject [d_date_sk]
-                                  CometFilter [d_date_sk,d_year]
-                                    CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
-                          CometBroadcastExchange [i_item_sk,i_item_id] #5
-                            CometFilter [i_item_sk,i_item_id]
-                              CometScan parquet spark_catalog.default.item [i_item_sk,i_item_id]
-                      CometBroadcastExchange [p_promo_sk] #6
-                        CometProject [p_promo_sk]
-                          CometFilter [p_promo_sk,p_channel_email,p_channel_event]
-                            CometScan parquet spark_catalog.default.promotion [p_promo_sk,p_channel_email,p_channel_event]
+      CometColumnarToRow
+        InputAdapter
+          CometColumnarExchange [i_item_id] #1
+            WholeStageCodegen (1)
+              HashAggregate [i_item_id,ss_quantity,ss_list_price,ss_coupon_amt,ss_sales_price] [sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count]
+                CometColumnarToRow
+                  InputAdapter
+                    CometProject [ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,i_item_id]
+                      CometBroadcastHashJoin [ss_promo_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,i_item_id,p_promo_sk]
+                        CometProject [ss_promo_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,i_item_id]
+                          CometBroadcastHashJoin [ss_item_sk,ss_promo_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,i_item_sk,i_item_id]
+                            CometProject [ss_item_sk,ss_promo_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt]
+                              CometBroadcastHashJoin [ss_item_sk,ss_promo_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,ss_sold_date_sk,d_date_sk]
+                                CometProject [ss_item_sk,ss_promo_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,ss_sold_date_sk]
+                                  CometBroadcastHashJoin [ss_item_sk,ss_cdemo_sk,ss_promo_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,ss_sold_date_sk,cd_demo_sk]
+                                    CometFilter [ss_item_sk,ss_cdemo_sk,ss_promo_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,ss_sold_date_sk]
+                                      CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_cdemo_sk,ss_promo_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,ss_sold_date_sk]
+                                        SubqueryBroadcast [d_date_sk] #1
+                                          BroadcastExchange #2
+                                            WholeStageCodegen (1)
+                                              CometColumnarToRow
+                                                InputAdapter
+                                                  CometProject [d_date_sk]
+                                                    CometFilter [d_date_sk,d_year]
+                                                      CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                    CometBroadcastExchange [cd_demo_sk] #3
+                                      CometProject [cd_demo_sk]
+                                        CometFilter [cd_demo_sk,cd_gender,cd_marital_status,cd_education_status]
+                                          CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_gender,cd_marital_status,cd_education_status]
+                                CometBroadcastExchange [d_date_sk] #4
+                                  CometProject [d_date_sk]
+                                    CometFilter [d_date_sk,d_year]
+                                      CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                            CometBroadcastExchange [i_item_sk,i_item_id] #5
+                              CometFilter [i_item_sk,i_item_id]
+                                CometScan parquet spark_catalog.default.item [i_item_sk,i_item_id]
+                        CometBroadcastExchange [p_promo_sk] #6
+                          CometProject [p_promo_sk]
+                            CometFilter [p_promo_sk,p_channel_email,p_channel_event]
+                              CometScan parquet spark_catalog.default.promotion [p_promo_sk,p_channel_email,p_channel_event]

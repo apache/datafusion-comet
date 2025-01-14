@@ -37,7 +37,7 @@ use arrow::{
 };
 use arrow_array::builder::StringBuilder;
 use arrow_array::{DictionaryArray, StringArray, StructArray};
-use arrow_schema::{DataType, Schema};
+use arrow_schema::{DataType, Field, Schema};
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use datafusion_common::{
     cast::as_generic_string_array, internal_err, Result as DataFusionResult, ScalarValue,
@@ -49,7 +49,6 @@ use num::{
     ToPrimitive,
 };
 use regex::Regex;
-use std::collections::HashMap;
 use std::str::FromStr;
 use std::{
     any::Any,
@@ -151,6 +150,240 @@ impl Hash for Cast {
         self.child.hash(state);
         self.data_type.hash(state);
         self.cast_options.hash(state);
+    }
+}
+
+/// Determine if Comet supports a cast, taking options such as EvalMode and Timezone into account.
+pub fn cast_supported(
+    from_type: &DataType,
+    to_type: &DataType,
+    options: &SparkCastOptions,
+) -> bool {
+    use DataType::*;
+
+    let from_type = if let Dictionary(_, dt) = from_type {
+        dt
+    } else {
+        from_type
+    };
+
+    let to_type = if let Dictionary(_, dt) = to_type {
+        dt
+    } else {
+        to_type
+    };
+
+    if from_type == to_type {
+        return true;
+    }
+
+    match (from_type, to_type) {
+        (Boolean, _) => can_cast_from_boolean(to_type, options),
+        (UInt8 | UInt16 | UInt32 | UInt64, Int8 | Int16 | Int32 | Int64)
+            if options.allow_cast_unsigned_ints =>
+        {
+            true
+        }
+        (Int8, _) => can_cast_from_byte(to_type, options),
+        (Int16, _) => can_cast_from_short(to_type, options),
+        (Int32, _) => can_cast_from_int(to_type, options),
+        (Int64, _) => can_cast_from_long(to_type, options),
+        (Float32, _) => can_cast_from_float(to_type, options),
+        (Float64, _) => can_cast_from_double(to_type, options),
+        (Decimal128(p, s), _) => can_cast_from_decimal(p, s, to_type, options),
+        (Timestamp(_, None), _) => can_cast_from_timestamp_ntz(to_type, options),
+        (Timestamp(_, Some(_)), _) => can_cast_from_timestamp(to_type, options),
+        (Utf8 | LargeUtf8, _) => can_cast_from_string(to_type, options),
+        (_, Utf8 | LargeUtf8) => can_cast_to_string(from_type, options),
+        (Struct(from_fields), Struct(to_fields)) => from_fields
+            .iter()
+            .zip(to_fields.iter())
+            .all(|(a, b)| cast_supported(a.data_type(), b.data_type(), options)),
+        _ => false,
+    }
+}
+
+fn can_cast_from_string(to_type: &DataType, options: &SparkCastOptions) -> bool {
+    use DataType::*;
+    match to_type {
+        Boolean | Int8 | Int16 | Int32 | Int64 | Binary => true,
+        Float32 | Float64 => {
+            // https://github.com/apache/datafusion-comet/issues/326
+            // Does not support inputs ending with 'd' or 'f'. Does not support 'inf'.
+            // Does not support ANSI mode.
+            options.allow_incompat
+        }
+        Decimal128(_, _) => {
+            // https://github.com/apache/datafusion-comet/issues/325
+            // Does not support inputs ending with 'd' or 'f'. Does not support 'inf'.
+            // Does not support ANSI mode. Returns 0.0 instead of null if input contains no digits
+
+            options.allow_incompat
+        }
+        Date32 | Date64 => {
+            // https://github.com/apache/datafusion-comet/issues/327
+            // Only supports years between 262143 BC and 262142 AD
+            options.allow_incompat
+        }
+        Timestamp(_, _) if options.eval_mode == EvalMode::Ansi => {
+            // ANSI mode not supported
+            false
+        }
+        Timestamp(_, Some(tz)) if tz.as_ref() != "UTC" => {
+            // Cast will use UTC instead of $timeZoneId
+            options.allow_incompat
+        }
+        Timestamp(_, _) => {
+            // https://github.com/apache/datafusion-comet/issues/328
+            // Not all valid formats are supported
+            options.allow_incompat
+        }
+        _ => false,
+    }
+}
+
+fn can_cast_to_string(from_type: &DataType, options: &SparkCastOptions) -> bool {
+    use DataType::*;
+    match from_type {
+        Boolean | Int8 | Int16 | Int32 | Int64 | Date32 | Date64 | Timestamp(_, _) => true,
+        Float32 | Float64 => {
+            // There can be differences in precision.
+            // For example, the input \"1.4E-45\" will produce 1.0E-45 " +
+            // instead of 1.4E-45"))
+            true
+        }
+        Decimal128(_, _) => {
+            // https://github.com/apache/datafusion-comet/issues/1068
+            // There can be formatting differences in some case due to Spark using
+            // scientific notation where Comet does not
+            true
+        }
+        Binary => {
+            // https://github.com/apache/datafusion-comet/issues/377
+            // Only works for binary data representing valid UTF-8 strings
+            options.allow_incompat
+        }
+        Struct(fields) => fields
+            .iter()
+            .all(|f| can_cast_to_string(f.data_type(), options)),
+        _ => false,
+    }
+}
+
+fn can_cast_from_timestamp_ntz(to_type: &DataType, options: &SparkCastOptions) -> bool {
+    use DataType::*;
+    match to_type {
+        Timestamp(_, _) | Date32 | Date64 | Utf8 => {
+            // incompatible
+            options.allow_incompat
+        }
+        _ => {
+            // unsupported
+            false
+        }
+    }
+}
+
+fn can_cast_from_timestamp(to_type: &DataType, _options: &SparkCastOptions) -> bool {
+    use DataType::*;
+    match to_type {
+        Boolean | Int8 | Int16 => {
+            // https://github.com/apache/datafusion-comet/issues/352
+            // this seems like an edge case that isn't important for us to support
+            false
+        }
+        Int64 => {
+            // https://github.com/apache/datafusion-comet/issues/352
+            true
+        }
+        Date32 | Date64 | Utf8 | Decimal128(_, _) => true,
+        _ => {
+            // unsupported
+            false
+        }
+    }
+}
+
+fn can_cast_from_boolean(to_type: &DataType, _: &SparkCastOptions) -> bool {
+    use DataType::*;
+    matches!(to_type, Int8 | Int16 | Int32 | Int64 | Float32 | Float64)
+}
+
+fn can_cast_from_byte(to_type: &DataType, _: &SparkCastOptions) -> bool {
+    use DataType::*;
+    matches!(
+        to_type,
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Decimal128(_, _)
+    )
+}
+
+fn can_cast_from_short(to_type: &DataType, _: &SparkCastOptions) -> bool {
+    use DataType::*;
+    matches!(
+        to_type,
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Decimal128(_, _)
+    )
+}
+
+fn can_cast_from_int(to_type: &DataType, options: &SparkCastOptions) -> bool {
+    use DataType::*;
+    match to_type {
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Utf8 => true,
+        Decimal128(_, _) => {
+            // incompatible: no overflow check
+            options.allow_incompat
+        }
+        _ => false,
+    }
+}
+
+fn can_cast_from_long(to_type: &DataType, options: &SparkCastOptions) -> bool {
+    use DataType::*;
+    match to_type {
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 => true,
+        Decimal128(_, _) => {
+            // incompatible: no overflow check
+            options.allow_incompat
+        }
+        _ => false,
+    }
+}
+
+fn can_cast_from_float(to_type: &DataType, _: &SparkCastOptions) -> bool {
+    use DataType::*;
+    matches!(
+        to_type,
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float64 | Decimal128(_, _)
+    )
+}
+
+fn can_cast_from_double(to_type: &DataType, _: &SparkCastOptions) -> bool {
+    use DataType::*;
+    matches!(
+        to_type,
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Decimal128(_, _)
+    )
+}
+
+fn can_cast_from_decimal(
+    p1: &u8,
+    _s1: &i8,
+    to_type: &DataType,
+    options: &SparkCastOptions,
+) -> bool {
+    use DataType::*;
+    match to_type {
+        Int8 | Int16 | Int32 | Int64 | Float32 | Float64 => true,
+        Decimal128(p2, _) => {
+            if p2 < p1 {
+                // https://github.com/apache/datafusion/issues/13492
+                // Incompatible(Some("Casting to smaller precision is not supported"))
+                options.allow_incompat
+            } else {
+                true
+            }
+        }
+        _ => false,
     }
 }
 

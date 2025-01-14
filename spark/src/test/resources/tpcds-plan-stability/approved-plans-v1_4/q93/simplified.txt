@@ -1,5 +1,5 @@
 WholeStageCodegen (1)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [ss_customer_sk,sumsales]
         CometHashAggregate [ss_customer_sk,sumsales,sum,isEmpty,sum(act_sales)]
