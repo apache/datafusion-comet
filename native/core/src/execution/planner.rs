@@ -18,7 +18,7 @@
 //! Converts Spark physical plan to DataFusion physical plan
 
 use super::expressions::EvalMode;
-use crate::execution::operators::{CopyMode, FilterExec as CometFilterExec};
+use crate::execution::operators::CopyMode;
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -70,13 +70,13 @@ use datafusion_functions_nested::concat::ArrayAppend;
 use datafusion_functions_nested::remove::array_remove_all_udf;
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
+use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
 use datafusion::datasource::physical_plan::FileScanConfig;
-use crate::execution::shuffle::CompressionCodec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion_comet_proto::{
     spark_expression::{
@@ -2765,7 +2765,7 @@ mod tests {
         let op = create_filter(op_scan, 0);
         let planner = PhysicalPlanner::default();
 
-        let (mut _scans, filter_exec) = planner.create_plan(&op, &mut vec![]).unwrap();
+        let (mut _scans, filter_exec) = planner.create_plan(&op, &mut vec![], 1).unwrap();
 
         assert_eq!("FilterExec", filter_exec.native_plan.name());
         assert_eq!(1, filter_exec.children.len());
@@ -2789,7 +2789,7 @@ mod tests {
 
         let planner = PhysicalPlanner::default();
 
-        let (_scans, hash_join_exec) = planner.create_plan(&op_join, &mut vec![]).unwrap();
+        let (_scans, hash_join_exec) = planner.create_plan(&op_join, &mut vec![], 1).unwrap();
 
         assert_eq!("HashJoinExec", hash_join_exec.native_plan.name());
         assert_eq!(2, hash_join_exec.children.len());

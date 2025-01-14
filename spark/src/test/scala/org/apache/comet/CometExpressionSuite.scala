@@ -2435,52 +2435,51 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-ignore("read map[int, int] from parquet") {
-withTempPath { dir =>
+  ignore("read map[int, int] from parquet") {
+    withTempPath { dir =>
 // create input file with Comet disabled
-withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-val df = spark
-.range(5)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(5)
 // Spark does not allow null as a key but does allow null as a
 // value, and the entire map be null
-.select(
-when(col("id") > 1, map(col("id"), when(col("id") > 2, col("id")))).alias("map1"))
-df.write.parquet(dir.toString())
-}
+          .select(
+            when(col("id") > 1, map(col("id"), when(col("id") > 2, col("id")))).alias("map1"))
+        df.write.parquet(dir.toString())
+      }
 
-Seq("", "parquet").foreach { v1List =>
-withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
-val df = spark.read.parquet(dir.toString())
-checkSparkAnswerAndOperator(df.select("map1"))
-checkSparkAnswerAndOperator(df.select(map_keys(col("map1"))))
-checkSparkAnswerAndOperator(df.select(map_values(col("map1"))))
-}
-}
-}
-}
+      Seq("", "parquet").foreach { v1List =>
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
+          val df = spark.read.parquet(dir.toString())
+          checkSparkAnswerAndOperator(df.select("map1"))
+          checkSparkAnswerAndOperator(df.select(map_keys(col("map1"))))
+          checkSparkAnswerAndOperator(df.select(map_values(col("map1"))))
+        }
+      }
+    }
+  }
 
-ignore("read array[int] from parquet") {
-withTempPath { dir =>
+  ignore("read array[int] from parquet") {
+    withTempPath { dir =>
 // create input file with Comet disabled
-withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-val df = spark
-.range(5)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(5)
 // Spark does not allow null as a key but does allow null as a
 // value, and the entire map be null
-.select(when(col("id") > 1, sequence(lit(0), col("id") * 2)).alias("array1"))
-df.write.parquet(dir.toString())
-}
+          .select(when(col("id") > 1, sequence(lit(0), col("id") * 2)).alias("array1"))
+        df.write.parquet(dir.toString())
+      }
 
-Seq("", "parquet").foreach { v1List =>
-withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
-val df = spark.read.parquet(dir.toString())
-checkSparkAnswerAndOperator(df.select("array1"))
-checkSparkAnswerAndOperator(df.select(element_at(col("array1"), lit(1))))
-}
-}
-}
-}
-
+      Seq("", "parquet").foreach { v1List =>
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
+          val df = spark.read.parquet(dir.toString())
+          checkSparkAnswerAndOperator(df.select("array1"))
+          checkSparkAnswerAndOperator(df.select(element_at(col("array1"), lit(1))))
+        }
+      }
+    }
+  }
 
   test("CreateArray") {
     Seq(true, false).foreach { dictionaryEnabled =>

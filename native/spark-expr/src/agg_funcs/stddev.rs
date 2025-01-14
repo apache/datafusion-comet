@@ -17,11 +17,7 @@
 
 use std::{any::Any, sync::Arc};
 
-<<<<<<<< HEAD:native/spark-expr/src/stddev.rs
-use crate::variance::VarianceAccumulator;
-========
 use crate::agg_funcs::variance::VarianceAccumulator;
->>>>>>>> main:native/spark-expr/src/agg_funcs/stddev.rs
 use arrow::{
     array::ArrayRef,
     datatypes::{DataType, Field},

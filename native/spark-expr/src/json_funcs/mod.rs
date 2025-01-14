@@ -15,16 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-<<<<<<<< HEAD:native/core/src/execution/expressions/mod.rs
-//! Native DataFusion expressions
-
-pub mod bloom_filter_agg;
-pub mod bloom_filter_might_contain;
-pub mod subquery;
-
-pub use datafusion_comet_spark_expr::EvalMode;
-========
 mod to_json;
 
 pub use to_json::ToJson;
->>>>>>>> main:native/spark-expr/src/json_funcs/mod.rs

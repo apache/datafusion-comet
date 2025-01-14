@@ -37,7 +37,7 @@ use arrow::{
 };
 use arrow_array::builder::StringBuilder;
 use arrow_array::{DictionaryArray, StringArray, StructArray};
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{DataType, Schema};
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use datafusion_common::{
     cast::as_generic_string_array, internal_err, Result as DataFusionResult, ScalarValue,
@@ -49,6 +49,7 @@ use num::{
     ToPrimitive,
 };
 use regex::Regex;
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::{
     any::Any,

@@ -19,13 +19,8 @@ use arrow::compute::{and, filter, is_not_null};
 
 use std::{any::Any, sync::Arc};
 
-<<<<<<<< HEAD:native/spark-expr/src/correlation.rs
-use crate::covariance::CovarianceAccumulator;
-use crate::stddev::StddevAccumulator;
-========
 use crate::agg_funcs::covariance::CovarianceAccumulator;
 use crate::agg_funcs::stddev::StddevAccumulator;
->>>>>>>> main:native/spark-expr/src/agg_funcs/correlation.rs
 use arrow::{
     array::ArrayRef,
     datatypes::{DataType, Field},
