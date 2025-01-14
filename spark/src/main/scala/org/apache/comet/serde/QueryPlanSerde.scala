@@ -1795,7 +1795,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           optExprWithInfo(optExpr, expr, child)
 
         case InitCap(child) =>
-          if (CometConf.COMET_EXEC_EXPAND_ENABLED.get()) {
+          if (CometConf.COMET_EXEC_INITCAP_ENABLED.get()) {
             val castExpr = Cast(child, StringType)
             val childExpr = exprToProtoInternal(castExpr, inputs)
             val optExpr = scalarExprToProto("initcap", childExpr)
