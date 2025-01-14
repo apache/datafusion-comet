@@ -2553,7 +2553,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
         spark.read.parquet(path.toString).createOrReplaceTempView("t1")
         checkSparkAnswerAndOperator(
-          sql("SELECT array_intersect(array(_2, _3, _4), array(_9, _10)) from t1"))
+          sql("SELECT array_intersect(array(_2, _3, _4), array(_3, _4)) from t1"))
         checkSparkAnswerAndOperator(
           sql("SELECT array_intersect(array(_2 * -1), array(_9, _10)) from t1"))
         checkSparkAnswerAndOperator(sql("SELECT array_intersect(array(_18), array(_19)) from t1"))
