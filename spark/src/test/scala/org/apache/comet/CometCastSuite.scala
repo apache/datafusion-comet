@@ -839,7 +839,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast TimestampType to DecimalType(10,2) is unsupported") {
-    castFallbackTest(generateTimestamps(), DataTypes.createDecimalType(10, 2),
+    castFallbackTest(
+      generateTimestamps(),
+      DataTypes.createDecimalType(10, 2),
       "Unsupported cast from TimestampType to DecimalType(10,2)")
   }
 
