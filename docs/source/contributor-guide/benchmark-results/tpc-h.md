@@ -66,7 +66,7 @@ $SPARK_HOME/bin/spark-submit \
     --name spark \
     --benchmark tpch \
     --data /mnt/bigdata/tpch/sf100/ \
-    --queries /home/andy/git/apache/datafusion-benchmarks/tpch/queries \
+    --queries ../../tpch/queries \
     --output . \
     --iterations 5
 
@@ -102,7 +102,7 @@ $SPARK_HOME/bin/spark-submit \
     --name comet \
     --benchmark tpch \
     --data /mnt/bigdata/tpch/sf100/ \
-    --queries /home/andy/git/apache/datafusion-benchmarks/tpch/queries \
+    --queries ../../tpch/queries \
     --output . \
     --iterations 5
 ```
