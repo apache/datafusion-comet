@@ -46,6 +46,7 @@ Comet provides the following configuration settings.
 | spark.comet.exec.filter.enabled | Whether to enable filter by default. | true |
 | spark.comet.exec.globalLimit.enabled | Whether to enable globalLimit by default. | true |
 | spark.comet.exec.hashJoin.enabled | Whether to enable hashJoin by default. | true |
+| spark.comet.exec.initCap.enabled | Whether to enable initCap by default. | false |
 | spark.comet.exec.localLimit.enabled | Whether to enable localLimit by default. | true |
 | spark.comet.exec.memoryPool | The type of memory pool to be used for Comet native execution. Available memory pool types are 'greedy', 'fair_spill', 'greedy_task_shared', 'fair_spill_task_shared', 'greedy_global' and 'fair_spill_global', By default, this config is 'greedy_task_shared'. | greedy_task_shared |
 | spark.comet.exec.project.enabled | Whether to enable project by default. | true |

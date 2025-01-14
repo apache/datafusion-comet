@@ -1364,8 +1364,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           sql(s"create table $table(id int, name varchar(20)) using parquet")
           sql(
             s"insert into $table values(1, 'james smith'), (2, 'michael rose'), " +
-              "(3, 'robert williams'), (4, 'rames rose'), (5, 'james smith')")
-          checkSparkAnswerAndOperator(s"SELECT initcap(name) FROM $table")
+              "(3, 'robert williams'), (4, 'rames rose'), (5, 'james smith'), " +
+              "(6, 'robert rose-smith'), (7, 'james ähtäri')")
+          if (CometConf.COMET_EXEC_INITCAP_ENABLED.get()) {
+            // TODO: remove this if clause https://github.com/apache/datafusion-comet/issues/1052
+            checkSparkAnswerAndOperator(s"SELECT initcap(name) FROM $table")
+          } else {
+            checkSparkAnswer(s"SELECT initcap(name) FROM $table")
+          }
         }
       }
     }
