@@ -371,6 +371,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[AggExpr] = {
+
+    if (aggExpr.isDistinct) {
+      // https://github.com/apache/datafusion-comet/issues/1260
+      withInfo(aggExpr, "distinct aggregates are not supported")
+      return None
+    }
+
     aggExpr.aggregateFunction match {
       case s @ Sum(child, _) if sumDataTypeSupported(s.dataType) && isLegacyMode(s) =>
         val childExpr = exprToProto(child, inputs, binding)
@@ -1788,10 +1795,19 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           optExprWithInfo(optExpr, expr, child)
 
         case InitCap(child) =>
-          val castExpr = Cast(child, StringType)
-          val childExpr = exprToProtoInternal(castExpr, inputs)
-          val optExpr = scalarExprToProto("initcap", childExpr)
-          optExprWithInfo(optExpr, expr, castExpr)
+          if (CometConf.COMET_EXEC_INITCAP_ENABLED.get()) {
+            val castExpr = Cast(child, StringType)
+            val childExpr = exprToProtoInternal(castExpr, inputs)
+            val optExpr = scalarExprToProto("initcap", childExpr)
+            optExprWithInfo(optExpr, expr, castExpr)
+          } else {
+            withInfo(
+              expr,
+              "Comet initCap is not compatible with Spark yet. " +
+                "See https://github.com/apache/datafusion-comet/issues/1052 ." +
+                s"Set ${CometConf.COMET_EXEC_INITCAP_ENABLED.key}=true to enable it anyway.")
+            None
+          }
 
         case Length(child) =>
           val castExpr = Cast(child, StringType)
@@ -2266,6 +2282,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             withInfo(expr, "unsupported arguments for GetArrayStructFields", child)
             None
           }
+        case expr if expr.prettyName == "array_remove" =>
+          createBinaryExpr(
+            expr.children(0),
+            expr.children(1),
+            inputs,
+            (builder, binaryExpr) => builder.setArrayRemove(binaryExpr))
         case expr if expr.prettyName == "array_contains" =>
           createBinaryExpr(
             expr.children(0),

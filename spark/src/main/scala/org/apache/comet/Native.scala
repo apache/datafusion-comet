@@ -139,7 +139,8 @@ class Native extends NativeBase {
       checksumAlgo: Int,
       currentChecksum: Long,
       compressionCodec: String,
-      compressionLevel: Int): Array[Long]
+      compressionLevel: Int,
+      enableFastEncoding: Boolean): Array[Long]
   // scalastyle:on
 
   /**
