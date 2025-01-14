@@ -1795,10 +1795,19 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           optExprWithInfo(optExpr, expr, child)
 
         case InitCap(child) =>
-          val castExpr = Cast(child, StringType)
-          val childExpr = exprToProtoInternal(castExpr, inputs)
-          val optExpr = scalarExprToProto("initcap", childExpr)
-          optExprWithInfo(optExpr, expr, castExpr)
+          if (CometConf.COMET_EXEC_INITCAP_ENABLED.get()) {
+            val castExpr = Cast(child, StringType)
+            val childExpr = exprToProtoInternal(castExpr, inputs)
+            val optExpr = scalarExprToProto("initcap", childExpr)
+            optExprWithInfo(optExpr, expr, castExpr)
+          } else {
+            withInfo(
+              expr,
+              "Comet initCap is not compatible with Spark yet. " +
+                "See https://github.com/apache/datafusion-comet/issues/1052 ." +
+                s"Set ${CometConf.COMET_EXEC_INITCAP_ENABLED.key}=true to enable it anyway.")
+            None
+          }
 
         case Length(child) =>
           val castExpr = Cast(child, StringType)
