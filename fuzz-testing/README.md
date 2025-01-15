@@ -59,8 +59,8 @@ Set appropriate values for `SPARK_HOME`, `SPARK_MASTER`, and `COMET_JAR` environ
 $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
     --class org.apache.comet.fuzz.Main \
-    target/comet-fuzz-spark3.4_2.12-0.5.0-SNAPSHOT-jar-with-dependencies.jar \
-    data --num-files=2 --num-rows=200 --num-columns=100
+    target/comet-fuzz-spark3.4_2.12-0.6.0-SNAPSHOT-jar-with-dependencies.jar \
+    data --num-files=2 --num-rows=200 --num-columns=100 --exclude-negative-zero
 ```
 
 There is an optional `--exclude-negative-zero` flag for excluding `-0.0` from the generated data, which is 
@@ -75,7 +75,7 @@ Generate random queries that are based on the available test files.
 $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
     --class org.apache.comet.fuzz.Main \
-    target/comet-fuzz-spark3.4_2.12-0.5.0-SNAPSHOT-jar-with-dependencies.jar \
+    target/comet-fuzz-spark3.4_2.12-0.6.0-SNAPSHOT-jar-with-dependencies.jar \
     queries --num-files=2 --num-queries=500
 ```
 
@@ -84,12 +84,12 @@ Note that the output filename is currently hard-coded as `queries.sql`
 ### Execute Queries
 
 ```shell
+export COMET_JAR=`pwd`/../spark/target/comet-spark-spark3.4_2.12-0.6.0-SNAPSHOT.jar
 $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.comet.enabled=true \
     --conf spark.comet.exec.enabled=true \
-    --conf spark.comet.exec.all.enabled=true \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.comet.exec.shuffle.enabled=true \
     --conf spark.comet.exec.shuffle.mode=auto \
@@ -97,7 +97,7 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.driver.extraClassPath=$COMET_JAR \
     --conf spark.executor.extraClassPath=$COMET_JAR \
     --class org.apache.comet.fuzz.Main \
-    target/comet-fuzz-spark3.4_2.12-0.5.0-SNAPSHOT-jar-with-dependencies.jar \
+    target/comet-fuzz-spark3.4_2.12-0.6.0-SNAPSHOT-jar-with-dependencies.jar \
     run --num-files=2 --filename=queries.sql
 ```
 

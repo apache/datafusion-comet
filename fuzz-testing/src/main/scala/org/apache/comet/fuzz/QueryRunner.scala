@@ -21,6 +21,7 @@ package org.apache.comet.fuzz
 
 import java.io.{BufferedWriter, FileWriter, PrintWriter, StringWriter}
 
+import scala.collection.mutable
 import scala.io.Source
 
 import org.apache.spark.sql.{Row, SparkSession}
@@ -77,16 +78,7 @@ object QueryRunner {
                   val r = cometRows(i)
                   assert(l.length == r.length)
                   for (j <- 0 until l.length) {
-                    val same = (l(j), r(j)) match {
-                      case (a: Float, b: Float) if a.isInfinity => b.isInfinity
-                      case (a: Float, b: Float) if a.isNaN => b.isNaN
-                      case (a: Float, b: Float) => (a - b).abs <= 0.000001f
-                      case (a: Double, b: Double) if a.isInfinity => b.isInfinity
-                      case (a: Double, b: Double) if a.isNaN => b.isNaN
-                      case (a: Double, b: Double) => (a - b).abs <= 0.000001
-                      case (a: Array[Byte], b: Array[Byte]) => a.sameElements(b)
-                      case (a, b) => a == b
-                    }
+                    val same = sameValue(l(j), r(j))
                     if (!same) {
                       showSQL(w, sql)
                       showPlans(w, sparkPlan, cometPlan)
@@ -138,11 +130,27 @@ object QueryRunner {
     }
   }
 
+  private def sameValue(a: Any, b: Any): Boolean = {
+    (a, b) match {
+      case (a: Float, b: Float) if a.isInfinity => b.isInfinity
+      case (a: Float, b: Float) if a.isNaN => b.isNaN
+      case (a: Float, b: Float) => (a - b).abs <= 0.000001f
+      case (a: Double, b: Double) if a.isInfinity => b.isInfinity
+      case (a: Double, b: Double) if a.isNaN => b.isNaN
+      case (a: Double, b: Double) => (a - b).abs <= 0.000001
+      case (a: Array[Byte], b: Array[Byte]) => a.sameElements(b)
+      case (a: Array[_], b: Array[_]) =>
+        a.length == b.length && a.zip(b).forall(x => sameValue(x._1, x._2))
+      case (a, b) => a == b
+    }
+  }
+
   private def formatRow(row: Row): String = {
     row.toSeq
       .map {
         case null => "NULL"
-        case v: Array[Byte] => v.mkString
+        case s: mutable.WrappedArray[_] => s.mkString
+        case v: Array[_] => v.mkString
         case other => other.toString
       }
       .mkString(",")

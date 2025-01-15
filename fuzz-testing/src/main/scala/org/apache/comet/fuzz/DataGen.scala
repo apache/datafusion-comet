@@ -23,10 +23,11 @@ import java.math.{BigDecimal, RoundingMode}
 import java.nio.charset.Charset
 import java.sql.Timestamp
 
+import scala.collection.mutable.ListBuffer
 import scala.util.Random
 
 import org.apache.spark.sql.{Row, SaveMode, SparkSession}
-import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, StructField, StructType}
 
 object DataGen {
 
@@ -81,6 +82,17 @@ object DataGen {
       numRows: Int,
       generateNegativeZero: Boolean): Seq[Any] = {
     dataType match {
+      case ArrayType(elementType, _) =>
+        val values = generateColumn(r, elementType, numRows, generateNegativeZero)
+        val list = ListBuffer[Any]()
+        for (i <- 0 until numRows) {
+          if (i % 10 == 0) {
+            list += null
+          } else {
+            list += Range(0, r.nextInt(5)).map(j => values((i + j) % values.length)).toArray
+          }
+        }
+        list
       case DataTypes.BooleanType =>
         generateColumn(r, DataTypes.LongType, numRows, generateNegativeZero)
           .map(_.asInstanceOf[Long].toShort)
