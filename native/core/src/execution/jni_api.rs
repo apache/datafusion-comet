@@ -26,7 +26,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_execution::memory_pool::{
-    FairSpillPool, GreedyMemoryPool, MemoryPool, TrackConsumersPool,
+    FairSpillPool, GreedyMemoryPool, MemoryPool, TrackConsumersPool, UnboundedMemoryPool,
 };
 use futures::poll;
 use jni::{
@@ -118,6 +118,7 @@ enum MemoryPoolType {
     FairSpillTaskShared,
     GreedyGlobal,
     FairSpillGlobal,
+    Unbounded,
 }
 
 struct MemoryPoolConfig {
@@ -319,6 +320,7 @@ fn parse_memory_pool_config(
             "greedy_global" => MemoryPoolConfig::new(MemoryPoolType::GreedyGlobal, pool_size),
             "fair_spill" => MemoryPoolConfig::new(MemoryPoolType::FairSpill, pool_size_per_task),
             "greedy" => MemoryPoolConfig::new(MemoryPoolType::Greedy, pool_size_per_task),
+            "unbounded" => MemoryPoolConfig::new(MemoryPoolType::Unbounded, 0),
             _ => {
                 return Err(CometError::Config(format!(
                     "Unsupported memory pool type: {}",
@@ -397,6 +399,7 @@ fn create_memory_pool(
             per_task_memory_pool.num_plans += 1;
             Arc::clone(&per_task_memory_pool.memory_pool)
         }
+        MemoryPoolType::Unbounded => Arc::new(UnboundedMemoryPool::default()),
     }
 }
 
