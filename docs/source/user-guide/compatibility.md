@@ -133,6 +133,7 @@ The following cast operations are generally compatible with Spark except for the
 | string | date | Only supports years between 262143 BC and 262142 AD |
 | date | string |  |
 | timestamp | long |  |
+| timestamp | decimal |  |
 | timestamp | string |  |
 | timestamp | date |  |
 
