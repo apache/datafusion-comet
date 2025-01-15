@@ -496,7 +496,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 .as_ref()
                 .unwrap()
                 .native_plan
-                .execute(0, task_ctx)?;
+                .execute(partition as usize, task_ctx)?;
             exec_context.stream = Some(stream);
         } else {
             // Pull input batches
