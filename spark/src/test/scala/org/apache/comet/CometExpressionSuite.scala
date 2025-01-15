@@ -2544,6 +2544,38 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "SELECT array_remove(case when _2 = _3 THEN array(_2, _3,_4) ELSE null END, _3) from t1"))
       }
     }
+  }
+
+  test("array_remove - ints") {
+    registerIntArray()
+    withSQLConf(
+      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+      CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key -> "LocalTableScan") {
+      for (query <- Seq(
+          "select a, array_remove(a, 2) from int_array",
+          "select a, array_remove(a, -2) from int_array",
+          "select a, array_remove(a, null) from int_array")) {
+        checkSparkAnswerAndOperator(sql(query), classOf[LocalTableScanExec])
+      }
+    }
+  }
+
+  test("array_remove - strings") {
+    registerStringArray()
+    withSQLConf(
+      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+      CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key -> "LocalTableScan") {
+      for (query <- Seq(
+        "select a, array_remove(a, 'two') from string_array",
+        "select a, array_remove(a, '') from string_array",
+        "select a, array_remove(a, 'four') from string_array",
+        "select a, array_remove(a, null) from string_array")) {
+        checkSparkAnswerAndOperator(sql(query), classOf[LocalTableScanExec])
+      }
+    }
+  }
+
+  private def registerIntArray(): Unit = {
     val values: Seq[Option[Array[Option[Int]]]] = Seq(
       Some(Array(Some(1), Some(2), Some(3))),
       Some(Array(Some(1), Some(2), Some(2))),
@@ -2551,16 +2583,18 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       None,
       Some(Array()),
       Some(Array(None, None)))
-    values.toDF("a").createTempView("int_array")
-    withSQLConf(
-      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
-      CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key -> "LocalTableScan") {
-      checkSparkAnswerAndOperator(
-        sql("select a, array_remove(a, 2) from int_array"),
-        classOf[LocalTableScanExec])
-      checkSparkAnswerAndOperator(
-        sql("select a, array_remove(a, null) from int_array"),
-        classOf[LocalTableScanExec])
-    }
+    values.toDF("a").createOrReplaceTempView("int_array")
   }
+
+  private def registerStringArray(): Unit = {
+    val values: Seq[Option[Array[Option[String]]]] = Seq(
+      Some(Array(Some("one"), Some("two"), Some("three"))),
+      Some(Array(Some("one"), Some("two"), Some("two"))),
+      Some(Array(None, Some("two"), Some("two"))),
+      None,
+      Some(Array()),
+      Some(Array(None, None)))
+    values.toDF("a").createOrReplaceTempView("string_array")
+  }
+
 }
