@@ -2300,6 +2300,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             expr.children(1),
             inputs,
             (builder, binaryExpr) => builder.setArrayAppend(binaryExpr))
+        case expr if expr.prettyName == "array_repeat" =>
+          createBinaryExpr(
+            expr.children(0),
+            expr.children(1),
+            inputs,
+            (builder, binaryExpr) => builder.setArrayRepeat(binaryExpr))
         case _ =>
           withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
           None
