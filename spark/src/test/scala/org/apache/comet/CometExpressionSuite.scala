@@ -2566,10 +2566,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
       CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key -> "LocalTableScan") {
       for (query <- Seq(
-        "select a, array_remove(a, 'two') from string_array",
-        "select a, array_remove(a, '') from string_array",
-        "select a, array_remove(a, 'four') from string_array",
-        "select a, array_remove(a, null) from string_array")) {
+          "select a, array_remove(a, 'two') from string_array",
+          "select a, array_remove(a, '') from string_array",
+          "select a, array_remove(a, 'four') from string_array",
+          "select a, array_remove(a, null) from string_array")) {
         checkSparkAnswerAndOperator(sql(query), classOf[LocalTableScanExec])
       }
     }
