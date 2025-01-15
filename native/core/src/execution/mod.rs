@@ -29,7 +29,9 @@ pub(crate) mod util;
 pub use datafusion_comet_spark_expr::timezone;
 pub(crate) mod utils;
 
+mod fair_memory_pool;
 mod memory_pool;
+
 pub use memory_pool::*;
 
 #[cfg(test)]
