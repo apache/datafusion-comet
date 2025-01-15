@@ -24,7 +24,7 @@ import org.apache.spark.sql.types.DataTypes
 
 object Meta {
 
-  val dataTypes: Seq[(DataType, Double)] = Seq(
+  val baseTypes: Seq[(DataType, Double)] = Seq(
     (DataTypes.BooleanType, 0.1),
     (DataTypes.ByteType, 0.2),
     (DataTypes.ShortType, 0.2),
@@ -39,6 +39,11 @@ object Meta {
     // (DataTypes.TimestampNTZType, 0.2),
     (DataTypes.StringType, 0.2),
     (DataTypes.BinaryType, 0.1))
+
+  val dataTypes: Seq[(DataType, Double)] = baseTypes ++
+    baseTypes
+      .filterNot(_._1 == DataTypes.BinaryType)
+      .map(dt => (DataTypes.createArrayType(dt._1, true), 0.2))
 
   val stringScalarFunc: Seq[Function] = Seq(
     Function("substring", 3),
@@ -100,8 +105,17 @@ object Meta {
     Function("bool_or", 1),
     Function("bitwise_not", 1))
 
-  val miscScalarFunc: Seq[Function] =
-    Seq(Function("isnan", 1), Function("isnull", 1), Function("isnotnull", 1))
+  val miscScalarFunc: Seq[Function] = Seq(
+    Function("array", 3), // is actually var arg
+    Function("isnan", 1),
+    Function("isnull", 1),
+    Function("isnotnull", 1))
+
+  val arrayScalarFunc: Seq[Function] = Seq(
+    Function("array_insert", 3),
+    Function("array_append", 2),
+    Function("array_contains", 2),
+    Function("array_remove", 2))
 
   val scalarFunc: Seq[Function] = stringScalarFunc ++ dateScalarFunc ++
     mathScalarFunc ++ miscScalarFunc

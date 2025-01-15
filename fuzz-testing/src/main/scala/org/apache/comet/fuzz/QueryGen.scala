@@ -42,7 +42,7 @@ object QueryGen {
     val uniqueQueries = mutable.HashSet[String]()
 
     for (_ <- 0 until numQueries) {
-      val sql = r.nextInt().abs % 8 match {
+      val sql = r.nextInt().abs % 9 match {
         case 0 => generateJoin(r, spark, numFiles)
         case 1 => generateAggregate(r, spark, numFiles)
         case 2 => generateScalar(r, spark, numFiles)
@@ -50,6 +50,7 @@ object QueryGen {
         case 4 => generateUnaryArithmetic(r, spark, numFiles)
         case 5 => generateBinaryArithmetic(r, spark, numFiles)
         case 6 => generateBinaryComparison(r, spark, numFiles)
+        case 7 => generateArray(r, spark, numFiles)
         case _ => generateConditional(r, spark, numFiles)
       }
       if (!uniqueQueries.contains(sql)) {
@@ -119,6 +120,20 @@ object QueryGen {
 
     // Example SELECT a, b, a+b FROM test0
     s"SELECT $a, $b, $a $op $b " +
+      s"FROM $tableName " +
+      s"ORDER BY $a, $b;"
+  }
+
+  private def generateArray(r: Random, spark: SparkSession, numFiles: Int): String = {
+    val tableName = s"test${r.nextInt(numFiles)}"
+    val table = spark.table(tableName)
+
+    val op = Utils.randomChoice(Meta.arrayScalarFunc, r)
+    val a = Utils.randomChoice(table.columns, r)
+    val b = Utils.randomChoice(table.columns, r)
+
+    // Example SELECT a, b, c, array_remove(a, b) FROM test0
+    s"SELECT $a, $b, $op($a, $b) " +
       s"FROM $tableName " +
       s"ORDER BY $a, $b;"
   }
