@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (34)
+* CometColumnarToRow (34)
 +- CometTakeOrderedAndProject (33)
    +- CometHashAggregate (32)
       +- CometExchange (31)
@@ -190,6 +190,6 @@ Functions [2]: [count(1), sum(UnscaledValue(ext_sales_price#12))]
 Input [7]: [channel#10, col_name#11, d_year#8, d_qoy#9, i_category#6, sales_cnt#39, sales_amt#40]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[channel#10 ASC NULLS FIRST,col_name#11 ASC NULLS FIRST,d_year#8 ASC NULLS FIRST,d_qoy#9 ASC NULLS FIRST,i_category#6 ASC NULLS FIRST], output=[channel#10,col_name#11,d_year#8,d_qoy#9,i_category#6,sales_cnt#39,sales_amt#40]), [channel#10, col_name#11, d_year#8, d_qoy#9, i_category#6, sales_cnt#39, sales_amt#40], 100, [channel#10 ASC NULLS FIRST, col_name#11 ASC NULLS FIRST, d_year#8 ASC NULLS FIRST, d_qoy#9 ASC NULLS FIRST, i_category#6 ASC NULLS FIRST], [channel#10, col_name#11, d_year#8, d_qoy#9, i_category#6, sales_cnt#39, sales_amt#40]
 
-(34) ColumnarToRow [codegen id : 1]
+(34) CometColumnarToRow [codegen id : 1]
 Input [7]: [channel#10, col_name#11, d_year#8, d_qoy#9, i_category#6, sales_cnt#39, sales_amt#40]
 

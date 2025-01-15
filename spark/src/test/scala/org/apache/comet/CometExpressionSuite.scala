@@ -28,8 +28,8 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
-import org.apache.spark.sql.comet.CometProjectExec
-import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, ProjectExec, WholeStageCodegenExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec}
+import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
@@ -749,7 +749,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val project = cometPlan
         .asInstanceOf[WholeStageCodegenExec]
         .child
-        .asInstanceOf[ColumnarToRowExec]
+        .asInstanceOf[CometColumnarToRowExec]
         .child
         .asInstanceOf[InputAdapter]
         .child
@@ -1364,8 +1364,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           sql(s"create table $table(id int, name varchar(20)) using parquet")
           sql(
             s"insert into $table values(1, 'james smith'), (2, 'michael rose'), " +
-              "(3, 'robert williams'), (4, 'rames rose'), (5, 'james smith')")
-          checkSparkAnswerAndOperator(s"SELECT initcap(name) FROM $table")
+              "(3, 'robert williams'), (4, 'rames rose'), (5, 'james smith'), " +
+              "(6, 'robert rose-smith'), (7, 'james ähtäri')")
+          if (CometConf.COMET_EXEC_INITCAP_ENABLED.get()) {
+            // TODO: remove this if clause https://github.com/apache/datafusion-comet/issues/1052
+            checkSparkAnswerAndOperator(s"SELECT initcap(name) FROM $table")
+          } else {
+            checkSparkAnswer(s"SELECT initcap(name) FROM $table")
+          }
         }
       }
     }
@@ -2284,52 +2290,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  ignore("read map[int, int] from parquet") {
-    withTempPath { dir =>
-      // create input file with Comet disabled
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val df = spark
-          .range(5)
-          // Spark does not allow null as a key but does allow null as a
-          // value, and the entire map be null
-          .select(
-            when(col("id") > 1, map(col("id"), when(col("id") > 2, col("id")))).alias("map1"))
-        df.write.parquet(dir.toString())
-      }
-
-      Seq("", "parquet").foreach { v1List =>
-        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
-          val df = spark.read.parquet(dir.toString())
-          checkSparkAnswerAndOperator(df.select("map1"))
-          checkSparkAnswerAndOperator(df.select(map_keys(col("map1"))))
-          checkSparkAnswerAndOperator(df.select(map_values(col("map1"))))
-        }
-      }
-    }
-  }
-
-  ignore("read array[int] from parquet") {
-    withTempPath { dir =>
-      // create input file with Comet disabled
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val df = spark
-          .range(5)
-          // Spark does not allow null as a key but does allow null as a
-          // value, and the entire map be null
-          .select(when(col("id") > 1, sequence(lit(0), col("id") * 2)).alias("array1"))
-        df.write.parquet(dir.toString())
-      }
-
-      Seq("", "parquet").foreach { v1List =>
-        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
-          val df = spark.read.parquet(dir.toString())
-          checkSparkAnswerAndOperator(df.select("array1"))
-          checkSparkAnswerAndOperator(df.select(element_at(col("array1"), lit(1))))
-        }
-      }
-    }
-  }
-
   test("get_struct_field with DataFusion ParquetExec - simple case") {
     withTempPath { dir =>
       // create input file with Comet disabled
@@ -2424,6 +2384,52 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
           val df = spark.read.parquet(dir.toString())
           checkSparkAnswerAndOperator(df.select("nested1"))
+        }
+      }
+    }
+  }
+
+  ignore("read map[int, int] from parquet") {
+    withTempPath { dir =>
+// create input file with Comet disabled
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(5)
+// Spark does not allow null as a key but does allow null as a
+// value, and the entire map be null
+          .select(
+            when(col("id") > 1, map(col("id"), when(col("id") > 2, col("id")))).alias("map1"))
+        df.write.parquet(dir.toString())
+      }
+
+      Seq("", "parquet").foreach { v1List =>
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
+          val df = spark.read.parquet(dir.toString())
+          checkSparkAnswerAndOperator(df.select("map1"))
+          checkSparkAnswerAndOperator(df.select(map_keys(col("map1"))))
+          checkSparkAnswerAndOperator(df.select(map_values(col("map1"))))
+        }
+      }
+    }
+  }
+
+  ignore("read array[int] from parquet") {
+    withTempPath { dir =>
+// create input file with Comet disabled
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(5)
+// Spark does not allow null as a key but does allow null as a
+// value, and the entire map be null
+          .select(when(col("id") > 1, sequence(lit(0), col("id") * 2)).alias("array1"))
+        df.write.parquet(dir.toString())
+      }
+
+      Seq("", "parquet").foreach { v1List =>
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
+          val df = spark.read.parquet(dir.toString())
+          checkSparkAnswerAndOperator(df.select("array1"))
+          checkSparkAnswerAndOperator(df.select(element_at(col("array1"), lit(1))))
         }
       }
     }
@@ -2622,6 +2628,34 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         .withColumn("idx", udf((_: Int) => 1).apply(col("_4")))
         .withColumn("arrUnsupportedArgs", expr("array_insert(arr, idx, 1)"))
       checkSparkAnswer(df.select("arrUnsupportedArgs"))
+    }
+  }
+
+  test("array_contains") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      makeParquetFileAllTypes(path, dictionaryEnabled = false, n = 10000)
+      spark.read.parquet(path.toString).createOrReplaceTempView("t1");
+      checkSparkAnswerAndOperator(
+        spark.sql("SELECT array_contains(array(_2, _3, _4), _2) FROM t1"))
+      checkSparkAnswerAndOperator(
+        spark.sql("SELECT array_contains((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
+    }
+  }
+
+  test("array_remove") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_remove(array(_2, _3,_4), _2) from t1 where _2 is null"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_remove(array(_2, _3,_4), _3) from t1 where _3 is not null"))
+        checkSparkAnswerAndOperator(sql(
+          "SELECT array_remove(case when _2 = _3 THEN array(_2, _3,_4) ELSE null END, _3) from t1"))
+      }
     }
   }
 }

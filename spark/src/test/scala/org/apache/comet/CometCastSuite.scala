@@ -838,8 +838,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateTimestamps(), DataTypes.DoubleType)
   }
 
-  test("cast TimestampType to DecimalType(10,2)") {
-    castTest(generateTimestamps(), DataTypes.TimestampType)
+  ignore("cast TimestampType to DecimalType(10,2)") {
+    // https://github.com/apache/datafusion-comet/issues/1280
+    // Native cast invoked for unsupported cast from Timestamp(Microsecond, Some("Etc/UTC")) to Decimal128(10, 2)
+    castTest(generateTimestamps(), DataTypes.createDecimalType(10, 2))
   }
 
   test("cast TimestampType to StringType") {

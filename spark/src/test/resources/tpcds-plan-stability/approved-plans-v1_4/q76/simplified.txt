@@ -1,5 +1,5 @@
 WholeStageCodegen (1)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [channel,col_name,d_year,d_qoy,i_category,sales_cnt,sales_amt]
         CometHashAggregate [channel,col_name,d_year,d_qoy,i_category,sales_cnt,sales_amt,count,sum,count(1),sum(UnscaledValue(ext_sales_price))]

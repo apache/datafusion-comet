@@ -1,68 +1,62 @@
 TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store_cumulative]
-  WholeStageCodegen (9)
+  WholeStageCodegen (6)
     Filter [web_cumulative,store_cumulative]
       InputAdapter
         Window [web_sales,item_sk,d_date,store_sales]
-          WholeStageCodegen (8)
-            Sort [item_sk,d_date]
+          WholeStageCodegen (5)
+            CometColumnarToRow
               InputAdapter
-                Exchange [item_sk] #1
-                  WholeStageCodegen (7)
-                    Project [item_sk,item_sk,d_date,d_date,cume_sales,cume_sales]
-                      SortMergeJoin [item_sk,d_date,item_sk,d_date]
-                        InputAdapter
-                          WholeStageCodegen (3)
-                            Sort [item_sk,d_date]
-                              InputAdapter
-                                Exchange [item_sk,d_date] #2
-                                  WholeStageCodegen (2)
-                                    Project [item_sk,d_date,cume_sales]
-                                      InputAdapter
-                                        Window [_w0,ws_item_sk,d_date]
-                                          WholeStageCodegen (1)
-                                            ColumnarToRow
-                                              InputAdapter
-                                                CometSort [item_sk,d_date,_w0,ws_item_sk]
-                                                  CometExchange [ws_item_sk] #3
-                                                    CometHashAggregate [item_sk,d_date,_w0,ws_item_sk,sum,sum(UnscaledValue(ws_sales_price))]
-                                                      CometExchange [ws_item_sk,d_date] #4
-                                                        CometHashAggregate [ws_item_sk,d_date,sum,ws_sales_price]
-                                                          CometProject [ws_item_sk,ws_sales_price,d_date]
-                                                            CometBroadcastHashJoin [ws_item_sk,ws_sales_price,ws_sold_date_sk,d_date_sk,d_date]
-                                                              CometFilter [ws_item_sk,ws_sales_price,ws_sold_date_sk]
-                                                                CometScan parquet spark_catalog.default.web_sales [ws_item_sk,ws_sales_price,ws_sold_date_sk]
-                                                                  SubqueryBroadcast [d_date_sk] #1
-                                                                    BroadcastExchange #5
-                                                                      WholeStageCodegen (1)
-                                                                        ColumnarToRow
-                                                                          InputAdapter
-                                                                            CometProject [d_date_sk,d_date]
-                                                                              CometFilter [d_date_sk,d_date,d_month_seq]
-                                                                                CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date,d_month_seq]
-                                                              CometBroadcastExchange [d_date_sk,d_date] #6
-                                                                CometProject [d_date_sk,d_date]
-                                                                  CometFilter [d_date_sk,d_date,d_month_seq]
-                                                                    CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date,d_month_seq]
-                        InputAdapter
-                          WholeStageCodegen (6)
-                            Sort [item_sk,d_date]
-                              InputAdapter
-                                Exchange [item_sk,d_date] #7
-                                  WholeStageCodegen (5)
-                                    Project [item_sk,d_date,cume_sales]
-                                      InputAdapter
-                                        Window [_w0,ss_item_sk,d_date]
-                                          WholeStageCodegen (4)
-                                            ColumnarToRow
-                                              InputAdapter
-                                                CometSort [item_sk,d_date,_w0,ss_item_sk]
-                                                  CometExchange [ss_item_sk] #8
-                                                    CometHashAggregate [item_sk,d_date,_w0,ss_item_sk,sum,sum(UnscaledValue(ss_sales_price))]
-                                                      CometExchange [ss_item_sk,d_date] #9
-                                                        CometHashAggregate [ss_item_sk,d_date,sum,ss_sales_price]
-                                                          CometProject [ss_item_sk,ss_sales_price,d_date]
-                                                            CometBroadcastHashJoin [ss_item_sk,ss_sales_price,ss_sold_date_sk,d_date_sk,d_date]
-                                                              CometFilter [ss_item_sk,ss_sales_price,ss_sold_date_sk]
-                                                                CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_sales_price,ss_sold_date_sk]
-                                                                  ReusedSubquery [d_date_sk] #1
-                                                              ReusedExchange [d_date_sk,d_date] #6
+                CometSort [item_sk,d_date,web_sales,store_sales]
+                  CometExchange [item_sk] #1
+                    CometProject [item_sk,item_sk,d_date,d_date,cume_sales,cume_sales] [item_sk,d_date,web_sales,store_sales]
+                      CometSortMergeJoin [item_sk,d_date,cume_sales,item_sk,d_date,cume_sales]
+                        CometSort [item_sk,d_date,cume_sales]
+                          CometColumnarExchange [item_sk,d_date] #2
+                            WholeStageCodegen (2)
+                              Project [item_sk,d_date,cume_sales]
+                                InputAdapter
+                                  Window [_w0,ws_item_sk,d_date]
+                                    WholeStageCodegen (1)
+                                      CometColumnarToRow
+                                        InputAdapter
+                                          CometSort [item_sk,d_date,_w0,ws_item_sk]
+                                            CometExchange [ws_item_sk] #3
+                                              CometHashAggregate [item_sk,d_date,_w0,ws_item_sk,sum,sum(UnscaledValue(ws_sales_price))]
+                                                CometExchange [ws_item_sk,d_date] #4
+                                                  CometHashAggregate [ws_item_sk,d_date,sum,ws_sales_price]
+                                                    CometProject [ws_item_sk,ws_sales_price,d_date]
+                                                      CometBroadcastHashJoin [ws_item_sk,ws_sales_price,ws_sold_date_sk,d_date_sk,d_date]
+                                                        CometFilter [ws_item_sk,ws_sales_price,ws_sold_date_sk]
+                                                          CometScan parquet spark_catalog.default.web_sales [ws_item_sk,ws_sales_price,ws_sold_date_sk]
+                                                            SubqueryBroadcast [d_date_sk] #1
+                                                              BroadcastExchange #5
+                                                                WholeStageCodegen (1)
+                                                                  CometColumnarToRow
+                                                                    InputAdapter
+                                                                      CometProject [d_date_sk,d_date]
+                                                                        CometFilter [d_date_sk,d_date,d_month_seq]
+                                                                          CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date,d_month_seq]
+                                                        CometBroadcastExchange [d_date_sk,d_date] #6
+                                                          CometProject [d_date_sk,d_date]
+                                                            CometFilter [d_date_sk,d_date,d_month_seq]
+                                                              CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date,d_month_seq]
+                        CometSort [item_sk,d_date,cume_sales]
+                          CometColumnarExchange [item_sk,d_date] #7
+                            WholeStageCodegen (4)
+                              Project [item_sk,d_date,cume_sales]
+                                InputAdapter
+                                  Window [_w0,ss_item_sk,d_date]
+                                    WholeStageCodegen (3)
+                                      CometColumnarToRow
+                                        InputAdapter
+                                          CometSort [item_sk,d_date,_w0,ss_item_sk]
+                                            CometExchange [ss_item_sk] #8
+                                              CometHashAggregate [item_sk,d_date,_w0,ss_item_sk,sum,sum(UnscaledValue(ss_sales_price))]
+                                                CometExchange [ss_item_sk,d_date] #9
+                                                  CometHashAggregate [ss_item_sk,d_date,sum,ss_sales_price]
+                                                    CometProject [ss_item_sk,ss_sales_price,d_date]
+                                                      CometBroadcastHashJoin [ss_item_sk,ss_sales_price,ss_sold_date_sk,d_date_sk,d_date]
+                                                        CometFilter [ss_item_sk,ss_sales_price,ss_sold_date_sk]
+                                                          CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_sales_price,ss_sold_date_sk]
+                                                            ReusedSubquery [d_date_sk] #1
+                                                        ReusedExchange [d_date_sk,d_date] #6

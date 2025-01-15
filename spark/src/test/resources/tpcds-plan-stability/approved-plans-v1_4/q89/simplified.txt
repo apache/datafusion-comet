@@ -5,7 +5,7 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,s_store_name,i_category,i_cla
         InputAdapter
           Window [_w0,i_category,i_brand,s_store_name,s_company_name]
             WholeStageCodegen (1)
-              ColumnarToRow
+              CometColumnarToRow
                 InputAdapter
                   CometSort [i_category,i_class,i_brand,s_store_name,s_company_name,d_moy,sum_sales,_w0]
                     CometExchange [i_category,i_brand,s_store_name,s_company_name] #1
@@ -26,7 +26,7 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,s_store_name,i_category,i_cla
                                               SubqueryBroadcast [d_date_sk] #1
                                                 BroadcastExchange #4
                                                   WholeStageCodegen (1)
-                                                    ColumnarToRow
+                                                    CometColumnarToRow
                                                       InputAdapter
                                                         CometProject [d_date_sk,d_moy]
                                                           CometFilter [d_date_sk,d_year,d_moy]

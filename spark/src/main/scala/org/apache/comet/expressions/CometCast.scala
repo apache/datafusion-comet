@@ -204,7 +204,6 @@ object CometCast {
         Compatible()
       case DataTypes.StringType => Compatible()
       case DataTypes.DateType => Compatible()
-      case _: DecimalType => Compatible()
       case _ => Unsupported
     }
   }

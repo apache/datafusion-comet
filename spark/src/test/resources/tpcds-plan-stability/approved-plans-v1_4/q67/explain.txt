@@ -2,7 +2,7 @@
 TakeOrderedAndProject (28)
 +- * Filter (27)
    +- Window (26)
-      +- * ColumnarToRow (25)
+      +- * CometColumnarToRow (25)
          +- CometSort (24)
             +- CometExchange (23)
                +- CometHashAggregate (22)
@@ -143,7 +143,7 @@ Arguments: hashpartitioning(i_category#19, 5), ENSURE_REQUIREMENTS, CometNativeS
 Input [9]: [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, sumsales#30]
 Arguments: [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, sumsales#30], [i_category#19 ASC NULLS FIRST, sumsales#30 DESC NULLS LAST]
 
-(25) ColumnarToRow [codegen id : 1]
+(25) CometColumnarToRow [codegen id : 1]
 Input [9]: [i_category#19, i_class#20, i_brand#21, i_product_name#22, d_year#23, d_qoy#24, d_moy#25, s_store_id#26, sumsales#30]
 
 (26) Window
@@ -162,7 +162,7 @@ Arguments: 100, [i_category#19 ASC NULLS FIRST, i_class#20 ASC NULLS FIRST, i_br
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#5 IN dynamicpruning#6
 BroadcastExchange (33)
-+- * ColumnarToRow (32)
++- * CometColumnarToRow (32)
    +- CometProject (31)
       +- CometFilter (30)
          +- CometScan parquet spark_catalog.default.date_dim (29)
@@ -183,7 +183,7 @@ Condition : (((isnotnull(d_month_seq#8) AND (d_month_seq#8 >= 1200)) AND (d_mont
 Input [5]: [d_date_sk#7, d_month_seq#8, d_year#9, d_moy#10, d_qoy#11]
 Arguments: [d_date_sk#7, d_year#9, d_moy#10, d_qoy#11], [d_date_sk#7, d_year#9, d_moy#10, d_qoy#11]
 
-(32) ColumnarToRow [codegen id : 1]
+(32) CometColumnarToRow [codegen id : 1]
 Input [4]: [d_date_sk#7, d_year#9, d_moy#10, d_qoy#11]
 
 (33) BroadcastExchange

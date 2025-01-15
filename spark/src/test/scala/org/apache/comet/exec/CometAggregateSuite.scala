@@ -25,6 +25,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
@@ -37,6 +38,23 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
  */
 class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
+
+  test("stddev_pop should return NaN for some cases") {
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_EXPR_STDDEV_ENABLED.key -> "true") {
+      Seq(true, false).foreach { nullOnDivideByZero =>
+        withSQLConf("spark.sql.legacy.statisticalAggregate" -> nullOnDivideByZero.toString) {
+
+          val data: Seq[(Float, Int)] = Seq((Float.PositiveInfinity, 1))
+          withParquetTable(data, "tbl", false) {
+            val df = sql("SELECT stddev_pop(_1), stddev_pop(_2) FROM tbl")
+            checkSparkAnswer(df)
+          }
+        }
+      }
+    }
+  }
 
   test("count with aggregation filter") {
     withSQLConf(
@@ -69,6 +87,37 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                              |  lead(123, 100, a) OVER (ORDER BY id) as lead
                              |FROM (SELECT 1 as id, 2 as a) tmp
       """.stripMargin))
+    }
+  }
+
+  // based on Spark's SQLWindowFunctionSuite test of the same name
+  test("window function: partition and order expressions") {
+    for (shuffleMode <- Seq("auto", "native", "jvm")) {
+      withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> shuffleMode) {
+        val df =
+          Seq((1, "a", 5), (2, "a", 6), (3, "b", 7), (4, "b", 8), (5, "c", 9), (6, "c", 10)).toDF(
+            "month",
+            "area",
+            "product")
+        df.createOrReplaceTempView("windowData")
+        val df2 = sql("""
+            |select month, area, product, sum(product + 1) over (partition by 1 order by 2)
+            |from windowData
+          """.stripMargin)
+        checkSparkAnswer(df2)
+        val cometShuffles = collect(df2.queryExecution.executedPlan) {
+          case _: CometShuffleExchangeExec => true
+        }
+        if (shuffleMode == "jvm" || shuffleMode == "auto") {
+          assert(cometShuffles.length == 1)
+        } else {
+          // we fall back to Spark for shuffle because we do not support
+          // native shuffle with a LocalTableScan input, and we do not fall
+          // back to Comet columnar shuffle due to
+          // https://github.com/apache/datafusion-comet/issues/1248
+          assert(cometShuffles.isEmpty)
+        }
+      }
     }
   }
 
@@ -925,7 +974,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("distinct") {
+  // TODO enable once https://github.com/apache/datafusion-comet/issues/1267 is implemented
+  ignore("distinct") {
     withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
       Seq("native", "jvm").foreach { cometShuffleMode =>
         withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> cometShuffleMode) {

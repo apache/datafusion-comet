@@ -103,6 +103,8 @@ public final class CometDiskBlockWriter {
   private long totalWritten = 0L;
   private boolean initialized = false;
   private final int columnarBatchSize;
+  private final String compressionCodec;
+  private final int compressionLevel;
   private final boolean isAsync;
   private final int asyncThreadNum;
   private final ExecutorService threadPool;
@@ -153,6 +155,9 @@ public final class CometDiskBlockWriter {
     this.threadPool = threadPool;
 
     this.columnarBatchSize = (int) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_BATCH_SIZE().get();
+    this.compressionCodec = CometConf$.MODULE$.COMET_EXEC_SHUFFLE_COMPRESSION_CODEC().get();
+    this.compressionLevel =
+        (int) CometConf$.MODULE$.COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL().get();
 
     this.numElementsForSpillThreshold =
         (int) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_SPILL_THRESHOLD().get();
@@ -397,7 +402,14 @@ public final class CometDiskBlockWriter {
       synchronized (file) {
         outputRecords += rowPartition.getNumRows();
         written =
-            doSpilling(dataTypes, file, rowPartition, writeMetricsToUse, preferDictionaryRatio);
+            doSpilling(
+                dataTypes,
+                file,
+                rowPartition,
+                writeMetricsToUse,
+                preferDictionaryRatio,
+                compressionCodec,
+                compressionLevel);
       }
 
       // Update metrics

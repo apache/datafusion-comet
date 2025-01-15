@@ -52,8 +52,9 @@ import org.apache.spark.util.random.XORShiftRandom
 
 import com.google.common.base.Objects
 
+import org.apache.comet.CometConf
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass, QueryPlanSerde}
-import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.serde.OperatorOuterClass.{CompressionCodec, Operator}
 import org.apache.comet.serde.QueryPlanSerde.serializeDataType
 import org.apache.comet.shims.ShimCometShuffleExchangeExec
 
@@ -237,7 +238,8 @@ object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
       partitioner = new Partitioner {
         override def numPartitions: Int = outputPartitioning.numPartitions
         override def getPartition(key: Any): Int = key.asInstanceOf[Int]
-      })
+      },
+      decodeTime = metrics("decode_time"))
     dependency
   }
 
@@ -434,7 +436,8 @@ object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
         serializer,
         shuffleWriterProcessor = ShuffleExchangeExec.createShuffleWriteProcessor(writeMetrics),
         shuffleType = CometColumnarShuffle,
-        schema = Some(fromAttributes(outputAttributes)))
+        schema = Some(fromAttributes(outputAttributes)),
+        decodeTime = writeMetrics("decode_time"))
 
     dependency
   }
@@ -480,7 +483,7 @@ class CometShuffleWriteProcessor(
 
     val detailedMetrics = Seq(
       "elapsed_compute",
-      "ipc_time",
+      "encode_time",
       "repart_time",
       "mempool_time",
       "input_batches",
@@ -552,6 +555,22 @@ class CometShuffleWriteProcessor(
       val shuffleWriterBuilder = OperatorOuterClass.ShuffleWriter.newBuilder()
       shuffleWriterBuilder.setOutputDataFile(dataFile)
       shuffleWriterBuilder.setOutputIndexFile(indexFile)
+      shuffleWriterBuilder.setEnableFastEncoding(
+        CometConf.COMET_SHUFFLE_ENABLE_FAST_ENCODING.get())
+
+      if (SparkEnv.get.conf.getBoolean("spark.shuffle.compress", true)) {
+        val codec = CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_CODEC.get() match {
+          case "zstd" => CompressionCodec.Zstd
+          case "lz4" => CompressionCodec.Lz4
+          case "snappy" => CompressionCodec.Snappy
+          case other => throw new UnsupportedOperationException(s"invalid codec: $other")
+        }
+        shuffleWriterBuilder.setCodec(codec)
+      } else {
+        shuffleWriterBuilder.setCodec(CompressionCodec.None)
+      }
+      shuffleWriterBuilder.setCompressionLevel(
+        CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL.get)
 
       outputPartitioning match {
         case _: HashPartitioning =>

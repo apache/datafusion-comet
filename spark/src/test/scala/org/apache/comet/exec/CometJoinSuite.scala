@@ -216,7 +216,7 @@ class CometJoinSuite extends CometTestBase {
           v.toDouble,
           v.toString,
           v % 2 == 0,
-          v.toString().getBytes,
+          v.toString.getBytes,
           Decimal(v))
 
       withParquetTable((0 until 10).map(i => manyTypes(i, i % 5)), "tbl_a") {
@@ -294,6 +294,7 @@ class CometJoinSuite extends CometTestBase {
 
   test("SortMergeJoin without join filter") {
     withSQLConf(
+      CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.key -> "true",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
       withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
@@ -338,9 +339,9 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  // https://github.com/apache/datafusion-comet/issues/398
-  ignore("SortMergeJoin with join filter") {
+  test("SortMergeJoin with join filter") {
     withSQLConf(
+      CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key -> "true",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
@@ -391,9 +392,6 @@ class CometJoinSuite extends CometTestBase {
               "AND tbl_a._2 >= tbl_b._1")
           checkSparkAnswerAndOperator(df9)
 
-          // TODO: Enable these tests after fixing the issue:
-          // https://github.com/apache/datafusion-comet/issues/861
-          /*
           val df10 = sql(
             "SELECT * FROM tbl_a LEFT ANTI JOIN tbl_b ON tbl_a._2 = tbl_b._1 " +
               "AND tbl_a._2 >= tbl_b._1")
@@ -403,7 +401,6 @@ class CometJoinSuite extends CometTestBase {
             "SELECT * FROM tbl_b LEFT ANTI JOIN tbl_a ON tbl_a._2 = tbl_b._1 " +
               "AND tbl_a._2 >= tbl_b._1")
           checkSparkAnswerAndOperator(df11)
-           */
         }
       }
     }

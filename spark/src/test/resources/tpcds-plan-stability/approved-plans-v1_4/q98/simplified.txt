@@ -1,5 +1,5 @@
 WholeStageCodegen (3)
-  ColumnarToRow
+  CometColumnarToRow
     InputAdapter
       CometProject [i_item_desc,i_category,i_class,i_current_price,itemrevenue,revenueratio]
         CometSort [i_item_desc,i_category,i_class,i_current_price,itemrevenue,revenueratio,i_item_id]
@@ -9,7 +9,7 @@ WholeStageCodegen (3)
                 InputAdapter
                   Window [_w0,i_class]
                     WholeStageCodegen (1)
-                      ColumnarToRow
+                      CometColumnarToRow
                         InputAdapter
                           CometSort [i_item_desc,i_category,i_class,i_current_price,itemrevenue,_w0,i_item_id]
                             CometExchange [i_class] #2
@@ -25,7 +25,7 @@ WholeStageCodegen (3)
                                                 SubqueryBroadcast [d_date_sk] #1
                                                   BroadcastExchange #4
                                                     WholeStageCodegen (1)
-                                                      ColumnarToRow
+                                                      CometColumnarToRow
                                                         InputAdapter
                                                           CometProject [d_date_sk]
                                                             CometFilter [d_date_sk,d_date]

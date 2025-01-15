@@ -5,7 +5,7 @@ TakeOrderedAndProject [i_manager_id,avg_monthly_sales,sum_sales]
         InputAdapter
           Window [_w0,i_manager_id]
             WholeStageCodegen (1)
-              ColumnarToRow
+              CometColumnarToRow
                 InputAdapter
                   CometSort [i_manager_id,sum_sales,_w0]
                     CometExchange [i_manager_id] #1
@@ -27,7 +27,7 @@ TakeOrderedAndProject [i_manager_id,avg_monthly_sales,sum_sales]
                                               SubqueryBroadcast [d_date_sk] #1
                                                 BroadcastExchange #4
                                                   WholeStageCodegen (1)
-                                                    ColumnarToRow
+                                                    CometColumnarToRow
                                                       InputAdapter
                                                         CometProject [d_date_sk,d_moy]
                                                           CometFilter [d_date_sk,d_month_seq,d_moy]

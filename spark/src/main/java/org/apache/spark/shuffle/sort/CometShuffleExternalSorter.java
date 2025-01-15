@@ -107,6 +107,8 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
   private final long[] partitionChecksums;
 
   private final String checksumAlgorithm;
+  private final String compressionCodec;
+  private final int compressionLevel;
 
   // The memory allocator for this sorter. It is used to allocate/free memory pages for this sorter.
   // Because we need to allocate off-heap memory regardless of configured Spark memory mode
@@ -153,6 +155,9 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
     this.peakMemoryUsedBytes = getMemoryUsage();
     this.partitionChecksums = createPartitionChecksums(numPartitions, conf);
     this.checksumAlgorithm = getChecksumAlgorithm(conf);
+    this.compressionCodec = CometConf$.MODULE$.COMET_EXEC_SHUFFLE_COMPRESSION_CODEC().get();
+    this.compressionLevel =
+        (int) CometConf$.MODULE$.COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL().get();
 
     this.initialSize = initialSize;
 
@@ -556,7 +561,9 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
                     spillInfo.file,
                     rowPartition,
                     writeMetricsToUse,
-                    preferDictionaryRatio);
+                    preferDictionaryRatio,
+                    compressionCodec,
+                    compressionLevel);
             spillInfo.partitionLengths[currentPartition] = written;
 
             // Store the checksum for the current partition.
@@ -578,7 +585,13 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
       if (currentPartition != -1) {
         long written =
             doSpilling(
-                dataTypes, spillInfo.file, rowPartition, writeMetricsToUse, preferDictionaryRatio);
+                dataTypes,
+                spillInfo.file,
+                rowPartition,
+                writeMetricsToUse,
+                preferDictionaryRatio,
+                compressionCodec,
+                compressionLevel);
         spillInfo.partitionLengths[currentPartition] = written;
 
         synchronized (spills) {

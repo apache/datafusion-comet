@@ -1,38 +1,39 @@
 == Physical Plan ==
-TakeOrderedAndProject (34)
-+- * HashAggregate (33)
-   +- Exchange (32)
-      +- * HashAggregate (31)
-         +- * ColumnarToRow (30)
-            +- CometProject (29)
-               +- CometBroadcastHashJoin (28)
-                  :- CometProject (24)
-                  :  +- CometBroadcastHashJoin (23)
-                  :     :- CometProject (19)
-                  :     :  +- CometBroadcastHashJoin (18)
-                  :     :     :- CometProject (14)
-                  :     :     :  +- CometBroadcastHashJoin (13)
-                  :     :     :     :- CometProject (8)
-                  :     :     :     :  +- CometBroadcastHashJoin (7)
-                  :     :     :     :     :- CometProject (3)
-                  :     :     :     :     :  +- CometFilter (2)
-                  :     :     :     :     :     +- CometScan parquet spark_catalog.default.date_dim (1)
-                  :     :     :     :     +- CometBroadcastExchange (6)
-                  :     :     :     :        +- CometFilter (5)
-                  :     :     :     :           +- CometScan parquet spark_catalog.default.store_sales (4)
-                  :     :     :     +- CometBroadcastExchange (12)
-                  :     :     :        +- CometProject (11)
-                  :     :     :           +- CometFilter (10)
-                  :     :     :              +- CometScan parquet spark_catalog.default.item (9)
-                  :     :     +- CometBroadcastExchange (17)
-                  :     :        +- CometFilter (16)
-                  :     :           +- CometScan parquet spark_catalog.default.customer (15)
-                  :     +- CometBroadcastExchange (22)
-                  :        +- CometFilter (21)
-                  :           +- CometScan parquet spark_catalog.default.customer_address (20)
-                  +- CometBroadcastExchange (27)
-                     +- CometFilter (26)
-                        +- CometScan parquet spark_catalog.default.store (25)
+TakeOrderedAndProject (35)
++- * HashAggregate (34)
+   +- * CometColumnarToRow (33)
+      +- CometColumnarExchange (32)
+         +- * HashAggregate (31)
+            +- * CometColumnarToRow (30)
+               +- CometProject (29)
+                  +- CometBroadcastHashJoin (28)
+                     :- CometProject (24)
+                     :  +- CometBroadcastHashJoin (23)
+                     :     :- CometProject (19)
+                     :     :  +- CometBroadcastHashJoin (18)
+                     :     :     :- CometProject (14)
+                     :     :     :  +- CometBroadcastHashJoin (13)
+                     :     :     :     :- CometProject (8)
+                     :     :     :     :  +- CometBroadcastHashJoin (7)
+                     :     :     :     :     :- CometProject (3)
+                     :     :     :     :     :  +- CometFilter (2)
+                     :     :     :     :     :     +- CometScan parquet spark_catalog.default.date_dim (1)
+                     :     :     :     :     +- CometBroadcastExchange (6)
+                     :     :     :     :        +- CometFilter (5)
+                     :     :     :     :           +- CometScan parquet spark_catalog.default.store_sales (4)
+                     :     :     :     +- CometBroadcastExchange (12)
+                     :     :     :        +- CometProject (11)
+                     :     :     :           +- CometFilter (10)
+                     :     :     :              +- CometScan parquet spark_catalog.default.item (9)
+                     :     :     +- CometBroadcastExchange (17)
+                     :     :        +- CometFilter (16)
+                     :     :           +- CometScan parquet spark_catalog.default.customer (15)
+                     :     +- CometBroadcastExchange (22)
+                     :        +- CometFilter (21)
+                     :           +- CometScan parquet spark_catalog.default.customer_address (20)
+                     +- CometBroadcastExchange (27)
+                        +- CometFilter (26)
+                           +- CometScan parquet spark_catalog.default.store (25)
 
 
 (1) CometScan parquet spark_catalog.default.date_dim
@@ -175,7 +176,7 @@ Arguments: [ss_store_sk#6], [s_store_sk#19], Inner, NOT (substr(ca_zip#18, 1, 5)
 Input [9]: [ss_store_sk#6, ss_ext_sales_price#7, i_brand_id#10, i_brand#11, i_manufact_id#12, i_manufact#13, ca_zip#18, s_store_sk#19, s_zip#20]
 Arguments: [ss_ext_sales_price#7, i_brand_id#10, i_brand#11, i_manufact_id#12, i_manufact#13], [ss_ext_sales_price#7, i_brand_id#10, i_brand#11, i_manufact_id#12, i_manufact#13]
 
-(30) ColumnarToRow [codegen id : 1]
+(30) CometColumnarToRow [codegen id : 1]
 Input [5]: [ss_ext_sales_price#7, i_brand_id#10, i_brand#11, i_manufact_id#12, i_manufact#13]
 
 (31) HashAggregate [codegen id : 1]
@@ -185,18 +186,21 @@ Functions [1]: [partial_sum(UnscaledValue(ss_ext_sales_price#7))]
 Aggregate Attributes [1]: [sum#21]
 Results [5]: [i_brand#11, i_brand_id#10, i_manufact_id#12, i_manufact#13, sum#22]
 
-(32) Exchange
+(32) CometColumnarExchange
 Input [5]: [i_brand#11, i_brand_id#10, i_manufact_id#12, i_manufact#13, sum#22]
-Arguments: hashpartitioning(i_brand#11, i_brand_id#10, i_manufact_id#12, i_manufact#13, 5), ENSURE_REQUIREMENTS, [plan_id=1]
+Arguments: hashpartitioning(i_brand#11, i_brand_id#10, i_manufact_id#12, i_manufact#13, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
-(33) HashAggregate [codegen id : 2]
+(33) CometColumnarToRow [codegen id : 2]
+Input [5]: [i_brand#11, i_brand_id#10, i_manufact_id#12, i_manufact#13, sum#22]
+
+(34) HashAggregate [codegen id : 2]
 Input [5]: [i_brand#11, i_brand_id#10, i_manufact_id#12, i_manufact#13, sum#22]
 Keys [4]: [i_brand#11, i_brand_id#10, i_manufact_id#12, i_manufact#13]
 Functions [1]: [sum(UnscaledValue(ss_ext_sales_price#7))]
 Aggregate Attributes [1]: [sum(UnscaledValue(ss_ext_sales_price#7))#23]
 Results [5]: [i_brand_id#10 AS brand_id#24, i_brand#11 AS brand#25, i_manufact_id#12, i_manufact#13, MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#7))#23,17,2) AS ext_price#26]
 
-(34) TakeOrderedAndProject
+(35) TakeOrderedAndProject
 Input [5]: [brand_id#24, brand#25, i_manufact_id#12, i_manufact#13, ext_price#26]
 Arguments: 100, [ext_price#26 DESC NULLS LAST, brand#25 ASC NULLS FIRST, brand_id#24 ASC NULLS FIRST, i_manufact_id#12 ASC NULLS FIRST, i_manufact#13 ASC NULLS FIRST], [brand_id#24, brand#25, i_manufact_id#12, i_manufact#13, ext_price#26]
 

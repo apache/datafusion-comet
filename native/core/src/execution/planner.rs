@@ -18,7 +18,7 @@
 //! Converts Spark physical plan to DataFusion physical plan
 
 use super::expressions::EvalMode;
-use crate::execution::operators::{CopyMode, FilterExec as CometFilterExec};
+use crate::execution::operators::CopyMode;
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -67,14 +67,17 @@ use datafusion::{
 };
 use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr};
 use datafusion_functions_nested::concat::ArrayAppend;
+use datafusion_functions_nested::remove::array_remove_all_udf;
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
+use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
 use datafusion::datasource::physical_plan::FileScanConfig;
+use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion_comet_proto::{
     spark_expression::{
         self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
@@ -82,8 +85,8 @@ use datafusion_comet_proto::{
     },
     spark_operator::{
         self, lower_window_frame_bound::LowerFrameBoundStruct, operator::OpStruct,
-        upper_window_frame_bound::UpperFrameBoundStruct, BuildSide, JoinType, Operator,
-        WindowFrameType,
+        upper_window_frame_bound::UpperFrameBoundStruct, BuildSide,
+        CompressionCodec as SparkCompressionCodec, JoinType, Operator, WindowFrameType,
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
@@ -105,6 +108,7 @@ use datafusion_expr::{
     AggregateUDF, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
     WindowFunctionDefinition,
 };
+use datafusion_functions_nested::array_has::ArrayHas;
 use datafusion_physical_expr::expressions::{Literal, StatsType};
 use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr::LexOrdering;
@@ -728,6 +732,49 @@ impl PhysicalPlanner {
                     expr.legacy_negative_index,
                 )))
             }
+            ExprStruct::ArrayContains(expr) => {
+                let src_array_expr =
+                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let key_expr =
+                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let args = vec![Arc::clone(&src_array_expr), key_expr];
+                let array_has_expr = Arc::new(ScalarFunctionExpr::new(
+                    "array_has",
+                    Arc::new(ScalarUDF::new_from_impl(ArrayHas::new())),
+                    args,
+                    DataType::Boolean,
+                ));
+                Ok(array_has_expr)
+            }
+            ExprStruct::ArrayRemove(expr) => {
+                let src_array_expr =
+                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let key_expr =
+                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let args = vec![Arc::clone(&src_array_expr), Arc::clone(&key_expr)];
+                let return_type = src_array_expr.data_type(&input_schema)?;
+
+                let datafusion_array_remove = array_remove_all_udf();
+
+                let array_remove_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
+                    "array_remove",
+                    datafusion_array_remove,
+                    args,
+                    return_type,
+                ));
+                let is_null_expr: Arc<dyn PhysicalExpr> = Arc::new(IsNullExpr::new(key_expr));
+
+                let null_literal_expr: Arc<dyn PhysicalExpr> =
+                    Arc::new(Literal::new(ScalarValue::Null));
+
+                let case_expr = CaseExpr::try_new(
+                    None,
+                    vec![(is_null_expr, null_literal_expr)],
+                    Some(array_remove_expr),
+                )?;
+
+                Ok(Arc::new(case_expr))
+            }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
                 expr
@@ -891,22 +938,10 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                if can_reuse_input_batch(&child.native_plan) {
-                    let filter = Arc::new(CometFilterExec::try_new(
-                        predicate,
-                        Arc::clone(&child.native_plan),
-                    )?);
-
-                    return Ok((
-                        scans,
-                        Arc::new(SparkPlan::new(spark_plan.plan_id, filter, vec![child])),
-                    ));
-                }
                 let filter = Arc::new(FilterExec::try_new(
                     predicate,
                     Arc::clone(&child.native_plan),
                 )?);
-
                 Ok((
                     scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, filter, vec![child])),
@@ -1213,11 +1248,26 @@ impl PhysicalPlanner {
                 let partitioning = self
                     .create_partitioning(writer.partitioning.as_ref().unwrap(), child.schema())?;
 
+                let codec = match writer.codec.try_into() {
+                    Ok(SparkCompressionCodec::None) => Ok(CompressionCodec::None),
+                    Ok(SparkCompressionCodec::Snappy) => Ok(CompressionCodec::Snappy),
+                    Ok(SparkCompressionCodec::Zstd) => {
+                        Ok(CompressionCodec::Zstd(writer.compression_level))
+                    }
+                    Ok(SparkCompressionCodec::Lz4) => Ok(CompressionCodec::Lz4Frame),
+                    _ => Err(ExecutionError::GeneralError(format!(
+                        "Unsupported shuffle compression codec: {:?}",
+                        writer.codec
+                    ))),
+                }?;
+
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
                     Arc::clone(&child.native_plan),
                     partitioning,
+                    codec,
                     writer.output_data_file.clone(),
                     writer.output_index_file.clone(),
+                    writer.enable_fast_encoding,
                 )?);
 
                 Ok((
@@ -1321,17 +1371,42 @@ impl PhysicalPlanner {
                     false,
                 )?);
 
-                Ok((
-                    scans,
-                    Arc::new(SparkPlan::new(
-                        spark_plan.plan_id,
-                        join,
-                        vec![
-                            Arc::clone(&join_params.left),
-                            Arc::clone(&join_params.right),
-                        ],
-                    )),
-                ))
+                if join.filter.is_some() {
+                    // SMJ with join filter produces lots of tiny batches
+                    let coalesce_batches: Arc<dyn ExecutionPlan> =
+                        Arc::new(CoalesceBatchesExec::new(
+                            Arc::<SortMergeJoinExec>::clone(&join),
+                            self.session_ctx
+                                .state()
+                                .config_options()
+                                .execution
+                                .batch_size,
+                        ));
+                    Ok((
+                        scans,
+                        Arc::new(SparkPlan::new_with_additional(
+                            spark_plan.plan_id,
+                            coalesce_batches,
+                            vec![
+                                Arc::clone(&join_params.left),
+                                Arc::clone(&join_params.right),
+                            ],
+                            vec![join],
+                        )),
+                    ))
+                } else {
+                    Ok((
+                        scans,
+                        Arc::new(SparkPlan::new(
+                            spark_plan.plan_id,
+                            join,
+                            vec![
+                                Arc::clone(&join_params.left),
+                                Arc::clone(&join_params.right),
+                            ],
+                        )),
+                    ))
+                }
             }
             OpStruct::HashJoin(join) => {
                 let (join_params, scans) = self.parse_join_parameters(
@@ -2692,7 +2767,7 @@ mod tests {
 
         let (mut _scans, filter_exec) = planner.create_plan(&op, &mut vec![], 1).unwrap();
 
-        assert_eq!("CometFilterExec", filter_exec.native_plan.name());
+        assert_eq!("FilterExec", filter_exec.native_plan.name());
         assert_eq!(1, filter_exec.children.len());
         assert_eq!(0, filter_exec.additional_native_plans.len());
     }

@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import java.io.DataInputStream
+import java.nio.channels.Channels
 import java.util.UUID
 import java.util.concurrent.{Future, TimeoutException, TimeUnit}
 
@@ -26,13 +28,15 @@ import scala.concurrent.{ExecutionContext, Promise}
 import scala.concurrent.duration.NANOSECONDS
 import scala.util.control.NonFatal
 
-import org.apache.spark.{broadcast, Partition, SparkContext, TaskContext}
+import org.apache.spark.{broadcast, Partition, SparkContext, SparkEnv, TaskContext}
 import org.apache.spark.comet.shims.ShimCometBroadcastExchangeExec
+import org.apache.spark.io.CompressionCodec
 import org.apache.spark.launcher.SparkLauncher
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
+import org.apache.spark.sql.comet.execution.shuffle.ArrowReaderIterator
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, ShuffleQueryStageExec}
@@ -299,7 +303,23 @@ class CometBatchRDD(
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     val partition = split.asInstanceOf[CometBatchPartition]
     partition.value.value.toIterator
-      .flatMap(CometExec.decodeBatches(_, this.getClass.getSimpleName))
+      .flatMap(decodeBatches(_, this.getClass.getSimpleName))
+  }
+
+  /**
+   * Decodes the byte arrays back to ColumnarBatchs and put them into buffer.
+   */
+  private def decodeBatches(bytes: ChunkedByteBuffer, source: String): Iterator[ColumnarBatch] = {
+    if (bytes.size == 0) {
+      return Iterator.empty
+    }
+
+    // use Spark's compression codec (LZ4 by default) and not Comet's compression
+    val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
+    val cbbis = bytes.toInputStream()
+    val ins = new DataInputStream(codec.compressedInputStream(cbbis))
+    // batches are in Arrow IPC format
+    new ArrowReaderIterator(Channels.newChannel(ins), source)
   }
 }
 

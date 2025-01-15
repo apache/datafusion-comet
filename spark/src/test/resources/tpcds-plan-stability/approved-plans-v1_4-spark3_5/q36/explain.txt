@@ -2,7 +2,7 @@
 TakeOrderedAndProject (29)
 +- * Project (28)
    +- Window (27)
-      +- * ColumnarToRow (26)
+      +- * CometColumnarToRow (26)
          +- CometSort (25)
             +- CometExchange (24)
                +- CometHashAggregate (23)
@@ -148,7 +148,7 @@ Arguments: hashpartitioning(_w1#22, _w2#23, 5), ENSURE_REQUIREMENTS, CometNative
 Input [7]: [gross_margin#19, i_category#14, i_class#15, lochierarchy#20, _w0#21, _w1#22, _w2#23]
 Arguments: [gross_margin#19, i_category#14, i_class#15, lochierarchy#20, _w0#21, _w1#22, _w2#23], [_w1#22 ASC NULLS FIRST, _w2#23 ASC NULLS FIRST, _w0#21 ASC NULLS FIRST]
 
-(26) ColumnarToRow [codegen id : 1]
+(26) CometColumnarToRow [codegen id : 1]
 Input [7]: [gross_margin#19, i_category#14, i_class#15, lochierarchy#20, _w0#21, _w1#22, _w2#23]
 
 (27) Window
@@ -167,7 +167,7 @@ Arguments: 100, [lochierarchy#20 DESC NULLS LAST, CASE WHEN (lochierarchy#20 = 0
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#5 IN dynamicpruning#6
 BroadcastExchange (34)
-+- * ColumnarToRow (33)
++- * CometColumnarToRow (33)
    +- CometProject (32)
       +- CometFilter (31)
          +- CometScan parquet spark_catalog.default.date_dim (30)
@@ -188,7 +188,7 @@ Condition : ((isnotnull(d_year#8) AND (d_year#8 = 2001)) AND isnotnull(d_date_sk
 Input [2]: [d_date_sk#7, d_year#8]
 Arguments: [d_date_sk#7], [d_date_sk#7]
 
-(33) ColumnarToRow [codegen id : 1]
+(33) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#7]
 
 (34) BroadcastExchange

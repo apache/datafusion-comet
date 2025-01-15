@@ -6,7 +6,7 @@
 :  :  :  :- * BroadcastNestedLoopJoin Inner BuildRight (88)
 :  :  :  :  :- * BroadcastNestedLoopJoin Inner BuildRight (67)
 :  :  :  :  :  :- * BroadcastNestedLoopJoin Inner BuildRight (46)
-:  :  :  :  :  :  :- * ColumnarToRow (25)
+:  :  :  :  :  :  :- * CometColumnarToRow (25)
 :  :  :  :  :  :  :  +- CometHashAggregate (24)
 :  :  :  :  :  :  :     +- CometExchange (23)
 :  :  :  :  :  :  :        +- CometHashAggregate (22)
@@ -32,7 +32,7 @@
 :  :  :  :  :  :  :                       +- CometFilter (17)
 :  :  :  :  :  :  :                          +- CometScan parquet spark_catalog.default.store (16)
 :  :  :  :  :  :  +- BroadcastExchange (45)
-:  :  :  :  :  :     +- * ColumnarToRow (44)
+:  :  :  :  :  :     +- * CometColumnarToRow (44)
 :  :  :  :  :  :        +- CometHashAggregate (43)
 :  :  :  :  :  :           +- CometExchange (42)
 :  :  :  :  :  :              +- CometHashAggregate (41)
@@ -52,7 +52,7 @@
 :  :  :  :  :  :                       :              +- CometScan parquet spark_catalog.default.time_dim (32)
 :  :  :  :  :  :                       +- ReusedExchange (38)
 :  :  :  :  :  +- BroadcastExchange (66)
-:  :  :  :  :     +- * ColumnarToRow (65)
+:  :  :  :  :     +- * CometColumnarToRow (65)
 :  :  :  :  :        +- CometHashAggregate (64)
 :  :  :  :  :           +- CometExchange (63)
 :  :  :  :  :              +- CometHashAggregate (62)
@@ -72,7 +72,7 @@
 :  :  :  :  :                       :              +- CometScan parquet spark_catalog.default.time_dim (53)
 :  :  :  :  :                       +- ReusedExchange (59)
 :  :  :  :  +- BroadcastExchange (87)
-:  :  :  :     +- * ColumnarToRow (86)
+:  :  :  :     +- * CometColumnarToRow (86)
 :  :  :  :        +- CometHashAggregate (85)
 :  :  :  :           +- CometExchange (84)
 :  :  :  :              +- CometHashAggregate (83)
@@ -92,7 +92,7 @@
 :  :  :  :                       :              +- CometScan parquet spark_catalog.default.time_dim (74)
 :  :  :  :                       +- ReusedExchange (80)
 :  :  :  +- BroadcastExchange (108)
-:  :  :     +- * ColumnarToRow (107)
+:  :  :     +- * CometColumnarToRow (107)
 :  :  :        +- CometHashAggregate (106)
 :  :  :           +- CometExchange (105)
 :  :  :              +- CometHashAggregate (104)
@@ -112,7 +112,7 @@
 :  :  :                       :              +- CometScan parquet spark_catalog.default.time_dim (95)
 :  :  :                       +- ReusedExchange (101)
 :  :  +- BroadcastExchange (129)
-:  :     +- * ColumnarToRow (128)
+:  :     +- * CometColumnarToRow (128)
 :  :        +- CometHashAggregate (127)
 :  :           +- CometExchange (126)
 :  :              +- CometHashAggregate (125)
@@ -132,7 +132,7 @@
 :  :                       :              +- CometScan parquet spark_catalog.default.time_dim (116)
 :  :                       +- ReusedExchange (122)
 :  +- BroadcastExchange (150)
-:     +- * ColumnarToRow (149)
+:     +- * CometColumnarToRow (149)
 :        +- CometHashAggregate (148)
 :           +- CometExchange (147)
 :              +- CometHashAggregate (146)
@@ -152,7 +152,7 @@
 :                       :              +- CometScan parquet spark_catalog.default.time_dim (137)
 :                       +- ReusedExchange (143)
 +- BroadcastExchange (171)
-   +- * ColumnarToRow (170)
+   +- * CometColumnarToRow (170)
       +- CometHashAggregate (169)
          +- CometExchange (168)
             +- CometHashAggregate (167)
@@ -285,7 +285,7 @@ Input [1]: [count#13]
 Keys: []
 Functions [1]: [count(1)]
 
-(25) ColumnarToRow [codegen id : 8]
+(25) CometColumnarToRow [codegen id : 8]
 Input [1]: [h8_30_to_9#14]
 
 (26) CometScan parquet spark_catalog.default.store_sales
@@ -368,7 +368,7 @@ Input [1]: [count#24]
 Keys: []
 Functions [1]: [count(1)]
 
-(44) ColumnarToRow [codegen id : 1]
+(44) CometColumnarToRow [codegen id : 1]
 Input [1]: [h9_to_9_30#25]
 
 (45) BroadcastExchange
@@ -459,7 +459,7 @@ Input [1]: [count#35]
 Keys: []
 Functions [1]: [count(1)]
 
-(65) ColumnarToRow [codegen id : 2]
+(65) CometColumnarToRow [codegen id : 2]
 Input [1]: [h9_30_to_10#36]
 
 (66) BroadcastExchange
@@ -550,7 +550,7 @@ Input [1]: [count#46]
 Keys: []
 Functions [1]: [count(1)]
 
-(86) ColumnarToRow [codegen id : 3]
+(86) CometColumnarToRow [codegen id : 3]
 Input [1]: [h10_to_10_30#47]
 
 (87) BroadcastExchange
@@ -641,7 +641,7 @@ Input [1]: [count#57]
 Keys: []
 Functions [1]: [count(1)]
 
-(107) ColumnarToRow [codegen id : 4]
+(107) CometColumnarToRow [codegen id : 4]
 Input [1]: [h10_30_to_11#58]
 
 (108) BroadcastExchange
@@ -732,7 +732,7 @@ Input [1]: [count#68]
 Keys: []
 Functions [1]: [count(1)]
 
-(128) ColumnarToRow [codegen id : 5]
+(128) CometColumnarToRow [codegen id : 5]
 Input [1]: [h11_to_11_30#69]
 
 (129) BroadcastExchange
@@ -823,7 +823,7 @@ Input [1]: [count#79]
 Keys: []
 Functions [1]: [count(1)]
 
-(149) ColumnarToRow [codegen id : 6]
+(149) CometColumnarToRow [codegen id : 6]
 Input [1]: [h11_30_to_12#80]
 
 (150) BroadcastExchange
@@ -914,7 +914,7 @@ Input [1]: [count#90]
 Keys: []
 Functions [1]: [count(1)]
 
-(170) ColumnarToRow [codegen id : 7]
+(170) CometColumnarToRow [codegen id : 7]
 Input [1]: [h12_to_12_30#91]
 
 (171) BroadcastExchange

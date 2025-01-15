@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (47)
+* CometColumnarToRow (47)
 +- CometHashAggregate (46)
    +- CometExchange (45)
       +- CometHashAggregate (44)
@@ -261,14 +261,14 @@ Input [1]: [count#26]
 Keys: []
 Functions [1]: [count(1)]
 
-(47) ColumnarToRow [codegen id : 1]
+(47) CometColumnarToRow [codegen id : 1]
 Input [1]: [count(1)#27]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#2 IN dynamicpruning#3
 BroadcastExchange (52)
-+- * ColumnarToRow (51)
++- * CometColumnarToRow (51)
    +- CometProject (50)
       +- CometFilter (49)
          +- CometScan parquet spark_catalog.default.date_dim (48)
@@ -289,7 +289,7 @@ Condition : (((isnotnull(d_month_seq#6) AND (d_month_seq#6 >= 1200)) AND (d_mont
 Input [3]: [d_date_sk#4, d_date#5, d_month_seq#6]
 Arguments: [d_date_sk#4, d_date#5], [d_date_sk#4, d_date#5]
 
-(51) ColumnarToRow [codegen id : 1]
+(51) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#4, d_date#5]
 
 (52) BroadcastExchange

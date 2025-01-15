@@ -1,74 +1,80 @@
 == Physical Plan ==
-* BroadcastNestedLoopJoin Inner BuildRight (70)
-:- * BroadcastNestedLoopJoin Inner BuildRight (58)
-:  :- * BroadcastNestedLoopJoin Inner BuildRight (46)
-:  :  :- * BroadcastNestedLoopJoin Inner BuildRight (34)
-:  :  :  :- * BroadcastNestedLoopJoin Inner BuildRight (22)
-:  :  :  :  :- * HashAggregate (10)
-:  :  :  :  :  +- Exchange (9)
-:  :  :  :  :     +- * HashAggregate (8)
-:  :  :  :  :        +- * HashAggregate (7)
-:  :  :  :  :           +- * ColumnarToRow (6)
-:  :  :  :  :              +- CometExchange (5)
-:  :  :  :  :                 +- CometHashAggregate (4)
-:  :  :  :  :                    +- CometProject (3)
-:  :  :  :  :                       +- CometFilter (2)
-:  :  :  :  :                          +- CometScan parquet spark_catalog.default.store_sales (1)
-:  :  :  :  +- BroadcastExchange (21)
-:  :  :  :     +- * HashAggregate (20)
-:  :  :  :        +- Exchange (19)
-:  :  :  :           +- * HashAggregate (18)
-:  :  :  :              +- * HashAggregate (17)
-:  :  :  :                 +- * ColumnarToRow (16)
-:  :  :  :                    +- CometExchange (15)
-:  :  :  :                       +- CometHashAggregate (14)
-:  :  :  :                          +- CometProject (13)
-:  :  :  :                             +- CometFilter (12)
-:  :  :  :                                +- CometScan parquet spark_catalog.default.store_sales (11)
-:  :  :  +- BroadcastExchange (33)
-:  :  :     +- * HashAggregate (32)
-:  :  :        +- Exchange (31)
-:  :  :           +- * HashAggregate (30)
-:  :  :              +- * HashAggregate (29)
-:  :  :                 +- * ColumnarToRow (28)
-:  :  :                    +- CometExchange (27)
-:  :  :                       +- CometHashAggregate (26)
-:  :  :                          +- CometProject (25)
-:  :  :                             +- CometFilter (24)
-:  :  :                                +- CometScan parquet spark_catalog.default.store_sales (23)
-:  :  +- BroadcastExchange (45)
-:  :     +- * HashAggregate (44)
-:  :        +- Exchange (43)
-:  :           +- * HashAggregate (42)
-:  :              +- * HashAggregate (41)
-:  :                 +- * ColumnarToRow (40)
-:  :                    +- CometExchange (39)
-:  :                       +- CometHashAggregate (38)
-:  :                          +- CometProject (37)
-:  :                             +- CometFilter (36)
-:  :                                +- CometScan parquet spark_catalog.default.store_sales (35)
-:  +- BroadcastExchange (57)
-:     +- * HashAggregate (56)
-:        +- Exchange (55)
-:           +- * HashAggregate (54)
-:              +- * HashAggregate (53)
-:                 +- * ColumnarToRow (52)
-:                    +- CometExchange (51)
-:                       +- CometHashAggregate (50)
-:                          +- CometProject (49)
-:                             +- CometFilter (48)
-:                                +- CometScan parquet spark_catalog.default.store_sales (47)
-+- BroadcastExchange (69)
-   +- * HashAggregate (68)
-      +- Exchange (67)
-         +- * HashAggregate (66)
-            +- * HashAggregate (65)
-               +- * ColumnarToRow (64)
-                  +- CometExchange (63)
-                     +- CometHashAggregate (62)
-                        +- CometProject (61)
-                           +- CometFilter (60)
-                              +- CometScan parquet spark_catalog.default.store_sales (59)
+* BroadcastNestedLoopJoin Inner BuildRight (76)
+:- * BroadcastNestedLoopJoin Inner BuildRight (63)
+:  :- * BroadcastNestedLoopJoin Inner BuildRight (50)
+:  :  :- * BroadcastNestedLoopJoin Inner BuildRight (37)
+:  :  :  :- * BroadcastNestedLoopJoin Inner BuildRight (24)
+:  :  :  :  :- * HashAggregate (11)
+:  :  :  :  :  +- * CometColumnarToRow (10)
+:  :  :  :  :     +- CometColumnarExchange (9)
+:  :  :  :  :        +- * HashAggregate (8)
+:  :  :  :  :           +- * HashAggregate (7)
+:  :  :  :  :              +- * CometColumnarToRow (6)
+:  :  :  :  :                 +- CometExchange (5)
+:  :  :  :  :                    +- CometHashAggregate (4)
+:  :  :  :  :                       +- CometProject (3)
+:  :  :  :  :                          +- CometFilter (2)
+:  :  :  :  :                             +- CometScan parquet spark_catalog.default.store_sales (1)
+:  :  :  :  +- BroadcastExchange (23)
+:  :  :  :     +- * HashAggregate (22)
+:  :  :  :        +- * CometColumnarToRow (21)
+:  :  :  :           +- CometColumnarExchange (20)
+:  :  :  :              +- * HashAggregate (19)
+:  :  :  :                 +- * HashAggregate (18)
+:  :  :  :                    +- * CometColumnarToRow (17)
+:  :  :  :                       +- CometExchange (16)
+:  :  :  :                          +- CometHashAggregate (15)
+:  :  :  :                             +- CometProject (14)
+:  :  :  :                                +- CometFilter (13)
+:  :  :  :                                   +- CometScan parquet spark_catalog.default.store_sales (12)
+:  :  :  +- BroadcastExchange (36)
+:  :  :     +- * HashAggregate (35)
+:  :  :        +- * CometColumnarToRow (34)
+:  :  :           +- CometColumnarExchange (33)
+:  :  :              +- * HashAggregate (32)
+:  :  :                 +- * HashAggregate (31)
+:  :  :                    +- * CometColumnarToRow (30)
+:  :  :                       +- CometExchange (29)
+:  :  :                          +- CometHashAggregate (28)
+:  :  :                             +- CometProject (27)
+:  :  :                                +- CometFilter (26)
+:  :  :                                   +- CometScan parquet spark_catalog.default.store_sales (25)
+:  :  +- BroadcastExchange (49)
+:  :     +- * HashAggregate (48)
+:  :        +- * CometColumnarToRow (47)
+:  :           +- CometColumnarExchange (46)
+:  :              +- * HashAggregate (45)
+:  :                 +- * HashAggregate (44)
+:  :                    +- * CometColumnarToRow (43)
+:  :                       +- CometExchange (42)
+:  :                          +- CometHashAggregate (41)
+:  :                             +- CometProject (40)
+:  :                                +- CometFilter (39)
+:  :                                   +- CometScan parquet spark_catalog.default.store_sales (38)
+:  +- BroadcastExchange (62)
+:     +- * HashAggregate (61)
+:        +- * CometColumnarToRow (60)
+:           +- CometColumnarExchange (59)
+:              +- * HashAggregate (58)
+:                 +- * HashAggregate (57)
+:                    +- * CometColumnarToRow (56)
+:                       +- CometExchange (55)
+:                          +- CometHashAggregate (54)
+:                             +- CometProject (53)
+:                                +- CometFilter (52)
+:                                   +- CometScan parquet spark_catalog.default.store_sales (51)
++- BroadcastExchange (75)
+   +- * HashAggregate (74)
+      +- * CometColumnarToRow (73)
+         +- CometColumnarExchange (72)
+            +- * HashAggregate (71)
+               +- * HashAggregate (70)
+                  +- * CometColumnarToRow (69)
+                     +- CometExchange (68)
+                        +- CometHashAggregate (67)
+                           +- CometProject (66)
+                              +- CometFilter (65)
+                                 +- CometScan parquet spark_catalog.default.store_sales (64)
 
 
 (1) CometScan parquet spark_catalog.default.store_sales
@@ -95,7 +101,7 @@ Functions [2]: [partial_avg(UnscaledValue(ss_list_price#3)), partial_count(ss_li
 Input [4]: [ss_list_price#3, sum#6, count#7, count#8]
 Arguments: hashpartitioning(ss_list_price#3, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(6) ColumnarToRow [codegen id : 1]
+(6) CometColumnarToRow [codegen id : 1]
 Input [4]: [ss_list_price#3, sum#6, count#7, count#8]
 
 (7) HashAggregate [codegen id : 1]
@@ -112,314 +118,332 @@ Functions [3]: [merge_avg(UnscaledValue(ss_list_price#3)), merge_count(ss_list_p
 Aggregate Attributes [3]: [avg(UnscaledValue(ss_list_price#3))#9, count(ss_list_price#3)#10, count(ss_list_price#3)#11]
 Results [4]: [sum#6, count#7, count#8, count#12]
 
-(9) Exchange
+(9) CometColumnarExchange
 Input [4]: [sum#6, count#7, count#8, count#12]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=2]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
-(10) HashAggregate [codegen id : 12]
+(10) CometColumnarToRow [codegen id : 12]
+Input [4]: [sum#6, count#7, count#8, count#12]
+
+(11) HashAggregate [codegen id : 12]
 Input [4]: [sum#6, count#7, count#8, count#12]
 Keys: []
 Functions [3]: [avg(UnscaledValue(ss_list_price#3)), count(ss_list_price#3), count(distinct ss_list_price#3)]
 Aggregate Attributes [3]: [avg(UnscaledValue(ss_list_price#3))#9, count(ss_list_price#3)#10, count(ss_list_price#3)#11]
 Results [3]: [cast((avg(UnscaledValue(ss_list_price#3))#9 / 100.0) as decimal(11,6)) AS B1_LP#13, count(ss_list_price#3)#10 AS B1_CNT#14, count(ss_list_price#3)#11 AS B1_CNTD#15]
 
-(11) CometScan parquet spark_catalog.default.store_sales
+(12) CometScan parquet spark_catalog.default.store_sales
 Output [5]: [ss_quantity#16, ss_wholesale_cost#17, ss_list_price#18, ss_coupon_amt#19, ss_sold_date_sk#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
 PushedFilters: [IsNotNull(ss_quantity), GreaterThanOrEqual(ss_quantity,6), LessThanOrEqual(ss_quantity,10), Or(Or(And(GreaterThanOrEqual(ss_list_price,90.00),LessThanOrEqual(ss_list_price,100.00)),And(GreaterThanOrEqual(ss_coupon_amt,2323.00),LessThanOrEqual(ss_coupon_amt,3323.00))),And(GreaterThanOrEqual(ss_wholesale_cost,31.00),LessThanOrEqual(ss_wholesale_cost,51.00)))]
 ReadSchema: struct<ss_quantity:int,ss_wholesale_cost:decimal(7,2),ss_list_price:decimal(7,2),ss_coupon_amt:decimal(7,2)>
 
-(12) CometFilter
+(13) CometFilter
 Input [5]: [ss_quantity#16, ss_wholesale_cost#17, ss_list_price#18, ss_coupon_amt#19, ss_sold_date_sk#20]
 Condition : (((isnotnull(ss_quantity#16) AND (ss_quantity#16 >= 6)) AND (ss_quantity#16 <= 10)) AND ((((ss_list_price#18 >= 90.00) AND (ss_list_price#18 <= 100.00)) OR ((ss_coupon_amt#19 >= 2323.00) AND (ss_coupon_amt#19 <= 3323.00))) OR ((ss_wholesale_cost#17 >= 31.00) AND (ss_wholesale_cost#17 <= 51.00))))
 
-(13) CometProject
+(14) CometProject
 Input [5]: [ss_quantity#16, ss_wholesale_cost#17, ss_list_price#18, ss_coupon_amt#19, ss_sold_date_sk#20]
 Arguments: [ss_list_price#18], [ss_list_price#18]
 
-(14) CometHashAggregate
+(15) CometHashAggregate
 Input [1]: [ss_list_price#18]
 Keys [1]: [ss_list_price#18]
 Functions [2]: [partial_avg(UnscaledValue(ss_list_price#18)), partial_count(ss_list_price#18)]
 
-(15) CometExchange
+(16) CometExchange
 Input [4]: [ss_list_price#18, sum#21, count#22, count#23]
 Arguments: hashpartitioning(ss_list_price#18, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
 
-(16) ColumnarToRow [codegen id : 2]
+(17) CometColumnarToRow [codegen id : 2]
 Input [4]: [ss_list_price#18, sum#21, count#22, count#23]
 
-(17) HashAggregate [codegen id : 2]
+(18) HashAggregate [codegen id : 2]
 Input [4]: [ss_list_price#18, sum#21, count#22, count#23]
 Keys [1]: [ss_list_price#18]
 Functions [2]: [merge_avg(UnscaledValue(ss_list_price#18)), merge_count(ss_list_price#18)]
 Aggregate Attributes [2]: [avg(UnscaledValue(ss_list_price#18))#24, count(ss_list_price#18)#25]
 Results [4]: [ss_list_price#18, sum#21, count#22, count#23]
 
-(18) HashAggregate [codegen id : 2]
+(19) HashAggregate [codegen id : 2]
 Input [4]: [ss_list_price#18, sum#21, count#22, count#23]
 Keys: []
 Functions [3]: [merge_avg(UnscaledValue(ss_list_price#18)), merge_count(ss_list_price#18), partial_count(distinct ss_list_price#18)]
 Aggregate Attributes [3]: [avg(UnscaledValue(ss_list_price#18))#24, count(ss_list_price#18)#25, count(ss_list_price#18)#26]
 Results [4]: [sum#21, count#22, count#23, count#27]
 
-(19) Exchange
+(20) CometColumnarExchange
 Input [4]: [sum#21, count#22, count#23, count#27]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=4]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
 
-(20) HashAggregate [codegen id : 3]
+(21) CometColumnarToRow [codegen id : 3]
+Input [4]: [sum#21, count#22, count#23, count#27]
+
+(22) HashAggregate [codegen id : 3]
 Input [4]: [sum#21, count#22, count#23, count#27]
 Keys: []
 Functions [3]: [avg(UnscaledValue(ss_list_price#18)), count(ss_list_price#18), count(distinct ss_list_price#18)]
 Aggregate Attributes [3]: [avg(UnscaledValue(ss_list_price#18))#24, count(ss_list_price#18)#25, count(ss_list_price#18)#26]
 Results [3]: [cast((avg(UnscaledValue(ss_list_price#18))#24 / 100.0) as decimal(11,6)) AS B2_LP#28, count(ss_list_price#18)#25 AS B2_CNT#29, count(ss_list_price#18)#26 AS B2_CNTD#30]
 
-(21) BroadcastExchange
+(23) BroadcastExchange
 Input [3]: [B2_LP#28, B2_CNT#29, B2_CNTD#30]
 Arguments: IdentityBroadcastMode, [plan_id=5]
 
-(22) BroadcastNestedLoopJoin [codegen id : 12]
+(24) BroadcastNestedLoopJoin [codegen id : 12]
 Join type: Inner
 Join condition: None
 
-(23) CometScan parquet spark_catalog.default.store_sales
+(25) CometScan parquet spark_catalog.default.store_sales
 Output [5]: [ss_quantity#31, ss_wholesale_cost#32, ss_list_price#33, ss_coupon_amt#34, ss_sold_date_sk#35]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
 PushedFilters: [IsNotNull(ss_quantity), GreaterThanOrEqual(ss_quantity,11), LessThanOrEqual(ss_quantity,15), Or(Or(And(GreaterThanOrEqual(ss_list_price,142.00),LessThanOrEqual(ss_list_price,152.00)),And(GreaterThanOrEqual(ss_coupon_amt,12214.00),LessThanOrEqual(ss_coupon_amt,13214.00))),And(GreaterThanOrEqual(ss_wholesale_cost,79.00),LessThanOrEqual(ss_wholesale_cost,99.00)))]
 ReadSchema: struct<ss_quantity:int,ss_wholesale_cost:decimal(7,2),ss_list_price:decimal(7,2),ss_coupon_amt:decimal(7,2)>
 
-(24) CometFilter
+(26) CometFilter
 Input [5]: [ss_quantity#31, ss_wholesale_cost#32, ss_list_price#33, ss_coupon_amt#34, ss_sold_date_sk#35]
 Condition : (((isnotnull(ss_quantity#31) AND (ss_quantity#31 >= 11)) AND (ss_quantity#31 <= 15)) AND ((((ss_list_price#33 >= 142.00) AND (ss_list_price#33 <= 152.00)) OR ((ss_coupon_amt#34 >= 12214.00) AND (ss_coupon_amt#34 <= 13214.00))) OR ((ss_wholesale_cost#32 >= 79.00) AND (ss_wholesale_cost#32 <= 99.00))))
 
-(25) CometProject
+(27) CometProject
 Input [5]: [ss_quantity#31, ss_wholesale_cost#32, ss_list_price#33, ss_coupon_amt#34, ss_sold_date_sk#35]
 Arguments: [ss_list_price#33], [ss_list_price#33]
 
-(26) CometHashAggregate
+(28) CometHashAggregate
 Input [1]: [ss_list_price#33]
 Keys [1]: [ss_list_price#33]
 Functions [2]: [partial_avg(UnscaledValue(ss_list_price#33)), partial_count(ss_list_price#33)]
 
-(27) CometExchange
+(29) CometExchange
 Input [4]: [ss_list_price#33, sum#36, count#37, count#38]
 Arguments: hashpartitioning(ss_list_price#33, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=6]
 
-(28) ColumnarToRow [codegen id : 4]
+(30) CometColumnarToRow [codegen id : 4]
 Input [4]: [ss_list_price#33, sum#36, count#37, count#38]
 
-(29) HashAggregate [codegen id : 4]
+(31) HashAggregate [codegen id : 4]
 Input [4]: [ss_list_price#33, sum#36, count#37, count#38]
 Keys [1]: [ss_list_price#33]
 Functions [2]: [merge_avg(UnscaledValue(ss_list_price#33)), merge_count(ss_list_price#33)]
 Aggregate Attributes [2]: [avg(UnscaledValue(ss_list_price#33))#39, count(ss_list_price#33)#40]
 Results [4]: [ss_list_price#33, sum#36, count#37, count#38]
 
-(30) HashAggregate [codegen id : 4]
+(32) HashAggregate [codegen id : 4]
 Input [4]: [ss_list_price#33, sum#36, count#37, count#38]
 Keys: []
 Functions [3]: [merge_avg(UnscaledValue(ss_list_price#33)), merge_count(ss_list_price#33), partial_count(distinct ss_list_price#33)]
 Aggregate Attributes [3]: [avg(UnscaledValue(ss_list_price#33))#39, count(ss_list_price#33)#40, count(ss_list_price#33)#41]
 Results [4]: [sum#36, count#37, count#38, count#42]
 
-(31) Exchange
+(33) CometColumnarExchange
 Input [4]: [sum#36, count#37, count#38, count#42]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=7]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=7]
 
-(32) HashAggregate [codegen id : 5]
+(34) CometColumnarToRow [codegen id : 5]
+Input [4]: [sum#36, count#37, count#38, count#42]
+
+(35) HashAggregate [codegen id : 5]
 Input [4]: [sum#36, count#37, count#38, count#42]
 Keys: []
 Functions [3]: [avg(UnscaledValue(ss_list_price#33)), count(ss_list_price#33), count(distinct ss_list_price#33)]
 Aggregate Attributes [3]: [avg(UnscaledValue(ss_list_price#33))#39, count(ss_list_price#33)#40, count(ss_list_price#33)#41]
 Results [3]: [cast((avg(UnscaledValue(ss_list_price#33))#39 / 100.0) as decimal(11,6)) AS B3_LP#43, count(ss_list_price#33)#40 AS B3_CNT#44, count(ss_list_price#33)#41 AS B3_CNTD#45]
 
-(33) BroadcastExchange
+(36) BroadcastExchange
 Input [3]: [B3_LP#43, B3_CNT#44, B3_CNTD#45]
 Arguments: IdentityBroadcastMode, [plan_id=8]
 
-(34) BroadcastNestedLoopJoin [codegen id : 12]
+(37) BroadcastNestedLoopJoin [codegen id : 12]
 Join type: Inner
 Join condition: None
 
-(35) CometScan parquet spark_catalog.default.store_sales
+(38) CometScan parquet spark_catalog.default.store_sales
 Output [5]: [ss_quantity#46, ss_wholesale_cost#47, ss_list_price#48, ss_coupon_amt#49, ss_sold_date_sk#50]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
 PushedFilters: [IsNotNull(ss_quantity), GreaterThanOrEqual(ss_quantity,16), LessThanOrEqual(ss_quantity,20), Or(Or(And(GreaterThanOrEqual(ss_list_price,135.00),LessThanOrEqual(ss_list_price,145.00)),And(GreaterThanOrEqual(ss_coupon_amt,6071.00),LessThanOrEqual(ss_coupon_amt,7071.00))),And(GreaterThanOrEqual(ss_wholesale_cost,38.00),LessThanOrEqual(ss_wholesale_cost,58.00)))]
 ReadSchema: struct<ss_quantity:int,ss_wholesale_cost:decimal(7,2),ss_list_price:decimal(7,2),ss_coupon_amt:decimal(7,2)>
 
-(36) CometFilter
+(39) CometFilter
 Input [5]: [ss_quantity#46, ss_wholesale_cost#47, ss_list_price#48, ss_coupon_amt#49, ss_sold_date_sk#50]
 Condition : (((isnotnull(ss_quantity#46) AND (ss_quantity#46 >= 16)) AND (ss_quantity#46 <= 20)) AND ((((ss_list_price#48 >= 135.00) AND (ss_list_price#48 <= 145.00)) OR ((ss_coupon_amt#49 >= 6071.00) AND (ss_coupon_amt#49 <= 7071.00))) OR ((ss_wholesale_cost#47 >= 38.00) AND (ss_wholesale_cost#47 <= 58.00))))
 
-(37) CometProject
+(40) CometProject
 Input [5]: [ss_quantity#46, ss_wholesale_cost#47, ss_list_price#48, ss_coupon_amt#49, ss_sold_date_sk#50]
 Arguments: [ss_list_price#48], [ss_list_price#48]
 
-(38) CometHashAggregate
+(41) CometHashAggregate
 Input [1]: [ss_list_price#48]
 Keys [1]: [ss_list_price#48]
 Functions [2]: [partial_avg(UnscaledValue(ss_list_price#48)), partial_count(ss_list_price#48)]
 
-(39) CometExchange
+(42) CometExchange
 Input [4]: [ss_list_price#48, sum#51, count#52, count#53]
 Arguments: hashpartitioning(ss_list_price#48, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=9]
 
-(40) ColumnarToRow [codegen id : 6]
+(43) CometColumnarToRow [codegen id : 6]
 Input [4]: [ss_list_price#48, sum#51, count#52, count#53]
 
-(41) HashAggregate [codegen id : 6]
+(44) HashAggregate [codegen id : 6]
 Input [4]: [ss_list_price#48, sum#51, count#52, count#53]
 Keys [1]: [ss_list_price#48]
 Functions [2]: [merge_avg(UnscaledValue(ss_list_price#48)), merge_count(ss_list_price#48)]
 Aggregate Attributes [2]: [avg(UnscaledValue(ss_list_price#48))#54, count(ss_list_price#48)#55]
 Results [4]: [ss_list_price#48, sum#51, count#52, count#53]
 
-(42) HashAggregate [codegen id : 6]
+(45) HashAggregate [codegen id : 6]
 Input [4]: [ss_list_price#48, sum#51, count#52, count#53]
 Keys: []
 Functions [3]: [merge_avg(UnscaledValue(ss_list_price#48)), merge_count(ss_list_price#48), partial_count(distinct ss_list_price#48)]
 Aggregate Attributes [3]: [avg(UnscaledValue(ss_list_price#48))#54, count(ss_list_price#48)#55, count(ss_list_price#48)#56]
 Results [4]: [sum#51, count#52, count#53, count#57]
 
-(43) Exchange
+(46) CometColumnarExchange
 Input [4]: [sum#51, count#52, count#53, count#57]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=10]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=10]
 
-(44) HashAggregate [codegen id : 7]
+(47) CometColumnarToRow [codegen id : 7]
+Input [4]: [sum#51, count#52, count#53, count#57]
+
+(48) HashAggregate [codegen id : 7]
 Input [4]: [sum#51, count#52, count#53, count#57]
 Keys: []
 Functions [3]: [avg(UnscaledValue(ss_list_price#48)), count(ss_list_price#48), count(distinct ss_list_price#48)]
 Aggregate Attributes [3]: [avg(UnscaledValue(ss_list_price#48))#54, count(ss_list_price#48)#55, count(ss_list_price#48)#56]
 Results [3]: [cast((avg(UnscaledValue(ss_list_price#48))#54 / 100.0) as decimal(11,6)) AS B4_LP#58, count(ss_list_price#48)#55 AS B4_CNT#59, count(ss_list_price#48)#56 AS B4_CNTD#60]
 
-(45) BroadcastExchange
+(49) BroadcastExchange
 Input [3]: [B4_LP#58, B4_CNT#59, B4_CNTD#60]
 Arguments: IdentityBroadcastMode, [plan_id=11]
 
-(46) BroadcastNestedLoopJoin [codegen id : 12]
+(50) BroadcastNestedLoopJoin [codegen id : 12]
 Join type: Inner
 Join condition: None
 
-(47) CometScan parquet spark_catalog.default.store_sales
+(51) CometScan parquet spark_catalog.default.store_sales
 Output [5]: [ss_quantity#61, ss_wholesale_cost#62, ss_list_price#63, ss_coupon_amt#64, ss_sold_date_sk#65]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
 PushedFilters: [IsNotNull(ss_quantity), GreaterThanOrEqual(ss_quantity,21), LessThanOrEqual(ss_quantity,25), Or(Or(And(GreaterThanOrEqual(ss_list_price,122.00),LessThanOrEqual(ss_list_price,132.00)),And(GreaterThanOrEqual(ss_coupon_amt,836.00),LessThanOrEqual(ss_coupon_amt,1836.00))),And(GreaterThanOrEqual(ss_wholesale_cost,17.00),LessThanOrEqual(ss_wholesale_cost,37.00)))]
 ReadSchema: struct<ss_quantity:int,ss_wholesale_cost:decimal(7,2),ss_list_price:decimal(7,2),ss_coupon_amt:decimal(7,2)>
 
-(48) CometFilter
+(52) CometFilter
 Input [5]: [ss_quantity#61, ss_wholesale_cost#62, ss_list_price#63, ss_coupon_amt#64, ss_sold_date_sk#65]
 Condition : (((isnotnull(ss_quantity#61) AND (ss_quantity#61 >= 21)) AND (ss_quantity#61 <= 25)) AND ((((ss_list_price#63 >= 122.00) AND (ss_list_price#63 <= 132.00)) OR ((ss_coupon_amt#64 >= 836.00) AND (ss_coupon_amt#64 <= 1836.00))) OR ((ss_wholesale_cost#62 >= 17.00) AND (ss_wholesale_cost#62 <= 37.00))))
 
-(49) CometProject
+(53) CometProject
 Input [5]: [ss_quantity#61, ss_wholesale_cost#62, ss_list_price#63, ss_coupon_amt#64, ss_sold_date_sk#65]
 Arguments: [ss_list_price#63], [ss_list_price#63]
 
-(50) CometHashAggregate
+(54) CometHashAggregate
 Input [1]: [ss_list_price#63]
 Keys [1]: [ss_list_price#63]
 Functions [2]: [partial_avg(UnscaledValue(ss_list_price#63)), partial_count(ss_list_price#63)]
 
-(51) CometExchange
+(55) CometExchange
 Input [4]: [ss_list_price#63, sum#66, count#67, count#68]
 Arguments: hashpartitioning(ss_list_price#63, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=12]
 
-(52) ColumnarToRow [codegen id : 8]
+(56) CometColumnarToRow [codegen id : 8]
 Input [4]: [ss_list_price#63, sum#66, count#67, count#68]
 
-(53) HashAggregate [codegen id : 8]
+(57) HashAggregate [codegen id : 8]
 Input [4]: [ss_list_price#63, sum#66, count#67, count#68]
 Keys [1]: [ss_list_price#63]
 Functions [2]: [merge_avg(UnscaledValue(ss_list_price#63)), merge_count(ss_list_price#63)]
 Aggregate Attributes [2]: [avg(UnscaledValue(ss_list_price#63))#69, count(ss_list_price#63)#70]
 Results [4]: [ss_list_price#63, sum#66, count#67, count#68]
 
-(54) HashAggregate [codegen id : 8]
+(58) HashAggregate [codegen id : 8]
 Input [4]: [ss_list_price#63, sum#66, count#67, count#68]
 Keys: []
 Functions [3]: [merge_avg(UnscaledValue(ss_list_price#63)), merge_count(ss_list_price#63), partial_count(distinct ss_list_price#63)]
 Aggregate Attributes [3]: [avg(UnscaledValue(ss_list_price#63))#69, count(ss_list_price#63)#70, count(ss_list_price#63)#71]
 Results [4]: [sum#66, count#67, count#68, count#72]
 
-(55) Exchange
+(59) CometColumnarExchange
 Input [4]: [sum#66, count#67, count#68, count#72]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=13]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=13]
 
-(56) HashAggregate [codegen id : 9]
+(60) CometColumnarToRow [codegen id : 9]
+Input [4]: [sum#66, count#67, count#68, count#72]
+
+(61) HashAggregate [codegen id : 9]
 Input [4]: [sum#66, count#67, count#68, count#72]
 Keys: []
 Functions [3]: [avg(UnscaledValue(ss_list_price#63)), count(ss_list_price#63), count(distinct ss_list_price#63)]
 Aggregate Attributes [3]: [avg(UnscaledValue(ss_list_price#63))#69, count(ss_list_price#63)#70, count(ss_list_price#63)#71]
 Results [3]: [cast((avg(UnscaledValue(ss_list_price#63))#69 / 100.0) as decimal(11,6)) AS B5_LP#73, count(ss_list_price#63)#70 AS B5_CNT#74, count(ss_list_price#63)#71 AS B5_CNTD#75]
 
-(57) BroadcastExchange
+(62) BroadcastExchange
 Input [3]: [B5_LP#73, B5_CNT#74, B5_CNTD#75]
 Arguments: IdentityBroadcastMode, [plan_id=14]
 
-(58) BroadcastNestedLoopJoin [codegen id : 12]
+(63) BroadcastNestedLoopJoin [codegen id : 12]
 Join type: Inner
 Join condition: None
 
-(59) CometScan parquet spark_catalog.default.store_sales
+(64) CometScan parquet spark_catalog.default.store_sales
 Output [5]: [ss_quantity#76, ss_wholesale_cost#77, ss_list_price#78, ss_coupon_amt#79, ss_sold_date_sk#80]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
 PushedFilters: [IsNotNull(ss_quantity), GreaterThanOrEqual(ss_quantity,26), LessThanOrEqual(ss_quantity,30), Or(Or(And(GreaterThanOrEqual(ss_list_price,154.00),LessThanOrEqual(ss_list_price,164.00)),And(GreaterThanOrEqual(ss_coupon_amt,7326.00),LessThanOrEqual(ss_coupon_amt,8326.00))),And(GreaterThanOrEqual(ss_wholesale_cost,7.00),LessThanOrEqual(ss_wholesale_cost,27.00)))]
 ReadSchema: struct<ss_quantity:int,ss_wholesale_cost:decimal(7,2),ss_list_price:decimal(7,2),ss_coupon_amt:decimal(7,2)>
 
-(60) CometFilter
+(65) CometFilter
 Input [5]: [ss_quantity#76, ss_wholesale_cost#77, ss_list_price#78, ss_coupon_amt#79, ss_sold_date_sk#80]
 Condition : (((isnotnull(ss_quantity#76) AND (ss_quantity#76 >= 26)) AND (ss_quantity#76 <= 30)) AND ((((ss_list_price#78 >= 154.00) AND (ss_list_price#78 <= 164.00)) OR ((ss_coupon_amt#79 >= 7326.00) AND (ss_coupon_amt#79 <= 8326.00))) OR ((ss_wholesale_cost#77 >= 7.00) AND (ss_wholesale_cost#77 <= 27.00))))
 
-(61) CometProject
+(66) CometProject
 Input [5]: [ss_quantity#76, ss_wholesale_cost#77, ss_list_price#78, ss_coupon_amt#79, ss_sold_date_sk#80]
 Arguments: [ss_list_price#78], [ss_list_price#78]
 
-(62) CometHashAggregate
+(67) CometHashAggregate
 Input [1]: [ss_list_price#78]
 Keys [1]: [ss_list_price#78]
 Functions [2]: [partial_avg(UnscaledValue(ss_list_price#78)), partial_count(ss_list_price#78)]
 
-(63) CometExchange
+(68) CometExchange
 Input [4]: [ss_list_price#78, sum#81, count#82, count#83]
 Arguments: hashpartitioning(ss_list_price#78, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=15]
 
-(64) ColumnarToRow [codegen id : 10]
+(69) CometColumnarToRow [codegen id : 10]
 Input [4]: [ss_list_price#78, sum#81, count#82, count#83]
 
-(65) HashAggregate [codegen id : 10]
+(70) HashAggregate [codegen id : 10]
 Input [4]: [ss_list_price#78, sum#81, count#82, count#83]
 Keys [1]: [ss_list_price#78]
 Functions [2]: [merge_avg(UnscaledValue(ss_list_price#78)), merge_count(ss_list_price#78)]
 Aggregate Attributes [2]: [avg(UnscaledValue(ss_list_price#78))#84, count(ss_list_price#78)#85]
 Results [4]: [ss_list_price#78, sum#81, count#82, count#83]
 
-(66) HashAggregate [codegen id : 10]
+(71) HashAggregate [codegen id : 10]
 Input [4]: [ss_list_price#78, sum#81, count#82, count#83]
 Keys: []
 Functions [3]: [merge_avg(UnscaledValue(ss_list_price#78)), merge_count(ss_list_price#78), partial_count(distinct ss_list_price#78)]
 Aggregate Attributes [3]: [avg(UnscaledValue(ss_list_price#78))#84, count(ss_list_price#78)#85, count(ss_list_price#78)#86]
 Results [4]: [sum#81, count#82, count#83, count#87]
 
-(67) Exchange
+(72) CometColumnarExchange
 Input [4]: [sum#81, count#82, count#83, count#87]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, [plan_id=16]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=16]
 
-(68) HashAggregate [codegen id : 11]
+(73) CometColumnarToRow [codegen id : 11]
+Input [4]: [sum#81, count#82, count#83, count#87]
+
+(74) HashAggregate [codegen id : 11]
 Input [4]: [sum#81, count#82, count#83, count#87]
 Keys: []
 Functions [3]: [avg(UnscaledValue(ss_list_price#78)), count(ss_list_price#78), count(distinct ss_list_price#78)]
 Aggregate Attributes [3]: [avg(UnscaledValue(ss_list_price#78))#84, count(ss_list_price#78)#85, count(ss_list_price#78)#86]
 Results [3]: [cast((avg(UnscaledValue(ss_list_price#78))#84 / 100.0) as decimal(11,6)) AS B6_LP#88, count(ss_list_price#78)#85 AS B6_CNT#89, count(ss_list_price#78)#86 AS B6_CNTD#90]
 
-(69) BroadcastExchange
+(75) BroadcastExchange
 Input [3]: [B6_LP#88, B6_CNT#89, B6_CNTD#90]
 Arguments: IdentityBroadcastMode, [plan_id=17]
 
-(70) BroadcastNestedLoopJoin [codegen id : 12]
+(76) BroadcastNestedLoopJoin [codegen id : 12]
 Join type: Inner
 Join condition: None
 
