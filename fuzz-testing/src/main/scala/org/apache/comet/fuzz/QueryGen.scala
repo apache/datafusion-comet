@@ -128,7 +128,7 @@ object QueryGen {
     val tableName = s"test${r.nextInt(numFiles)}"
     val table = spark.table(tableName)
 
-    val op = Utils.randomChoice(Meta.arrayScalarFunc, r)
+    val op = Utils.randomChoice(Meta.arrayScalarFunc, r).name
     val a = Utils.randomChoice(table.columns, r)
     val b = Utils.randomChoice(table.columns, r)
 
