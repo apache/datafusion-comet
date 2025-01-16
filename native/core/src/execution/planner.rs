@@ -18,7 +18,7 @@
 //! Converts Spark physical plan to DataFusion physical plan
 
 use super::expressions::EvalMode;
-use crate::execution::operators::CopyMode;
+use crate::execution::operators::{CopyMode, FilterExec};
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -37,7 +37,6 @@ use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf,
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
-use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
@@ -2767,7 +2766,7 @@ mod tests {
 
         let (mut _scans, filter_exec) = planner.create_plan(&op, &mut vec![], 1).unwrap();
 
-        assert_eq!("FilterExec", filter_exec.native_plan.name());
+        assert_eq!("CometFilterExec", filter_exec.native_plan.name());
         assert_eq!(1, filter_exec.children.len());
         assert_eq!(0, filter_exec.additional_native_plans.len());
     }
