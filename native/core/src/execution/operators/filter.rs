@@ -228,7 +228,7 @@ impl DisplayAs for FilterExec {
 
 impl ExecutionPlan for FilterExec {
     fn name(&self) -> &'static str {
-        "CometFilterExec"
+        "FilterExec"
     }
 
     /// Return a reference to Any that can be used for downcasting
