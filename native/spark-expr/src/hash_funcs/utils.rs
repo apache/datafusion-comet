@@ -286,7 +286,13 @@ macro_rules! create_hashes_internal {
                     $crate::hash_array!(FixedSizeBinaryArray, col, $hashes_buffer, $hash_method);
                 }
                 DataType::Decimal128(precision, _) => {
-                    $crate::hash_array_decimal!(Decimal128Array, col, $hashes_buffer, $hash_method, precision);
+                    $crate::hash_array_decimal!(
+                        Decimal128Array,
+                        col,
+                        $hashes_buffer,
+                        $hash_method,
+                        precision
+                    );
                 }
                 DataType::Dictionary(index_type, _) => match **index_type {
                     DataType::Int8 => {
