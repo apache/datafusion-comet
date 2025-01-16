@@ -1,46 +1,47 @@
 == Physical Plan ==
-* ColumnarToRow (42)
-+- CometSort (41)
-   +- CometColumnarExchange (40)
-      +- * HashAggregate (39)
-         +- Exchange (38)
-            +- * HashAggregate (37)
-               +- * ColumnarToRow (36)
-                  +- CometProject (35)
-                     +- CometBroadcastHashJoin (34)
-                        :- CometProject (29)
-                        :  +- CometBroadcastHashJoin (28)
-                        :     :- CometProject (24)
-                        :     :  +- CometBroadcastHashJoin (23)
-                        :     :     :- CometProject (18)
-                        :     :     :  +- CometBroadcastHashJoin (17)
-                        :     :     :     :- CometProject (13)
-                        :     :     :     :  +- CometBroadcastHashJoin (12)
-                        :     :     :     :     :- CometProject (7)
-                        :     :     :     :     :  +- CometBroadcastHashJoin (6)
-                        :     :     :     :     :     :- CometFilter (2)
-                        :     :     :     :     :     :  +- CometScan parquet spark_catalog.default.call_center (1)
-                        :     :     :     :     :     +- CometBroadcastExchange (5)
-                        :     :     :     :     :        +- CometFilter (4)
-                        :     :     :     :     :           +- CometScan parquet spark_catalog.default.catalog_returns (3)
-                        :     :     :     :     +- CometBroadcastExchange (11)
-                        :     :     :     :        +- CometProject (10)
-                        :     :     :     :           +- CometFilter (9)
-                        :     :     :     :              +- CometScan parquet spark_catalog.default.date_dim (8)
-                        :     :     :     +- CometBroadcastExchange (16)
-                        :     :     :        +- CometFilter (15)
-                        :     :     :           +- CometScan parquet spark_catalog.default.customer (14)
-                        :     :     +- CometBroadcastExchange (22)
-                        :     :        +- CometProject (21)
-                        :     :           +- CometFilter (20)
-                        :     :              +- CometScan parquet spark_catalog.default.customer_address (19)
-                        :     +- CometBroadcastExchange (27)
-                        :        +- CometFilter (26)
-                        :           +- CometScan parquet spark_catalog.default.customer_demographics (25)
-                        +- CometBroadcastExchange (33)
-                           +- CometProject (32)
-                              +- CometFilter (31)
-                                 +- CometScan parquet spark_catalog.default.household_demographics (30)
+* CometColumnarToRow (43)
++- CometSort (42)
+   +- CometColumnarExchange (41)
+      +- * HashAggregate (40)
+         +- * CometColumnarToRow (39)
+            +- CometColumnarExchange (38)
+               +- * HashAggregate (37)
+                  +- * CometColumnarToRow (36)
+                     +- CometProject (35)
+                        +- CometBroadcastHashJoin (34)
+                           :- CometProject (29)
+                           :  +- CometBroadcastHashJoin (28)
+                           :     :- CometProject (24)
+                           :     :  +- CometBroadcastHashJoin (23)
+                           :     :     :- CometProject (18)
+                           :     :     :  +- CometBroadcastHashJoin (17)
+                           :     :     :     :- CometProject (13)
+                           :     :     :     :  +- CometBroadcastHashJoin (12)
+                           :     :     :     :     :- CometProject (7)
+                           :     :     :     :     :  +- CometBroadcastHashJoin (6)
+                           :     :     :     :     :     :- CometFilter (2)
+                           :     :     :     :     :     :  +- CometScan parquet spark_catalog.default.call_center (1)
+                           :     :     :     :     :     +- CometBroadcastExchange (5)
+                           :     :     :     :     :        +- CometFilter (4)
+                           :     :     :     :     :           +- CometScan parquet spark_catalog.default.catalog_returns (3)
+                           :     :     :     :     +- CometBroadcastExchange (11)
+                           :     :     :     :        +- CometProject (10)
+                           :     :     :     :           +- CometFilter (9)
+                           :     :     :     :              +- CometScan parquet spark_catalog.default.date_dim (8)
+                           :     :     :     +- CometBroadcastExchange (16)
+                           :     :     :        +- CometFilter (15)
+                           :     :     :           +- CometScan parquet spark_catalog.default.customer (14)
+                           :     :     +- CometBroadcastExchange (22)
+                           :     :        +- CometProject (21)
+                           :     :           +- CometFilter (20)
+                           :     :              +- CometScan parquet spark_catalog.default.customer_address (19)
+                           :     +- CometBroadcastExchange (27)
+                           :        +- CometFilter (26)
+                           :           +- CometScan parquet spark_catalog.default.customer_demographics (25)
+                           +- CometBroadcastExchange (33)
+                              +- CometProject (32)
+                                 +- CometFilter (31)
+                                    +- CometScan parquet spark_catalog.default.household_demographics (30)
 
 
 (1) CometScan parquet spark_catalog.default.call_center
@@ -211,7 +212,7 @@ Arguments: [c_current_hdemo_sk#15], [hd_demo_sk#22], Inner, BuildRight
 Input [8]: [cc_call_center_id#2, cc_name#3, cc_manager#4, cr_net_loss#7, c_current_hdemo_sk#15, cd_marital_status#20, cd_education_status#21, hd_demo_sk#22]
 Arguments: [cc_call_center_id#2, cc_name#3, cc_manager#4, cr_net_loss#7, cd_marital_status#20, cd_education_status#21], [cc_call_center_id#2, cc_name#3, cc_manager#4, cr_net_loss#7, cd_marital_status#20, cd_education_status#21]
 
-(36) ColumnarToRow [codegen id : 1]
+(36) CometColumnarToRow [codegen id : 1]
 Input [6]: [cc_call_center_id#2, cc_name#3, cc_manager#4, cr_net_loss#7, cd_marital_status#20, cd_education_status#21]
 
 (37) HashAggregate [codegen id : 1]
@@ -221,57 +222,60 @@ Functions [1]: [partial_sum(UnscaledValue(cr_net_loss#7))]
 Aggregate Attributes [1]: [sum#24]
 Results [6]: [cc_call_center_id#2, cc_name#3, cc_manager#4, cd_marital_status#20, cd_education_status#21, sum#25]
 
-(38) Exchange
+(38) CometColumnarExchange
 Input [6]: [cc_call_center_id#2, cc_name#3, cc_manager#4, cd_marital_status#20, cd_education_status#21, sum#25]
-Arguments: hashpartitioning(cc_call_center_id#2, cc_name#3, cc_manager#4, cd_marital_status#20, cd_education_status#21, 5), ENSURE_REQUIREMENTS, [plan_id=1]
+Arguments: hashpartitioning(cc_call_center_id#2, cc_name#3, cc_manager#4, cd_marital_status#20, cd_education_status#21, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
-(39) HashAggregate [codegen id : 2]
+(39) CometColumnarToRow [codegen id : 2]
+Input [6]: [cc_call_center_id#2, cc_name#3, cc_manager#4, cd_marital_status#20, cd_education_status#21, sum#25]
+
+(40) HashAggregate [codegen id : 2]
 Input [6]: [cc_call_center_id#2, cc_name#3, cc_manager#4, cd_marital_status#20, cd_education_status#21, sum#25]
 Keys [5]: [cc_call_center_id#2, cc_name#3, cc_manager#4, cd_marital_status#20, cd_education_status#21]
 Functions [1]: [sum(UnscaledValue(cr_net_loss#7))]
 Aggregate Attributes [1]: [sum(UnscaledValue(cr_net_loss#7))#26]
 Results [4]: [cc_call_center_id#2 AS Call_Center#27, cc_name#3 AS Call_Center_Name#28, cc_manager#4 AS Manager#29, MakeDecimal(sum(UnscaledValue(cr_net_loss#7))#26,17,2) AS Returns_Loss#30]
 
-(40) CometColumnarExchange
+(41) CometColumnarExchange
 Input [4]: [Call_Center#27, Call_Center_Name#28, Manager#29, Returns_Loss#30]
 Arguments: rangepartitioning(Returns_Loss#30 DESC NULLS LAST, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
-(41) CometSort
+(42) CometSort
 Input [4]: [Call_Center#27, Call_Center_Name#28, Manager#29, Returns_Loss#30]
 Arguments: [Call_Center#27, Call_Center_Name#28, Manager#29, Returns_Loss#30], [Returns_Loss#30 DESC NULLS LAST]
 
-(42) ColumnarToRow [codegen id : 3]
+(43) CometColumnarToRow [codegen id : 3]
 Input [4]: [Call_Center#27, Call_Center_Name#28, Manager#29, Returns_Loss#30]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 3 Hosting Expression = cr_returned_date_sk#8 IN dynamicpruning#9
-BroadcastExchange (47)
-+- * ColumnarToRow (46)
-   +- CometProject (45)
-      +- CometFilter (44)
-         +- CometScan parquet spark_catalog.default.date_dim (43)
+BroadcastExchange (48)
++- * CometColumnarToRow (47)
+   +- CometProject (46)
+      +- CometFilter (45)
+         +- CometScan parquet spark_catalog.default.date_dim (44)
 
 
-(43) CometScan parquet spark_catalog.default.date_dim
+(44) CometScan parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#10, d_year#11, d_moy#12]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), IsNotNull(d_moy), EqualTo(d_year,1998), EqualTo(d_moy,11), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
-(44) CometFilter
+(45) CometFilter
 Input [3]: [d_date_sk#10, d_year#11, d_moy#12]
 Condition : ((((isnotnull(d_year#11) AND isnotnull(d_moy#12)) AND (d_year#11 = 1998)) AND (d_moy#12 = 11)) AND isnotnull(d_date_sk#10))
 
-(45) CometProject
+(46) CometProject
 Input [3]: [d_date_sk#10, d_year#11, d_moy#12]
 Arguments: [d_date_sk#10], [d_date_sk#10]
 
-(46) ColumnarToRow [codegen id : 1]
+(47) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#10]
 
-(47) BroadcastExchange
+(48) BroadcastExchange
 Input [1]: [d_date_sk#10]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=3]
 

@@ -373,6 +373,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[AggExpr] = {
+
+    if (aggExpr.isDistinct) {
+      // https://github.com/apache/datafusion-comet/issues/1260
+      withInfo(aggExpr, "distinct aggregates are not supported")
+      return None
+    }
+
     aggExpr.aggregateFunction match {
       case s @ Sum(child, _) if sumDataTypeSupported(s.dataType) && isLegacyMode(s) =>
         val childExpr = exprToProto(child, inputs, binding)
@@ -1747,7 +1754,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             exprToProtoInternal(elements._1, inputs)
           })
           val thenSeq = branches.map(elements => {
-            allBranches = allBranches :+ elements._1
+            allBranches = allBranches :+ elements._2
             exprToProtoInternal(elements._2, inputs)
           })
           assert(whenSeq.length == thenSeq.length)
@@ -1790,10 +1797,19 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           optExprWithInfo(optExpr, expr, child)
 
         case InitCap(child) =>
-          val castExpr = Cast(child, StringType)
-          val childExpr = exprToProtoInternal(castExpr, inputs)
-          val optExpr = scalarExprToProto("initcap", childExpr)
-          optExprWithInfo(optExpr, expr, castExpr)
+          if (CometConf.COMET_EXEC_INITCAP_ENABLED.get()) {
+            val castExpr = Cast(child, StringType)
+            val childExpr = exprToProtoInternal(castExpr, inputs)
+            val optExpr = scalarExprToProto("initcap", childExpr)
+            optExprWithInfo(optExpr, expr, castExpr)
+          } else {
+            withInfo(
+              expr,
+              "Comet initCap is not compatible with Spark yet. " +
+                "See https://github.com/apache/datafusion-comet/issues/1052 ." +
+                s"Set ${CometConf.COMET_EXEC_INITCAP_ENABLED.key}=true to enable it anyway.")
+            None
+          }
 
         case Length(child) =>
           val castExpr = Cast(child, StringType)
@@ -2268,6 +2284,18 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             withInfo(expr, "unsupported arguments for GetArrayStructFields", child)
             None
           }
+        case expr if expr.prettyName == "array_remove" =>
+          createBinaryExpr(
+            expr.children(0),
+            expr.children(1),
+            inputs,
+            (builder, binaryExpr) => builder.setArrayRemove(binaryExpr))
+        case expr if expr.prettyName == "array_contains" =>
+          createBinaryExpr(
+            expr.children(0),
+            expr.children(1),
+            inputs,
+            (builder, binaryExpr) => builder.setArrayContains(binaryExpr))
         case _ if expr.prettyName == "array_append" =>
           createBinaryExpr(
             expr.children(0),
@@ -2932,11 +2960,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           case RightOuter => JoinType.RightOuter
           case FullOuter => JoinType.FullOuter
           case LeftSemi => JoinType.LeftSemi
-          // TODO: DF SMJ with join condition fails TPCH q21
-          case LeftAnti if condition.isEmpty => JoinType.LeftAnti
-          case LeftAnti =>
-            withInfo(join, "LeftAnti SMJ join with condition is not supported")
-            return None
+          case LeftAnti => JoinType.LeftAnti
           case _ =>
             // Spark doesn't support other join types
             withInfo(op, s"Unsupported join type ${join.joinType}")
@@ -3225,17 +3249,22 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       orderSpec: Seq[SortOrder],
       op: SparkPlan): Boolean = {
     if (partitionSpec.length != orderSpec.length) {
-      withInfo(op, "Partitioning and sorting specifications do not match")
       return false
     }
 
-    val partitionColumnNames = partitionSpec.collect { case a: AttributeReference =>
-      a.name
+    val partitionColumnNames = partitionSpec.collect {
+      case a: AttributeReference => a.name
+      case other =>
+        withInfo(op, s"Unsupported partition expression: ${other.getClass.getSimpleName}")
+        return false
     }
 
     val orderColumnNames = orderSpec.collect { case s: SortOrder =>
       s.child match {
         case a: AttributeReference => a.name
+        case other =>
+          withInfo(op, s"Unsupported sort expression: ${other.getClass.getSimpleName}")
+          return false
       }
     }
 
