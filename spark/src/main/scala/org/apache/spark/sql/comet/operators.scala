@@ -270,62 +270,61 @@ abstract class CometNativeExec extends CometExec {
           throw new CometRuntimeException(s"Cannot find the first non broadcast plan: $this")
         }
 
-        // If the first non broadcast plan is found, we need to adjust the partition number of
-        // the broadcast plans to make sure they have the same partition number as the first non
-        // broadcast plan.
-        val firstNonBroadcastPlanNumPartitions =
-          firstNonBroadcastPlan.map { x =>
-            val p: SparkPlan = x._1
-            val z = p.outputPartitioning.numPartitions
-            println(s"firstNonBroadcastPlanNumPartitions (${p.nodeName}) = $z")
-            z
-          }
-
         // Spark doesn't need to zip Broadcast RDDs, so it doesn't schedule Broadcast RDDs with
         // same partition number. But for Comet, we need to zip them so we need to adjust the
         // partition number of Broadcast RDDs to make sure they have the same partition number.
-        firstNonBroadcastPlanNumPartitions match {
-          case Some(n) =>
-            println(s"Setting broadcast partitions to $n")
 
-            sparkPlans.zipWithIndex.foreach { case (plan, _) =>
-              plan match {
-                case c: CometBroadcastExchangeExec =>
-                  inputs += c
-                    .setNumPartitions(n)
-                    .executeColumnar()
-                case BroadcastQueryStageExec(_, c: CometBroadcastExchangeExec, _) =>
-                  inputs += c
-                    .setNumPartitions(n)
-                    .executeColumnar()
-                case ReusedExchangeExec(_, c: CometBroadcastExchangeExec) =>
-                  inputs += c
-                    .setNumPartitions(n)
-                    .executeColumnar()
-                case BroadcastQueryStageExec(
-                      _,
-                      ReusedExchangeExec(_, c: CometBroadcastExchangeExec),
-                      _) =>
-                  inputs += c
-                    .setNumPartitions(n)
-                    .executeColumnar()
-                case _: CometNativeExec =>
-                // no-op
-                case _ =>
-                  val rdd = plan.executeColumnar()
-                  if (plan.outputPartitioning.numPartitions != n) {
-                    throw new CometRuntimeException(
-                      s"Partition number mismatch: ${rdd.getNumPartitions} != " +
-                        s"${firstNonBroadcastPlanNumPartitions.get}")
-                  } else {
-                    inputs += rdd
-                  }
-                case _ =>
-                  throw new CometRuntimeException(s"Unexpected plan: $plan")
-              }
-            }
-          case _ =>
-            println("firstNonBroadcastPlan was empty")
+        def foo(plan: SparkPlan): Boolean = {
+          plan match {
+            case _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec | _: ReusedExchangeExec
+                 | _: BroadcastQueryStageExec | _: CometNativeExec => true
+            case _ => false
+          }
+        }
+
+        val sparkPlans1 = sparkPlans.filterNot(foo)
+        val sparkPlans2 = sparkPlans.filter(foo)
+
+        // execute non-broadcast plans first so we know the output partitioning
+        sparkPlans1.foreach {
+          case _: CometNativeExec =>
+            // no-op
+          case plan =>
+            val rdd = plan.executeColumnar()
+            inputs += rdd
+        }
+
+        if (inputs.map(_.getNumPartitions).distinct.length > 1) {
+          throw new CometRuntimeException("Partition number mismatch")
+        }
+
+        // If the first non broadcast plan is found, we need to adjust the partition number of
+        // the broadcast plans to make sure they have the same partition number as the first non
+        // broadcast plan.
+        val forceNumPartitions = inputs.headOption.map(_.getNumPartitions)
+
+        sparkPlans2.foreach {
+          case c: CometBroadcastExchangeExec if forceNumPartitions.isDefined =>
+            inputs += c
+              .setNumPartitions(forceNumPartitions.get)
+              .executeColumnar()
+          case BroadcastQueryStageExec(_, c: CometBroadcastExchangeExec, _) if forceNumPartitions.isDefined =>
+            inputs += c
+              .setNumPartitions(forceNumPartitions.get)
+              .executeColumnar()
+          case ReusedExchangeExec(_, c: CometBroadcastExchangeExec) if forceNumPartitions.isDefined =>
+            inputs += c
+              .setNumPartitions(forceNumPartitions.get)
+              .executeColumnar()
+          case BroadcastQueryStageExec(_, ReusedExchangeExec(_, c: CometBroadcastExchangeExec), _) if forceNumPartitions.isDefined =>
+            inputs += c
+              .setNumPartitions(forceNumPartitions.get)
+              .executeColumnar()
+          case _: CometNativeExec =>
+            // no-op
+          case plan =>
+            val rdd = plan.executeColumnar()
+            inputs += rdd
         }
 
         if (inputs.isEmpty && !sparkPlans.forall(_.isInstanceOf[CometNativeExec])) {
@@ -333,9 +332,14 @@ abstract class CometNativeExec extends CometExec {
         }
 
         if (inputs.nonEmpty) {
+          val debugStr = inputs
+            .map(x => s"${x.getClass.getSimpleName} parts = ${x.getNumPartitions}")
+            .mkString("\n\t")
+          println(s"zipping these RDDS:\n\t$debugStr")
           ZippedPartitionsRDD(sparkContext, inputs.toSeq)(createCometExecIter)
         } else {
-          val partitionNum = firstNonBroadcastPlanNumPartitions.get
+          // TODO
+          val partitionNum = 0 // firstNonBroadcastPlanNumPartitions.get
           CometExecRDD(sparkContext, partitionNum)(createCometExecIter)
         }
     }
