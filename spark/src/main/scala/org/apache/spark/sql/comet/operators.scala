@@ -660,10 +660,6 @@ case class CometUnionExec(
     children: Seq[SparkPlan])
     extends CometExec {
 
-  // outputPartitioning currently returns UnknownPartitioning(0) but is should probably be
-  // based on its children?
-  // override def outputPartitioning: Partitioning = children.head.outputPartitioning
-
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     sparkContext.union(children.map(_.executeColumnar()))
   }
