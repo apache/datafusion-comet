@@ -234,12 +234,23 @@ abstract class CometNativeExec extends CometExec {
 
         foreachUntilCometInput(this)(sparkPlans += _)
 
+        // scalastyle:off println
+        println("------------------")
+        sparkPlans.foreach {
+          case p: CometUnionExec =>
+            println(s"${p.getClass} has ${p.outputPartitioning} and first child has ${p.children.head.outputPartitioning}")
+          case p =>
+            println(s"${p.getClass} has ${p.outputPartitioning}")
+        }
+        println("------------------")
+
         // Find the first non broadcast plan
         val firstNonBroadcastPlan = sparkPlans.zipWithIndex.find {
           case (_: CometBroadcastExchangeExec, _) => false
           case (BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _), _) => false
           case (BroadcastQueryStageExec(_, _: ReusedExchangeExec, _), _) => false
-          case _ => true
+          case _ =>
+            true
         }
 
         val containsBroadcastInput = sparkPlans.exists {
@@ -248,6 +259,8 @@ abstract class CometNativeExec extends CometExec {
           case BroadcastQueryStageExec(_, _: ReusedExchangeExec, _) => true
           case _ => false
         }
+
+        println(s"containsBroadcastInput = $containsBroadcastInput")
 
         // If the first non broadcast plan is not found, it means all the plans are broadcast plans.
         // This is not expected, so throw an exception.
@@ -259,48 +272,59 @@ abstract class CometNativeExec extends CometExec {
         // the broadcast plans to make sure they have the same partition number as the first non
         // broadcast plan.
         val firstNonBroadcastPlanNumPartitions =
-          firstNonBroadcastPlan.map(_._1.outputPartitioning.numPartitions)
+          firstNonBroadcastPlan.map { x =>
+            val p: SparkPlan = x._1
+            val z = p.outputPartitioning.numPartitions
+            println(s"firstNonBroadcastPlanNumPartitions (${p.nodeName}) = $z")
+            z
+          }
 
         // Spark doesn't need to zip Broadcast RDDs, so it doesn't schedule Broadcast RDDs with
         // same partition number. But for Comet, we need to zip them so we need to adjust the
         // partition number of Broadcast RDDs to make sure they have the same partition number.
-        sparkPlans.zipWithIndex.foreach { case (plan, _) =>
-          plan match {
-            case c: CometBroadcastExchangeExec if firstNonBroadcastPlanNumPartitions.nonEmpty =>
-              inputs += c
-                .setNumPartitions(firstNonBroadcastPlanNumPartitions.get)
-                .executeColumnar()
-            case BroadcastQueryStageExec(_, c: CometBroadcastExchangeExec, _)
-                if firstNonBroadcastPlanNumPartitions.nonEmpty =>
-              inputs += c
-                .setNumPartitions(firstNonBroadcastPlanNumPartitions.get)
-                .executeColumnar()
-            case ReusedExchangeExec(_, c: CometBroadcastExchangeExec)
-                if firstNonBroadcastPlanNumPartitions.nonEmpty =>
-              inputs += c
-                .setNumPartitions(firstNonBroadcastPlanNumPartitions.get)
-                .executeColumnar()
-            case BroadcastQueryStageExec(
-                  _,
-                  ReusedExchangeExec(_, c: CometBroadcastExchangeExec),
-                  _) if firstNonBroadcastPlanNumPartitions.nonEmpty =>
-              inputs += c
-                .setNumPartitions(firstNonBroadcastPlanNumPartitions.get)
-                .executeColumnar()
-            case _: CometNativeExec =>
-            // no-op
-            case _ if firstNonBroadcastPlanNumPartitions.nonEmpty =>
-              val rdd = plan.executeColumnar()
-              if (plan.outputPartitioning.numPartitions != firstNonBroadcastPlanNumPartitions.get) {
-                throw new CometRuntimeException(
-                  s"Partition number mismatch: ${rdd.getNumPartitions} != " +
-                    s"${firstNonBroadcastPlanNumPartitions.get}")
-              } else {
-                inputs += rdd
+        firstNonBroadcastPlanNumPartitions match {
+          case Some(n) =>
+
+            println(s"Setting broadcast partitions to $n")
+
+            sparkPlans.zipWithIndex.foreach { case (plan, _) =>
+              plan match {
+                case c: CometBroadcastExchangeExec =>
+                  inputs += c
+                    .setNumPartitions(n)
+                    .executeColumnar()
+                case BroadcastQueryStageExec(_, c: CometBroadcastExchangeExec, _) =>
+                  inputs += c
+                    .setNumPartitions(n)
+                    .executeColumnar()
+                case ReusedExchangeExec(_, c: CometBroadcastExchangeExec) =>
+                  inputs += c
+                    .setNumPartitions(n)
+                    .executeColumnar()
+                case BroadcastQueryStageExec(
+                _,
+                ReusedExchangeExec(_, c: CometBroadcastExchangeExec),
+                _) =>
+                  inputs += c
+                    .setNumPartitions(n)
+                    .executeColumnar()
+                case _: CometNativeExec =>
+                // no-op
+                case _ =>
+                  val rdd = plan.executeColumnar()
+                  if (plan.outputPartitioning.numPartitions != n) {
+                    throw new CometRuntimeException(
+                      s"Partition number mismatch: ${rdd.getNumPartitions} != " +
+                        s"${firstNonBroadcastPlanNumPartitions.get}")
+                  } else {
+                    inputs += rdd
+                  }
+                case _ =>
+                  throw new CometRuntimeException(s"Unexpected plan: $plan")
               }
-            case _ =>
-              throw new CometRuntimeException(s"Unexpected plan: $plan")
-          }
+            }
+          case _ =>
+            println("firstNonBroadcastPlan was empty")
         }
 
         if (inputs.isEmpty && !sparkPlans.forall(_.isInstanceOf[CometNativeExec])) {
@@ -648,6 +672,11 @@ case class CometUnionExec(
     override val output: Seq[Attribute],
     children: Seq[SparkPlan])
     extends CometExec {
+
+  // outputPartitioning currently returns UnknownPartitioning(0) but is should probably be
+  // based on its children?
+  // override def outputPartitioning: Partitioning = children.head.outputPartitioning
+
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     sparkContext.union(children.map(_.executeColumnar()))
   }

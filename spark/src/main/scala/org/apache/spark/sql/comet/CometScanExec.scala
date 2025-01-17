@@ -132,11 +132,14 @@ case class CometScanExec(
   lazy val bucketedScan: Boolean = wrapped.bucketedScan
 
   override lazy val (outputPartitioning, outputOrdering): (Partitioning, Seq[SortOrder]) = {
+    // scalastyle:off println
+    println("wrapped " + wrapped.outputPartitioning)
     if (bucketedScan) {
       (wrapped.outputPartitioning, wrapped.outputOrdering)
     } else {
       val files = selectedPartitions.flatMap(partition => partition.files)
       val numPartitions = files.length
+      println("CometScanExec num Parts = " + numPartitions)
       (UnknownPartitioning(numPartitions), wrapped.outputOrdering)
     }
   }

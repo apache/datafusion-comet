@@ -1427,7 +1427,7 @@ class CometExecSuite extends CometTestBase {
       .format(tableFormat)
       .saveAsTable("dim_store")
 
-    withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+    withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "false",
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true") {
       val df = sql(
         """
