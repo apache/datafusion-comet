@@ -108,8 +108,6 @@ case class CometBroadcastExchangeExec(
   private var numPartitions: Option[Int] = None
 
   def setNumPartitions(numPartitions: Int): CometBroadcastExchangeExec = {
-    // scalastyle:off println
-    println(s"setNumPartitions($numPartitions)")
     this.numPartitions = Some(numPartitions)
     this
   }
