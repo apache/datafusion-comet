@@ -274,7 +274,7 @@ abstract class CometNativeExec extends CometExec {
         // same partition number. But for Comet, we need to zip them so we need to adjust the
         // partition number of Broadcast RDDs to make sure they have the same partition number.
 
-        def foo(plan: SparkPlan): Boolean = {
+        def isBroadcastOrNative(plan: SparkPlan): Boolean = {
           plan match {
             case _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec | _: ReusedExchangeExec
                  | _: BroadcastQueryStageExec | _: CometNativeExec => true
@@ -282,8 +282,8 @@ abstract class CometNativeExec extends CometExec {
           }
         }
 
-        val sparkPlans1 = sparkPlans.filterNot(foo)
-        val sparkPlans2 = sparkPlans.filter(foo)
+        val sparkPlans1 = sparkPlans.filterNot(isBroadcastOrNative)
+        val sparkPlans2 = sparkPlans.filter(isBroadcastOrNative)
 
         // execute non-broadcast plans first so we know the output partitioning
         sparkPlans1.foreach {
@@ -332,10 +332,6 @@ abstract class CometNativeExec extends CometExec {
         }
 
         if (inputs.nonEmpty) {
-          val debugStr = inputs
-            .map(x => s"${x.getClass.getSimpleName} parts = ${x.getNumPartitions}")
-            .mkString("\n\t")
-          println(s"zipping these RDDS:\n\t$debugStr")
           ZippedPartitionsRDD(sparkContext, inputs.toSeq)(createCometExecIter)
         } else {
           // TODO
