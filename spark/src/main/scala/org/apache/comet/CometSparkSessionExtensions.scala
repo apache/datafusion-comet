@@ -190,7 +190,7 @@ class CometSparkSessionExtensions
 
           // data source V1
           case scanExec @ FileSourceScanExec(
-                HadoopFsRelation(_, partitionSchema, _, _, _, _),
+                HadoopFsRelation(_, partitionSchema, _, _, fileFormat, _),
                 _: Seq[_],
                 requiredSchema,
                 _,
@@ -199,7 +199,8 @@ class CometSparkSessionExtensions
                 _,
                 _,
                 _)
-              if CometNativeScanExec.isSchemaSupported(requiredSchema)
+              if CometScanExec.isFileFormatSupported(fileFormat)
+                && CometNativeScanExec.isSchemaSupported(requiredSchema)
                 && CometNativeScanExec.isSchemaSupported(partitionSchema)
                 // TODO we only enable full native scan if COMET_EXEC_ENABLED is enabled
                 // but this is not really what we want .. we currently insert `CometScanExec`
