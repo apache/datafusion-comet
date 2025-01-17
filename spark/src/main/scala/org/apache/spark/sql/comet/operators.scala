@@ -262,8 +262,9 @@ abstract class CometNativeExec extends CometExec {
 
         def isBroadcastOrNative(plan: SparkPlan): Boolean = {
           plan match {
-            case _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec | _: ReusedExchangeExec
-                 | _: BroadcastQueryStageExec | _: CometNativeExec => true
+            case _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec |
+                _: ReusedExchangeExec | _: BroadcastQueryStageExec | _: CometNativeExec =>
+              true
             case _ => false
           }
         }
@@ -274,7 +275,7 @@ abstract class CometNativeExec extends CometExec {
         // execute non-broadcast plans first so we know the output partitioning
         sparkPlans1.foreach {
           case _: CometNativeExec =>
-            // no-op
+          // no-op
           case plan =>
             val rdd = plan.executeColumnar()
             inputs += rdd
@@ -294,20 +295,23 @@ abstract class CometNativeExec extends CometExec {
             inputs += c
               .setNumPartitions(forceNumPartitions.get)
               .executeColumnar()
-          case BroadcastQueryStageExec(_, c: CometBroadcastExchangeExec, _) if forceNumPartitions.isDefined =>
+          case BroadcastQueryStageExec(_, c: CometBroadcastExchangeExec, _)
+              if forceNumPartitions.isDefined =>
             inputs += c
               .setNumPartitions(forceNumPartitions.get)
               .executeColumnar()
-          case ReusedExchangeExec(_, c: CometBroadcastExchangeExec) if forceNumPartitions.isDefined =>
+          case ReusedExchangeExec(_, c: CometBroadcastExchangeExec)
+              if forceNumPartitions.isDefined =>
             inputs += c
               .setNumPartitions(forceNumPartitions.get)
               .executeColumnar()
-          case BroadcastQueryStageExec(_, ReusedExchangeExec(_, c: CometBroadcastExchangeExec), _) if forceNumPartitions.isDefined =>
+          case BroadcastQueryStageExec(_, ReusedExchangeExec(_, c: CometBroadcastExchangeExec), _)
+              if forceNumPartitions.isDefined =>
             inputs += c
               .setNumPartitions(forceNumPartitions.get)
               .executeColumnar()
           case _: CometNativeExec =>
-            // no-op
+          // no-op
           case plan =>
             val rdd = plan.executeColumnar()
             inputs += rdd
