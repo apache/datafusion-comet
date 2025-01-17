@@ -1396,8 +1396,7 @@ class CometExecSuite extends CometTestBase {
       (1270, 22, 5, 50),
       (1280, 23, 1, 50),
       (1290, 24, 1, 50),
-      (1300, 25, 1, 50)
-    )
+      (1300, 25, 1, 50))
 
     val storeData = Seq[(Int, String, String)](
       (1, "North-Holland", "NL"),
@@ -1405,32 +1404,34 @@ class CometExecSuite extends CometTestBase {
       (3, "Bavaria", "DE"),
       (4, "California", "US"),
       (5, "Texas", "US"),
-      (6, "Texas", "US")
-    )
+      (6, "Texas", "US"))
 
     val tableFormat = "parquet"
 
-    factData.toDF("date_id", "store_id", "product_id", "units_sold")
+    factData
+      .toDF("date_id", "store_id", "product_id", "units_sold")
       .write
       .partitionBy("store_id")
       .format(tableFormat)
       .saveAsTable("fact_sk")
 
-    factData.toDF("date_id", "store_id", "product_id", "units_sold")
+    factData
+      .toDF("date_id", "store_id", "product_id", "units_sold")
       .write
       .partitionBy("store_id")
       .format(tableFormat)
       .saveAsTable("fact_stats")
 
-    storeData.toDF("store_id", "state_province", "country")
+    storeData
+      .toDF("store_id", "state_province", "country")
       .write
       .format(tableFormat)
       .saveAsTable("dim_store")
 
-    withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "false",
+    withSQLConf(
+      SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "false",
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true") {
-      val df = sql(
-        """
+      val df = sql("""
           |SELECT f.store_id,
           |       f.date_id,
           |       s.state_province
@@ -1450,7 +1451,7 @@ class CometExecSuite extends CometTestBase {
           |WHERE s.country = 'US'
           |""".stripMargin)
 
-      //checkPartitionPruningPredicate(df, withSubquery = false, withBroadcast = false)
+      // checkPartitionPruningPredicate(df, withSubquery = false, withBroadcast = false)
       checkAnswer(df, Row(4, 1300, "California") :: Row(5, 1000, "Texas") :: Nil)
     }
   }

@@ -238,7 +238,9 @@ abstract class CometNativeExec extends CometExec {
         println("------------------")
         sparkPlans.foreach {
           case p: CometUnionExec =>
-            println(s"${p.getClass} has ${p.outputPartitioning} and first child has ${p.children.head.outputPartitioning}")
+            println(
+              s"${p.getClass} has ${p.outputPartitioning}; " +
+                s"first child has ${p.children.head.outputPartitioning}")
           case p =>
             println(s"${p.getClass} has ${p.outputPartitioning}")
         }
@@ -284,7 +286,6 @@ abstract class CometNativeExec extends CometExec {
         // partition number of Broadcast RDDs to make sure they have the same partition number.
         firstNonBroadcastPlanNumPartitions match {
           case Some(n) =>
-
             println(s"Setting broadcast partitions to $n")
 
             sparkPlans.zipWithIndex.foreach { case (plan, _) =>
@@ -302,9 +303,9 @@ abstract class CometNativeExec extends CometExec {
                     .setNumPartitions(n)
                     .executeColumnar()
                 case BroadcastQueryStageExec(
-                _,
-                ReusedExchangeExec(_, c: CometBroadcastExchangeExec),
-                _) =>
+                      _,
+                      ReusedExchangeExec(_, c: CometBroadcastExchangeExec),
+                      _) =>
                   inputs += c
                     .setNumPartitions(n)
                     .executeColumnar()
