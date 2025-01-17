@@ -234,18 +234,6 @@ abstract class CometNativeExec extends CometExec {
 
         foreachUntilCometInput(this)(sparkPlans += _)
 
-        // scalastyle:off println
-        println("------------------")
-        sparkPlans.foreach {
-          case p: CometUnionExec =>
-            println(
-              s"${p.getClass} has ${p.outputPartitioning}; " +
-                s"first child has ${p.children.head.outputPartitioning}")
-          case p =>
-            println(s"${p.getClass} has ${p.outputPartitioning}")
-        }
-        println("------------------")
-
         // Find the first non broadcast plan
         val firstNonBroadcastPlan = sparkPlans.zipWithIndex.find {
           case (_: CometBroadcastExchangeExec, _) => false
@@ -261,8 +249,6 @@ abstract class CometNativeExec extends CometExec {
           case BroadcastQueryStageExec(_, _: ReusedExchangeExec, _) => true
           case _ => false
         }
-
-        println(s"containsBroadcastInput = $containsBroadcastInput")
 
         // If the first non broadcast plan is not found, it means all the plans are broadcast plans.
         // This is not expected, so throw an exception.
@@ -334,7 +320,7 @@ abstract class CometNativeExec extends CometExec {
         if (inputs.nonEmpty) {
           ZippedPartitionsRDD(sparkContext, inputs.toSeq)(createCometExecIter)
         } else {
-          // TODO
+          // TODO this seems to be unreachable?
           val partitionNum = 0 // firstNonBroadcastPlanNumPartitions.get
           CometExecRDD(sparkContext, partitionNum)(createCometExecIter)
         }
