@@ -242,9 +242,16 @@ abstract class CometNativeExec extends CometExec {
           case _ => true
         }
 
+        val containsBroadcastInput = sparkPlans.exists {
+          case _: CometBroadcastExchangeExec => true
+          case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
+          case BroadcastQueryStageExec(_, _: ReusedExchangeExec, _) => true
+          case _ => false
+        }
+
         // If the first non broadcast plan is not found, it means all the plans are broadcast plans.
         // This is not expected, so throw an exception.
-        if (firstNonBroadcastPlan.isEmpty) {
+        if (containsBroadcastInput && firstNonBroadcastPlan.isEmpty) {
           throw new CometRuntimeException(s"Cannot find the first non broadcast plan: $this")
         }
 
@@ -292,11 +299,16 @@ abstract class CometNativeExec extends CometExec {
           }
         }
 
-        if (inputs.isEmpty) {
+        if (inputs.isEmpty && !sparkPlans.forall(_.isInstanceOf[CometNativeExec])) {
           throw new CometRuntimeException(s"No input for CometNativeExec:\n $this")
         }
 
-        ZippedPartitionsRDD(sparkContext, inputs.toSeq)(createCometExecIter)
+        if (inputs.nonEmpty) {
+          ZippedPartitionsRDD(sparkContext, inputs.toSeq)(createCometExecIter)
+        } else {
+          val partitionNum = firstNonBroadcastPlanNumPartitions
+          CometExecRDD(sparkContext, partitionNum)(createCometExecIter)
+        }
     }
   }
 
