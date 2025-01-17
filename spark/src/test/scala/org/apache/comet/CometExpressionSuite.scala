@@ -1931,8 +1931,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("hash functions with decimal input") {
     withTable("t1", "t2") {
-      // when precision is less than or equal to 18, spark use decimal long value to calculate hash.
-      // refer: org.apache.spark.sql.catalyst.expressions.InterpretedHashFunction.hash
+      // Apache Spark: if it's a small decimal, i.e. precision <= 18, turn it into long and hash it.
+      // Else, turn it into bytes and hash it.
       sql("create table t1(c1 decimal(18, 2)) using parquet")
       sql("insert into t1 values(1.23), (-1.23), (0.0), (null)")
       checkSparkAnswerAndOperator("select c1, hash(c1), xxhash64(c1) from t1 order by c1")

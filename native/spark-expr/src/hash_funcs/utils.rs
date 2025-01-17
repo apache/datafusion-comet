@@ -105,29 +105,38 @@ macro_rules! hash_array_primitive_float {
 }
 
 #[macro_export]
-macro_rules! hash_array_decimal {
-    ($array_type:ident, $column: ident, $hashes: ident, $hash_method: ident, $precision: ident) => {
+macro_rules! hash_array_small_decimal {
+    ($array_type:ident, $column: ident, $hashes: ident, $hash_method: ident) => {
         let array = $column.as_any().downcast_ref::<$array_type>().unwrap();
-        let precision = *$precision;
 
         if array.null_count() == 0 {
             for (i, hash) in $hashes.iter_mut().enumerate() {
-                // when precision is less than or equal to 18, spark use deimal long value to calculate hash.
-                // refer: org.apache.spark.sql.catalyst.expressions.InterpretedHashFunction.hash
-                if precision <= 18 {
-                    *hash = $hash_method(i64::try_from(array.value(i)).unwrap().to_le_bytes(), *hash);
-                } else {
-                    *hash = $hash_method(array.value(i).to_le_bytes(), *hash);
-                };
+                *hash = $hash_method(i64::try_from(array.value(i)).unwrap().to_le_bytes(), *hash);
             }
         } else {
             for (i, hash) in $hashes.iter_mut().enumerate() {
                 if !array.is_null(i) {
-                    if precision <= 18 {
-                        *hash = $hash_method(i64::try_from(array.value(i)).unwrap().to_le_bytes(), *hash);
-                    } else {
-                        *hash = $hash_method(array.value(i).to_le_bytes(), *hash);
-                    };
+                    *hash =
+                        $hash_method(i64::try_from(array.value(i)).unwrap().to_le_bytes(), *hash);
+                }
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! hash_array_decimal {
+    ($array_type:ident, $column: ident, $hashes: ident, $hash_method: ident) => {
+        let array = $column.as_any().downcast_ref::<$array_type>().unwrap();
+
+        if array.null_count() == 0 {
+            for (i, hash) in $hashes.iter_mut().enumerate() {
+                *hash = $hash_method(array.value(i).to_le_bytes(), *hash);
+            }
+        } else {
+            for (i, hash) in $hashes.iter_mut().enumerate() {
+                if !array.is_null(i) {
+                    *hash = $hash_method(array.value(i).to_le_bytes(), *hash);
                 }
             }
         }
@@ -285,14 +294,13 @@ macro_rules! create_hashes_internal {
                 DataType::FixedSizeBinary(_) => {
                     $crate::hash_array!(FixedSizeBinaryArray, col, $hashes_buffer, $hash_method);
                 }
-                DataType::Decimal128(precision, _) => {
-                    $crate::hash_array_decimal!(
-                        Decimal128Array,
-                        col,
-                        $hashes_buffer,
-                        $hash_method,
-                        precision
-                    );
+                // Apache Spark: if it's a small decimal, i.e. precision <= 18, turn it into long and hash it.
+                // Else, turn it into bytes and hash it.
+                DataType::Decimal128(precision, _) if *precision <= 18 => {
+                    $crate::hash_array_small_decimal!(Decimal128Array, col, $hashes_buffer, $hash_method);
+                }
+                DataType::Decimal128(_, _) => {
+                    $crate::hash_array_decimal!(Decimal128Array, col, $hashes_buffer, $hash_method);
                 }
                 DataType::Dictionary(index_type, _) => match **index_type {
                     DataType::Int8 => {
