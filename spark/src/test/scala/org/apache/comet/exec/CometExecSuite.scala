@@ -1363,7 +1363,8 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  test("SPARK-38570: Fix incorrect DynamicPartitionPruning caused by Literal") {
+  // TODO remove this test once all Spark SQL tests pass
+  ignore("SPARK-38570: Fix incorrect DynamicPartitionPruning caused by Literal") {
     val factData = Seq[(Int, Int, Int, Int)](
       (1000, 1, 1, 10),
       (1010, 2, 1, 10),
