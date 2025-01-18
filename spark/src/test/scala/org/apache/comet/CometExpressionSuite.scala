@@ -2551,4 +2551,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+  test("array_distinct") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10)
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+        checkSparkAnswerAndOperator(spark.sql("Select array_distinct(array(_2, _3,_4)) from t1"))
+        checkSparkAnswerAndOperator(
+          spark.sql("Select array_distinct(array(_2,_4, null)) from t1"))
+      }
+    }
+  }
 }
