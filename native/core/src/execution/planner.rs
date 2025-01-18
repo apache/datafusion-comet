@@ -2078,7 +2078,6 @@ impl PhysicalPlanner {
         }
     }
 
-
     fn create_scalar_function_expr(
         &self,
         expr: &ScalarFunc,
@@ -2090,18 +2089,12 @@ impl PhysicalPlanner {
             .map(|x| self.create_expr(x, Arc::clone(&input_schema)))
             .collect::<Result<Vec<_>, _>>()?;
 
-        println!("args: {:?}", args);
-
         let fun_name = &expr.func;
-
-        println!("function name: {}", fun_name);
 
         let input_expr_types = args
             .iter()
             .map(|x| x.data_type(input_schema.as_ref()))
             .collect::<Result<Vec<_>, _>>()?;
-
-        println!("input_expr_types: {:?}", input_expr_types);
 
         let (data_type, coerced_input_types) =
             match expr.return_type.as_ref().map(to_arrow_datatype) {
