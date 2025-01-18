@@ -85,9 +85,10 @@ message Expr {
     BinaryExpr array_append = 58;
     ArrayInsert array_insert = 59;
     BinaryExpr array_contains = 60;
-    BinaryExpr make_map = 61;
-    UnaryExpr map_keys = 62;
-    UnaryExpr map_values = 63;
+    BinaryExpr array_remove = 61;
+    BinaryExpr make_map = 62;
+    UnaryExpr map_keys = 63;
+    UnaryExpr map_values = 64;
   }
 }
 

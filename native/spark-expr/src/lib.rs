@@ -37,14 +37,13 @@ pub use schema_adapter::SparkSchemaAdapterFactory;
 pub use static_invoke::*;
 
 mod negative;
-pub mod spark_hash;
 mod struct_funcs;
 pub use negative::{create_negate_expr, NegativeExpr};
 mod normalize_nan;
 
+mod json_funcs;
 pub mod test_common;
 pub mod timezone;
-mod to_json;
 mod unbound;
 pub use unbound::UnboundColumn;
 pub mod utils;
@@ -54,6 +53,8 @@ pub use predicate_funcs::{spark_isnan, RLike};
 
 mod agg_funcs;
 mod comet_scalar_funcs;
+pub mod hash_funcs;
+
 mod string_funcs;
 
 mod datetime_funcs;
@@ -65,11 +66,12 @@ pub use cast::{spark_cast, Cast, SparkCastOptions};
 pub use comet_scalar_funcs::create_comet_physical_fun;
 pub use datetime_funcs::*;
 pub use error::{SparkError, SparkResult};
+pub use hash_funcs::*;
 pub use if_expr::IfExpr;
+pub use json_funcs::ToJson;
 pub use list::{ArrayInsert, GetArrayStructFields, ListExtract};
 pub use string_funcs::*;
 pub use struct_funcs::*;
-pub use to_json::ToJson;
 
 /// Spark supports three evaluation modes when evaluating expressions, which affect
 /// the behavior when processing input values that are invalid or would result in an

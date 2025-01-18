@@ -189,6 +189,8 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("window", defaultValue = true)
   val COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("takeOrderedAndProject", defaultValue = true)
+  val COMET_EXEC_INITCAP_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("initCap", defaultValue = false)
 
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
@@ -254,6 +256,13 @@ object CometConf extends ShimCometConf {
     .checkValues(Set("native", "jvm", "auto"))
     .createWithDefault("auto")
 
+  val COMET_SHUFFLE_FALLBACK_TO_COLUMNAR: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.fallbackToColumnar")
+      .doc("Whether to try falling back to columnar shuffle when native shuffle is not supported")
+      .internal()
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_BROADCAST_FORCE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.broadcast.enabled")
       .doc(
@@ -287,6 +296,14 @@ object CometConf extends ShimCometConf {
       .doc("The compression level to use when compressing shuffle files with zstd.")
       .intConf
       .createWithDefault(1)
+
+  val COMET_SHUFFLE_ENABLE_FAST_ENCODING: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enableFastEncoding")
+      .doc("Whether to enable Comet's faster proprietary encoding for shuffle blocks " +
+        "rather than using Arrow IPC.")
+      .internal()
+      .booleanConf
+      .createWithDefault(true)
 
   val COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.columnar.shuffle.async.enabled")

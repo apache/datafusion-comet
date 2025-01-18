@@ -66,6 +66,7 @@ use datafusion::{
 };
 use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr};
 use datafusion_functions_nested::concat::ArrayAppend;
+use datafusion_functions_nested::remove::array_remove_all_udf;
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
 use crate::execution::shuffle::CompressionCodec;
@@ -736,6 +737,35 @@ impl PhysicalPlanner {
                     DataType::Boolean,
                 ));
                 Ok(array_has_expr)
+            }
+            ExprStruct::ArrayRemove(expr) => {
+                let src_array_expr =
+                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let key_expr =
+                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let args = vec![Arc::clone(&src_array_expr), Arc::clone(&key_expr)];
+                let return_type = src_array_expr.data_type(&input_schema)?;
+
+                let datafusion_array_remove = array_remove_all_udf();
+
+                let array_remove_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
+                    "array_remove",
+                    datafusion_array_remove,
+                    args,
+                    return_type,
+                ));
+                let is_null_expr: Arc<dyn PhysicalExpr> = Arc::new(IsNullExpr::new(key_expr));
+
+                let null_literal_expr: Arc<dyn PhysicalExpr> =
+                    Arc::new(Literal::new(ScalarValue::Null));
+
+                let case_expr = CaseExpr::try_new(
+                    None,
+                    vec![(is_null_expr, null_literal_expr)],
+                    Some(array_remove_expr),
+                )?;
+
+                Ok(Arc::new(case_expr))
             }
             ExprStruct::MapKeys(expr) => {
                 let map_expr =
