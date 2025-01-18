@@ -1073,12 +1073,20 @@ class CometSparkSessionExtensions
         var firstNativeOp = true
         newPlan.transformDown {
           case op: CometNativeExec =>
-            if (firstNativeOp) {
+            val newPlan = if (firstNativeOp) {
               firstNativeOp = false
               op.convertBlock()
             } else {
               op
             }
+
+            // If reaching leaf node, reset `firstNativeOp` to true
+            // because it will start a new block in next iteration.
+            if (op.children.isEmpty) {
+              firstNativeOp = true
+            }
+
+            newPlan
           case op =>
             firstNativeOp = true
             op
