@@ -75,7 +75,7 @@ object CometConf extends ShimCometConf {
         "that to enable native vectorized execution, both this config and " +
         "'spark.comet.exec.enabled' need to be enabled.")
     .booleanConf
-    .createWithDefault(true)
+    .createWithDefault(false)
 
   val SCAN_NATIVE_COMET = "native_comet"
   val SCAN_NATIVE_DATAFUSION = "native_datafusion"
