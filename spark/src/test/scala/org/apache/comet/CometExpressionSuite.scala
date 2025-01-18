@@ -2552,13 +2552,18 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-
   test("CreateMap") {
-    withTempDir { dir =>
-      val path = new Path(dir.toURI.toString, "test.parquet")
-      makeParquetFileAllTypes(path, dictionaryEnabled = false, n = 10000)
-      spark.read.parquet(path.toString).createOrReplaceTempView("t1");
-      checkSparkAnswerAndOperator(spark.sql("SELECT map(1, _2, 2, _3, 3, _4) FROM t1"))
+    withSQLConf("parquet.enable.dictionary" -> "true") {
+      val table = "test"
+      withTable(table) {
+        sql(s"create table $table(col1 long, col2 int) using parquet")
+        sql(s"insert into $table values(1, 2)")
+        sql(s"insert into $table values(2, 2)")
+        sql(s"insert into $table values(3, 4)")
+        sql(s"insert into $table values(4, 6)")
+
+        checkSparkAnswerAndOperator(s"SELECT map(col1, col2) FROM $table")
+      }
     }
   }
 }
