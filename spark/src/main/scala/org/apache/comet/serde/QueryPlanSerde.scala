@@ -44,7 +44,7 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isCometScan, isSpark34Plus, withInfo}
-import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incompatible, RegExp, Unsupported}
+import org.apache.comet.expressions.{CometArrayRemove, CometCast, CometEvalMode, Compatible, Incompatible, RegExp, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, MapInfo, StructInfo}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
@@ -2282,12 +2282,16 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             withInfo(expr, "unsupported arguments for GetArrayStructFields", child)
             None
           }
-        case expr if expr.prettyName == "array_remove" =>
-          createBinaryExpr(
-            expr.children(0),
-            expr.children(1),
-            inputs,
-            (builder, binaryExpr) => builder.setArrayRemove(binaryExpr))
+        case expr: ArrayRemove =>
+          if (CometArrayRemove.checkSupport(expr)) {
+            createBinaryExpr(
+              expr.children(0),
+              expr.children(1),
+              inputs,
+              (builder, binaryExpr) => builder.setArrayRemove(binaryExpr))
+          } else {
+            None
+          }
         case expr if expr.prettyName == "array_contains" =>
           createBinaryExpr(
             expr.children(0),
