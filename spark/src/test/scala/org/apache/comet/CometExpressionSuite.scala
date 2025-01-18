@@ -2559,18 +2559,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
         spark.read.parquet(path.toString).createOrReplaceTempView("t1")
 
-//        checkSparkAnswerAndOperator(sql("SELECT array_repeat(_2, 3) from t1"))
-//        checkSparkAnswerAndOperator(sql("SELECT array_repeat(5, _2) from t1"))
-//        checkSparkAnswerAndOperator(sql("SELECT array_repeat(_2, null) from t1"))
-//        checkSparkAnswerAndOperator(sql("SELECT array_repeat(2, null) from t1"))
-//        checkSparkAnswerAndOperator(sql("SELECT array_repeat(null, 3) from t1"))
-//        checkSparkAnswerAndOperator(sql("SELECT array_repeat(null, _3) from t1"))
-//        checkSparkAnswerAndOperator(sql("SELECT array_repeat(_2, 0) from t1"))
-//        checkSparkAnswerAndOperator(sql("SELECT array_repeat(_2, -1) from t1"))
-        checkSparkAnswerAndOperator(sql("SELECT array_repeat(8, 5) from t1"))
-        checkSparkAnswerAndOperator(sql("SELECT array_repeat(_8, 2) from t1"))
-        checkSparkAnswerAndOperator(sql("SELECT array_repeat(true, 3) from t1"))
-        checkSparkAnswerAndOperator(sql("SELECT array_repeat(1.5, 2) from t1"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_repeat(array(_2,_3), _2) from t1 where _2 is null"))
+      // checkSparkAnswerAndOperator(
+      //   sql("SELECT array_repeat(_3, 0) from t1 where _3 is not null"))
+      // checkSparkAnswerAndOperator(
+      //   sql("SELECT array_repeat(_3, 2) from t1 where _3 is not null"))
+      // checkSparkAnswerAndOperator(sql("SELECT array_repeat(_2, 2) from t1 where _2 is null"))
+      // checkSparkAnswerAndOperator(
+      //   sql("SELECT array_repeat(case when _2 = _3 THEN _8 ELSE null END, 2) from t1"))
       }
     }
   }

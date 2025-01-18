@@ -771,7 +771,8 @@ impl PhysicalPlanner {
                     self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let count_expr =
                     self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let return_type = src_expr.data_type(&input_schema)?;
+                let element_type = src_expr.data_type(&input_schema)?;
+                let return_type = DataType::List(Arc::new(Field::new("item", element_type, true)));
                 let args = vec![Arc::clone(&src_expr), Arc::clone(&count_expr)];
 
                 let datafusion_array_repeat = array_repeat_udf();
