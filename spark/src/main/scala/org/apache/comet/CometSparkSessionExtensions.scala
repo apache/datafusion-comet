@@ -190,7 +190,7 @@ class CometSparkSessionExtensions
 
           // data source V1
           case scanExec @ FileSourceScanExec(
-                HadoopFsRelation(_, partitionSchema, _, _, _: ParquetFileFormat, _),
+                HadoopFsRelation(_, partitionSchema, _, _, fileFormat, _),
                 _: Seq[_],
                 requiredSchema,
                 _,
@@ -199,7 +199,8 @@ class CometSparkSessionExtensions
                 _,
                 _,
                 _)
-              if CometNativeScanExec.isSchemaSupported(requiredSchema)
+              if CometScanExec.isFileFormatSupported(fileFormat)
+                && CometNativeScanExec.isSchemaSupported(requiredSchema)
                 && CometNativeScanExec.isSchemaSupported(partitionSchema)
                 // TODO we only enable full native scan if COMET_EXEC_ENABLED is enabled
                 // but this is not really what we want .. we currently insert `CometScanExec`
@@ -1072,12 +1073,20 @@ class CometSparkSessionExtensions
         var firstNativeOp = true
         newPlan.transformDown {
           case op: CometNativeExec =>
-            if (firstNativeOp) {
+            val newPlan = if (firstNativeOp) {
               firstNativeOp = false
               op.convertBlock()
             } else {
               op
             }
+
+            // If reaching leaf node, reset `firstNativeOp` to true
+            // because it will start a new block in next iteration.
+            if (op.children.isEmpty) {
+              firstNativeOp = true
+            }
+
+            newPlan
           case op =>
             firstNativeOp = true
             op
