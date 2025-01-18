@@ -32,7 +32,7 @@ use crate::{
     },
 };
 use arrow::compute::CastOptions;
-use arrow_schema::{DataType, Field, Schema, SchemaBuilder, TimeUnit, DECIMAL128_MAX_PRECISION};
+use arrow_schema::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
@@ -95,14 +95,11 @@ use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
 };
-use datafusion_expr::Expr::ScalarSubquery;
 use datafusion_expr::{
     AggregateUDF, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
     WindowFunctionDefinition,
 };
 use datafusion_functions_nested::array_has::ArrayHas;
-use datafusion_functions_nested::make_array::make_array_udf;
-use datafusion_functions_nested::map::map_udf;
 use datafusion_functions_nested::map_keys::map_keys_udf;
 use datafusion_functions_nested::map_values::map_values_udf;
 use datafusion_physical_expr::expressions::{Literal, StatsType};
@@ -111,7 +108,6 @@ use datafusion_physical_expr::LexOrdering;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
-use parquet::data_type::Int32Type;
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
 
@@ -2082,49 +2078,63 @@ impl PhysicalPlanner {
         }
     }
 
+
     fn create_scalar_function_expr(
         &self,
         expr: &ScalarFunc,
         input_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        println!("create_scalar_function_expr {:?}", expr);
         let args = expr
             .args
             .iter()
             .map(|x| self.create_expr(x, Arc::clone(&input_schema)))
             .collect::<Result<Vec<_>, _>>()?;
-        println!("create_scalar_function_expr args len {:?}", args.len());
+
+        println!("args: {:?}", args);
 
         let fun_name = &expr.func;
-        println!("create_scalar_function_expr fun_name {:?}", fun_name);
-        let input_expr_types = if fun_name != "map" {
-            args
-                .iter()
-                .map(|x| x.data_type(input_schema.as_ref()))
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            args
-                .iter()
-                .map(|x| x.data_type(input_schema.as_ref())).take(2)
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        println!(
-            "create_scalar_function_expr input_expr_types {:?}",
-            input_expr_types
-        );
 
-        println!("create_scalar_function_expr args {:?}", args);
+        println!("function name: {}", fun_name);
+
+        let input_expr_types = args
+            .iter()
+            .map(|x| x.data_type(input_schema.as_ref()))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        println!("input_expr_types: {:?}", input_expr_types);
+
         let (data_type, coerced_input_types) =
-            self.get_data_type_and_coerced_type(expr, fun_name, &input_expr_types)?;
-        println!(
-            "create_scalar_function_expr coerced {:?} data_type {:?}",
-            coerced_input_types, data_type
-        );
+            match expr.return_type.as_ref().map(to_arrow_datatype) {
+                Some(t) => (t, input_expr_types.clone()),
+                None => {
+                    let fun_name = match fun_name.as_ref() {
+                        "read_side_padding" => "rpad", // use the same return type as rpad
+                        other => other,
+                    };
+                    let func = self.session_ctx.udf(fun_name)?;
+
+                    let coerced_types = func
+                        .coerce_types(&input_expr_types)
+                        .unwrap_or_else(|_| input_expr_types.clone());
+
+                    let data_type = match fun_name {
+                        // workaround for https://github.com/apache/datafusion/issues/13716
+                        "datepart" => DataType::Int32,
+                        _ => {
+                            // TODO need to call `return_type_from_exprs` instead
+                            #[allow(deprecated)]
+                            func.inner().return_type(&coerced_types)?
+                        }
+                    };
+
+                    (data_type, coerced_types)
+                }
+            };
 
         let fun_expr =
             create_comet_physical_fun(fun_name, data_type.clone(), &self.session_ctx.state())?;
 
-        let mut args = args
+        let args = args
             .into_iter()
             .zip(input_expr_types.into_iter().zip(coerced_input_types))
             .map(|(expr, (from_type, to_type))| {
@@ -2142,32 +2152,7 @@ impl PhysicalPlanner {
                 }
             })
             .collect::<Vec<_>>();
-        if fun_name == "map" {
-            let keys = args.clone().into_iter().step_by(2).collect::<Vec<_>>();
-            let values = args.into_iter().skip(1).step_by(2).collect::<Vec<_>>();
-            println!("create_scalar_function_expr keys {:?}", keys.len());
-            println!("create_scalar_function_expr value {:?}", values.len());
 
-            let keys_expr = Arc::new(ScalarFunctionExpr::new(
-                "make_array",
-                make_array_udf(),
-                keys.clone(),
-                DataType::List(Arc::new(Field::new("key", keys[0].data_type(&input_schema)?, keys[0].nullable(&input_schema)?))),
-            ));
-            let values_expr = Arc::new(ScalarFunctionExpr::new(
-                "make_array",
-                make_array_udf(),
-                keys.clone(),
-                DataType::List(Arc::new(Field::new("value", values[0].data_type(&input_schema)?, values[0].nullable(&input_schema)?))),
-            ));
-
-            return Ok(Arc::new(ScalarFunctionExpr::new(
-                fun_name,
-                map_udf(),
-                vec![keys_expr, values_expr],
-                data_type,
-            )));
-        }
         let scalar_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
             fun_name,
             fun_expr,
@@ -2176,35 +2161,6 @@ impl PhysicalPlanner {
         ));
 
         Ok(scalar_expr)
-    }
-
-    fn get_data_type_and_coerced_type(&self, expr: &ScalarFunc, fun_name: &String, input_expr_types: &Vec<DataType>) -> Result<(DataType, Vec<DataType>), ExecutionError> {
-        Ok(match expr.return_type.as_ref().map(to_arrow_datatype) {
-            Some(t) => (t, input_expr_types.clone()),
-            None => {
-                let fun_name = match fun_name.as_ref() {
-                    "read_side_padding" => "rpad", // use the same return type as rpad
-                    other => other,
-                };
-                let func = self.session_ctx.udf(fun_name)?;
-
-                let coerced_types = func
-                    .coerce_types(&input_expr_types)
-                    .unwrap_or_else(|_| input_expr_types.clone());
-
-                let data_type = match fun_name {
-                    // workaround for https://github.com/apache/datafusion/issues/13716
-                    "datepart" => DataType::Int32,
-                    _ => {
-                        // TODO need to call `return_type_from_exprs` instead
-                        #[allow(deprecated)]
-                        func.inner().return_type(&coerced_types)?
-                    }
-                };
-
-                (data_type, coerced_types)
-            }
-        })
     }
 
     fn create_aggr_func_expr(
