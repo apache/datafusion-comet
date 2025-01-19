@@ -1928,6 +1928,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+
+  test("hash functions with decimal input") {
+    withTable("t1", "t2") {
+      // Apache Spark: if it's a small decimal, i.e. precision <= 18, turn it into long and hash it.
+      // Else, turn it into bytes and hash it.
+      sql("create table t1(c1 decimal(18, 2)) using parquet")
+      sql("insert into t1 values(1.23), (-1.23), (0.0), (null)")
+      checkSparkAnswerAndOperator("select c1, hash(c1), xxhash64(c1) from t1 order by c1")
+
+      // TODO: comet hash function is not compatible with spark for decimal with precision greater than 18.
+      // https://github.com/apache/datafusion-comet/issues/1294
+//       sql("create table t2(c1 decimal(20, 2)) using parquet")
+//       sql("insert into t2 values(1.23), (-1.23), (0.0), (null)")
+//       checkSparkAnswerAndOperator("select c1, hash(c1), xxhash64(c1) from t2 order by c1")
+    }
+  }
+
   test("unary negative integer overflow test") {
     def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
       withSQLConf(
