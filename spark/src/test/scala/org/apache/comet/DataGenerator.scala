@@ -211,7 +211,7 @@ class DataGenerator(r: Random) {
             list += Range(0, r.nextInt(5)).map(j => values((i + j) % values.length)).toArray
           }
         }
-        list
+        list.toSeq
       case DataTypes.BooleanType =>
         generateColumn(r, DataTypes.LongType, numRows, generateNegativeZero)
           .map(_.asInstanceOf[Long].toShort)
