@@ -17,6 +17,7 @@
 
 //! Define JNI APIs which can be called from Java/Scala.
 
+use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 use arrow::datatypes::DataType as ArrowDataType;
 use arrow_array::RecordBatch;
 use datafusion::{
@@ -40,8 +41,6 @@ use jni::{
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc, task::Poll};
 
-use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
-
 use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
     execution::{
@@ -54,6 +53,7 @@ use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_common::ScalarValue;
 use datafusion_execution::runtime_env::RuntimeEnvBuilder;
 use futures::stream::StreamExt;
+use jni::objects::JByteBuffer;
 use jni::sys::JNI_FALSE;
 use jni::{
     objects::GlobalRef,
@@ -64,6 +64,7 @@ use std::sync::Mutex;
 use tokio::runtime::Runtime;
 
 use crate::execution::operators::ScanExec;
+use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 use log::info;
 use once_cell::sync::{Lazy, OnceCell};
@@ -147,7 +148,7 @@ impl PerTaskMemoryPool {
 
 /// Accept serialized query plan and return the address of the native query plan.
 /// # Safety
-/// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     e: JNIEnv,
@@ -162,7 +163,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     memory_pool_type: jstring,
     memory_limit: jlong,
     memory_limit_per_task: jlong,
-    memory_fraction: jdouble,
     task_attempt_id: jlong,
     debug_native: jboolean,
     explain_native: jboolean,
@@ -208,7 +208,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             memory_pool_type,
             memory_limit,
             memory_limit_per_task,
-            memory_fraction,
         )?;
         let memory_pool =
             create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
@@ -281,14 +280,13 @@ fn parse_memory_pool_config(
     memory_pool_type: String,
     memory_limit: i64,
     memory_limit_per_task: i64,
-    memory_fraction: f64,
 ) -> CometResult<MemoryPoolConfig> {
     let memory_pool_config = if use_unified_memory_manager {
         MemoryPoolConfig::new(MemoryPoolType::Unified, 0)
     } else {
         // Use the memory pool from DF
-        let pool_size = (memory_limit as f64 * memory_fraction) as usize;
-        let pool_size_per_task = (memory_limit_per_task as f64 * memory_fraction) as usize;
+        let pool_size = memory_limit as usize;
+        let pool_size_per_task = memory_limit_per_task as usize;
         match memory_pool_type.as_str() {
             "fair_spill_task_shared" => {
                 MemoryPoolConfig::new(MemoryPoolType::FairSpillTaskShared, pool_size_per_task)
@@ -447,7 +445,7 @@ fn pull_input_batches(exec_context: &mut ExecutionContext) -> Result<(), CometEr
 /// Accept serialized query plan and the addresses of Arrow Arrays from Spark,
 /// then execute the query. Return addresses of arrow vector.
 /// # Safety
-/// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     e: JNIEnv,
@@ -621,7 +619,7 @@ fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
 
 /// Used by Comet shuffle external sorter to write sorted records to disk.
 /// # Safety
-/// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative(
     e: JNIEnv,
@@ -635,6 +633,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
     checksum_enabled: jboolean,
     checksum_algo: jint,
     current_checksum: jlong,
+    compression_codec: jstring,
+    compression_level: jint,
+    enable_fast_encoding: jboolean,
 ) -> jlongArray {
     try_unwrap_or_throw(&e, |mut env| unsafe {
         let data_types = convert_datatype_arrays(&mut env, serialized_datatypes)?;
@@ -662,6 +663,18 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
             Some(current_checksum as u32)
         };
 
+        let compression_codec: String = env
+            .get_string(&JString::from_raw(compression_codec))
+            .unwrap()
+            .into();
+
+        let compression_codec = match compression_codec.as_str() {
+            "zstd" => CompressionCodec::Zstd(compression_level),
+            "lz4" => CompressionCodec::Lz4Frame,
+            "snappy" => CompressionCodec::Snappy,
+            _ => CompressionCodec::Lz4Frame,
+        };
+
         let (written_bytes, checksum) = process_sorted_row_partition(
             row_num,
             batch_size as usize,
@@ -673,6 +686,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
             checksum_enabled,
             checksum_algo,
             current_checksum,
+            &compression_codec,
+            enable_fast_encoding != JNI_FALSE,
         )?;
 
         let checksum = if let Some(checksum) = checksum {
@@ -704,5 +719,26 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
         array.rdxsort();
 
         Ok(())
+    })
+}
+
+#[no_mangle]
+/// Used by Comet native shuffle reader
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
+    e: JNIEnv,
+    _class: JClass,
+    byte_buffer: JByteBuffer,
+    length: jint,
+    array_addrs: jlongArray,
+    schema_addrs: jlongArray,
+) -> jlong {
+    try_unwrap_or_throw(&e, |mut env| {
+        let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
+        let length = length as usize;
+        let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
+        let batch = read_ipc_compressed(slice)?;
+        prepare_output(&mut env, array_addrs, schema_addrs, batch, false)
     })
 }

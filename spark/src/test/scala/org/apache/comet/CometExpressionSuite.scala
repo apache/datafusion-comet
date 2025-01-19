@@ -1364,8 +1364,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           sql(s"create table $table(id int, name varchar(20)) using parquet")
           sql(
             s"insert into $table values(1, 'james smith'), (2, 'michael rose'), " +
-              "(3, 'robert williams'), (4, 'rames rose'), (5, 'james smith')")
-          checkSparkAnswerAndOperator(s"SELECT initcap(name) FROM $table")
+              "(3, 'robert williams'), (4, 'rames rose'), (5, 'james smith'), " +
+              "(6, 'robert rose-smith'), (7, 'james ähtäri')")
+          if (CometConf.COMET_EXEC_INITCAP_ENABLED.get()) {
+            // TODO: remove this if clause https://github.com/apache/datafusion-comet/issues/1052
+            checkSparkAnswerAndOperator(s"SELECT initcap(name) FROM $table")
+          } else {
+            checkSparkAnswer(s"SELECT initcap(name) FROM $table")
+          }
         }
       }
     }
@@ -1922,6 +1928,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+
+  test("hash functions with decimal input") {
+    withTable("t1", "t2") {
+      // Apache Spark: if it's a small decimal, i.e. precision <= 18, turn it into long and hash it.
+      // Else, turn it into bytes and hash it.
+      sql("create table t1(c1 decimal(18, 2)) using parquet")
+      sql("insert into t1 values(1.23), (-1.23), (0.0), (null)")
+      checkSparkAnswerAndOperator("select c1, hash(c1), xxhash64(c1) from t1 order by c1")
+
+      // TODO: comet hash function is not compatible with spark for decimal with precision greater than 18.
+      // https://github.com/apache/datafusion-comet/issues/1294
+//       sql("create table t2(c1 decimal(20, 2)) using parquet")
+//       sql("insert into t2 values(1.23), (-1.23), (0.0), (null)")
+//       checkSparkAnswerAndOperator("select c1, hash(c1), xxhash64(c1) from t2 order by c1")
+    }
+  }
+
   test("unary negative integer overflow test") {
     def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
       withSQLConf(
@@ -2527,6 +2550,22 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         spark.sql("SELECT array_contains(array(_2, _3, _4), _2) FROM t1"))
       checkSparkAnswerAndOperator(
         spark.sql("SELECT array_contains((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
+    }
+  }
+
+  test("array_remove") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_remove(array(_2, _3,_4), _2) from t1 where _2 is null"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_remove(array(_2, _3,_4), _3) from t1 where _3 is not null"))
+        checkSparkAnswerAndOperator(sql(
+          "SELECT array_remove(case when _2 = _3 THEN array(_2, _3,_4) ELSE null END, _3) from t1"))
+      }
     }
   }
 }

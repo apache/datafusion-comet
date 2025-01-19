@@ -17,10 +17,13 @@
 
 //! Defines the External shuffle repartition plan.
 
+use crate::execution::shuffle::codec::{fast_codec_supports_type, BatchReader};
+use crate::execution::shuffle::BatchWriter;
 use crate::{
     common::bit::ceil,
     errors::{CometError, CometResult},
 };
+use arrow::ipc::reader::StreamReader;
 use arrow::{datatypes::*, ipc::writer::StreamWriter};
 use async_trait::async_trait;
 use bytes::Buf;
@@ -49,7 +52,7 @@ use datafusion::{
         RecordBatchStream, SendableRecordBatchStream, Statistics,
     },
 };
-use datafusion_comet_spark_expr::spark_hash::create_murmur3_hashes;
+use datafusion_comet_spark_expr::hash_funcs::murmur3::create_murmur3_hashes;
 use datafusion_physical_expr::EquivalenceProperties;
 use futures::executor::block_on;
 use futures::{lock::Mutex, Stream, StreamExt, TryFutureExt, TryStreamExt};
@@ -90,15 +93,23 @@ pub struct ShuffleWriterExec {
     output_index_file: String,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
+    /// Cache for expensive-to-compute plan properties
     cache: PlanProperties,
+    /// The compression codec to use when compressing shuffle blocks
     codec: CompressionCodec,
+    /// When true, Comet will use a fast proprietary encoding rather than using Arrow IPC
+    enable_fast_encoding: bool,
 }
 
 impl DisplayAs for ShuffleWriterExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "ShuffleWriterExec: partitioning={:?}", self.partitioning)
+                write!(
+                    f,
+                    "ShuffleWriterExec: partitioning={:?}, fast_encoding={}, compression={:?}",
+                    self.partitioning, self.enable_fast_encoding, self.codec
+                )
             }
         }
     }
@@ -131,6 +142,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                 self.codec.clone(),
                 self.output_data_file.clone(),
                 self.output_index_file.clone(),
+                self.enable_fast_encoding,
             )?)),
             _ => panic!("ShuffleWriterExec wrong number of children"),
         }
@@ -156,6 +168,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                     metrics,
                     context,
                     self.codec.clone(),
+                    self.enable_fast_encoding,
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
@@ -188,6 +201,7 @@ impl ShuffleWriterExec {
         codec: CompressionCodec,
         output_data_file: String,
         output_index_file: String,
+        enable_fast_encoding: bool,
     ) -> Result<Self> {
         let cache = PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
@@ -204,6 +218,7 @@ impl ShuffleWriterExec {
             output_index_file,
             cache,
             codec,
+            enable_fast_encoding,
         })
     }
 }
@@ -224,22 +239,25 @@ struct PartitionBuffer {
     batch_size: usize,
     /// Memory reservation for this partition buffer.
     reservation: MemoryReservation,
-    codec: CompressionCodec,
+    /// Writer that performs encoding and compression
+    shuffle_block_writer: ShuffleBlockWriter,
 }
 
 impl PartitionBuffer {
-    fn new(
+    fn try_new(
         schema: SchemaRef,
         batch_size: usize,
         partition_id: usize,
         runtime: &Arc<RuntimeEnv>,
         codec: CompressionCodec,
-    ) -> Self {
+        enable_fast_encoding: bool,
+    ) -> Result<Self> {
         let reservation = MemoryConsumer::new(format!("PartitionBuffer[{}]", partition_id))
             .with_can_spill(true)
             .register(&runtime.memory_pool);
-
-        Self {
+        let shuffle_block_writer =
+            ShuffleBlockWriter::try_new(schema.as_ref(), enable_fast_encoding, codec)?;
+        Ok(Self {
             schema,
             frozen: vec![],
             active: vec![],
@@ -247,8 +265,8 @@ impl PartitionBuffer {
             num_active_rows: 0,
             batch_size,
             reservation,
-            codec,
-        }
+            shuffle_block_writer,
+        })
     }
 
     /// Initializes active builders if necessary.
@@ -312,7 +330,7 @@ impl PartitionBuffer {
             repart_timer.stop();
 
             if self.num_active_rows >= self.batch_size {
-                let flush = self.flush(&metrics.ipc_time);
+                let flush = self.flush(metrics);
                 if let Err(e) = flush {
                     return AppendRowStatus::MemDiff(Err(e));
                 }
@@ -330,7 +348,7 @@ impl PartitionBuffer {
     }
 
     /// flush active data into frozen bytes
-    fn flush(&mut self, ipc_time: &Time) -> Result<isize> {
+    fn flush(&mut self, metrics: &ShuffleRepartitionerMetrics) -> Result<isize> {
         if self.num_active_rows == 0 {
             return Ok(0);
         }
@@ -340,14 +358,20 @@ impl PartitionBuffer {
         let active = std::mem::take(&mut self.active);
         let num_rows = self.num_active_rows;
         self.num_active_rows = 0;
-        self.reservation.try_shrink(self.active_slots_mem_size)?;
 
+        let mut mempool_timer = metrics.mempool_time.timer();
+        self.reservation.try_shrink(self.active_slots_mem_size)?;
+        mempool_timer.stop();
+
+        let mut repart_timer = metrics.repart_time.timer();
         let frozen_batch = make_batch(Arc::clone(&self.schema), active, num_rows)?;
+        repart_timer.stop();
 
         let frozen_capacity_old = self.frozen.capacity();
         let mut cursor = Cursor::new(&mut self.frozen);
         cursor.seek(SeekFrom::End(0))?;
-        write_ipc_compressed(&frozen_batch, &mut cursor, &self.codec, ipc_time)?;
+        self.shuffle_block_writer
+            .write_batch(&frozen_batch, &mut cursor, &metrics.encode_time)?;
 
         mem_diff += (self.frozen.capacity() - frozen_capacity_old) as isize;
         Ok(mem_diff)
@@ -652,7 +676,7 @@ struct ShuffleRepartitionerMetrics {
     mempool_time: Time,
 
     /// Time encoding batches to IPC format
-    ipc_time: Time,
+    encode_time: Time,
 
     /// Time spent writing to disk. Maps to "shuffleWriteTime" in Spark SQL Metrics.
     write_time: Time,
@@ -676,7 +700,7 @@ impl ShuffleRepartitionerMetrics {
             baseline: BaselineMetrics::new(metrics, partition),
             repart_time: MetricBuilder::new(metrics).subset_time("repart_time", partition),
             mempool_time: MetricBuilder::new(metrics).subset_time("mempool_time", partition),
-            ipc_time: MetricBuilder::new(metrics).subset_time("ipc_time", partition),
+            encode_time: MetricBuilder::new(metrics).subset_time("encode_time", partition),
             write_time: MetricBuilder::new(metrics).subset_time("write_time", partition),
             input_batches: MetricBuilder::new(metrics).counter("input_batches", partition),
             spill_count: MetricBuilder::new(metrics).spill_count(partition),
@@ -688,7 +712,7 @@ impl ShuffleRepartitionerMetrics {
 
 impl ShuffleRepartitioner {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub fn try_new(
         partition_id: usize,
         output_data_file: String,
         output_index_file: String,
@@ -698,7 +722,8 @@ impl ShuffleRepartitioner {
         runtime: Arc<RuntimeEnv>,
         batch_size: usize,
         codec: CompressionCodec,
-    ) -> Self {
+        enable_fast_encoding: bool,
+    ) -> Result<Self> {
         let num_output_partitions = partitioning.partition_count();
         let reservation = MemoryConsumer::new(format!("ShuffleRepartitioner[{}]", partition_id))
             .with_can_spill(true)
@@ -714,21 +739,22 @@ impl ShuffleRepartitioner {
             partition_ids.set_len(batch_size);
         }
 
-        Self {
+        Ok(Self {
             output_data_file,
             output_index_file,
             schema: Arc::clone(&schema),
             buffered_partitions: (0..num_output_partitions)
                 .map(|partition_id| {
-                    PartitionBuffer::new(
+                    PartitionBuffer::try_new(
                         Arc::clone(&schema),
                         batch_size,
                         partition_id,
                         &runtime,
                         codec.clone(),
+                        enable_fast_encoding,
                     )
                 })
-                .collect::<Vec<_>>(),
+                .collect::<Result<Vec<_>>>()?,
             spills: Mutex::new(vec![]),
             partitioning,
             num_output_partitions,
@@ -738,7 +764,7 @@ impl ShuffleRepartitioner {
             hashes_buf,
             partition_ids,
             batch_size,
-        }
+        })
     }
 
     /// Shuffles rows in input batch into corresponding partition buffer.
@@ -790,6 +816,8 @@ impl ShuffleRepartitioner {
             Partitioning::Hash(exprs, _) => {
                 let (partition_starts, shuffled_partition_ids): (Vec<usize>, Vec<usize>) = {
                     let mut timer = self.metrics.repart_time.timer();
+
+                    // evaluate partition expressions
                     let arrays = exprs
                         .iter()
                         .map(|expr| expr.evaluate(&input)?.into_array(input.num_rows()))
@@ -923,7 +951,7 @@ impl ShuffleRepartitioner {
         let mut output_batches: Vec<Vec<u8>> = vec![vec![]; num_output_partitions];
         let mut offsets = vec![0; num_output_partitions + 1];
         for i in 0..num_output_partitions {
-            buffered_partitions[i].flush(&self.metrics.ipc_time)?;
+            buffered_partitions[i].flush(&self.metrics)?;
             output_batches[i] = std::mem::take(&mut buffered_partitions[i].frozen);
         }
 
@@ -1023,19 +1051,18 @@ impl ShuffleRepartitioner {
         }
 
         let mut timer = self.metrics.write_time.timer();
-
         let spillfile = self
             .runtime
             .disk_manager
             .create_tmp_file("shuffle writer spill")?;
+        timer.stop();
+
         let offsets = spill_into(
             &mut self.buffered_partitions,
             spillfile.path(),
             self.num_output_partitions,
-            &self.metrics.ipc_time,
+            &self.metrics,
         )?;
-
-        timer.stop();
 
         let mut spills = self.spills.lock().await;
         let used = self.reservation.size();
@@ -1107,15 +1134,17 @@ fn spill_into(
     buffered_partitions: &mut [PartitionBuffer],
     path: &Path,
     num_output_partitions: usize,
-    ipc_time: &Time,
+    metrics: &ShuffleRepartitionerMetrics,
 ) -> Result<Vec<u64>> {
     let mut output_batches: Vec<Vec<u8>> = vec![vec![]; num_output_partitions];
 
     for i in 0..num_output_partitions {
-        buffered_partitions[i].flush(ipc_time)?;
+        buffered_partitions[i].flush(metrics)?;
         output_batches[i] = std::mem::take(&mut buffered_partitions[i].frozen);
     }
     let path = path.to_owned();
+
+    let mut write_timer = metrics.write_time.timer();
 
     let mut offsets = vec![0; num_output_partitions + 1];
     let mut spill_data = OpenOptions::new()
@@ -1130,6 +1159,8 @@ fn spill_into(
         spill_data.write_all(&output_batches[i])?;
         output_batches[i].clear();
     }
+    write_timer.stop();
+
     // add one extra offset at last to ease partition length computation
     offsets[num_output_partitions] = spill_data.stream_position()?;
     Ok(offsets)
@@ -1156,9 +1187,10 @@ async fn external_shuffle(
     metrics: ShuffleRepartitionerMetrics,
     context: Arc<TaskContext>,
     codec: CompressionCodec,
+    enable_fast_encoding: bool,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
-    let mut repartitioner = ShuffleRepartitioner::new(
+    let mut repartitioner = ShuffleRepartitioner::try_new(
         partition_id,
         output_data_file,
         output_index_file,
@@ -1168,7 +1200,8 @@ async fn external_shuffle(
         context.runtime_env(),
         context.session_config().batch_size(),
         codec,
-    );
+        enable_fast_encoding,
+    )?;
 
     while let Some(batch) = input.next().await {
         // Block on the repartitioner to insert the batch and shuffle the rows
@@ -1549,56 +1582,250 @@ impl Checksum {
 #[derive(Debug, Clone)]
 pub enum CompressionCodec {
     None,
+    Lz4Frame,
     Zstd(i32),
+    Snappy,
 }
 
-/// Writes given record batch as Arrow IPC bytes into given writer.
-/// Returns number of bytes written.
-pub fn write_ipc_compressed<W: Write + Seek>(
-    batch: &RecordBatch,
-    output: &mut W,
-    codec: &CompressionCodec,
-    ipc_time: &Time,
-) -> Result<usize> {
-    if batch.num_rows() == 0 {
-        return Ok(0);
+pub struct ShuffleBlockWriter {
+    fast_encoding: bool,
+    codec: CompressionCodec,
+    encoded_schema: Vec<u8>,
+    header_bytes: Vec<u8>,
+}
+
+impl ShuffleBlockWriter {
+    pub fn try_new(
+        schema: &Schema,
+        enable_fast_encoding: bool,
+        codec: CompressionCodec,
+    ) -> Result<Self> {
+        let mut encoded_schema = vec![];
+
+        let enable_fast_encoding = enable_fast_encoding
+            && schema
+                .fields()
+                .iter()
+                .all(|f| fast_codec_supports_type(f.data_type()));
+
+        // encode the schema once and then reuse the encoded bytes for each batch
+        if enable_fast_encoding {
+            let mut w = BatchWriter::new(&mut encoded_schema);
+            w.write_partial_schema(schema)?;
+        }
+
+        let header_bytes = Vec::with_capacity(24);
+        let mut cursor = Cursor::new(header_bytes);
+
+        // leave space for compressed message length
+        cursor.seek_relative(8)?;
+
+        // write number of columns because JVM side needs to know how many addresses to allocate
+        let field_count = schema.fields().len();
+        cursor.write_all(&field_count.to_le_bytes())?;
+
+        // write compression codec to header
+        let codec_header = match &codec {
+            CompressionCodec::Snappy => b"SNAP",
+            CompressionCodec::Lz4Frame => b"LZ4_",
+            CompressionCodec::Zstd(_) => b"ZSTD",
+            CompressionCodec::None => b"NONE",
+        };
+        cursor.write_all(codec_header)?;
+
+        // write encoding scheme
+        if enable_fast_encoding {
+            cursor.write_all(b"FAST")?;
+        } else {
+            cursor.write_all(b"AIPC")?;
+        }
+
+        let header_bytes = cursor.into_inner();
+
+        Ok(Self {
+            fast_encoding: enable_fast_encoding,
+            codec,
+            encoded_schema,
+            header_bytes,
+        })
     }
 
-    let mut timer = ipc_time.timer();
-    let start_pos = output.stream_position()?;
-
-    // write ipc_length placeholder
-    output.write_all(&[0u8; 8])?;
-
-    let output = match codec {
-        CompressionCodec::None => {
-            let mut arrow_writer = StreamWriter::try_new(output, &batch.schema())?;
-            arrow_writer.write(batch)?;
-            arrow_writer.finish()?;
-            arrow_writer.into_inner()?
+    /// Writes given record batch as Arrow IPC bytes into given writer.
+    /// Returns number of bytes written.
+    pub fn write_batch<W: Write + Seek>(
+        &self,
+        batch: &RecordBatch,
+        output: &mut W,
+        ipc_time: &Time,
+    ) -> Result<usize> {
+        if batch.num_rows() == 0 {
+            return Ok(0);
         }
-        CompressionCodec::Zstd(level) => {
-            let encoder = zstd::Encoder::new(output, *level)?;
-            let mut arrow_writer = StreamWriter::try_new(encoder, &batch.schema())?;
-            arrow_writer.write(batch)?;
-            arrow_writer.finish()?;
-            let zstd_encoder = arrow_writer.into_inner()?;
-            zstd_encoder.finish()?
+
+        let mut timer = ipc_time.timer();
+        let start_pos = output.stream_position()?;
+
+        // write header
+        output.write_all(&self.header_bytes)?;
+
+        let output = if self.fast_encoding {
+            match &self.codec {
+                CompressionCodec::None => {
+                    let mut fast_writer = BatchWriter::new(&mut *output);
+                    fast_writer.write_all(&self.encoded_schema)?;
+                    fast_writer.write_batch(batch)?;
+                    output
+                }
+                CompressionCodec::Lz4Frame => {
+                    let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
+                    let mut fast_writer = BatchWriter::new(&mut wtr);
+                    fast_writer.write_all(&self.encoded_schema)?;
+                    fast_writer.write_batch(batch)?;
+                    wtr.finish().map_err(|e| {
+                        DataFusionError::Execution(format!("lz4 compression error: {}", e))
+                    })?
+                }
+                CompressionCodec::Zstd(level) => {
+                    let mut encoder = zstd::Encoder::new(output, *level)?;
+                    let mut fast_writer = BatchWriter::new(&mut encoder);
+                    fast_writer.write_all(&self.encoded_schema)?;
+                    fast_writer.write_batch(batch)?;
+                    encoder.finish()?
+                }
+                CompressionCodec::Snappy => {
+                    let mut encoder = snap::write::FrameEncoder::new(output);
+                    let mut fast_writer = BatchWriter::new(&mut encoder);
+                    fast_writer.write_all(&self.encoded_schema)?;
+                    fast_writer.write_batch(batch)?;
+                    encoder.into_inner().map_err(|e| {
+                        DataFusionError::Execution(format!("snappy compression error: {}", e))
+                    })?
+                }
+            }
+        } else {
+            match &self.codec {
+                CompressionCodec::None => {
+                    let mut arrow_writer = StreamWriter::try_new(output, &batch.schema())?;
+                    arrow_writer.write(batch)?;
+                    arrow_writer.finish()?;
+                    arrow_writer.into_inner()?
+                }
+                CompressionCodec::Lz4Frame => {
+                    let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
+                    let mut arrow_writer = StreamWriter::try_new(&mut wtr, &batch.schema())?;
+                    arrow_writer.write(batch)?;
+                    arrow_writer.finish()?;
+                    wtr.finish().map_err(|e| {
+                        DataFusionError::Execution(format!("lz4 compression error: {}", e))
+                    })?
+                }
+
+                CompressionCodec::Zstd(level) => {
+                    let encoder = zstd::Encoder::new(output, *level)?;
+                    let mut arrow_writer = StreamWriter::try_new(encoder, &batch.schema())?;
+                    arrow_writer.write(batch)?;
+                    arrow_writer.finish()?;
+                    let zstd_encoder = arrow_writer.into_inner()?;
+                    zstd_encoder.finish()?
+                }
+
+                CompressionCodec::Snappy => {
+                    let mut wtr = snap::write::FrameEncoder::new(output);
+                    let mut arrow_writer = StreamWriter::try_new(&mut wtr, &batch.schema())?;
+                    arrow_writer.write(batch)?;
+                    arrow_writer.finish()?;
+                    wtr.into_inner().map_err(|e| {
+                        DataFusionError::Execution(format!("snappy compression error: {}", e))
+                    })?
+                }
+            }
+        };
+
+        // fill ipc length
+        let end_pos = output.stream_position()?;
+        let ipc_length = end_pos - start_pos - 8;
+        let max_size = i32::MAX as u64;
+        if ipc_length > max_size {
+            return Err(DataFusionError::Execution(format!(
+                "Shuffle block size {ipc_length} exceeds maximum size of {max_size}. \
+                Try reducing batch size or increasing compression level"
+            )));
+        }
+
+        // fill ipc length
+        output.seek(SeekFrom::Start(start_pos))?;
+        output.write_all(&ipc_length.to_le_bytes())?;
+        output.seek(SeekFrom::Start(end_pos))?;
+
+        timer.stop();
+
+        Ok((end_pos - start_pos) as usize)
+    }
+}
+
+pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
+    let fast_encoding = match &bytes[4..8] {
+        b"AIPC" => false,
+        b"FAST" => true,
+        other => {
+            return Err(DataFusionError::Internal(format!(
+                "invalid encoding schema: {other:?}"
+            )))
         }
     };
-
-    // fill ipc length
-    let end_pos = output.stream_position()?;
-    let ipc_length = end_pos - start_pos - 8;
-
-    // fill ipc length
-    output.seek(SeekFrom::Start(start_pos))?;
-    output.write_all(&ipc_length.to_le_bytes()[..])?;
-    output.seek(SeekFrom::Start(end_pos))?;
-
-    timer.stop();
-
-    Ok((end_pos - start_pos) as usize)
+    match &bytes[0..4] {
+        b"SNAP" => {
+            let mut decoder = snap::read::FrameDecoder::new(&bytes[8..]);
+            if fast_encoding {
+                // TODO avoid reading bytes into interim buffer
+                let mut buffer = vec![];
+                decoder.read_to_end(&mut buffer)?;
+                let mut reader = BatchReader::new(&buffer);
+                reader.read_batch()
+            } else {
+                let mut reader = StreamReader::try_new(decoder, None)?;
+                reader.next().unwrap().map_err(|e| e.into())
+            }
+        }
+        b"LZ4_" => {
+            let mut decoder = lz4_flex::frame::FrameDecoder::new(&bytes[8..]);
+            if fast_encoding {
+                // TODO avoid reading bytes into interim buffer
+                let mut buffer = vec![];
+                decoder.read_to_end(&mut buffer)?;
+                let mut reader = BatchReader::new(&buffer);
+                reader.read_batch()
+            } else {
+                let mut reader = StreamReader::try_new(decoder, None)?;
+                reader.next().unwrap().map_err(|e| e.into())
+            }
+        }
+        b"ZSTD" => {
+            let mut decoder = zstd::Decoder::new(&bytes[8..])?;
+            if fast_encoding {
+                // TODO avoid reading bytes into interim buffer
+                let mut buffer = vec![];
+                decoder.read_to_end(&mut buffer)?;
+                let mut reader = BatchReader::new(&buffer);
+                reader.read_batch()
+            } else {
+                let mut reader = StreamReader::try_new(decoder, None)?;
+                reader.next().unwrap().map_err(|e| e.into())
+            }
+        }
+        b"NONE" => {
+            if fast_encoding {
+                let mut reader = BatchReader::new(&bytes[8..]);
+                reader.read_batch()
+            } else {
+                let mut reader = StreamReader::try_new(&bytes[8..], None)?;
+                reader.next().unwrap().map_err(|e| e.into())
+            }
+        }
+        other => Err(DataFusionError::Execution(format!(
+            "Failed to decode batch: invalid compression codec: {other:?}"
+        ))),
+    }
 }
 
 /// A stream that yields no record batches which represent end of output.
@@ -1650,18 +1877,33 @@ mod test {
 
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
-    fn write_ipc_zstd() {
+    fn roundtrip_ipc() {
         let batch = create_batch(8192);
-        let mut output = vec![];
-        let mut cursor = Cursor::new(&mut output);
-        write_ipc_compressed(
-            &batch,
-            &mut cursor,
-            &CompressionCodec::Zstd(1),
-            &Time::default(),
-        )
-        .unwrap();
-        assert_eq!(40218, output.len());
+        for fast_encoding in [true, false] {
+            for codec in &[
+                CompressionCodec::None,
+                CompressionCodec::Zstd(1),
+                CompressionCodec::Snappy,
+                CompressionCodec::Lz4Frame,
+            ] {
+                let mut output = vec![];
+                let mut cursor = Cursor::new(&mut output);
+                let writer = ShuffleBlockWriter::try_new(
+                    batch.schema().as_ref(),
+                    fast_encoding,
+                    codec.clone(),
+                )
+                .unwrap();
+                let length = writer
+                    .write_batch(&batch, &mut cursor, &Time::default())
+                    .unwrap();
+                assert_eq!(length, output.len());
+
+                let ipc_without_length_prefix = &output[16..];
+                let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
+                assert_eq!(batch, batch2);
+            }
+        }
     }
 
     #[test]
@@ -1737,6 +1979,7 @@ mod test {
             CompressionCodec::Zstd(1),
             "/tmp/data.out".to_string(),
             "/tmp/index.out".to_string(),
+            true,
         )
         .unwrap();
 
