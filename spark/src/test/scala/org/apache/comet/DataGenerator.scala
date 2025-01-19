@@ -163,19 +163,20 @@ class DataGenerator(r: Random) {
     DataTypes.StringType,
     DataTypes.BinaryType)
 
-  // TODO add Array, Map, and Struct
-  private val dataTypes = primitiveTypes
-  /* ++
-    primitiveTypes
-      .filterNot(_ == DataTypes.BinaryType)
-      .map(DataTypes.createArrayType) */
-
   def makeParquetFile(
       r: Random,
       spark: SparkSession,
       filename: String,
       numRows: Int,
-      generateNegativeZero: Boolean): Unit = {
+      generateNegativeZero: Boolean,
+      includeComplexTypes: Boolean = false): Unit = {
+
+    val dataTypes = if (includeComplexTypes) {
+      // TODO add Map and Struct
+      primitiveTypes ++ primitiveTypes.map(DataTypes.createArrayType)
+    } else {
+      primitiveTypes
+    }
 
     // generate schema using random data types
     val fields = dataTypes.zipWithIndex
