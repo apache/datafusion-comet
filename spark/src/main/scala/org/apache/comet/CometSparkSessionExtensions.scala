@@ -1408,6 +1408,8 @@ object CometSparkSessionExtensions extends Logging {
    *   The node with information (if any) attached
    */
   def withInfos[T <: TreeNode[_]](node: T, info: Set[String], exprs: T*): T = {
+    // scalastyle:off println
+    println(s"withInfo: ${info.mkString}")
     val existingNodeInfos = node.getTagValue(CometExplainInfo.EXTENSION_INFO)
     val newNodeInfo = (existingNodeInfos ++ exprs
       .flatMap(_.getTagValue(CometExplainInfo.EXTENSION_INFO))).flatten.toSet

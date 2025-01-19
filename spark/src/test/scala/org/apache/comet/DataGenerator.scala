@@ -22,11 +22,12 @@ package org.apache.comet
 import java.math.{BigDecimal, RoundingMode}
 import java.nio.charset.Charset
 import java.sql.Timestamp
-import scala.util.Random
-import org.apache.spark.sql.{RandomDataGenerator, Row, SaveMode, SparkSession}
-import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, StringType, StructField, StructType}
 
 import scala.collection.mutable.ListBuffer
+import scala.util.Random
+
+import org.apache.spark.sql.{RandomDataGenerator, Row, SaveMode, SparkSession}
+import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, StringType, StructField, StructType}
 
 object DataGenerator {
   // note that we use `def` rather than `val` intentionally here so that
@@ -158,18 +159,18 @@ class DataGenerator(r: Random) {
     DataTypes.DateType,
     DataTypes.TimestampType,
     // TimestampNTZType only in Spark 3.4+
-    // (DataTypes.TimestampNTZType, 0.2),
+    // DataTypes.TimestampNTZType,
     DataTypes.StringType,
-    DataTypes.BinaryType
-  )
+    DataTypes.BinaryType)
 
-  // TODO add Map and Struct
-  private val dataTypes = primitiveTypes ++
+  // TODO add Array, Map, and Struct
+  private val dataTypes = primitiveTypes
+  /* ++
     primitiveTypes
       .filterNot(_ == DataTypes.BinaryType)
-      .map(DataTypes.createArrayType)
+      .map(DataTypes.createArrayType) */
 
-  def generateRandomParquetFile(
+  def makeParquetFile(
       r: Random,
       spark: SparkSession,
       filename: String,

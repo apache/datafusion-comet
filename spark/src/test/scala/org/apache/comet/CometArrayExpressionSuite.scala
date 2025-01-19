@@ -20,11 +20,11 @@
 package org.apache.comet
 
 import scala.collection.immutable.HashSet
+import scala.util.Random
+
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-
-import scala.util.Random
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -45,21 +45,27 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_remove - test all types") {
+    // scalastyle:off println
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
       val filename = path.toString
       val random = new Random(42)
-      DataGenerator.DEFAULT.generateRandomParquetFile(random, spark, filename, 100, true)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        DataGenerator.DEFAULT.makeParquetFile(
+          random,
+          spark,
+          filename,
+          100,
+          generateNegativeZero = true)
+      }
       val table = spark.read.parquet(filename)
       table.createOrReplaceTempView("t1")
-
       // test with array of each column
       for (fieldName <- table.schema.fieldNames) {
         sql(s"SELECT array($fieldName, $fieldName) as a, $fieldName as b FROM t1")
           .createOrReplaceTempView("t2")
         val df = sql("SELECT array_remove(a, b) FROM t2")
         checkSparkAnswerAndOperator(df)
-        // scalastyle:off println
         println(df.queryExecution.executedPlan)
       }
     }

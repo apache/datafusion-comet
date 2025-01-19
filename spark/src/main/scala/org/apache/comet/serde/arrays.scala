@@ -20,44 +20,41 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{ArrayRemove, Expression}
-import org.apache.spark.sql.types.{DataType, DataTypes}
+import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.shims.CometExprShim
 
 trait CometExpression {
   def checkSupport(expr: Expression): Boolean
-  def convert(expr: Expression)
 }
 
-object CometArrayRemove extends CometExpression {
+object CometArrayRemove extends CometExpression with CometExprShim {
 
   def isTypeSupported(dt: DataType): Boolean = {
-//    dt match {
-//      case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType |
-    //      DataTypes.LongType => true
-//      case _ => false
-//    }
-    true
-  }
-
-  override def checkSupport(expr: Expression): Boolean = {
-    expr match {
-      case ArrayRemove(l, r) =>
-        if (!isTypeSupported(l.dataType)) {
-          withInfo(expr, s"data type not supported: ${l.dataType}")
-          return false
-        }
-        if (!isTypeSupported(r.dataType)) {
-          withInfo(expr, s"data type not supported: ${r.dataType}")
-          return false
-        }
+    import DataTypes._
+    dt match {
+      case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
+          _: DecimalType | DateType | TimestampType | StringType | BinaryType =>
         true
-      case _ =>
+      case t if isTimestampNTZType(t) => true
+      case ArrayType(elementType, _) => isTypeSupported(elementType)
+      case _: StructType =>
+        // https://github.com/apache/datafusion-comet/issues/1307
         false
+      case _ => false
     }
   }
 
-  override def convert(expr: Expression): Unit = {
-    // TODO
+  override def checkSupport(expr: Expression): Boolean = {
+    val ar = expr.asInstanceOf[ArrayRemove]
+    val inputTypes: Set[DataType] = ar.children.map(_.dataType).toSet
+    for (dt <- inputTypes) {
+      if (!isTypeSupported(dt)) {
+        withInfo(expr, s"data type not supported [1]: $dt")
+        return false
+      }
+    }
+    true
   }
 }

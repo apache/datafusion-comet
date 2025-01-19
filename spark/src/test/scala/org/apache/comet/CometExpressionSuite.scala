@@ -21,7 +21,6 @@ package org.apache.comet
 
 import java.time.{Duration, Period}
 
-import scala.collection.immutable.HashSet
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 import scala.util.Random
