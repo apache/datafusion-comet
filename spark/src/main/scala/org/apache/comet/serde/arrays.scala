@@ -51,7 +51,7 @@ object CometArrayRemove extends CometExpression with CometExprShim {
     val inputTypes: Set[DataType] = ar.children.map(_.dataType).toSet
     for (dt <- inputTypes) {
       if (!isTypeSupported(dt)) {
-        withInfo(expr, s"data type not supported [1]: $dt")
+        withInfo(expr, s"data type not supported: $dt")
         return false
       }
     }
