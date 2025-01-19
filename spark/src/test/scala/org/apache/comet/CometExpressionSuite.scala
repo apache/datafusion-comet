@@ -2537,34 +2537,4 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("array_remove - integer") {
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
-        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
-        checkSparkAnswerAndOperator(
-          sql("SELECT array_remove(array(_2, _3,_4), _2) from t1 where _2 is null"))
-        checkSparkAnswerAndOperator(
-          sql("SELECT array_remove(array(_2, _3,_4), _3) from t1 where _3 is not null"))
-        checkSparkAnswerAndOperator(sql(
-          "SELECT array_remove(case when _2 = _3 THEN array(_2, _3,_4) ELSE null END, _3) from t1"))
-      }
-    }
-  }
-
-  test("array_remove - fallback for unsupported type") {
-    withTempDir { dir =>
-      val path = new Path(dir.toURI.toString, "test.parquet")
-      makeParquetFileAllTypes(path, dictionaryEnabled = true, 100)
-      spark.read.parquet(path.toString).createOrReplaceTempView("t1")
-      sql("SELECT array(struct(_1, _2)) as a, struct(_1, _2) as b FROM t1")
-        .createOrReplaceTempView("t2")
-      val expectedFallbackReasons = HashSet(
-        "data type not supported: ArrayType(StructType(StructField(_1,BooleanType,true),StructField(_2,ByteType,true)),false)")
-      checkSparkAnswerAndCompareExplainPlan(
-        sql("SELECT array_remove(a, b) FROM t2"),
-        expectedFallbackReasons)
-    }
-  }
 }

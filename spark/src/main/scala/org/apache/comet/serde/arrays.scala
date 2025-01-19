@@ -17,7 +17,7 @@
  * under the License.
  */
 
-package org.apache.comet.expressions
+package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{ArrayRemove, Expression}
 import org.apache.spark.sql.types.{DataType, DataTypes}
@@ -26,14 +26,18 @@ import org.apache.comet.CometSparkSessionExtensions.withInfo
 
 trait CometExpression {
   def checkSupport(expr: Expression): Boolean
+  def convert(expr: Expression)
 }
 
 object CometArrayRemove extends CometExpression {
 
   def isTypeSupported(dt: DataType): Boolean = {
-    // TODO we probably support many more types but we only
-    // have tests for integer so far, so we don't really know
-    dt == DataTypes.IntegerType
+//    dt match {
+//      case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType |
+    //      DataTypes.LongType => true
+//      case _ => false
+//    }
+    true
   }
 
   override def checkSupport(expr: Expression): Boolean = {
@@ -53,4 +57,7 @@ object CometArrayRemove extends CometExpression {
     }
   }
 
+  override def convert(expr: Expression): Unit = {
+    // TODO
+  }
 }

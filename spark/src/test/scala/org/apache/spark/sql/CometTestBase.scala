@@ -418,6 +418,10 @@ abstract class CometTestBase
     value % div
   }
 
+  def makeParquetFileAllSparkTypes(path: Path): Unit = {
+
+  }
+
   def makeParquetFileAllTypes(path: Path, dictionaryEnabled: Boolean, n: Int): Unit = {
     makeParquetFileAllTypes(path, dictionaryEnabled, 0, n)
   }

@@ -19,10 +19,14 @@
 
 package org.apache.comet
 
+import java.math.{BigDecimal, RoundingMode}
+import java.nio.charset.Charset
+import java.sql.Timestamp
 import scala.util.Random
+import org.apache.spark.sql.{RandomDataGenerator, Row, SaveMode, SparkSession}
+import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, StringType, StructField, StructType}
 
-import org.apache.spark.sql.{RandomDataGenerator, Row}
-import org.apache.spark.sql.types.{StringType, StructType}
+import scala.collection.mutable.ListBuffer
 
 object DataGenerator {
   // note that we use `def` rather than `val` intentionally here so that
@@ -139,6 +143,156 @@ class DataGenerator(r: Random) {
       schema: StructType,
       stringGen: Option[() => String] = None): Seq[Row] = {
     Range(0, num).map(_ => generateRow(schema, stringGen))
+  }
+
+  private val primitiveTypes = Seq(
+    DataTypes.BooleanType,
+    DataTypes.ByteType,
+    DataTypes.ShortType,
+    DataTypes.IntegerType,
+    DataTypes.LongType,
+    DataTypes.FloatType,
+    DataTypes.DoubleType,
+    DataTypes.createDecimalType(10, 2),
+    DataTypes.createDecimalType(36, 18),
+    DataTypes.DateType,
+    DataTypes.TimestampType,
+    // TimestampNTZType only in Spark 3.4+
+    // (DataTypes.TimestampNTZType, 0.2),
+    DataTypes.StringType,
+    DataTypes.BinaryType
+  )
+
+  // TODO add Map and Struct
+  private val dataTypes = primitiveTypes ++
+    primitiveTypes
+      .filterNot(_ == DataTypes.BinaryType)
+      .map(DataTypes.createArrayType)
+
+  def generateRandomParquetFile(
+      r: Random,
+      spark: SparkSession,
+      filename: String,
+      numRows: Int,
+      generateNegativeZero: Boolean): Unit = {
+
+    // generate schema using random data types
+    val fields = dataTypes.zipWithIndex
+      .map(i => StructField(s"c${i._2}", i._1, nullable = true))
+    val schema = StructType(fields)
+
+    // generate columnar data
+    val cols: Seq[Seq[Any]] =
+      fields.map(f => generateColumn(r, f.dataType, numRows, generateNegativeZero))
+
+    // convert to rows
+    val rows = Range(0, numRows).map(rowIndex => {
+      Row.fromSeq(cols.map(_(rowIndex)))
+    })
+
+    val df = spark.createDataFrame(spark.sparkContext.parallelize(rows), schema)
+    df.write.mode(SaveMode.Overwrite).parquet(filename)
+  }
+
+  def generateColumn(
+      r: Random,
+      dataType: DataType,
+      numRows: Int,
+      generateNegativeZero: Boolean): Seq[Any] = {
+    dataType match {
+      case ArrayType(elementType, _) =>
+        val values = generateColumn(r, elementType, numRows, generateNegativeZero)
+        val list = ListBuffer[Any]()
+        for (i <- 0 until numRows) {
+          if (i % 10 == 0) {
+            list += null
+          } else {
+            list += Range(0, r.nextInt(5)).map(j => values((i + j) % values.length)).toArray
+          }
+        }
+        list
+      case DataTypes.BooleanType =>
+        generateColumn(r, DataTypes.LongType, numRows, generateNegativeZero)
+          .map(_.asInstanceOf[Long].toShort)
+          .map(s => s % 2 == 0)
+      case DataTypes.ByteType =>
+        generateColumn(r, DataTypes.LongType, numRows, generateNegativeZero)
+          .map(_.asInstanceOf[Long].toByte)
+      case DataTypes.ShortType =>
+        generateColumn(r, DataTypes.LongType, numRows, generateNegativeZero)
+          .map(_.asInstanceOf[Long].toShort)
+      case DataTypes.IntegerType =>
+        generateColumn(r, DataTypes.LongType, numRows, generateNegativeZero)
+          .map(_.asInstanceOf[Long].toInt)
+      case DataTypes.LongType =>
+        Range(0, numRows).map(_ => {
+          r.nextInt(50) match {
+            case 0 => null
+            case 1 => 0L
+            case 2 => Byte.MinValue.toLong
+            case 3 => Byte.MaxValue.toLong
+            case 4 => Short.MinValue.toLong
+            case 5 => Short.MaxValue.toLong
+            case 6 => Int.MinValue.toLong
+            case 7 => Int.MaxValue.toLong
+            case 8 => Long.MinValue
+            case 9 => Long.MaxValue
+            case _ => r.nextLong()
+          }
+        })
+      case DataTypes.FloatType =>
+        Range(0, numRows).map(_ => {
+          r.nextInt(20) match {
+            case 0 => null
+            case 1 => Float.NegativeInfinity
+            case 2 => Float.PositiveInfinity
+            case 3 => Float.MinValue
+            case 4 => Float.MaxValue
+            case 5 => 0.0f
+            case 6 if generateNegativeZero => -0.0f
+            case _ => r.nextFloat()
+          }
+        })
+      case DataTypes.DoubleType =>
+        Range(0, numRows).map(_ => {
+          r.nextInt(20) match {
+            case 0 => null
+            case 1 => Double.NegativeInfinity
+            case 2 => Double.PositiveInfinity
+            case 3 => Double.MinValue
+            case 4 => Double.MaxValue
+            case 5 => 0.0
+            case 6 if generateNegativeZero => -0.0
+            case _ => r.nextDouble()
+          }
+        })
+      case dt: DecimalType =>
+        Range(0, numRows).map(_ =>
+          new BigDecimal(r.nextDouble()).setScale(dt.scale, RoundingMode.HALF_UP))
+      case DataTypes.StringType =>
+        Range(0, numRows).map(_ => {
+          r.nextInt(10) match {
+            case 0 => null
+            case 1 => r.nextInt().toByte.toString
+            case 2 => r.nextLong().toString
+            case 3 => r.nextDouble().toString
+            case _ => r.nextString(8)
+          }
+        })
+      case DataTypes.BinaryType =>
+        generateColumn(r, DataTypes.StringType, numRows, generateNegativeZero)
+          .map {
+            case x: String =>
+              x.getBytes(Charset.defaultCharset())
+            case _ =>
+              null
+          }
+      case DataTypes.DateType =>
+        Range(0, numRows).map(_ => new java.sql.Date(1716645600011L + r.nextInt()))
+      case DataTypes.TimestampType =>
+        Range(0, numRows).map(_ => new Timestamp(1716645600011L + r.nextInt()))
+      case _ => throw new IllegalStateException(s"Cannot generate data for $dataType yet")
+    }
   }
 
 }
