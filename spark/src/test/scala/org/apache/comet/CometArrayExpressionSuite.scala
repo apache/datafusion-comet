@@ -45,7 +45,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_remove - test all types") {
-    // scalastyle:off println
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
       val filename = path.toString
@@ -66,7 +65,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           .createOrReplaceTempView("t2")
         val df = sql("SELECT array_remove(a, b) FROM t2")
         checkSparkAnswerAndOperator(df)
-        println(df.queryExecution.executedPlan)
       }
     }
   }
