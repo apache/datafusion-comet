@@ -48,7 +48,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.unsafe.types.UTF8String
 
-import org.apache.comet.{CometConf, DataGenerator, ExtendedExplainInfo}
+import org.apache.comet.{CometConf, DataGenerator, DataGenOptions, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark35Plus, isSpark40Plus}
 
 class CometExecSuite extends CometTestBase {
@@ -1745,7 +1745,13 @@ class CometExecSuite extends CometTestBase {
       val filename = path.toString
       val random = new Random(42)
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        DataGenerator.DEFAULT.makeParquetFile(random, spark, filename, 100)
+        val options = DataGenOptions(
+          allowNull = true,
+          generateNegativeZero = true,
+          generateArray = true,
+          generateStruct = true,
+          generateMap = true)
+        DataGenerator.DEFAULT.makeParquetFile(random, spark, filename, 100, options)
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",

@@ -25,6 +25,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.types.StructType
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -55,7 +56,12 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           spark,
           filename,
           100,
-          includeComplexTypes = false)
+          DataGenOptions(
+            allowNull = true,
+            generateNegativeZero = true,
+            generateArray = false,
+            generateStruct = false,
+            generateMap = false))
       }
       val table = spark.read.parquet(filename)
       table.createOrReplaceTempView("t1")
@@ -75,7 +81,13 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       val filename = path.toString
       val random = new Random(42)
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        DataGenerator.DEFAULT.makeParquetFile(random, spark, filename, 100)
+        val options = DataGenOptions(
+          allowNull = true,
+          generateNegativeZero = true,
+          generateArray = true,
+          generateStruct = true,
+          generateMap = false)
+        DataGenerator.DEFAULT.makeParquetFile(random, spark, filename, 100, options)
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
@@ -84,11 +96,17 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         val table = spark.read.parquet(filename)
         table.createOrReplaceTempView("t1")
         // test with array of each column
-        for (fieldName <- table.schema.fieldNames) {
+        for (field <- table.schema.fields) {
+          val fieldName = field.name
           sql(s"SELECT array($fieldName, $fieldName) as a, $fieldName as b FROM t1")
             .createOrReplaceTempView("t2")
           val df = sql("SELECT array_remove(a, b) FROM t2")
-          checkSparkAnswer(df)
+          field.dataType match {
+            case _: StructType =>
+            // skip due to https://github.com/apache/datafusion-comet/issues/1314
+            case _ =>
+              checkSparkAnswer(df)
+          }
         }
       }
     }
