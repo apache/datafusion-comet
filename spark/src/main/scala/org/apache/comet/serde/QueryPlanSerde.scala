@@ -2294,6 +2294,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             expr.children(1),
             inputs,
             (builder, binaryExpr) => builder.setArrayContains(binaryExpr))
+        case expr if expr.prettyName == "array_distinct" =>
+          createUnaryExpr(
+            expr.children(0),
+            inputs,
+            (builder, unaryExpr) => builder.setArrayDistinct(unaryExpr))
         case _ if expr.prettyName == "array_append" =>
           createBinaryExpr(
             expr.children(0),

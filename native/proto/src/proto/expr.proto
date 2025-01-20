@@ -86,6 +86,7 @@ message Expr {
     ArrayInsert array_insert = 59;
     BinaryExpr array_contains = 60;
     BinaryExpr array_remove = 61;
+    UnaryExpr array_distinct = 62;
   }
 }
 
