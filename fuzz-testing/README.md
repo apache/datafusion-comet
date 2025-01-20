@@ -44,7 +44,9 @@ Planned areas of improvement:
 
 ## Usage
 
-Build the jar file first.
+From the root of the project, run `mvn install -DskipTests` to install Comet. 
+
+Then build the fuzz testing jar.
 
 ```shell
 mvn package
