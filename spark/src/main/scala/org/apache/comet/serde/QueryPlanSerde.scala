@@ -393,6 +393,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             ExprOuterClass.AggExpr
               .newBuilder()
               .setSum(sumBuilder)
+              .setDistinct(aggExpr.isDistinct)
               .build())
         } else {
           if (dataType.isEmpty) {
@@ -439,6 +440,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
       case Count(children) =>
+        if (children.length > 1 && aggExpr.isDistinct) {
+          withInfo(aggExpr, "no support for count distinct with multiple expressions")
+          return None
+        }
+
         val exprChildren = children.map(exprToProto(_, inputs, binding))
 
         if (exprChildren.forall(_.isDefined)) {
@@ -449,6 +455,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             ExprOuterClass.AggExpr
               .newBuilder()
               .setCount(countBuilder)
+              .setDistinct(aggExpr.isDistinct)
               .build())
         } else {
           withInfo(aggExpr, children: _*)

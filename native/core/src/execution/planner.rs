@@ -109,6 +109,7 @@ use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
+use datafusion_expr::test::function_stub::count_udaf;
 
 // For clippy error on type_complexity.
 type PhyAggResult = Result<Vec<AggregateFunctionExpr>, ExecutionError>;
@@ -1552,7 +1553,7 @@ impl PhysicalPlanner {
                     .schema(schema)
                     .alias("count")
                     .with_ignore_nulls(false)
-                    .with_distinct(false)
+                    .with_distinct(spark_expr.distinct)
                     .build()
                     .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
             }
@@ -1565,7 +1566,7 @@ impl PhysicalPlanner {
                     .schema(schema)
                     .alias("min")
                     .with_ignore_nulls(false)
-                    .with_distinct(false)
+                    .with_distinct(spark_expr.distinct)
                     .build()
                     .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
             }
@@ -1578,7 +1579,7 @@ impl PhysicalPlanner {
                     .schema(schema)
                     .alias("max")
                     .with_ignore_nulls(false)
-                    .with_distinct(false)
+                    .with_distinct(spark_expr.distinct)
                     .build()
                     .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
             }
@@ -1603,7 +1604,7 @@ impl PhysicalPlanner {
                     .schema(schema)
                     .alias("sum")
                     .with_ignore_nulls(false)
-                    .with_distinct(false)
+                    .with_distinct(spark_expr.distinct)
                     .build()
                     .map_err(|e| e.into())
             }
@@ -1631,7 +1632,7 @@ impl PhysicalPlanner {
                     .schema(schema)
                     .alias("avg")
                     .with_ignore_nulls(false)
-                    .with_distinct(false)
+                    .with_distinct(spark_expr.distinct)
                     .build()
                     .map_err(|e| e.into())
             }
@@ -1643,7 +1644,7 @@ impl PhysicalPlanner {
                     .schema(schema)
                     .alias("first")
                     .with_ignore_nulls(false)
-                    .with_distinct(false)
+                    .with_distinct(spark_expr.distinct)
                     .build()
                     .map_err(|e| e.into())
             }
@@ -1655,7 +1656,7 @@ impl PhysicalPlanner {
                     .schema(schema)
                     .alias("last")
                     .with_ignore_nulls(false)
-                    .with_distinct(false)
+                    .with_distinct(spark_expr.distinct)
                     .build()
                     .map_err(|e| e.into())
             }
@@ -1666,7 +1667,7 @@ impl PhysicalPlanner {
                     .schema(schema)
                     .alias("bit_and")
                     .with_ignore_nulls(false)
-                    .with_distinct(false)
+                    .with_distinct(spark_expr.distinct)
                     .build()
                     .map_err(|e| e.into())
             }
@@ -1677,7 +1678,7 @@ impl PhysicalPlanner {
                     .schema(schema)
                     .alias("bit_or")
                     .with_ignore_nulls(false)
-                    .with_distinct(false)
+                    .with_distinct(spark_expr.distinct)
                     .build()
                     .map_err(|e| e.into())
             }
@@ -1688,7 +1689,7 @@ impl PhysicalPlanner {
                     .schema(schema)
                     .alias("bit_xor")
                     .with_ignore_nulls(false)
-                    .with_distinct(false)
+                    .with_distinct(spark_expr.distinct)
                     .build()
                     .map_err(|e| e.into())
             }
