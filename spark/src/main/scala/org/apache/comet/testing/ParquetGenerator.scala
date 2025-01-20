@@ -87,7 +87,8 @@ object ParquetGenerator {
     val schema = StructType(fields)
 
     // generate columnar data
-    val cols: Seq[Seq[Any]] = fields.map(f => generateColumn(r, f.dataType, numRows, options)).toSeq
+    val cols: Seq[Seq[Any]] =
+      fields.map(f => generateColumn(r, f.dataType, numRows, options)).toSeq
 
     // convert to rows
     val rows = Range(0, numRows).map(rowIndex => {
