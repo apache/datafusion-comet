@@ -26,11 +26,15 @@ import org.rogach.scallop.ScallopOption
 
 import org.apache.spark.sql.SparkSession
 
+import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
+
 class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
   object generateData extends Subcommand("data") {
     val numFiles: ScallopOption[Int] = opt[Int](required = true)
     val numRows: ScallopOption[Int] = opt[Int](required = true)
-    val numColumns: ScallopOption[Int] = opt[Int](required = true)
+    val generateArrays: ScallopOption[Boolean] = opt[Boolean](required = false)
+    val generateStructs: ScallopOption[Boolean] = opt[Boolean](required = false)
+    val generateMaps: ScallopOption[Boolean] = opt[Boolean](required = false)
     val excludeNegativeZero: ScallopOption[Boolean] = opt[Boolean](required = false)
   }
   addSubcommand(generateData)
@@ -60,13 +64,20 @@ object Main {
     val conf = new Conf(args.toIndexedSeq)
     conf.subcommand match {
       case Some(conf.generateData) =>
-        DataGen.generateRandomFiles(
-          r,
-          spark,
-          numFiles = conf.generateData.numFiles(),
-          numRows = conf.generateData.numRows(),
-          numColumns = conf.generateData.numColumns(),
+        val options = DataGenOptions(
+          allowNull = true,
+          generateArray = !conf.generateData.generateArrays(),
+          generateStruct = !conf.generateData.generateStructs(),
+          generateMap = !conf.generateData.generateMaps(),
           generateNegativeZero = !conf.generateData.excludeNegativeZero())
+        for (i <- 0 until conf.generateData.numFiles()) {
+          ParquetGenerator.makeParquetFile(
+            r,
+            spark,
+            s"test$i.parquet",
+            numRows = conf.generateData.numRows(),
+            options)
+        }
       case Some(conf.generateQueries) =>
         QueryGen.generateRandomQueries(
           r,

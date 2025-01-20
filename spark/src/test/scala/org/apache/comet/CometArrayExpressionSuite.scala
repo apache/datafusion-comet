@@ -27,6 +27,8 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.types.StructType
 
+import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
+
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("array_remove - integer") {
@@ -51,7 +53,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       val filename = path.toString
       val random = new Random(42)
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        DataGenerator.DEFAULT.makeParquetFile(
+        ParquetGenerator.makeParquetFile(
           random,
           spark,
           filename,
@@ -87,7 +89,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           generateArray = true,
           generateStruct = true,
           generateMap = false)
-        DataGenerator.DEFAULT.makeParquetFile(random, spark, filename, 100, options)
+        ParquetGenerator.makeParquetFile(random, spark, filename, 100, options)
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",

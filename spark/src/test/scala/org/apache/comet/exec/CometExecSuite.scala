@@ -48,8 +48,9 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.unsafe.types.UTF8String
 
-import org.apache.comet.{CometConf, DataGenerator, DataGenOptions, ExtendedExplainInfo}
+import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark35Plus, isSpark40Plus}
+import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 class CometExecSuite extends CometTestBase {
   import testImplicits._
@@ -1751,7 +1752,7 @@ class CometExecSuite extends CometTestBase {
           generateArray = true,
           generateStruct = true,
           generateMap = true)
-        DataGenerator.DEFAULT.makeParquetFile(random, spark, filename, 100, options)
+        ParquetGenerator.makeParquetFile(random, spark, filename, 100, options)
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",

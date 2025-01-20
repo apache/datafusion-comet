@@ -64,8 +64,12 @@ object QueryRunner {
             val sparkRows = df.collect()
             val sparkPlan = df.queryExecution.executedPlan.toString
 
+            // execute witjh Comet
             try {
               spark.conf.set("spark.comet.enabled", "true")
+              // complex type support until we support it natively
+              spark.conf.set("spark.comet.sparkToColumnar.enabled", "true")
+              spark.conf.set("spark.comet.convert.parquet.enabled", "true")
               val df = spark.sql(sql)
               val cometRows = df.collect()
               val cometPlan = df.queryExecution.executedPlan.toString
