@@ -254,7 +254,11 @@ abstract class CometTestBase
       dfSpark.queryExecution.explainString(ExtendedMode),
       dfComet.queryExecution.explainString(ExtendedMode))
     if (supportsExtendedExplainInfo(dfSpark.queryExecution)) {
-      assert(expectedInfo.forall(s => diff.contains(s)))
+      for (info <- expectedInfo) {
+        if (!diff.contains(info)) {
+          fail(s"Extended explain diff did not contain $info. Diff: $diff.")
+        }
+      }
     }
     val extendedInfo =
       new ExtendedExplainInfo().generateExtendedInfo(dfComet.queryExecution.executedPlan)
