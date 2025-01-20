@@ -48,7 +48,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.unsafe.types.UTF8String
 
-import org.apache.comet.{CometConf, ExtendedExplainInfo}
+import org.apache.comet.{CometConf, DataGenerator, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark35Plus, isSpark40Plus}
 
 class CometExecSuite extends CometTestBase {
@@ -1736,6 +1736,25 @@ class CometExecSuite extends CometTestBase {
         c
       }
       assert(numOperators.length == 1)
+    }
+  }
+
+  test("SparkToColumnar read all types") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        DataGenerator.DEFAULT.makeParquetFile(random, spark, filename, 100)
+      }
+      withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
+        val table = spark.read.parquet(filename)
+        table.createOrReplaceTempView("t1")
+        checkSparkAnswer(sql("SELECT * FROM t1"))
+      }
     }
   }
 

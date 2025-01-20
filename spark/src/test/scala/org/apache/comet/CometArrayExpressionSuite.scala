@@ -44,7 +44,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  test("array_remove - test all types") {
+  test("array_remove - test all types (native Parquet reader)") {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
       val filename = path.toString
@@ -55,7 +55,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           spark,
           filename,
           100,
-          generateNegativeZero = true)
+          includeComplexTypes = false)
       }
       val table = spark.read.parquet(filename)
       table.createOrReplaceTempView("t1")
@@ -69,6 +69,31 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("array_remove - test all types (convert from Parquet)") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        DataGenerator.DEFAULT.makeParquetFile(random, spark, filename, 100)
+      }
+      withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
+        val table = spark.read.parquet(filename)
+        table.createOrReplaceTempView("t1")
+        // test with array of each column
+        for (fieldName <- table.schema.fieldNames) {
+          sql(s"SELECT array($fieldName, $fieldName) as a, $fieldName as b FROM t1")
+            .createOrReplaceTempView("t2")
+          val df = sql("SELECT array_remove(a, b) FROM t2")
+          checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+
   test("array_remove - fallback for unsupported type struct") {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
@@ -78,9 +103,12 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         .createOrReplaceTempView("t2")
       val expectedFallbackReasons = HashSet(
         "data type not supported: ArrayType(StructType(StructField(_1,BooleanType,true),StructField(_2,ByteType,true)),false)")
+      // note that checkExtended is disabled here due to an unrelated issue
+      // https://github.com/apache/datafusion-comet/issues/1313
       checkSparkAnswerAndCompareExplainPlan(
         sql("SELECT array_remove(a, b) FROM t2"),
-        expectedFallbackReasons)
+        expectedFallbackReasons,
+        checkExtended = false)
     }
   }
 }

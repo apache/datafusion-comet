@@ -168,8 +168,8 @@ class DataGenerator(r: Random) {
       spark: SparkSession,
       filename: String,
       numRows: Int,
-      generateNegativeZero: Boolean,
-      includeComplexTypes: Boolean = false): Unit = {
+      generateNegativeZero: Boolean = true,
+      includeComplexTypes: Boolean = true): Unit = {
 
     val dataTypes = if (includeComplexTypes) {
       // TODO add Map and Struct
