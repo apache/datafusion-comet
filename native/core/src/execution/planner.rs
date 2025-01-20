@@ -101,6 +101,8 @@ use datafusion_expr::{
     WindowFunctionDefinition,
 };
 use datafusion_functions_nested::array_has::ArrayHas;
+use datafusion_functions_nested::map_keys::map_keys_udf;
+use datafusion_functions_nested::map_values::map_values_udf;
 use datafusion_physical_expr::expressions::{Literal, StatsType};
 use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr::LexOrdering;
@@ -765,6 +767,46 @@ impl PhysicalPlanner {
 
                 Ok(Arc::new(case_expr))
             }
+            ExprStruct::MapKeys(expr) => {
+                let map_expr =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let return_type =
+                    if let DataType::Map(field, _) = map_expr.data_type(&input_schema)? {
+                        if let DataType::Struct(fields) = field.data_type() {
+                            fields[0].data_type().clone()
+                        } else {
+                            unreachable!()
+                        }
+                    } else {
+                        unreachable!()
+                    };
+                Ok(Arc::new(ScalarFunctionExpr::new(
+                    "map_keys",
+                    map_keys_udf(),
+                    vec![map_expr],
+                    return_type,
+                )))
+            }
+            ExprStruct::MapValues(expr) => {
+                let map_expr =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let return_type =
+                    if let DataType::Map(field, _) = map_expr.data_type(&input_schema)? {
+                        if let DataType::Struct(fields) = field.data_type() {
+                            fields[0].data_type().clone()
+                        } else {
+                            unreachable!()
+                        }
+                    } else {
+                        unreachable!()
+                    };
+                Ok(Arc::new(ScalarFunctionExpr::new(
+                    "map_values",
+                    map_values_udf(),
+                    vec![map_expr],
+                    return_type,
+                )))
+            }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
                 expr
@@ -1114,7 +1156,6 @@ impl PhysicalPlanner {
                     codec,
                     writer.output_data_file.clone(),
                     writer.output_index_file.clone(),
-                    writer.enable_fast_encoding,
                 )?);
 
                 Ok((
@@ -2079,6 +2120,7 @@ impl PhysicalPlanner {
             .collect::<Result<Vec<_>, _>>()?;
 
         let fun_name = &expr.func;
+
         let input_expr_types = args
             .iter()
             .map(|x| x.data_type(input_schema.as_ref()))
