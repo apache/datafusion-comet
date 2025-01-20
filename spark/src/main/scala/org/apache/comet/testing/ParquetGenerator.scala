@@ -84,6 +84,7 @@ object ParquetGenerator {
     // generate schema using random data types
     val fields = dataTypes.zipWithIndex
       .map(i => StructField(s"c${i._2}", i._1, nullable = true))
+      .toSeq
     val schema = StructType(fields)
 
     // generate columnar data
