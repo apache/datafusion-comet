@@ -242,7 +242,7 @@ abstract class CometTestBase
   protected def checkSparkAnswerAndCompareExplainPlan(
       df: DataFrame,
       expectedInfo: Set[String],
-      checkExtended: Boolean = true): Unit = {
+      checkExplainString: Boolean = true): Unit = {
     var expected: Array[Row] = Array.empty
     var dfSpark: Dataset[Row] = null
     withSQLConf(CometConf.COMET_ENABLED.key -> "false", EXTENDED_EXPLAIN_PROVIDERS_KEY -> "") {
@@ -251,13 +251,15 @@ abstract class CometTestBase
     }
     val dfComet = Dataset.ofRows(spark, df.logicalPlan)
     checkAnswer(dfComet, expected)
-    val diff = StringUtils.difference(
-      dfSpark.queryExecution.explainString(ExtendedMode),
-      dfComet.queryExecution.explainString(ExtendedMode))
-    if (supportsExtendedExplainInfo(dfSpark.queryExecution)) {
-      for (info <- expectedInfo) {
-        if (!diff.contains(info)) {
-          fail(s"Extended explain diff did not contain [$info]. Diff: $diff.")
+    if (checkExplainString) {
+      val diff = StringUtils.difference(
+        dfSpark.queryExecution.explainString(ExtendedMode),
+        dfComet.queryExecution.explainString(ExtendedMode))
+      if (supportsExtendedExplainInfo(dfSpark.queryExecution)) {
+        for (info <- expectedInfo) {
+          if (!diff.contains(info)) {
+            fail(s"Extended explain diff did not contain [$info]. Diff: $diff.")
+          }
         }
       }
     }

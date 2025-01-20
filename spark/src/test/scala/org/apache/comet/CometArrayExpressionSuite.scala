@@ -128,7 +128,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       checkSparkAnswerAndCompareExplainPlan(
         sql("SELECT array_remove(a, b) FROM t2"),
         expectedFallbackReasons,
-        checkExtended = false)
+        checkExplainString = false)
     }
   }
 }
