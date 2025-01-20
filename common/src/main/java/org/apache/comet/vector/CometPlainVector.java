@@ -38,6 +38,8 @@ public class CometPlainVector extends CometDecodedVector {
   private byte booleanByteCache;
   private int booleanByteCacheIndex = -1;
 
+  private boolean isReused;
+
   public CometPlainVector(ValueVector vector, boolean useDecimal128) {
     this(vector, useDecimal128, false);
   }
@@ -57,10 +59,15 @@ public class CometPlainVector extends CometDecodedVector {
     }
 
     isBaseFixedWidthVector = valueVector instanceof BaseFixedWidthVector;
+    this.isReused = isReused;
   }
 
   public boolean isReused() {
-    return false;
+    return isReused;
+  }
+
+  public void setReused(boolean isReused) {
+    this.isReused = isReused;
   }
 
   @Override
