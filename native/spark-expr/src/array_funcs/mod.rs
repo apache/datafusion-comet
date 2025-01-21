@@ -15,12 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod chr;
-mod prediction;
-mod string_space;
-mod substring;
+mod array_insert;
+mod get_array_struct_fields;
+mod list_extract;
 
-pub use chr::SparkChrFunc;
-pub use prediction::*;
-pub use string_space::StringSpaceExpr;
-pub use substring::SubstringExpr;
+pub use array_insert::ArrayInsert;
+pub use get_array_struct_fields::GetArrayStructFields;
+pub use list_extract::ListExtract;

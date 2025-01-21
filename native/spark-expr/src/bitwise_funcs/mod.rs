@@ -15,12 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod chr;
-mod prediction;
-mod string_space;
-mod substring;
+mod bitwise_not;
 
-pub use chr::SparkChrFunc;
-pub use prediction::*;
-pub use string_space::StringSpaceExpr;
-pub use substring::SubstringExpr;
+pub use bitwise_not::{bitwise_not, BitwiseNotExpr};
