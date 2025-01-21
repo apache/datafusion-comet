@@ -151,7 +151,13 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
             partitionSchema,
             file.partitionValues,
             JavaConverters.mapAsJavaMap(metrics))
-          batchReader.init()
+          try {
+            batchReader.init()
+          } catch {
+            case e: Throwable =>
+              batchReader.close()
+              throw e
+          }
           batchReader
         } else {
           val batchReader = new BatchReader(
@@ -167,7 +173,13 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
             partitionSchema,
             file.partitionValues,
             JavaConverters.mapAsJavaMap(metrics))
-          batchReader.init()
+          try {
+            batchReader.init()
+          } catch {
+            case e: Throwable =>
+              batchReader.close()
+              throw e
+          }
           batchReader
         }
       val iter = new RecordReaderIterator(recordBatchReader)
