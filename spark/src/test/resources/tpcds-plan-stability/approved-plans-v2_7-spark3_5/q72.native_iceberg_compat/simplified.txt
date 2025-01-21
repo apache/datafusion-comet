@@ -1,0 +1,66 @@
+WholeStageCodegen (1)
+  ColumnarToRow
+    InputAdapter
+      CometTakeOrderedAndProject [i_item_desc,w_warehouse_name,d_week_seq,no_promo,promo,total_cnt]
+        CometHashAggregate [i_item_desc,w_warehouse_name,d_week_seq,no_promo,promo,total_cnt,count,count(1)]
+          CometExchange [i_item_desc,w_warehouse_name,d_week_seq] #1
+            CometHashAggregate [i_item_desc,w_warehouse_name,d_week_seq,count]
+              CometProject [w_warehouse_name,i_item_desc,d_week_seq]
+                CometSortMergeJoin [cs_item_sk,cs_order_number,w_warehouse_name,i_item_desc,d_week_seq,cr_item_sk,cr_order_number]
+                  CometSort [cs_item_sk,cs_order_number,w_warehouse_name,i_item_desc,d_week_seq]
+                    CometExchange [cs_item_sk,cs_order_number] #2
+                      CometProject [cs_item_sk,cs_order_number,w_warehouse_name,i_item_desc,d_week_seq]
+                        CometBroadcastHashJoin [cs_item_sk,cs_promo_sk,cs_order_number,w_warehouse_name,i_item_desc,d_week_seq,p_promo_sk]
+                          CometProject [cs_item_sk,cs_promo_sk,cs_order_number,w_warehouse_name,i_item_desc,d_week_seq]
+                            CometBroadcastHashJoin [cs_ship_date_sk,cs_item_sk,cs_promo_sk,cs_order_number,w_warehouse_name,i_item_desc,d_date,d_week_seq,d_date_sk,d_date]
+                              CometProject [cs_ship_date_sk,cs_item_sk,cs_promo_sk,cs_order_number,w_warehouse_name,i_item_desc,d_date,d_week_seq]
+                                CometBroadcastHashJoin [cs_ship_date_sk,cs_item_sk,cs_promo_sk,cs_order_number,inv_date_sk,w_warehouse_name,i_item_desc,d_date,d_week_seq,d_date_sk,d_week_seq]
+                                  CometProject [cs_ship_date_sk,cs_item_sk,cs_promo_sk,cs_order_number,inv_date_sk,w_warehouse_name,i_item_desc,d_date,d_week_seq]
+                                    CometBroadcastHashJoin [cs_ship_date_sk,cs_item_sk,cs_promo_sk,cs_order_number,cs_sold_date_sk,inv_date_sk,w_warehouse_name,i_item_desc,d_date_sk,d_date,d_week_seq]
+                                      CometProject [cs_ship_date_sk,cs_item_sk,cs_promo_sk,cs_order_number,cs_sold_date_sk,inv_date_sk,w_warehouse_name,i_item_desc]
+                                        CometBroadcastHashJoin [cs_ship_date_sk,cs_bill_hdemo_sk,cs_item_sk,cs_promo_sk,cs_order_number,cs_sold_date_sk,inv_date_sk,w_warehouse_name,i_item_desc,hd_demo_sk]
+                                          CometProject [cs_ship_date_sk,cs_bill_hdemo_sk,cs_item_sk,cs_promo_sk,cs_order_number,cs_sold_date_sk,inv_date_sk,w_warehouse_name,i_item_desc]
+                                            CometBroadcastHashJoin [cs_ship_date_sk,cs_bill_cdemo_sk,cs_bill_hdemo_sk,cs_item_sk,cs_promo_sk,cs_order_number,cs_sold_date_sk,inv_date_sk,w_warehouse_name,i_item_desc,cd_demo_sk]
+                                              CometProject [cs_ship_date_sk,cs_bill_cdemo_sk,cs_bill_hdemo_sk,cs_item_sk,cs_promo_sk,cs_order_number,cs_sold_date_sk,inv_date_sk,w_warehouse_name,i_item_desc]
+                                                CometBroadcastHashJoin [cs_ship_date_sk,cs_bill_cdemo_sk,cs_bill_hdemo_sk,cs_item_sk,cs_promo_sk,cs_order_number,cs_sold_date_sk,inv_date_sk,w_warehouse_name,i_item_sk,i_item_desc]
+                                                  CometProject [cs_ship_date_sk,cs_bill_cdemo_sk,cs_bill_hdemo_sk,cs_item_sk,cs_promo_sk,cs_order_number,cs_sold_date_sk,inv_date_sk,w_warehouse_name]
+                                                    CometBroadcastHashJoin [cs_ship_date_sk,cs_bill_cdemo_sk,cs_bill_hdemo_sk,cs_item_sk,cs_promo_sk,cs_order_number,cs_sold_date_sk,inv_warehouse_sk,inv_date_sk,w_warehouse_sk,w_warehouse_name]
+                                                      CometProject [cs_ship_date_sk,cs_bill_cdemo_sk,cs_bill_hdemo_sk,cs_item_sk,cs_promo_sk,cs_order_number,cs_sold_date_sk,inv_warehouse_sk,inv_date_sk]
+                                                        CometBroadcastHashJoin [cs_ship_date_sk,cs_bill_cdemo_sk,cs_bill_hdemo_sk,cs_item_sk,cs_promo_sk,cs_order_number,cs_quantity,cs_sold_date_sk,inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]
+                                                          CometFilter [cs_ship_date_sk,cs_bill_cdemo_sk,cs_bill_hdemo_sk,cs_item_sk,cs_promo_sk,cs_order_number,cs_quantity,cs_sold_date_sk]
+                                                            CometScan parquet spark_catalog.default.catalog_sales [cs_ship_date_sk,cs_bill_cdemo_sk,cs_bill_hdemo_sk,cs_item_sk,cs_promo_sk,cs_order_number,cs_quantity,cs_sold_date_sk]
+                                                          CometBroadcastExchange [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk] #3
+                                                            CometFilter [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]
+                                                              CometScan parquet spark_catalog.default.inventory [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]
+                                                      CometBroadcastExchange [w_warehouse_sk,w_warehouse_name] #4
+                                                        CometFilter [w_warehouse_sk,w_warehouse_name]
+                                                          CometScan parquet spark_catalog.default.warehouse [w_warehouse_sk,w_warehouse_name]
+                                                  CometBroadcastExchange [i_item_sk,i_item_desc] #5
+                                                    CometFilter [i_item_sk,i_item_desc]
+                                                      CometScan parquet spark_catalog.default.item [i_item_sk,i_item_desc]
+                                              CometBroadcastExchange [cd_demo_sk] #6
+                                                CometProject [cd_demo_sk]
+                                                  CometFilter [cd_demo_sk,cd_marital_status]
+                                                    CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status]
+                                          CometBroadcastExchange [hd_demo_sk] #7
+                                            CometProject [hd_demo_sk]
+                                              CometFilter [hd_demo_sk,hd_buy_potential]
+                                                CometScan parquet spark_catalog.default.household_demographics [hd_demo_sk,hd_buy_potential]
+                                      CometBroadcastExchange [d_date_sk,d_date,d_week_seq] #8
+                                        CometProject [d_date_sk,d_date,d_week_seq]
+                                          CometFilter [d_date_sk,d_date,d_week_seq,d_year]
+                                            CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date,d_week_seq,d_year]
+                                  CometBroadcastExchange [d_date_sk,d_week_seq] #9
+                                    CometFilter [d_date_sk,d_week_seq]
+                                      CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_week_seq]
+                              CometBroadcastExchange [d_date_sk,d_date] #10
+                                CometFilter [d_date_sk,d_date]
+                                  CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date]
+                          CometBroadcastExchange [p_promo_sk] #11
+                            CometFilter [p_promo_sk]
+                              CometScan parquet spark_catalog.default.promotion [p_promo_sk]
+                  CometSort [cr_item_sk,cr_order_number]
+                    CometExchange [cr_item_sk,cr_order_number] #12
+                      CometProject [cr_item_sk,cr_order_number]
+                        CometFilter [cr_item_sk,cr_order_number,cr_returned_date_sk]
+                          CometScan parquet spark_catalog.default.catalog_returns [cr_item_sk,cr_order_number,cr_returned_date_sk]

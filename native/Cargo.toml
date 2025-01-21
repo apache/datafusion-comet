@@ -57,6 +57,8 @@ num = "0.4"
 rand = "0.8"
 regex = "1.9.6"
 thiserror = "1"
+object_store = "0.11.0"
+url = "2.2"
 
 [profile.release]
 debug = true

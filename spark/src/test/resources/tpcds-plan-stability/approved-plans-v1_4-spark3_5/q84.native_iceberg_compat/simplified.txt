@@ -1,0 +1,34 @@
+TakeOrderedAndProject [c_customer_id,customer_id,customername]
+  WholeStageCodegen (1)
+    Project [c_customer_id,c_last_name,c_first_name]
+      ColumnarToRow
+        InputAdapter
+          CometBroadcastHashJoin [c_customer_id,c_first_name,c_last_name,cd_demo_sk,sr_cdemo_sk]
+            CometBroadcastExchange [c_customer_id,c_first_name,c_last_name,cd_demo_sk] #1
+              CometProject [c_customer_id,c_first_name,c_last_name,cd_demo_sk]
+                CometBroadcastHashJoin [c_customer_id,c_first_name,c_last_name,cd_demo_sk,hd_income_band_sk,ib_income_band_sk]
+                  CometProject [c_customer_id,c_first_name,c_last_name,cd_demo_sk,hd_income_band_sk]
+                    CometBroadcastHashJoin [c_customer_id,c_current_hdemo_sk,c_first_name,c_last_name,cd_demo_sk,hd_demo_sk,hd_income_band_sk]
+                      CometProject [c_customer_id,c_current_hdemo_sk,c_first_name,c_last_name,cd_demo_sk]
+                        CometBroadcastHashJoin [c_customer_id,c_current_cdemo_sk,c_current_hdemo_sk,c_first_name,c_last_name,cd_demo_sk]
+                          CometProject [c_customer_id,c_current_cdemo_sk,c_current_hdemo_sk,c_first_name,c_last_name]
+                            CometBroadcastHashJoin [c_customer_id,c_current_cdemo_sk,c_current_hdemo_sk,c_current_addr_sk,c_first_name,c_last_name,ca_address_sk]
+                              CometFilter [c_customer_id,c_current_cdemo_sk,c_current_hdemo_sk,c_current_addr_sk,c_first_name,c_last_name]
+                                CometScan parquet spark_catalog.default.customer [c_customer_id,c_current_cdemo_sk,c_current_hdemo_sk,c_current_addr_sk,c_first_name,c_last_name]
+                              CometBroadcastExchange [ca_address_sk] #2
+                                CometProject [ca_address_sk]
+                                  CometFilter [ca_address_sk,ca_city]
+                                    CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_city]
+                          CometBroadcastExchange [cd_demo_sk] #3
+                            CometFilter [cd_demo_sk]
+                              CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk]
+                      CometBroadcastExchange [hd_demo_sk,hd_income_band_sk] #4
+                        CometFilter [hd_demo_sk,hd_income_band_sk]
+                          CometScan parquet spark_catalog.default.household_demographics [hd_demo_sk,hd_income_band_sk]
+                  CometBroadcastExchange [ib_income_band_sk] #5
+                    CometProject [ib_income_band_sk]
+                      CometFilter [ib_income_band_sk,ib_lower_bound,ib_upper_bound]
+                        CometScan parquet spark_catalog.default.income_band [ib_income_band_sk,ib_lower_bound,ib_upper_bound]
+            CometProject [sr_cdemo_sk]
+              CometFilter [sr_cdemo_sk,sr_returned_date_sk]
+                CometScan parquet spark_catalog.default.store_returns [sr_cdemo_sk,sr_returned_date_sk]
