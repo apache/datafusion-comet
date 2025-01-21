@@ -33,7 +33,7 @@ import org.apache.spark.sql.catalyst.{FunctionIdentifier, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
 import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo, Hex}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometCollectLimitExec, CometFilterExec, CometHashAggregateExec, CometHashJoinExec, CometProjectExec, CometScanExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometCollectLimitExec, CometFilterExec, CometHashAggregateExec, CometHashJoinExec, CometNativeScanExec, CometProjectExec, CometScanExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
@@ -532,7 +532,8 @@ class CometExecSuite extends CometTestBase {
           val df = sql("SELECT * FROM tbl WHERE _2 > _3")
           df.collect()
 
-          val metrics = find(df.queryExecution.executedPlan)(_.isInstanceOf[CometScanExec])
+          val metrics = find(df.queryExecution.executedPlan)(s =>
+            s.isInstanceOf[CometScanExec] || s.isInstanceOf[CometNativeScanExec])
             .map(_.metrics)
             .get
 
@@ -1457,7 +1458,10 @@ class CometExecSuite extends CometTestBase {
         val projected = df.selectExpr("_1 as x")
         val unioned = projected.union(df)
         val p = unioned.queryExecution.executedPlan.find(_.isInstanceOf[UnionExec])
-        assert(p.get.collectLeaves().forall(_.isInstanceOf[CometScanExec]))
+        assert(
+          p.get
+            .collectLeaves()
+            .forall(o => o.isInstanceOf[CometScanExec] || o.isInstanceOf[CometNativeScanExec]))
       }
     }
   }

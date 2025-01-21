@@ -1,0 +1,148 @@
+== Physical Plan ==
+* ColumnarToRow (28)
++- CometHashAggregate (27)
+   +- CometExchange (26)
+      +- CometHashAggregate (25)
+         +- CometProject (24)
+            +- CometBroadcastHashJoin (23)
+               :- CometProject (18)
+               :  +- CometBroadcastHashJoin (17)
+               :     :- CometProject (12)
+               :     :  +- CometBroadcastHashJoin (11)
+               :     :     :- CometProject (7)
+               :     :     :  +- CometBroadcastHashJoin (6)
+               :     :     :     :- CometFilter (2)
+               :     :     :     :  +- CometNativeScan: `spark_catalog`.`default`.`store_sales` (1)
+               :     :     :     +- CometBroadcastExchange (5)
+               :     :     :        +- CometFilter (4)
+               :     :     :           +- CometNativeScan: `spark_catalog`.`default`.`store` (3)
+               :     :     +- CometBroadcastExchange (10)
+               :     :        +- CometFilter (9)
+               :     :           +- CometNativeScan: `spark_catalog`.`default`.`customer_demographics` (8)
+               :     +- CometBroadcastExchange (16)
+               :        +- CometProject (15)
+               :           +- CometFilter (14)
+               :              +- CometNativeScan: `spark_catalog`.`default`.`customer_address` (13)
+               +- CometBroadcastExchange (22)
+                  +- CometProject (21)
+                     +- CometFilter (20)
+                        +- CometNativeScan: `spark_catalog`.`default`.`date_dim` (19)
+
+
+(1) CometNativeScan: `spark_catalog`.`default`.`store_sales`
+Output [7]: [ss_cdemo_sk#1, ss_addr_sk#2, ss_store_sk#3, ss_quantity#4, ss_sales_price#5, ss_net_profit#6, ss_sold_date_sk#7]
+Arguments: [ss_cdemo_sk#1, ss_addr_sk#2, ss_store_sk#3, ss_quantity#4, ss_sales_price#5, ss_net_profit#6, ss_sold_date_sk#7]
+
+(2) CometFilter
+Input [7]: [ss_cdemo_sk#1, ss_addr_sk#2, ss_store_sk#3, ss_quantity#4, ss_sales_price#5, ss_net_profit#6, ss_sold_date_sk#7]
+Condition : ((((isnotnull(ss_store_sk#3) AND isnotnull(ss_cdemo_sk#1)) AND isnotnull(ss_addr_sk#2)) AND ((((ss_sales_price#5 >= 100.00) AND (ss_sales_price#5 <= 150.00)) OR ((ss_sales_price#5 >= 50.00) AND (ss_sales_price#5 <= 100.00))) OR ((ss_sales_price#5 >= 150.00) AND (ss_sales_price#5 <= 200.00)))) AND ((((ss_net_profit#6 >= 0.00) AND (ss_net_profit#6 <= 2000.00)) OR ((ss_net_profit#6 >= 150.00) AND (ss_net_profit#6 <= 3000.00))) OR ((ss_net_profit#6 >= 50.00) AND (ss_net_profit#6 <= 25000.00))))
+
+(3) CometNativeScan: `spark_catalog`.`default`.`store`
+Output [1]: [s_store_sk#8]
+Arguments: [s_store_sk#8]
+
+(4) CometFilter
+Input [1]: [s_store_sk#8]
+Condition : isnotnull(s_store_sk#8)
+
+(5) CometBroadcastExchange
+Input [1]: [s_store_sk#8]
+Arguments: [s_store_sk#8]
+
+(6) CometBroadcastHashJoin
+Left output [7]: [ss_cdemo_sk#1, ss_addr_sk#2, ss_store_sk#3, ss_quantity#4, ss_sales_price#5, ss_net_profit#6, ss_sold_date_sk#7]
+Right output [1]: [s_store_sk#8]
+Arguments: [ss_store_sk#3], [s_store_sk#8], Inner, BuildRight
+
+(7) CometProject
+Input [8]: [ss_cdemo_sk#1, ss_addr_sk#2, ss_store_sk#3, ss_quantity#4, ss_sales_price#5, ss_net_profit#6, ss_sold_date_sk#7, s_store_sk#8]
+Arguments: [ss_cdemo_sk#1, ss_addr_sk#2, ss_quantity#4, ss_sales_price#5, ss_net_profit#6, ss_sold_date_sk#7], [ss_cdemo_sk#1, ss_addr_sk#2, ss_quantity#4, ss_sales_price#5, ss_net_profit#6, ss_sold_date_sk#7]
+
+(8) CometNativeScan: `spark_catalog`.`default`.`customer_demographics`
+Output [3]: [cd_demo_sk#9, cd_marital_status#10, cd_education_status#11]
+Arguments: [cd_demo_sk#9, cd_marital_status#10, cd_education_status#11]
+
+(9) CometFilter
+Input [3]: [cd_demo_sk#9, cd_marital_status#10, cd_education_status#11]
+Condition : (isnotnull(cd_demo_sk#9) AND ((((cd_marital_status#10 = M) AND (cd_education_status#11 = 4 yr Degree         )) OR ((cd_marital_status#10 = D) AND (cd_education_status#11 = 2 yr Degree         ))) OR ((cd_marital_status#10 = S) AND (cd_education_status#11 = College             ))))
+
+(10) CometBroadcastExchange
+Input [3]: [cd_demo_sk#9, cd_marital_status#10, cd_education_status#11]
+Arguments: [cd_demo_sk#9, cd_marital_status#10, cd_education_status#11]
+
+(11) CometBroadcastHashJoin
+Left output [6]: [ss_cdemo_sk#1, ss_addr_sk#2, ss_quantity#4, ss_sales_price#5, ss_net_profit#6, ss_sold_date_sk#7]
+Right output [3]: [cd_demo_sk#9, cd_marital_status#10, cd_education_status#11]
+Arguments: [ss_cdemo_sk#1], [cd_demo_sk#9], Inner, ((((((cd_marital_status#10 = M) AND (cd_education_status#11 = 4 yr Degree         )) AND (ss_sales_price#5 >= 100.00)) AND (ss_sales_price#5 <= 150.00)) OR ((((cd_marital_status#10 = D) AND (cd_education_status#11 = 2 yr Degree         )) AND (ss_sales_price#5 >= 50.00)) AND (ss_sales_price#5 <= 100.00))) OR ((((cd_marital_status#10 = S) AND (cd_education_status#11 = College             )) AND (ss_sales_price#5 >= 150.00)) AND (ss_sales_price#5 <= 200.00))), BuildRight
+
+(12) CometProject
+Input [9]: [ss_cdemo_sk#1, ss_addr_sk#2, ss_quantity#4, ss_sales_price#5, ss_net_profit#6, ss_sold_date_sk#7, cd_demo_sk#9, cd_marital_status#10, cd_education_status#11]
+Arguments: [ss_addr_sk#2, ss_quantity#4, ss_net_profit#6, ss_sold_date_sk#7], [ss_addr_sk#2, ss_quantity#4, ss_net_profit#6, ss_sold_date_sk#7]
+
+(13) CometNativeScan: `spark_catalog`.`default`.`customer_address`
+Output [3]: [ca_address_sk#12, ca_state#13, ca_country#14]
+Arguments: [ca_address_sk#12, ca_state#13, ca_country#14]
+
+(14) CometFilter
+Input [3]: [ca_address_sk#12, ca_state#13, ca_country#14]
+Condition : (((isnotnull(ca_country#14) AND (ca_country#14 = United States)) AND isnotnull(ca_address_sk#12)) AND ((ca_state#13 IN (CO,OH,TX) OR ca_state#13 IN (OR,MN,KY)) OR ca_state#13 IN (VA,CA,MS)))
+
+(15) CometProject
+Input [3]: [ca_address_sk#12, ca_state#13, ca_country#14]
+Arguments: [ca_address_sk#12, ca_state#13], [ca_address_sk#12, ca_state#13]
+
+(16) CometBroadcastExchange
+Input [2]: [ca_address_sk#12, ca_state#13]
+Arguments: [ca_address_sk#12, ca_state#13]
+
+(17) CometBroadcastHashJoin
+Left output [4]: [ss_addr_sk#2, ss_quantity#4, ss_net_profit#6, ss_sold_date_sk#7]
+Right output [2]: [ca_address_sk#12, ca_state#13]
+Arguments: [ss_addr_sk#2], [ca_address_sk#12], Inner, ((((ca_state#13 IN (CO,OH,TX) AND (ss_net_profit#6 >= 0.00)) AND (ss_net_profit#6 <= 2000.00)) OR ((ca_state#13 IN (OR,MN,KY) AND (ss_net_profit#6 >= 150.00)) AND (ss_net_profit#6 <= 3000.00))) OR ((ca_state#13 IN (VA,CA,MS) AND (ss_net_profit#6 >= 50.00)) AND (ss_net_profit#6 <= 25000.00))), BuildRight
+
+(18) CometProject
+Input [6]: [ss_addr_sk#2, ss_quantity#4, ss_net_profit#6, ss_sold_date_sk#7, ca_address_sk#12, ca_state#13]
+Arguments: [ss_quantity#4, ss_sold_date_sk#7], [ss_quantity#4, ss_sold_date_sk#7]
+
+(19) CometNativeScan: `spark_catalog`.`default`.`date_dim`
+Output [2]: [d_date_sk#15, d_year#16]
+Arguments: [d_date_sk#15, d_year#16]
+
+(20) CometFilter
+Input [2]: [d_date_sk#15, d_year#16]
+Condition : ((isnotnull(d_year#16) AND (d_year#16 = 2001)) AND isnotnull(d_date_sk#15))
+
+(21) CometProject
+Input [2]: [d_date_sk#15, d_year#16]
+Arguments: [d_date_sk#15], [d_date_sk#15]
+
+(22) CometBroadcastExchange
+Input [1]: [d_date_sk#15]
+Arguments: [d_date_sk#15]
+
+(23) CometBroadcastHashJoin
+Left output [2]: [ss_quantity#4, ss_sold_date_sk#7]
+Right output [1]: [d_date_sk#15]
+Arguments: [ss_sold_date_sk#7], [d_date_sk#15], Inner, BuildRight
+
+(24) CometProject
+Input [3]: [ss_quantity#4, ss_sold_date_sk#7, d_date_sk#15]
+Arguments: [ss_quantity#4], [ss_quantity#4]
+
+(25) CometHashAggregate
+Input [1]: [ss_quantity#4]
+Keys: []
+Functions [1]: [partial_sum(ss_quantity#4)]
+
+(26) CometExchange
+Input [1]: [sum#17]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+
+(27) CometHashAggregate
+Input [1]: [sum#17]
+Keys: []
+Functions [1]: [sum(ss_quantity#4)]
+
+(28) ColumnarToRow [codegen id : 1]
+Input [1]: [sum(ss_quantity)#18]
+

@@ -21,6 +21,7 @@ package org.apache.comet.fuzz
 
 import java.io.{BufferedWriter, FileWriter, PrintWriter, StringWriter}
 
+import scala.collection.mutable.WrappedArray
 import scala.io.Source
 
 import org.apache.spark.sql.{Row, SparkSession}
@@ -81,17 +82,7 @@ object QueryRunner {
                   val r = cometRows(i)
                   assert(l.length == r.length)
                   for (j <- 0 until l.length) {
-                    val same = (l(j), r(j)) match {
-                      case (a: Float, b: Float) if a.isInfinity => b.isInfinity
-                      case (a: Float, b: Float) if a.isNaN => b.isNaN
-                      case (a: Float, b: Float) => (a - b).abs <= 0.000001f
-                      case (a: Double, b: Double) if a.isInfinity => b.isInfinity
-                      case (a: Double, b: Double) if a.isNaN => b.isNaN
-                      case (a: Double, b: Double) => (a - b).abs <= 0.000001
-                      case (a: Array[Byte], b: Array[Byte]) => a.sameElements(b)
-                      case (a, b) => a == b
-                    }
-                    if (!same) {
+                    if (!same(l(j), r(j))) {
                       showSQL(w, sql)
                       showPlans(w, sparkPlan, cometPlan)
                       w.write(s"First difference at row $i:\n")
@@ -142,14 +133,34 @@ object QueryRunner {
     }
   }
 
+  private def same(l: Any, r: Any): Boolean = {
+    (l, r) match {
+      case (a: Float, b: Float) if a.isInfinity => b.isInfinity
+      case (a: Float, b: Float) if a.isNaN => b.isNaN
+      case (a: Float, b: Float) => (a - b).abs <= 0.000001f
+      case (a: Double, b: Double) if a.isInfinity => b.isInfinity
+      case (a: Double, b: Double) if a.isNaN => b.isNaN
+      case (a: Double, b: Double) => (a - b).abs <= 0.000001
+      case (a: Array[_], b: Array[_]) =>
+        a.length == b.length && a.zip(b).forall(x => same(x._1, x._2))
+      case (a: WrappedArray[_], b: WrappedArray[_]) =>
+        a.length == b.length && a.zip(b).forall(x => same(x._1, x._2))
+      case (a, b) => a == b
+    }
+  }
+
+  private def format(value: Any): String = {
+    value match {
+      case null => "NULL"
+      case v: WrappedArray[_] => s"[${v.map(format).mkString(",")}]"
+      case v: Array[Byte] => s"[${v.mkString(",")}]"
+      case other =>
+        s"${other.getClass}: ${other.toString}"
+    }
+  }
+
   private def formatRow(row: Row): String = {
-    row.toSeq
-      .map {
-        case null => "NULL"
-        case v: Array[Byte] => v.mkString
-        case other => other.toString
-      }
-      .mkString(",")
+    row.toSeq.map(format).mkString(",")
   }
 
   private def showSQL(w: BufferedWriter, sql: String, maxLength: Int = 120): Unit = {
