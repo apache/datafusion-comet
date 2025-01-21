@@ -154,8 +154,7 @@ object QueryRunner {
       case null => "NULL"
       case v: WrappedArray[_] => s"[${v.map(format).mkString(",")}]"
       case v: Array[Byte] => s"[${v.mkString(",")}]"
-      case other =>
-        s"${other.getClass}: ${other.toString}"
+      case other => other.toString
     }
   }
 
