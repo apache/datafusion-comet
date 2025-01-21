@@ -79,7 +79,7 @@ url = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
-pprof = { version = "0.13.0", features = ["flamegraph"] }
+pprof = { version = "0.14.0", features = ["flamegraph"] }
 criterion = { version = "0.5.1", features = ["async_tokio"] }
 jni = { version = "0.21", features = ["invocation"] }
 lazy_static = "1.4"
