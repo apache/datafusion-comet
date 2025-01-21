@@ -46,7 +46,28 @@ message Operator {
     SortMergeJoin sort_merge_join = 108;
     HashJoin hash_join = 109;
     Window window = 110;
+    NativeScan native_scan = 111;
   }
+}
+
+message SparkPartitionedFile {
+  string file_path = 1;
+  int64 start = 2;
+  int64 length = 3;
+  int64 file_size = 4;
+  repeated spark.spark_expression.Expr partition_values = 5;
+}
+
+// This name and the one above are not great, but they correspond to the (unfortunate) Spark names.
+// I prepended "Spark" since I think there's a name collision on the native side, but we can revisit.
+message SparkFilePartition {
+  repeated SparkPartitionedFile partitioned_file = 1;
+}
+
+message SparkStructField {
+  string name = 1;
+  spark.spark_expression.DataType data_type = 2;
+  bool nullable = 3;
 }
 
 message Scan {
@@ -55,6 +76,21 @@ message Scan {
   // is purely for informational purposes when viewing native query plans in
   // debug mode.
   string source = 2;
+}
+
+message NativeScan {
+  repeated spark.spark_expression.DataType fields = 1;
+  // The source of the scan (e.g. file scan, broadcast exchange, shuffle, etc). This
+  // is purely for informational purposes when viewing native query plans in
+  // debug mode.
+  string source = 2;
+  repeated SparkStructField required_schema = 3;
+  repeated SparkStructField data_schema = 4;
+  repeated SparkStructField partition_schema = 5;
+  repeated spark.spark_expression.Expr data_filters = 6;
+  repeated SparkFilePartition file_partitions = 7;
+  repeated int64 projection_vector = 8;
+  string session_timezone = 9;
 }
 
 message Projection {

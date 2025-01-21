@@ -53,7 +53,7 @@ import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark34Plus, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isOffHeapEnabled, isSpark34Plus, isSpark40Plus, isTesting, shouldApplySparkToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.rules.RewriteJoin
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -187,6 +187,29 @@ class CometSparkSessionExtensions
                 withInfo(scanExec, "Comet Scan only supports Parquet")
                 scanExec
             }
+
+          // data source V1
+          case scanExec @ FileSourceScanExec(
+                HadoopFsRelation(_, partitionSchema, _, _, fileFormat, _),
+                _: Seq[_],
+                requiredSchema,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _)
+              if CometScanExec.isFileFormatSupported(fileFormat)
+                && CometNativeScanExec.isSchemaSupported(requiredSchema)
+                && CometNativeScanExec.isSchemaSupported(partitionSchema)
+                // TODO we only enable full native scan if COMET_EXEC_ENABLED is enabled
+                // but this is not really what we want .. we currently insert `CometScanExec`
+                // here and then it gets replaced with `CometNativeScanExec` in `CometExecRule`
+                // but that only happens if `COMET_EXEC_ENABLED` is enabled
+                && COMET_EXEC_ENABLED.get()
+                && COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_DATAFUSION =>
+            logInfo("Comet extension enabled for v1 full native Scan")
+            CometScanExec(scanExec, session)
 
           // data source V1
           case scanExec @ FileSourceScanExec(
@@ -353,6 +376,13 @@ class CometSparkSessionExtensions
       }
 
       plan.transformUp {
+        // Fully native scan for V1
+        case scan: CometScanExec
+            if COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_DATAFUSION) =>
+          val nativeOp = QueryPlanSerde.operator2Proto(scan).get
+          CometNativeScanExec(nativeOp, scan.wrapped, scan.session)
+
+        // Comet JVM + native scan for V1 and V2
         case op if isCometScan(op) =>
           val nativeOp = QueryPlanSerde.operator2Proto(op).get
           CometScanWrapper(nativeOp, op)
@@ -944,6 +974,14 @@ class CometSparkSessionExtensions
     }
 
     override def apply(plan: SparkPlan): SparkPlan = {
+
+      // Comet required off-heap memory to be enabled
+      if (!isOffHeapEnabled(conf) && !isTesting) {
+        logWarning("Comet native exec disabled because spark.memory.offHeap.enabled=false")
+        withInfo(plan, "Comet native exec disabled because spark.memory.offHeap.enabled=false")
+        return plan
+      }
+
       // DataFusion doesn't have ANSI mode. For now we just disable CometExec if ANSI mode is
       // enabled.
       if (isANSIEnabled(conf)) {
@@ -1035,12 +1073,20 @@ class CometSparkSessionExtensions
         var firstNativeOp = true
         newPlan.transformDown {
           case op: CometNativeExec =>
-            if (firstNativeOp) {
+            val newPlan = if (firstNativeOp) {
               firstNativeOp = false
               op.convertBlock()
             } else {
               op
             }
+
+            // If reaching leaf node, reset `firstNativeOp` to true
+            // because it will start a new block in next iteration.
+            if (op.children.isEmpty) {
+              firstNativeOp = true
+            }
+
+            newPlan
           case op =>
             firstNativeOp = true
             op
@@ -1204,12 +1250,21 @@ object CometSparkSessionExtensions extends Logging {
     }
   }
 
+  private[comet] def isOffHeapEnabled(conf: SQLConf): Boolean =
+    conf.getConfString("spark.memory.offHeap.enabled", "false").toBoolean
+
+  // Copied from org.apache.spark.util.Utils which is private to Spark.
+  private[comet] def isTesting: Boolean = {
+    System.getenv("SPARK_TESTING") != null || System.getProperty("spark.testing") != null
+  }
+
   // Check whether Comet shuffle is enabled:
   // 1. `COMET_EXEC_SHUFFLE_ENABLED` is true
   // 2. `spark.shuffle.manager` is set to `CometShuffleManager`
   // 3. Off-heap memory is enabled || Spark/Comet unit testing
   private[comet] def isCometShuffleEnabled(conf: SQLConf): Boolean =
-    COMET_EXEC_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf)
+    COMET_EXEC_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf) &&
+      (isOffHeapEnabled(conf) || isTesting)
 
   private[comet] def getCometShuffleNotEnabledReason(conf: SQLConf): Option[String] = {
     if (!COMET_EXEC_SHUFFLE_ENABLED.get(conf)) {

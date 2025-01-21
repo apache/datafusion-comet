@@ -26,6 +26,7 @@ import org.apache.spark.sql.comet.CometMetricNode
 
 class Native extends NativeBase {
 
+  // scalastyle:off
   /**
    * Create a native query plan from execution SparkPlan serialized in bytes.
    * @param id
@@ -53,6 +54,7 @@ class Native extends NativeBase {
       id: Long,
       iterators: Array[CometBatchIterator],
       plan: Array[Byte],
+      partitionCount: Int,
       metrics: CometMetricNode,
       metricsUpdateInterval: Long,
       taskMemoryManager: CometTaskMemoryManager,

@@ -1,0 +1,44 @@
+WholeStageCodegen (2)
+  HashAggregate [sum,sum,count] [sum(UnscaledValue(cs_ext_ship_cost)),sum(UnscaledValue(cs_net_profit)),count(cs_order_number),order count ,total shipping cost ,total net profit ,sum,sum,count]
+    InputAdapter
+      Exchange #1
+        WholeStageCodegen (1)
+          HashAggregate [cs_order_number] [sum(UnscaledValue(cs_ext_ship_cost)),sum(UnscaledValue(cs_net_profit)),count(cs_order_number),sum,sum,count,sum,sum,count]
+            HashAggregate [cs_order_number] [sum(UnscaledValue(cs_ext_ship_cost)),sum(UnscaledValue(cs_net_profit)),sum,sum,sum,sum]
+              ColumnarToRow
+                InputAdapter
+                  CometHashAggregate [cs_order_number,sum,sum,cs_ext_ship_cost,cs_net_profit]
+                    CometProject [cs_order_number,cs_ext_ship_cost,cs_net_profit]
+                      CometBroadcastHashJoin [cs_call_center_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit,cc_call_center_sk]
+                        CometProject [cs_call_center_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit]
+                          CometBroadcastHashJoin [cs_ship_addr_sk,cs_call_center_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit,ca_address_sk]
+                            CometProject [cs_ship_addr_sk,cs_call_center_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit]
+                              CometBroadcastHashJoin [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit,d_date_sk]
+                                CometSortMergeJoin [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit,cr_order_number]
+                                  CometProject [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit]
+                                    CometSortMergeJoin [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_warehouse_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit,cs_order_number,cs_warehouse_sk]
+                                      CometSort [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_warehouse_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit]
+                                        CometExchange [cs_order_number] #2
+                                          CometProject [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_warehouse_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit]
+                                            CometFilter [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_warehouse_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit,cs_sold_date_sk]
+                                              CometNativeScan: `spark_catalog`.`default`.`catalog_sales` [cs_ship_date_sk,cs_ship_addr_sk,cs_call_center_sk,cs_warehouse_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit,cs_sold_date_sk]
+                                      CometSort [cs_warehouse_sk,cs_order_number]
+                                        CometExchange [cs_order_number] #3
+                                          CometProject [cs_warehouse_sk,cs_order_number]
+                                            CometNativeScan: `spark_catalog`.`default`.`catalog_sales` [cs_warehouse_sk,cs_order_number,cs_sold_date_sk]
+                                  CometSort [cr_order_number]
+                                    CometExchange [cr_order_number] #4
+                                      CometProject [cr_order_number]
+                                        CometNativeScan: `spark_catalog`.`default`.`catalog_returns` [cr_order_number,cr_returned_date_sk]
+                                CometBroadcastExchange [d_date_sk] #5
+                                  CometProject [d_date_sk]
+                                    CometFilter [d_date_sk,d_date]
+                                      CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_date]
+                            CometBroadcastExchange [ca_address_sk] #6
+                              CometProject [ca_address_sk]
+                                CometFilter [ca_address_sk,ca_state]
+                                  CometNativeScan: `spark_catalog`.`default`.`customer_address` [ca_address_sk,ca_state]
+                        CometBroadcastExchange [cc_call_center_sk] #7
+                          CometProject [cc_call_center_sk]
+                            CometFilter [cc_call_center_sk,cc_county]
+                              CometNativeScan: `spark_catalog`.`default`.`call_center` [cc_call_center_sk,cc_county]

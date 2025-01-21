@@ -1,0 +1,36 @@
+TakeOrderedAndProject [w_state,i_item_id,sales_before,sales_after]
+  WholeStageCodegen (2)
+    HashAggregate [w_state,i_item_id,sum,isEmpty,sum,isEmpty] [sum(CASE WHEN (d_date < 2000-03-11) THEN (cs_sales_price - coalesce(cast(cr_refunded_cash as decimal(12,2)), 0.00)) ELSE 0.00 END),sum(CASE WHEN (d_date >= 2000-03-11) THEN (cs_sales_price - coalesce(cast(cr_refunded_cash as decimal(12,2)), 0.00)) ELSE 0.00 END),sales_before,sales_after,sum,isEmpty,sum,isEmpty]
+      InputAdapter
+        Exchange [w_state,i_item_id] #1
+          WholeStageCodegen (1)
+            HashAggregate [w_state,i_item_id,d_date,cs_sales_price,cr_refunded_cash] [sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty]
+              ColumnarToRow
+                InputAdapter
+                  CometProject [cs_sales_price,cr_refunded_cash,w_state,i_item_id,d_date]
+                    CometBroadcastHashJoin [cs_sales_price,cs_sold_date_sk,cr_refunded_cash,w_state,i_item_id,d_date_sk,d_date]
+                      CometProject [cs_sales_price,cs_sold_date_sk,cr_refunded_cash,w_state,i_item_id]
+                        CometBroadcastHashJoin [cs_item_sk,cs_sales_price,cs_sold_date_sk,cr_refunded_cash,w_state,i_item_sk,i_item_id]
+                          CometProject [cs_item_sk,cs_sales_price,cs_sold_date_sk,cr_refunded_cash,w_state]
+                            CometBroadcastHashJoin [cs_warehouse_sk,cs_item_sk,cs_sales_price,cs_sold_date_sk,cr_refunded_cash,w_warehouse_sk,w_state]
+                              CometProject [cs_warehouse_sk,cs_item_sk,cs_sales_price,cs_sold_date_sk,cr_refunded_cash]
+                                CometSortMergeJoin [cs_warehouse_sk,cs_item_sk,cs_order_number,cs_sales_price,cs_sold_date_sk,cr_item_sk,cr_order_number,cr_refunded_cash]
+                                  CometSort [cs_warehouse_sk,cs_item_sk,cs_order_number,cs_sales_price,cs_sold_date_sk]
+                                    CometExchange [cs_order_number,cs_item_sk] #2
+                                      CometFilter [cs_warehouse_sk,cs_item_sk,cs_order_number,cs_sales_price,cs_sold_date_sk]
+                                        CometNativeScan: `spark_catalog`.`default`.`catalog_sales` [cs_warehouse_sk,cs_item_sk,cs_order_number,cs_sales_price,cs_sold_date_sk]
+                                  CometSort [cr_item_sk,cr_order_number,cr_refunded_cash]
+                                    CometExchange [cr_order_number,cr_item_sk] #3
+                                      CometProject [cr_item_sk,cr_order_number,cr_refunded_cash]
+                                        CometFilter [cr_item_sk,cr_order_number,cr_refunded_cash,cr_returned_date_sk]
+                                          CometNativeScan: `spark_catalog`.`default`.`catalog_returns` [cr_item_sk,cr_order_number,cr_refunded_cash,cr_returned_date_sk]
+                              CometBroadcastExchange [w_warehouse_sk,w_state] #4
+                                CometFilter [w_warehouse_sk,w_state]
+                                  CometNativeScan: `spark_catalog`.`default`.`warehouse` [w_warehouse_sk,w_state]
+                          CometBroadcastExchange [i_item_sk,i_item_id] #5
+                            CometProject [i_item_sk,i_item_id]
+                              CometFilter [i_item_sk,i_item_id,i_current_price]
+                                CometNativeScan: `spark_catalog`.`default`.`item` [i_item_sk,i_item_id,i_current_price]
+                      CometBroadcastExchange [d_date_sk,d_date] #6
+                        CometFilter [d_date_sk,d_date]
+                          CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_date]

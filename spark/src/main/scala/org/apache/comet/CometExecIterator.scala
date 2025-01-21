@@ -70,6 +70,7 @@ class CometExecIterator(
       id,
       cometBatchIterators,
       protobufQueryPlan,
+      numParts,
       nativeMetrics,
       metricsUpdateInterval = COMET_METRICS_UPDATE_INTERVAL.get(),
       new CometTaskMemoryManager(id),

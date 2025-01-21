@@ -23,6 +23,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.parquet.column.ColumnDescriptor;
+import org.apache.parquet.schema.Type;
 import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.TimestampNTZType$;
 
@@ -35,6 +36,9 @@ public abstract class AbstractColumnReader implements AutoCloseable {
 
   /** The Spark data type. */
   protected final DataType type;
+
+  /** The Spark data type. */
+  protected final Type fieldType;
 
   /** Parquet column descriptor. */
   protected final ColumnDescriptor descriptor;
@@ -61,13 +65,23 @@ public abstract class AbstractColumnReader implements AutoCloseable {
 
   public AbstractColumnReader(
       DataType type,
+      Type fieldType,
       ColumnDescriptor descriptor,
       boolean useDecimal128,
       boolean useLegacyDateTimestamp) {
     this.type = type;
+    this.fieldType = fieldType;
     this.descriptor = descriptor;
     this.useDecimal128 = useDecimal128;
     this.useLegacyDateTimestamp = useLegacyDateTimestamp;
+  }
+
+  public AbstractColumnReader(
+      DataType type,
+      ColumnDescriptor descriptor,
+      boolean useDecimal128,
+      boolean useLegacyDateTimestamp) {
+    this(type, null, descriptor, useDecimal128, useLegacyDateTimestamp);
     TypeUtil.checkParquetType(descriptor, type);
   }
 
