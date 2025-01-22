@@ -765,6 +765,23 @@ impl PhysicalPlanner {
 
                 Ok(Arc::new(case_expr))
             }
+            ExprStruct::ArrayCompact(expr) => {
+                let src_array_expr =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let null_literal_expr: Arc<dyn PhysicalExpr> =
+                    Arc::new(Literal::new(ScalarValue::Null));
+                let args = vec![Arc::clone(&src_array_expr), null_literal_expr];
+                let return_type = src_array_expr.data_type(&input_schema)?;
+
+                let array_compact_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
+                    "array_compact",
+                    array_remove_all_udf,
+                    args,
+                    return_type,
+                ));
+
+                Ok(Arc::new(array_compact_expr))
+            }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
                 expr
