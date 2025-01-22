@@ -32,7 +32,6 @@ object QueryRunner {
       spark: SparkSession,
       numFiles: Int,
       filename: String,
-      showMatchingResults: Boolean,
       showFailedSparkQueries: Boolean = false): Unit = {
 
     val outputFilename = s"results-${System.currentTimeMillis()}.md"
@@ -65,7 +64,7 @@ object QueryRunner {
             val sparkRows = df.collect()
             val sparkPlan = df.queryExecution.executedPlan.toString
 
-            // execute witjh Comet
+            // execute with Comet
             try {
               spark.conf.set("spark.comet.enabled", "true")
               // complex type support until we support it natively
