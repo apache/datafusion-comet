@@ -799,9 +799,11 @@ impl PhysicalPlanner {
                 let args = vec![Arc::clone(&src_array_expr), null_literal_expr];
                 let return_type = src_array_expr.data_type(&input_schema)?;
 
+                let datafusion_array_compact = array_remove_all_udf();
+
                 let array_compact_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
                     "array_compact",
-                    array_remove_all_udf,
+                    datafusion_array_compact,
                     args,
                     return_type,
                 ));
