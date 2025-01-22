@@ -86,7 +86,8 @@ message Expr {
     ArrayInsert array_insert = 59;
     BinaryExpr array_contains = 60;
     BinaryExpr array_remove = 61;
-    BinaryExpr array_repeat = 62;
+    BinaryExpr array_intersect = 62;
+    BinaryExpr array_repeat = 63;
   }
 }
 

@@ -1,0 +1,156 @@
+== Physical Plan ==
+TakeOrderedAndProject (29)
++- * Project (28)
+   +- * Filter (27)
+      +- Window (26)
+         +- * Sort (25)
+            +- Exchange (24)
+               +- * HashAggregate (23)
+                  +- Exchange (22)
+                     +- * HashAggregate (21)
+                        +- * ColumnarToRow (20)
+                           +- CometProject (19)
+                              +- CometBroadcastHashJoin (18)
+                                 :- CometProject (14)
+                                 :  +- CometBroadcastHashJoin (13)
+                                 :     :- CometProject (8)
+                                 :     :  +- CometBroadcastHashJoin (7)
+                                 :     :     :- CometProject (3)
+                                 :     :     :  +- CometFilter (2)
+                                 :     :     :     +- CometNativeScan: `spark_catalog`.`default`.`item` (1)
+                                 :     :     +- CometBroadcastExchange (6)
+                                 :     :        +- CometFilter (5)
+                                 :     :           +- CometNativeScan: `spark_catalog`.`default`.`store_sales` (4)
+                                 :     +- CometBroadcastExchange (12)
+                                 :        +- CometProject (11)
+                                 :           +- CometFilter (10)
+                                 :              +- CometNativeScan: `spark_catalog`.`default`.`date_dim` (9)
+                                 +- CometBroadcastExchange (17)
+                                    +- CometFilter (16)
+                                       +- CometNativeScan: `spark_catalog`.`default`.`store` (15)
+
+
+(1) CometNativeScan: `spark_catalog`.`default`.`item`
+Output [5]: [i_item_sk#1, i_brand#2, i_class#3, i_category#4, i_manager_id#5]
+Arguments: [i_item_sk#1, i_brand#2, i_class#3, i_category#4, i_manager_id#5]
+
+(2) CometFilter
+Input [5]: [i_item_sk#1, i_brand#2, i_class#3, i_category#4, i_manager_id#5]
+Condition : ((((i_category#4 IN (Books                                             ,Children                                          ,Electronics                                       ) AND i_class#3 IN (personal                                          ,portable                                          ,refernece                                         ,self-help                                         )) AND i_brand#2 IN (scholaramalgamalg #6                             ,scholaramalgamalg #7                              ,exportiunivamalg #8                               ,scholaramalgamalg #8                              )) OR ((i_category#4 IN (Women                                             ,Music                                             ,Men                                               ) AND i_class#3 IN (accessories                                       ,classical                                         ,fragrances                                        ,pants                                             )) AND i_brand#2 IN (amalgimporto #9                                   ,edu packscholar #9                                ,exportiimporto #9                                 ,importoamalg #9                                   ))) AND isnotnull(i_item_sk#1))
+
+(3) CometProject
+Input [5]: [i_item_sk#1, i_brand#2, i_class#3, i_category#4, i_manager_id#5]
+Arguments: [i_item_sk#1, i_manager_id#5], [i_item_sk#1, i_manager_id#5]
+
+(4) CometNativeScan: `spark_catalog`.`default`.`store_sales`
+Output [4]: [ss_item_sk#10, ss_store_sk#11, ss_sales_price#12, ss_sold_date_sk#13]
+Arguments: [ss_item_sk#10, ss_store_sk#11, ss_sales_price#12, ss_sold_date_sk#13]
+
+(5) CometFilter
+Input [4]: [ss_item_sk#10, ss_store_sk#11, ss_sales_price#12, ss_sold_date_sk#13]
+Condition : (isnotnull(ss_item_sk#10) AND isnotnull(ss_store_sk#11))
+
+(6) CometBroadcastExchange
+Input [4]: [ss_item_sk#10, ss_store_sk#11, ss_sales_price#12, ss_sold_date_sk#13]
+Arguments: [ss_item_sk#10, ss_store_sk#11, ss_sales_price#12, ss_sold_date_sk#13]
+
+(7) CometBroadcastHashJoin
+Left output [2]: [i_item_sk#1, i_manager_id#5]
+Right output [4]: [ss_item_sk#10, ss_store_sk#11, ss_sales_price#12, ss_sold_date_sk#13]
+Arguments: [i_item_sk#1], [ss_item_sk#10], Inner, BuildRight
+
+(8) CometProject
+Input [6]: [i_item_sk#1, i_manager_id#5, ss_item_sk#10, ss_store_sk#11, ss_sales_price#12, ss_sold_date_sk#13]
+Arguments: [i_manager_id#5, ss_store_sk#11, ss_sales_price#12, ss_sold_date_sk#13], [i_manager_id#5, ss_store_sk#11, ss_sales_price#12, ss_sold_date_sk#13]
+
+(9) CometNativeScan: `spark_catalog`.`default`.`date_dim`
+Output [3]: [d_date_sk#14, d_month_seq#15, d_moy#16]
+Arguments: [d_date_sk#14, d_month_seq#15, d_moy#16]
+
+(10) CometFilter
+Input [3]: [d_date_sk#14, d_month_seq#15, d_moy#16]
+Condition : (d_month_seq#15 INSET 1200, 1201, 1202, 1203, 1204, 1205, 1206, 1207, 1208, 1209, 1210, 1211 AND isnotnull(d_date_sk#14))
+
+(11) CometProject
+Input [3]: [d_date_sk#14, d_month_seq#15, d_moy#16]
+Arguments: [d_date_sk#14, d_moy#16], [d_date_sk#14, d_moy#16]
+
+(12) CometBroadcastExchange
+Input [2]: [d_date_sk#14, d_moy#16]
+Arguments: [d_date_sk#14, d_moy#16]
+
+(13) CometBroadcastHashJoin
+Left output [4]: [i_manager_id#5, ss_store_sk#11, ss_sales_price#12, ss_sold_date_sk#13]
+Right output [2]: [d_date_sk#14, d_moy#16]
+Arguments: [ss_sold_date_sk#13], [d_date_sk#14], Inner, BuildRight
+
+(14) CometProject
+Input [6]: [i_manager_id#5, ss_store_sk#11, ss_sales_price#12, ss_sold_date_sk#13, d_date_sk#14, d_moy#16]
+Arguments: [i_manager_id#5, ss_store_sk#11, ss_sales_price#12, d_moy#16], [i_manager_id#5, ss_store_sk#11, ss_sales_price#12, d_moy#16]
+
+(15) CometNativeScan: `spark_catalog`.`default`.`store`
+Output [1]: [s_store_sk#17]
+Arguments: [s_store_sk#17]
+
+(16) CometFilter
+Input [1]: [s_store_sk#17]
+Condition : isnotnull(s_store_sk#17)
+
+(17) CometBroadcastExchange
+Input [1]: [s_store_sk#17]
+Arguments: [s_store_sk#17]
+
+(18) CometBroadcastHashJoin
+Left output [4]: [i_manager_id#5, ss_store_sk#11, ss_sales_price#12, d_moy#16]
+Right output [1]: [s_store_sk#17]
+Arguments: [ss_store_sk#11], [s_store_sk#17], Inner, BuildRight
+
+(19) CometProject
+Input [5]: [i_manager_id#5, ss_store_sk#11, ss_sales_price#12, d_moy#16, s_store_sk#17]
+Arguments: [i_manager_id#5, ss_sales_price#12, d_moy#16], [i_manager_id#5, ss_sales_price#12, d_moy#16]
+
+(20) ColumnarToRow [codegen id : 1]
+Input [3]: [i_manager_id#5, ss_sales_price#12, d_moy#16]
+
+(21) HashAggregate [codegen id : 1]
+Input [3]: [i_manager_id#5, ss_sales_price#12, d_moy#16]
+Keys [2]: [i_manager_id#5, d_moy#16]
+Functions [1]: [partial_sum(UnscaledValue(ss_sales_price#12))]
+Aggregate Attributes [1]: [sum#18]
+Results [3]: [i_manager_id#5, d_moy#16, sum#19]
+
+(22) Exchange
+Input [3]: [i_manager_id#5, d_moy#16, sum#19]
+Arguments: hashpartitioning(i_manager_id#5, d_moy#16, 5), ENSURE_REQUIREMENTS, [plan_id=1]
+
+(23) HashAggregate [codegen id : 2]
+Input [3]: [i_manager_id#5, d_moy#16, sum#19]
+Keys [2]: [i_manager_id#5, d_moy#16]
+Functions [1]: [sum(UnscaledValue(ss_sales_price#12))]
+Aggregate Attributes [1]: [sum(UnscaledValue(ss_sales_price#12))#20]
+Results [3]: [i_manager_id#5, MakeDecimal(sum(UnscaledValue(ss_sales_price#12))#20,17,2) AS sum_sales#21, MakeDecimal(sum(UnscaledValue(ss_sales_price#12))#20,17,2) AS _w0#22]
+
+(24) Exchange
+Input [3]: [i_manager_id#5, sum_sales#21, _w0#22]
+Arguments: hashpartitioning(i_manager_id#5, 5), ENSURE_REQUIREMENTS, [plan_id=2]
+
+(25) Sort [codegen id : 3]
+Input [3]: [i_manager_id#5, sum_sales#21, _w0#22]
+Arguments: [i_manager_id#5 ASC NULLS FIRST], false, 0
+
+(26) Window
+Input [3]: [i_manager_id#5, sum_sales#21, _w0#22]
+Arguments: [avg(_w0#22) windowspecdefinition(i_manager_id#5, specifiedwindowframe(RowFrame, unboundedpreceding$(), unboundedfollowing$())) AS avg_monthly_sales#23], [i_manager_id#5]
+
+(27) Filter [codegen id : 4]
+Input [4]: [i_manager_id#5, sum_sales#21, _w0#22, avg_monthly_sales#23]
+Condition : CASE WHEN (avg_monthly_sales#23 > 0.000000) THEN ((abs((sum_sales#21 - avg_monthly_sales#23)) / avg_monthly_sales#23) > 0.1000000000000000) ELSE false END
+
+(28) Project [codegen id : 4]
+Output [3]: [i_manager_id#5, sum_sales#21, avg_monthly_sales#23]
+Input [4]: [i_manager_id#5, sum_sales#21, _w0#22, avg_monthly_sales#23]
+
+(29) TakeOrderedAndProject
+Input [3]: [i_manager_id#5, sum_sales#21, avg_monthly_sales#23]
+Arguments: 100, [i_manager_id#5 ASC NULLS FIRST, avg_monthly_sales#23 ASC NULLS FIRST, sum_sales#21 ASC NULLS FIRST], [i_manager_id#5, sum_sales#21, avg_monthly_sales#23]
+

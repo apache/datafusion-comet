@@ -1,0 +1,42 @@
+WholeStageCodegen (1)
+  ColumnarToRow
+    InputAdapter
+      CometTakeOrderedAndProject [item_id,ss_item_rev,ss_dev,cs_item_rev,cs_dev,ws_item_rev,ws_dev,average]
+        CometProject [item_id,ss_item_rev,ss_dev,cs_item_rev,cs_dev,ws_item_rev,ws_dev,average]
+          CometBroadcastHashJoin [item_id,ss_item_rev,cs_item_rev,item_id,ws_item_rev]
+            CometProject [item_id,ss_item_rev,cs_item_rev]
+              CometBroadcastHashJoin [item_id,ss_item_rev,item_id,cs_item_rev]
+                CometFilter [item_id,ss_item_rev]
+                  CometHashAggregate [item_id,ss_item_rev,i_item_id,sum,sum(UnscaledValue(ss_ext_sales_price))]
+                    CometExchange [i_item_id] #1
+                      CometHashAggregate [i_item_id,sum,ss_ext_sales_price]
+                        CometProject [ss_ext_sales_price,i_item_id]
+                          CometBroadcastHashJoin [ss_ext_sales_price,ss_sold_date_sk,i_item_id,d_date_sk]
+                            CometProject [ss_ext_sales_price,ss_sold_date_sk,i_item_id]
+                              CometBroadcastHashJoin [ss_item_sk,ss_ext_sales_price,ss_sold_date_sk,i_item_sk,i_item_id]
+                                CometFilter [ss_item_sk,ss_ext_sales_price,ss_sold_date_sk]
+                                  CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_item_sk,ss_ext_sales_price,ss_sold_date_sk]
+                                CometBroadcastExchange [i_item_sk,i_item_id] #2
+                                  CometFilter [i_item_sk,i_item_id]
+                                    CometNativeScan: `spark_catalog`.`default`.`item` [i_item_sk,i_item_id]
+                            CometBroadcastExchange [d_date_sk] #3
+                              CometProject [d_date_sk]
+                                CometBroadcastHashJoin [d_date_sk,d_date,d_date]
+                                  CometFilter [d_date_sk,d_date]
+                                    CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_date]
+                                  CometBroadcastExchange [d_date] #4
+                                    CometProject [d_date]
+                                      CometFilter [d_date,d_week_seq]
+                                        Subquery #1
+                                          WholeStageCodegen (1)
+                                            ColumnarToRow
+                                              InputAdapter
+                                                CometProject [d_week_seq]
+                                                  CometFilter [d_date,d_week_seq]
+                                                    CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date,d_week_seq]
+                                        CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date,d_week_seq]
+                CometBroadcastExchange [item_id,cs_item_rev] #5
+                  CometFilter [item_id,cs_item_rev]
+                    CometHashAggregate [item_id,cs_item_rev,i_item_id,sum,sum(UnscaledValue(cs_ext_sales_price))]
+                      ReusedExchange [i_item_id,sum] #1
+            ReusedExchange [item_id,ws_item_rev] #5

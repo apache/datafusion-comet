@@ -29,12 +29,14 @@ import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, Normalize
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometSinkPlaceHolder, CometSparkToColumnarExec, DecimalPrecision}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometScanExec, CometSinkPlaceHolder, CometSparkToColumnarExec, DecimalPrecision}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD}
+import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
@@ -2306,6 +2308,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             expr.children(1),
             inputs,
             (builder, binaryExpr) => builder.setArrayRepeat(binaryExpr))
+        case _ if expr.prettyName == "array_intersect" =>
+          createBinaryExpr(
+            expr.children(0),
+            expr.children(1),
+            inputs,
+            (builder, binaryExpr) => builder.setArrayIntersect(binaryExpr))
         case _ =>
           withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
           None
@@ -2546,6 +2554,83 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     childOp.foreach(result.addChildren)
 
     op match {
+
+      // Fully native scan for V1
+      case scan: CometScanExec
+          if CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_DATAFUSION =>
+        val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
+        nativeScanBuilder.setSource(op.simpleStringWithNodeId())
+
+        val scanTypes = op.output.flatten { attr =>
+          serializeDataType(attr.dataType)
+        }
+
+        if (scanTypes.length == op.output.length) {
+          nativeScanBuilder.addAllFields(scanTypes.asJava)
+
+          // Sink operators don't have children
+          result.clearChildren()
+
+          // TODO remove flatMap and add error handling for unsupported data filters
+          val dataFilters = scan.dataFilters.flatMap(exprToProto(_, scan.output))
+          nativeScanBuilder.addAllDataFilters(dataFilters.asJava)
+
+          // TODO: modify CometNativeScan to generate the file partitions without instantiating RDD.
+          scan.inputRDD match {
+            case rdd: DataSourceRDD =>
+              val partitions = rdd.partitions
+              partitions.foreach(p => {
+                val inputPartitions = p.asInstanceOf[DataSourceRDDPartition].inputPartitions
+                inputPartitions.foreach(partition => {
+                  partition2Proto(
+                    partition.asInstanceOf[FilePartition],
+                    nativeScanBuilder,
+                    scan.relation.partitionSchema)
+                })
+              })
+            case rdd: FileScanRDD =>
+              rdd.filePartitions.foreach(partition => {
+                partition2Proto(partition, nativeScanBuilder, scan.relation.partitionSchema)
+              })
+            case _ =>
+          }
+
+          val partitionSchema = schema2Proto(scan.relation.partitionSchema.fields)
+          val requiredSchema = schema2Proto(scan.requiredSchema.fields)
+          val dataSchema = schema2Proto(scan.relation.dataSchema.fields)
+
+          val data_schema_idxs = scan.requiredSchema.fields.map(field => {
+            scan.relation.dataSchema.fieldIndex(field.name)
+          })
+          val partition_schema_idxs = Array
+            .range(
+              scan.relation.dataSchema.fields.length,
+              scan.relation.dataSchema.length + scan.relation.partitionSchema.fields.length)
+
+          val projection_vector = (data_schema_idxs ++ partition_schema_idxs).map(idx =>
+            idx.toLong.asInstanceOf[java.lang.Long])
+
+          nativeScanBuilder.addAllProjectionVector(projection_vector.toIterable.asJava)
+
+          // In `CometScanRule`, we ensure partitionSchema is supported.
+          assert(partitionSchema.length == scan.relation.partitionSchema.fields.length)
+
+          nativeScanBuilder.addAllDataSchema(dataSchema.toIterable.asJava)
+          nativeScanBuilder.addAllRequiredSchema(requiredSchema.toIterable.asJava)
+          nativeScanBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
+          nativeScanBuilder.setSessionTimezone(conf.getConfString("spark.sql.session.timeZone"))
+
+          Some(result.setNativeScan(nativeScanBuilder).build())
+
+        } else {
+          // There are unsupported scan type
+          val msg =
+            s"unsupported Comet operator: ${op.nodeName}, due to unsupported data types above"
+          emitWarning(msg)
+          withInfo(op, msg)
+          None
+        }
+
       case ProjectExec(projectList, child) if CometConf.COMET_EXEC_PROJECT_ENABLED.get(conf) =>
         val exprs = projectList.map(exprToProto(_, child.output))
 
@@ -3203,5 +3288,49 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     }
 
     true
+  }
+
+  private def schema2Proto(
+      fields: Array[StructField]): Array[OperatorOuterClass.SparkStructField] = {
+    val fieldBuilder = OperatorOuterClass.SparkStructField.newBuilder()
+    fields.map(field => {
+      fieldBuilder.setName(field.name)
+      fieldBuilder.setDataType(serializeDataType(field.dataType).get)
+      fieldBuilder.setNullable(field.nullable)
+      fieldBuilder.build()
+    })
+  }
+
+  private def partition2Proto(
+      partition: FilePartition,
+      nativeScanBuilder: OperatorOuterClass.NativeScan.Builder,
+      partitionSchema: StructType): Unit = {
+    val partitionBuilder = OperatorOuterClass.SparkFilePartition.newBuilder()
+    partition.files.foreach(file => {
+      // Process the partition values
+      val partitionValues = file.partitionValues
+      assert(partitionValues.numFields == partitionSchema.length)
+      val partitionVals =
+        partitionValues.toSeq(partitionSchema).zipWithIndex.map { case (value, i) =>
+          val attr = partitionSchema(i)
+          val valueProto = exprToProto(Literal(value, attr.dataType), Seq.empty)
+          // In `CometScanRule`, we have already checked that all partition values are
+          // supported. So, we can safely use `get` here.
+          assert(
+            valueProto.isDefined,
+            s"Unsupported partition value: $value, type: ${attr.dataType}")
+          valueProto.get
+        }
+
+      val fileBuilder = OperatorOuterClass.SparkPartitionedFile.newBuilder()
+      partitionVals.foreach(fileBuilder.addPartitionValues)
+      fileBuilder
+        .setFilePath(file.filePath.toString)
+        .setStart(file.start)
+        .setLength(file.length)
+        .setFileSize(file.fileSize)
+      partitionBuilder.addPartitionedFile(fileBuilder.build())
+    })
+    nativeScanBuilder.addFilePartitions(partitionBuilder.build())
   }
 }

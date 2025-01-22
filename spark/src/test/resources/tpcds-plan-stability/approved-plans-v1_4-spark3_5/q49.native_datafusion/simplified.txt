@@ -1,0 +1,69 @@
+TakeOrderedAndProject [channel,return_rank,currency_rank,item,return_ratio]
+  WholeStageCodegen (11)
+    HashAggregate [channel,item,return_ratio,return_rank,currency_rank]
+      InputAdapter
+        Exchange [channel,item,return_ratio,return_rank,currency_rank] #1
+          WholeStageCodegen (10)
+            HashAggregate [channel,item,return_ratio,return_rank,currency_rank]
+              InputAdapter
+                Union
+                  WholeStageCodegen (3)
+                    Project [item,return_ratio,return_rank,currency_rank]
+                      Filter [return_rank,currency_rank]
+                        InputAdapter
+                          Window [currency_ratio]
+                            WholeStageCodegen (2)
+                              Sort [currency_ratio]
+                                InputAdapter
+                                  Window [return_ratio]
+                                    WholeStageCodegen (1)
+                                      ColumnarToRow
+                                        InputAdapter
+                                          CometSort [item,return_ratio,currency_ratio]
+                                            CometExchange #2
+                                              CometHashAggregate [item,return_ratio,currency_ratio,ws_item_sk,sum,sum,sum,isEmpty,sum,isEmpty,sum(coalesce(wr_return_quantity, 0)),sum(coalesce(ws_quantity, 0)),sum(coalesce(cast(wr_return_amt as decimal(12,2)), 0.00)),sum(coalesce(cast(ws_net_paid as decimal(12,2)), 0.00))]
+                                                CometExchange [ws_item_sk] #3
+                                                  CometHashAggregate [ws_item_sk,sum,sum,sum,isEmpty,sum,isEmpty,wr_return_quantity,ws_quantity,wr_return_amt,ws_net_paid]
+                                                    CometProject [ws_item_sk,ws_quantity,ws_net_paid,wr_return_quantity,wr_return_amt]
+                                                      CometBroadcastHashJoin [ws_item_sk,ws_quantity,ws_net_paid,ws_sold_date_sk,wr_return_quantity,wr_return_amt,d_date_sk]
+                                                        CometProject [ws_item_sk,ws_quantity,ws_net_paid,ws_sold_date_sk,wr_return_quantity,wr_return_amt]
+                                                          CometBroadcastHashJoin [ws_item_sk,ws_order_number,ws_quantity,ws_net_paid,ws_sold_date_sk,wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt]
+                                                            CometBroadcastExchange [ws_item_sk,ws_order_number,ws_quantity,ws_net_paid,ws_sold_date_sk] #4
+                                                              CometProject [ws_item_sk,ws_order_number,ws_quantity,ws_net_paid,ws_sold_date_sk]
+                                                                CometFilter [ws_item_sk,ws_order_number,ws_quantity,ws_net_paid,ws_net_profit,ws_sold_date_sk]
+                                                                  CometNativeScan: `spark_catalog`.`default`.`web_sales` [ws_item_sk,ws_order_number,ws_quantity,ws_net_paid,ws_net_profit,ws_sold_date_sk]
+                                                            CometProject [wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt]
+                                                              CometFilter [wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt,wr_returned_date_sk]
+                                                                CometNativeScan: `spark_catalog`.`default`.`web_returns` [wr_item_sk,wr_order_number,wr_return_quantity,wr_return_amt,wr_returned_date_sk]
+                                                        CometBroadcastExchange [d_date_sk] #5
+                                                          CometProject [d_date_sk]
+                                                            CometFilter [d_date_sk,d_year,d_moy]
+                                                              CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_year,d_moy]
+                  WholeStageCodegen (6)
+                    Project [item,return_ratio,return_rank,currency_rank]
+                      Filter [return_rank,currency_rank]
+                        InputAdapter
+                          Window [currency_ratio]
+                            WholeStageCodegen (5)
+                              Sort [currency_ratio]
+                                InputAdapter
+                                  Window [return_ratio]
+                                    WholeStageCodegen (4)
+                                      ColumnarToRow
+                                        InputAdapter
+                                          CometSort [item,return_ratio,currency_ratio]
+                                            ReusedExchange [item,return_ratio,currency_ratio] #2
+                  WholeStageCodegen (9)
+                    Project [item,return_ratio,return_rank,currency_rank]
+                      Filter [return_rank,currency_rank]
+                        InputAdapter
+                          Window [currency_ratio]
+                            WholeStageCodegen (8)
+                              Sort [currency_ratio]
+                                InputAdapter
+                                  Window [return_ratio]
+                                    WholeStageCodegen (7)
+                                      ColumnarToRow
+                                        InputAdapter
+                                          CometSort [item,return_ratio,currency_ratio]
+                                            ReusedExchange [item,return_ratio,currency_ratio] #2

@@ -131,8 +131,15 @@ case class CometScanExec(
   // exposed for testing
   lazy val bucketedScan: Boolean = wrapped.bucketedScan
 
-  override lazy val (outputPartitioning, outputOrdering): (Partitioning, Seq[SortOrder]) =
-    (wrapped.outputPartitioning, wrapped.outputOrdering)
+  override lazy val (outputPartitioning, outputOrdering): (Partitioning, Seq[SortOrder]) = {
+    if (bucketedScan) {
+      (wrapped.outputPartitioning, wrapped.outputOrdering)
+    } else {
+      val files = selectedPartitions.flatMap(partition => partition.files)
+      val numPartitions = files.length
+      (UnknownPartitioning(numPartitions), wrapped.outputOrdering)
+    }
+  }
 
   @transient
   private lazy val pushedDownFilters = getPushedDownFilters(relation, dataFilters)
@@ -465,6 +472,19 @@ case class CometScanExec(
 }
 
 object CometScanExec extends DataTypeSupport {
+
+  override def isAdditionallySupported(dt: DataType): Boolean = {
+    if (CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
+      // TODO add array and map
+      dt match {
+        case s: StructType => s.fields.map(_.dataType).forall(isTypeSupported)
+        case _ => false
+      }
+    } else {
+      false
+    }
+  }
+
   def apply(scanExec: FileSourceScanExec, session: SparkSession): CometScanExec = {
     // TreeNode.mapProductIterator is protected method.
     def mapProductIterator[B: ClassTag](product: Product, f: Any => B): Array[B] = {

@@ -242,17 +242,30 @@ abstract class CometNativeExec extends CometExec {
           case _ => true
         }
 
+        val containsBroadcastInput = sparkPlans.exists {
+          case _: CometBroadcastExchangeExec => true
+          case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
+          case BroadcastQueryStageExec(_, _: ReusedExchangeExec, _) => true
+          case _ => false
+        }
+
         // If the first non broadcast plan is not found, it means all the plans are broadcast plans.
         // This is not expected, so throw an exception.
-        if (firstNonBroadcastPlan.isEmpty) {
+        if (containsBroadcastInput && firstNonBroadcastPlan.isEmpty) {
           throw new CometRuntimeException(s"Cannot find the first non broadcast plan: $this")
         }
 
         // If the first non broadcast plan is found, we need to adjust the partition number of
         // the broadcast plans to make sure they have the same partition number as the first non
         // broadcast plan.
-        val firstNonBroadcastPlanRDD = firstNonBroadcastPlan.get._1.executeColumnar()
-        val firstNonBroadcastPlanNumPartitions = firstNonBroadcastPlanRDD.getNumPartitions
+        val (firstNonBroadcastPlanRDD, firstNonBroadcastPlanNumPartitions) =
+          firstNonBroadcastPlan.get._1 match {
+            case plan: CometNativeExec =>
+              (null, plan.outputPartitioning.numPartitions)
+            case plan =>
+              val rdd = plan.executeColumnar()
+              (rdd, rdd.getNumPartitions)
+          }
 
         // Spark doesn't need to zip Broadcast RDDs, so it doesn't schedule Broadcast RDDs with
         // same partition number. But for Comet, we need to zip them so we need to adjust the
@@ -270,6 +283,8 @@ abstract class CometNativeExec extends CometExec {
                   ReusedExchangeExec(_, c: CometBroadcastExchangeExec),
                   _) =>
               inputs += c.setNumPartitions(firstNonBroadcastPlanNumPartitions).executeColumnar()
+            case _: CometNativeExec =>
+            // no-op
             case _ if idx == firstNonBroadcastPlan.get._2 =>
               inputs += firstNonBroadcastPlanRDD
             case _ =>
@@ -284,11 +299,16 @@ abstract class CometNativeExec extends CometExec {
           }
         }
 
-        if (inputs.isEmpty) {
+        if (inputs.isEmpty && !sparkPlans.forall(_.isInstanceOf[CometNativeExec])) {
           throw new CometRuntimeException(s"No input for CometNativeExec:\n $this")
         }
 
-        ZippedPartitionsRDD(sparkContext, inputs.toSeq)(createCometExecIter)
+        if (inputs.nonEmpty) {
+          ZippedPartitionsRDD(sparkContext, inputs.toSeq)(createCometExecIter)
+        } else {
+          val partitionNum = firstNonBroadcastPlanNumPartitions
+          CometExecRDD(sparkContext, partitionNum)(createCometExecIter)
+        }
     }
   }
 
@@ -312,10 +332,10 @@ abstract class CometNativeExec extends CometExec {
    */
   def foreachUntilCometInput(plan: SparkPlan)(func: SparkPlan => Unit): Unit = {
     plan match {
-      case _: CometScanExec | _: CometBatchScanExec | _: ShuffleQueryStageExec |
-          _: AQEShuffleReadExec | _: CometShuffleExchangeExec | _: CometUnionExec |
-          _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec | _: ReusedExchangeExec |
-          _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec |
+      case _: CometNativeScanExec | _: CometScanExec | _: CometBatchScanExec |
+          _: ShuffleQueryStageExec | _: AQEShuffleReadExec | _: CometShuffleExchangeExec |
+          _: CometUnionExec | _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec |
+          _: ReusedExchangeExec | _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec |
           _: CometSparkToColumnarExec =>
         func(plan)
       case _: CometPlan =>
@@ -394,6 +414,8 @@ abstract class CometNativeExec extends CometExec {
     makeCopy(newArgs).asInstanceOf[CometNativeExec]
   }
 }
+
+abstract class CometLeafExec extends CometNativeExec with LeafExecNode
 
 abstract class CometUnaryExec extends CometNativeExec with UnaryExecNode
 
@@ -622,6 +644,7 @@ case class CometUnionExec(
     override val output: Seq[Attribute],
     children: Seq[SparkPlan])
     extends CometExec {
+
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     sparkContext.union(children.map(_.executeColumnar()))
   }

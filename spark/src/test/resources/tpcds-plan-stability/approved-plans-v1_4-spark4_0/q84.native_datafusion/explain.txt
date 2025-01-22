@@ -1,0 +1,167 @@
+== Physical Plan ==
+TakeOrderedAndProject (32)
++- * Project (31)
+   +- * ColumnarToRow (30)
+      +- CometBroadcastHashJoin (29)
+         :- CometBroadcastExchange (25)
+         :  +- CometProject (24)
+         :     +- CometBroadcastHashJoin (23)
+         :        :- CometProject (18)
+         :        :  +- CometBroadcastHashJoin (17)
+         :        :     :- CometProject (13)
+         :        :     :  +- CometBroadcastHashJoin (12)
+         :        :     :     :- CometProject (8)
+         :        :     :     :  +- CometBroadcastHashJoin (7)
+         :        :     :     :     :- CometFilter (2)
+         :        :     :     :     :  +- CometNativeScan: `spark_catalog`.`default`.`customer` (1)
+         :        :     :     :     +- CometBroadcastExchange (6)
+         :        :     :     :        +- CometProject (5)
+         :        :     :     :           +- CometFilter (4)
+         :        :     :     :              +- CometNativeScan: `spark_catalog`.`default`.`customer_address` (3)
+         :        :     :     +- CometBroadcastExchange (11)
+         :        :     :        +- CometFilter (10)
+         :        :     :           +- CometNativeScan: `spark_catalog`.`default`.`customer_demographics` (9)
+         :        :     +- CometBroadcastExchange (16)
+         :        :        +- CometFilter (15)
+         :        :           +- CometNativeScan: `spark_catalog`.`default`.`household_demographics` (14)
+         :        +- CometBroadcastExchange (22)
+         :           +- CometProject (21)
+         :              +- CometFilter (20)
+         :                 +- CometNativeScan: `spark_catalog`.`default`.`income_band` (19)
+         +- CometProject (28)
+            +- CometFilter (27)
+               +- CometNativeScan: `spark_catalog`.`default`.`store_returns` (26)
+
+
+(1) CometNativeScan: `spark_catalog`.`default`.`customer`
+Output [6]: [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_current_addr_sk#4, c_first_name#5, c_last_name#6]
+Arguments: [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_current_addr_sk#4, c_first_name#5, c_last_name#6]
+
+(2) CometFilter
+Input [6]: [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_current_addr_sk#4, c_first_name#5, c_last_name#6]
+Condition : ((isnotnull(c_current_addr_sk#4) AND isnotnull(c_current_cdemo_sk#2)) AND isnotnull(c_current_hdemo_sk#3))
+
+(3) CometNativeScan: `spark_catalog`.`default`.`customer_address`
+Output [2]: [ca_address_sk#7, ca_city#8]
+Arguments: [ca_address_sk#7, ca_city#8]
+
+(4) CometFilter
+Input [2]: [ca_address_sk#7, ca_city#8]
+Condition : ((isnotnull(ca_city#8) AND (ca_city#8 = Edgewood)) AND isnotnull(ca_address_sk#7))
+
+(5) CometProject
+Input [2]: [ca_address_sk#7, ca_city#8]
+Arguments: [ca_address_sk#7], [ca_address_sk#7]
+
+(6) CometBroadcastExchange
+Input [1]: [ca_address_sk#7]
+Arguments: [ca_address_sk#7]
+
+(7) CometBroadcastHashJoin
+Left output [6]: [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_current_addr_sk#4, c_first_name#5, c_last_name#6]
+Right output [1]: [ca_address_sk#7]
+Arguments: [c_current_addr_sk#4], [ca_address_sk#7], Inner, BuildRight
+
+(8) CometProject
+Input [7]: [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_current_addr_sk#4, c_first_name#5, c_last_name#6, ca_address_sk#7]
+Arguments: [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_first_name#5, c_last_name#6], [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_first_name#5, c_last_name#6]
+
+(9) CometNativeScan: `spark_catalog`.`default`.`customer_demographics`
+Output [1]: [cd_demo_sk#9]
+Arguments: [cd_demo_sk#9]
+
+(10) CometFilter
+Input [1]: [cd_demo_sk#9]
+Condition : isnotnull(cd_demo_sk#9)
+
+(11) CometBroadcastExchange
+Input [1]: [cd_demo_sk#9]
+Arguments: [cd_demo_sk#9]
+
+(12) CometBroadcastHashJoin
+Left output [5]: [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_first_name#5, c_last_name#6]
+Right output [1]: [cd_demo_sk#9]
+Arguments: [c_current_cdemo_sk#2], [cd_demo_sk#9], Inner, BuildRight
+
+(13) CometProject
+Input [6]: [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_first_name#5, c_last_name#6, cd_demo_sk#9]
+Arguments: [c_customer_id#1, c_current_hdemo_sk#3, c_first_name#5, c_last_name#6, cd_demo_sk#9], [c_customer_id#1, c_current_hdemo_sk#3, c_first_name#5, c_last_name#6, cd_demo_sk#9]
+
+(14) CometNativeScan: `spark_catalog`.`default`.`household_demographics`
+Output [2]: [hd_demo_sk#10, hd_income_band_sk#11]
+Arguments: [hd_demo_sk#10, hd_income_band_sk#11]
+
+(15) CometFilter
+Input [2]: [hd_demo_sk#10, hd_income_band_sk#11]
+Condition : (isnotnull(hd_demo_sk#10) AND isnotnull(hd_income_band_sk#11))
+
+(16) CometBroadcastExchange
+Input [2]: [hd_demo_sk#10, hd_income_band_sk#11]
+Arguments: [hd_demo_sk#10, hd_income_band_sk#11]
+
+(17) CometBroadcastHashJoin
+Left output [5]: [c_customer_id#1, c_current_hdemo_sk#3, c_first_name#5, c_last_name#6, cd_demo_sk#9]
+Right output [2]: [hd_demo_sk#10, hd_income_band_sk#11]
+Arguments: [c_current_hdemo_sk#3], [hd_demo_sk#10], Inner, BuildRight
+
+(18) CometProject
+Input [7]: [c_customer_id#1, c_current_hdemo_sk#3, c_first_name#5, c_last_name#6, cd_demo_sk#9, hd_demo_sk#10, hd_income_band_sk#11]
+Arguments: [c_customer_id#1, c_first_name#5, c_last_name#6, cd_demo_sk#9, hd_income_band_sk#11], [c_customer_id#1, c_first_name#5, c_last_name#6, cd_demo_sk#9, hd_income_band_sk#11]
+
+(19) CometNativeScan: `spark_catalog`.`default`.`income_band`
+Output [3]: [ib_income_band_sk#12, ib_lower_bound#13, ib_upper_bound#14]
+Arguments: [ib_income_band_sk#12, ib_lower_bound#13, ib_upper_bound#14]
+
+(20) CometFilter
+Input [3]: [ib_income_band_sk#12, ib_lower_bound#13, ib_upper_bound#14]
+Condition : ((((isnotnull(ib_lower_bound#13) AND isnotnull(ib_upper_bound#14)) AND (ib_lower_bound#13 >= 38128)) AND (ib_upper_bound#14 <= 88128)) AND isnotnull(ib_income_band_sk#12))
+
+(21) CometProject
+Input [3]: [ib_income_band_sk#12, ib_lower_bound#13, ib_upper_bound#14]
+Arguments: [ib_income_band_sk#12], [ib_income_band_sk#12]
+
+(22) CometBroadcastExchange
+Input [1]: [ib_income_band_sk#12]
+Arguments: [ib_income_band_sk#12]
+
+(23) CometBroadcastHashJoin
+Left output [5]: [c_customer_id#1, c_first_name#5, c_last_name#6, cd_demo_sk#9, hd_income_band_sk#11]
+Right output [1]: [ib_income_band_sk#12]
+Arguments: [hd_income_band_sk#11], [ib_income_band_sk#12], Inner, BuildRight
+
+(24) CometProject
+Input [6]: [c_customer_id#1, c_first_name#5, c_last_name#6, cd_demo_sk#9, hd_income_band_sk#11, ib_income_band_sk#12]
+Arguments: [c_customer_id#1, c_first_name#5, c_last_name#6, cd_demo_sk#9], [c_customer_id#1, c_first_name#5, c_last_name#6, cd_demo_sk#9]
+
+(25) CometBroadcastExchange
+Input [4]: [c_customer_id#1, c_first_name#5, c_last_name#6, cd_demo_sk#9]
+Arguments: [c_customer_id#1, c_first_name#5, c_last_name#6, cd_demo_sk#9]
+
+(26) CometNativeScan: `spark_catalog`.`default`.`store_returns`
+Output [2]: [sr_cdemo_sk#15, sr_returned_date_sk#16]
+Arguments: [sr_cdemo_sk#15, sr_returned_date_sk#16]
+
+(27) CometFilter
+Input [2]: [sr_cdemo_sk#15, sr_returned_date_sk#16]
+Condition : isnotnull(sr_cdemo_sk#15)
+
+(28) CometProject
+Input [2]: [sr_cdemo_sk#15, sr_returned_date_sk#16]
+Arguments: [sr_cdemo_sk#15], [sr_cdemo_sk#15]
+
+(29) CometBroadcastHashJoin
+Left output [4]: [c_customer_id#1, c_first_name#5, c_last_name#6, cd_demo_sk#9]
+Right output [1]: [sr_cdemo_sk#15]
+Arguments: [cd_demo_sk#9], [sr_cdemo_sk#15], Inner, BuildLeft
+
+(30) ColumnarToRow [codegen id : 1]
+Input [5]: [c_customer_id#1, c_first_name#5, c_last_name#6, cd_demo_sk#9, sr_cdemo_sk#15]
+
+(31) Project [codegen id : 1]
+Output [3]: [c_customer_id#1 AS customer_id#17, concat(c_last_name#6, , , c_first_name#5) AS customername#18, c_customer_id#1]
+Input [5]: [c_customer_id#1, c_first_name#5, c_last_name#6, cd_demo_sk#9, sr_cdemo_sk#15]
+
+(32) TakeOrderedAndProject
+Input [3]: [customer_id#17, customername#18, c_customer_id#1]
+Arguments: 100, [c_customer_id#1 ASC NULLS FIRST], [customer_id#17, customername#18]
+
