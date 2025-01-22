@@ -2334,7 +2334,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  ignore("get_struct_field - select subset of struct") {
+  test("get_struct_field with DataFusion ParquetExec - select subset of struct") {
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2698,9 +2698,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
         spark.read.parquet(path.toString).createOrReplaceTempView("t1")
 
-        // checkSparkAnswerAndOperator(sql("SELECT array_repeat(_3, null) from t1"))
+        checkSparkAnswerAndOperator(sql("SELECT array_repeat(_2, _4) from t1"))
         checkSparkAnswerAndOperator(
-          sql("SELECT array_repeat(_4, 5) from t1 where _4 is not null"))
+          sql("SELECT array_repeat(_2, 5) from t1 where _2 is not null"))
         checkSparkAnswerAndOperator(sql("SELECT array_repeat(_3, 2) from t1 where _3 is null"))
         checkSparkAnswerAndOperator(sql("SELECT array_repeat(cast(_3 as string), 2) from t1"))
         checkSparkAnswerAndOperator(sql("SELECT array_repeat(array(_2, _3, _4), 2) from t1"))
