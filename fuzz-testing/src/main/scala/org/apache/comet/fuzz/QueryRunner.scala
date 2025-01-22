@@ -65,7 +65,7 @@ object QueryRunner {
             val sparkRows = df.collect()
             val sparkPlan = df.queryExecution.executedPlan.toString
 
-            // execute witjh Comet
+            // execute with Comet
             try {
               spark.conf.set("spark.comet.enabled", "true")
               // complex type support until we support it natively
