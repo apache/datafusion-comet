@@ -62,7 +62,7 @@ $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
     --class org.apache.comet.fuzz.Main \
     target/comet-fuzz-spark3.4_2.12-0.6.0-SNAPSHOT-jar-with-dependencies.jar \
-    data --num-files=2 --num-rows=200 --exclude-negative-zero
+    data --num-files=2 --num-rows=200 --exclude-negative-zero --generate-arrays --generate-structs --generate-maps
 ```
 
 There is an optional `--exclude-negative-zero` flag for excluding `-0.0` from the generated data, which is 

@@ -66,9 +66,9 @@ object Main {
       case Some(conf.generateData) =>
         val options = DataGenOptions(
           allowNull = true,
-          generateArray = !conf.generateData.generateArrays(),
-          generateStruct = !conf.generateData.generateStructs(),
-          generateMap = !conf.generateData.generateMaps(),
+          generateArray = conf.generateData.generateArrays(),
+          generateStruct = conf.generateData.generateStructs(),
+          generateMap = conf.generateData.generateMaps(),
           generateNegativeZero = !conf.generateData.excludeNegativeZero())
         for (i <- 0 until conf.generateData.numFiles()) {
           ParquetGenerator.makeParquetFile(
