@@ -756,7 +756,7 @@ builds:
       <<: *stage-build
     package:
       dockerfile:
-        - dockerfilePath: dev/Dockerfile-ubi8
+        - dockerfilePath: dev/Dockerfile-ubi8-jdk11
           perApplication: false
           publish:
             - repo: docker.apple.com/pie/comet-builder-ubi8-jdk11
