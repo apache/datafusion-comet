@@ -1,0 +1,33 @@
+TakeOrderedAndProject [avg_quarterly_sales,sum_sales,i_manufact_id]
+  WholeStageCodegen (2)
+    Project [i_manufact_id,sum_sales,avg_quarterly_sales]
+      Filter [avg_quarterly_sales,sum_sales]
+        InputAdapter
+          Window [_w0,i_manufact_id]
+            WholeStageCodegen (1)
+              ColumnarToRow
+                InputAdapter
+                  CometSort [i_manufact_id,sum_sales,_w0]
+                    CometExchange [i_manufact_id] #1
+                      CometHashAggregate [i_manufact_id,sum_sales,_w0,d_qoy,sum,sum(UnscaledValue(ss_sales_price))]
+                        CometExchange [i_manufact_id,d_qoy] #2
+                          CometHashAggregate [i_manufact_id,d_qoy,sum,ss_sales_price]
+                            CometProject [i_manufact_id,ss_sales_price,d_qoy]
+                              CometBroadcastHashJoin [i_manufact_id,ss_store_sk,ss_sales_price,d_qoy,s_store_sk]
+                                CometProject [i_manufact_id,ss_store_sk,ss_sales_price,d_qoy]
+                                  CometBroadcastHashJoin [i_manufact_id,ss_store_sk,ss_sales_price,ss_sold_date_sk,d_date_sk,d_qoy]
+                                    CometProject [i_manufact_id,ss_store_sk,ss_sales_price,ss_sold_date_sk]
+                                      CometBroadcastHashJoin [i_item_sk,i_manufact_id,ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk]
+                                        CometProject [i_item_sk,i_manufact_id]
+                                          CometFilter [i_item_sk,i_brand,i_class,i_category,i_manufact_id]
+                                            CometNativeScan: `spark_catalog`.`default`.`item` [i_item_sk,i_brand,i_class,i_category,i_manufact_id]
+                                        CometBroadcastExchange [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk] #3
+                                          CometFilter [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk]
+                                            CometNativeScan: `spark_catalog`.`default`.`store_sales` [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk]
+                                    CometBroadcastExchange [d_date_sk,d_qoy] #4
+                                      CometProject [d_date_sk,d_qoy]
+                                        CometFilter [d_date_sk,d_month_seq,d_qoy]
+                                          CometNativeScan: `spark_catalog`.`default`.`date_dim` [d_date_sk,d_month_seq,d_qoy]
+                                CometBroadcastExchange [s_store_sk] #5
+                                  CometFilter [s_store_sk]
+                                    CometNativeScan: `spark_catalog`.`default`.`store` [s_store_sk]

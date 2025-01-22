@@ -70,6 +70,7 @@ class CometExecIterator(
       id,
       cometBatchIterators,
       protobufQueryPlan,
+      numParts,
       nativeMetrics,
       new CometTaskMemoryManager(id),
       batchSize = COMET_BATCH_SIZE.get(),

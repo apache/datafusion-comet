@@ -24,11 +24,16 @@ use jni::{
     JNIEnv,
 };
 
+use arrow::error::ArrowError;
+use arrow::ipc::reader::StreamReader;
+use datafusion_execution::object_store::ObjectStoreUrl;
+use object_store::path::Path;
 use parquet::{
     basic::{Encoding, LogicalType, TimeUnit, Type as PhysicalType},
     format::{MicroSeconds, MilliSeconds, NanoSeconds},
     schema::types::{ColumnDescriptor, ColumnPath, PrimitiveTypeBuilder},
 };
+use url::{ParseError, Url};
 
 /// Convert primitives from Spark side into a `ColumnDescriptor`.
 #[allow(clippy::too_many_arguments)]
@@ -196,5 +201,54 @@ fn fix_type_length(t: &PhysicalType, type_length: i32) -> i32 {
         PhysicalType::INT64 | PhysicalType::DOUBLE => 8,
         PhysicalType::INT96 => 12,
         _ => type_length,
+    }
+}
+
+pub fn deserialize_schema(ipc_bytes: &[u8]) -> Result<arrow::datatypes::Schema, ArrowError> {
+    let reader = StreamReader::try_new(std::io::Cursor::new(ipc_bytes), None)?;
+    let schema = reader.schema().as_ref().clone();
+    Ok(schema)
+}
+
+// parses the url and returns a tuple of the scheme and object store path
+pub fn get_file_path(url_: String) -> Result<(ObjectStoreUrl, Path), ParseError> {
+    // we define origin of a url as scheme + "://" + authority + ["/" + bucket]
+    let url = Url::parse(url_.as_ref()).unwrap();
+    let mut object_store_origin = url.scheme().to_owned();
+    let mut object_store_path = Path::from_url_path(url.path()).unwrap();
+    if object_store_origin == "s3a" {
+        object_store_origin = "s3".to_string();
+        object_store_origin.push_str("://");
+        object_store_origin.push_str(url.authority());
+        object_store_origin.push('/');
+        let path_splits = url.path_segments().map(|c| c.collect::<Vec<_>>()).unwrap();
+        object_store_origin.push_str(path_splits.first().unwrap());
+        let new_path = path_splits[1..path_splits.len() - 1].join("/");
+        //TODO: (ARROW NATIVE) check the use of unwrap here
+        object_store_path = Path::from_url_path(new_path.clone().as_str()).unwrap();
+    } else {
+        object_store_origin.push_str("://");
+        object_store_origin.push_str(url.authority());
+        object_store_origin.push('/');
+    }
+    Ok((
+        ObjectStoreUrl::parse(object_store_origin).unwrap(),
+        object_store_path,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_file_path() {
+        let inp = "file:///comet/spark-warehouse/t1/part1=2019-01-01%2011%253A11%253A11/part-00000-84d7ed74-8f28-456c-9270-f45376eea144.c000.snappy.parquet";
+        let expected = "comet/spark-warehouse/t1/part1=2019-01-01 11%3A11%3A11/part-00000-84d7ed74-8f28-456c-9270-f45376eea144.c000.snappy.parquet";
+
+        if let Ok((_obj_store_url, path)) = get_file_path(inp.to_string()) {
+            let actual = path.to_string();
+            assert_eq!(actual, expected);
+        }
     }
 }
