@@ -771,11 +771,25 @@ impl PhysicalPlanner {
                     self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let count_expr =
                     self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let element_type = src_expr.data_type(&input_schema)?;
-                let return_type = DataType::List(Arc::new(Field::new("item", element_type, true)));
+                // Cast count_expr from Int32 to Int64 to support df count argument
+                let count_expr: Arc<dyn PhysicalExpr> = match count_expr.data_type(&input_schema.clone())? {
+                    DataType::Int32 => Arc::new(CastExpr::new(
+                        count_expr,
+                        DataType::Int64,
+                        Some(CastOptions::default()),
+                    )),
+                    _ => count_expr,
+                };
+
                 let args = vec![Arc::clone(&src_expr), Arc::clone(&count_expr)];
 
                 let datafusion_array_repeat = array_repeat_udf();
+                let data_types: Vec<DataType> = vec![
+                    src_expr.data_type(&Arc::clone(&input_schema))?,
+                    count_expr.data_type(&Arc::clone(&input_schema))?,
+                ];
+                let return_type = datafusion_array_repeat.return_type(&data_types)?;
+
                 let array_repeat_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
                     "array_repeat",
                     datafusion_array_repeat,
