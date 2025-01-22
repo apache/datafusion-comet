@@ -2559,15 +2559,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
         spark.read.parquet(path.toString).createOrReplaceTempView("t1")
 
+        // checkSparkAnswerAndOperator(sql("SELECT array_repeat(_3, null) from t1"))
         checkSparkAnswerAndOperator(
-          sql("SELECT array_repeat(array(_2,_3), _2) from t1 where _2 is null"))
-      // checkSparkAnswerAndOperator(
-      //   sql("SELECT array_repeat(_3, 0) from t1 where _3 is not null"))
-      // checkSparkAnswerAndOperator(
-      //   sql("SELECT array_repeat(_3, 2) from t1 where _3 is not null"))
-      // checkSparkAnswerAndOperator(sql("SELECT array_repeat(_2, 2) from t1 where _2 is null"))
-      // checkSparkAnswerAndOperator(
-      //   sql("SELECT array_repeat(case when _2 = _3 THEN _8 ELSE null END, 2) from t1"))
+          sql("SELECT array_repeat(_4, 5) from t1 where _4 is not null"))
+        checkSparkAnswerAndOperator(sql("SELECT array_repeat(_3, 2) from t1 where _3 is null"))
+        checkSparkAnswerAndOperator(sql("SELECT array_repeat(cast(_3 as string), 2) from t1"))
+        checkSparkAnswerAndOperator(sql("SELECT array_repeat(array(_2, _3, _4), 2) from t1"))
       }
     }
   }
