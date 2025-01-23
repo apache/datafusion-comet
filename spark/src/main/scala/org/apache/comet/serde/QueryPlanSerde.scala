@@ -2371,18 +2371,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           withInfo(expr, "unsupported arguments for GetArrayStructFields", child)
           None
         }
-      case expr: ArrayRemove =>
-        if (CometArrayRemove.checkSupport(expr)) {
-          createBinaryExpr(
-            expr,
-            expr.children(0),
-            expr.children(1),
-            input,
-            binding,
-            (builder, binaryExpr) => builder.setArrayRemove(binaryExpr))
-        } else {
-          None
-        }
+      case expr: ArrayRemove => CometArrayRemove.convert(expr, input, binding)
       case expr if expr.prettyName == "array_contains" =>
         createBinaryExpr(
           expr,

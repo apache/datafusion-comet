@@ -45,7 +45,7 @@ import org.apache.comet.CoverageResultStatus.{CoverageResultStatus, Passed}
  * The test will update files docs/spark_builtin_expr_coverage.txt
  */
 @Ignore
-class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+class CometExpressionSerdeCoverageSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   import testImplicits._
 
