@@ -304,7 +304,12 @@ fn scan_schema(input_batch: &InputBatch, data_types: &[DataType]) -> SchemaRef {
                 .map(|(idx, c)| {
                     let datatype = ScanExec::unpack_dictionary_type(c.data_type());
                     // We don't use the field name. Put a placeholder.
-                    Field::new(format!("col_{}", idx), datatype, true)
+                    if matches!(datatype, DataType::Dictionary(_, _)) {
+                        #[allow(deprecated)]
+                        Field::new_dict(format!("col_{}", idx), datatype, true, idx as i64, false)
+                    } else {
+                        Field::new(format!("col_{}", idx), datatype, true)
+                    }
                 })
                 .collect::<Vec<Field>>()
         }
