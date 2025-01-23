@@ -303,7 +303,7 @@ impl DisplayAs for FilterExec {
                 } else {
                     "".to_string()
                 };
-                write!(f, "FilterExec: {}{}", self.predicate, display_projections)
+                write!(f, "CometFilterExec: {}{}", self.predicate, display_projections)
             }
         }
     }
@@ -311,7 +311,7 @@ impl DisplayAs for FilterExec {
 
 impl ExecutionPlan for FilterExec {
     fn name(&self) -> &'static str {
-        "FilterExec"
+        "CometFilterExec"
     }
 
     /// Return a reference to Any that can be used for downcasting
