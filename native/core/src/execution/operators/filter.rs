@@ -303,7 +303,11 @@ impl DisplayAs for FilterExec {
                 } else {
                     "".to_string()
                 };
-                write!(f, "CometFilterExec: {}{}", self.predicate, display_projections)
+                write!(
+                    f,
+                    "CometFilterExec: {}{}",
+                    self.predicate, display_projections
+                )
             }
         }
     }
