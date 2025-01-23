@@ -57,8 +57,8 @@ import org.apache.spark.TaskContext;
 import org.apache.spark.TaskContext$;
 import org.apache.spark.executor.TaskMetrics;
 import org.apache.spark.sql.catalyst.InternalRow;
-import org.apache.spark.sql.comet.CometArrowUtils;
 import org.apache.spark.sql.comet.parquet.CometParquetReadSupport;
+import org.apache.spark.sql.comet.util.Utils$;
 import org.apache.spark.sql.execution.datasources.PartitionedFile;
 import org.apache.spark.sql.execution.datasources.parquet.ParquetToSparkSchemaConverter;
 import org.apache.spark.sql.execution.metric.SQLMetric;
@@ -260,7 +260,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     } ////// End get requested schema
 
     String timeZoneId = conf.get("spark.sql.session.timeZone");
-    Schema arrowSchema = CometArrowUtils.toArrowSchema(sparkSchema, timeZoneId);
+    Schema arrowSchema = Utils$.MODULE$.toArrowSchema(sparkSchema, timeZoneId);
     ByteArrayOutputStream out = new ByteArrayOutputStream();
     WriteChannel writeChannel = new WriteChannel(Channels.newChannel(out));
     MessageSerializer.serialize(writeChannel, arrowSchema);
