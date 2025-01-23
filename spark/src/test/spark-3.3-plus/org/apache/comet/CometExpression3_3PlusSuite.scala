@@ -28,7 +28,7 @@ import org.apache.spark.util.sketch.BloomFilter
 import java.io.ByteArrayOutputStream
 import scala.util.Random
 
-class CometExpressionSerde3_3PlusSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+class CometExpression3_3PlusSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
   val func_might_contain = new FunctionIdentifier("might_contain")

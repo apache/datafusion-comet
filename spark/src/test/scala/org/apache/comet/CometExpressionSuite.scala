@@ -38,7 +38,7 @@ import org.apache.spark.sql.types.{Decimal, DecimalType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark35Plus, isSpark40Plus}
 
-class CometExpressionSerdeSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
   test("compare true/false to negative zero") {
