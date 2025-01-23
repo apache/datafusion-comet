@@ -16,16 +16,13 @@
 // under the License.
 
 use crate::execution::spark_plan::SparkPlan;
-use crate::{
-    errors::CometError,
-    jvm_bridge::jni_call,
-};
+use crate::{errors::CometError, jvm_bridge::jni_call};
 use datafusion::physical_plan::metrics::MetricValue;
 use datafusion_comet_proto::spark_metric::NativeMetricNode;
 use jni::{objects::JObject, JNIEnv};
+use prost::Message;
 use std::collections::HashMap;
 use std::sync::Arc;
-use prost::Message;
 
 /// Updates the metrics of a CometMetricNode. This function is called recursively to
 /// update the metrics of all the children nodes. The metrics are pulled from the
@@ -33,7 +30,7 @@ use prost::Message;
 pub fn update_comet_metric(
     env: &mut JNIEnv,
     metric_node: &JObject,
-    spark_plan: &Arc<SparkPlan>
+    spark_plan: &Arc<SparkPlan>,
 ) -> Result<(), CometError> {
     unsafe {
         let native_metric = to_native_metric_node(spark_plan);
@@ -76,7 +73,6 @@ pub fn to_native_metric_node(spark_plan: &Arc<SparkPlan>) -> Result<NativeMetric
         .for_each(|(name, value)| {
             native_metric_node.metrics.insert(name.to_string(), value);
         });
-
 
     // add children
     spark_plan.children().iter().for_each(|child_plan| {
