@@ -451,7 +451,7 @@ fn filter_and_project(
         .and_then(|array| {
             Ok(match (as_boolean_array(&array), projection) {
                 // Apply filter array to record batch
-                (Ok(filter_array), None) => filter_record_batch(batch, filter_array)?,
+                (Ok(filter_array), None) => comet_filter_record_batch(batch, filter_array)?,
                 (Ok(filter_array), Some(projection)) => {
                     let projected_columns = projection
                         .iter()
