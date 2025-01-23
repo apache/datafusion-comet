@@ -34,7 +34,7 @@ pub fn update_comet_metric(
 ) -> Result<(), CometError> {
     unsafe {
         let native_metric = to_native_metric_node(spark_plan);
-        let jbytes = env.byte_array_from_slice(&*native_metric?.encode_to_vec())?;
+        let jbytes = env.byte_array_from_slice(&native_metric?.encode_to_vec())?;
         jni_call!(env, comet_metric_node(metric_node).set_all_from_bytes(&jbytes) -> ())?;
     }
     Ok(())
