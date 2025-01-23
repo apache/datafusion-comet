@@ -41,7 +41,8 @@ use datafusion_physical_expr::expressions::BinaryExpr;
 use datafusion_physical_expr::intervals::utils::check_support;
 use datafusion_physical_expr::utils::collect_columns;
 use datafusion_physical_expr::{
-    analyze, split_conjunction, AnalysisContext, ConstExpr, ExprBoundaries, PhysicalExpr,
+    analyze, split_conjunction, AcrossPartitions, AnalysisContext, ConstExpr, ExprBoundaries,
+    PhysicalExpr,
 };
 
 use futures::stream::{Stream, StreamExt};
@@ -168,11 +169,15 @@ impl FilterExec {
                 if binary.op() == &Operator::Eq {
                     // Filter evaluates to single value for all partitions
                     if input_eqs.is_expr_constant(binary.left()) {
-                        res_constants
-                            .push(ConstExpr::from(binary.right()).with_across_partitions(true))
+                        res_constants.push(
+                            ConstExpr::from(binary.right())
+                                .with_across_partitions(AcrossPartitions::Heterogeneous),
+                        )
                     } else if input_eqs.is_expr_constant(binary.right()) {
-                        res_constants
-                            .push(ConstExpr::from(binary.left()).with_across_partitions(true))
+                        res_constants.push(
+                            ConstExpr::from(binary.left())
+                                .with_across_partitions(AcrossPartitions::Heterogeneous),
+                        )
                     }
                 }
             }
@@ -200,7 +205,7 @@ impl FilterExec {
             .filter(|column| stats.column_statistics[column.index()].is_singleton())
             .map(|column| {
                 let expr = Arc::new(column) as _;
-                ConstExpr::new(expr).with_across_partitions(true)
+                ConstExpr::new(expr).with_across_partitions(AcrossPartitions::Heterogeneous)
             });
         // this is for statistics
         eq_properties = eq_properties.with_constants(constants);

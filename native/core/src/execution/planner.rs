@@ -53,7 +53,6 @@ use datafusion::{
         },
         PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
-    physical_optimizer::join_selection::swap_hash_join,
     physical_plan::{
         aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
         joins::{utils::JoinFilter, HashJoinExec, PartitionMode, SortMergeJoinExec},
@@ -1467,7 +1466,7 @@ impl PhysicalPlanner {
                     ))
                 } else {
                     let swapped_hash_join =
-                        swap_hash_join(hash_join.as_ref(), PartitionMode::Partitioned)?;
+                        hash_join.as_ref().swap_inputs(PartitionMode::Partitioned)?;
 
                     let mut additional_native_plans = vec![];
                     if swapped_hash_join.as_any().is::<ProjectionExec>() {
@@ -1655,7 +1654,7 @@ impl PhysicalPlanner {
             Some(JoinFilter::new(
                 rewritten_physical_expr,
                 column_indices,
-                filter_schema,
+                filter_schema.into(),
             ))
         } else {
             None
