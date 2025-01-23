@@ -801,14 +801,14 @@ impl PhysicalPlanner {
 
                 let datafusion_array_compact = array_remove_all_udf();
 
-                let array_compact_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
+                let array_compact_expr = Arc::new(ScalarFunctionExpr::new(
                     "array_compact",
                     datafusion_array_compact,
                     args,
                     return_type,
                 ));
 
-                Ok(Arc::new(array_compact_expr))
+                Ok(array_compact_expr)
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
