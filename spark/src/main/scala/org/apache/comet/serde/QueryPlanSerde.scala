@@ -914,13 +914,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
    */
   def exprToProto(
       expr: Expression,
-      input: Seq[Attribute],
+      inputs: Seq[Attribute],
       binding: Boolean = true): Option[Expr] = {
 
     val conf = SQLConf.get
     val newExpr =
       DecimalPrecision.promote(conf.decimalOperationsAllowPrecisionLoss, expr, !conf.ansiEnabled)
-    exprToProtoInternal(newExpr, input, binding)
+    exprToProtoInternal(newExpr, inputs, binding)
   }
 
   def exprToProtoInternal(
