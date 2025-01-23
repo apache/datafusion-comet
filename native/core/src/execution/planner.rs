@@ -104,7 +104,7 @@ use datafusion_common::{
 };
 use datafusion_execution::object_store::ObjectStoreUrl;
 use datafusion_expr::{
-    AggregateUDF, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    AggregateUDF, ReturnTypeArgs, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
     WindowFunctionDefinition,
 };
 use datafusion_functions_nested::array_has::ArrayHas;
@@ -2269,15 +2269,30 @@ impl PhysicalPlanner {
                         .coerce_types(&input_expr_types)
                         .unwrap_or_else(|_| input_expr_types.clone());
 
-                    let data_type = match fun_name {
-                        // workaround for https://github.com/apache/datafusion/issues/13716
-                        "datepart" => DataType::Int32,
-                        _ => {
-                            // TODO need to call `return_type_from_exprs` instead
-                            #[allow(deprecated)]
-                            func.inner().return_type(&coerced_types)?
-                        }
+                    // TODO this should try and find scalar
+                    let arguments = args
+                        .iter()
+                        .map(|e| {
+                            e.as_ref()
+                                .as_any()
+                                .downcast_ref::<Literal>()
+                                .map(|lit| lit.value())
+                        })
+                        .collect::<Vec<_>>();
+
+                    let nullables = arguments.iter().map(|_| true).collect::<Vec<_>>();
+
+                    let args = ReturnTypeArgs {
+                        arg_types: &coerced_types,
+                        scalar_arguments: &arguments,
+                        nullables: &nullables,
                     };
+
+                    let data_type = func
+                        .inner()
+                        .return_type_from_args(args)?
+                        .return_type()
+                        .clone();
 
                     (data_type, coerced_types)
                 }
