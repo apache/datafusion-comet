@@ -826,6 +826,34 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
   }
 
   /**
+   * Wrap an expression in a cast.
+   */
+  def castToProto(
+      expr: Expression,
+      timeZoneId: Option[String],
+      dt: DataType,
+      childExpr: Expr,
+      evalMode: CometEvalMode.Value): Option[Expr] = {
+    serializeDataType(dt) match {
+      case Some(dataType) =>
+        val castBuilder = ExprOuterClass.Cast.newBuilder()
+        castBuilder.setChild(childExpr)
+        castBuilder.setDatatype(dataType)
+        castBuilder.setEvalMode(evalModeToProto(evalMode))
+        castBuilder.setAllowIncompat(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get())
+        castBuilder.setTimezone(timeZoneId.getOrElse("UTC"))
+        Some(
+          ExprOuterClass.Expr
+            .newBuilder()
+            .setCast(castBuilder)
+            .build())
+      case _ =>
+        withInfo(expr, s"Unsupported datatype in castToProto: $dt")
+        None
+    }
+  }
+
+  /**
    * Convert a Spark expression to protobuf.
    *
    * @param expr
@@ -841,36 +869,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       expr: Expression,
       input: Seq[Attribute],
       binding: Boolean = true): Option[Expr] = {
-    def castToProto(
-        timeZoneId: Option[String],
-        dt: DataType,
-        childExpr: Option[Expr],
-        evalMode: CometEvalMode.Value): Option[Expr] = {
-      val dataType = serializeDataType(dt)
-
-      if (childExpr.isDefined && dataType.isDefined) {
-        val castBuilder = ExprOuterClass.Cast.newBuilder()
-        castBuilder.setChild(childExpr.get)
-        castBuilder.setDatatype(dataType.get)
-        castBuilder.setEvalMode(evalModeToProto(evalMode))
-        castBuilder.setAllowIncompat(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get())
-        val timeZone = timeZoneId.getOrElse("UTC")
-        castBuilder.setTimezone(timeZone)
-
-        Some(
-          ExprOuterClass.Expr
-            .newBuilder()
-            .setCast(castBuilder)
-            .build())
-      } else {
-        if (!dataType.isDefined) {
-          withInfo(expr, s"Unsupported datatype ${dt}")
-        } else {
-          withInfo(expr, s"Unsupported expression $childExpr")
-        }
-        None
-      }
-    }
 
     def exprToProtoInternal(expr: Expression, inputs: Seq[Attribute]): Option[Expr] = {
       SQLConf.get
@@ -895,11 +893,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
           castSupport match {
             case Compatible(_) =>
-              castToProto(timeZoneId, dt, childExpr, evalMode)
+              castToProto(expr, timeZoneId, dt, childExpr.get, evalMode)
             case Incompatible(reason) =>
               if (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get()) {
                 logWarning(getIncompatMessage(reason))
-                castToProto(timeZoneId, dt, childExpr, evalMode)
+                castToProto(expr, timeZoneId, dt, childExpr.get, evalMode)
               } else {
                 withInfo(
                   expr,
