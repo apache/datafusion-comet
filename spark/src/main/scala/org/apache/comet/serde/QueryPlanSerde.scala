@@ -3416,3 +3416,10 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     nativeScanBuilder.addFilePartitions(partitionBuilder.build())
   }
 }
+
+trait CometExpressionSerde {
+  def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr]
+}

@@ -26,13 +26,6 @@ import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.createBinaryExpr
 import org.apache.comet.shims.CometExprShim
 
-trait CometExpressionSerde {
-  def convert(
-      expr: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr]
-}
-
 object CometArrayRemove extends CometExpressionSerde with CometExprShim {
 
   /** Exposed for unit testing */
