@@ -2310,6 +2310,38 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             expr.children(1),
             inputs,
             (builder, binaryExpr) => builder.setArrayIntersect(binaryExpr))
+        case ArrayJoin(arrayExpr, delimiterExpr, nullReplacementExpr) =>
+          val arrayExprProto = exprToProto(arrayExpr, inputs, binding)
+          val delimiterExprProto = exprToProto(delimiterExpr, inputs, binding)
+
+          if (arrayExprProto.isDefined && delimiterExprProto.isDefined) {
+            val arrayJoinBuilder = nullReplacementExpr match {
+              case Some(nrExpr) =>
+                val nullReplacementExprProto = exprToProto(nrExpr, inputs, binding)
+                ExprOuterClass.ArrayJoin
+                  .newBuilder()
+                  .setArrayExpr(arrayExprProto.get)
+                  .setDelimiterExpr(delimiterExprProto.get)
+                  .setNullReplacementExpr(nullReplacementExprProto.get)
+              case None =>
+                ExprOuterClass.ArrayJoin
+                  .newBuilder()
+                  .setArrayExpr(arrayExprProto.get)
+                  .setDelimiterExpr(delimiterExprProto.get)
+            }
+            Some(
+              ExprOuterClass.Expr
+                .newBuilder()
+                .setArrayJoin(arrayJoinBuilder)
+                .build())
+          } else {
+            val exprs: List[Expression] = nullReplacementExpr match {
+              case Some(nrExpr) => List(arrayExpr, delimiterExpr, nrExpr)
+              case None => List(arrayExpr, delimiterExpr)
+            }
+            withInfo(expr, "unsupported arguments for ArrayJoin", exprs: _*)
+            None
+          }
         case _ =>
           withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
           None
