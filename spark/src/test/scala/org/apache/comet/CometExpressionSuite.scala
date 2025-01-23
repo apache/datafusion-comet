@@ -2333,7 +2333,22 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("get_struct_field with DataFusion ParquetExec - simple case") {
+  private def testV1AndV2(testName: String)(f: => Unit): Unit = {
+    test(s"$testName - V1") {
+      withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") { f }
+    }
+
+    // The test will fail because it will  produce a different plan and the operator check will fail
+    // We could get the test to pass anyway by skipping the operator check, but when V2 does get supported,
+    // we want to make sure we enable the operator check and marking the test as ignore will make it
+    // more obvious
+    //
+    ignore(s"$testName - V2") {
+      withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") { f }
+    }
+  }
+
+  testV1AndV2("get_struct_field with DataFusion ParquetExec - simple case") {
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2346,21 +2361,18 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         df.write.parquet(dir.toString())
       }
 
-      Seq("parquet").foreach { v1List =>
-        withSQLConf(
-          SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
-          CometConf.COMET_ENABLED.key -> "true",
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
-          CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+        CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
 
-          val df = spark.read.parquet(dir.toString())
-          checkSparkAnswerAndOperator(df.select("nested1.id"))
-        }
+        val df = spark.read.parquet(dir.toString())
+        checkSparkAnswerAndOperator(df.select("nested1.id"))
       }
     }
   }
 
-  test("get_struct_field with DataFusion ParquetExec - select subset of struct") {
+  testV1AndV2("get_struct_field with DataFusion ParquetExec - select subset of struct") {
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2379,22 +2391,19 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         df.write.parquet(dir.toString())
       }
 
-      Seq("parquet").foreach { v1List =>
-        withSQLConf(
-          SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
-          CometConf.COMET_ENABLED.key -> "true",
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
-          CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+        CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
 
-          val df = spark.read.parquet(dir.toString())
+        val df = spark.read.parquet(dir.toString())
 
-          checkSparkAnswerAndOperator(df.select("nested1.id"))
+        checkSparkAnswerAndOperator(df.select("nested1.id"))
 
-          checkSparkAnswerAndOperator(df.select("nested1.id", "nested1.nested2.id"))
+        checkSparkAnswerAndOperator(df.select("nested1.id", "nested1.nested2.id"))
 
-          // unsupported cast from Int64 to Struct([Field { name: "id", data_type: Int64, ...
-          // checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
-        }
+        // unsupported cast from Int64 to Struct([Field { name: "id", data_type: Int64, ...
+        // checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
       }
     }
   }
@@ -2419,7 +2428,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         df.write.parquet(dir.toString())
       }
 
-      Seq("parquet").foreach { v1List =>
+      Seq("", "parquet").foreach { v1List =>
         withSQLConf(
           SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
           CometConf.COMET_ENABLED.key -> "true",
