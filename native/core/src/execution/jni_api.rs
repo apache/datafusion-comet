@@ -584,9 +584,13 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
 
 /// Updates the metrics of the query plan.
 fn update_metrics(env: &mut JNIEnv, exec_context: &mut ExecutionContext) -> CometResult<()> {
-    let native_query = exec_context.root_op.as_ref().unwrap();
-    let metrics = exec_context.metrics.as_obj();
-    update_comet_metric(env, metrics, native_query)
+    if exec_context.root_op.is_some() {
+        let native_query = exec_context.root_op.as_ref().unwrap();
+        let metrics = exec_context.metrics.as_obj();
+        update_comet_metric(env, metrics, native_query)
+    } else {
+        Ok(())
+    }
 }
 
 fn convert_datatype_arrays(
