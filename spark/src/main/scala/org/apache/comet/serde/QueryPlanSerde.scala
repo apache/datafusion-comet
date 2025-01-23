@@ -3417,7 +3417,26 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
   }
 }
 
+/**
+ * Trait for providing serialization logic for expressions.
+ */
 trait CometExpressionSerde {
+
+  /**
+   * Convert a Spark expression into a protocol buffer representation that can be passed into
+   * native code.
+   *
+   * @param expr
+   *   The Spark expression.
+   * @param inputs
+   *   The input attributes.
+   * @param binding
+   *   Whether the attributes are bound (this is only relevant in aggregate expressions).
+   * @return
+   *   Protocol buffer representation, or None if the expression could not be converted. In this
+   *   case it is expected that the input expression will have been tagged with reasons why it
+   *   could not be converted.
+   */
   def convert(
       expr: Expression,
       inputs: Seq[Attribute],
