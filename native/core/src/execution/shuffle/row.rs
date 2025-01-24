@@ -3439,21 +3439,7 @@ fn make_batch(arrays: Vec<ArrayRef>, row_count: usize) -> Result<RecordBatch, Ar
     let fields = arrays
         .iter()
         .enumerate()
-        .map(|(i, array)| match array.data_type() {
-            DataType::Dictionary(_, _) => {
-                #[allow(deprecated)]
-                let field = Field::new_dict(
-                    format!("c{}", i),
-                    array.data_type().clone(),
-                    true,
-                    dict_id,
-                    false,
-                );
-                dict_id += 1;
-                field
-            }
-            _ => Field::new(format!("c{}", i), array.data_type().clone(), true),
-        })
+        .map(|(i, array)| Field::new(format!("c{}", i), array.data_type().clone(), true))
         .collect::<Vec<_>>();
     let schema = Arc::new(Schema::new(fields));
     let options = RecordBatchOptions::new().with_row_count(Option::from(row_count));
