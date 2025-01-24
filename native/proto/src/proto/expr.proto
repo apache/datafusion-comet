@@ -87,7 +87,8 @@ message Expr {
     BinaryExpr array_contains = 60;
     BinaryExpr array_remove = 61;
     BinaryExpr array_intersect = 62;
-    UnaryExpr array_compact = 63;
+    ArrayJoin array_join = 63;
+    UnaryExpr array_compact = 64;
   }
 }
 
@@ -414,6 +415,12 @@ message ArrayInsert {
   Expr pos_expr = 2;
   Expr item_expr = 3;
   bool legacy_negative_index = 4;
+}
+
+message ArrayJoin {
+  Expr array_expr = 1;
+  Expr delimiter_expr = 2;
+  Expr null_replacement_expr = 3;
 }
 
 message DataType {
