@@ -2348,8 +2348,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           createUnaryExpr(
             expr.children(0),
             inputs,
-            (builder, unaryExpr) => builder.setArrayCompact(unaryExpr)
-          )
+            (builder, unaryExpr) => builder.setArrayCompact(unaryExpr))
         case _ =>
           withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
           None

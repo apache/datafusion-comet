@@ -2701,6 +2701,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+
   test("array_compact") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
