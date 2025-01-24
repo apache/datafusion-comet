@@ -450,10 +450,10 @@ source releases, or from the latest code in the GitHub repository.</p>
 <span class="w">    </span>--conf<span class="w"> </span>spark.driver.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.executor.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.plugins<span class="o">=</span>org.apache.spark.CometPlugin<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.shuffle.manager<span class="o">=</span>org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager
-<span class="go">    --conf spark.comet.explainFallback.enabled=true \</span>
-<span class="go">    --conf spark.memory.offHeap.enabled=true \</span>
-<span class="go">    --conf spark.memory.offHeap.size=16g \</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.shuffle.manager<span class="o">=</span>org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.comet.explainFallback.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>16g<span class="w"> </span><span class="se">\</span>
 </pre></div>
 </div>
 <section id="verify-comet-enabled-for-spark-sql-query">
