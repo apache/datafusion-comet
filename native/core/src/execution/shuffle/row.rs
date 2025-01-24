@@ -3435,7 +3435,6 @@ fn builder_to_array(
 }
 
 fn make_batch(arrays: Vec<ArrayRef>, row_count: usize) -> Result<RecordBatch, ArrowError> {
-    let mut dict_id = 0;
     let fields = arrays
         .iter()
         .enumerate()
