@@ -20,7 +20,7 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{ArrayRemove, Attribute, Expression}
-import org.apache.spark.sql.types.DataType
+import org.apache.spark.sql.types.{ArrayType, DataType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.createBinaryExpr
@@ -29,7 +29,14 @@ object CometArrayContains extends CometExpressionSerde {
 
   /** Exposed for unit testing */
   def isTypeSupported(dt: DataType): Boolean = {
-    isPrimitiveType(dt)
+    if (isPrimitiveType(dt) || isDecimalType(dt) || isTemporalType(dt) || isStringOrBinaryType(
+        dt)) {
+      return true
+    }
+    dt match {
+      case ArrayType(elementType, _) => isTypeSupported(elementType)
+      case _ => false
+    }
   }
 
   override def convert(
@@ -58,7 +65,14 @@ object CometArrayRemove extends CometExpressionSerde {
 
   /** Exposed for unit testing */
   def isTypeSupported(dt: DataType): Boolean = {
-    isPrimitiveType(dt)
+    if (isPrimitiveType(dt) || isDecimalType(dt) || isTemporalType(dt) || isStringOrBinaryType(
+        dt)) {
+      return true
+    }
+    dt match {
+      case ArrayType(elementType, _) => isTypeSupported(elementType)
+      case _ => false
+    }
   }
 
   override def convert(

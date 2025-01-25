@@ -3477,10 +3477,32 @@ trait CometExpressionSerde extends CometExprShim {
   def isPrimitiveType(dt: DataType): Boolean = {
     import DataTypes._
     dt match {
-      case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-          _: DecimalType | DateType | TimestampType | StringType | BinaryType =>
+      case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType =>
         true
+      case _ => false
+    }
+  }
+
+  def isDecimalType(dt: DataType): Boolean = {
+    dt match {
+      case _: DecimalType => true
+      case _ => false
+    }
+  }
+
+  def isTemporalType(dt: DataType): Boolean = {
+    import DataTypes._
+    dt match {
+      case DateType | TimestampType => true
       case t if isTimestampNTZType(t) => true
+      case _ => false
+    }
+  }
+
+  def isStringOrBinaryType(dt: DataType): Boolean = {
+    import DataTypes._
+    dt match {
+      case StringType | BinaryType => true
       case _ => false
     }
   }
