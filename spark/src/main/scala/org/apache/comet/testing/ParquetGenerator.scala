@@ -212,8 +212,8 @@ object ParquetGenerator {
 }
 
 case class DataGenOptions(
-    allowNull: Boolean,
-    generateNegativeZero: Boolean,
-    generateArray: Boolean,
-    generateStruct: Boolean,
-    generateMap: Boolean)
+    allowNull: Boolean = true,
+    generateNegativeZero: Boolean = true,
+    generateArray: Boolean = true,
+    generateStruct: Boolean = true,
+    generateMap: Boolean = true)

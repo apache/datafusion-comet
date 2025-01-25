@@ -20,28 +20,45 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{ArrayRemove, Attribute, Expression}
-import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, StructType}
+import org.apache.spark.sql.types.DataType
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.createBinaryExpr
-import org.apache.comet.shims.CometExprShim
 
-object CometArrayRemove extends CometExpressionSerde with CometExprShim {
+object CometArrayContains extends CometExpressionSerde {
 
   /** Exposed for unit testing */
   def isTypeSupported(dt: DataType): Boolean = {
-    import DataTypes._
-    dt match {
-      case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-          _: DecimalType | DateType | TimestampType | StringType | BinaryType =>
-        true
-      case t if isTimestampNTZType(t) => true
-      case ArrayType(elementType, _) => isTypeSupported(elementType)
-      case _: StructType =>
-        // https://github.com/apache/datafusion-comet/issues/1307
-        false
-      case _ => false
+    isPrimitiveType(dt)
+  }
+
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val ar = expr.asInstanceOf[ArrayRemove]
+    val inputTypes: Set[DataType] = ar.children.map(_.dataType).toSet
+    for (dt <- inputTypes) {
+      if (!isTypeSupported(dt)) {
+        withInfo(expr, s"data type not supported: $dt")
+        return None
+      }
     }
+    createBinaryExpr(
+      expr,
+      expr.children(0),
+      expr.children(1),
+      inputs,
+      binding,
+      (builder, binaryExpr) => builder.setArrayContains(binaryExpr))
+  }
+}
+
+object CometArrayRemove extends CometExpressionSerde {
+
+  /** Exposed for unit testing */
+  def isTypeSupported(dt: DataType): Boolean = {
+    isPrimitiveType(dt)
   }
 
   override def convert(

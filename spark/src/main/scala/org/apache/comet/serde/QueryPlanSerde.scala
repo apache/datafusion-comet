@@ -3452,7 +3452,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 /**
  * Trait for providing serialization logic for expressions.
  */
-trait CometExpressionSerde {
+trait CometExpressionSerde extends CometExprShim {
 
   /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into
@@ -3473,4 +3473,15 @@ trait CometExpressionSerde {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr]
+
+  def isPrimitiveType(dt: DataType): Boolean = {
+    import DataTypes._
+    dt match {
+      case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
+          _: DecimalType | DateType | TimestampType | StringType | BinaryType =>
+        true
+      case t if isTimestampNTZType(t) => true
+      case _ => false
+    }
+  }
 }
