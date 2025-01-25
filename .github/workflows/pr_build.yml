@@ -197,7 +197,7 @@ jobs:
         test-target: [java]
         spark-version: ['4.0']
       fail-fast: false
-    # if: github.event_name == 'push'
+    if: github.event_name == 'push'
     name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}/${{ matrix.test-target }}
     runs-on: ${{ matrix.os }}
     steps:
