@@ -1450,8 +1450,6 @@ object CometSparkSessionExtensions extends Logging {
     val newNodeInfo = (existingNodeInfos ++ exprs
       .flatMap(_.getTagValue(CometExplainInfo.EXTENSION_INFO))).flatten.toSet
     node.setTagValue(CometExplainInfo.EXTENSION_INFO, newNodeInfo ++ info)
-    // scalastyle:off println
-    println(info.mkString)
     node
   }
 
