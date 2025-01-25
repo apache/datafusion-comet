@@ -2428,6 +2428,22 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           withInfo(expr, "unsupported arguments for ArrayJoin", exprs: _*)
           None
         }
+      case expr @ ArrayFilter(child, _) if ArrayCompact(child).replacement.sql == expr.sql =>
+        val elementType = serializeDataType(child.dataType.asInstanceOf[ArrayType].elementType)
+        val srcExprProto = exprToProto(child, inputs, binding)
+        if (elementType.isDefined && srcExprProto.isDefined) {
+          val arrayCompactBuilder = ExprOuterClass.ArrayCompact
+            .newBuilder()
+            .setArrayExpr(srcExprProto.get)
+            .setItemDatatype(elementType.get)
+          Some(
+            ExprOuterClass.Expr
+              .newBuilder()
+              .setArrayCompact(arrayCompactBuilder)
+              .build())
+        } else {
+          None
+        }
       case _ =>
         withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
         None
