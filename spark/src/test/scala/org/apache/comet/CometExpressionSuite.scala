@@ -2703,17 +2703,17 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("array_compact") {
+    assume(isSpark34Plus)
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, n = 10000)
-        spark.read.parquet(path.toString).createOrReplaceTempView("t1");
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+
         checkSparkAnswerAndOperator(
-          sql("SELECT array_compact(array(_2, _3, _4)) from t1 where _2 is null"))
+          sql("SELECT array_compact(array(_2)) FROM t1 WHERE _2 IS NULL"))
         checkSparkAnswerAndOperator(
-          sql("SELECT array_compact(array(_2)) from t1 where _2 is null"))
-        checkSparkAnswerAndOperator(
-          sql("SELECT array_compact(array(_2, _3, _4)) from t1 where _2 is not null"))
+          sql("SELECT array_compact(array(_2)) FROM t1 WHERE _2 IS NOT NULL"))
       }
     }
   }

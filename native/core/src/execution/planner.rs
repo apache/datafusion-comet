@@ -820,17 +820,17 @@ impl PhysicalPlanner {
             }
             ExprStruct::ArrayCompact(expr) => {
                 let src_array_expr =
-                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                    self.create_expr(expr.array_expr.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let datatype = to_arrow_datatype(expr.item_datatype.as_ref().unwrap());
+
                 let null_literal_expr: Arc<dyn PhysicalExpr> =
-                    Arc::new(Literal::new(ScalarValue::Null));
+                    Arc::new(Literal::new(ScalarValue::Null.cast_to(&datatype)?));
                 let args = vec![Arc::clone(&src_array_expr), null_literal_expr];
                 let return_type = src_array_expr.data_type(&input_schema)?;
 
-                let datafusion_array_compact = array_remove_all_udf();
-
                 let array_compact_expr = Arc::new(ScalarFunctionExpr::new(
                     "array_compact",
-                    datafusion_array_compact,
+                    array_remove_all_udf(),
                     args,
                     return_type,
                 ));
