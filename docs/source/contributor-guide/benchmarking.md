@@ -24,10 +24,6 @@ benchmarking documentation and scripts are available in the [DataFusion Benchmar
 
 We also have many micro benchmarks that can be run from an IDE located [here](https://github.com/apache/datafusion-comet/tree/main/spark/src/test/scala/org/apache/spark/sql/benchmark). 
 
-### TPC-DS
-
-For TPC-DS, use `spark.comet.exec.replaceSortMergeJoin=false`.
-
 ## Current Benchmark Results
 
 - [Benchmarks derived from TPC-H](benchmark-results/tpc-h)
