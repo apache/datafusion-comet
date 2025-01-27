@@ -180,8 +180,6 @@ impl PhysicalPlanner {
         spark_expr: &Expr,
         input_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        println!("create_expr() {:?}", spark_expr);
-
         match spark_expr.expr_struct.as_ref().unwrap() {
             ExprStruct::Add(expr) => self.create_binary_expr(
                 expr.left.as_ref().unwrap(),
@@ -952,8 +950,6 @@ impl PhysicalPlanner {
         let children = &spark_plan.children;
         match spark_plan.op_struct.as_ref().unwrap() {
             OpStruct::Projection(project) => {
-                println!("Projection: {project:?}");
-
                 assert!(children.len() == 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
                 let exprs: PhyExprResult = project
@@ -2574,10 +2570,6 @@ fn create_case_expr(
 
     if let Some(coerce_type) = get_coerce_type_for_case_expression(&then_types, else_type.as_ref())
     {
-        println!(
-            "get_coerce_type_for_case_expression(${then_types:?}, {else_type:?}) -> {coerce_type}"
-        );
-
         let cast_options = SparkCastOptions::new_without_timezone(EvalMode::Legacy, false);
 
         let when_then_pairs = when_then_pairs
@@ -2596,14 +2588,12 @@ fn create_case_expr(
             Arc::new(Cast::new(x, coerce_type.clone(), cast_options.clone()))
                 as Arc<dyn PhysicalExpr>
         });
-
-        let x = Arc::new(CaseExpr::try_new(None, when_then_pairs, else_phy_expr)?);
-
-        println!("AFTER COERCION: {x:?}");
-
-        Ok(x)
+        Ok(Arc::new(CaseExpr::try_new(
+            None,
+            when_then_pairs,
+            else_phy_expr,
+        )?));
     } else {
-        println!("get_coerce_type_for_case_expression -> None");
         Ok(Arc::new(CaseExpr::try_new(
             None,
             when_then_pairs,
