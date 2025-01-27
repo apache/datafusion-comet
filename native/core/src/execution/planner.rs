@@ -2592,7 +2592,7 @@ fn create_case_expr(
             None,
             when_then_pairs,
             else_phy_expr,
-        )?));
+        )?))
     } else {
         Ok(Arc::new(CaseExpr::try_new(
             None,
