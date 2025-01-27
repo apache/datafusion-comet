@@ -33,12 +33,12 @@ edition = "2021"
 rust-version = "1.79"
 
 [workspace.dependencies]
-arrow = { version = "53.3.0", features = ["prettyprint", "ffi", "chrono-tz"] }
-arrow-array = { version = "53.3.0" }
-arrow-buffer = { version = "53.3.0" }
-arrow-data = { version = "53.3.0" }
-arrow-schema = { version = "53.3.0" }
-parquet = { version = "53.3.0", default-features = false, features = ["experimental"] }
+arrow = { version = "53.4.0", features = ["prettyprint", "ffi", "chrono-tz"] }
+arrow-array = { version = "53.4.0" }
+arrow-buffer = { version = "53.4.0" }
+arrow-data = { version = "53.4.0" }
+arrow-schema = { version = "53.4.0" }
+parquet = { version = "53.4.0", default-features = false, features = ["experimental"] }
 datafusion = { version = "44.0.0", default-features = false, features = ["unicode_expressions", "crypto_expressions"] }
 datafusion-common = { version = "44.0.0", default-features = false }
 datafusion-functions = { version = "44.0.0", default-features = false, features = ["crypto_expressions"] }
