@@ -103,6 +103,7 @@ use datafusion_common::{
     JoinType as DFJoinType, ScalarValue,
 };
 use datafusion_execution::object_store::ObjectStoreUrl;
+use datafusion_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion_expr::{
     AggregateUDF, ReturnTypeArgs, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
     WindowFunctionDefinition,
@@ -582,15 +583,70 @@ impl PhysicalPlanner {
 
                 let else_phy_expr = match &case_when.else_expr {
                     None => None,
-                    Some(_) => {
-                        Some(self.create_expr(case_when.else_expr.as_ref().unwrap(), input_schema)?)
-                    }
+                    Some(_) => Some(self.create_expr(
+                        case_when.else_expr.as_ref().unwrap(),
+                        Arc::clone(&input_schema),
+                    )?),
                 };
-                Ok(Arc::new(CaseExpr::try_new(
-                    None,
-                    when_then_pairs,
-                    else_phy_expr,
-                )?))
+
+                let when_types: Vec<DataType> = when_then_pairs
+                    .iter()
+                    .map(|x| x.0.data_type(&input_schema))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let then_types: Vec<DataType> = when_then_pairs
+                    .iter()
+                    .map(|x| x.1.data_type(&input_schema))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let else_type: Option<DataType> = else_phy_expr
+                    .as_ref()
+                    .map(|x| Arc::clone(x).data_type(&input_schema))
+                    .transpose()?;
+
+                let mut when_then_types = vec![];
+                when_then_types.extend(when_types);
+                when_then_types.extend(then_types);
+
+                if let Some(coerce_type) =
+                    get_coerce_type_for_case_expression(&when_then_types, else_type.as_ref())
+                {
+                    let cast_options =
+                        SparkCastOptions::new_without_timezone(EvalMode::Legacy, false);
+
+                    let when_then_pairs = when_then_pairs
+                        .iter()
+                        .map(|x| {
+                            let w: Arc<dyn PhysicalExpr> = Arc::new(Cast::new(
+                                Arc::clone(&x.0),
+                                coerce_type.clone(),
+                                cast_options.clone(),
+                            ));
+                            let t: Arc<dyn PhysicalExpr> = Arc::new(Cast::new(
+                                Arc::clone(&x.1),
+                                coerce_type.clone(),
+                                cast_options.clone(),
+                            ));
+                            (w, t)
+                        })
+                        .collect::<Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>>();
+
+                    let else_phy_expr: Option<Arc<dyn PhysicalExpr>> =
+                        else_phy_expr.clone().map(|x| {
+                            Arc::new(Cast::new(x, coerce_type.clone(), cast_options.clone()))
+                                as Arc<dyn PhysicalExpr>
+                        });
+
+                    Ok(Arc::new(CaseExpr::try_new(
+                        None,
+                        when_then_pairs,
+                        else_phy_expr,
+                    )?))
+                } else {
+                    Ok(Arc::new(CaseExpr::try_new(
+                        None,
+                        when_then_pairs,
+                        else_phy_expr.clone(),
+                    )?))
+                }
             }
             ExprStruct::In(expr) => {
                 let value =
