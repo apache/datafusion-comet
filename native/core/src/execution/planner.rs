@@ -2559,12 +2559,12 @@ fn create_case_expr(
 ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
     let then_types: Vec<DataType> = when_then_pairs
         .iter()
-        .map(|x| x.1.data_type(&input_schema))
+        .map(|x| x.1.data_type(input_schema))
         .collect::<Result<Vec<_>, _>>()?;
 
     let else_type: Option<DataType> = else_expr
         .as_ref()
-        .map(|x| Arc::clone(x).data_type(&input_schema))
+        .map(|x| Arc::clone(x).data_type(input_schema))
         .transpose()?
         .or(Some(DataType::Null));
 
