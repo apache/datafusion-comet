@@ -473,11 +473,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             let start = Instant::now();
             let planner = PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx))
                 .with_exec_id(exec_context_id);
+
+            println!("BEFORE create_plan");
             let (scans, root_op) = planner.create_plan(
                 &exec_context.spark_plan,
                 &mut exec_context.input_sources.clone(),
                 exec_context.partition_count,
             )?;
+            println!("AFTER create_plan: {root_op:?}");
             let physical_plan_time = start.elapsed();
 
             exec_context.plan_creation_time += physical_plan_time;

@@ -592,57 +592,7 @@ impl PhysicalPlanner {
                     )?),
                 };
 
-                let then_types: Vec<DataType> = when_then_pairs
-                    .iter()
-                    .map(|x| x.1.data_type(&input_schema))
-                    .collect::<Result<Vec<_>, _>>()?;
-
-                let else_type: Option<DataType> = else_phy_expr
-                    .as_ref()
-                    .map(|x| Arc::clone(x).data_type(&input_schema))
-                    .transpose()?
-                    .or(Some(DataType::Null));
-
-                println!("get_coerce_type_for_case_expression(${then_types:?}, {else_type:?})");
-
-                if let Some(coerce_type) =
-                    get_coerce_type_for_case_expression(&then_types, else_type.as_ref())
-                {
-                    println!("get_coerce_type_for_case_expression -> {coerce_type}");
-                    let cast_options =
-                        SparkCastOptions::new_without_timezone(EvalMode::Legacy, false);
-
-                    let when_then_pairs = when_then_pairs
-                        .iter()
-                        .map(|x| {
-                            let t: Arc<dyn PhysicalExpr> = Arc::new(Cast::new(
-                                Arc::clone(&x.1),
-                                coerce_type.clone(),
-                                cast_options.clone(),
-                            ));
-                            (Arc::clone(&x.0), t)
-                        })
-                        .collect::<Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>>();
-
-                    let else_phy_expr: Option<Arc<dyn PhysicalExpr>> =
-                        else_phy_expr.clone().map(|x| {
-                            Arc::new(Cast::new(x, coerce_type.clone(), cast_options.clone()))
-                                as Arc<dyn PhysicalExpr>
-                        });
-
-                    let x = Arc::new(CaseExpr::try_new(None, when_then_pairs, else_phy_expr)?);
-
-                    println!("{x:?}");
-
-                    Ok(x)
-                } else {
-                    println!("get_coerce_type_for_case_expression -> None");
-                    Ok(Arc::new(CaseExpr::try_new(
-                        None,
-                        when_then_pairs,
-                        else_phy_expr.clone(),
-                    )?))
-                }
+                create_case_expr(when_then_pairs, else_phy_expr, &input_schema)
             }
             ExprStruct::In(expr) => {
                 let value =
@@ -760,12 +710,11 @@ impl PhysicalPlanner {
                 let null_literal_expr: Arc<dyn PhysicalExpr> =
                     Arc::new(Literal::new(ScalarValue::Null));
 
-                let case_expr = CaseExpr::try_new(
-                    None,
+                create_case_expr(
                     vec![(is_null_expr, null_literal_expr)],
                     Some(array_append_expr),
-                )?;
-                Ok(Arc::new(case_expr))
+                    &input_schema,
+                )
             }
             ExprStruct::ArrayInsert(expr) => {
                 let src_array_expr = self.create_expr(
@@ -818,13 +767,11 @@ impl PhysicalPlanner {
                 let null_literal_expr: Arc<dyn PhysicalExpr> =
                     Arc::new(Literal::new(ScalarValue::Null));
 
-                let case_expr = CaseExpr::try_new(
-                    None,
+                create_case_expr(
                     vec![(is_null_expr, null_literal_expr)],
                     Some(array_remove_expr),
-                )?;
-
-                Ok(Arc::new(case_expr))
+                    &input_schema,
+                )
             }
             ExprStruct::ArrayIntersect(expr) => {
                 let left_expr =
@@ -1005,6 +952,8 @@ impl PhysicalPlanner {
         let children = &spark_plan.children;
         match spark_plan.op_struct.as_ref().unwrap() {
             OpStruct::Projection(project) => {
+                println!("Projection: {project:?}");
+
                 assert!(children.len() == 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
                 let exprs: PhyExprResult = project
@@ -2604,6 +2553,63 @@ fn convert_spark_types_to_arrow_schema(
         .collect_vec();
     let arrow_schema: SchemaRef = Arc::new(Schema::new(arrow_fields));
     arrow_schema
+}
+
+/// Create CASE WHEN expression and add casting as needed
+fn create_case_expr(
+    when_then_pairs: Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>,
+    else_expr: Option<Arc<dyn PhysicalExpr>>,
+    input_schema: &Schema,
+) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+    let then_types: Vec<DataType> = when_then_pairs
+        .iter()
+        .map(|x| x.1.data_type(&input_schema))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let else_type: Option<DataType> = else_expr
+        .as_ref()
+        .map(|x| Arc::clone(x).data_type(&input_schema))
+        .transpose()?
+        .or(Some(DataType::Null));
+
+    if let Some(coerce_type) = get_coerce_type_for_case_expression(&then_types, else_type.as_ref())
+    {
+        println!(
+            "get_coerce_type_for_case_expression(${then_types:?}, {else_type:?}) -> {coerce_type}"
+        );
+
+        let cast_options = SparkCastOptions::new_without_timezone(EvalMode::Legacy, false);
+
+        let when_then_pairs = when_then_pairs
+            .iter()
+            .map(|x| {
+                let t: Arc<dyn PhysicalExpr> = Arc::new(Cast::new(
+                    Arc::clone(&x.1),
+                    coerce_type.clone(),
+                    cast_options.clone(),
+                ));
+                (Arc::clone(&x.0), t)
+            })
+            .collect::<Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>>();
+
+        let else_phy_expr: Option<Arc<dyn PhysicalExpr>> = else_expr.clone().map(|x| {
+            Arc::new(Cast::new(x, coerce_type.clone(), cast_options.clone()))
+                as Arc<dyn PhysicalExpr>
+        });
+
+        let x = Arc::new(CaseExpr::try_new(None, when_then_pairs, else_phy_expr)?);
+
+        println!("AFTER COERCION: {x:?}");
+
+        Ok(x)
+    } else {
+        println!("get_coerce_type_for_case_expression -> None");
+        Ok(Arc::new(CaseExpr::try_new(
+            None,
+            when_then_pairs,
+            else_expr.clone(),
+        )?))
+    }
 }
 
 #[cfg(test)]
