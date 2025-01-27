@@ -784,7 +784,7 @@ impl PhysicalPlanner {
                     self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 // Cast count_expr from Int32 to Int64 to support df count argument
                 let count_expr: Arc<dyn PhysicalExpr> =
-                    match count_expr.data_type(&input_schema.clone())? {
+                    match count_expr.data_type(Arc::<Schema>::clone(&input_schema))? {
                         DataType::Int32 => Arc::new(CastExpr::new(
                             count_expr,
                             DataType::Int64,
