@@ -19,8 +19,8 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, XxHash64}
-import org.apache.spark.sql.types.{DecimalType, LongType}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Murmur3Hash, XxHash64}
+import org.apache.spark.sql.types.{DecimalType, IntegerType, LongType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarExprToProtoWithReturnType, serializeDataType, supportedDataType}
@@ -52,5 +52,35 @@ object CometXxHash64 extends CometExpressionSerde {
     val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
     // the seed is put at the end of the arguments
     scalarExprToProtoWithReturnType("xxhash64", LongType, exprs :+ seedExpr: _*)
+  }
+}
+
+object Murmur3Hash extends CometExpressionSerde {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val hash = expr.asInstanceOf[Murmur3Hash]
+    for (child <- hash.children) {
+      child.dataType match {
+        case dt: DecimalType if dt.precision > 18 =>
+          // Spark converts decimals with precision > 18 into
+          // Java BigDecimal before hashing
+          withInfo(expr, s"Unsupported datatype: $dt (precision > 18)")
+          return None
+        case dt if !supportedDataType(dt) =>
+          withInfo(expr, s"Unsupported datatype $dt")
+          return None
+        case _ =>
+      }
+    }
+    val exprs = hash.children.map(exprToProtoInternal(_, inputs, binding))
+    val seedBuilder = ExprOuterClass.Literal
+      .newBuilder()
+      .setDatatype(serializeDataType(IntegerType).get)
+      .setIntVal(hash.seed)
+    val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
+    // the seed is put at the end of the arguments
+    scalarExprToProtoWithReturnType("murmur3_hash", IntegerType, exprs :+ seedExpr: _*)
   }
 }
