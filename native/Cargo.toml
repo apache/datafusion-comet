@@ -30,7 +30,7 @@ license = "Apache-2.0"
 edition = "2021"
 
 # Comet uses the same minimum Rust version as DataFusion
-rust-version = "1.79"
+rust-version = "1.81"
 
 [workspace.dependencies]
 arrow = { version = "54.0.0", features = ["prettyprint", "ffi", "chrono-tz"] }
