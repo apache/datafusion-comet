@@ -2396,6 +2396,14 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           inputs,
           binding,
           (builder, binaryExpr) => builder.setArrayIntersect(binaryExpr))
+      case _ if expr.prettyName == "array_repeat" =>
+        createBinaryExpr(
+          expr,
+          expr.children(0),
+          expr.children(1),
+          inputs,
+          binding,
+          (builder, binaryExpr) => builder.setArrayRepeat(binaryExpr))
       case ArrayJoin(arrayExpr, delimiterExpr, nullReplacementExpr) =>
         val arrayExprProto = exprToProto(arrayExpr, inputs, binding)
         val delimiterExprProto = exprToProto(delimiterExpr, inputs, binding)

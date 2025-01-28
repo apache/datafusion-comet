@@ -110,6 +110,7 @@ use datafusion_expr::{
     WindowFunctionDefinition,
 };
 use datafusion_functions_nested::array_has::ArrayHas;
+use datafusion_functions_nested::repeat::array_repeat_udf;
 use datafusion_physical_expr::expressions::{Literal, StatsType};
 use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr::LexOrdering;
@@ -774,6 +775,49 @@ impl PhysicalPlanner {
                     Some(array_remove_expr),
                 )?;
 
+                Ok(Arc::new(case_expr))
+            }
+            ExprStruct::ArrayRepeat(expr) => {
+                let src_expr =
+                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let count_expr =
+                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                // Cast count_expr from Int32 to Int64 to support df count argument
+                let count_expr: Arc<dyn PhysicalExpr> =
+                    match count_expr.data_type(&Arc::clone(&input_schema))? {
+                        DataType::Int32 => Arc::new(CastExpr::new(
+                            count_expr,
+                            DataType::Int64,
+                            Some(CastOptions::default()),
+                        )),
+                        _ => count_expr,
+                    };
+
+                let args = vec![Arc::clone(&src_expr), Arc::clone(&count_expr)];
+
+                let datafusion_array_repeat = array_repeat_udf();
+                let data_types: Vec<DataType> = vec![
+                    src_expr.data_type(&Arc::clone(&input_schema))?,
+                    count_expr.data_type(&Arc::clone(&input_schema))?,
+                ];
+                let return_type = datafusion_array_repeat.return_type(&data_types)?;
+
+                let array_repeat_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
+                    "array_repeat",
+                    datafusion_array_repeat,
+                    args,
+                    return_type,
+                ));
+
+                let is_null_expr: Arc<dyn PhysicalExpr> = Arc::new(IsNullExpr::new(count_expr));
+                let null_literal_expr: Arc<dyn PhysicalExpr> =
+                    Arc::new(Literal::new(ScalarValue::Null));
+
+                let case_expr = CaseExpr::try_new(
+                    None,
+                    vec![(is_null_expr, null_literal_expr)],
+                    Some(array_repeat_expr),
+                )?;
                 Ok(Arc::new(case_expr))
             }
             ExprStruct::ArrayIntersect(expr) => {
