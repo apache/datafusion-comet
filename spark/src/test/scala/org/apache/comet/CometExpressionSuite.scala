@@ -1935,7 +1935,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       (17, 2),
       (18, 2),
       (19, 2),
-      (DecimalType.MAX_PRECISION, DecimalType.MAX_PRECISION - 1))
+      (DecimalType.MAX_PRECISION, DecimalType.MAX_SCALE - 1))
     for ((p, s) <- testPrecisionScales) {
       withTable("t1") {
         sql(s"create table t1(c1 decimal($p, $s)) using parquet")
@@ -1956,7 +1956,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       (17, 2),
       (18, 2),
       (19, 2),
-      (DecimalType.MAX_PRECISION, DecimalType.MAX_PRECISION - 1))
+      (DecimalType.MAX_PRECISION, DecimalType.MAX_SCALE - 1))
     for ((p, s) <- testPrecisionScales) {
       withTable("t1") {
         sql(s"create table t1(c1 decimal($p, $s)) using parquet")
