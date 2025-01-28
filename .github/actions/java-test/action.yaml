@@ -67,4 +67,4 @@ runs:
 
     - name: Upload coverage results
       if: ${{ inputs.upload-test-reports == 'true' }}
-      uses: codecov/codecov-action@v3 # uses v3 as it allows tokenless uploading
+      uses: codecov/codecov-action@v5

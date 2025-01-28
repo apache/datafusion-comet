@@ -19,16 +19,17 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Expression, XxHash64}
-import org.apache.spark.sql.types.DecimalType
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, XxHash64}
+import org.apache.spark.sql.types.{DecimalType, LongType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.supportedDataType
-import org.apache.comet.shims.CometExprShim
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarExprToProtoWithReturnType, serializeDataType, supportedDataType}
 
-/** Type checks for XxHash64 expression */
-object CometXxHash64 extends CometExpression with CometExprShim {
-  override def checkSupport(expr: Expression): Boolean = {
+object CometXxHash64 extends CometExpressionSerde {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
     val hash = expr.asInstanceOf[XxHash64]
     for (child <- hash.children) {
       child.dataType match {
@@ -36,13 +37,20 @@ object CometXxHash64 extends CometExpression with CometExprShim {
           // Spark converts decimals with precision > 18 into
           // Java BigDecimal before hashing
           withInfo(expr, s"Unsupported datatype: $dt (precision > 18)")
-          return false
+          return None
         case dt if !supportedDataType(dt) =>
           withInfo(expr, s"Unsupported datatype $dt")
-          return false
+          return None
         case _ =>
       }
     }
-    true
+    val exprs = hash.children.map(exprToProtoInternal(_, inputs, binding))
+    val seedBuilder = ExprOuterClass.Literal
+      .newBuilder()
+      .setDatatype(serializeDataType(LongType).get)
+      .setLongVal(hash.seed)
+    val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
+    // the seed is put at the end of the arguments
+    scalarExprToProtoWithReturnType("xxhash64", LongType, exprs :+ seedExpr: _*)
   }
 }
