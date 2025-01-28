@@ -2176,7 +2176,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case _: Murmur3Hash => CometXxHash64.convert(expr, inputs, binding)
+      case _: Murmur3Hash => CometMurmur3Hash.convert(expr, inputs, binding)
 
       case _: XxHash64 => CometXxHash64.convert(expr, inputs, binding)
 

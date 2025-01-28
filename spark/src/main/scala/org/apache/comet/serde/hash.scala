@@ -45,7 +45,7 @@ object CometXxHash64 extends CometExpressionSerde {
   }
 }
 
-object Murmur3Hash extends CometExpressionSerde {
+object CometMurmur3Hash extends CometExpressionSerde {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
