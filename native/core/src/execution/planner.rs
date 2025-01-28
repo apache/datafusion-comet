@@ -65,6 +65,7 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr};
+use datafusion_functions_nested::array_has::array_has_any_udf;
 use datafusion_functions_nested::concat::ArrayAppend;
 use datafusion_functions_nested::remove::array_remove_all_udf;
 use datafusion_functions_nested::set_ops::array_intersect_udf;
@@ -808,6 +809,21 @@ impl PhysicalPlanner {
                     DataType::Utf8,
                 ));
                 Ok(array_join_expr)
+            }
+            ExprStruct::ArraysOverlap(expr) => {
+                let left_array_expr =
+                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let right_array_expr =
+                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let args = vec![Arc::clone(&left_array_expr), right_array_expr];
+                let datafusion_array_has_any = array_has_any_udf();
+                let array_has_any_expr = Arc::new(ScalarFunctionExpr::new(
+                    "array_has_any",
+                    datafusion_array_has_any,
+                    args,
+                    DataType::Boolean,
+                ));
+                Ok(array_has_any_expr)
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",

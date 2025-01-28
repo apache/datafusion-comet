@@ -88,6 +88,7 @@ message Expr {
     BinaryExpr array_remove = 61;
     BinaryExpr array_intersect = 62;
     ArrayJoin array_join = 63;
+    BinaryExpr arrays_overlap = 64;
   }
 }
 
