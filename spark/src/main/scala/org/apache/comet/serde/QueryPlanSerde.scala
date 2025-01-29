@@ -2176,35 +2176,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case Murmur3Hash(children, seed) =>
-        val firstUnSupportedInput = children.find(c => !supportedDataType(c.dataType))
-        if (firstUnSupportedInput.isDefined) {
-          withInfo(expr, s"Unsupported datatype ${firstUnSupportedInput.get.dataType}")
-          return None
-        }
-        val exprs = children.map(exprToProtoInternal(_, inputs, binding))
-        val seedBuilder = ExprOuterClass.Literal
-          .newBuilder()
-          .setDatatype(serializeDataType(IntegerType).get)
-          .setIntVal(seed)
-        val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
-        // the seed is put at the end of the arguments
-        scalarExprToProtoWithReturnType("murmur3_hash", IntegerType, exprs :+ seedExpr: _*)
+      case _: Murmur3Hash => CometMurmur3Hash.convert(expr, inputs, binding)
 
-      case XxHash64(children, seed) =>
-        val firstUnSupportedInput = children.find(c => !supportedDataType(c.dataType))
-        if (firstUnSupportedInput.isDefined) {
-          withInfo(expr, s"Unsupported datatype ${firstUnSupportedInput.get.dataType}")
-          return None
-        }
-        val exprs = children.map(exprToProtoInternal(_, inputs, binding))
-        val seedBuilder = ExprOuterClass.Literal
-          .newBuilder()
-          .setDatatype(serializeDataType(LongType).get)
-          .setLongVal(seed)
-        val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
-        // the seed is put at the end of the arguments
-        scalarExprToProtoWithReturnType("xxhash64", LongType, exprs :+ seedExpr: _*)
+      case _: XxHash64 => CometXxHash64.convert(expr, inputs, binding)
 
       case Sha2(left, numBits) =>
         if (!numBits.foldable) {
