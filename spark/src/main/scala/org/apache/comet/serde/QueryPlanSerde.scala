@@ -935,7 +935,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           withInfo(
             expr,
             s"$expr is not fully compatible with Spark. To enable it anyway, set " +
-              s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true")
+              s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true. ${CometConf.COMPAT_GUIDE}.")
           None
         case _ =>
           handler.convert(expr, inputs, binding)
@@ -2386,7 +2386,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         }
       case _: ArrayRemove => convert(CometArrayRemove)
       case _: ArrayContains => convert(CometArrayContains)
-      // Function introduced in 3.4.0. Refer by name to provide compatibility with older Spark builds 
+      // Function introduced in 3.4.0. Refer by name to provide compatibility with older Spark builds
       case _ if expr.prettyName == "array_append" => convert(CometArrayAppend)
       case _: ArrayIntersect => convert(CometArrayIntersect)
       case _: ArrayJoin => convert(CometArrayJoin)
