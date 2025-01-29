@@ -22,7 +22,6 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{ArrayJoin, ArrayRemove, Attribute, Expression}
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, StructType}
 
-import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProto}
 import org.apache.comet.shims.CometExprShim
@@ -68,11 +67,11 @@ object CometArrayRemove extends CometExpressionSerde with CometExprShim {
 }
 
 object CometArrayAppend extends CometExpressionSerde with CometExprShim {
-  override def isIncompat(): Boolean = true
+  override def isIncompat: Boolean = true
   override def convert(
-    expr: Expression,
-    inputs: Seq[Attribute],
-    binding: Boolean): Option[ExprOuterClass.Expr] = {
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
     createBinaryExpr(
       expr,
       expr.children(0),
@@ -84,7 +83,7 @@ object CometArrayAppend extends CometExpressionSerde with CometExprShim {
 }
 
 object CometArrayContains extends CometExpressionSerde with CometExprShim {
-  override def isIncompat(): Boolean = true
+  override def isIncompat: Boolean = true
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -100,7 +99,7 @@ object CometArrayContains extends CometExpressionSerde with CometExprShim {
 }
 
 object CometArrayIntersect extends CometExpressionSerde with CometExprShim {
-  override def isIncompat(): Boolean = true
+  override def isIncompat: Boolean = true
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -116,7 +115,7 @@ object CometArrayIntersect extends CometExpressionSerde with CometExprShim {
 }
 
 object CometArraysOverlap extends CometExpressionSerde with CometExprShim {
-  override def isIncompat(): Boolean = true
+  override def isIncompat: Boolean = true
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -132,8 +131,7 @@ object CometArraysOverlap extends CometExpressionSerde with CometExprShim {
 }
 
 object CometArrayJoin extends CometExpressionSerde with CometExprShim {
-  override def isIncompat(): Boolean = true
-
+  override def isIncompat: Boolean = true
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],

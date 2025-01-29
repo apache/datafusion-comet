@@ -930,11 +930,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     SQLConf.get
 
     def toProto(handler: CometExpressionSerde): Option[Expr] = {
-      if (handler.isIncompat() && !CometConf.COMET_ALLOW_INCOMPATIBLE.get()) {
+      if (handler.isIncompat && !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get()) {
         withInfo(
           expr,
           s"$expr is not fully compatible with Spark. To enable it anyway, set " +
-            s"${CometConf.COMET_ALLOW_INCOMPATIBLE.key}=true")
+            s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true")
         return None
       }
       handler.convert(expr, inputs, binding)
@@ -3415,8 +3415,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
  */
 trait CometExpressionSerde {
 
-  /** Determine whether this expression should only be enabled if COMET_ALLOW_INCOMPATIBLE is true */
-  def isIncompat(): Boolean = false
+  /**
+   * Determine whether this expression should only be enabled if COMET_EXPR_ALLOW_INCOMPATIBLE is
+   * true
+   */
+  def isIncompat: Boolean = false
 
   /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into
