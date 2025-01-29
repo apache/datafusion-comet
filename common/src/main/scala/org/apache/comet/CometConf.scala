@@ -45,6 +45,9 @@ import org.apache.comet.shims.ShimCometConf
  */
 object CometConf extends ShimCometConf {
 
+  private val COMPAT_GUIDE = "For more information, refer to the Comet Compatibility " +
+    "Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html)"
+
   private val TUNING_GUIDE = "For more information, refer to the Comet Tuning " +
     "Guide (https://datafusion.apache.org/comet/user-guide/tuning.html)"
 
@@ -609,8 +612,7 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.expression.allowIncompatible")
       .doc(
         "Comet is not currently fully compatible with Spark for all expressions. " +
-          "Set this config to true to allow them anyway. See compatibility guide " +
-          "for more information.")
+          s"Set this config to true to allow them anyway. $COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 
@@ -618,16 +620,15 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.cast.allowIncompatible")
       .doc(
         "Comet is not currently fully compatible with Spark for all cast operations. " +
-          "Set this config to true to allow them anyway. See compatibility guide " +
-          "for more information.")
+          s"Set this config to true to allow them anyway. $COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 
   val COMET_REGEXP_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
     conf("spark.comet.regexp.allowIncompatible")
-      .doc("Comet is not currently fully compatible with Spark for all regular expressions. " +
-        "Set this config to true to allow them anyway using Rust's regular expression engine. " +
-        "See compatibility guide for more information.")
+      .doc(
+        "Comet is not currently fully compatible with Spark for all regular expressions. " +
+          s"Set this config to true to allow them anyway. $COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 
