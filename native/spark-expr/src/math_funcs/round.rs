@@ -136,3 +136,66 @@ fn decimal_round_f(scale: &i8, point: &i64) -> Box<dyn Fn(i128) -> i128> {
         Box::new(move |x: i128| (x + x.signum() * half) / div)
     }
 }
+
+#[cfg(test)]
+mod test {
+    use std::sync::Arc;
+
+    use crate::spark_round;
+
+    use arrow::array::{Float32Array, Float64Array};
+    use arrow_schema::DataType;
+    use datafusion_common::cast::{as_float32_array, as_float64_array};
+    use datafusion_common::{Result, ScalarValue};
+    use datafusion_expr::ColumnarValue;
+
+    #[test]
+    fn test_round_f32() -> Result<()> {
+        let args = vec![
+            ColumnarValue::Array(Arc::new(Float32Array::from(vec![
+                125.2345, 15.3455, 125.2345, 125.2345, 125.2345, 125.2345, 130.2345, 100.2345,
+                0.2345, 0.2345,
+            ]))),
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
+        ];
+        println!(
+            "hello {:?}",
+            ColumnarValue::Array(Arc::new(Float32Array::from(vec![125.2345; 10])))
+        );
+
+        let ColumnarValue::Array(result) = spark_round(&args, &DataType::Float32)? else {
+            unreachable!()
+        };
+        let floats = as_float32_array(&result)?;
+
+        let expected = Float32Array::from(vec![
+            125.23, 15.35, 125.23, 125.23, 125.23, 125.23, 130.23, 100.23, 0.23, 0.23,
+        ]);
+
+        assert_eq!(floats, &expected);
+        Ok(())
+    }
+
+    #[test]
+    fn test_round_f64() -> Result<()> {
+        let args = vec![
+            ColumnarValue::Array(Arc::new(Float64Array::from(vec![
+                125.2345, 15.3455, 125.2345, 125.2345, 125.2345, 125.2345, 130.2345, 100.2345,
+                0.2345, 0.2345,
+            ]))),
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
+        ];
+
+        let ColumnarValue::Array(result) = spark_round(&args, &DataType::Float64)? else {
+            unreachable!()
+        };
+        let floats = as_float64_array(&result)?;
+
+        let expected = Float64Array::from(vec![
+            125.23, 15.35, 125.23, 125.23, 125.23, 125.23, 130.23, 100.23, 0.23, 0.23,
+        ]);
+
+        assert_eq!(floats, &expected);
+        Ok(())
+    }
+}
