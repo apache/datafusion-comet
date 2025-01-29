@@ -19,11 +19,12 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayRemove, Attribute, Expression}
+import org.apache.spark.sql.catalyst.expressions.{ArrayJoin, ArrayRemove, Attribute, Expression}
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, StructType}
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.createBinaryExpr
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProto}
 import org.apache.comet.shims.CometExprShim
 
 object CometArrayRemove extends CometExpressionSerde with CometExprShim {
@@ -63,5 +64,111 @@ object CometArrayRemove extends CometExpressionSerde with CometExprShim {
       inputs,
       binding,
       (builder, binaryExpr) => builder.setArrayRemove(binaryExpr))
+  }
+}
+
+object CometArrayAppend extends CometExpressionSerde with CometExprShim {
+  override def isIncompat(): Boolean = true
+  override def convert(
+    expr: Expression,
+    inputs: Seq[Attribute],
+    binding: Boolean): Option[ExprOuterClass.Expr] = {
+    createBinaryExpr(
+      expr,
+      expr.children(0),
+      expr.children(1),
+      inputs,
+      binding,
+      (builder, binaryExpr) => builder.setArrayAppend(binaryExpr))
+  }
+}
+
+object CometArrayContains extends CometExpressionSerde with CometExprShim {
+  override def isIncompat(): Boolean = true
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    createBinaryExpr(
+      expr,
+      expr.children(0),
+      expr.children(1),
+      inputs,
+      binding,
+      (builder, binaryExpr) => builder.setArrayContains(binaryExpr))
+  }
+}
+
+object CometArrayIntersect extends CometExpressionSerde with CometExprShim {
+  override def isIncompat(): Boolean = true
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    createBinaryExpr(
+      expr,
+      expr.children(0),
+      expr.children(1),
+      inputs,
+      binding,
+      (builder, binaryExpr) => builder.setArrayIntersect(binaryExpr))
+  }
+}
+
+object CometArraysOverlap extends CometExpressionSerde with CometExprShim {
+  override def isIncompat(): Boolean = true
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    createBinaryExpr(
+      expr,
+      expr.children(0),
+      expr.children(1),
+      inputs,
+      binding,
+      (builder, binaryExpr) => builder.setArraysOverlap(binaryExpr))
+  }
+}
+
+object CometArrayJoin extends CometExpressionSerde with CometExprShim {
+  override def isIncompat(): Boolean = true
+
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val arrayExpr = expr.asInstanceOf[ArrayJoin]
+    val arrayExprProto = exprToProto(arrayExpr, inputs, binding)
+    val delimiterExprProto = exprToProto(arrayExpr.delimiter, inputs, binding)
+
+    if (arrayExprProto.isDefined && delimiterExprProto.isDefined) {
+      val arrayJoinBuilder = arrayExpr.nullReplacement match {
+        case Some(nrExpr) =>
+          val nullReplacementExprProto = exprToProto(nrExpr, inputs, binding)
+          ExprOuterClass.ArrayJoin
+            .newBuilder()
+            .setArrayExpr(arrayExprProto.get)
+            .setDelimiterExpr(delimiterExprProto.get)
+            .setNullReplacementExpr(nullReplacementExprProto.get)
+        case None =>
+          ExprOuterClass.ArrayJoin
+            .newBuilder()
+            .setArrayExpr(arrayExprProto.get)
+            .setDelimiterExpr(delimiterExprProto.get)
+      }
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setArrayJoin(arrayJoinBuilder)
+          .build())
+    } else {
+      val exprs: List[Expression] = arrayExpr.nullReplacement match {
+        case Some(nrExpr) => List(arrayExpr, arrayExpr.delimiter, nrExpr)
+        case None => List(arrayExpr, arrayExpr.delimiter)
+      }
+      withInfo(expr, "unsupported arguments for ArrayJoin", exprs: _*)
+      None
+    }
   }
 }

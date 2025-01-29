@@ -605,6 +605,15 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
+    conf("spark.comet.expression.allowIncompatible")
+      .doc(
+        "Comet is not currently fully compatible with Spark for all expressions. " +
+          "Set this config to true to allow them anyway. See compatibility guide " +
+          "for more information.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_CAST_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
     conf("spark.comet.cast.allowIncompatible")
       .doc(
