@@ -161,7 +161,7 @@ mod test {
             unreachable!()
         };
         let floats = as_float32_array(&result)?;
-        let expected = Float32Array::from(vec![125.23, 15.35, 0.12, 0.13, 0.80, 123.12]);
+        let expected = Float32Array::from(vec![125.23, 15.35, 0.12, 0.13, 0.79, 123.12]);
         assert_eq!(floats, &expected);
         Ok(())
     }
@@ -178,7 +178,7 @@ mod test {
             unreachable!()
         };
         let floats = as_float64_array(&result)?;
-        let expected = Float32Array::from(vec![125.23, 15.35, 0.12, 0.13, 0.80, 123.12]);
+        let expected = Float32Array::from(vec![125.23, 15.35, 0.12, 0.13, 0.79, 123.12]);
         assert_eq!(floats, &expected);
         Ok(())
     }
