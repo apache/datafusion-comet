@@ -2429,19 +2429,29 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
       case expr @ ArrayFilter(child, _) if ArrayCompact(child).replacement.sql == expr.sql =>
-        val elementType = serializeDataType(child.dataType.asInstanceOf[ArrayType].elementType)
-        val srcExprProto = exprToProto(child, inputs, binding)
-        if (elementType.isDefined && srcExprProto.isDefined) {
-          val arrayCompactBuilder = ExprOuterClass.ArrayCompact
-            .newBuilder()
-            .setArrayExpr(srcExprProto.get)
-            .setItemDatatype(elementType.get)
-          Some(
-            ExprOuterClass.Expr
+        if (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get()) {
+          val elementType = serializeDataType(child.dataType.asInstanceOf[ArrayType].elementType)
+          val srcExprProto = exprToProto(child, inputs, binding)
+          if (elementType.isDefined && srcExprProto.isDefined) {
+            val arrayCompactBuilder = ExprOuterClass.ArrayCompact
               .newBuilder()
-              .setArrayCompact(arrayCompactBuilder)
-              .build())
+              .setArrayExpr(srcExprProto.get)
+              .setItemDatatype(elementType.get)
+            Some(
+              ExprOuterClass.Expr
+                .newBuilder()
+                .setArrayCompact(arrayCompactBuilder)
+                .build())
+          } else {
+            withInfo(expr, "unsupported arguments for ArrayCompact", expr.children: _*)
+            None
+          }
         } else {
+          withInfo(
+            expr,
+            s"array_compact is not fully compatible with Spark. " +
+              s"Set ${CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key}=true " +
+              "to allow it anyway.")
           None
         }
       case _ =>
