@@ -915,8 +915,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
    *   Whether to bind the expression to the input attributes
    * @return
    *   The protobuf representation of the expression, or None if the expression is not supported.
-   *   In the case where None is returned, the plan will be tagged with the reason(s) why it is
-   *   not supported.
+   *   In the case where None is returned, the expression will be tagged with the reason(s) why it
+   *   is not supported.
    */
   def exprToProto(
       expr: Expression,
@@ -941,8 +941,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
    *   Whether to bind the expression to the input attributes
    * @return
    *   The protobuf representation of the expression, or None if the expression is not supported.
-   *   In the case where None is returned, the plan will be tagged with the reason(s) why it is
-   *   not supported.
+   *   In the case where None is returned, the expression will be tagged with the reason(s) why it
+   *   is not supported.
    */
   def exprToProtoInternal(
       expr: Expression,
