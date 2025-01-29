@@ -153,21 +153,15 @@ mod test {
     fn test_round_f32() -> Result<()> {
         let args = vec![
             ColumnarValue::Array(Arc::new(Float32Array::from(vec![
-                125.2345, 15.3455, 125.2345, 125.2345, 125.2345, 125.2345, 130.2345, 100.2345,
-                0.2345, 0.2345,
+                125.2345, 15.3455, 0.1234, 0.125, 0.785, 123.123,
             ]))),
             ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
         ];
-
         let ColumnarValue::Array(result) = spark_round(&args, &DataType::Float32)? else {
             unreachable!()
         };
         let floats = as_float32_array(&result)?;
-
-        let expected = Float32Array::from(vec![
-            125.23, 15.35, 125.23, 125.23, 125.23, 125.23, 130.23, 100.23, 0.23, 0.23,
-        ]);
-
+        let expected = Float32Array::from(vec![125.23, 15.35, 0.12, 0.13, 0.80, 123.12]);
         assert_eq!(floats, &expected);
         Ok(())
     }
@@ -176,21 +170,15 @@ mod test {
     fn test_round_f64() -> Result<()> {
         let args = vec![
             ColumnarValue::Array(Arc::new(Float64Array::from(vec![
-                125.2345, 15.3455, 125.2345, 125.2345, 125.2345, 125.2345, 130.2345, 100.2345,
-                0.2345, 0.2345,
+                125.2345, 15.3455, 0.1234, 0.125, 0.785, 123.123,
             ]))),
             ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
         ];
-
         let ColumnarValue::Array(result) = spark_round(&args, &DataType::Float64)? else {
             unreachable!()
         };
         let floats = as_float64_array(&result)?;
-
-        let expected = Float64Array::from(vec![
-            125.23, 15.35, 125.23, 125.23, 125.23, 125.23, 130.23, 100.23, 0.23, 0.23,
-        ]);
-
+        let expected = Float32Array::from(vec![125.23, 15.35, 0.12, 0.13, 0.80, 123.12]);
         assert_eq!(floats, &expected);
         Ok(())
     }
