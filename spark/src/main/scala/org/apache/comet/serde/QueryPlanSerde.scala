@@ -2384,7 +2384,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         }
       case _: ArrayRemove => toProto(CometArrayRemove)
       case _: ArrayContains => toProto(CometArrayContains)
-      case _: ArrayAppend => toProto(CometArrayAppend)
+      case _ if expr.prettyName == "array_append" => toProto(CometArrayAppend)
       case _: ArrayIntersect => toProto(CometArrayIntersect)
       case _: ArrayJoin => toProto(CometArrayJoin)
       case _: ArraysOverlap => toProto(CometArraysOverlap)
