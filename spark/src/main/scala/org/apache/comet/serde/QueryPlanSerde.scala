@@ -929,15 +929,17 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       binding: Boolean): Option[Expr] = {
     SQLConf.get
 
-    def toProto(handler: CometExpressionSerde): Option[Expr] = {
-      if (handler.isIncompat && !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get()) {
-        withInfo(
-          expr,
-          s"$expr is not fully compatible with Spark. To enable it anyway, set " +
-            s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true")
-        return None
+    def convert(handler: CometExpressionSerde): Option[Expr] = {
+      handler match {
+        case _: IncompatExpr if !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() =>
+          withInfo(
+            expr,
+            s"$expr is not fully compatible with Spark. To enable it anyway, set " +
+              s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true")
+          None
+        case _ =>
+          handler.convert(expr, inputs, binding)
       }
-      handler.convert(expr, inputs, binding)
     }
 
     expr match {
@@ -2382,12 +2384,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           withInfo(expr, "unsupported arguments for GetArrayStructFields", child)
           None
         }
-      case _: ArrayRemove => toProto(CometArrayRemove)
-      case _: ArrayContains => toProto(CometArrayContains)
-      case _ if expr.prettyName == "array_append" => toProto(CometArrayAppend)
-      case _: ArrayIntersect => toProto(CometArrayIntersect)
-      case _: ArrayJoin => toProto(CometArrayJoin)
-      case _: ArraysOverlap => toProto(CometArraysOverlap)
+      case _: ArrayRemove => convert(CometArrayRemove)
+      case _: ArrayContains => convert(CometArrayContains)
+      case _ if expr.prettyName == "array_append" => convert(CometArrayAppend)
+      case _: ArrayIntersect => convert(CometArrayIntersect)
+      case _: ArrayJoin => convert(CometArrayJoin)
+      case _: ArraysOverlap => convert(CometArraysOverlap)
       case _ =>
         withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
         None
@@ -3416,12 +3418,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 trait CometExpressionSerde {
 
   /**
-   * Determine whether this expression should only be enabled if COMET_EXPR_ALLOW_INCOMPATIBLE is
-   * true
-   */
-  def isIncompat: Boolean = false
-
-  /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into
    * native code.
    *
@@ -3441,3 +3437,6 @@ trait CometExpressionSerde {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr]
 }
+
+/** Marker trait for an expression that is not guaranteed to be 100% compatible with Spark */
+trait IncompatExpr {}

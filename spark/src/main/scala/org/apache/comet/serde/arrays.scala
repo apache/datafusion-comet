@@ -66,8 +66,7 @@ object CometArrayRemove extends CometExpressionSerde with CometExprShim {
   }
 }
 
-object CometArrayAppend extends CometExpressionSerde with CometExprShim {
-  override def isIncompat: Boolean = true
+object CometArrayAppend extends CometExpressionSerde with IncompatExpr {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -82,8 +81,7 @@ object CometArrayAppend extends CometExpressionSerde with CometExprShim {
   }
 }
 
-object CometArrayContains extends CometExpressionSerde with CometExprShim {
-  override def isIncompat: Boolean = true
+object CometArrayContains extends CometExpressionSerde with IncompatExpr {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -98,8 +96,7 @@ object CometArrayContains extends CometExpressionSerde with CometExprShim {
   }
 }
 
-object CometArrayIntersect extends CometExpressionSerde with CometExprShim {
-  override def isIncompat: Boolean = true
+object CometArrayIntersect extends CometExpressionSerde with IncompatExpr {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -114,8 +111,7 @@ object CometArrayIntersect extends CometExpressionSerde with CometExprShim {
   }
 }
 
-object CometArraysOverlap extends CometExpressionSerde with CometExprShim {
-  override def isIncompat: Boolean = true
+object CometArraysOverlap extends CometExpressionSerde with IncompatExpr {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -130,14 +126,13 @@ object CometArraysOverlap extends CometExpressionSerde with CometExprShim {
   }
 }
 
-object CometArrayJoin extends CometExpressionSerde with CometExprShim {
-  override def isIncompat: Boolean = true
+object CometArrayJoin extends CometExpressionSerde with IncompatExpr {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val arrayExpr = expr.asInstanceOf[ArrayJoin]
-    val arrayExprProto = exprToProto(arrayExpr, inputs, binding)
+    val arrayExprProto = exprToProto(arrayExpr.array, inputs, binding)
     val delimiterExprProto = exprToProto(arrayExpr.delimiter, inputs, binding)
 
     if (arrayExprProto.isDefined && delimiterExprProto.isDefined) {
