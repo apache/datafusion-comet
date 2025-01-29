@@ -2428,6 +2428,22 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           withInfo(expr, "unsupported arguments for ArrayJoin", exprs: _*)
           None
         }
+      case ArraysOverlap(leftArrayExpr, rightArrayExpr) =>
+        if (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get()) {
+          createBinaryExpr(
+            expr,
+            leftArrayExpr,
+            rightArrayExpr,
+            inputs,
+            binding,
+            (builder, binaryExpr) => builder.setArraysOverlap(binaryExpr))
+        } else {
+          withInfo(
+            expr,
+            s"$expr is not supported yet. To enable all incompatible casts, set " +
+              s"${CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key}=true")
+          None
+        }
       case _ if expr.prettyName == "array_except" =>
         if (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get()) {
           createBinaryExpr(
