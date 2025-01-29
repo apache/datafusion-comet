@@ -158,10 +158,6 @@ mod test {
             ]))),
             ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
         ];
-        println!(
-            "hello {:?}",
-            ColumnarValue::Array(Arc::new(Float32Array::from(vec![125.2345; 10])))
-        );
 
         let ColumnarValue::Array(result) = spark_round(&args, &DataType::Float32)? else {
             unreachable!()
