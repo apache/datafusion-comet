@@ -182,15 +182,26 @@ The following Spark expressions are currently available. Any known compatibility
 | VariancePop   |       |
 | VarianceSamp  |       |
 
-## Complex Types
+## Arrays
 
-| Expression        | Notes       |
-| ----------------- | ----------- |
-| CreateNamedStruct |             |
-| ElementAt         | Arrays only |
-| GetArrayItem      |             |
-| GetStructField    |             |
-| StructsToJson     |             |
+| Expression        | Notes        |
+|-------------------|--------------|
+| ArrayAppend       | Experimental |
+| ArrayContains     | Experimental |
+| ArrayIntersect    | Experimental |
+| ArrayJoin         | Experimental |
+| ArrayRemove       | Experimental |
+| ArraysOverlap     | Experimental |
+| ElementAt         | Arrays only  |
+| GetArrayItem      |              |
+
+## Structs
+
+| Expression        | Notes        |
+|-------------------|--------------|
+| CreateNamedStruct |              |
+| GetStructField    |              |
+| StructsToJson     |              |
 
 ## Other
 
