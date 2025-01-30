@@ -2366,6 +2366,17 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case _: ArrayIntersect => convert(CometArrayIntersect)
       case _: ArrayJoin => convert(CometArrayJoin)
       case _: ArraysOverlap => convert(CometArraysOverlap)
+      case expr @ ArrayFilter(child, _) if ArrayCompact(child).replacement.sql == expr.sql =>
+        if (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get()) {
+          convert(CometArrayCompact)
+        } else {
+          withInfo(
+            expr,
+            s"array_compact is not fully compatible with Spark. " +
+              s"Set ${CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key}=true " +
+              "to allow it anyway.")
+          None
+        }
       case _ =>
         withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
         None

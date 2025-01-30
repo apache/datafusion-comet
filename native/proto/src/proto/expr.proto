@@ -424,6 +424,11 @@ message ArrayJoin {
   Expr null_replacement_expr = 3;
 }
 
+message ArrayCompact {
+  Expr array_expr = 1;
+  DataType item_datatype = 2;
+}
+
 message DataType {
   enum DataTypeId {
     BOOL = 0;
