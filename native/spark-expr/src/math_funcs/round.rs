@@ -150,7 +150,7 @@ mod test {
     use datafusion_expr::ColumnarValue;
 
     #[test]
-    fn test_round_f32() -> Result<()> {
+    fn test_round_f32_array() -> Result<()> {
         let args = vec![
             ColumnarValue::Array(Arc::new(Float32Array::from(vec![
                 125.2345, 15.3455, 0.1234, 0.125, 0.785, 123.123,
@@ -167,7 +167,7 @@ mod test {
     }
 
     #[test]
-    fn test_round_f64() -> Result<()> {
+    fn test_round_f64_array() -> Result<()> {
         let args = vec![
             ColumnarValue::Array(Arc::new(Float64Array::from(vec![
                 125.2345, 15.3455, 0.1234, 0.125, 0.785, 123.123,
@@ -180,6 +180,36 @@ mod test {
         let floats = as_float64_array(&result)?;
         let expected = Float64Array::from(vec![125.23, 15.35, 0.12, 0.13, 0.79, 123.12]);
         assert_eq!(floats, &expected);
+        Ok(())
+    }
+
+    #[test]
+    fn test_round_f32_scalar() -> Result<()> {
+        let args = vec![
+            ColumnarValue::Scalar(ScalarValue::Float32(Some(125.2345))),
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
+        ];
+        let ColumnarValue::Scalar(ScalarValue::Float32(Some(result))) =
+            spark_round(&args, &DataType::Float32)?
+        else {
+            unreachable!()
+        };
+        assert_eq!(result, 125.23);
+        Ok(())
+    }
+
+    #[test]
+    fn test_round_f64_scalar() -> Result<()> {
+        let args = vec![
+            ColumnarValue::Scalar(ScalarValue::Float64(Some(125.2345))),
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
+        ];
+        let ColumnarValue::Scalar(ScalarValue::Float32(Some(result))) =
+            spark_round(&args, &DataType::Float32)?
+        else {
+            unreachable!()
+        };
+        assert_eq!(result, 125.23);
         Ok(())
     }
 }
