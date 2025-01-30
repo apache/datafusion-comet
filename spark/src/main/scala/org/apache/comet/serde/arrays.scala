@@ -126,6 +126,21 @@ object CometArraysOverlap extends CometExpressionSerde with IncompatExpr {
   }
 }
 
+object CometArrayExcept extends CometExpressionSerde with IncompatExpr {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    createBinaryExpr(
+      expr,
+      expr.children(0),
+      expr.children(1),
+      inputs,
+      binding,
+      (builder, binaryExpr) => builder.setArrayExcept(binaryExpr))
+  }
+}
+
 object CometArrayJoin extends CometExpressionSerde with IncompatExpr {
   override def convert(
       expr: Expression,
