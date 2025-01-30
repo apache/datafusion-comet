@@ -26,7 +26,7 @@ import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProto}
 import org.apache.comet.shims.CometExprShim
 
-object CometArrayRemove extends CometExpressionSerde with CometExprShim with IncompatExpr {
+object CometArrayRemove extends CometExpressionSerde with CometExprShim {
 
   /** Exposed for unit testing */
   def isTypeSupported(dt: DataType): Boolean = {

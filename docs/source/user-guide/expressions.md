@@ -190,7 +190,7 @@ The following Spark expressions are currently available. Any known compatibility
 | ArrayContains     | Experimental |
 | ArrayIntersect    | Experimental |
 | ArrayJoin         | Experimental |
-| ArrayRemove       | Experimental |
+| ArrayRemove       |              |
 | ArraysOverlap     | Experimental |
 | ElementAt         | Arrays only  |
 | GetArrayItem      |              |
