@@ -26,7 +26,7 @@ use std::{
 use jni::objects::GlobalRef;
 
 use datafusion::{
-    common::DataFusionError,
+    common::{resources_datafusion_err, DataFusionError},
     execution::memory_pool::{MemoryPool, MemoryReservation},
 };
 
@@ -101,12 +101,12 @@ impl MemoryPool for CometMemoryPool {
                 // Release the acquired bytes before throwing error
                 self.release(acquired as usize)?;
 
-                return Err(DataFusionError::Execution(format!(
+                return Err(resources_datafusion_err!(
                     "Failed to acquire {} bytes, only got {}. Reserved: {}",
                     additional,
                     acquired,
-                    self.reserved(),
-                )));
+                    self.reserved()
+                ));
             }
             self.used.fetch_add(additional, Relaxed);
         }
