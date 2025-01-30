@@ -292,4 +292,22 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("array_except") {
+    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_except(array(_2, _3, _4), array(_3, _4)) from t1"))
+          checkSparkAnswerAndOperator(sql("SELECT array_except(array(_18), array(_19)) from t1"))
+          checkSparkAnswerAndOperator(spark.sql(
+            "SELECT array_except((CASE WHEN _2 = _3 THEN array(_2, _3, _4) END), array(_4)) FROM t1"))
+        }
+      }
+    }
+  }
+
 }
