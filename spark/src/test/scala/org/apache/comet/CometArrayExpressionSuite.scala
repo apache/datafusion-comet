@@ -292,4 +292,22 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("array_union") {
+    assume(isSpark34Plus)
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_union(array(_2, _3, _4), array(_3, _4)) from t1"))
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_union(array(_2 * -1), array(_9, _10)) from t1"))
+          checkSparkAnswerAndOperator(sql("SELECT array_union(array(_18), array(_19)) from t1"))
+        }
+      }
+    }
+  }
+
 }
