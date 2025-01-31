@@ -1869,7 +1869,7 @@ pub(crate) fn register_object_store(
     session_context: Arc<SessionContext>,
 ) -> Result<ObjectStoreUrl, ExecutionError> {
     let object_store = object_store::local::LocalFileSystem::new();
-    let url = ObjectStoreUrl::parse("file://").unwrap();
+    let url = ObjectStoreUrl::parse("file://")?;
     session_context
         .runtime_env()
         .register_object_store(url.as_ref(), Arc::new(object_store));
@@ -1884,7 +1884,7 @@ pub(crate) fn register_object_store(
     // TODO: read the namenode configuration from file schema or from spark.defaultFS
     let url = ObjectStoreUrl::parse("hdfs://namenode:9000")?;
     if let Some(object_store) =
-        datafusion_objectstore_hdfs::object_store::hdfs::HadoopFileSystem::new((&url).as_ref())
+        datafusion_objectstore_hdfs::object_store::hdfs::HadoopFileSystem::new(url.as_ref())
     {
         session_context
             .runtime_env()
