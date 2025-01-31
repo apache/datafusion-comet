@@ -842,7 +842,11 @@ impl PhysicalPlanner {
                     args,
                     DataType::UInt64,
                 ));
-                Ok(array_has_any_expr)
+                Ok(Arc::new(Cast::new(
+                    array_has_any_expr,
+                    DataType::Int64,
+                    SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                )))
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
