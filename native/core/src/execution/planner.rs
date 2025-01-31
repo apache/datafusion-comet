@@ -830,19 +830,20 @@ impl PhysicalPlanner {
                 Ok(array_has_any_expr)
             }
             ExprStruct::ArrayUnion(expr) => {
-                let left_array_expr =
+                let left_expr =
                     self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right_array_expr =
+                let right_expr =
                     self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let array_union_udf = array_union_udf();
-                let return_type = right_array_expr.data_type(&input_schema)?;
-                let args = vec![Arc::clone(&left_array_expr), right_array_expr];
-                Ok(Arc::new(ScalarFunctionExpr::new(
+                let args = vec![Arc::clone(&left_expr), right_expr];
+                let datafusion_array_intersect = array_union_udf();
+                let return_type = left_expr.data_type(&input_schema)?;
+                let array_intersect_expr = Arc::new(ScalarFunctionExpr::new(
                     "array_union",
-                    array_union_udf,
+                    datafusion_array_intersect,
                     args,
                     return_type,
-                )))
+                ));
+                Ok(array_intersect_expr)
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
