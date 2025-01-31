@@ -1863,6 +1863,7 @@ fn trim_end(s: &str) -> &str {
     }
 }
 
+// Default object store which is local filesystem
 #[cfg(not(feature = "hdfs"))]
 pub(crate) fn register_object_store(
     session_context: Arc<SessionContext>,
@@ -1871,10 +1872,11 @@ pub(crate) fn register_object_store(
     let url = ObjectStoreUrl::parse("file://").unwrap();
     session_context
         .runtime_env()
-        .register_object_store((&url).as_ref(), Arc::new(object_store));
+        .register_object_store(url.as_ref(), Arc::new(object_store));
     Ok(url)
 }
 
+// HDFS object store
 #[cfg(feature = "hdfs")]
 pub(crate) fn register_object_store(
     session_context: Arc<SessionContext>,
@@ -1886,7 +1888,7 @@ pub(crate) fn register_object_store(
     {
         session_context
             .runtime_env()
-            .register_object_store((&url).as_ref(), Arc::new(object_store));
+            .register_object_store(url.as_ref(), Arc::new(object_store));
 
         return Ok(url);
     }
