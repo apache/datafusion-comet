@@ -40,6 +40,8 @@ use datafusion_comet_spark_expr::{timezone, EvalMode, SparkError, SparkResult};
 use datafusion_common::{cast::as_generic_string_array, Result as DataFusionResult, ScalarValue};
 use datafusion_expr::ColumnarValue;
 // use datafusion_physical_expr::PhysicalExpr;
+use crate::execution::operators::ExecutionError;
+use datafusion::prelude::SessionContext;
 use num::{
     cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
     ToPrimitive,
@@ -48,6 +50,7 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::{fmt::Debug, hash::Hash, num::Wrapping, sync::Arc};
+use url::Url;
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
@@ -1859,6 +1862,40 @@ fn trim_end(s: &str) -> &str {
     } else {
         s
     }
+}
+
+#[cfg(not(feature = "hdfs"))]
+pub(crate) fn register_object_store(
+    session_context: Arc<SessionContext>,
+) -> Result<(), ExecutionError> {
+    let object_store = object_store::local::LocalFileSystem::new();
+    let url = Url::try_from("file://").unwrap();
+    session_context
+        .runtime_env()
+        .register_object_store(&url, Arc::new(object_store));
+    Ok(())
+}
+
+#[cfg(feature = "hdfs")]
+pub(crate) fn register_object_store(
+    session_context: Arc<SessionContext>,
+) -> Result<(), ExecutionError> {
+    // TODO: read the namenode configuration from file schema or from spark.defaultFS
+    let url = Url::try_from("hdfs://namenode:9000").unwrap();
+    if let Some(object_store) =
+        datafusion_objectstore_hdfs::object_store::hdfs::HadoopFileSystem::new((&url).as_ref())
+    {
+        session_context
+            .runtime_env()
+            .register_object_store(&url, Arc::new(object_store));
+
+        return Ok(());
+    }
+
+    Err(ExecutionError::GeneralError(format!(
+        "HDFS object store cannot be created for {}",
+        url
+    )))
 }
 
 #[cfg(test)]
