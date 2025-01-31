@@ -111,6 +111,7 @@ use datafusion_expr::{
     WindowFunctionDefinition,
 };
 use datafusion_functions_nested::array_has::ArrayHas;
+use datafusion_functions_nested::position::array_position_udf;
 use datafusion_physical_expr::expressions::{Literal, StatsType};
 use datafusion_physical_expr::window::WindowExpr;
 use datafusion_physical_expr::LexOrdering;
@@ -828,6 +829,24 @@ impl PhysicalPlanner {
                     DataType::Boolean,
                 ));
                 Ok(array_has_any_expr)
+            }
+            ExprStruct::ArrayPosition(expr) => {
+                let left_array_expr =
+                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let right_array_expr =
+                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let args = vec![left_array_expr, right_array_expr];
+                let array_has_any_expr = Arc::new(ScalarFunctionExpr::new(
+                    "array_position",
+                    array_position_udf(),
+                    args,
+                    DataType::UInt64,
+                ));
+                Ok(Arc::new(Cast::new(
+                    array_has_any_expr,
+                    DataType::Int64,
+                    SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                )))
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
