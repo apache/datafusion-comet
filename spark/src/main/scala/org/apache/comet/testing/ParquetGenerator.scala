@@ -42,9 +42,6 @@ object ParquetGenerator {
     DataTypes.createDecimalType(10, 2),
     DataTypes.createDecimalType(36, 18),
     DataTypes.DateType,
-    DataTypes.TimestampType,
-    // TimestampNTZType only in Spark 3.4+
-    // DataTypes.TimestampNTZType,
     DataTypes.StringType,
     DataTypes.BinaryType)
 
@@ -57,6 +54,12 @@ object ParquetGenerator {
 
     val dataTypes = ListBuffer[DataType]()
     dataTypes.appendAll(primitiveTypes)
+
+    if (options.generateTimestamps) {
+      dataTypes += DataTypes.TimestampType
+      // TimestampNTZType only in Spark 3.4+
+      // dataTypes += DataTypes.TimestampNTZType,
+    }
 
     if (options.generateStruct) {
       dataTypes += StructType(
@@ -212,8 +215,9 @@ object ParquetGenerator {
 }
 
 case class DataGenOptions(
-    allowNull: Boolean,
-    generateNegativeZero: Boolean,
-    generateArray: Boolean,
-    generateStruct: Boolean,
-    generateMap: Boolean)
+    allowNull: Boolean = true,
+    generateNegativeZero: Boolean = true,
+    generateTimestamps: Boolean = true,
+    generateArray: Boolean = false,
+    generateStruct: Boolean = false,
+    generateMap: Boolean = false)

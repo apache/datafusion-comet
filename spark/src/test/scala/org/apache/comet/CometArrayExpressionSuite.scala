@@ -26,7 +26,6 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{array, col, expr, lit, udf}
-import org.apache.spark.sql.types.StructType
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark34Plus, isSpark35Plus}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
@@ -55,17 +54,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       val filename = path.toString
       val random = new Random(42)
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        ParquetGenerator.makeParquetFile(
-          random,
-          spark,
-          filename,
-          100,
-          DataGenOptions(
-            allowNull = true,
-            generateNegativeZero = true,
-            generateArray = false,
-            generateStruct = false,
-            generateMap = false))
+        ParquetGenerator.makeParquetFile(random, spark, filename, 100, DataGenOptions())
       }
       val table = spark.read.parquet(filename)
       table.createOrReplaceTempView("t1")
@@ -79,38 +68,31 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  test("array_remove - test all types (convert from Parquet)") {
+  test("array_remove - test arrays (native_datafusion reader)") {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
       val filename = path.toString
       val random = new Random(42)
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val options = DataGenOptions(
-          allowNull = true,
-          generateNegativeZero = true,
-          generateArray = true,
-          generateStruct = true,
-          generateMap = false)
-        ParquetGenerator.makeParquetFile(random, spark, filename, 100, options)
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          100,
+          DataGenOptions(
+            generateArray = true,
+            // native_datafusion does not support timestamps correctly yet
+            generateTimestamps = false))
       }
-      withSQLConf(
-        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
-        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
+      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION) {
         val table = spark.read.parquet(filename)
         table.createOrReplaceTempView("t1")
         // test with array of each column
-        for (field <- table.schema.fields) {
-          val fieldName = field.name
+        for (fieldName <- table.schema.fieldNames) {
           sql(s"SELECT array($fieldName, $fieldName) as a, $fieldName as b FROM t1")
             .createOrReplaceTempView("t2")
           val df = sql("SELECT array_remove(a, b) FROM t2")
-          field.dataType match {
-            case _: StructType =>
-            // skip due to https://github.com/apache/datafusion-comet/issues/1314
-            case _ =>
-              checkSparkAnswer(df)
-          }
+          checkSparkAnswerAndOperator(df)
         }
       }
     }
