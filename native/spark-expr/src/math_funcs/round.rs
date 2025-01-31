@@ -204,8 +204,8 @@ mod test {
             ColumnarValue::Scalar(ScalarValue::Float64(Some(125.2345))),
             ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
         ];
-        let ColumnarValue::Scalar(ScalarValue::Float32(Some(result))) =
-            spark_round(&args, &DataType::Float32)?
+        let ColumnarValue::Scalar(ScalarValue::Float64(Some(result))) =
+            spark_round(&args, &DataType::Float64)?
         else {
             unreachable!()
         };
