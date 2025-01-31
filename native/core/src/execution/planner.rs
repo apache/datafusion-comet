@@ -106,7 +106,6 @@ use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
 };
-use datafusion_execution::object_store::ObjectStoreUrl;
 use datafusion_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion_expr::{
     AggregateUDF, ReturnTypeArgs, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
@@ -1167,7 +1166,7 @@ impl PhysicalPlanner {
 
                 // By default, local FS object store registered
                 // if `hdfs` feature enabled then HDFS file object store registered
-                register_object_store(Arc::clone(&self.session_ctx))?;
+                let object_store_url = register_object_store(Arc::clone(&self.session_ctx))?;
 
                 // Generate file groups
                 let mut file_groups: Vec<Vec<PartitionedFile>> =
@@ -1226,8 +1225,6 @@ impl PhysicalPlanner {
 
                 // TODO: I think we can remove partition_count in the future, but leave for testing.
                 assert_eq!(file_groups.len(), partition_count);
-
-                let object_store_url = ObjectStoreUrl::parse("hdfs://namenode:9000").unwrap();
                 let partition_fields: Vec<Field> = partition_schema
                     .fields()
                     .iter()

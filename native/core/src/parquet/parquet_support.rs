@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::execution::operators::ExecutionError;
 use arrow::{
     array::{
         cast::AsArray,
@@ -35,13 +36,12 @@ use arrow_array::builder::StringBuilder;
 use arrow_array::{DictionaryArray, StringArray, StructArray};
 use arrow_schema::DataType;
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
+use datafusion::execution::object_store::ObjectStoreUrl;
+use datafusion::prelude::SessionContext;
 use datafusion_comet_spark_expr::utils::array_with_timezone;
 use datafusion_comet_spark_expr::{timezone, EvalMode, SparkError, SparkResult};
 use datafusion_common::{cast::as_generic_string_array, Result as DataFusionResult, ScalarValue};
 use datafusion_expr::ColumnarValue;
-// use datafusion_physical_expr::PhysicalExpr;
-use crate::execution::operators::ExecutionError;
-use datafusion::prelude::SessionContext;
 use num::{
     cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
     ToPrimitive,
@@ -50,7 +50,6 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::{fmt::Debug, hash::Hash, num::Wrapping, sync::Arc};
-use url::Url;
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
@@ -1867,29 +1866,29 @@ fn trim_end(s: &str) -> &str {
 #[cfg(not(feature = "hdfs"))]
 pub(crate) fn register_object_store(
     session_context: Arc<SessionContext>,
-) -> Result<(), ExecutionError> {
+) -> Result<ObjectStoreUrl, ExecutionError> {
     let object_store = object_store::local::LocalFileSystem::new();
-    let url = Url::try_from("file://").unwrap();
+    let url = ObjectStoreUrl::parse("file://").unwrap();
     session_context
         .runtime_env()
-        .register_object_store(&url, Arc::new(object_store));
-    Ok(())
+        .register_object_store((&url).as_ref(), Arc::new(object_store));
+    Ok(url)
 }
 
 #[cfg(feature = "hdfs")]
 pub(crate) fn register_object_store(
     session_context: Arc<SessionContext>,
-) -> Result<(), ExecutionError> {
+) -> Result<ObjectStoreUrl, ExecutionError> {
     // TODO: read the namenode configuration from file schema or from spark.defaultFS
-    let url = Url::try_from("hdfs://namenode:9000").unwrap();
+    let url = ObjectStoreUrl::parse("hdfs://namenode:9000")?;
     if let Some(object_store) =
         datafusion_objectstore_hdfs::object_store::hdfs::HadoopFileSystem::new((&url).as_ref())
     {
         session_context
             .runtime_env()
-            .register_object_store(&url, Arc::new(object_store));
+            .register_object_store((&url).as_ref(), Arc::new(object_store));
 
-        return Ok(());
+        return Ok(url);
     }
 
     Err(ExecutionError::GeneralError(format!(
