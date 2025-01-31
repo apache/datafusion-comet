@@ -292,13 +292,23 @@ under the License.
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#regular-expressions">
-   Regular Expressions
+  <a class="reference internal nav-link" href="#floating-number-comparison">
+   Floating number comparison
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#floating-number-comparison">
-   Floating number comparison
+  <a class="reference internal nav-link" href="#incompatible-expressions">
+   Incompatible Expressions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#array-expressions">
+   Array Expressions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#regular-expressions">
+   Regular Expressions
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
@@ -381,12 +391,6 @@ specify <code class="docutils literal notranslate"><span class="pre">spark.comet
 be used in production.</p>
 <p>There is an <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/313">epic</a> where we are tracking the work to fully implement ANSI support.</p>
 </section>
-<section id="regular-expressions">
-<h2>Regular Expressions<a class="headerlink" href="#regular-expressions" title="Link to this heading">¶</a></h2>
-<p>Comet uses the Rust regexp crate for evaluating regular expressions, and this has different behavior from Java’s
-regular expression engine. Comet will fall back to Spark for patterns that are known to produce different results, but
-this can be overridden by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.regexp.allowIncompatible=true</span></code>.</p>
-</section>
 <section id="floating-number-comparison">
 <h2>Floating number comparison<a class="headerlink" href="#floating-number-comparison" title="Link to this heading">¶</a></h2>
 <p>Spark normalizes NaN and zero for floating point numbers for several cases. See <code class="docutils literal notranslate"><span class="pre">NormalizeFloatingNumbers</span></code> optimization rule in Spark.
@@ -394,6 +398,22 @@ However, one exception is comparison. Spark does not normalize NaN and zero when
 because they are handled well in Spark (e.g., <code class="docutils literal notranslate"><span class="pre">SQLOrderingUtil.compareFloats</span></code>). But the comparison
 functions of arrow-rs used by DataFusion do not normalize NaN and zero (e.g., <a class="reference external" href="https://docs.rs/arrow/latest/arrow/compute/kernels/cmp/fn.eq.html#">arrow::compute::kernels::cmp::eq</a>).
 So Comet will add additional normalization expression of NaN and zero for comparison.</p>
+</section>
+<section id="incompatible-expressions">
+<h2>Incompatible Expressions<a class="headerlink" href="#incompatible-expressions" title="Link to this heading">¶</a></h2>
+<p>Some Comet native expressions are not 100% compatible with Spark and are disabled by default. These expressions
+will fall back to Spark but can be enabled by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.allowIncompatible=true</span></code>.</p>
+</section>
+<section id="array-expressions">
+<h2>Array Expressions<a class="headerlink" href="#array-expressions" title="Link to this heading">¶</a></h2>
+<p>Comet has experimental support for a number of array expressions. These are experimental and currently marked
+as incompatible and can be enabled by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.allowIncompatible=true</span></code>.</p>
+</section>
+<section id="regular-expressions">
+<h2>Regular Expressions<a class="headerlink" href="#regular-expressions" title="Link to this heading">¶</a></h2>
+<p>Comet uses the Rust regexp crate for evaluating regular expressions, and this has different behavior from Java’s
+regular expression engine. Comet will fall back to Spark for patterns that are known to produce different results, but
+this can be overridden by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.regexp.allowIncompatible=true</span></code>.</p>
 </section>
 <section id="cast">
 <h2>Cast<a class="headerlink" href="#cast" title="Link to this heading">¶</a></h2>
