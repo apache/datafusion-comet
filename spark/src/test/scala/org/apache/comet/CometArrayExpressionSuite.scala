@@ -292,7 +292,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  test("array_except") {
+  test("array_except - basic test (only integer values)") {
     withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
@@ -305,6 +305,73 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           checkSparkAnswerAndOperator(sql("SELECT array_except(array(_18), array(_19)) from t1"))
           checkSparkAnswerAndOperator(spark.sql(
             "SELECT array_except((CASE WHEN _2 = _3 THEN array(_2, _3, _4) END), array(_4)) FROM t1"))
+        }
+      }
+    }
+  }
+
+  test("array_except - test all types (native Parquet reader)") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          100,
+          DataGenOptions(
+            allowNull = true,
+            generateNegativeZero = true,
+            generateArray = false,
+            generateStruct = false,
+            generateMap = false))
+      }
+      val table = spark.read.parquet(filename)
+      table.createOrReplaceTempView("t1")
+      // test with array of each column
+      for (fieldName <- table.schema.fieldNames) {
+        sql(s"SELECT array($fieldName, $fieldName) as a, array(a[0], $fieldName) as b FROM t1")
+          .createOrReplaceTempView("t2")
+        val df = sql("SELECT array_except(a, b) FROM t2")
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("array_except - test all types (convert from Parquet)") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val options = DataGenOptions(
+          allowNull = true,
+          generateNegativeZero = true,
+          generateArray = true,
+          generateStruct = true,
+          generateMap = false)
+        ParquetGenerator.makeParquetFile(random, spark, filename, 100, options)
+      }
+      withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
+        val table = spark.read.parquet(filename)
+        table.createOrReplaceTempView("t1")
+        // test with array of each column
+        for (field <- table.schema.fields) {
+          val fieldName = field.name
+          sql(s"SELECT array($fieldName, $fieldName) as a, array(a[0], $fieldName) as b FROM t1")
+            .createOrReplaceTempView("t2")
+          val df = sql("SELECT array_except(a, b) FROM t2")
+          field.dataType match {
+            case _: StructType =>
+            // skip due to https://github.com/apache/datafusion-comet/issues/1314
+            case _ =>
+              checkSparkAnswer(df)
+          }
         }
       }
     }

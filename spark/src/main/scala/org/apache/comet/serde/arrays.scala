@@ -126,7 +126,7 @@ object CometArraysOverlap extends CometExpressionSerde with IncompatExpr {
   }
 }
 
-object CometArrayExcept extends CometExpressionSerde with IncompatExpr {
+object CometArrayExcept extends CometExpressionSerde with CometExprShim {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
