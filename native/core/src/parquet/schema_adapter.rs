@@ -289,6 +289,9 @@ impl SchemaMapper for SchemaMapping {
 fn cast_supported(from_type: &DataType, to_type: &DataType, options: &SparkParquetOptions) -> bool {
     use DataType::*;
 
+    let _from_type = from_type.clone();
+    let _to_type = to_type.clone();
+
     let from_type = if let Dictionary(_, dt) = from_type {
         dt
     } else {
@@ -417,7 +420,8 @@ fn can_cast_to_string(from_type: &DataType, options: &SparkParquetOptions) -> bo
 fn can_convert_from_timestamp_ntz(to_type: &DataType, options: &SparkParquetOptions) -> bool {
     use DataType::*;
     match to_type {
-        Timestamp(_, _) | Date32 | Date64 | Utf8 => {
+        Timestamp(_, _) => true,
+        Date32 | Date64 | Utf8 => {
             // incompatible
             options.allow_incompat
         }
