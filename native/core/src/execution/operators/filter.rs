@@ -32,25 +32,28 @@ use arrow::record_batch::RecordBatch;
 use arrow_array::{make_array, Array, ArrayRef, BooleanArray, RecordBatchOptions};
 use arrow_data::transform::MutableArrayData;
 use arrow_schema::ArrowError;
+use datafusion::physical_plan::common::can_project;
+use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion_common::cast::as_boolean_array;
 use datafusion_common::stats::Precision;
-use datafusion_common::{internal_err, plan_err, DataFusionError, Result};
+use datafusion_common::{internal_err, plan_err, project_schema, DataFusionError, Result};
 use datafusion_execution::TaskContext;
 use datafusion_expr::Operator;
+use datafusion_physical_expr::equivalence::ProjectionMapping;
 use datafusion_physical_expr::expressions::BinaryExpr;
 use datafusion_physical_expr::intervals::utils::check_support;
 use datafusion_physical_expr::utils::collect_columns;
 use datafusion_physical_expr::{
-    analyze, split_conjunction, AnalysisContext, ConstExpr, ExprBoundaries, PhysicalExpr,
+    analyze, split_conjunction, AcrossPartitions, AnalysisContext, ConstExpr, ExprBoundaries,
+    PhysicalExpr,
 };
-
 use futures::stream::{Stream, StreamExt};
 use log::trace;
 
 /// This is a copy of DataFusion's FilterExec with one modification to ensure that input
 /// batches are never passed through unchanged. The changes are between the comments
 /// `BEGIN Comet change` and `END Comet change`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FilterExec {
     /// The expression to filter on. This expression must evaluate to a boolean value.
     predicate: Arc<dyn PhysicalExpr>,
@@ -62,6 +65,8 @@ pub struct FilterExec {
     default_selectivity: u8,
     /// Properties equivalence properties, partitioning, etc.
     cache: PlanProperties,
+    /// The projection indices of the columns in the output schema of join
+    projection: Option<Vec<usize>>,
 }
 
 impl FilterExec {
@@ -73,13 +78,15 @@ impl FilterExec {
         match predicate.data_type(input.schema().as_ref())? {
             DataType::Boolean => {
                 let default_selectivity = 20;
-                let cache = Self::compute_properties(&input, &predicate, default_selectivity)?;
+                let cache =
+                    Self::compute_properties(&input, &predicate, default_selectivity, None)?;
                 Ok(Self {
                     predicate,
                     input: Arc::clone(&input),
                     metrics: ExecutionPlanMetricsSet::new(),
                     default_selectivity,
                     cache,
+                    projection: None,
                 })
             }
             other => {
@@ -101,6 +108,35 @@ impl FilterExec {
         Ok(self)
     }
 
+    /// Return new instance of [FilterExec] with the given projection.
+    pub fn with_projection(&self, projection: Option<Vec<usize>>) -> Result<Self> {
+        //  Check if the projection is valid
+        can_project(&self.schema(), projection.as_ref())?;
+
+        let projection = match projection {
+            Some(projection) => match &self.projection {
+                Some(p) => Some(projection.iter().map(|i| p[*i]).collect()),
+                None => Some(projection),
+            },
+            None => None,
+        };
+
+        let cache = Self::compute_properties(
+            &self.input,
+            &self.predicate,
+            self.default_selectivity,
+            projection.as_ref(),
+        )?;
+        Ok(Self {
+            predicate: Arc::clone(&self.predicate),
+            input: Arc::clone(&self.input),
+            metrics: self.metrics.clone(),
+            default_selectivity: self.default_selectivity,
+            cache,
+            projection,
+        })
+    }
+
     /// The expression to filter on. This expression must evaluate to a boolean value.
     pub fn predicate(&self) -> &Arc<dyn PhysicalExpr> {
         &self.predicate
@@ -114,6 +150,11 @@ impl FilterExec {
     /// The default selectivity
     pub fn default_selectivity(&self) -> u8 {
         self.default_selectivity
+    }
+
+    /// Projection
+    pub fn projection(&self) -> Option<&Vec<usize>> {
+        self.projection.as_ref()
     }
 
     /// Calculates `Statistics` for `FilterExec`, by applying selectivity (either default, or estimated) to input statistics.
@@ -168,11 +209,21 @@ impl FilterExec {
                 if binary.op() == &Operator::Eq {
                     // Filter evaluates to single value for all partitions
                     if input_eqs.is_expr_constant(binary.left()) {
-                        res_constants
-                            .push(ConstExpr::from(binary.right()).with_across_partitions(true))
+                        let (expr, across_parts) = (
+                            binary.right(),
+                            input_eqs.get_expr_constant_value(binary.right()),
+                        );
+                        res_constants.push(
+                            ConstExpr::new(Arc::clone(expr)).with_across_partitions(across_parts),
+                        );
                     } else if input_eqs.is_expr_constant(binary.right()) {
-                        res_constants
-                            .push(ConstExpr::from(binary.left()).with_across_partitions(true))
+                        let (expr, across_parts) = (
+                            binary.left(),
+                            input_eqs.get_expr_constant_value(binary.left()),
+                        );
+                        res_constants.push(
+                            ConstExpr::new(Arc::clone(expr)).with_across_partitions(across_parts),
+                        );
                     }
                 }
             }
@@ -184,6 +235,7 @@ impl FilterExec {
         input: &Arc<dyn ExecutionPlan>,
         predicate: &Arc<dyn PhysicalExpr>,
         default_selectivity: u8,
+        projection: Option<&Vec<usize>>,
     ) -> Result<PlanProperties> {
         // Combine the equal predicates with the input equivalence properties
         // to construct the equivalence properties:
@@ -199,17 +251,32 @@ impl FilterExec {
             .into_iter()
             .filter(|column| stats.column_statistics[column.index()].is_singleton())
             .map(|column| {
+                let value = stats.column_statistics[column.index()]
+                    .min_value
+                    .get_value();
                 let expr = Arc::new(column) as _;
-                ConstExpr::new(expr).with_across_partitions(true)
+                ConstExpr::new(expr)
+                    .with_across_partitions(AcrossPartitions::Uniform(value.cloned()))
             });
-        // this is for statistics
+        // This is for statistics
         eq_properties = eq_properties.with_constants(constants);
-        // this is for logical constant (for example: a = '1', then a could be marked as a constant)
+        // This is for logical constant (for example: a = '1', then a could be marked as a constant)
         // to do: how to deal with multiple situation to represent = (for example c1 between 0 and 0)
         eq_properties = eq_properties.with_constants(Self::extend_constants(input, predicate));
+
+        let mut output_partitioning = input.output_partitioning().clone();
+        // If contains projection, update the PlanProperties.
+        if let Some(projection) = projection {
+            let schema = eq_properties.schema();
+            let projection_mapping = ProjectionMapping::from_indices(projection, schema)?;
+            let out_schema = project_schema(schema, Some(projection))?;
+            output_partitioning = output_partitioning.project(&projection_mapping, &eq_properties);
+            eq_properties = eq_properties.project(&projection_mapping, out_schema);
+        }
+
         Ok(PlanProperties::new(
             eq_properties,
-            input.output_partitioning().clone(), // Output Partitioning
+            output_partitioning,
             input.pipeline_behavior(),
             input.boundedness(),
         ))
@@ -220,7 +287,27 @@ impl DisplayAs for FilterExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "FilterExec: {}", self.predicate)
+                let display_projections = if let Some(projection) = self.projection.as_ref() {
+                    format!(
+                        ", projection=[{}]",
+                        projection
+                            .iter()
+                            .map(|index| format!(
+                                "{}@{}",
+                                self.input.schema().fields().get(*index).unwrap().name(),
+                                index
+                            ))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                } else {
+                    "".to_string()
+                };
+                write!(
+                    f,
+                    "CometFilterExec: {}{}",
+                    self.predicate, display_projections
+                )
             }
         }
     }
@@ -245,7 +332,7 @@ impl ExecutionPlan for FilterExec {
     }
 
     fn maintains_input_order(&self) -> Vec<bool> {
-        // tell optimizer this operator doesn't reorder its input
+        // Tell optimizer this operator doesn't reorder its input
         vec![true]
     }
 
@@ -258,6 +345,7 @@ impl ExecutionPlan for FilterExec {
                 let selectivity = e.default_selectivity();
                 e.with_default_selectivity(selectivity)
             })
+            .and_then(|e| e.with_projection(self.projection().cloned()))
             .map(|e| Arc::new(e) as _)
     }
 
@@ -274,10 +362,11 @@ impl ExecutionPlan for FilterExec {
         );
         let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
         Ok(Box::pin(FilterExecStream {
-            schema: self.input.schema(),
+            schema: self.schema(),
             predicate: Arc::clone(&self.predicate),
             input: self.input.execute(partition, context)?,
             baseline_metrics,
+            projection: self.projection.clone(),
         }))
     }
 
@@ -288,7 +377,13 @@ impl ExecutionPlan for FilterExec {
     /// The output statistics of a filtering operation can be estimated if the
     /// predicate's selectivity value can be determined for the incoming data.
     fn statistics(&self) -> Result<Statistics> {
-        Self::statistics_helper(&self.input, self.predicate(), self.default_selectivity)
+        let stats =
+            Self::statistics_helper(&self.input, self.predicate(), self.default_selectivity)?;
+        Ok(stats.project(self.projection.as_ref()))
+    }
+
+    fn cardinality_effect(&self) -> CardinalityEffect {
+        CardinalityEffect::LowerEqual
     }
 }
 
@@ -332,28 +427,41 @@ fn collect_new_statistics(
 /// The FilterExec streams wraps the input iterator and applies the predicate expression to
 /// determine which rows to include in its output batches
 struct FilterExecStream {
-    /// Output schema, which is the same as the input schema for this operator
+    /// Output schema after the projection
     schema: SchemaRef,
     /// The expression to filter on. This expression must evaluate to a boolean value.
     predicate: Arc<dyn PhysicalExpr>,
     /// The input partition to filter.
     input: SendableRecordBatchStream,
-    /// runtime metrics recording
+    /// Runtime metrics recording
     baseline_metrics: BaselineMetrics,
+    /// The projection indices of the columns in the input schema
+    projection: Option<Vec<usize>>,
 }
 
-pub(crate) fn batch_filter(
+fn filter_and_project(
     batch: &RecordBatch,
     predicate: &Arc<dyn PhysicalExpr>,
+    projection: Option<&Vec<usize>>,
+    output_schema: &SchemaRef,
 ) -> Result<RecordBatch> {
     predicate
         .evaluate(batch)
         .and_then(|v| v.into_array(batch.num_rows()))
         .and_then(|array| {
-            Ok(match as_boolean_array(&array) {
-                // apply filter array to record batch
-                Ok(filter_array) => comet_filter_record_batch(batch, filter_array)?,
-                Err(_) => {
+            Ok(match (as_boolean_array(&array), projection) {
+                // Apply filter array to record batch
+                (Ok(filter_array), None) => comet_filter_record_batch(batch, filter_array)?,
+                (Ok(filter_array), Some(projection)) => {
+                    let projected_columns = projection
+                        .iter()
+                        .map(|i| Arc::clone(batch.column(*i)))
+                        .collect();
+                    let projected_batch =
+                        RecordBatch::try_new(Arc::clone(output_schema), projected_columns)?;
+                    comet_filter_record_batch(&projected_batch, filter_array)?
+                }
+                (Err(_), _) => {
                     return internal_err!("Cannot create filter_array from non-boolean predicates");
                 }
             })
@@ -397,9 +505,14 @@ impl Stream for FilterExecStream {
             match ready!(self.input.poll_next_unpin(cx)) {
                 Some(Ok(batch)) => {
                     let timer = self.baseline_metrics.elapsed_compute().timer();
-                    let filtered_batch = batch_filter(&batch, &self.predicate)?;
+                    let filtered_batch = filter_and_project(
+                        &batch,
+                        &self.predicate,
+                        self.projection.as_ref(),
+                        &self.schema,
+                    )?;
                     timer.done();
-                    // skip entirely filtered batches
+                    // Skip entirely filtered batches
                     if filtered_batch.num_rows() == 0 {
                         continue;
                     }
@@ -416,7 +529,7 @@ impl Stream for FilterExecStream {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        // same number of record batches
+        // Same number of record batches
         self.input.size_hint()
     }
 }

@@ -950,6 +950,19 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       binding: Boolean): Option[Expr] = {
     SQLConf.get
 
+    def convert(handler: CometExpressionSerde): Option[Expr] = {
+      handler match {
+        case _: IncompatExpr if !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() =>
+          withInfo(
+            expr,
+            s"$expr is not fully compatible with Spark. To enable it anyway, set " +
+              s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true. ${CometConf.COMPAT_GUIDE}.")
+          None
+        case _ =>
+          handler.convert(expr, inputs, binding)
+      }
+    }
+
     expr match {
       case a @ Alias(_, _) =>
         val r = exprToProtoInternal(a.child, inputs, binding)
@@ -2197,35 +2210,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case Murmur3Hash(children, seed) =>
-        val firstUnSupportedInput = children.find(c => !supportedDataType(c.dataType))
-        if (firstUnSupportedInput.isDefined) {
-          withInfo(expr, s"Unsupported datatype ${firstUnSupportedInput.get.dataType}")
-          return None
-        }
-        val exprs = children.map(exprToProtoInternal(_, inputs, binding))
-        val seedBuilder = ExprOuterClass.Literal
-          .newBuilder()
-          .setDatatype(serializeDataType(IntegerType).get)
-          .setIntVal(seed)
-        val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
-        // the seed is put at the end of the arguments
-        scalarExprToProtoWithReturnType("murmur3_hash", IntegerType, exprs :+ seedExpr: _*)
+      case _: Murmur3Hash => CometMurmur3Hash.convert(expr, inputs, binding)
 
-      case XxHash64(children, seed) =>
-        val firstUnSupportedInput = children.find(c => !supportedDataType(c.dataType))
-        if (firstUnSupportedInput.isDefined) {
-          withInfo(expr, s"Unsupported datatype ${firstUnSupportedInput.get.dataType}")
-          return None
-        }
-        val exprs = children.map(exprToProtoInternal(_, inputs, binding))
-        val seedBuilder = ExprOuterClass.Literal
-          .newBuilder()
-          .setDatatype(serializeDataType(LongType).get)
-          .setLongVal(seed)
-        val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
-        // the seed is put at the end of the arguments
-        scalarExprToProtoWithReturnType("xxhash64", LongType, exprs :+ seedExpr: _*)
+      case _: XxHash64 => CometXxHash64.convert(expr, inputs, binding)
 
       case Sha2(left, numBits) =>
         if (!numBits.foldable) {
@@ -2392,83 +2379,19 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           withInfo(expr, "unsupported arguments for GetArrayStructFields", child)
           None
         }
-      case expr: ArrayRemove => CometArrayRemove.convert(expr, inputs, binding)
-      case expr if expr.prettyName == "array_contains" =>
-        createBinaryExpr(
-          expr,
-          expr.children(0),
-          expr.children(1),
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setArrayContains(binaryExpr))
-      case _ if expr.prettyName == "array_append" =>
-        createBinaryExpr(
-          expr,
-          expr.children(0),
-          expr.children(1),
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setArrayAppend(binaryExpr))
-      case _ if expr.prettyName == "array_intersect" =>
-        createBinaryExpr(
-          expr,
-          expr.children(0),
-          expr.children(1),
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setArrayIntersect(binaryExpr))
-      case ArrayJoin(arrayExpr, delimiterExpr, nullReplacementExpr) =>
-        val arrayExprProto = exprToProtoInternal(arrayExpr, inputs, binding)
-        val delimiterExprProto = exprToProtoInternal(delimiterExpr, inputs, binding)
-
-        if (arrayExprProto.isDefined && delimiterExprProto.isDefined) {
-          val arrayJoinBuilder = nullReplacementExpr match {
-            case Some(nrExpr) =>
-              val nullReplacementExprProto = exprToProtoInternal(nrExpr, inputs, binding)
-              ExprOuterClass.ArrayJoin
-                .newBuilder()
-                .setArrayExpr(arrayExprProto.get)
-                .setDelimiterExpr(delimiterExprProto.get)
-                .setNullReplacementExpr(nullReplacementExprProto.get)
-            case None =>
-              ExprOuterClass.ArrayJoin
-                .newBuilder()
-                .setArrayExpr(arrayExprProto.get)
-                .setDelimiterExpr(delimiterExprProto.get)
-          }
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setArrayJoin(arrayJoinBuilder)
-              .build())
-        } else {
-          val exprs: List[Expression] = nullReplacementExpr match {
-            case Some(nrExpr) => List(arrayExpr, delimiterExpr, nrExpr)
-            case None => List(arrayExpr, delimiterExpr)
-          }
-          withInfo(expr, "unsupported arguments for ArrayJoin", exprs: _*)
-          None
-        }
-      case ArraysOverlap(leftArrayExpr, rightArrayExpr) =>
-        if (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get()) {
-          createBinaryExpr(
-            expr,
-            leftArrayExpr,
-            rightArrayExpr,
-            inputs,
-            binding,
-            (builder, binaryExpr) => builder.setArraysOverlap(binaryExpr))
-        } else {
-          withInfo(
-            expr,
-            s"$expr is not supported yet. To enable all incompatible casts, set " +
-              s"${CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key}=true")
-          None
-        }
+      case _: ArrayRemove => convert(CometArrayRemove)
+      case _: ArrayContains => convert(CometArrayContains)
+      // Function introduced in 3.4.0. Refer by name to provide compatibility
+      // with older Spark builds
+      case _ if expr.prettyName == "array_append" => convert(CometArrayAppend)
+      case _: ArrayIntersect => convert(CometArrayIntersect)
+      case _: ArrayJoin => convert(CometArrayJoin)
+      case _: ArraysOverlap => convert(CometArraysOverlap)
       case _ =>
         withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
         None
     }
+
   }
 
   /**
@@ -3511,3 +3434,6 @@ trait CometExpressionSerde {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr]
 }
+
+/** Marker trait for an expression that is not guaranteed to be 100% compatible with Spark */
+trait IncompatExpr {}
