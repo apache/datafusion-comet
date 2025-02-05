@@ -51,7 +51,7 @@ import org.apache.comet.shims.ShimCometTPCHQuerySuite
  * }}}
  */
 class CometTPCHQuerySuite extends QueryTest with TPCBase with ShimCometTPCHQuerySuite {
-
+  // test
   private val tpchDataPath = sys.env.get("SPARK_TPCH_DATA")
 
   val tpchQueries: Seq[String] = Seq(
