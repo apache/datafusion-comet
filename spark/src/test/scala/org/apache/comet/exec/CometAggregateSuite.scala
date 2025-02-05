@@ -32,12 +32,27 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
+import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 /**
  * Test suite dedicated to Comet native aggregate operator
  */
 class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
+
+  test("avg decimal") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        ParquetGenerator.makeParquetFile(random, spark, filename, 10000, DataGenOptions())
+      }
+      val table = spark.read.parquet(filename).coalesce(1)
+      table.createOrReplaceTempView("t1")
+      checkSparkAnswer("SELECT c1, avg(c7) FROM t1 GROUP BY c1 ORDER BY c1")
+    }
+  }
 
   test("stddev_pop should return NaN for some cases") {
     withSQLConf(
