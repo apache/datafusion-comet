@@ -332,7 +332,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       table.createOrReplaceTempView("t1")
       // test with array of each column
       for (fieldName <- table.schema.fieldNames) {
-        sql(s"SELECT array($fieldName, $fieldName) as a, array(a[0], $fieldName) as b FROM t1")
+        sql(s"SELECT array($fieldName, $fieldName) as a, array($fieldName) as b FROM t1")
           .createOrReplaceTempView("t2")
         val df = sql("SELECT array_except(a, b) FROM t2")
         checkSparkAnswerAndOperator(df)
@@ -363,7 +363,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         // test with array of each column
         for (field <- table.schema.fields) {
           val fieldName = field.name
-          sql(s"SELECT array($fieldName, $fieldName) as a, array(a[0], $fieldName) as b FROM t1")
+          sql(s"SELECT array($fieldName, $fieldName) as a, array($fieldName) as b FROM t1")
             .createOrReplaceTempView("t2")
           val df = sql("SELECT array_except(a, b) FROM t2")
           field.dataType match {
