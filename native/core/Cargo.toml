@@ -77,6 +77,7 @@ datafusion-comet-proto = { workspace = true }
 object_store = { workspace = true }
 url = { workspace = true }
 chrono = { workspace = true }
+datafusion-objectstore-hdfs = { git = "https://github.com/comphead/datafusion-objectstore-hdfs", branch = "master", optional = true }
 
 [dev-dependencies]
 pprof = { version = "0.14.0", features = ["flamegraph"] }
@@ -88,6 +89,7 @@ hex = "0.4.3"
 
 [features]
 default = []
+hdfs = ["datafusion-objectstore-hdfs"]
 
 [lib]
 name = "comet"
