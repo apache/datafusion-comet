@@ -122,8 +122,9 @@ object CometNativeScanExec extends DataTypeSupport {
   }
 
   override def isAdditionallySupported(dt: DataType): Boolean = {
-    // TODO add array and map
+    // TODO add map support
     dt match {
+      case s: ArrayType => isTypeSupported(s.elementType)
       case s: StructType => s.fields.map(_.dataType).forall(isTypeSupported)
       case _ => false
     }
