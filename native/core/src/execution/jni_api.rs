@@ -91,6 +91,10 @@ struct ExecutionContext {
     pub runtime: Runtime,
     /// Native metrics
     pub metrics: Arc<GlobalRef>,
+    // The interval in milliseconds to update metrics
+    pub metrics_update_interval: Option<Duration>,
+    // The last update time of metrics
+    pub metrics_last_update_time: Instant,
     /// The time it took to create the native plan and configure the context
     pub plan_creation_time: Duration,
     /// DataFusion SessionContext
@@ -158,6 +162,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     serialized_query: jbyteArray,
     partition_count: jint,
     metrics_node: JObject,
+    metrics_update_interval: jlong,
     comet_task_memory_manager_obj: JObject,
     batch_size: jint,
     use_unified_memory_manager: jboolean,
@@ -220,6 +225,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
         let plan_creation_time = start.elapsed();
 
+        let metrics_update_interval = if metrics_update_interval > 0 {
+            Some(Duration::from_millis(metrics_update_interval as u64))
+        } else {
+            None
+        };
+
         let exec_context = Box::new(ExecutionContext {
             id,
             task_attempt_id,
@@ -231,6 +242,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             stream: None,
             runtime,
             metrics,
+            metrics_update_interval,
+            metrics_last_update_time: Instant::now(),
             plan_creation_time,
             session_ctx: Arc::new(session),
             debug_native: debug_native == 1,
@@ -504,6 +517,18 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             // Polling the stream.
             let next_item = exec_context.stream.as_mut().unwrap().next();
             let poll_output = exec_context.runtime.block_on(async { poll!(next_item) });
+
+            // update metrics at interval
+            match exec_context.metrics_update_interval {
+                Some(interval) => {
+                    let now = Instant::now();
+                    if now - exec_context.metrics_last_update_time >= interval {
+                        update_metrics(&mut env, exec_context)?;
+                        exec_context.metrics_last_update_time = now;
+                    }
+                }
+                None => {}
+            }
 
             match poll_output {
                 Poll::Ready(Some(output)) => {

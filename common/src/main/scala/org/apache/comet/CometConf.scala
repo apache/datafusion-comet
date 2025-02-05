@@ -622,6 +622,14 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_METRICS_UPDATE_INTERVAL: ConfigEntry[Long] =
+    conf("spark.comet.metrics.updateInterval")
+      .doc(
+        "The interval in milliseconds to update metrics. If interval is negative," +
+          " metrics will be updated upon task completion.")
+      .longConf
+      .createWithDefault(3000L)
+
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(
       exec: String,
