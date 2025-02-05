@@ -68,6 +68,7 @@ use datafusion_functions_nested::array_has::array_has_any_udf;
 use datafusion_functions_nested::concat::ArrayAppend;
 use datafusion_functions_nested::remove::array_remove_all_udf;
 use datafusion_functions_nested::set_ops::array_intersect_udf;
+use datafusion_functions_nested::except::array_except_udf;
 use datafusion_functions_nested::string::array_to_string_udf;
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
@@ -828,6 +829,22 @@ impl PhysicalPlanner {
                     DataType::Boolean,
                 ));
                 Ok(array_has_any_expr)
+            }
+            ExprStruct::ArrayExcept(expr) => {
+                let left_expr =
+                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let right_expr =
+                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let return_type = left_expr.data_type(&input_schema)?;
+                let args = vec![Arc::clone(&left_expr), right_expr];
+
+                let array_except_expr = Arc::new(ScalarFunctionExpr::new(
+                    "array_except",
+                    array_except_udf(),
+                    args,
+                    return_type,
+                ));
+                Ok(array_except_expr)
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
