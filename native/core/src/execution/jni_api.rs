@@ -290,7 +290,7 @@ fn parse_memory_pool_config(
     let pool_size = memory_limit as usize;
     let memory_pool_config = if use_unified_memory_manager {
         match memory_pool_type.as_str() {
-            "fair" => MemoryPoolConfig::new(MemoryPoolType::Unified, 0),
+            "unified" => MemoryPoolConfig::new(MemoryPoolType::Unified, 0),
             _ => MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size),
         }
     } else {
