@@ -19,10 +19,14 @@
 
 package org.apache.spark.sql.comet
 
+import scala.collection.JavaConverters._
+
 import org.apache.spark.SparkContext
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+
+import org.apache.comet.serde.Metric
 
 /**
  * A node carrying SQL metrics from SparkPlan, and metrics of its children. Native code will call
@@ -64,6 +68,20 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
         // no-op
         logDebug(s"Non-existing metric: $metricName. Ignored")
     }
+  }
+
+  private def set_all(metricNode: Metric.NativeMetricNode): Unit = {
+    metricNode.getMetricsMap.forEach((name, value) => {
+      set(name, value)
+    })
+    metricNode.getChildrenList.asScala.zip(children).foreach { case (child, childNode) =>
+      childNode.set_all(child)
+    }
+  }
+
+  def set_all_from_bytes(bytes: Array[Byte]): Unit = {
+    val metricNode = Metric.NativeMetricNode.parseFrom(bytes)
+    set_all(metricNode)
   }
 }
 
