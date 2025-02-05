@@ -64,7 +64,7 @@ impl CometFairMemoryPool {
     ) -> CometFairMemoryPool {
         Self {
             task_memory_manager_handle,
-            pool_size: pool_size,
+            pool_size,
             state: Mutex::new(CometFairPoolState { used: 0, num: 0 }),
         }
     }
