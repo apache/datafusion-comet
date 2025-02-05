@@ -519,15 +519,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             let poll_output = exec_context.runtime.block_on(async { poll!(next_item) });
 
             // update metrics at interval
-            match exec_context.metrics_update_interval {
-                Some(interval) => {
-                    let now = Instant::now();
-                    if now - exec_context.metrics_last_update_time >= interval {
-                        update_metrics(&mut env, exec_context)?;
-                        exec_context.metrics_last_update_time = now;
-                    }
+            if let Some(interval) = exec_context.metrics_update_interval {
+                let now = Instant::now();
+                if now - exec_context.metrics_last_update_time >= interval {
+                    update_metrics(&mut env, exec_context)?;
+                    exec_context.metrics_last_update_time = now;
                 }
-                None => {}
             }
 
             match poll_output {
