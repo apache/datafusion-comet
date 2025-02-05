@@ -36,7 +36,9 @@ use datafusion::physical_plan::common::can_project;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion_common::cast::as_boolean_array;
 use datafusion_common::stats::Precision;
-use datafusion_common::{internal_err, plan_err, project_schema, DataFusionError, Result};
+use datafusion_common::{
+    internal_err, plan_err, project_schema, DataFusionError, Result, ScalarValue,
+};
 use datafusion_execution::TaskContext;
 use datafusion_expr::Operator;
 use datafusion_physical_expr::equivalence::ProjectionMapping;
@@ -407,6 +409,16 @@ fn collect_new_statistics(
                     ..
                 },
             )| {
+                let Some(interval) = interval else {
+                    // If the interval is `None`, we can say that there are no rows:
+                    return ColumnStatistics {
+                        null_count: Precision::Exact(0),
+                        max_value: Precision::Exact(ScalarValue::Null),
+                        min_value: Precision::Exact(ScalarValue::Null),
+                        sum_value: Precision::Exact(ScalarValue::Null),
+                        distinct_count: Precision::Exact(0),
+                    };
+                };
                 let (lower, upper) = interval.into_bounds();
                 let (min_value, max_value) = if lower.eq(&upper) {
                     (Precision::Exact(lower), Precision::Exact(upper))
@@ -417,6 +429,7 @@ fn collect_new_statistics(
                     null_count: input_column_stats[idx].null_count.to_inexact(),
                     max_value,
                     min_value,
+                    sum_value: Precision::Absent,
                     distinct_count: distinct_count.to_inexact(),
                 }
             },

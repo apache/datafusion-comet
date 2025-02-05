@@ -30,7 +30,7 @@ use std::{any::Any, sync::Arc};
 
 use crate::utils::is_valid_decimal_precision;
 use arrow_array::ArrowNativeTypeOp;
-use arrow_data::decimal::{MAX_DECIMAL_FOR_EACH_PRECISION, MIN_DECIMAL_FOR_EACH_PRECISION};
+use arrow_data::decimal::{MAX_DECIMAL128_FOR_EACH_PRECISION, MIN_DECIMAL128_FOR_EACH_PRECISION};
 use datafusion::logical_expr::Volatility::Immutable;
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::type_coercion::aggregates::avg_return_type;
@@ -265,8 +265,8 @@ impl Accumulator for AvgDecimalAccumulator {
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
         let scaler = 10_i128.pow(self.target_scale.saturating_sub(self.sum_scale) as u32);
-        let target_min = MIN_DECIMAL_FOR_EACH_PRECISION[self.target_precision as usize - 1];
-        let target_max = MAX_DECIMAL_FOR_EACH_PRECISION[self.target_precision as usize - 1];
+        let target_min = MIN_DECIMAL128_FOR_EACH_PRECISION[self.target_precision as usize];
+        let target_max = MAX_DECIMAL128_FOR_EACH_PRECISION[self.target_precision as usize];
 
         let result = self
             .sum
@@ -445,8 +445,8 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
         let iter = sums.into_iter().zip(counts);
 
         let scaler = 10_i128.pow(self.target_scale.saturating_sub(self.sum_scale) as u32);
-        let target_min = MIN_DECIMAL_FOR_EACH_PRECISION[self.target_precision as usize - 1];
-        let target_max = MAX_DECIMAL_FOR_EACH_PRECISION[self.target_precision as usize - 1];
+        let target_min = MIN_DECIMAL128_FOR_EACH_PRECISION[self.target_precision as usize];
+        let target_max = MAX_DECIMAL128_FOR_EACH_PRECISION[self.target_precision as usize];
 
         for (sum, count) in iter {
             if count != 0 {
