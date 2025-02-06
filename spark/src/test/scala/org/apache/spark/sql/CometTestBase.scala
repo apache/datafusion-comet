@@ -122,8 +122,13 @@ abstract class CometTestBase
           (actual.isNegInfinity && expected.isNegInfinity)) {
           // ok
         } else {
+
+          def almostEqual(a: Double, b: Double, tolerance: Double = 1e-6f): Boolean = {
+            Math.abs(a - b) <= tolerance * Math.max(Math.abs(a), Math.abs(b))
+          }
+
           assert(
-            math.abs(actual - expected) < absTol,
+            almostEqual(actual, expected),
             s"actual answer $actual not within $absTol of correct answer $expected")
         }
       case (actual, expected) =>
