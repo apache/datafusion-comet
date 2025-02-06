@@ -75,10 +75,10 @@ pub fn to_native_metric_node(spark_plan: &Arc<SparkPlan>) -> Result<NativeMetric
         });
 
     // add children
-    spark_plan.children().iter().for_each(|child_plan| {
-        let child_node = to_native_metric_node(child_plan).unwrap();
+    for child_plan in spark_plan.children() {
+        let child_node = to_native_metric_node(child_plan)?;
         native_metric_node.children.push(child_node);
-    });
+    }
 
     Ok(native_metric_node)
 }
