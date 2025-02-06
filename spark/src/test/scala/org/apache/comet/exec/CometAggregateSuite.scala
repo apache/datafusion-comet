@@ -886,7 +886,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withSQLConf("parquet.enable.dictionary" -> dictionaryEnabled.toString) {
-          val table = "t1"
+          val table = s"final_decimal_avg_$dictionaryEnabled"
           withTable(table) {
             sql(s"create table $table(a decimal(38, 37), b INT) using parquet")
             sql(s"insert into $table values(-0.0000000000000000000000000000000000002, 1)")
@@ -900,13 +900,13 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             sql(s"insert into $table values(0.13344406545919155429936259114971302408, 5)")
             sql(s"insert into $table values(0.13344406545919155429936259114971302408, 5)")
 
-            checkSparkAnswerAndNumOfAggregates("SELECT b , AVG(a) FROM t1 GROUP BY b", 2)
-            checkSparkAnswerAndNumOfAggregates("SELECT AVG(a) FROM t1", 2)
+            checkSparkAnswerAndNumOfAggregates(s"SELECT b , AVG(a) FROM $table GROUP BY b", 2)
+            checkSparkAnswerAndNumOfAggregates(s"SELECT AVG(a) FROM $table", 2)
             checkSparkAnswerAndNumOfAggregates(
-              "SELECT b, MIN(a), MAX(a), COUNT(a), SUM(a), AVG(a) FROM t1 GROUP BY b",
+              s"SELECT b, MIN(a), MAX(a), COUNT(a), SUM(a), AVG(a) FROM $table GROUP BY b",
               2)
             checkSparkAnswerAndNumOfAggregates(
-              "SELECT MIN(a), MAX(a), COUNT(a), SUM(a), AVG(a) FROM t1",
+              s"SELECT MIN(a), MAX(a), COUNT(a), SUM(a), AVG(a) FROM $table",
               2)
           }
         }
