@@ -30,6 +30,7 @@ use datafusion::{
     common::{resources_datafusion_err, DataFusionError},
     execution::memory_pool::{MemoryPool, MemoryReservation},
 };
+use datafusion_common::resources_err;
 use datafusion_execution::memory_pool::MemoryConsumer;
 use parking_lot::Mutex;
 
