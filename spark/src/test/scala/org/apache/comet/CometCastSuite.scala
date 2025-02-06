@@ -349,6 +349,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   ignore("cast FloatType to DecimalType(10,2)") {
+    // // https://github.com/apache/datafusion-comet/issues/1371
     castTest(generateFloats(), DataTypes.createDecimalType(10, 2))
   }
 
@@ -408,6 +409,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   ignore("cast DoubleType to DecimalType(10,2)") {
+    // https://github.com/apache/datafusion-comet/issues/1371
     castTest(generateDoubles(), DataTypes.createDecimalType(10, 2))
   }
 
