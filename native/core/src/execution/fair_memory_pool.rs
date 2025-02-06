@@ -141,12 +141,12 @@ impl MemoryPool for CometFairMemoryPool {
                 // Release the acquired bytes before throwing error
                 self.release(acquired as usize)?;
 
-                return Err(resources_datafusion_err!(
+                return resources_err!(
                     "Failed to acquire {} bytes, only got {} bytes. Reserved: {} bytes",
                     additional,
                     acquired,
                     state.used
-                ));
+                );
             }
             state.used = state.used.checked_add(additional).unwrap();
         }
