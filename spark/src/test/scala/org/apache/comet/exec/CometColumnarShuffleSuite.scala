@@ -35,7 +35,7 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometSparkSessionExtensions}
 
 abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   protected val adaptiveExecutionEnabled: Boolean

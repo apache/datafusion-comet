@@ -40,7 +40,6 @@ trait DataTypeSupport {
       true
     case t: DataType if t.typeName == "timestamp_ntz" =>
       true
-      true
     case _ => false
   }
 

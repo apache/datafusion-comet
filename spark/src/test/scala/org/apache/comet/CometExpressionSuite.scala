@@ -125,6 +125,26 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("uint data type support") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      Seq(Byte.MaxValue, Short.MaxValue).foreach { valueRanges =>
+        {
+          withTempDir { dir =>
+            val path = new Path(dir.toURI.toString, "testuint.parquet")
+            makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, valueRanges + 1)
+            withParquetTable(path.toString, "tbl") {
+              if (CometSparkSessionExtensions.isComplexTypeReaderEnabled(conf)) {
+                checkSparkAnswer("select _9, _10 FROM tbl order by _11")
+              } else {
+                checkSparkAnswerAndOperator("select _9, _10 FROM tbl order by _11")
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("null literals") {
     val batchSize = 1000
     Seq(true, false).foreach { dictionaryEnabled =>
@@ -142,6 +162,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkSparkAnswerAndOperator(sqlString)
         }
       }
+
     }
   }
 
