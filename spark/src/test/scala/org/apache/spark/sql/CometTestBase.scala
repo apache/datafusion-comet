@@ -117,7 +117,11 @@ abstract class CometTestBase
 
     actualAnswer.toSeq.zip(expectedAnswer.toSeq).foreach {
       case (actual: Double, expected: Double) =>
-        if (!actual.isNaN && !expected.isNaN) {
+        if ((actual.isNaN && expected.isNaN) ||
+          (actual.isPosInfinity && expected.isPosInfinity) ||
+          (actual.isNegInfinity && expected.isNegInfinity)) {
+          // ok
+        } else {
           assert(
             math.abs(actual - expected) < absTol,
             s"actual answer $actual not within $absTol of correct answer $expected")
