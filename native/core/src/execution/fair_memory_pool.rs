@@ -27,7 +27,7 @@ use crate::{
     jvm_bridge::{jni_call, JVMClasses},
 };
 use datafusion::{
-    common::{resources_datafusion_err, DataFusionError},
+    common::DataFusionError,
     execution::memory_pool::{MemoryPool, MemoryReservation},
 };
 use datafusion_common::resources_err;
