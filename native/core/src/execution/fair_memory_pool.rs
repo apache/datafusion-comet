@@ -129,9 +129,9 @@ impl MemoryPool for CometFairMemoryPool {
             let limit = self.pool_size.checked_div(num).unwrap();
             let size = reservation.size();
             if limit < size + additional {
-                return Err(resources_datafusion_err!(
+                return resources_err!(
                     "Failed to acquire {additional} bytes where {size} bytes already reserved and the fair limit is {limit} bytes, {num} registered"
-                ));
+                );
             }
 
             let acquired = self.acquire(additional)?;
