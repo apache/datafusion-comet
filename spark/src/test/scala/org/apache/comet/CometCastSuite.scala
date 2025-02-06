@@ -985,8 +985,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val values = Seq(BigDecimal("12345.6789"), BigDecimal("9876.5432"), BigDecimal("123.4567"))
     val df = withNulls(values)
       .toDF("b")
-      .withColumn("a", col("b").cast(DecimalType(6, 2)))
-    checkSparkAnswer(df)
+      .withColumn("a", col("b").cast(DecimalType(38, 28)))
+    castTest(df, DecimalType(6, 2))
   }
 
   test("cast between decimals with higher precision than source") {
@@ -1217,8 +1217,17 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     .replace(".WITH_SUGGESTION] ", "]")
                     .startsWith(cometMessage))
               } else if (CometSparkSessionExtensions.isSpark34Plus) {
-                // for Spark 3.4 we expect to reproduce the error message exactly
-                assert(cometMessage == sparkMessage)
+                // for comet decimal conversion throws ArrowError(string) from arrow
+                if (cometMessage.contains("Invalid argument error")) {
+                  val regex =
+                    "\\[\\[?(NUMERIC_VALUE_OUT_OF_RANGE|Invalid argument error)\\]?:? .*? (\\d+(\\.\\d+)?) .*? Decimal\\(?(\\d+),?\\s?(\\d+)\\)?.*?\\]?"
+                  assert(cometMessage.matches(regex) == sparkMessage.matches(regex))
+
+                } else {
+                  // for Spark 3.4 we expect to reproduce the error message exactly
+                  assert(cometMessage == sparkMessage)
+
+                }
               } else {
                 // for Spark 3.3 we just need to strip the prefix from the Comet message
                 // before comparing
