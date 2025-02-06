@@ -22,7 +22,6 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
-import org.apache.parquet.format.IntType
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.types._
@@ -31,7 +30,10 @@ import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
+  lazy val fuzzTestEnabled: Boolean = sys.env.contains("COMET_FUZZ_TEST")
+
   test("aggregates") {
+    assume(fuzzTestEnabled)
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
       val filename = path.toString
@@ -58,31 +60,54 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
       // TODO: corr, covar_pop, covar_samp needs 2 args
 
-      val numericFields = table.schema.fields.filter { field =>
-        field.dataType match {
-          case _: ByteType | _: ShortType | _: IntegerType | _: LongType => true
-          case _: FloatType | _: DoubleType => true
-          case _: DecimalType => true
-          case _ => false
-        }
-      }
+      val numericFields = table.schema.fields.filter(isNumeric)
+      val groupingFields: Array[StructField] = table.schema.fields.filterNot(isNumeric)
 
-      // TODO test more group by types
-      // TODO test no grouping
-      // TODO test multiple grouping expr
+      // test grouping by each non-numeric column, grouping by all non-numeric columns, and no grouping
+      val groupByIndividualCols: Seq[Seq[String]] = groupingFields.map(f => Seq(f.name)).toSeq
+      val groupByAllCols: Seq[Seq[String]] = Seq(groupingFields.map(_.name).toSeq)
+      val noGroup: Seq[Seq[String]] = Seq(Seq.empty)
+      val groupings: Seq[Seq[String]] = groupByIndividualCols ++ groupByAllCols ++ noGroup
 
-      for (agg <- numericAggs) {
-        for (field <- numericFields) {
-          if (agg == "avg" && field.dataType.isInstanceOf[DecimalType]) {
-            // skip known issue
-          } else {
-            val sql = s"SELECT c1, $agg(${field.name}) FROM t1 GROUP BY c1 ORDER BY c1"
-            println(sql)
-            checkSparkAnswerWithTol(sql)
-            // TODO check operators
+      for (scan <- Seq(
+          CometConf.SCAN_NATIVE_COMET,
+          CometConf.SCAN_NATIVE_DATAFUSION,
+          CometConf.SCAN_NATIVE_ICEBERG_COMPAT)) {
+        for (shuffleMode <- Seq("auto", "jvm", "native")) {
+          withSQLConf(
+            CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan,
+            CometConf.COMET_SHUFFLE_MODE.key -> shuffleMode) {
+            for (group <- groupings) {
+              for (agg <- numericAggs) {
+                for (field <- numericFields) {
+                  if (agg == "avg" && field.dataType.isInstanceOf[DecimalType]) {
+                    // skip known issue
+                  } else {
+                    val sql = if (group.isEmpty) {
+                      s"SELECT $agg(${field.name}) FROM t1"
+                    } else {
+                      val groupCols = group.mkString(", ")
+                      s"SELECT $groupCols, $agg(${field.name}) FROM t1 GROUP BY $groupCols ORDER BY $groupCols"
+                    }
+                    println(sql)
+                    checkSparkAnswerWithTol(sql)
+                    // TODO check operators
+                  }
+                }
+              }
+            }
           }
         }
       }
+    }
+  }
+
+  private def isNumeric(field: StructField) = {
+    field.dataType match {
+      case _: ByteType | _: ShortType | _: IntegerType | _: LongType => true
+      case _: FloatType | _: DoubleType => true
+      case _: DecimalType => true
+      case _ => false
     }
   }
 }
