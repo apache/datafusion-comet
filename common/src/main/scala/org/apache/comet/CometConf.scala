@@ -504,7 +504,7 @@ object CometConf extends ShimCometConf {
     .doc(
       "The type of memory pool to be used for Comet native execution. " +
         "Available memory pool types are 'greedy', 'fair_spill', 'greedy_task_shared', " +
-        "'fair_spill_task_shared', 'greedy_global' and 'fair_spill_global'. For off-eap " +
+        "'fair_spill_task_shared', 'greedy_global' and 'fair_spill_global'. For off-heap " +
         "types are 'unified' and `fair_unified`.")
     .stringConf
     .createWithDefault("greedy_task_shared")
