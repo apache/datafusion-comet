@@ -882,6 +882,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
     withSQLConf(
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withSQLConf("parquet.enable.dictionary" -> dictionaryEnabled.toString) {
@@ -929,6 +930,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("avg null handling") {
     withSQLConf(
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       val table = "t1"
       withTable(table) {
