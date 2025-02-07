@@ -127,16 +127,36 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("uint data type support") {
     Seq(true, false).foreach { dictionaryEnabled =>
-      Seq(Byte.MaxValue, Short.MaxValue).foreach { valueRanges =>
+      // TODO: Once the question of what to get back from uint_8, uint_16 types is resolved,
+      // we can also update this test to check for COMET_SCAN_ALLOW_INCOMPATIBLE=true
+      Seq(false).foreach { allowIncompatible =>
         {
-          withTempDir { dir =>
-            val path = new Path(dir.toURI.toString, "testuint.parquet")
-            makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, valueRanges + 1)
-            withParquetTable(path.toString, "tbl") {
-              if (CometSparkSessionExtensions.isComplexTypeReaderEnabled(conf)) {
-                checkSparkAnswer("select _9, _10 FROM tbl order by _11")
-              } else {
-                checkSparkAnswerAndOperator("select _9, _10 FROM tbl order by _11")
+          withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> allowIncompatible.toString) {
+            withTempDir { dir =>
+              val path = new Path(dir.toURI.toString, "testuint.parquet")
+              makeParquetFileAllTypes(
+                path,
+                dictionaryEnabled = dictionaryEnabled,
+                Byte.MinValue,
+                Byte.MaxValue)
+              withParquetTable(path.toString, "tbl") {
+                val col = "_9"
+                val qry = s"select _9 from tbl order by _11"
+                if (CometSparkSessionExtensions.isComplexTypeReaderEnabled(conf)) {
+                  if (!allowIncompatible) {
+                    checkSparkAnswer(qry)
+                  } else {
+                    // need to convert the values to unsigned values
+                    val expected = (Byte.MinValue to Byte.MaxValue)
+                      .map(v => {
+                        if (v < 0) Byte.MaxValue.toShort - v else v
+                      })
+                      .toDF("a")
+                    checkAnswer(sql(qry), expected)
+                  }
+                } else {
+                  checkSparkAnswerAndOperator(qry)
+                }
               }
             }
           }
