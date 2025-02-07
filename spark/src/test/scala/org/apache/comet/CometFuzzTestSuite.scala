@@ -30,7 +30,7 @@ import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
-  lazy val fuzzTestEnabled: Boolean = sys.env.contains("COMET_FUZZ_TEST")
+  private val fuzzTestEnabled: Boolean = sys.env.contains("COMET_FUZZ_TEST")
 
   test("aggregates") {
     assume(fuzzTestEnabled)
