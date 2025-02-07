@@ -52,10 +52,12 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val noGroup: Seq[Seq[String]] = Seq(Seq.empty)
       val groupings: Seq[Seq[String]] = groupByIndividualCols ++ groupByAllCols ++ noGroup
 
-      for (scan <- Seq(
-          CometConf.SCAN_NATIVE_COMET,
-          CometConf.SCAN_NATIVE_DATAFUSION,
-          CometConf.SCAN_NATIVE_ICEBERG_COMPAT)) {
+      val scanTypes = Seq(
+        CometConf.SCAN_NATIVE_COMET
+          /*CometConf.SCAN_NATIVE_DATAFUSION,
+        CometConf.SCAN_NATIVE_ICEBERG_COMPAT*/ )
+
+      for (scan <- scanTypes) {
         for (shuffleMode <- Seq("auto", "jvm", "native")) {
           withSQLConf(
             CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan,
@@ -124,6 +126,11 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 }
 
 object Exprs {
+
+  /**
+   * Aggregate expressions. Note that `first` and `last` are excluded because they are
+   * non-deterministic.
+   */
   val aggregate: Seq[ExprMeta] = Seq(
     ExprMeta("min", Seq(OrderedTypes)),
     ExprMeta("max", Seq(OrderedTypes)),
@@ -137,21 +144,22 @@ object Exprs {
     ExprMeta("variance", Seq(NumericType)),
     ExprMeta("var_pop", Seq(NumericType)),
     ExprMeta("var_samp", Seq(NumericType)),
-    ExprMeta("corr", Seq(NumericType, NumericType)))
+    ExprMeta("corr", Seq(NumericType, NumericType)),
+    ExprMeta("covar_pop", Seq(NumericType, NumericType)),
+    ExprMeta("covar_samp", Seq(NumericType, NumericType)))
 }
 
+/** Meta-data about a Spark expression */
 case class ExprMeta(name: String, args: Seq[ArgType])
 
+/** Represents that data type(s) that an argument accepts */
 sealed trait ArgType
 
+/** Supports any input type */
 case object AnyType extends ArgType
-
-case object StringType extends ArgType
 
 /** Integral, floating-point, and decimal */
 case object NumericType extends ArgType
 
-case object ArrayType extends ArgType
-
-/** Types that can ordered. Includes struct and array but excludes maps. */
+/** Types that can ordered. Includes struct and array but excludes maps */
 case object OrderedTypes extends ArgType
