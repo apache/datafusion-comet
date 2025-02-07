@@ -47,3 +47,6 @@ fs-hdfs3 = { version = "^0.1.12", optional = true }
 futures = { workspace = true }
 object_store = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "parking_lot"] }
+
+[package.metadata.cargo-machete]
+ignored = ["fs-hdfs", "fs-hdfs3"]
