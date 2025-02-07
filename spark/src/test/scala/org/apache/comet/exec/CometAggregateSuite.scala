@@ -52,6 +52,10 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withTable(tableName) {
         val table = spark.read.parquet(filename).coalesce(1)
         table.createOrReplaceTempView(tableName)
+        // we fall back to Spark for avg on decimal due to the following issue
+        // https://github.com/apache/datafusion-comet/issues/1371
+        // once this is fixed, we should change this test to
+        // checkSparkAnswerAndNumOfAggregates
         checkSparkAnswer(s"SELECT c1, avg(c7) FROM $tableName GROUP BY c1 ORDER BY c1")
       }
     }
