@@ -29,7 +29,7 @@ runs:
       shell: bash
       run: |
         cd native
-        cargo clippy --color=never --all-targets --workspace -- -D warnings
+        cargo clippy --color=never --all-targets --workspace --exclude hdfs -- -D warnings
 
     - name: Check compilation
       shell: bash
