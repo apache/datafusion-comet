@@ -1355,12 +1355,12 @@ object CometSparkSessionExtensions extends Logging {
   /** Calculates required memory overhead in MB per executor process for Comet. */
   def getCometMemoryOverheadInMiB(sparkConf: SparkConf): Long = {
     val executorMemoryMiB = if (cometUnifiedMemoryManagerEnabled(sparkConf)) {
+      ConfigHelpers
+        .byteFromString(sparkConf.get("spark.memory.offHeap.size"), ByteUnit.MiB)
+    } else {
       // `spark.executor.memory` default value is 1g
       ConfigHelpers
         .byteFromString(sparkConf.get("spark.executor.memory", "1024MB"), ByteUnit.MiB)
-    } else {
-      ConfigHelpers
-        .byteFromString(sparkConf.get("spark.memory.offHeap.size"), ByteUnit.MiB)
     }
 
     val minimum = ConfigHelpers
