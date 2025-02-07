@@ -91,6 +91,10 @@ hex = "0.4.3"
 default = []
 hdfs=["datafusion-objectstore-hdfs"]
 
+# exclude optional packages from cargo machete verifications
+[package.metadata.cargo-machete]
+ignored = ["datafusion-objectstore-hdfs"]
+
 [lib]
 name = "comet"
 # "rlib" is for benchmarking with criterion.
