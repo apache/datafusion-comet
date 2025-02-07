@@ -73,7 +73,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 // test all combinations
                 val args: Seq[StructField] = argFields.map(_.head)
 
-                if (agg.name == "avg" && args.head.dataType.isInstanceOf[DecimalType]) {
+                if (agg.name == "_avg" && args.head.dataType.isInstanceOf[DecimalType]) {
                   // skip known issue
                 } else {
 
