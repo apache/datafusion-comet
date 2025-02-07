@@ -48,9 +48,12 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         ParquetGenerator.makeParquetFile(random, spark, filename, 10000, DataGenOptions())
       }
-      val table = spark.read.parquet(filename).coalesce(1)
-      table.createOrReplaceTempView("t1")
-      checkSparkAnswer("SELECT c1, avg(c7) FROM t1 GROUP BY c1 ORDER BY c1")
+      val tableName = "avg_decimal"
+      withTable(tableName) {
+        val table = spark.read.parquet(filename).coalesce(1)
+        table.createOrReplaceTempView(tableName)
+        checkSparkAnswer(s"SELECT c1, avg(c7) FROM $tableName GROUP BY c1 ORDER BY c1")
+      }
     }
   }
 
@@ -930,9 +933,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("avg null handling") {
     withSQLConf(
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
-      val table = "t1"
+      val table = "avg_null_handling"
       withTable(table) {
         sql(s"create table $table(a double, b double) using parquet")
         sql(s"insert into $table values(1, 1.0)")
