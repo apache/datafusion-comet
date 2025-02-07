@@ -1354,9 +1354,14 @@ object CometSparkSessionExtensions extends Logging {
 
   /** Calculates required memory overhead in MB per executor process for Comet. */
   def getCometMemoryOverheadInMiB(sparkConf: SparkConf): Long = {
-    // `spark.executor.memory` default value is 1g
-    val executorMemoryMiB = ConfigHelpers
-      .byteFromString(sparkConf.get("spark.executor.memory", "1024MB"), ByteUnit.MiB)
+    val executorMemoryMiB = if (cometUnifiedMemoryManagerEnabled(sparkConf)) {
+      // `spark.executor.memory` default value is 1g
+      ConfigHelpers
+        .byteFromString(sparkConf.get("spark.executor.memory", "1024MB"), ByteUnit.MiB)
+    } else {
+      ConfigHelpers
+        .byteFromString(sparkConf.get("spark.memory.offHeap.size"), ByteUnit.MiB)
+    }
 
     val minimum = ConfigHelpers
       .byteFromString(
@@ -1381,7 +1386,7 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   /** Calculates required shuffle memory size in bytes per executor process for Comet. */
-  def getCometShuffleMemorySize(sparkConf: SparkConf, conf: SQLConf): Long = {
+  def getCometShuffleMemorySize(sparkConf: SparkConf, conf: SQLConf = SQLConf.get): Long = {
     val cometMemoryOverhead = getCometMemoryOverheadInMiB(sparkConf)
 
     val overheadFactor = COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR.get(conf)
@@ -1397,6 +1402,16 @@ object CometSparkSessionExtensions extends Logging {
     } else {
       ByteUnit.MiB.toBytes(shuffleMemorySize)
     }
+  }
+
+  def cometUnifiedMemoryManagerEnabled(sparkConf: SparkConf): Boolean = {
+    sparkConf.getBoolean("spark.memory.offHeap.enabled", false)
+  }
+
+  def cometShuffleUnifiedMemoryManagerEnabled(sparkConf: SparkConf): Boolean = {
+    sparkConf.getBoolean(
+      CometConf.COMET_COLUMNAR_SHUFFLE_UNIFIED_MEMORY_ALLOCATOR_IN_TEST.key,
+      CometConf.COMET_COLUMNAR_SHUFFLE_UNIFIED_MEMORY_ALLOCATOR_IN_TEST.defaultValue.get)
   }
 
   /**
