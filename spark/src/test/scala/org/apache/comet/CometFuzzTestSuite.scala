@@ -44,23 +44,6 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val table = spark.read.parquet(filename).coalesce(1)
       table.createOrReplaceTempView("t1")
 
-      val numericAggs = Seq(
-        "min",
-        "max",
-        "sum",
-        "avg",
-        "count",
-        "median",
-        "stddev",
-        "stddev_pop",
-        "stddev_samp",
-        "variance",
-        "var_pop",
-        "var_samp")
-
-      // TODO: corr, covar_pop, covar_samp needs 2 args
-
-      val numericFields = table.schema.fields.filter(isNumeric)
       val groupingFields: Array[StructField] = table.schema.fields.filterNot(isNumeric)
 
       // test grouping by each non-numeric column, grouping by all non-numeric columns, and no grouping
@@ -78,21 +61,31 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan,
             CometConf.COMET_SHUFFLE_MODE.key -> shuffleMode) {
             for (group <- groupings) {
-              for (agg <- numericAggs) {
-                for (field <- numericFields) {
-                  if (agg == "avg" && field.dataType.isInstanceOf[DecimalType]) {
-                    // skip known issue
+              for (agg <- Exprs.aggregate) {
+
+                // pick all compatible columns for all input args
+                val argFields: Seq[Array[StructField]] = agg.args.map(argType =>
+                  table.schema.fields.filter(f => isMatch(f.dataType, argType)))
+
+                // just pick the first compatible column for each type for now, but should randomize this or
+                // test all combinations
+                val args: Seq[StructField] = argFields.map(_.head)
+
+                if (agg.name == "avg" && args.head.dataType.isInstanceOf[DecimalType]) {
+                  // skip known issue
+                } else {
+
+                  val aggSql = s"${agg.name}(${args.map(_.name).mkString(",")})"
+
+                  val sql = if (group.isEmpty) {
+                    s"SELECT $aggSql FROM t1"
                   } else {
-                    val sql = if (group.isEmpty) {
-                      s"SELECT $agg(${field.name}) FROM t1"
-                    } else {
-                      val groupCols = group.mkString(", ")
-                      s"SELECT $groupCols, $agg(${field.name}) FROM t1 GROUP BY $groupCols ORDER BY $groupCols"
-                    }
-                    println(sql)
-                    checkSparkAnswerWithTol(sql)
-                    // TODO check operators
+                    val groupCols = group.mkString(", ")
+                    s"SELECT $groupCols, $aggSql FROM t1 GROUP BY $groupCols ORDER BY $groupCols"
                   }
+                  println(sql)
+                  checkSparkAnswerWithTol(sql)
+                  // TODO check operators
                 }
               }
             }
@@ -110,4 +103,55 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       case _ => false
     }
   }
+
+  def isMatch(dt: DataType, at: ArgType): Boolean = {
+    at match {
+      case AnyType => true
+      case NumericType =>
+        dt match {
+          case _: ByteType | _: ShortType | _: IntegerType | _: LongType => true
+          case _: FloatType | _: DoubleType => true
+          case _: DecimalType => true
+          case _ => false
+        }
+      case OrderedTypes =>
+        // TODO exclude map or other complex types that contain maps
+        true
+      case _ => false
+    }
+  }
+
 }
+
+object Exprs {
+  val aggregate: Seq[ExprMeta] = Seq(
+    ExprMeta("min", Seq(OrderedTypes)),
+    ExprMeta("max", Seq(OrderedTypes)),
+    ExprMeta("count", Seq(AnyType)),
+    ExprMeta("sum", Seq(NumericType)),
+    ExprMeta("avg", Seq(NumericType)),
+    ExprMeta("median", Seq(NumericType)),
+    ExprMeta("stddev", Seq(NumericType)),
+    ExprMeta("stddev_pop", Seq(NumericType)),
+    ExprMeta("stddev_samp", Seq(NumericType)),
+    ExprMeta("variance", Seq(NumericType)),
+    ExprMeta("var_pop", Seq(NumericType)),
+    ExprMeta("var_samp", Seq(NumericType)),
+    ExprMeta("corr", Seq(NumericType, NumericType)))
+}
+
+case class ExprMeta(name: String, args: Seq[ArgType])
+
+sealed trait ArgType
+
+case object AnyType extends ArgType
+
+case object StringType extends ArgType
+
+/** Integral, floating-point, and decimal */
+case object NumericType extends ArgType
+
+case object ArrayType extends ArgType
+
+/** Types that can ordered. Includes struct and array but excludes maps. */
+case object OrderedTypes extends ArgType
