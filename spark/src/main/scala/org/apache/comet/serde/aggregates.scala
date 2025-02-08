@@ -20,9 +20,11 @@
 package org.apache.comet.serde
 
 import scala.collection.JavaConverters.asJavaIterableConverter
+
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, First, Last, Sum}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Covariance, CovPopulation, CovSample, First, Last, Sum}
 import org.apache.spark.sql.types.DecimalType
+
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 import org.apache.comet.shims.ShimQueryPlanSerde
@@ -205,8 +207,12 @@ object CometSum extends CometAggregateExpressionSerde with ShimQueryPlanSerde {
   }
 }
 
-object CometFirst  extends CometAggregateExpressionSerde {
-  override def convert(aggExpr: AggregateExpression, expr: Expression, inputs: Seq[Attribute], binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+object CometFirst extends CometAggregateExpressionSerde {
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.AggExpr] = {
     val first = expr.asInstanceOf[First]
     if (first.ignoreNulls) {
       // DataFusion doesn't support ignoreNulls true
@@ -237,8 +243,12 @@ object CometFirst  extends CometAggregateExpressionSerde {
   }
 }
 
-object CometLast  extends CometAggregateExpressionSerde {
-  override def convert(aggExpr: AggregateExpression, expr: Expression, inputs: Seq[Attribute], binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+object CometLast extends CometAggregateExpressionSerde {
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.AggExpr] = {
     val last = expr.asInstanceOf[Last]
     if (last.ignoreNulls) {
       // DataFusion doesn't support ignoreNulls true
@@ -270,7 +280,11 @@ object CometLast  extends CometAggregateExpressionSerde {
 }
 
 object CometBitAndAgg extends CometAggregateExpressionSerde {
-  override def convert(aggExpr: AggregateExpression, expr: Expression, inputs: Seq[Attribute], binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.AggExpr] = {
     val bitAnd = expr.asInstanceOf[BitAndAgg]
     if (!AggSerde.bitwiseAggTypeSupported(bitAnd.dataType)) {
       withInfo(aggExpr, s"Unsupported data type: ${expr.dataType}")
@@ -300,7 +314,11 @@ object CometBitAndAgg extends CometAggregateExpressionSerde {
 }
 
 object CometBitOrAgg extends CometAggregateExpressionSerde {
-  override def convert(aggExpr: AggregateExpression, expr: Expression, inputs: Seq[Attribute], binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.AggExpr] = {
     val bitOr = expr.asInstanceOf[BitOrAgg]
     if (!AggSerde.bitwiseAggTypeSupported(bitOr.dataType)) {
       withInfo(aggExpr, s"Unsupported data type: ${expr.dataType}")
@@ -330,7 +348,11 @@ object CometBitOrAgg extends CometAggregateExpressionSerde {
 }
 
 object CometBitXOrAgg extends CometAggregateExpressionSerde {
-  override def convert(aggExpr: AggregateExpression, expr: Expression, inputs: Seq[Attribute], binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.AggExpr] = {
     val bitXor = expr.asInstanceOf[BitXorAgg]
     if (!AggSerde.bitwiseAggTypeSupported(bitXor.dataType)) {
       withInfo(aggExpr, s"Unsupported data type: ${expr.dataType}")
@@ -356,6 +378,60 @@ object CometBitXOrAgg extends CometAggregateExpressionSerde {
       withInfo(aggExpr, child)
       None
     }
+  }
+}
+
+trait CometCovBase extends CometAggregateExpressionSerde {
+  def convertCov(
+      aggExpr: AggregateExpression,
+      cov: Covariance,
+      nullOnDivideByZero: Boolean,
+      statsType: Int,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+    val child1Expr = exprToProto(cov.left, inputs, binding)
+    val child2Expr = exprToProto(cov.right, inputs, binding)
+    val dataType = serializeDataType(cov.dataType)
+
+    if (child1Expr.isDefined && child2Expr.isDefined && dataType.isDefined) {
+      val builder = ExprOuterClass.Covariance.newBuilder()
+      builder.setChild1(child1Expr.get)
+      builder.setChild2(child2Expr.get)
+      builder.setNullOnDivideByZero(nullOnDivideByZero)
+      builder.setDatatype(dataType.get)
+      builder.setStatsTypeValue(statsType)
+
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setCovariance(builder)
+          .build())
+    } else {
+      withInfo(aggExpr, "Child expression or data type not supported")
+      None
+    }
+  }
+}
+
+object CometCovSampleAgg extends CometCovBase {
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+    val covSample = expr.asInstanceOf[CovSample]
+    convertCov(aggExpr, covSample, covSample.nullOnDivideByZero, 0, inputs, binding)
+  }
+}
+
+object CometCovPopulationAgg extends CometCovBase {
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+    val covSample = expr.asInstanceOf[CovPopulation]
+    convertCov(aggExpr, covSample, covSample.nullOnDivideByZero, 1, inputs, binding)
   }
 }
 

@@ -363,48 +363,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case agg: BitAndAgg => CometBitAndAgg.convert(aggExpr, agg, inputs, binding)
       case agg: BitOrAgg => CometBitOrAgg.convert(aggExpr, agg, inputs, binding)
       case agg: BitXorAgg => CometBitXOrAgg.convert(aggExpr, agg, inputs, binding)
-      case cov @ CovSample(child1, child2, nullOnDivideByZero) =>
-        val child1Expr = exprToProto(child1, inputs, binding)
-        val child2Expr = exprToProto(child2, inputs, binding)
-        val dataType = serializeDataType(cov.dataType)
-
-        if (child1Expr.isDefined && child2Expr.isDefined && dataType.isDefined) {
-          val covBuilder = ExprOuterClass.Covariance.newBuilder()
-          covBuilder.setChild1(child1Expr.get)
-          covBuilder.setChild2(child2Expr.get)
-          covBuilder.setNullOnDivideByZero(nullOnDivideByZero)
-          covBuilder.setDatatype(dataType.get)
-          covBuilder.setStatsTypeValue(0)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setCovariance(covBuilder)
-              .build())
-        } else {
-          None
-        }
-      case cov @ CovPopulation(child1, child2, nullOnDivideByZero) =>
-        val child1Expr = exprToProto(child1, inputs, binding)
-        val child2Expr = exprToProto(child2, inputs, binding)
-        val dataType = serializeDataType(cov.dataType)
-
-        if (child1Expr.isDefined && child2Expr.isDefined && dataType.isDefined) {
-          val covBuilder = ExprOuterClass.Covariance.newBuilder()
-          covBuilder.setChild1(child1Expr.get)
-          covBuilder.setChild2(child2Expr.get)
-          covBuilder.setNullOnDivideByZero(nullOnDivideByZero)
-          covBuilder.setDatatype(dataType.get)
-          covBuilder.setStatsTypeValue(1)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setCovariance(covBuilder)
-              .build())
-        } else {
-          None
-        }
+      case agg: CovSample => CometCovSampleAgg.convert(aggExpr, agg, inputs, binding)
+      case agg: CovPopulation => CometCovPopulationAgg.convert(aggExpr, agg, inputs, binding)
       case variance @ VarianceSamp(child, nullOnDivideByZero) =>
         val childExpr = exprToProto(child, inputs, binding)
         val dataType = serializeDataType(variance.dataType)
