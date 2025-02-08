@@ -116,49 +116,12 @@ abstract class CometTestBase
     require(absTol > 0 && absTol <= 1e-6, s"absTol $absTol is out of range (0, 1e-6]")
 
     actualAnswer.toSeq.zip(expectedAnswer.toSeq).foreach {
-      case (actual: Float, expected: Float) =>
-        def isPosInfinity(value: Float): Boolean = {
-          value.isPosInfinity || value == 3.4028235e38
-        }
-
-        if ((actual.isNaN && expected.isNaN) ||
-          (isPosInfinity(actual) && isPosInfinity(expected)) ||
-          (actual.isNegInfinity && expected.isNegInfinity)) {
-          // ok
-        } else {
-
-          def almostEqual(a: Double, b: Double, tolerance: Double = 1e-6f): Boolean = {
-            Math.abs(a - b) <= tolerance * Math.max(Math.abs(a), Math.abs(b))
-          }
-
-          assert(
-            almostEqual(actual, expected),
-            s"actual answer $actual not within $absTol of correct answer $expected")
-        }
-
       case (actual: Double, expected: Double) =>
-        def isPosInfinity(value: Double): Boolean = {
-          value.isPosInfinity || value == 3.4028235e38
-        }
-
-        if ((actual.isNaN && expected.isNaN) ||
-          (isPosInfinity(actual) && isPosInfinity(expected)) ||
-          (actual.isNegInfinity && expected.isNegInfinity)) {
-          // ok
-        } else {
-
-          def almostEqual(a: Double, b: Double, tolerance: Double = 1e-6f): Boolean = {
-            Math.abs(a - b) <= tolerance * Math.max(Math.abs(a), Math.abs(b))
-          }
-
+        if (!actual.isNaN && !expected.isNaN) {
           assert(
-            almostEqual(actual, expected),
+            math.abs(actual - expected) < absTol,
             s"actual answer $actual not within $absTol of correct answer $expected")
         }
-
-      case (actual: Array[_], expected: Array[_]) =>
-        assert(actual.sameElements(expected), s"$actualAnswer did not equal $expectedAnswer")
-
       case (actual, expected) =>
         assert(actual == expected, s"$actualAnswer did not equal $expectedAnswer")
     }
