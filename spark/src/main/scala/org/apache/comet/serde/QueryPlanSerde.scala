@@ -182,14 +182,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     }
   }
 
-  private def avgDataTypeSupported(dt: DataType): Boolean = {
-    dt match {
-      case _: NumericType => true
-      // TODO: implement support for interval types
-      case _ => false
-    }
-  }
-
   private def bitwiseAggTypeSupported(dt: DataType): Boolean = {
     dt match {
       case _: IntegerType | LongType | ShortType | ByteType => true
@@ -397,58 +389,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
           None
         }
-      case s @ Average(child, _) if avgDataTypeSupported(s.dataType) && isLegacyMode(s) =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(s.dataType)
-
-        val sumDataType = if (child.dataType.isInstanceOf[DecimalType]) {
-
-          // This is input precision + 10 to be consistent with Spark
-          val precision = Math.min(
-            DecimalType.MAX_PRECISION,
-            child.dataType.asInstanceOf[DecimalType].precision + 10)
-          val newType =
-            DecimalType.apply(precision, child.dataType.asInstanceOf[DecimalType].scale)
-          serializeDataType(newType)
-        } else {
-          serializeDataType(child.dataType)
-        }
-
-        if (childExpr.isDefined && dataType.isDefined) {
-          val builder = ExprOuterClass.Avg.newBuilder()
-          builder.setChild(childExpr.get)
-          builder.setDatatype(dataType.get)
-          builder.setFailOnError(getFailOnError(s))
-          builder.setSumDatatype(sumDataType.get)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setAvg(builder)
-              .build())
-        } else if (dataType.isEmpty) {
-          withInfo(aggExpr, s"datatype ${s.dataType} is not supported", child)
-          None
-        } else {
-          withInfo(aggExpr, child)
-          None
-        }
-      case Count(children) =>
-        val exprChildren = children.map(exprToProto(_, inputs, binding))
-
-        if (exprChildren.forall(_.isDefined)) {
-          val countBuilder = ExprOuterClass.Count.newBuilder()
-          countBuilder.addAllChildren(exprChildren.map(_.get).asJava)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setCount(countBuilder)
-              .build())
-        } else {
-          withInfo(aggExpr, children: _*)
-          None
-        }
+      case avg: Average => CometAverage.convert(aggExpr, avg, inputs, binding)
+      case count: Count => CometCount.convert(aggExpr, count, inputs, binding)
       case min: Min => CometMin.convert(aggExpr, min, inputs, binding)
       case max: Max => CometMax.convert(aggExpr, max, inputs, binding)
       case first @ First(child, ignoreNulls)

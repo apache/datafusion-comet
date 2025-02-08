@@ -19,12 +19,15 @@
 
 package org.apache.comet.serde
 
+import scala.collection.JavaConverters.asJavaIterableConverter
+
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
-import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateExpression
-import org.apache.spark.sql.types.{BooleanType, DataType, DateType, NumericType, TimestampType}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average}
+import org.apache.spark.sql.types.{BooleanType, DataType, DateType, DecimalType, NumericType, TimestampType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
+import org.apache.comet.shims.ShimQueryPlanSerde
 
 object CometMin extends CometAggregateExpressionSerde {
 
@@ -96,11 +99,102 @@ object CometMax extends CometAggregateExpressionSerde {
   }
 }
 
+object CometCount extends CometAggregateExpressionSerde {
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+    val exprChildren = expr.children.map(exprToProto(_, inputs, binding))
+    if (exprChildren.forall(_.isDefined)) {
+      val countBuilder = ExprOuterClass.Count.newBuilder()
+      countBuilder.addAllChildren(exprChildren.map(_.get).asJava)
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setCount(countBuilder)
+          .build())
+    } else {
+      withInfo(aggExpr, expr.children: _*)
+      None
+    }
+  }
+}
+
+object CometAverage extends CometAggregateExpressionSerde with ShimQueryPlanSerde {
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+    val avg = expr.asInstanceOf[Average]
+
+    if (!AggSerde.avgDataTypeSupported(expr.dataType)) {
+      withInfo(aggExpr, s"Unsupported data type: ${expr.dataType}")
+      return None
+    }
+
+    if (!isLegacyMode(avg)) {
+      withInfo(aggExpr, "Average is only supported in legacy mode")
+      return None
+    }
+
+    val child = avg.child
+    val childExpr = exprToProto(child, inputs, binding)
+    val dataType = serializeDataType(expr.dataType)
+
+    val sumDataType = child.dataType match {
+      case decimalType: DecimalType =>
+        // This is input precision + 10 to be consistent with Spark
+        val precision = Math.min(DecimalType.MAX_PRECISION, decimalType.precision + 10)
+        val newType =
+          DecimalType.apply(precision, decimalType.scale)
+        serializeDataType(newType)
+      case _ =>
+        serializeDataType(child.dataType)
+    }
+
+    if (childExpr.isDefined && dataType.isDefined) {
+      val builder = ExprOuterClass.Avg.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setDatatype(dataType.get)
+      builder.setFailOnError(getFailOnError(avg))
+      builder.setSumDatatype(sumDataType.get)
+
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setAvg(builder)
+          .build())
+    } else if (dataType.isEmpty) {
+      withInfo(aggExpr, s"datatype ${expr.dataType} is not supported", child)
+      None
+    } else {
+      withInfo(aggExpr, child)
+      None
+    }
+  }
+}
+
 object AggSerde {
+
   def minMaxDataTypeSupported(dt: DataType): Boolean = {
     dt match {
-      case _: NumericType | DateType | TimestampType | BooleanType => true
+      case _: NumericType =>
+        // TODO: implement support for interval types
+        true
+      case DateType | TimestampType | BooleanType => true
       case _ => false
     }
   }
+
+  def avgDataTypeSupported(dt: DataType): Boolean = {
+    dt match {
+      case _: NumericType =>
+        // TODO: implement support for interval types
+        true
+      case _ => false
+    }
+  }
+
 }
