@@ -91,6 +91,10 @@ struct ExecutionContext {
     pub runtime: Runtime,
     /// Native metrics
     pub metrics: Arc<GlobalRef>,
+    // The interval in milliseconds to update metrics
+    pub metrics_update_interval: Option<Duration>,
+    // The last update time of metrics
+    pub metrics_last_update_time: Instant,
     /// The time it took to create the native plan and configure the context
     pub plan_creation_time: Duration,
     /// DataFusion SessionContext
@@ -99,8 +103,6 @@ struct ExecutionContext {
     pub debug_native: bool,
     /// Whether to write native plans with metrics to stdout
     pub explain_native: bool,
-    /// Map of metrics name -> jstring object to cache jni_NewStringUTF calls.
-    pub metrics_jstrings: HashMap<String, Arc<GlobalRef>>,
     /// Memory pool config
     pub memory_pool_config: MemoryPoolConfig,
 }
@@ -160,6 +162,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     serialized_query: jbyteArray,
     partition_count: jint,
     metrics_node: JObject,
+    metrics_update_interval: jlong,
     comet_task_memory_manager_obj: JObject,
     batch_size: jint,
     use_unified_memory_manager: jboolean,
@@ -222,6 +225,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
         let plan_creation_time = start.elapsed();
 
+        let metrics_update_interval = if metrics_update_interval > 0 {
+            Some(Duration::from_millis(metrics_update_interval as u64))
+        } else {
+            None
+        };
+
         let exec_context = Box::new(ExecutionContext {
             id,
             task_attempt_id,
@@ -233,11 +242,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             stream: None,
             runtime,
             metrics,
+            metrics_update_interval,
+            metrics_last_update_time: Instant::now(),
             plan_creation_time,
             session_ctx: Arc::new(session),
             debug_native: debug_native == 1,
             explain_native: explain_native == 1,
-            metrics_jstrings: HashMap::new(),
             memory_pool_config,
         });
 
@@ -508,8 +518,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             let next_item = exec_context.stream.as_mut().unwrap().next();
             let poll_output = exec_context.runtime.block_on(async { poll!(next_item) });
 
-            // Update metrics
-            update_metrics(&mut env, exec_context)?;
+            // update metrics at interval
+            if let Some(interval) = exec_context.metrics_update_interval {
+                let now = Instant::now();
+                if now - exec_context.metrics_last_update_time >= interval {
+                    update_metrics(&mut env, exec_context)?;
+                    exec_context.metrics_last_update_time = now;
+                }
+            }
 
             match poll_output {
                 Poll::Ready(Some(output)) => {
@@ -561,8 +577,12 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
     _class: JClass,
     exec_context: jlong,
 ) {
-    try_unwrap_or_throw(&e, |_| unsafe {
+    try_unwrap_or_throw(&e, |mut env| unsafe {
         let execution_context = get_execution_context(exec_context);
+
+        // Update metrics
+        update_metrics(&mut env, execution_context)?;
+
         if execution_context.memory_pool_config.pool_type == MemoryPoolType::FairSpillTaskShared
             || execution_context.memory_pool_config.pool_type == MemoryPoolType::GreedyTaskShared
         {
@@ -586,10 +606,13 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
 
 /// Updates the metrics of the query plan.
 fn update_metrics(env: &mut JNIEnv, exec_context: &mut ExecutionContext) -> CometResult<()> {
-    let native_query = exec_context.root_op.as_ref().unwrap();
-    let metrics = exec_context.metrics.as_obj();
-    let metrics_jstrings = &mut exec_context.metrics_jstrings;
-    update_comet_metric(env, metrics, native_query, metrics_jstrings)
+    if exec_context.root_op.is_some() {
+        let native_query = exec_context.root_op.as_ref().unwrap();
+        let metrics = exec_context.metrics.as_obj();
+        update_comet_metric(env, metrics, native_query)
+    } else {
+        Ok(())
+    }
 }
 
 fn convert_datatype_arrays(
