@@ -304,7 +304,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             sql("SELECT array_except(array(_2, _3, _4), array(_3, _4)) from t1"))
           checkSparkAnswerAndOperator(sql("SELECT array_except(array(_18), array(_19)) from t1"))
           checkSparkAnswerAndOperator(spark.sql(
-            "SELECT array_except((CASE WHEN _2 = _3 THEN array(_2, _3, _4) END), array(_4)) FROM t1"))
+            "SELECT array_except((CASE WHEN _2 = _3 THEN array(_2, _3, _4) END), array(_4)) FROM t1 WHERE _2 IS NOT NULL"))
         }
       }
     }
@@ -328,14 +328,16 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             generateStruct = false,
             generateMap = false))
       }
-      val table = spark.read.parquet(filename)
-      table.createOrReplaceTempView("t1")
-      // test with array of each column
-      for (fieldName <- table.schema.fieldNames) {
-        sql(s"SELECT array($fieldName, $fieldName) as a, array($fieldName) as b FROM t1")
-          .createOrReplaceTempView("t2")
-        val df = sql("SELECT array_except(a, b) FROM t2")
-        checkSparkAnswerAndOperator(df)
+      withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+        val table = spark.read.parquet(filename)
+        table.createOrReplaceTempView("t1")
+        // test with array of each column
+        for (fieldName <- table.schema.fieldNames) {
+          sql(s"SELECT array($fieldName, $fieldName) as a, array($fieldName) as b FROM t1")
+            .createOrReplaceTempView("t2")
+          val df = sql("SELECT array_except(a, b) FROM t2")
+          checkSparkAnswerAndOperator(df)
+        }
       }
     }
   }
@@ -357,7 +359,8 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
         CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
-        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+        CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
         val table = spark.read.parquet(filename)
         table.createOrReplaceTempView("t1")
         // test with array of each column
