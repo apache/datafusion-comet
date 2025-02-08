@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.collection.JavaConverters.asJavaIterableConverter
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Covariance, CovPopulation, CovSample, First, Last, Sum}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, CentralMomentAgg, CovPopulation, CovSample, Covariance, First, Last, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.types.DecimalType
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -413,7 +413,7 @@ trait CometCovBase extends CometAggregateExpressionSerde {
   }
 }
 
-object CometCovSampleAgg extends CometCovBase {
+object CometCovSample extends CometCovBase {
   override def convert(
       aggExpr: AggregateExpression,
       expr: Expression,
@@ -424,14 +424,53 @@ object CometCovSampleAgg extends CometCovBase {
   }
 }
 
-object CometCovPopulationAgg extends CometCovBase {
+object CometCovPopulation extends CometCovBase {
   override def convert(
       aggExpr: AggregateExpression,
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.AggExpr] = {
-    val covSample = expr.asInstanceOf[CovPopulation]
-    convertCov(aggExpr, covSample, covSample.nullOnDivideByZero, 1, inputs, binding)
+    val covPopulation = expr.asInstanceOf[CovPopulation]
+    convertCov(aggExpr, covPopulation, covPopulation.nullOnDivideByZero, 1, inputs, binding)
+  }
+}
+
+trait CometVariance extends CometAggregateExpressionSerde {
+  def convertVariance(aggExpr: AggregateExpression, expr: CentralMomentAgg, nullOnDivideByZero: Boolean, statsType: Int, inputs: Seq[Attribute], binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+    val childExpr = exprToProto(expr.child, inputs, binding)
+    val dataType = serializeDataType(expr.dataType)
+
+    if (childExpr.isDefined && dataType.isDefined) {
+      val builder = ExprOuterClass.Variance.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setNullOnDivideByZero(nullOnDivideByZero)
+      builder.setDatatype(dataType.get)
+      builder.setStatsTypeValue(statsType)
+
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setVariance(builder)
+          .build())
+    } else {
+      withInfo(aggExpr, expr.child)
+      None
+    }
+  }
+
+}
+
+object CometVarianceSamp extends CometVariance {
+  override def convert(aggExpr: AggregateExpression, expr: Expression, inputs: Seq[Attribute], binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+    val variance =  expr.asInstanceOf[VarianceSamp]
+    convertVariance(aggExpr, variance, variance.nullOnDivideByZero, 0, inputs, binding)
+  }
+}
+
+object CometVariancePop extends CometVariance {
+  override def convert(aggExpr: AggregateExpression, expr: Expression, inputs: Seq[Attribute], binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+    val variance =  expr.asInstanceOf[VariancePop]
+    convertVariance(aggExpr, variance, variance.nullOnDivideByZero, 1, inputs, binding)
   }
 }
 
