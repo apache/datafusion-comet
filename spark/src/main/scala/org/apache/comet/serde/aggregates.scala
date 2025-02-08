@@ -659,16 +659,16 @@ object CometBloomFilterAggregate extends CometAggregateExpressionSerde {
       numItemsExpr.isDefined &&
       numBitsExpr.isDefined &&
       dataType.isDefined) {
-      val bloomFilterAggBuilder = ExprOuterClass.BloomFilterAgg.newBuilder()
-      bloomFilterAggBuilder.setChild(childExpr.get)
-      bloomFilterAggBuilder.setNumItems(numItemsExpr.get)
-      bloomFilterAggBuilder.setNumBits(numBitsExpr.get)
-      bloomFilterAggBuilder.setDatatype(dataType.get)
+      val builder = ExprOuterClass.BloomFilterAgg.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setNumItems(numItemsExpr.get)
+      builder.setNumBits(numBitsExpr.get)
+      builder.setDatatype(dataType.get)
 
       Some(
         ExprOuterClass.AggExpr
           .newBuilder()
-          .setBloomFilterAgg(bloomFilterAggBuilder)
+          .setBloomFilterAgg(builder)
           .build())
     } else {
       withInfo(
