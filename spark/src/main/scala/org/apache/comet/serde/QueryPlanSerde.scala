@@ -175,13 +175,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     Some(dataType)
   }
 
-  private def sumDataTypeSupported(dt: DataType): Boolean = {
-    dt match {
-      case _: NumericType => true
-      case _ => false
-    }
-  }
-
   private def bitwiseAggTypeSupported(dt: DataType): Boolean = {
     dt match {
       case _: IntegerType | LongType | ShortType | ByteType => true
@@ -215,7 +208,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
                 None
               }
             case s: Sum =>
-              if (sumDataTypeSupported(s.dataType) && !s.dataType.isInstanceOf[DecimalType]) {
+              if (AggSerde.sumDataTypeSupported(s.dataType) && !s.dataType
+                  .isInstanceOf[DecimalType]) {
                 Some(agg)
               } else {
                 withInfo(windowExpr, s"datatype ${s.dataType} is not supported", expr)
@@ -366,29 +360,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     }
 
     aggExpr.aggregateFunction match {
-      case s @ Sum(child, _) if sumDataTypeSupported(s.dataType) && isLegacyMode(s) =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(s.dataType)
-
-        if (childExpr.isDefined && dataType.isDefined) {
-          val sumBuilder = ExprOuterClass.Sum.newBuilder()
-          sumBuilder.setChild(childExpr.get)
-          sumBuilder.setDatatype(dataType.get)
-          sumBuilder.setFailOnError(getFailOnError(s))
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setSum(sumBuilder)
-              .build())
-        } else {
-          if (dataType.isEmpty) {
-            withInfo(aggExpr, s"datatype ${s.dataType} is not supported", child)
-          } else {
-            withInfo(aggExpr, child)
-          }
-          None
-        }
+      case sum: Sum => CometSum.convert(aggExpr, sum, inputs, binding)
       case avg: Average => CometAverage.convert(aggExpr, avg, inputs, binding)
       case count: Count => CometCount.convert(aggExpr, count, inputs, binding)
       case min: Min => CometMin.convert(aggExpr, min, inputs, binding)

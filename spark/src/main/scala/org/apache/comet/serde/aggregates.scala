@@ -22,8 +22,8 @@ package org.apache.comet.serde
 import scala.collection.JavaConverters.asJavaIterableConverter
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average}
-import org.apache.spark.sql.types.{BooleanType, DataType, DateType, DecimalType, NumericType, TimestampType}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Sum}
+import org.apache.spark.sql.types.{BooleanType, DataType, DateType, DecimalType, TimestampType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
@@ -175,24 +175,66 @@ object CometAverage extends CometAggregateExpressionSerde with ShimQueryPlanSerd
     }
   }
 }
+object CometSum extends CometAggregateExpressionSerde with ShimQueryPlanSerde {
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+    val sum = expr.asInstanceOf[Sum]
+    val childExpr = exprToProto(sum.child, inputs, binding)
+    val dataType = serializeDataType(sum.dataType)
+
+    if (childExpr.isDefined && dataType.isDefined) {
+      val sumBuilder = ExprOuterClass.Sum.newBuilder()
+      sumBuilder.setChild(childExpr.get)
+      sumBuilder.setDatatype(dataType.get)
+      sumBuilder.setFailOnError(getFailOnError(sum))
+
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setSum(sumBuilder)
+          .build())
+    } else {
+      if (dataType.isEmpty) {
+        withInfo(aggExpr, s"datatype ${sum.dataType} is not supported", sum.child)
+      } else {
+        withInfo(aggExpr, sum.child)
+      }
+      None
+    }
+  }
+}
 
 object AggSerde {
+  import org.apache.spark.sql.types._
 
   def minMaxDataTypeSupported(dt: DataType): Boolean = {
     dt match {
-      case _: NumericType =>
-        // TODO: implement support for interval types
-        true
-      case DateType | TimestampType | BooleanType => true
+      case BooleanType => true
+      case ByteType | ShortType | IntegerType | LongType => true
+      case FloatType | DoubleType => true
+      case _: DecimalType => true
+      case DateType | TimestampType => true
       case _ => false
     }
   }
 
   def avgDataTypeSupported(dt: DataType): Boolean = {
     dt match {
-      case _: NumericType =>
-        // TODO: implement support for interval types
-        true
+      case ByteType | ShortType | IntegerType | LongType => true
+      case FloatType | DoubleType => true
+      case _: DecimalType => true
+      case _ => false
+    }
+  }
+
+  def sumDataTypeSupported(dt: DataType): Boolean = {
+    dt match {
+      case ByteType | ShortType | IntegerType | LongType => true
+      case FloatType | DoubleType => true
+      case _: DecimalType => true
       case _ => false
     }
   }
