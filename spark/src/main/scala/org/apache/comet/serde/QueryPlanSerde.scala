@@ -365,50 +365,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case count: Count => CometCount.convert(aggExpr, count, inputs, binding)
       case min: Min => CometMin.convert(aggExpr, min, inputs, binding)
       case max: Max => CometMax.convert(aggExpr, max, inputs, binding)
-      case first @ First(child, ignoreNulls)
-          if !ignoreNulls => // DataFusion doesn't support ignoreNulls true
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(first.dataType)
-
-        if (childExpr.isDefined && dataType.isDefined) {
-          val firstBuilder = ExprOuterClass.First.newBuilder()
-          firstBuilder.setChild(childExpr.get)
-          firstBuilder.setDatatype(dataType.get)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setFirst(firstBuilder)
-              .build())
-        } else if (dataType.isEmpty) {
-          withInfo(aggExpr, s"datatype ${first.dataType} is not supported", child)
-          None
-        } else {
-          withInfo(aggExpr, child)
-          None
-        }
-      case last @ Last(child, ignoreNulls)
-          if !ignoreNulls => // DataFusion doesn't support ignoreNulls true
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(last.dataType)
-
-        if (childExpr.isDefined && dataType.isDefined) {
-          val lastBuilder = ExprOuterClass.Last.newBuilder()
-          lastBuilder.setChild(childExpr.get)
-          lastBuilder.setDatatype(dataType.get)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setLast(lastBuilder)
-              .build())
-        } else if (dataType.isEmpty) {
-          withInfo(aggExpr, s"datatype ${last.dataType} is not supported", child)
-          None
-        } else {
-          withInfo(aggExpr, child)
-          None
-        }
+      case first: First => CometFirst.convert(aggExpr, first, inputs, binding)
+      case last: Last => CometLast.convert(aggExpr, last, inputs, binding)
       case bitAnd @ BitAndAgg(child) if bitwiseAggTypeSupported(bitAnd.dataType) =>
         val childExpr = exprToProto(child, inputs, binding)
         val dataType = serializeDataType(bitAnd.dataType)

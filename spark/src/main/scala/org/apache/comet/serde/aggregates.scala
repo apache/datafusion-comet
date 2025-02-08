@@ -20,11 +20,9 @@
 package org.apache.comet.serde
 
 import scala.collection.JavaConverters.asJavaIterableConverter
-
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Sum}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, First, Last, Sum}
 import org.apache.spark.sql.types.{BooleanType, DataType, DateType, DecimalType, TimestampType}
-
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 import org.apache.comet.shims.ShimQueryPlanSerde
@@ -202,6 +200,70 @@ object CometSum extends CometAggregateExpressionSerde with ShimQueryPlanSerde {
       } else {
         withInfo(aggExpr, sum.child)
       }
+      None
+    }
+  }
+}
+
+object CometFirst  extends CometAggregateExpressionSerde {
+  override def convert(aggExpr: AggregateExpression, expr: Expression, inputs: Seq[Attribute], binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+    val first = expr.asInstanceOf[First]
+    if (first.ignoreNulls) {
+      // DataFusion doesn't support ignoreNulls true
+      withInfo(aggExpr, "First not supported when ignoreNulls=true")
+      return None
+    }
+    val child = first.children.head
+    val childExpr = exprToProto(child, inputs, binding)
+    val dataType = serializeDataType(first.dataType)
+
+    if (childExpr.isDefined && dataType.isDefined) {
+      val firstBuilder = ExprOuterClass.First.newBuilder()
+      firstBuilder.setChild(childExpr.get)
+      firstBuilder.setDatatype(dataType.get)
+
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setFirst(firstBuilder)
+          .build())
+    } else if (dataType.isEmpty) {
+      withInfo(aggExpr, s"datatype ${first.dataType} is not supported", child)
+      None
+    } else {
+      withInfo(aggExpr, child)
+      None
+    }
+  }
+}
+
+object CometLast  extends CometAggregateExpressionSerde {
+  override def convert(aggExpr: AggregateExpression, expr: Expression, inputs: Seq[Attribute], binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+    val last = expr.asInstanceOf[Last]
+    if (last.ignoreNulls) {
+      // DataFusion doesn't support ignoreNulls true
+      withInfo(aggExpr, "Last not supported when ignoreNulls=true")
+      return None
+    }
+    val child = last.children.head
+    val childExpr = exprToProto(child, inputs, binding)
+    val dataType = serializeDataType(last.dataType)
+
+    if (childExpr.isDefined && dataType.isDefined) {
+      val LastBuilder = ExprOuterClass.Last.newBuilder()
+      LastBuilder.setChild(childExpr.get)
+      LastBuilder.setDatatype(dataType.get)
+
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setLast(LastBuilder)
+          .build())
+    } else if (dataType.isEmpty) {
+      withInfo(aggExpr, s"datatype ${last.dataType} is not supported", child)
+      None
+    } else {
+      withInfo(aggExpr, child)
       None
     }
   }
