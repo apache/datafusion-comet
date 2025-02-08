@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.collection.JavaConverters.asJavaIterableConverter
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, Corr, Covariance, CovPopulation, CovSample, First, Last, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, Corr, Covariance, CovPopulation, CovSample, First, Last, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ByteType, DecimalType, IntegerType, LongType, ShortType, StringType}
 
@@ -567,7 +567,7 @@ object CometStddevSamp extends CometStddev {
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    val variance = expr.asInstanceOf[VarianceSamp]
+    val variance = expr.asInstanceOf[StddevSamp]
     convertStddev(
       aggExpr,
       variance,
@@ -586,7 +586,7 @@ object CometStddevPop extends CometStddev {
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    val variance = expr.asInstanceOf[VariancePop]
+    val variance = expr.asInstanceOf[StddevPop]
     convertStddev(
       aggExpr,
       variance,
