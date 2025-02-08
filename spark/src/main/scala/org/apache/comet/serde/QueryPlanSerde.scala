@@ -175,13 +175,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     Some(dataType)
   }
 
-  private def bitwiseAggTypeSupported(dt: DataType): Boolean = {
-    dt match {
-      case _: IntegerType | LongType | ShortType | ByteType => true
-      case _ => false
-    }
-  }
-
   def windowExprToProto(
       windowExpr: WindowExpression,
       output: Seq[Attribute],
@@ -360,76 +353,16 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     }
 
     aggExpr.aggregateFunction match {
-      case sum: Sum => CometSum.convert(aggExpr, sum, inputs, binding)
-      case avg: Average => CometAverage.convert(aggExpr, avg, inputs, binding)
-      case count: Count => CometCount.convert(aggExpr, count, inputs, binding)
-      case min: Min => CometMin.convert(aggExpr, min, inputs, binding)
-      case max: Max => CometMax.convert(aggExpr, max, inputs, binding)
-      case first: First => CometFirst.convert(aggExpr, first, inputs, binding)
-      case last: Last => CometLast.convert(aggExpr, last, inputs, binding)
-      case bitAnd @ BitAndAgg(child) if bitwiseAggTypeSupported(bitAnd.dataType) =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(bitAnd.dataType)
-
-        if (childExpr.isDefined && dataType.isDefined) {
-          val bitAndBuilder = ExprOuterClass.BitAndAgg.newBuilder()
-          bitAndBuilder.setChild(childExpr.get)
-          bitAndBuilder.setDatatype(dataType.get)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setBitAndAgg(bitAndBuilder)
-              .build())
-        } else if (dataType.isEmpty) {
-          withInfo(aggExpr, s"datatype ${bitAnd.dataType} is not supported", child)
-          None
-        } else {
-          withInfo(aggExpr, child)
-          None
-        }
-      case bitOr @ BitOrAgg(child) if bitwiseAggTypeSupported(bitOr.dataType) =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(bitOr.dataType)
-
-        if (childExpr.isDefined && dataType.isDefined) {
-          val bitOrBuilder = ExprOuterClass.BitOrAgg.newBuilder()
-          bitOrBuilder.setChild(childExpr.get)
-          bitOrBuilder.setDatatype(dataType.get)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setBitOrAgg(bitOrBuilder)
-              .build())
-        } else if (dataType.isEmpty) {
-          withInfo(aggExpr, s"datatype ${bitOr.dataType} is not supported", child)
-          None
-        } else {
-          withInfo(aggExpr, child)
-          None
-        }
-      case bitXor @ BitXorAgg(child) if bitwiseAggTypeSupported(bitXor.dataType) =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(bitXor.dataType)
-
-        if (childExpr.isDefined && dataType.isDefined) {
-          val bitXorBuilder = ExprOuterClass.BitXorAgg.newBuilder()
-          bitXorBuilder.setChild(childExpr.get)
-          bitXorBuilder.setDatatype(dataType.get)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setBitXorAgg(bitXorBuilder)
-              .build())
-        } else if (dataType.isEmpty) {
-          withInfo(aggExpr, s"datatype ${bitXor.dataType} is not supported", child)
-          None
-        } else {
-          withInfo(aggExpr, child)
-          None
-        }
+      case agg: Sum => CometSum.convert(aggExpr, agg, inputs, binding)
+      case agg: Average => CometAverage.convert(aggExpr, agg, inputs, binding)
+      case agg: Count => CometCount.convert(aggExpr, agg, inputs, binding)
+      case agg: Min => CometMin.convert(aggExpr, agg, inputs, binding)
+      case agg: Max => CometMax.convert(aggExpr, agg, inputs, binding)
+      case agg: First => CometFirst.convert(aggExpr, agg, inputs, binding)
+      case agg: Last => CometLast.convert(aggExpr, agg, inputs, binding)
+      case agg: BitAndAgg => CometBitAndAgg.convert(aggExpr, agg, inputs, binding)
+      case agg: BitOrAgg => CometBitOrAgg.convert(aggExpr, agg, inputs, binding)
+      case agg: BitXorAgg => CometBitXOrAgg.convert(aggExpr, agg, inputs, binding)
       case cov @ CovSample(child1, child2, nullOnDivideByZero) =>
         val child1Expr = exprToProto(child1, inputs, binding)
         val child2Expr = exprToProto(child2, inputs, binding)

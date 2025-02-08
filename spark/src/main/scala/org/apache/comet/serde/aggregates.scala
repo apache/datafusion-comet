@@ -21,8 +21,8 @@ package org.apache.comet.serde
 
 import scala.collection.JavaConverters.asJavaIterableConverter
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, First, Last, Sum}
-import org.apache.spark.sql.types.{BooleanType, DataType, DateType, DecimalType, TimestampType}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, First, Last, Sum}
+import org.apache.spark.sql.types.DecimalType
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 import org.apache.comet.shims.ShimQueryPlanSerde
@@ -43,14 +43,14 @@ object CometMin extends CometAggregateExpressionSerde {
     val dataType = serializeDataType(expr.dataType)
 
     if (childExpr.isDefined && dataType.isDefined) {
-      val minBuilder = ExprOuterClass.Min.newBuilder()
-      minBuilder.setChild(childExpr.get)
-      minBuilder.setDatatype(dataType.get)
+      val builder = ExprOuterClass.Min.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setDatatype(dataType.get)
 
       Some(
         ExprOuterClass.AggExpr
           .newBuilder()
-          .setMin(minBuilder)
+          .setMin(builder)
           .build())
     } else if (dataType.isEmpty) {
       withInfo(aggExpr, s"datatype ${expr.dataType} is not supported", child)
@@ -78,14 +78,14 @@ object CometMax extends CometAggregateExpressionSerde {
     val dataType = serializeDataType(expr.dataType)
 
     if (childExpr.isDefined && dataType.isDefined) {
-      val MaxBuilder = ExprOuterClass.Max.newBuilder()
-      MaxBuilder.setChild(childExpr.get)
-      MaxBuilder.setDatatype(dataType.get)
+      val builder = ExprOuterClass.Max.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setDatatype(dataType.get)
 
       Some(
         ExprOuterClass.AggExpr
           .newBuilder()
-          .setMax(MaxBuilder)
+          .setMax(builder)
           .build())
     } else if (dataType.isEmpty) {
       withInfo(aggExpr, s"datatype ${expr.dataType} is not supported", child)
@@ -105,12 +105,12 @@ object CometCount extends CometAggregateExpressionSerde {
       binding: Boolean): Option[ExprOuterClass.AggExpr] = {
     val exprChildren = expr.children.map(exprToProto(_, inputs, binding))
     if (exprChildren.forall(_.isDefined)) {
-      val countBuilder = ExprOuterClass.Count.newBuilder()
-      countBuilder.addAllChildren(exprChildren.map(_.get).asJava)
+      val builder = ExprOuterClass.Count.newBuilder()
+      builder.addAllChildren(exprChildren.map(_.get).asJava)
       Some(
         ExprOuterClass.AggExpr
           .newBuilder()
-          .setCount(countBuilder)
+          .setCount(builder)
           .build())
     } else {
       withInfo(aggExpr, expr.children: _*)
@@ -184,15 +184,15 @@ object CometSum extends CometAggregateExpressionSerde with ShimQueryPlanSerde {
     val dataType = serializeDataType(sum.dataType)
 
     if (childExpr.isDefined && dataType.isDefined) {
-      val sumBuilder = ExprOuterClass.Sum.newBuilder()
-      sumBuilder.setChild(childExpr.get)
-      sumBuilder.setDatatype(dataType.get)
-      sumBuilder.setFailOnError(getFailOnError(sum))
+      val builder = ExprOuterClass.Sum.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setDatatype(dataType.get)
+      builder.setFailOnError(getFailOnError(sum))
 
       Some(
         ExprOuterClass.AggExpr
           .newBuilder()
-          .setSum(sumBuilder)
+          .setSum(builder)
           .build())
     } else {
       if (dataType.isEmpty) {
@@ -218,14 +218,14 @@ object CometFirst  extends CometAggregateExpressionSerde {
     val dataType = serializeDataType(first.dataType)
 
     if (childExpr.isDefined && dataType.isDefined) {
-      val firstBuilder = ExprOuterClass.First.newBuilder()
-      firstBuilder.setChild(childExpr.get)
-      firstBuilder.setDatatype(dataType.get)
+      val builder = ExprOuterClass.First.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setDatatype(dataType.get)
 
       Some(
         ExprOuterClass.AggExpr
           .newBuilder()
-          .setFirst(firstBuilder)
+          .setFirst(builder)
           .build())
     } else if (dataType.isEmpty) {
       withInfo(aggExpr, s"datatype ${first.dataType} is not supported", child)
@@ -250,17 +250,107 @@ object CometLast  extends CometAggregateExpressionSerde {
     val dataType = serializeDataType(last.dataType)
 
     if (childExpr.isDefined && dataType.isDefined) {
-      val LastBuilder = ExprOuterClass.Last.newBuilder()
-      LastBuilder.setChild(childExpr.get)
-      LastBuilder.setDatatype(dataType.get)
+      val builder = ExprOuterClass.Last.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setDatatype(dataType.get)
 
       Some(
         ExprOuterClass.AggExpr
           .newBuilder()
-          .setLast(LastBuilder)
+          .setLast(builder)
           .build())
     } else if (dataType.isEmpty) {
       withInfo(aggExpr, s"datatype ${last.dataType} is not supported", child)
+      None
+    } else {
+      withInfo(aggExpr, child)
+      None
+    }
+  }
+}
+
+object CometBitAndAgg extends CometAggregateExpressionSerde {
+  override def convert(aggExpr: AggregateExpression, expr: Expression, inputs: Seq[Attribute], binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+    val bitAnd = expr.asInstanceOf[BitAndAgg]
+    if (!AggSerde.bitwiseAggTypeSupported(bitAnd.dataType)) {
+      withInfo(aggExpr, s"Unsupported data type: ${expr.dataType}")
+      return None
+    }
+    val child = bitAnd.child
+    val childExpr = exprToProto(child, inputs, binding)
+    val dataType = serializeDataType(bitAnd.dataType)
+
+    if (childExpr.isDefined && dataType.isDefined) {
+      val builder = ExprOuterClass.BitAndAgg.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setDatatype(dataType.get)
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setBitAndAgg(builder)
+          .build())
+    } else if (dataType.isEmpty) {
+      withInfo(aggExpr, s"datatype ${bitAnd.dataType} is not supported", child)
+      None
+    } else {
+      withInfo(aggExpr, child)
+      None
+    }
+  }
+}
+
+object CometBitOrAgg extends CometAggregateExpressionSerde {
+  override def convert(aggExpr: AggregateExpression, expr: Expression, inputs: Seq[Attribute], binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+    val bitOr = expr.asInstanceOf[BitOrAgg]
+    if (!AggSerde.bitwiseAggTypeSupported(bitOr.dataType)) {
+      withInfo(aggExpr, s"Unsupported data type: ${expr.dataType}")
+      return None
+    }
+    val child = bitOr.child
+    val childExpr = exprToProto(child, inputs, binding)
+    val dataType = serializeDataType(bitOr.dataType)
+
+    if (childExpr.isDefined && dataType.isDefined) {
+      val builder = ExprOuterClass.BitOrAgg.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setDatatype(dataType.get)
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setBitOrAgg(builder)
+          .build())
+    } else if (dataType.isEmpty) {
+      withInfo(aggExpr, s"datatype ${bitOr.dataType} is not supported", child)
+      None
+    } else {
+      withInfo(aggExpr, child)
+      None
+    }
+  }
+}
+
+object CometBitXOrAgg extends CometAggregateExpressionSerde {
+  override def convert(aggExpr: AggregateExpression, expr: Expression, inputs: Seq[Attribute], binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+    val bitXor = expr.asInstanceOf[BitXorAgg]
+    if (!AggSerde.bitwiseAggTypeSupported(bitXor.dataType)) {
+      withInfo(aggExpr, s"Unsupported data type: ${expr.dataType}")
+      return None
+    }
+    val child = bitXor.child
+    val childExpr = exprToProto(child, inputs, binding)
+    val dataType = serializeDataType(bitXor.dataType)
+
+    if (childExpr.isDefined && dataType.isDefined) {
+      val builder = ExprOuterClass.BitXorAgg.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setDatatype(dataType.get)
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setBitXorAgg(builder)
+          .build())
+    } else if (dataType.isEmpty) {
+      withInfo(aggExpr, s"datatype ${bitXor.dataType} is not supported", child)
       None
     } else {
       withInfo(aggExpr, child)
@@ -297,6 +387,13 @@ object AggSerde {
       case ByteType | ShortType | IntegerType | LongType => true
       case FloatType | DoubleType => true
       case _: DecimalType => true
+      case _ => false
+    }
+  }
+
+  def bitwiseAggTypeSupported(dt: DataType): Boolean = {
+    dt match {
+      case ByteType | ShortType | IntegerType | LongType => true
       case _ => false
     }
   }
