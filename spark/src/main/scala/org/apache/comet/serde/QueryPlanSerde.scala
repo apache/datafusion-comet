@@ -190,13 +190,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     }
   }
 
-  private def minMaxDataTypeSupported(dt: DataType): Boolean = {
-    dt match {
-      case _: NumericType | DateType | TimestampType | BooleanType => true
-      case _ => false
-    }
-  }
-
   private def bitwiseAggTypeSupported(dt: DataType): Boolean = {
     dt match {
       case _: IntegerType | LongType | ShortType | ByteType => true
@@ -216,14 +209,14 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             case _: Count =>
               Some(agg)
             case min: Min =>
-              if (minMaxDataTypeSupported(min.dataType)) {
+              if (AggSerde.minMaxDataTypeSupported(min.dataType)) {
                 Some(agg)
               } else {
                 withInfo(windowExpr, s"datatype ${min.dataType} is not supported", expr)
                 None
               }
             case max: Max =>
-              if (minMaxDataTypeSupported(max.dataType)) {
+              if (AggSerde.minMaxDataTypeSupported(max.dataType)) {
                 Some(agg)
               } else {
                 withInfo(windowExpr, s"datatype ${max.dataType} is not supported", expr)
@@ -456,48 +449,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           withInfo(aggExpr, children: _*)
           None
         }
-      case min @ Min(child) if minMaxDataTypeSupported(min.dataType) =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(min.dataType)
-
-        if (childExpr.isDefined && dataType.isDefined) {
-          val minBuilder = ExprOuterClass.Min.newBuilder()
-          minBuilder.setChild(childExpr.get)
-          minBuilder.setDatatype(dataType.get)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setMin(minBuilder)
-              .build())
-        } else if (dataType.isEmpty) {
-          withInfo(aggExpr, s"datatype ${min.dataType} is not supported", child)
-          None
-        } else {
-          withInfo(aggExpr, child)
-          None
-        }
-      case max @ Max(child) if minMaxDataTypeSupported(max.dataType) =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(max.dataType)
-
-        if (childExpr.isDefined && dataType.isDefined) {
-          val maxBuilder = ExprOuterClass.Max.newBuilder()
-          maxBuilder.setChild(childExpr.get)
-          maxBuilder.setDatatype(dataType.get)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setMax(maxBuilder)
-              .build())
-        } else if (dataType.isEmpty) {
-          withInfo(aggExpr, s"datatype ${max.dataType} is not supported", child)
-          None
-        } else {
-          withInfo(aggExpr, child)
-          None
-        }
+      case min: Min => CometMin.convert(aggExpr, min, inputs, binding)
+      case max: Max => CometMax.convert(aggExpr, max, inputs, binding)
       case first @ First(child, ignoreNulls)
           if !ignoreNulls => // DataFusion doesn't support ignoreNulls true
         val childExpr = exprToProto(child, inputs, binding)
@@ -3433,6 +3386,35 @@ trait CometExpressionSerde {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr]
+}
+
+/**
+ * Trait for providing serialization logic for aggregate expressions.
+ */
+trait CometAggregateExpressionSerde {
+
+  /**
+   * Convert a Spark expression into a protocol buffer representation that can be passed into
+   * native code.
+   *
+   * @param expr
+   *   The aggregate expression.
+   * @param expr
+   *   The aggregate function.
+   * @param inputs
+   *   The input attributes.
+   * @param binding
+   *   Whether the attributes are bound (this is only relevant in aggregate expressions).
+   * @return
+   *   Protocol buffer representation, or None if the expression could not be converted. In this
+   *   case it is expected that the input expression will have been tagged with reasons why it
+   *   could not be converted.
+   */
+  def convert(
+      aggExpr: AggregateExpression,
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.AggExpr]
 }
 
 /** Marker trait for an expression that is not guaranteed to be 100% compatible with Spark */
