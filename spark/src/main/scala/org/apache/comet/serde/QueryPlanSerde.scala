@@ -23,7 +23,7 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, Complete, Corr, Count, CovPopulation, CovSample, Final, First, Last, Max, Min, Partial, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, Complete, Corr, Count, CovPopulation, CovSample, Final, First, Last, Max, Min, Partial, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
@@ -352,147 +352,32 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       return None
     }
 
-    aggExpr.aggregateFunction match {
-      case agg: Sum => CometSum.convert(aggExpr, agg, inputs, binding)
-      case agg: Average => CometAverage.convert(aggExpr, agg, inputs, binding)
-      case agg: Count => CometCount.convert(aggExpr, agg, inputs, binding)
-      case agg: Min => CometMin.convert(aggExpr, agg, inputs, binding)
-      case agg: Max => CometMax.convert(aggExpr, agg, inputs, binding)
-      case agg: First => CometFirst.convert(aggExpr, agg, inputs, binding)
-      case agg: Last => CometLast.convert(aggExpr, agg, inputs, binding)
-      case agg: BitAndAgg => CometBitAndAgg.convert(aggExpr, agg, inputs, binding)
-      case agg: BitOrAgg => CometBitOrAgg.convert(aggExpr, agg, inputs, binding)
-      case agg: BitXorAgg => CometBitXOrAgg.convert(aggExpr, agg, inputs, binding)
-      case agg: CovSample => CometCovSample.convert(aggExpr, agg, inputs, binding)
-      case agg: CovPopulation => CometCovPopulation.convert(aggExpr, agg, inputs, binding)
-      case agg: VarianceSamp => CometVarianceSamp.convert(aggExpr, agg, inputs, binding)
-      case agg: VariancePop => CometVariancePop.convert(aggExpr, agg, inputs, binding)
-      case std @ StddevSamp(child, nullOnDivideByZero) =>
-        if (CometConf.COMET_EXPR_STDDEV_ENABLED.get(conf)) {
-          val childExpr = exprToProto(child, inputs, binding)
-          val dataType = serializeDataType(std.dataType)
-
-          if (childExpr.isDefined && dataType.isDefined) {
-            val stdBuilder = ExprOuterClass.Stddev.newBuilder()
-            stdBuilder.setChild(childExpr.get)
-            stdBuilder.setNullOnDivideByZero(nullOnDivideByZero)
-            stdBuilder.setDatatype(dataType.get)
-            stdBuilder.setStatsTypeValue(0)
-
-            Some(
-              ExprOuterClass.AggExpr
-                .newBuilder()
-                .setStddev(stdBuilder)
-                .build())
-          } else {
-            withInfo(aggExpr, child)
-            None
-          }
-        } else {
-          withInfo(
-            aggExpr,
-            "stddev disabled by default because it can be slower than Spark. " +
-              s"Set ${CometConf.COMET_EXPR_STDDEV_ENABLED}=true to enable it.",
-            child)
-          None
-        }
-
-      case std @ StddevPop(child, nullOnDivideByZero) =>
-        if (CometConf.COMET_EXPR_STDDEV_ENABLED.get(conf)) {
-          val childExpr = exprToProto(child, inputs, binding)
-          val dataType = serializeDataType(std.dataType)
-
-          if (childExpr.isDefined && dataType.isDefined) {
-            val stdBuilder = ExprOuterClass.Stddev.newBuilder()
-            stdBuilder.setChild(childExpr.get)
-            stdBuilder.setNullOnDivideByZero(nullOnDivideByZero)
-            stdBuilder.setDatatype(dataType.get)
-            stdBuilder.setStatsTypeValue(1)
-
-            Some(
-              ExprOuterClass.AggExpr
-                .newBuilder()
-                .setStddev(stdBuilder)
-                .build())
-          } else {
-            withInfo(aggExpr, child)
-            None
-          }
-        } else {
-          withInfo(
-            aggExpr,
-            "stddev disabled by default because it can be slower than Spark. " +
-              s"Set ${CometConf.COMET_EXPR_STDDEV_ENABLED}=true to enable it.",
-            child)
-          None
-        }
-
-      case corr @ Corr(child1, child2, nullOnDivideByZero) =>
-        val child1Expr = exprToProto(child1, inputs, binding)
-        val child2Expr = exprToProto(child2, inputs, binding)
-        val dataType = serializeDataType(corr.dataType)
-
-        if (child1Expr.isDefined && child2Expr.isDefined && dataType.isDefined) {
-          val corrBuilder = ExprOuterClass.Correlation.newBuilder()
-          corrBuilder.setChild1(child1Expr.get)
-          corrBuilder.setChild2(child2Expr.get)
-          corrBuilder.setNullOnDivideByZero(nullOnDivideByZero)
-          corrBuilder.setDatatype(dataType.get)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setCorrelation(corrBuilder)
-              .build())
-        } else {
-          withInfo(aggExpr, child1, child2)
-          None
-        }
-
-      case bloom_filter @ BloomFilterAggregate(child, numItems, numBits, _, _) =>
-        // We ignore mutableAggBufferOffset and inputAggBufferOffset because they are
-        // implementation details for Spark's ObjectHashAggregate.
-        val childExpr = exprToProto(child, inputs, binding)
-        val numItemsExpr = exprToProto(numItems, inputs, binding)
-        val numBitsExpr = exprToProto(numBits, inputs, binding)
-        val dataType = serializeDataType(bloom_filter.dataType)
-
-        if (childExpr.isDefined &&
-          (child.dataType
-            .isInstanceOf[ByteType] ||
-            child.dataType
-              .isInstanceOf[ShortType] ||
-            child.dataType
-              .isInstanceOf[IntegerType] ||
-            child.dataType
-              .isInstanceOf[LongType] ||
-            child.dataType
-              .isInstanceOf[StringType]) &&
-          numItemsExpr.isDefined &&
-          numBitsExpr.isDefined &&
-          dataType.isDefined) {
-          val bloomFilterAggBuilder = ExprOuterClass.BloomFilterAgg.newBuilder()
-          bloomFilterAggBuilder.setChild(childExpr.get)
-          bloomFilterAggBuilder.setNumItems(numItemsExpr.get)
-          bloomFilterAggBuilder.setNumBits(numBitsExpr.get)
-          bloomFilterAggBuilder.setDatatype(dataType.get)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setBloomFilterAgg(bloomFilterAggBuilder)
-              .build())
-        } else {
-          withInfo(aggExpr, child, numItems, numBits)
-          None
-        }
-
+    val cometExpr: CometAggregateExpressionSerde = aggExpr.aggregateFunction match {
+      case _: Sum => CometSum
+      case _: Average => CometAverage
+      case _: Count => CometCount
+      case _: Min => CometMin
+      case _: Max => CometMax
+      case _: First => CometFirst
+      case _: Last => CometLast
+      case _: BitAndAgg => CometBitAndAgg
+      case _: BitOrAgg => CometBitOrAgg
+      case _: BitXorAgg => CometBitXOrAgg
+      case _: CovSample => CometCovSample
+      case _: CovPopulation => CometCovPopulation
+      case _: VarianceSamp => CometVarianceSamp
+      case _: VariancePop => CometVariancePop
+      case _: StddevSamp => CometStddevSamp
+      case _: StddevPop => CometStddevPop
+      case _: Corr => CometCorr
       case fn =>
         val msg = s"unsupported Spark aggregate function: ${fn.prettyName}"
         emitWarning(msg)
         withInfo(aggExpr, msg, fn.children: _*)
-        None
+        return None
+
     }
+    cometExpr.convert(aggExpr, aggExpr.aggregateFunction, inputs, binding, conf)
   }
 
   def evalModeToProto(evalMode: CometEvalMode.Value): ExprOuterClass.EvalMode = {
@@ -3131,6 +3016,8 @@ trait CometAggregateExpressionSerde {
    *   The input attributes.
    * @param binding
    *   Whether the attributes are bound (this is only relevant in aggregate expressions).
+   * @param conf
+   *   SQLConf
    * @return
    *   Protocol buffer representation, or None if the expression could not be converted. In this
    *   case it is expected that the input expression will have been tagged with reasons why it
@@ -3140,7 +3027,8 @@ trait CometAggregateExpressionSerde {
       aggExpr: AggregateExpression,
       expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.AggExpr]
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr]
 }
 
 /** Marker trait for an expression that is not guaranteed to be 100% compatible with Spark */
