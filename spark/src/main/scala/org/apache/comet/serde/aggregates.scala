@@ -189,6 +189,17 @@ object CometSum extends CometAggregateExpressionSerde with ShimQueryPlanSerde {
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
     val sum = expr.asInstanceOf[Sum]
+
+    if (!AggSerde.sumDataTypeSupported(sum.dataType)) {
+      withInfo(aggExpr, s"Unsupported data type: ${expr.dataType}")
+      return None
+    }
+
+    if (!isLegacyMode(sum)) {
+      withInfo(aggExpr, "Sum is only supported in legacy mode")
+      return None
+    }
+
     val childExpr = exprToProto(sum.child, inputs, binding)
     val dataType = serializeDataType(sum.dataType)
 
