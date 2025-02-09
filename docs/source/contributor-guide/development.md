@@ -48,6 +48,18 @@ A few common commands are specified in project's `Makefile`:
   such as Spark.
 - `make clean`: clean up the workspace
 
+### Using SBT:
+The general command is `sbt <definitions> assembly`, with the following definitions currently supported:
+- `-DbuildType=release/debug` - Sets the optimization level for native code
+- `-DsparkVersion=<>` - Supported versions are "3.3", "3.4", "3.5", "4.0"(experimental)
+- `-DscalaVersion=<>` - Supported versions are "2.12" and "2.13", usually, simply choosing the Spark version automatically selects the correct scala.
+- `-DjavaTarget=<>` - Supported targets are "17", "11", and "8"(or "1.8")
+- `-DrustTarget=<>` - Which platform and architecture to build for, options are "Win-x86", "Darwin-x86", "Darwin-aarch64", "Linux-amd64", "Linux-aarch64"\
+In most cases, when not cross compiling, its best to let the auto-selection work.
+
+SBT supports "test" and "testOnly".
+Do note that the generated artifact from an sbt build will be in `target/scala-2.12/comet-assembly-0.6.0-SNAPSHOT.jar`, which differs from the `make` output
+
 ## Development Environment
 
 Comet is a multi-language project with native code written in Rust and JVM code written in Java and Scala.
