@@ -862,7 +862,7 @@ class CometSparkSessionExtensions
               newOp match {
                 case Some(nativeOp) =>
                   s.child match {
-                    case n if n.isInstanceOf[CometNativeExec] || !n.supportsColumnar =>
+                    case n if n.isInstanceOf[CometNativeExec] || n.supportsColumnar =>
                       val cometOp =
                         CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
                       Some(CometSinkPlaceHolder(nativeOp, s, cometOp))
