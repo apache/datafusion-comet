@@ -45,6 +45,9 @@ import org.apache.comet.shims.ShimCometConf
  */
 object CometConf extends ShimCometConf {
 
+  val COMPAT_GUIDE: String = "For more information, refer to the Comet Compatibility " +
+    "Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html)"
+
   private val TUNING_GUIDE = "For more information, refer to the Comet Tuning " +
     "Guide (https://datafusion.apache.org/comet/user-guide/tuning.html)"
 
@@ -501,8 +504,8 @@ object CometConf extends ShimCometConf {
     .doc(
       "The type of memory pool to be used for Comet native execution. " +
         "Available memory pool types are 'greedy', 'fair_spill', 'greedy_task_shared', " +
-        "'fair_spill_task_shared', 'greedy_global' and 'fair_spill_global', By default, " +
-        "this config is 'greedy_task_shared'.")
+        "'fair_spill_task_shared', 'greedy_global' and 'fair_spill_global'. For off-heap " +
+        "types are 'unified' and `fair_unified`.")
     .stringConf
     .createWithDefault("greedy_task_shared")
 
@@ -605,22 +608,37 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXPR_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
+    conf("spark.comet.expression.allowIncompatible")
+      .doc(
+        "Comet is not currently fully compatible with Spark for all expressions. " +
+          s"Set this config to true to allow them anyway. $COMPAT_GUIDE.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_CAST_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
     conf("spark.comet.cast.allowIncompatible")
       .doc(
         "Comet is not currently fully compatible with Spark for all cast operations. " +
-          "Set this config to true to allow them anyway. See compatibility guide " +
-          "for more information.")
+          s"Set this config to true to allow them anyway. $COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 
   val COMET_REGEXP_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
     conf("spark.comet.regexp.allowIncompatible")
-      .doc("Comet is not currently fully compatible with Spark for all regular expressions. " +
-        "Set this config to true to allow them anyway using Rust's regular expression engine. " +
-        "See compatibility guide for more information.")
+      .doc(
+        "Comet is not currently fully compatible with Spark for all regular expressions. " +
+          s"Set this config to true to allow them anyway. $COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)
+
+  val COMET_METRICS_UPDATE_INTERVAL: ConfigEntry[Long] =
+    conf("spark.comet.metrics.updateInterval")
+      .doc(
+        "The interval in milliseconds to update metrics. If interval is negative," +
+          " metrics will be updated upon task completion.")
+      .longConf
+      .createWithDefault(3000L)
 
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(

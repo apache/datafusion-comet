@@ -28,7 +28,7 @@ use arrow::{
     temporal_conversions::as_datetime,
 };
 use arrow_array::types::TimestampMillisecondType;
-use arrow_data::decimal::{MAX_DECIMAL_FOR_EACH_PRECISION, MIN_DECIMAL_FOR_EACH_PRECISION};
+use arrow_data::decimal::{MAX_DECIMAL128_FOR_EACH_PRECISION, MIN_DECIMAL128_FOR_EACH_PRECISION};
 use chrono::{DateTime, Offset, TimeZone};
 
 /// Preprocesses input arrays to add timezone information from Spark to Arrow array datatype or
@@ -234,8 +234,8 @@ fn pre_timestamp_cast(array: ArrayRef, timezone: String) -> Result<ArrayRef, Arr
 #[inline]
 pub fn is_valid_decimal_precision(value: i128, precision: u8) -> bool {
     precision <= DECIMAL128_MAX_PRECISION
-        && value >= MIN_DECIMAL_FOR_EACH_PRECISION[precision as usize - 1]
-        && value <= MAX_DECIMAL_FOR_EACH_PRECISION[precision as usize - 1]
+        && value >= MIN_DECIMAL128_FOR_EACH_PRECISION[precision as usize]
+        && value <= MAX_DECIMAL128_FOR_EACH_PRECISION[precision as usize]
 }
 
 // These are borrowed from hashbrown crate:
