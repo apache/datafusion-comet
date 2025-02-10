@@ -197,6 +197,8 @@ impl SchemaMapper for SchemaMapping {
         let batch_rows = batch.num_rows();
         let batch_cols = batch.columns().to_vec();
 
+        // println!["map_batch"];
+
         let cols = self
             .required_schema
             // go through each field in the projected schema
@@ -214,6 +216,7 @@ impl SchemaMapper for SchemaMapping {
                     // However, if it does exist in both, then try to cast it to the correct output
                     // type
                     |batch_idx| {
+                        // println!["batch_idx: {}", batch_idx];
                         spark_parquet_convert(
                             ColumnarValue::Array(Arc::clone(&batch_cols[batch_idx])),
                             field.data_type(),
@@ -243,12 +246,15 @@ impl SchemaMapper for SchemaMapping {
         let batch_cols = batch.columns().to_vec();
         let schema = batch.schema();
 
+        // println!["map_batch"];
+
         // for each field in the batch's schema (which is based on a file, not a table)...
         let (cols, fields) = schema
             .fields()
             .iter()
             .zip(batch_cols.iter())
             .flat_map(|(field, batch_col)| {
+                // println!["field.name(): {}", field.name()];
                 self.table_schema
                     // try to get the same field from the table schema that we have stored in self
                     .field_with_name(field.name())

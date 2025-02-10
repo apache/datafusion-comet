@@ -617,8 +617,8 @@ fn adjust_timestamp_to_timezone<T: ArrowTimestampType>(
         let offset = to_tz.offset_from_local_datetime(&local).single()?;
         // println!["local: {}", local];
         // println!["offset: {}", offset];
-        let value = T::make_value(local + offset.fix()); // This is the change, minus to plus.
-        // println!["value: {:?}", value];
+        let value = T::make_value(local - offset.fix()); // This is the change, minus to plus.
+                                                         // println!["value: {:?}", value];
         value
     };
     let adjusted = if cast_options.safe {
@@ -668,14 +668,17 @@ fn cast_array(
     parquet_options: &SparkParquetOptions,
 ) -> DataFusionResult<ArrayRef> {
     use DataType::*;
+    // println!["cast_array"];
+    // println!["{}", parquet_options.timezone];
+    // println!["array: {:?}", array];
     let array = array_with_timezone(array, parquet_options.timezone.clone(), Some(to_type))?;
+    // println!["array: {:?}", array];
     let from_type = array.data_type().clone();
 
     let _from_type = from_type.clone();
     let _to_type = to_type.clone();
-    // println!["{}", parquet_options.timezone];
-    // println!["{}", _from_type];
-    // println!["{}", _to_type];
+    // println!["_from_type: {}", _from_type];
+    // println!["_to_type: {}", _to_type];
 
     let array = match &from_type {
         Dictionary(key_type, value_type)
@@ -765,11 +768,11 @@ fn cast_array(
             Ok(cast_with_options(&array, to_type, &PARQUET_OPTIONS)?)
         }
         (Timestamp(from_unit, None), Timestamp(to_unit, None)) => {
-            // println!["{:?}", array];
+            // println!["array: {:?}", array];
             let array = cast_with_options(&array, &Int64, &PARQUET_OPTIONS)?;
-            // println!["{:?}", array];
+            // println!["array: {:?}", array];
             let time_array = array.as_primitive::<Int64Type>();
-            // println!["{:?}", time_array];
+            // println!["time_array: {:?}", time_array];
             let from_size = time_unit_multiple(from_unit);
             let to_size = time_unit_multiple(to_unit);
             // we either divide or multiply, depending on size of each unit
@@ -789,7 +792,8 @@ fn cast_array(
                     }
                 }
             };
-            // println!["{:?}", converted];
+            // println!["converted: {:?}", converted];
+            return Ok(make_timestamp_array(&converted, *to_unit, None));
             // Normalize timezone
             let adjusted =
                 {
@@ -818,8 +822,10 @@ fn cast_array(
                         )?,
                     }
                 };
-            // println!["{:?}", adjusted];
-            Ok(make_timestamp_array(&adjusted, *to_unit, None))
+            // println!["adjusted: {:?}", adjusted];
+            let timestamp_array = make_timestamp_array(&adjusted, *to_unit, None);
+            // println!["timestamp_array: {:?}", timestamp_array];
+            Ok(timestamp_array)
         }
 
         _ if parquet_options.is_adapting_schema

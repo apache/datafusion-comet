@@ -73,6 +73,8 @@ pub fn array_with_timezone(
                     timestamp_ntz_to_timestamp(array, timezone.as_str(), Some(timezone.as_str()))
                 }
                 Some(DataType::Timestamp(_, None)) => {
+                    // This is not supported!
+                    return Ok(array);
                     timestamp_ntz_to_timestamp(array, timezone.as_str(), None)
                 }
                 _ => {
@@ -143,9 +145,15 @@ fn timestamp_ntz_to_timestamp(
     to_timezone: Option<&str>,
 ) -> Result<ArrayRef, ArrowError> {
     assert!(!tz.is_empty());
+    // println!["timestamp_ntz_to_timestamp"];
+    // println!["tz: {}", tz];
+    if let Some(to_timezone) = to_timezone {
+        // println!["to_timezone: {}", to_timezone];
+    }
     match array.data_type() {
         DataType::Timestamp(TimeUnit::Microsecond, None) => {
             let array = as_primitive_array::<TimestampMicrosecondType>(&array);
+            // println!["array: {:?}", array];
             let tz: Tz = tz.parse()?;
             let array: PrimitiveArray<TimestampMicrosecondType> = array.try_unary(|value| {
                 as_datetime::<TimestampMicrosecondType>(value)
@@ -156,15 +164,18 @@ fn timestamp_ntz_to_timestamp(
                         datetime.timestamp_micros()
                     })
             })?;
+            // println!["array: {:?}", array];
             let array_with_tz = if let Some(to_tz) = to_timezone {
                 array.with_timezone(to_tz)
             } else {
                 array
             };
+            // println!["array_with_tz: {:?}", array_with_tz];
             Ok(Arc::new(array_with_tz))
         }
         DataType::Timestamp(TimeUnit::Millisecond, None) => {
             let array = as_primitive_array::<TimestampMillisecondType>(&array);
+            // println!["array: {:?}", array];
             let tz: Tz = tz.parse()?;
             let array: PrimitiveArray<TimestampMillisecondType> = array.try_unary(|value| {
                 as_datetime::<TimestampMillisecondType>(value)
@@ -175,11 +186,13 @@ fn timestamp_ntz_to_timestamp(
                         datetime.timestamp_millis()
                     })
             })?;
+            // println!["array: {:?}", array];
             let array_with_tz = if let Some(to_tz) = to_timezone {
                 array.with_timezone(to_tz)
             } else {
                 array
             };
+            // println!["array_with_tz: {:?}", array_with_tz];
             Ok(Arc::new(array_with_tz))
         }
         _ => Ok(array),
