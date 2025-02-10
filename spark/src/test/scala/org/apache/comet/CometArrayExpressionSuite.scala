@@ -39,12 +39,14 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
         spark.read.parquet(path.toString).createOrReplaceTempView("t1")
-        checkSparkAnswerAndOperator(
-          sql("SELECT array_remove(array(_2, _3,_4), _2) from t1 where _2 is null"))
-        checkSparkAnswerAndOperator(
-          sql("SELECT array_remove(array(_2, _3,_4), _3) from t1 where _3 is not null"))
-        checkSparkAnswerAndOperator(sql(
-          "SELECT array_remove(case when _2 = _3 THEN array(_2, _3,_4) ELSE null END, _3) from t1"))
+        withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_remove(array(_2, _3,_4), _2) from t1 where _2 is null"))
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_remove(array(_2, _3,_4), _3) from t1 where _3 is not null"))
+          checkSparkAnswerAndOperator(sql(
+            "SELECT array_remove(case when _2 = _3 THEN array(_2, _3,_4) ELSE null END, _3) from t1"))
+        }
       }
     }
   }
@@ -74,7 +76,9 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         sql(s"SELECT array($fieldName, $fieldName) as a, $fieldName as b FROM t1")
           .createOrReplaceTempView("t2")
         val df = sql("SELECT array_remove(a, b) FROM t2")
-        checkSparkAnswerAndOperator(df)
+        withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
+          checkSparkAnswerAndOperator(df)
+        }
       }
     }
   }
@@ -121,22 +125,26 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       val path = new Path(dir.toURI.toString, "test.parquet")
       makeParquetFileAllTypes(path, dictionaryEnabled = true, 100)
       spark.read.parquet(path.toString).createOrReplaceTempView("t1")
-      sql("SELECT array(struct(_1, _2)) as a, struct(_1, _2) as b FROM t1")
-        .createOrReplaceTempView("t2")
-      val expectedFallbackReasons = HashSet(
-        "data type not supported: ArrayType(StructType(StructField(_1,BooleanType,true),StructField(_2,ByteType,true)),false)")
-      // note that checkExtended is disabled here due to an unrelated issue
-      // https://github.com/apache/datafusion-comet/issues/1313
-      checkSparkAnswerAndCompareExplainPlan(
-        sql("SELECT array_remove(a, b) FROM t2"),
-        expectedFallbackReasons,
-        checkExplainString = false)
+      withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
+        sql("SELECT array(struct(_1, _2)) as a, struct(_1, _2) as b FROM t1")
+          .createOrReplaceTempView("t2")
+        val expectedFallbackReasons = HashSet(
+          "data type not supported: ArrayType(StructType(StructField(_1,BooleanType,true),StructField(_2,ByteType,true)),false)")
+        // note that checkExtended is disabled here due to an unrelated issue
+        // https://github.com/apache/datafusion-comet/issues/1313
+        checkSparkAnswerAndCompareExplainPlan(
+          sql("SELECT array_remove(a, b) FROM t2"),
+          expectedFallbackReasons,
+          checkExplainString = false)
+      }
     }
   }
 
   test("array_append") {
     assume(isSpark34Plus)
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
+      CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
@@ -220,7 +228,9 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_contains") {
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
+      CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = false, n = 10000)
@@ -234,7 +244,9 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_intersect") {
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
+      CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
@@ -252,7 +264,9 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_join") {
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
+      CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
@@ -273,7 +287,9 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("arrays_overlap") {
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
+      CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")

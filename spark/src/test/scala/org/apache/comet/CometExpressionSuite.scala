@@ -119,7 +119,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
-          checkSparkAnswerAndOperator("select * FROM tbl WHERE _2 > 100")
+          withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
+            checkSparkAnswerAndOperator("select * FROM tbl WHERE _2 > 100")
+          }
         }
       }
     }
@@ -207,7 +209,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val path = new Path(dir.toURI.toString, "test.parquet")
           makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
           withParquetTable(path.toString, "tbl") {
-            checkSparkAnswerAndOperator(f"SELECT _20 + CAST(2 as $intType) from tbl")
+            withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
+              checkSparkAnswerAndOperator(f"SELECT _20 + CAST(2 as $intType) from tbl")
+            }
           }
         }
       }
@@ -220,14 +224,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
-          val (sparkErr, cometErr) =
-            checkSparkMaybeThrows(sql(s"SELECT _20 + ${Int.MaxValue} FROM tbl"))
-          if (isSpark40Plus) {
-            assert(sparkErr.get.getMessage.contains("EXPRESSION_DECODING_FAILED"))
-          } else {
-            assert(sparkErr.get.getMessage.contains("integer overflow"))
+          withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
+            val (sparkErr, cometErr) =
+              checkSparkMaybeThrows(sql(s"SELECT _20 + ${Int.MaxValue} FROM tbl"))
+            if (isSpark40Plus) {
+              assert(sparkErr.get.getMessage.contains("EXPRESSION_DECODING_FAILED"))
+            } else {
+              assert(sparkErr.get.getMessage.contains("integer overflow"))
+            }
+            assert(cometErr.get.getMessage.contains("`NaiveDate + TimeDelta` overflowed"))
           }
-          assert(cometErr.get.getMessage.contains("`NaiveDate + TimeDelta` overflowed"))
         }
       }
     }
@@ -240,7 +246,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val path = new Path(dir.toURI.toString, "test.parquet")
           makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
           withParquetTable(path.toString, "tbl") {
-            checkSparkAnswerAndOperator(f"SELECT _20 + $intColumn FROM tbl")
+            withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
+              checkSparkAnswerAndOperator(f"SELECT _20 + $intColumn FROM tbl")
+            }
           }
         }
       }

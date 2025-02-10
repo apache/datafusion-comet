@@ -546,6 +546,10 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Seq(true, false).foreach { nativeShuffleEnabled =>
         withSQLConf(
           CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> nativeShuffleEnabled.toString,
+          // this table doesn't have uint_8 or uint_16 but we cannot distinguish
+          // between the signed and unsigned types, so make sure the allow incompatible
+          // flag is true and we will get the right results
+          CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true",
           CometConf.COMET_SHUFFLE_MODE.key -> "native") {
           withTempDir { dir =>
             val path = new Path(dir.toURI.toString, "test")
@@ -936,6 +940,10 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Seq(true, false).foreach { nativeShuffleEnabled =>
         withSQLConf(
           CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> nativeShuffleEnabled.toString,
+          // this table doesn't have uint_8 or uint_16 but we cannot distinguish
+          // between the signed and unsigned types, so make sure the allow incompatible
+          // flag is true and we will get the right results
+          CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true",
           CometConf.COMET_SHUFFLE_MODE.key -> "native",
           CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
           withTempDir { dir =>
@@ -1106,6 +1114,10 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("bitwise aggregate") {
     withSQLConf(
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      // this table doesn't have uint_8 or uint_16 but we cannot distinguish
+      // between the signed and unsigned types, so make sure the allow incompatible
+      // flag is true and we will get the right results
+      CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       Seq(true, false).foreach { dictionary =>
         withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
