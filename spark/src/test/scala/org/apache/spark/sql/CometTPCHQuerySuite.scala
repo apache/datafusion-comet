@@ -93,6 +93,7 @@ class CometTPCHQuerySuite extends QueryTest with TPCBase with ShimCometTPCHQuery
     conf.set(CometConf.COMET_SHUFFLE_MODE.key, "jvm")
     conf.set(MEMORY_OFFHEAP_ENABLED.key, "true")
     conf.set(MEMORY_OFFHEAP_SIZE.key, "2g")
+    conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "2g")
   }
 
   protected override def createSparkSession: TestSparkSession = {

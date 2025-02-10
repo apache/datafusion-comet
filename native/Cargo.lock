@@ -909,6 +909,7 @@ dependencies = [
  "mimalloc",
  "num",
  "once_cell",
+ "parking_lot",
  "parquet",
  "paste",
  "pprof",

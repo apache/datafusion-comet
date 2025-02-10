@@ -63,6 +63,7 @@ use std::num::NonZeroUsize;
 use std::sync::Mutex;
 use tokio::runtime::Runtime;
 
+use crate::execution::fair_memory_pool::CometFairMemoryPool;
 use crate::execution::operators::ScanExec;
 use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
@@ -108,6 +109,7 @@ struct ExecutionContext {
 #[derive(PartialEq, Eq)]
 enum MemoryPoolType {
     Unified,
+    FairUnified,
     Greedy,
     FairSpill,
     GreedyTaskShared,
@@ -291,11 +293,14 @@ fn parse_memory_pool_config(
     memory_limit: i64,
     memory_limit_per_task: i64,
 ) -> CometResult<MemoryPoolConfig> {
+    let pool_size = memory_limit as usize;
     let memory_pool_config = if use_unified_memory_manager {
-        MemoryPoolConfig::new(MemoryPoolType::Unified, 0)
+        match memory_pool_type.as_str() {
+            "fair_unified" => MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size),
+            _ => MemoryPoolConfig::new(MemoryPoolType::Unified, 0),
+        }
     } else {
         // Use the memory pool from DF
-        let pool_size = memory_limit as usize;
         let pool_size_per_task = memory_limit_per_task as usize;
         match memory_pool_type.as_str() {
             "fair_spill_task_shared" => {
@@ -331,6 +336,12 @@ fn create_memory_pool(
         MemoryPoolType::Unified => {
             // Set Comet memory pool for native
             let memory_pool = CometMemoryPool::new(comet_task_memory_manager);
+            Arc::new(memory_pool)
+        }
+        MemoryPoolType::FairUnified => {
+            // Set Comet fair memory pool for native
+            let memory_pool =
+                CometFairMemoryPool::new(comet_task_memory_manager, memory_pool_config.pool_size);
             Arc::new(memory_pool)
         }
         MemoryPoolType::Greedy => Arc::new(TrackConsumersPool::new(
