@@ -21,5 +21,6 @@ mod list_extract;
 mod array_size;
 
 pub use array_insert::ArrayInsert;
+pub use array_size::ArraySize;
 pub use get_array_struct_fields::GetArrayStructFields;
 pub use list_extract::ListExtract;
