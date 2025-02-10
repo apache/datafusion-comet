@@ -30,6 +30,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNode
+import org.apache.spark.sql.catalyst.trees.TreePattern.PLAN_EXPRESSION
 import org.apache.spark.sql.catalyst.util.MetadataColumnHelper
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec, CometShuffleManager}
@@ -53,7 +54,7 @@ import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark34Plus, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometShuffleNotEnabledReason, isANSIEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark34Plus, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.rules.RewriteJoin
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -74,8 +75,12 @@ class CometSparkSessionExtensions
   override def apply(extensions: SparkSessionExtensions): Unit = {
     extensions.injectColumnar { session => CometScanColumnar(session) }
     extensions.injectColumnar { session => CometExecColumnar(session) }
+    extensions.injectColumnar { session => CometSubqueryExecColumnar(session) }
     extensions.injectQueryStagePrepRule { session => CometScanRule(session) }
     extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
+    extensions.injectQueryStagePrepRule { session =>
+      CometSubqueryExecRule(CometExecRule(session))
+    }
   }
 
   case class CometScanColumnar(session: SparkSession) extends ColumnarRule {
@@ -116,11 +121,11 @@ class CometSparkSessionExtensions
             withInfo(scan, "Metadata column is not supported")
             scan
 
-          case scanExec: FileSourceScanExec
-              if COMET_DPP_FALLBACK_ENABLED.get() &&
-                scanExec.partitionFilters.exists(isDynamicPruningFilter) =>
-            withInfo(scanExec, "DPP not supported")
-            scanExec
+//          case scanExec: FileSourceScanExec
+//              if COMET_DPP_FALLBACK_ENABLED.get() &&
+//                scanExec.partitionFilters.exists(isDynamicPruningFilter) =>
+//            withInfo(scanExec, "DPP not supported")
+//            scanExec
 
           // data source V2
           case scanExec: BatchScanExec
@@ -738,43 +743,16 @@ class CometSparkSessionExtensions
               s
           }
 
-        // `CometBroadcastExchangeExec`'s broadcast output is not compatible with Spark's broadcast
-        // exchange. It is only used for Comet native execution. We only transform Spark broadcast
-        // exchange to Comet broadcast exchange if its downstream is a Comet native plan or if the
-        // broadcast exchange is forced to be enabled by Comet config.
-        // Note that `CometBroadcastExchangeExec` is only supported for Spark 3.4+.
-        case plan if plan.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
-          val newChildren = plan.children.map {
-            case b: BroadcastExchangeExec
-                if isCometNative(b.child) &&
-                  CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf) &&
-                  isSpark34Plus => // Spark 3.4+ only
-              QueryPlanSerde.operator2Proto(b) match {
-                case Some(nativeOp) =>
-                  val cometOp = CometBroadcastExchangeExec(b, b.output, b.child)
-                  CometSinkPlaceHolder(nativeOp, b, cometOp)
-                case None => b
-              }
-            case other => other
-          }
-          if (!newChildren.exists(_.isInstanceOf[BroadcastExchangeExec])) {
-            val newPlan = apply(plan.withNewChildren(newChildren))
-            if (isCometNative(newPlan) || isCometBroadCastForceEnabled(conf)) {
-              newPlan
-            } else {
-              if (isCometNative(newPlan)) {
-                val reason =
-                  getCometBroadcastNotEnabledReason(conf).getOrElse("no reason available")
-                withInfo(plan, s"Broadcast is not enabled: $reason")
-              }
-              plan
-            }
-          } else {
-            withInfo(
-              plan,
-              s"${plan.nodeName} is not native because the following children are not native " +
-                s"${explainChildNotNative(plan)}")
-            plan
+        case b: BroadcastExchangeExec
+            if isCometNative(b.child) &&
+              CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf) &&
+              isSpark34Plus => // Spark 3.4+ only
+          QueryPlanSerde.operator2Proto(b) match {
+            case Some(nativeOp) =>
+              val cometOp = CometBroadcastExchangeExec(b, b.output, b.child)
+              CometSinkPlaceHolder(nativeOp, b, cometOp)
+            case None =>
+              b
           }
 
         // this case should be checked only after the previous case checking for a
@@ -1140,6 +1118,8 @@ class CometSparkSessionExtensions
     override def apply(plan: SparkPlan): SparkPlan = {
       val eliminatedPlan = plan transformUp {
         case ColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) => sparkToColumnar.child
+        case ColumnarToRowExec(child: CometBroadcastExchangeExec) =>
+          child
         case c @ ColumnarToRowExec(child) if child.exists(_.isInstanceOf[CometPlan]) =>
           val op = CometColumnarToRowExec(child)
           if (c.logicalLink.isEmpty) {
@@ -1152,6 +1132,10 @@ class CometSparkSessionExtensions
         case CometColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
           sparkToColumnar.child
         case CometSparkToColumnarExec(child: CometSparkToColumnarExec) => child
+        case CometColumnarToRowExec(child: CometBroadcastExchangeExec) =>
+          child
+        case b @ CometBroadcastExchangeExec(_, _, CometColumnarToRowExec(child)) =>
+          b.copy(child = child)
         // Spark adds `RowToColumnar` under Comet columnar shuffle. But it's redundant as the
         // shuffle takes row-based input.
         case s @ CometShuffleExchangeExec(
@@ -1172,6 +1156,45 @@ class CometSparkSessionExtensions
         case other =>
           other
       }
+    }
+  }
+
+  case class CometSubqueryExecColumnar(session: SparkSession) extends ColumnarRule {
+    override def preColumnarTransitions: Rule[SparkPlan] = CometSubqueryExecRule(
+      CometExecRule(session))
+
+    override def postColumnarTransitions: Rule[SparkPlan] =
+      CometSubqueryExecRule(EliminateRedundantTransitions(session))
+  }
+
+  case class CometSubqueryExecRule(cometExecRule: Rule[SparkPlan]) extends Rule[SparkPlan] {
+
+    override def apply(plan: SparkPlan): SparkPlan = {
+      if (!conf.dynamicPartitionPruningEnabled) {
+        return plan
+      }
+
+      def cleanSubqueryPlan(plan: SparkPlan): SparkPlan = {
+        plan transformUp {
+          case WholeStageCodegenExec(CometColumnarToRowExec(InputAdapter(child))) =>
+            CometColumnarToRowExec(child)
+          case b @ BroadcastExchangeExec(_, CometColumnarToRowExec(child)) =>
+            b.copy(child = child)
+        }
+      }
+
+      def replace_subquery(plan: SparkPlan): SparkPlan = {
+        plan.transformUpWithPruning(_.containsAnyPattern(PLAN_EXPRESSION)) { case p =>
+          p.transformExpressionsUpWithPruning(_.containsPattern(PLAN_EXPRESSION)) {
+            case sub: ExecSubqueryExpression =>
+              val child = cleanSubqueryPlan(sub.plan.child)
+              val newChild = cometExecRule.apply(child)
+              val subquery = sub.plan.withNewChildren(Seq(newChild))
+              sub.withNewPlan(subquery.asInstanceOf[BaseSubqueryExec])
+          }
+        }
+      }
+      replace_subquery(plan)
     }
   }
 }
