@@ -32,7 +32,8 @@ lazy val sparkVersion = settingKey[String]("Apache Spark version")
 lazy val parquetVersion = settingKey[String]("Apache Parquet version")
 lazy val slf4jVersion = settingKey[String]("SLF4J version")
 lazy val javaTarget = settingKey[Int]("Java target version")
-lazy val sparkScalaVersion = settingKey[String]("Default Scala version for the selected Spark version")
+lazy val sparkScalaVersion =
+  settingKey[String]("Default Scala version for the selected Spark version")
 
 ThisBuild / parquetVersion := "1.13.1"
 ThisBuild / javaTarget := 0
@@ -82,18 +83,22 @@ ThisBuild / scalaVersion := {
     case 0 => {
       // Use value specified by selected Spark version
       // If none such exists, use SBT's default
-      if ((ThisBuild / sparkScalaVersion).value == "") {
-        "2.12.17"
-      } else {
+      if ((ThisBuild / sparkScalaVersion).value != "") {
         (ThisBuild / sparkScalaVersion).value
+      } else {
+        "2.12.17"
       }
     }
     case 1 => {
       scalaProps(0) match {
         case "scala2.12" | "" =>
-          // If the spark version selected a 2.12 Scala, use it, otherwise use 2.12.17
+          // If the spark version selected a 2.12 Scala, use it.
+          // Otherwise, if the current sbt uses a 2.12 scala, use it.
+          // Otherwise, use 2.12.17
           if ((ThisBuild / sparkScalaVersion).value.startsWith("2.12")) {
             (ThisBuild / sparkScalaVersion).value
+          } else if ((ThisBuild / scalaVersion).value.startsWith("2.12")) {
+            (ThisBuild / scalaVersion).value
           } else {
             "2.12.17"
           }
@@ -150,9 +155,12 @@ lazy val platform = settingKey[String]("OS Family to build for")
 lazy val archFolder = settingKey[String]("Architecture to build for")
 lazy val rustTarget = settingKey[String]("Rust target and toolchain to use")
 ThisBuild / rustTarget := {
-  val platformProps = sys.props.map(_._1).filter {
-    x => x == "Win-x86" || x == "Darwin-x86" || x == "Darwin-aarch64" || x == "Linux-amd64" || x == "Linux-aarch64"
-  }.toSeq
+  val platformProps = sys.props
+    .map(_._1)
+    .filter { x =>
+      x == "Win-x86" || x == "Darwin-x86" || x == "Darwin-aarch64" || x == "Linux-amd64" || x == "Linux-aarch64"
+    }
+    .toSeq
 
   platformProps.size match {
     case 0 => {
@@ -376,7 +384,9 @@ lazy val native = (project in file("native"))
     cargoTask := {
       val log = streams.value.log
       val nativeDir = baseDirectory.value
-      val buildType = if (sys.props.contains("release") || sys.props.contains("apache-release")) "release" else "debug"
+      val buildType =
+        if (sys.props.contains("release") || sys.props.contains("apache-release")) "release"
+        else "debug"
 
       // To allow cross compilation
       val selectedTarget = (ThisBuild / rustTarget).value
@@ -401,7 +411,9 @@ lazy val native = (project in file("native"))
       cargoTask.value
 
       val log = streams.value.log
-      val buildType = if (sys.props.contains("release") || sys.props.contains("apache-release")) "release" else "debug"
+      val buildType =
+        if (sys.props.contains("release") || sys.props.contains("apache-release")) "release"
+        else "debug"
       val resourceDir = (Compile / resourceManaged).value
       val nativeLibPath = s"org/apache/comet/$platform/$archFolder"
       val outDir = resourceDir / nativeLibPath
