@@ -50,11 +50,11 @@ A few common commands are specified in project's `Makefile`:
 
 ### Using SBT:
 The general command is `sbt <definitions> assembly`, with the following definitions currently supported:
-- `-DbuildType=release/debug` - Sets the optimization level for native code
-- `-DsparkVersion=<>` - Supported versions are "3.3", "3.4", "3.5", "4.0"(experimental)
-- `-DscalaVersion=<>` - Supported versions are "2.12" and "2.13", usually, simply choosing the Spark version automatically selects the correct scala.
-- `-DjavaTarget=<>` - Supported targets are "17", "11", and "8"(or "1.8")
-- `-DrustTarget=<>` - Which platform and architecture to build for, options are "Win-x86", "Darwin-x86", "Darwin-aarch64", "Linux-amd64", "Linux-aarch64"\
+- `-Drelease` / `-Dapache-release` - Sets the optimization level for native code(Does not perform any other release-related changes)
+- `-Dspark<version>` - Supported versions are "3.3", "3.4", "3.5", "4.0"(experimental)
+- `-Dscala<version>` - Supported versions are "2.12" and "2.13", usually, simply choosing the Spark version automatically selects the correct scala.
+- `-Djdk<version>` - Supported targets are "17", "11", and "1.8"(JDK 8), ensure your JDK supports compilation for that target
+- `-D<platform>` - Which platform and architecture to build for, options are "Win-x86", "Darwin-x86", "Darwin-aarch64", "Linux-amd64", "Linux-aarch64"\
 In most cases, when not cross compiling, its best to let the auto-selection work.
 
 SBT supports "test" and "testOnly".
