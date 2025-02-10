@@ -36,14 +36,13 @@ import org.apache.parquet.hadoop.example.ExampleParquetWriter
 import org.apache.parquet.schema.{MessageType, MessageTypeParser}
 import org.apache.spark._
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE, SHUFFLE_MANAGER}
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometBroadcastExchangeExec, CometColumnarToRowExec, CometExec, CometScanExec, CometScanWrapper, CometSinkPlaceHolder, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{ColumnarToRowExec, ExtendedMode, InputAdapter, SparkPlan, WholeStageCodegenExec}
+import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal._
 import org.apache.spark.sql.test._
-import org.apache.spark.sql.types.DecimalType
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.{DecimalType, StructType}
 
 import org.apache.comet._
 import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
@@ -78,7 +77,9 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
+    conf.set(CometConf.COMET_SHUFFLE_FALLBACK_TO_COLUMNAR.key, "true")
     conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
+    conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "2g")
     conf.set(CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key, "true")
     conf
@@ -172,7 +173,7 @@ abstract class CometTestBase
   protected def checkCometOperators(plan: SparkPlan, excludedClasses: Class[_]*): Unit = {
     val wrapped = wrapCometSparkToColumnar(plan)
     wrapped.foreach {
-      case _: CometScanExec | _: CometBatchScanExec =>
+      case _: CometNativeScanExec | _: CometScanExec | _: CometBatchScanExec =>
       case _: CometSinkPlaceHolder | _: CometScanWrapper =>
       case _: CometColumnarToRowExec =>
       case _: CometSparkToColumnarExec =>
@@ -240,7 +241,8 @@ abstract class CometTestBase
 
   protected def checkSparkAnswerAndCompareExplainPlan(
       df: DataFrame,
-      expectedInfo: Set[String]): Unit = {
+      expectedInfo: Set[String],
+      checkExplainString: Boolean = true): Unit = {
     var expected: Array[Row] = Array.empty
     var dfSpark: Dataset[Row] = null
     withSQLConf(CometConf.COMET_ENABLED.key -> "false", EXTENDED_EXPLAIN_PROVIDERS_KEY -> "") {
@@ -249,11 +251,17 @@ abstract class CometTestBase
     }
     val dfComet = Dataset.ofRows(spark, df.logicalPlan)
     checkAnswer(dfComet, expected)
-    val diff = StringUtils.difference(
-      dfSpark.queryExecution.explainString(ExtendedMode),
-      dfComet.queryExecution.explainString(ExtendedMode))
-    if (supportsExtendedExplainInfo(dfSpark.queryExecution)) {
-      assert(expectedInfo.forall(s => diff.contains(s)))
+    if (checkExplainString) {
+      val diff = StringUtils.difference(
+        dfSpark.queryExecution.explainString(ExtendedMode),
+        dfComet.queryExecution.explainString(ExtendedMode))
+      if (supportsExtendedExplainInfo(dfSpark.queryExecution)) {
+        for (info <- expectedInfo) {
+          if (!diff.contains(info)) {
+            fail(s"Extended explain diff did not contain [$info]. Diff: $diff.")
+          }
+        }
+      }
     }
     val extendedInfo =
       new ExtendedExplainInfo().generateExtendedInfo(dfComet.queryExecution.executedPlan)

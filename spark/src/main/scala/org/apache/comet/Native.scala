@@ -26,6 +26,7 @@ import org.apache.spark.sql.comet.CometMetricNode
 
 class Native extends NativeBase {
 
+  // scalastyle:off
   /**
    * Create a native query plan from execution SparkPlan serialized in bytes.
    * @param id
@@ -39,6 +40,9 @@ class Native extends NativeBase {
    *   the bytes of serialized SparkPlan.
    * @param metrics
    *   the native metrics of SparkPlan.
+   * @param metricsUpdateInterval
+   *   the interval in milliseconds to update metrics, if interval is negative, metrics will be
+   *   updated upon task completion.
    * @param taskMemoryManager
    *   the task-level memory manager that is responsible for tracking memory usage across JVM and
    *   native side.
@@ -50,7 +54,9 @@ class Native extends NativeBase {
       id: Long,
       iterators: Array[CometBatchIterator],
       plan: Array[Byte],
+      partitionCount: Int,
       metrics: CometMetricNode,
+      metricsUpdateInterval: Long,
       taskMemoryManager: CometTaskMemoryManager,
       batchSize: Int,
       use_unified_memory_manager: Boolean,
@@ -139,7 +145,8 @@ class Native extends NativeBase {
       checksumAlgo: Int,
       currentChecksum: Long,
       compressionCodec: String,
-      compressionLevel: Int): Array[Long]
+      compressionLevel: Int,
+      enableFastEncoding: Boolean): Array[Long]
   // scalastyle:on
 
   /**

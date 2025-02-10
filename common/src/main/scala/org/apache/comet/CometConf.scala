@@ -45,6 +45,9 @@ import org.apache.comet.shims.ShimCometConf
  */
 object CometConf extends ShimCometConf {
 
+  val COMPAT_GUIDE: String = "For more information, refer to the Comet Compatibility " +
+    "Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html)"
+
   private val TUNING_GUIDE = "For more information, refer to the Comet Tuning " +
     "Guide (https://datafusion.apache.org/comet/user-guide/tuning.html)"
 
@@ -76,6 +79,27 @@ object CometConf extends ShimCometConf {
         "'spark.comet.exec.enabled' need to be enabled.")
     .booleanConf
     .createWithDefault(true)
+
+  val SCAN_NATIVE_COMET = "native_comet"
+  val SCAN_NATIVE_DATAFUSION = "native_datafusion"
+  val SCAN_NATIVE_ICEBERG_COMPAT = "native_iceberg_compat"
+
+  val COMET_NATIVE_SCAN_IMPL: ConfigEntry[String] = conf("spark.comet.scan.impl")
+    .doc(
+      s"The implementation of Comet Native Scan to use. Available modes are '$SCAN_NATIVE_COMET'," +
+        s"'$SCAN_NATIVE_DATAFUSION', and '$SCAN_NATIVE_ICEBERG_COMPAT'. " +
+        s"'$SCAN_NATIVE_COMET' is for the original Comet native scan which uses a jvm based " +
+        "parquet file reader and native column decoding. Supports simple types only " +
+        s"'$SCAN_NATIVE_DATAFUSION' is a fully native implementation of scan based on DataFusion" +
+        s"'$SCAN_NATIVE_ICEBERG_COMPAT' is a native implementation that exposes apis to read " +
+        "parquet columns natively.")
+    .internal()
+    .stringConf
+    .transform(_.toLowerCase(Locale.ROOT))
+    .checkValues(Set(SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT))
+    .createWithDefault(sys.env
+      .getOrElse("COMET_PARQUET_SCAN_IMPL", SCAN_NATIVE_COMET)
+      .toLowerCase(Locale.ROOT))
 
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.parallel.io.enabled")
@@ -189,6 +213,8 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("window", defaultValue = true)
   val COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("takeOrderedAndProject", defaultValue = true)
+  val COMET_EXEC_INITCAP_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("initCap", defaultValue = false)
 
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
@@ -254,6 +280,13 @@ object CometConf extends ShimCometConf {
     .checkValues(Set("native", "jvm", "auto"))
     .createWithDefault("auto")
 
+  val COMET_SHUFFLE_FALLBACK_TO_COLUMNAR: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.fallbackToColumnar")
+      .doc("Whether to try falling back to columnar shuffle when native shuffle is not supported")
+      .internal()
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_BROADCAST_FORCE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.broadcast.enabled")
       .doc(
@@ -287,6 +320,14 @@ object CometConf extends ShimCometConf {
       .doc("The compression level to use when compressing shuffle files with zstd.")
       .intConf
       .createWithDefault(1)
+
+  val COMET_SHUFFLE_ENABLE_FAST_ENCODING: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enableFastEncoding")
+      .doc("Whether to enable Comet's faster proprietary encoding for shuffle blocks " +
+        "rather than using Arrow IPC.")
+      .internal()
+      .booleanConf
+      .createWithDefault(true)
 
   val COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.columnar.shuffle.async.enabled")
@@ -567,22 +608,37 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXPR_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
+    conf("spark.comet.expression.allowIncompatible")
+      .doc(
+        "Comet is not currently fully compatible with Spark for all expressions. " +
+          s"Set this config to true to allow them anyway. $COMPAT_GUIDE.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_CAST_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
     conf("spark.comet.cast.allowIncompatible")
       .doc(
         "Comet is not currently fully compatible with Spark for all cast operations. " +
-          "Set this config to true to allow them anyway. See compatibility guide " +
-          "for more information.")
+          s"Set this config to true to allow them anyway. $COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 
   val COMET_REGEXP_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
     conf("spark.comet.regexp.allowIncompatible")
-      .doc("Comet is not currently fully compatible with Spark for all regular expressions. " +
-        "Set this config to true to allow them anyway using Rust's regular expression engine. " +
-        "See compatibility guide for more information.")
+      .doc(
+        "Comet is not currently fully compatible with Spark for all regular expressions. " +
+          s"Set this config to true to allow them anyway. $COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)
+
+  val COMET_METRICS_UPDATE_INTERVAL: ConfigEntry[Long] =
+    conf("spark.comet.metrics.updateInterval")
+      .doc(
+        "The interval in milliseconds to update metrics. If interval is negative," +
+          " metrics will be updated upon task completion.")
+      .longConf
+      .createWithDefault(3000L)
 
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(

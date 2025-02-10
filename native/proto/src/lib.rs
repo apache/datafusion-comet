@@ -36,3 +36,9 @@ pub mod spark_partitioning {
 pub mod spark_operator {
     include!(concat!("generated", "/spark.spark_operator.rs"));
 }
+
+// Include generated modules from .proto files.
+#[allow(missing_docs)]
+pub mod spark_metric {
+    include!(concat!("generated", "/spark.spark_metric.rs"));
+}

@@ -204,7 +204,6 @@ object CometCast {
         Compatible()
       case DataTypes.StringType => Compatible()
       case DataTypes.DateType => Compatible()
-      case _: DecimalType => Compatible()
       case _ => Unsupported
     }
   }
@@ -268,7 +267,9 @@ object CometCast {
     case DataTypes.BooleanType | DataTypes.DoubleType | DataTypes.ByteType | DataTypes.ShortType |
         DataTypes.IntegerType | DataTypes.LongType =>
       Compatible()
-    case _: DecimalType => Compatible()
+    case _: DecimalType =>
+      // https://github.com/apache/datafusion-comet/issues/1371
+      Incompatible(Some("There can be rounding differences"))
     case _ => Unsupported
   }
 
@@ -276,7 +277,9 @@ object CometCast {
     case DataTypes.BooleanType | DataTypes.FloatType | DataTypes.ByteType | DataTypes.ShortType |
         DataTypes.IntegerType | DataTypes.LongType =>
       Compatible()
-    case _: DecimalType => Compatible()
+    case _: DecimalType =>
+      // https://github.com/apache/datafusion-comet/issues/1371
+      Incompatible(Some("There can be rounding differences"))
     case _ => Unsupported
   }
 

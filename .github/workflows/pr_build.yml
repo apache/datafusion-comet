@@ -211,8 +211,7 @@ jobs:
         uses: ./.github/actions/java-test
         with:
           maven_opts: -Pspark-${{ matrix.spark-version }}
-          # https://github.com/codecov/codecov-action/issues/1549
-          # upload-test-reports: true
+          upload-test-reports: true
 
   macos-aarch64-test-with-spark4_0:
     strategy:

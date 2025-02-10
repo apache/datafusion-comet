@@ -348,8 +348,15 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateFloats(), DataTypes.DoubleType)
   }
 
-  test("cast FloatType to DecimalType(10,2)") {
+  ignore("cast FloatType to DecimalType(10,2)") {
+    // // https://github.com/apache/datafusion-comet/issues/1371
     castTest(generateFloats(), DataTypes.createDecimalType(10, 2))
+  }
+
+  test("cast FloatType to DecimalType(10,2) - allow incompat") {
+    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      castTest(generateFloats(), DataTypes.createDecimalType(10, 2))
+    }
   }
 
   test("cast FloatType to StringType") {
@@ -401,8 +408,15 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDoubles(), DataTypes.FloatType)
   }
 
-  test("cast DoubleType to DecimalType(10,2)") {
+  ignore("cast DoubleType to DecimalType(10,2)") {
+    // https://github.com/apache/datafusion-comet/issues/1371
     castTest(generateDoubles(), DataTypes.createDecimalType(10, 2))
+  }
+
+  test("cast DoubleType to DecimalType(10,2) - allow incompat") {
+    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      castTest(generateDoubles(), DataTypes.createDecimalType(10, 2))
+    }
   }
 
   test("cast DoubleType to StringType") {
@@ -838,8 +852,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateTimestamps(), DataTypes.DoubleType)
   }
 
-  test("cast TimestampType to DecimalType(10,2)") {
-    castTest(generateTimestamps(), DataTypes.TimestampType)
+  ignore("cast TimestampType to DecimalType(10,2)") {
+    // https://github.com/apache/datafusion-comet/issues/1280
+    // Native cast invoked for unsupported cast from Timestamp(Microsecond, Some("Etc/UTC")) to Decimal128(10, 2)
+    castTest(generateTimestamps(), DataTypes.createDecimalType(10, 2))
   }
 
   test("cast TimestampType to StringType") {

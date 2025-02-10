@@ -36,7 +36,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType}
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark40Plus}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -1364,8 +1364,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           sql(s"create table $table(id int, name varchar(20)) using parquet")
           sql(
             s"insert into $table values(1, 'james smith'), (2, 'michael rose'), " +
-              "(3, 'robert williams'), (4, 'rames rose'), (5, 'james smith')")
-          checkSparkAnswerAndOperator(s"SELECT initcap(name) FROM $table")
+              "(3, 'robert williams'), (4, 'rames rose'), (5, 'james smith'), " +
+              "(6, 'robert rose-smith'), (7, 'james ähtäri')")
+          if (CometConf.COMET_EXEC_INITCAP_ENABLED.get()) {
+            // TODO: remove this if clause https://github.com/apache/datafusion-comet/issues/1052
+            checkSparkAnswerAndOperator(s"SELECT initcap(name) FROM $table")
+          } else {
+            checkSparkAnswer(s"SELECT initcap(name) FROM $table")
+          }
         }
       }
     }
@@ -1922,6 +1928,49 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+
+  test("hash function with decimal input") {
+    val testPrecisionScales: Seq[(Int, Int)] = Seq(
+      (1, 0),
+      (17, 2),
+      (18, 2),
+      (19, 2),
+      (DecimalType.MAX_PRECISION, DecimalType.MAX_SCALE - 1))
+    for ((p, s) <- testPrecisionScales) {
+      withTable("t1") {
+        sql(s"create table t1(c1 decimal($p, $s)) using parquet")
+        sql("insert into t1 values(1.23), (-1.23), (0.0), (null)")
+        if (p <= 18) {
+          checkSparkAnswerAndOperator("select c1, hash(c1) from t1 order by c1")
+        } else {
+          // not supported natively yet
+          checkSparkAnswer("select c1, hash(c1) from t1 order by c1")
+        }
+      }
+    }
+  }
+
+  test("xxhash64 function with decimal input") {
+    val testPrecisionScales: Seq[(Int, Int)] = Seq(
+      (1, 0),
+      (17, 2),
+      (18, 2),
+      (19, 2),
+      (DecimalType.MAX_PRECISION, DecimalType.MAX_SCALE - 1))
+    for ((p, s) <- testPrecisionScales) {
+      withTable("t1") {
+        sql(s"create table t1(c1 decimal($p, $s)) using parquet")
+        sql("insert into t1 values(1.23), (-1.23), (0.0), (null)")
+        if (p <= 18) {
+          checkSparkAnswerAndOperator("select c1, xxhash64(c1) from t1 order by c1")
+        } else {
+          // not supported natively yet
+          checkSparkAnswer("select c1, xxhash64(c1) from t1 order by c1")
+        }
+      }
+    }
+  }
+
   test("unary negative integer overflow test") {
     def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
       withSQLConf(
@@ -2195,7 +2244,111 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  ignore("get_struct_field - select primitive fields") {
+  test("get_struct_field - select primitive fields") {
+    withTempPath { dir =>
+      // create input file with Comet disabled
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(5)
+          // Add both a null struct and null inner value
+          .select(when(col("id") > 1, struct(when(col("id") > 2, col("id")).alias("id")))
+            .alias("nested1"))
+
+        df.write.parquet(dir.toString())
+      }
+      val df = spark.read.parquet(dir.toString()).select("nested1.id")
+      // Comet's original scan does not support structs.
+      // The plan will have a Comet Scan only if scan impl is native_full or native_recordbatch
+      if (!CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_COMET)) {
+        checkSparkAnswerAndOperator(df)
+      } else {
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  test("get_struct_field - select subset of struct") {
+    withTempPath { dir =>
+      // create input file with Comet disabled
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(5)
+          // Add both a null struct and null inner value
+          .select(
+            when(
+              col("id") > 1,
+              struct(
+                when(col("id") > 2, col("id")).alias("id"),
+                when(col("id") > 2, struct(when(col("id") > 3, col("id")).alias("id")))
+                  .as("nested2")))
+              .alias("nested1"))
+
+        df.write.parquet(dir.toString())
+      }
+
+      val df = spark.read.parquet(dir.toString())
+      // Comet's original scan does not support structs.
+      // The plan will have a Comet Scan only if scan impl is native_full or native_recordbatch
+      if (!CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_COMET)) {
+        checkSparkAnswerAndOperator(df.select("nested1.id"))
+        checkSparkAnswerAndOperator(df.select("nested1.nested2"))
+        checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
+        checkSparkAnswerAndOperator(df.select("nested1.id", "nested1.nested2.id"))
+      } else {
+        checkSparkAnswer(df.select("nested1.id"))
+        checkSparkAnswer(df.select("nested1.nested2"))
+        checkSparkAnswer(df.select("nested1.nested2.id"))
+        checkSparkAnswer(df.select("nested1.id", "nested1.nested2.id"))
+      }
+    }
+  }
+
+  test("get_struct_field - read entire struct") {
+    withTempPath { dir =>
+      // create input file with Comet disabled
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(5)
+          // Add both a null struct and null inner value
+          .select(
+            when(
+              col("id") > 1,
+              struct(
+                when(col("id") > 2, col("id")).alias("id"),
+                when(col("id") > 2, struct(when(col("id") > 3, col("id")).alias("id")))
+                  .as("nested2")))
+              .alias("nested1"))
+
+        df.write.parquet(dir.toString())
+      }
+
+      val df = spark.read.parquet(dir.toString()).select("nested1.id")
+      // Comet's original scan does not support structs.
+      // The plan will have a Comet Scan only if scan impl is native_full or native_recordbatch
+      if (!CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_COMET)) {
+        checkSparkAnswerAndOperator(df)
+      } else {
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  private def testV1AndV2(testName: String)(f: => Unit): Unit = {
+    test(s"$testName - V1") {
+      withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") { f }
+    }
+
+    // The test will fail because it will  produce a different plan and the operator check will fail
+    // We could get the test to pass anyway by skipping the operator check, but when V2 does get supported,
+    // we want to make sure we enable the operator check and marking the test as ignore will make it
+    // more obvious
+    //
+    ignore(s"$testName - V2") {
+      withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") { f }
+    }
+  }
+
+  testV1AndV2("get_struct_field with DataFusion ParquetExec - simple case") {
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2208,16 +2361,55 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         df.write.parquet(dir.toString())
       }
 
-      Seq("", "parquet").foreach { v1List =>
-        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
-          val df = spark.read.parquet(dir.toString())
-          checkSparkAnswerAndOperator(df.select("nested1.id"))
-        }
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+        CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
+
+        val df = spark.read.parquet(dir.toString())
+        checkSparkAnswerAndOperator(df.select("nested1.id"))
       }
     }
   }
 
-  ignore("get_struct_field - select subset of struct") {
+  testV1AndV2("get_struct_field with DataFusion ParquetExec - select subset of struct") {
+    withTempPath { dir =>
+      // create input file with Comet disabled
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(5)
+          // Add both a null struct and null inner value
+          .select(
+            when(
+              col("id") > 1,
+              struct(
+                when(col("id") > 2, col("id")).alias("id"),
+                when(col("id") > 2, struct(when(col("id") > 3, col("id")).alias("id")))
+                  .as("nested2")))
+              .alias("nested1"))
+
+        df.write.parquet(dir.toString())
+      }
+
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+        CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
+
+        val df = spark.read.parquet(dir.toString())
+
+        checkSparkAnswerAndOperator(df.select("nested1.id"))
+
+        checkSparkAnswerAndOperator(df.select("nested1.id", "nested1.nested2.id"))
+
+        // unsupported cast from Int64 to Struct([Field { name: "id", data_type: Int64, ...
+        // checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
+      }
+    }
+  }
+
+  // TODO this is not using DataFusion's ParquetExec for some reason
+  ignore("get_struct_field with DataFusion ParquetExec - read entire struct") {
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2237,38 +2429,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
 
       Seq("", "parquet").foreach { v1List =>
-        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
-          val df = spark.read.parquet(dir.toString())
-          checkSparkAnswerAndOperator(df.select("nested1.id"))
-          checkSparkAnswerAndOperator(df.select("nested1.nested2"))
-          checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
-          checkSparkAnswerAndOperator(df.select("nested1.id", "nested1.nested2.id"))
-        }
-      }
-    }
-  }
+        withSQLConf(
+          SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
 
-  ignore("get_struct_field - read entire struct") {
-    withTempPath { dir =>
-      // create input file with Comet disabled
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val df = spark
-          .range(5)
-          // Add both a null struct and null inner value
-          .select(
-            when(
-              col("id") > 1,
-              struct(
-                when(col("id") > 2, col("id")).alias("id"),
-                when(col("id") > 2, struct(when(col("id") > 3, col("id")).alias("id")))
-                  .as("nested2")))
-              .alias("nested1"))
-
-        df.write.parquet(dir.toString())
-      }
-
-      Seq("", "parquet").foreach { v1List =>
-        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
           val df = spark.read.parquet(dir.toString())
           checkSparkAnswerAndOperator(df.select("nested1"))
         }
@@ -2278,12 +2443,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   ignore("read map[int, int] from parquet") {
     withTempPath { dir =>
-      // create input file with Comet disabled
+// create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         val df = spark
           .range(5)
-          // Spark does not allow null as a key but does allow null as a
-          // value, and the entire map be null
+// Spark does not allow null as a key but does allow null as a
+// value, and the entire map be null
           .select(
             when(col("id") > 1, map(col("id"), when(col("id") > 2, col("id")))).alias("map1"))
         df.write.parquet(dir.toString())
@@ -2302,12 +2467,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   ignore("read array[int] from parquet") {
     withTempPath { dir =>
-      // create input file with Comet disabled
+// create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         val df = spark
           .range(5)
-          // Spark does not allow null as a key but does allow null as a
-          // value, and the entire map be null
+// Spark does not allow null as a key but does allow null as a
+// value, and the entire map be null
           .select(when(col("id") > 1, sequence(lit(0), col("id") * 2)).alias("array1"))
         df.write.parquet(dir.toString())
       }

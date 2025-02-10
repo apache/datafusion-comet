@@ -38,7 +38,9 @@ trait DataTypeSupport {
     case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
         BinaryType | StringType | _: DecimalType | DateType | TimestampType =>
       true
-    case t: DataType if t.typeName == "timestamp_ntz" => true
+    case t: DataType if t.typeName == "timestamp_ntz" =>
+      true
+      true
     case _ => false
   }
 

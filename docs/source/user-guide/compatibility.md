@@ -32,12 +32,6 @@ be used in production.
 
 There is an [epic](https://github.com/apache/datafusion-comet/issues/313) where we are tracking the work to fully implement ANSI support.
 
-## Regular Expressions
-
-Comet uses the Rust regexp crate for evaluating regular expressions, and this has different behavior from Java's
-regular expression engine. Comet will fall back to Spark for patterns that are known to produce different results, but
-this can be overridden by setting `spark.comet.regexp.allowIncompatible=true`.
-
 ## Floating number comparison
 
 Spark normalizes NaN and zero for floating point numbers for several cases. See `NormalizeFloatingNumbers` optimization rule in Spark.
@@ -45,6 +39,22 @@ However, one exception is comparison. Spark does not normalize NaN and zero when
 because they are handled well in Spark (e.g., `SQLOrderingUtil.compareFloats`). But the comparison
 functions of arrow-rs used by DataFusion do not normalize NaN and zero (e.g., [arrow::compute::kernels::cmp::eq](https://docs.rs/arrow/latest/arrow/compute/kernels/cmp/fn.eq.html#)).
 So Comet will add additional normalization expression of NaN and zero for comparison.
+
+## Incompatible Expressions
+
+Some Comet native expressions are not 100% compatible with Spark and are disabled by default. These expressions
+will fall back to Spark but can be enabled by setting `spark.comet.expression.allowIncompatible=true`.
+
+## Array Expressions
+
+Comet has experimental support for a number of array expressions. These are experimental and currently marked
+as incompatible and can be enabled by setting `spark.comet.expression.allowIncompatible=true`.
+
+## Regular Expressions
+
+Comet uses the Rust regexp crate for evaluating regular expressions, and this has different behavior from Java's
+regular expression engine. Comet will fall back to Spark for patterns that are known to produce different results, but
+this can be overridden by setting `spark.comet.regexp.allowIncompatible=true`.
 
 ## Cast
 
@@ -107,7 +117,6 @@ The following cast operations are generally compatible with Spark except for the
 | float | integer |  |
 | float | long |  |
 | float | double |  |
-| float | decimal |  |
 | float | string | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
 | double | boolean |  |
 | double | byte |  |
@@ -115,7 +124,6 @@ The following cast operations are generally compatible with Spark except for the
 | double | integer |  |
 | double | long |  |
 | double | float |  |
-| double | decimal |  |
 | double | string | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
 | decimal | byte |  |
 | decimal | short |  |
@@ -133,7 +141,6 @@ The following cast operations are generally compatible with Spark except for the
 | string | date | Only supports years between 262143 BC and 262142 AD |
 | date | string |  |
 | timestamp | long |  |
-| timestamp | decimal |  |
 | timestamp | string |  |
 | timestamp | date |  |
 
@@ -145,6 +152,8 @@ The following cast operations are not compatible with Spark for all inputs and a
 |-|-|-|
 | integer | decimal  | No overflow check |
 | long | decimal  | No overflow check |
+| float | decimal  | There can be rounding differences |
+| double | decimal  | There can be rounding differences |
 | string | float  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. |
 | string | double  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. |
 | string | decimal  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. Returns 0.0 instead of null if input contains no digits |

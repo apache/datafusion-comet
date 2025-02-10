@@ -23,7 +23,7 @@ use crate::{
         shuffle::{
             list::{append_list_element, SparkUnsafeArray},
             map::{append_map_elements, get_map_key_value_dt, SparkUnsafeMap},
-            shuffle_writer::{write_ipc_compressed, Checksum},
+            shuffle_writer::{Checksum, ShuffleBlockWriter},
         },
         utils::bytes_to_i128,
     },
@@ -3298,6 +3298,7 @@ pub fn process_sorted_row_partition(
     // inside the loop within the method across batches.
     initial_checksum: Option<u32>,
     codec: &CompressionCodec,
+    enable_fast_encoding: bool,
 ) -> Result<(i64, Option<u32>), CometError> {
     // TODO: We can tune this parameter automatically based on row size and cache size.
     let row_step = 10;
@@ -3360,7 +3361,12 @@ pub fn process_sorted_row_partition(
 
         // we do not collect metrics in Native_writeSortedFileNative
         let ipc_time = Time::default();
-        written += write_ipc_compressed(&batch, &mut cursor, codec, &ipc_time)?;
+        let block_writer = ShuffleBlockWriter::try_new(
+            batch.schema().as_ref(),
+            enable_fast_encoding,
+            codec.clone(),
+        )?;
+        written += block_writer.write_batch(&batch, &mut cursor, &ipc_time)?;
 
         if let Some(checksum) = &mut current_checksum {
             checksum.update(&mut cursor)?;
@@ -3429,24 +3435,10 @@ fn builder_to_array(
 }
 
 fn make_batch(arrays: Vec<ArrayRef>, row_count: usize) -> Result<RecordBatch, ArrowError> {
-    let mut dict_id = 0;
     let fields = arrays
         .iter()
         .enumerate()
-        .map(|(i, array)| match array.data_type() {
-            DataType::Dictionary(_, _) => {
-                let field = Field::new_dict(
-                    format!("c{}", i),
-                    array.data_type().clone(),
-                    true,
-                    dict_id,
-                    false,
-                );
-                dict_id += 1;
-                field
-            }
-            _ => Field::new(format!("c{}", i), array.data_type().clone(), true),
-        })
+        .map(|(i, array)| Field::new(format!("c{}", i), array.data_type().clone(), true))
         .collect::<Vec<_>>();
     let schema = Arc::new(Schema::new(fields));
     let options = RecordBatchOptions::new().with_row_count(Option::from(row_count));
