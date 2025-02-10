@@ -17,23 +17,5 @@
 
 #[macro_use]
 pub mod bit;
-
-use crate::TypeTrait;
-
-/// Getter APIs for Comet vectors.
-trait ValueGetter<T: TypeTrait> {
-    /// Gets the non-null value at `idx`.
-    ///
-    /// Note that null check needs to be done before the call, to ensure the value at `idx` is
-    /// not null.
-    fn value(&self, idx: usize) -> T::Native;
-}
-
-/// Setter APIs for Comet mutable vectors.
-trait ValueSetter<T: TypeTrait> {
-    /// Appends a non-null value `v` to the end of this vector.
-    fn append_value(&mut self, v: &T::Native);
-}
-
 mod buffer;
 pub use buffer::*;

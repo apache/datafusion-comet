@@ -44,7 +44,7 @@ fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("comet_parquet_read");
     let schema = build_test_schema();
 
-    let pages = build_plain_int32_pages(schema.clone(), schema.column(0), 0.0);
+    let pages = build_plain_int32_pages(schema.column(0), 0.0);
     group.bench_function("INT/PLAIN/NOT_NULL", |b| {
         let t = TypePtr::new(
             PrimitiveTypeBuilder::new("f", PhysicalType::INT32)
@@ -107,7 +107,6 @@ const VALUES_PER_PAGE: usize = 10_000;
 const BATCH_SIZE: usize = 4096;
 
 fn build_plain_int32_pages(
-    schema: SchemaDescPtr,
     column_desc: ColumnDescPtr,
     null_density: f32,
 ) -> impl PageIterator + Clone {
@@ -143,7 +142,7 @@ fn build_plain_int32_pages(
 
     // Since `InMemoryPageReader` is not exposed from parquet crate, here we use
     // `InMemoryPageIterator` instead which is a Iter<Iter<Page>>.
-    InMemoryPageIterator::new(schema, column_desc, vec![pages])
+    InMemoryPageIterator::new(vec![pages])
 }
 
 struct TestColumnReader {
@@ -213,6 +212,6 @@ impl Iterator for TestColumnReader {
         }
         self.total_num_values_read += total;
 
-        Some(self.inner.current_batch())
+        Some(self.inner.current_batch().unwrap())
     }
 }

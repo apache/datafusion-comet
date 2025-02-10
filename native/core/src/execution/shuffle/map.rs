@@ -30,8 +30,6 @@ use arrow_array::builder::{
 use arrow_schema::{DataType, FieldRef, Fields, TimeUnit};
 
 pub struct SparkUnsafeMap {
-    row_addr: i64,
-    row_size: i32,
     pub(crate) keys: SparkUnsafeArray,
     pub(crate) values: SparkUnsafeArray,
 }
@@ -59,8 +57,8 @@ impl SparkUnsafeMap {
             panic!("Negative value size in bytes of map: {}", value_array_size);
         }
 
-        let keys = SparkUnsafeArray::new(addr + 8, key_array_size as i32);
-        let values = SparkUnsafeArray::new(addr + 8 + key_array_size, value_array_size);
+        let keys = SparkUnsafeArray::new(addr + 8);
+        let values = SparkUnsafeArray::new(addr + 8 + key_array_size);
 
         if keys.get_num_elements() != values.get_num_elements() {
             panic!(
@@ -70,16 +68,7 @@ impl SparkUnsafeMap {
             );
         }
 
-        Self {
-            row_addr: addr,
-            row_size: size,
-            keys,
-            values,
-        }
-    }
-
-    pub(crate) fn get_num_elements(&self) -> usize {
-        self.keys.get_num_elements()
+        Self { keys, values }
     }
 }
 

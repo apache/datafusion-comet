@@ -20,10 +20,10 @@
 use crate::{
     errors::CometError,
     execution::{
-        datafusion::shuffle_writer::{write_ipc_compressed, Checksum},
         shuffle::{
             list::{append_list_element, SparkUnsafeArray},
             map::{append_map_elements, get_map_key_value_dt, SparkUnsafeMap},
+            shuffle_writer::{write_ipc_compressed, Checksum},
         },
         utils::bytes_to_i128,
     },
@@ -40,6 +40,7 @@ use arrow_array::{
     Array, ArrayRef, RecordBatch, RecordBatchOptions,
 };
 use arrow_schema::{ArrowError, DataType, Field, Schema, TimeUnit};
+use datafusion::physical_plan::metrics::Time;
 use jni::sys::{jint, jlong};
 use std::{
     fs::OpenOptions,
@@ -48,7 +49,6 @@ use std::{
     sync::Arc,
 };
 
-const WORD_SIZE: i64 = 8;
 const MAX_LONG_DIGITS: u8 = 18;
 const NESTED_TYPE_BUILDER_CAPACITY: usize = 100;
 
@@ -170,8 +170,8 @@ pub trait SparkUnsafeObject {
 
     /// Returns array value at the given index of the object.
     fn get_array(&self, index: usize) -> SparkUnsafeArray {
-        let (offset, len) = self.get_offset_and_len(index);
-        SparkUnsafeArray::new(self.get_row_addr() + offset as i64, len)
+        let (offset, _) = self.get_offset_and_len(index);
+        SparkUnsafeArray::new(self.get_row_addr() + offset as i64)
     }
 
     fn get_map(&self, index: usize) -> SparkUnsafeMap {
@@ -292,6 +292,7 @@ macro_rules! downcast_builder_ref {
 }
 
 // Expose the macro for other modules.
+use crate::execution::shuffle::shuffle_writer::CompressionCodec;
 pub(crate) use downcast_builder_ref;
 
 /// Appends field of row to the given struct builder. `dt` is the data type of the field.
@@ -3296,6 +3297,7 @@ pub fn process_sorted_row_partition(
     // this is the initial checksum for this method, as it also gets updated iteratively
     // inside the loop within the method across batches.
     initial_checksum: Option<u32>,
+    codec: &CompressionCodec,
 ) -> Result<(i64, Option<u32>), CometError> {
     // TODO: We can tune this parameter automatically based on row size and cache size.
     let row_step = 10;
@@ -3355,7 +3357,10 @@ pub fn process_sorted_row_partition(
         let mut frozen: Vec<u8> = vec![];
         let mut cursor = Cursor::new(&mut frozen);
         cursor.seek(SeekFrom::End(0))?;
-        written += write_ipc_compressed(&batch, &mut cursor)?;
+
+        // we do not collect metrics in Native_writeSortedFileNative
+        let ipc_time = Time::default();
+        written += write_ipc_compressed(&batch, &mut cursor, codec, &ipc_time)?;
 
         if let Some(checksum) = &mut current_checksum {
             checksum.update(&mut cursor)?;

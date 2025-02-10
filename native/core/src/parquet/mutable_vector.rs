@@ -18,6 +18,7 @@
 use arrow::{array::ArrayData, datatypes::DataType as ArrowDataType};
 
 use crate::common::{bit, CometBuffer};
+use crate::execution::operators::ExecutionError;
 
 const DEFAULT_ARRAY_LEN: usize = 4;
 
@@ -39,12 +40,6 @@ pub struct ParquetMutableVector {
 
     /// The number of null elements in this vector, must <= `num_values`.
     pub(crate) num_nulls: usize,
-
-    /// The capacity of the vector
-    pub(crate) capacity: usize,
-
-    /// How many bits are required to store a single value
-    pub(crate) bit_width: usize,
 
     /// The validity buffer of this Arrow vector. A bit set at position `i` indicates the `i`th
     /// element is not null. Otherwise, an unset bit at position `i` indicates the `i`th element is
@@ -109,8 +104,6 @@ impl ParquetMutableVector {
             arrow_type,
             num_values: 0,
             num_nulls: 0,
-            capacity,
-            bit_width,
             validity_buffer,
             value_buffer,
             children,
@@ -192,7 +185,7 @@ impl ParquetMutableVector {
     /// This method is highly unsafe since it calls `CometBuffer::to_arrow` which leaks raw
     /// pointer to the memory region that are tracked by `CometBuffer`. Please see comments on
     /// `to_arrow` buffer to understand the motivation.
-    pub fn get_array_data(&mut self) -> ArrayData {
+    pub fn get_array_data(&mut self) -> Result<ArrayData, ExecutionError> {
         unsafe {
             let data_type = if let Some(d) = &self.dictionary {
                 ArrowDataType::Dictionary(
@@ -204,20 +197,19 @@ impl ParquetMutableVector {
             };
             let mut builder = ArrayData::builder(data_type)
                 .len(self.num_values)
-                .add_buffer(self.value_buffer.to_arrow())
-                .null_bit_buffer(Some(self.validity_buffer.to_arrow()))
+                .add_buffer(self.value_buffer.to_arrow()?)
+                .null_bit_buffer(Some(self.validity_buffer.to_arrow()?))
                 .null_count(self.num_nulls);
 
             if Self::is_binary_type(&self.arrow_type) && self.dictionary.is_none() {
                 let child = &mut self.children[0];
-                builder = builder.add_buffer(child.value_buffer.to_arrow());
+                builder = builder.add_buffer(child.value_buffer.to_arrow()?);
             }
 
             if let Some(d) = &mut self.dictionary {
-                builder = builder.add_child_data(d.get_array_data());
+                builder = builder.add_child_data(d.get_array_data()?);
             }
-
-            builder.build_unchecked()
+            Ok(builder.build_unchecked())
         }
     }
 

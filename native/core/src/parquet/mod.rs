@@ -47,8 +47,6 @@ use util::jni::{convert_column_descriptor, convert_encoding};
 
 use self::util::jni::TypePromotionInfo;
 
-const STR_CLASS_NAME: &str = "java/lang/String";
-
 /// Parquet read context maintained across multiple JNI calls.
 struct Context {
     pub column_reader: ColumnReader,
@@ -543,7 +541,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_currentBatch(
     try_unwrap_or_throw(&e, |_env| {
         let ctx = get_context(handle)?;
         let reader = &mut ctx.column_reader;
-        let data = reader.current_batch();
+        let data = reader.current_batch()?;
         data.move_to_spark(array_addr, schema_addr)
             .map_err(|e| e.into())
     })

@@ -3,7 +3,7 @@ TakeOrderedAndProject (34)
 +- * HashAggregate (33)
    +- Exchange (32)
       +- * HashAggregate (31)
-         +- * ColumnarToRow (30)
+         +- * CometColumnarToRow (30)
             +- CometProject (29)
                +- CometBroadcastHashJoin (28)
                   :- CometProject (24)
@@ -175,7 +175,7 @@ Arguments: [ss_store_sk#6], [s_store_sk#19], Inner, NOT (substr(ca_zip#18, 1, 5)
 Input [9]: [ss_store_sk#6, ss_ext_sales_price#7, i_brand_id#10, i_brand#11, i_manufact_id#12, i_manufact#13, ca_zip#18, s_store_sk#19, s_zip#20]
 Arguments: [ss_ext_sales_price#7, i_brand_id#10, i_brand#11, i_manufact_id#12, i_manufact#13], [ss_ext_sales_price#7, i_brand_id#10, i_brand#11, i_manufact_id#12, i_manufact#13]
 
-(30) ColumnarToRow [codegen id : 1]
+(30) CometColumnarToRow [codegen id : 1]
 Input [5]: [ss_ext_sales_price#7, i_brand_id#10, i_brand#11, i_manufact_id#12, i_manufact#13]
 
 (31) HashAggregate [codegen id : 1]

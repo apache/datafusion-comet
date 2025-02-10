@@ -23,23 +23,59 @@ mod cast;
 mod error;
 mod if_expr;
 
+mod avg;
+pub use avg::Avg;
+mod bitwise_not;
+pub use bitwise_not::{bitwise_not, BitwiseNotExpr};
+mod avg_decimal;
+pub use avg_decimal::AvgDecimal;
+mod checkoverflow;
+pub use checkoverflow::CheckOverflow;
+mod correlation;
+pub use correlation::Correlation;
+mod covariance;
+pub use covariance::Covariance;
+mod strings;
+pub use strings::{Contains, EndsWith, Like, StartsWith, StringSpaceExpr, SubstringExpr};
 mod kernels;
 mod list;
 mod regexp;
 pub mod scalar_funcs;
+mod schema_adapter;
+mod static_invoke;
+pub use schema_adapter::SparkSchemaAdapterFactory;
+pub use static_invoke::*;
+
 pub mod spark_hash;
-mod structs;
+mod stddev;
+pub use stddev::Stddev;
+mod struct_funcs;
+mod sum_decimal;
+pub use sum_decimal::SumDecimal;
+mod negative;
+pub use negative::{create_negate_expr, NegativeExpr};
+mod normalize_nan;
 mod temporal;
+
+pub mod test_common;
 pub mod timezone;
 mod to_json;
+mod unbound;
+pub use unbound::UnboundColumn;
 pub mod utils;
+pub use normalize_nan::NormalizeNaNAndZero;
 
-pub use cast::{spark_cast, Cast};
+mod variance;
+pub use variance::Variance;
+mod comet_scalar_funcs;
+pub use cast::{spark_cast, Cast, SparkCastOptions};
+pub use comet_scalar_funcs::create_comet_physical_fun;
 pub use error::{SparkError, SparkResult};
 pub use if_expr::IfExpr;
 pub use list::{ArrayInsert, ArraySize, GetArrayStructFields, ListExtract};
 pub use regexp::RLike;
-pub use structs::{CreateNamedStruct, GetStructField};
+pub use struct_funcs::*;
+
 pub use temporal::{DateTruncExpr, HourExpr, MinuteExpr, SecondExpr, TimestampTruncExpr};
 pub use to_json::ToJson;
 
@@ -47,7 +83,7 @@ pub use to_json::ToJson;
 /// the behavior when processing input values that are invalid or would result in an
 /// error, such as divide by zero errors, and also affects behavior when converting
 /// between types.
-#[derive(Debug, Hash, PartialEq, Clone, Copy)]
+#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
 pub enum EvalMode {
     /// Legacy is the default behavior in Spark prior to Spark 4.0. This mode silently ignores
     /// or replaces errors during SQL operations. Operations resulting in errors (like
@@ -60,4 +96,10 @@ pub enum EvalMode {
     /// Same as Ansi mode, except that it converts errors to NULL values without
     /// failing the entire query.
     Try,
+}
+
+pub(crate) fn arithmetic_overflow_error(from_type: &str) -> SparkError {
+    SparkError::ArithmeticOverflow {
+        from_type: from_type.to_string(),
+    }
 }

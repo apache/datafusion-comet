@@ -28,7 +28,6 @@ use arrow_schema::{DataType, TimeUnit};
 
 pub struct SparkUnsafeArray {
     row_addr: i64,
-    row_size: i32,
     num_elements: usize,
     element_offset: i64,
 }
@@ -45,7 +44,7 @@ impl SparkUnsafeObject for SparkUnsafeArray {
 
 impl SparkUnsafeArray {
     /// Creates a `SparkUnsafeArray` which points to the given address and size in bytes.
-    pub fn new(addr: i64, size: i32) -> Self {
+    pub fn new(addr: i64) -> Self {
         // Read the number of elements from the first 8 bytes.
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr as *const u8, 8) };
         let num_elements = i64::from_le_bytes(slice.try_into().unwrap());
@@ -60,7 +59,6 @@ impl SparkUnsafeArray {
 
         Self {
             row_addr: addr,
-            row_size: size,
             num_elements: num_elements as usize,
             element_offset: addr + Self::get_header_portion_in_bytes(num_elements),
         }

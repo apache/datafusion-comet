@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (32)
+* CometColumnarToRow (32)
 +- CometTakeOrderedAndProject (31)
    +- CometHashAggregate (30)
       +- CometExchange (29)
@@ -179,14 +179,14 @@ Functions [2]: [sum(CASE WHEN (d_date#17 < 2000-03-11) THEN (cs_sales_price#4 - 
 Input [4]: [w_state#12, i_item_id#14, sales_before#22, sales_after#23]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[w_state#12 ASC NULLS FIRST,i_item_id#14 ASC NULLS FIRST], output=[w_state#12,i_item_id#14,sales_before#22,sales_after#23]), [w_state#12, i_item_id#14, sales_before#22, sales_after#23], 100, [w_state#12 ASC NULLS FIRST, i_item_id#14 ASC NULLS FIRST], [w_state#12, i_item_id#14, sales_before#22, sales_after#23]
 
-(32) ColumnarToRow [codegen id : 1]
+(32) CometColumnarToRow [codegen id : 1]
 Input [4]: [w_state#12, i_item_id#14, sales_before#22, sales_after#23]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = cs_sold_date_sk#5 IN dynamicpruning#6
 BroadcastExchange (36)
-+- * ColumnarToRow (35)
++- * CometColumnarToRow (35)
    +- CometFilter (34)
       +- CometScan parquet spark_catalog.default.date_dim (33)
 
@@ -202,7 +202,7 @@ ReadSchema: struct<d_date_sk:int,d_date:date>
 Input [2]: [d_date_sk#16, d_date#17]
 Condition : (((isnotnull(d_date#17) AND (d_date#17 >= 2000-02-10)) AND (d_date#17 <= 2000-04-10)) AND isnotnull(d_date_sk#16))
 
-(35) ColumnarToRow [codegen id : 1]
+(35) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#16, d_date#17]
 
 (36) BroadcastExchange

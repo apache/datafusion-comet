@@ -57,7 +57,8 @@ case class CometCollectLimitExec(
     "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
     "numPartitions" -> SQLMetrics.createMetric(
       sparkContext,
-      "number of partitions")) ++ readMetrics ++ writeMetrics
+      "number of partitions")) ++ readMetrics ++ writeMetrics ++ CometMetricNode.shuffleMetrics(
+    sparkContext)
 
   private lazy val serializer: Serializer =
     new UnsafeRowSerializer(child.output.size, longMetric("dataSize"))

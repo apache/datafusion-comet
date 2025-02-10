@@ -28,8 +28,8 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
-import org.apache.spark.sql.comet.CometProjectExec
-import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, ProjectExec, WholeStageCodegenExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec}
+import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
@@ -749,7 +749,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val project = cometPlan
         .asInstanceOf[WholeStageCodegenExec]
         .child
-        .asInstanceOf[ColumnarToRowExec]
+        .asInstanceOf[CometColumnarToRowExec]
         .child
         .asInstanceOf[InputAdapter]
         .child
@@ -2195,6 +2195,133 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  ignore("get_struct_field - select primitive fields") {
+    withTempPath { dir =>
+      // create input file with Comet disabled
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(5)
+          // Add both a null struct and null inner value
+          .select(when(col("id") > 1, struct(when(col("id") > 2, col("id")).alias("id")))
+            .alias("nested1"))
+
+        df.write.parquet(dir.toString())
+      }
+
+      Seq("", "parquet").foreach { v1List =>
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
+          val df = spark.read.parquet(dir.toString())
+          checkSparkAnswerAndOperator(df.select("nested1.id"))
+        }
+      }
+    }
+  }
+
+  ignore("get_struct_field - select subset of struct") {
+    withTempPath { dir =>
+      // create input file with Comet disabled
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(5)
+          // Add both a null struct and null inner value
+          .select(
+            when(
+              col("id") > 1,
+              struct(
+                when(col("id") > 2, col("id")).alias("id"),
+                when(col("id") > 2, struct(when(col("id") > 3, col("id")).alias("id")))
+                  .as("nested2")))
+              .alias("nested1"))
+
+        df.write.parquet(dir.toString())
+      }
+
+      Seq("", "parquet").foreach { v1List =>
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
+          val df = spark.read.parquet(dir.toString())
+          checkSparkAnswerAndOperator(df.select("nested1.id"))
+          checkSparkAnswerAndOperator(df.select("nested1.nested2"))
+          checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
+          checkSparkAnswerAndOperator(df.select("nested1.id", "nested1.nested2.id"))
+        }
+      }
+    }
+  }
+
+  ignore("get_struct_field - read entire struct") {
+    withTempPath { dir =>
+      // create input file with Comet disabled
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(5)
+          // Add both a null struct and null inner value
+          .select(
+            when(
+              col("id") > 1,
+              struct(
+                when(col("id") > 2, col("id")).alias("id"),
+                when(col("id") > 2, struct(when(col("id") > 3, col("id")).alias("id")))
+                  .as("nested2")))
+              .alias("nested1"))
+
+        df.write.parquet(dir.toString())
+      }
+
+      Seq("", "parquet").foreach { v1List =>
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
+          val df = spark.read.parquet(dir.toString())
+          checkSparkAnswerAndOperator(df.select("nested1"))
+        }
+      }
+    }
+  }
+
+  ignore("read map[int, int] from parquet") {
+    withTempPath { dir =>
+      // create input file with Comet disabled
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(5)
+          // Spark does not allow null as a key but does allow null as a
+          // value, and the entire map be null
+          .select(
+            when(col("id") > 1, map(col("id"), when(col("id") > 2, col("id")))).alias("map1"))
+        df.write.parquet(dir.toString())
+      }
+
+      Seq("", "parquet").foreach { v1List =>
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
+          val df = spark.read.parquet(dir.toString())
+          checkSparkAnswerAndOperator(df.select("map1"))
+          checkSparkAnswerAndOperator(df.select(map_keys(col("map1"))))
+          checkSparkAnswerAndOperator(df.select(map_values(col("map1"))))
+        }
+      }
+    }
+  }
+
+  ignore("read array[int] from parquet") {
+    withTempPath { dir =>
+      // create input file with Comet disabled
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(5)
+          // Spark does not allow null as a key but does allow null as a
+          // value, and the entire map be null
+          .select(when(col("id") > 1, sequence(lit(0), col("id") * 2)).alias("array1"))
+        df.write.parquet(dir.toString())
+      }
+
+      Seq("", "parquet").foreach { v1List =>
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
+          val df = spark.read.parquet(dir.toString())
+          checkSparkAnswerAndOperator(df.select("array1"))
+          checkSparkAnswerAndOperator(df.select(element_at(col("array1"), lit(1))))
+        }
+      }
+    }
+  }
+
   test("CreateArray") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
@@ -2406,5 +2533,17 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndOperator(df.select("arrSizeResult"))
         checkSparkAnswerAndOperator(df.select("arrSizeResultNull"))
       })
+  }
+
+  test("array_contains") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      makeParquetFileAllTypes(path, dictionaryEnabled = false, n = 10000)
+      spark.read.parquet(path.toString).createOrReplaceTempView("t1");
+      checkSparkAnswerAndOperator(
+        spark.sql("SELECT array_contains(array(_2, _3, _4), _2) FROM t1"))
+      checkSparkAnswerAndOperator(
+        spark.sql("SELECT array_contains((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
+    }
   }
 }

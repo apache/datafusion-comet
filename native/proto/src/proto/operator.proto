@@ -31,6 +31,9 @@ message Operator {
   // The child operators of this
   repeated Operator children = 1;
 
+  // Spark plan ID
+  uint32 plan_id = 2;
+
   oneof op_struct {
     Scan scan = 100;
     Projection projection = 101;
@@ -79,10 +82,19 @@ message Limit {
   int32 offset = 2;
 }
 
+enum CompressionCodec {
+  None = 0;
+  Zstd = 1;
+  Lz4 = 2;
+  Snappy = 3;
+}
+
 message ShuffleWriter {
   spark.spark_partitioning.Partitioning partitioning = 1;
   string output_data_file = 3;
   string output_index_file = 4;
+  CompressionCodec codec = 5;
+  int32 compression_level = 6;
 }
 
 enum AggregateMode {

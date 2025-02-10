@@ -3,7 +3,7 @@ TakeOrderedAndProject (32)
 +- * HashAggregate (31)
    +- Exchange (30)
       +- * HashAggregate (29)
-         +- * ColumnarToRow (28)
+         +- * CometColumnarToRow (28)
             +- CometProject (27)
                +- CometBroadcastHashJoin (26)
                   :- CometProject (22)
@@ -161,7 +161,7 @@ Arguments: [cs_sold_date_sk#5], [d_date_sk#16], Inner, BuildRight
 Input [7]: [cs_sales_price#4, cs_sold_date_sk#5, cr_refunded_cash#9, w_state#12, i_item_id#14, d_date_sk#16, d_date#17]
 Arguments: [cs_sales_price#4, cr_refunded_cash#9, w_state#12, i_item_id#14, d_date#17], [cs_sales_price#4, cr_refunded_cash#9, w_state#12, i_item_id#14, d_date#17]
 
-(28) ColumnarToRow [codegen id : 1]
+(28) CometColumnarToRow [codegen id : 1]
 Input [5]: [cs_sales_price#4, cr_refunded_cash#9, w_state#12, i_item_id#14, d_date#17]
 
 (29) HashAggregate [codegen id : 1]
@@ -190,7 +190,7 @@ Arguments: 100, [w_state#12 ASC NULLS FIRST, i_item_id#14 ASC NULLS FIRST], [w_s
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = cs_sold_date_sk#5 IN dynamicpruning#6
 BroadcastExchange (36)
-+- * ColumnarToRow (35)
++- * CometColumnarToRow (35)
    +- CometFilter (34)
       +- CometScan parquet spark_catalog.default.date_dim (33)
 
@@ -206,7 +206,7 @@ ReadSchema: struct<d_date_sk:int,d_date:date>
 Input [2]: [d_date_sk#16, d_date#17]
 Condition : (((isnotnull(d_date#17) AND (d_date#17 >= 2000-02-10)) AND (d_date#17 <= 2000-04-10)) AND isnotnull(d_date_sk#16))
 
-(35) ColumnarToRow [codegen id : 1]
+(35) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#16, d_date#17]
 
 (36) BroadcastExchange

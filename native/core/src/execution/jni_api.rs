@@ -17,22 +17,23 @@
 
 //! Define JNI APIs which can be called from Java/Scala.
 
+use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
 use arrow::datatypes::DataType as ArrowDataType;
 use arrow_array::RecordBatch;
 use datafusion::{
-    execution::{
-        disk_manager::DiskManagerConfig,
-        runtime_env::{RuntimeConfig, RuntimeEnv},
-    },
-    physical_plan::{display::DisplayableExecutionPlan, ExecutionPlan, SendableRecordBatchStream},
+    execution::{disk_manager::DiskManagerConfig, runtime_env::RuntimeEnv},
+    physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
+};
+use datafusion_execution::memory_pool::{
+    FairSpillPool, GreedyMemoryPool, MemoryPool, TrackConsumersPool,
 };
 use futures::poll;
 use jni::{
     errors::Result as JNIResult,
     objects::{
-        JByteArray, JClass, JIntArray, JLongArray, JMap, JObject, JObjectArray, JPrimitiveArray,
-        JString, ReleaseMode,
+        JByteArray, JClass, JIntArray, JLongArray, JObject, JObjectArray, JPrimitiveArray, JString,
+        ReleaseMode,
     },
     sys::{jbyteArray, jint, jlong, jlongArray},
     JNIEnv,
@@ -40,44 +41,50 @@ use jni::{
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc, task::Poll};
 
-use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
-
 use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
     execution::{
-        datafusion::planner::PhysicalPlanner, metrics::utils::update_comet_metric,
-        serde::to_arrow_datatype, shuffle::row::process_sorted_row_partition, sort::RdxSort,
+        metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
+        shuffle::row::process_sorted_row_partition, sort::RdxSort,
     },
     jvm_bridge::{jni_new_global_ref, JVMClasses},
 };
 use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_common::ScalarValue;
+use datafusion_execution::runtime_env::RuntimeEnvBuilder;
 use futures::stream::StreamExt;
+use jni::objects::JByteBuffer;
+use jni::sys::JNI_FALSE;
 use jni::{
     objects::GlobalRef,
     sys::{jboolean, jdouble, jintArray, jobjectArray, jstring},
 };
+use std::num::NonZeroUsize;
+use std::sync::Mutex;
 use tokio::runtime::Runtime;
 
 use crate::execution::operators::ScanExec;
+use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
+use crate::execution::spark_plan::SparkPlan;
 use log::info;
+use once_cell::sync::{Lazy, OnceCell};
 
 /// Comet native execution context. Kept alive across JNI calls.
 struct ExecutionContext {
     /// The id of the execution context.
     pub id: i64,
+    /// Task attempt id
+    pub task_attempt_id: i64,
     /// The deserialized Spark plan
     pub spark_plan: Operator,
     /// The DataFusion root operator converted from the `spark_plan`
-    pub root_op: Option<Arc<dyn ExecutionPlan>>,
+    pub root_op: Option<Arc<SparkPlan>>,
     /// The input sources for the DataFusion plan
     pub scans: Vec<ScanExec>,
     /// The global reference of input sources for the DataFusion plan
     pub input_sources: Vec<Arc<GlobalRef>>,
     /// The record batch stream to pull results from
     pub stream: Option<SendableRecordBatchStream>,
-    /// Configurations for DF execution
-    pub conf: HashMap<String, String>,
     /// The Tokio runtime used for async.
     pub runtime: Runtime,
     /// Native metrics
@@ -92,21 +99,75 @@ struct ExecutionContext {
     pub explain_native: bool,
     /// Map of metrics name -> jstring object to cache jni_NewStringUTF calls.
     pub metrics_jstrings: HashMap<String, Arc<GlobalRef>>,
+    /// Memory pool config
+    pub memory_pool_config: MemoryPoolConfig,
+}
+
+#[derive(PartialEq, Eq)]
+enum MemoryPoolType {
+    Unified,
+    Greedy,
+    FairSpill,
+    GreedyTaskShared,
+    FairSpillTaskShared,
+    GreedyGlobal,
+    FairSpillGlobal,
+}
+
+struct MemoryPoolConfig {
+    pool_type: MemoryPoolType,
+    pool_size: usize,
+}
+
+impl MemoryPoolConfig {
+    fn new(pool_type: MemoryPoolType, pool_size: usize) -> Self {
+        Self {
+            pool_type,
+            pool_size,
+        }
+    }
+}
+
+/// The per-task memory pools keyed by task attempt id.
+static TASK_SHARED_MEMORY_POOLS: Lazy<Mutex<HashMap<i64, PerTaskMemoryPool>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+struct PerTaskMemoryPool {
+    memory_pool: Arc<dyn MemoryPool>,
+    num_plans: usize,
+}
+
+impl PerTaskMemoryPool {
+    fn new(memory_pool: Arc<dyn MemoryPool>) -> Self {
+        Self {
+            memory_pool,
+            num_plans: 0,
+        }
+    }
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
 /// # Safety
-/// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     e: JNIEnv,
     _class: JClass,
     id: jlong,
-    config_object: JObject,
     iterators: jobjectArray,
     serialized_query: jbyteArray,
     metrics_node: JObject,
     comet_task_memory_manager_obj: JObject,
+    batch_size: jint,
+    use_unified_memory_manager: jboolean,
+    memory_pool_type: jstring,
+    memory_limit: jlong,
+    memory_limit_per_task: jlong,
+    task_attempt_id: jlong,
+    debug_native: jboolean,
+    explain_native: jboolean,
+    worker_threads: jint,
+    blocking_threads: jint,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         // Init JVM classes
@@ -120,36 +181,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         // Deserialize query plan
         let spark_plan = serde::deserialize_op(bytes.as_slice())?;
 
-        // Sets up context
-        let mut configs = HashMap::new();
-
-        let config_map = JMap::from_env(&mut env, &config_object)?;
-        let mut map_iter = config_map.iter(&mut env)?;
-        while let Some((key, value)) = map_iter.next(&mut env)? {
-            let key: String = env.get_string(&JString::from(key)).unwrap().into();
-            let value: String = env.get_string(&JString::from(value)).unwrap().into();
-            configs.insert(key, value);
-        }
-
-        // Whether we've enabled additional debugging on the native side
-        let debug_native = parse_bool(&configs, "debug_native")?;
-        let explain_native = parse_bool(&configs, "explain_native")?;
-
-        let worker_threads = configs
-            .get("worker_threads")
-            .map(String::as_str)
-            .unwrap_or("4")
-            .parse::<usize>()?;
-        let blocking_threads = configs
-            .get("blocking_threads")
-            .map(String::as_str)
-            .unwrap_or("10")
-            .parse::<usize>()?;
-
         // Use multi-threaded tokio runtime to prevent blocking spawned tasks if any
         let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(worker_threads)
-            .max_blocking_threads(blocking_threads)
+            .worker_threads(worker_threads as usize)
+            .max_blocking_threads(blocking_threads as usize)
             .enable_all()
             .build()?;
 
@@ -167,57 +202,57 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         let task_memory_manager =
             Arc::new(jni_new_global_ref!(env, comet_task_memory_manager_obj)?);
 
+        let memory_pool_type = env.get_string(&JString::from_raw(memory_pool_type))?.into();
+        let memory_pool_config = parse_memory_pool_config(
+            use_unified_memory_manager != JNI_FALSE,
+            memory_pool_type,
+            memory_limit,
+            memory_limit_per_task,
+        )?;
+        let memory_pool =
+            create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
+
         // We need to keep the session context alive. Some session state like temporary
         // dictionaries are stored in session context. If it is dropped, the temporary
         // dictionaries will be dropped as well.
-        let session = prepare_datafusion_session_context(&configs, task_memory_manager)?;
+        let session = prepare_datafusion_session_context(batch_size as usize, memory_pool)?;
 
         let plan_creation_time = start.elapsed();
 
         let exec_context = Box::new(ExecutionContext {
             id,
+            task_attempt_id,
             spark_plan,
             root_op: None,
             scans: vec![],
             input_sources,
             stream: None,
-            conf: configs,
             runtime,
             metrics,
             plan_creation_time,
             session_ctx: Arc::new(session),
-            debug_native,
-            explain_native,
+            debug_native: debug_native == 1,
+            explain_native: explain_native == 1,
             metrics_jstrings: HashMap::new(),
+            memory_pool_config,
         });
 
         Ok(Box::into_raw(exec_context) as i64)
     })
 }
 
-/// Parse Comet configs and configure DataFusion session context.
+/// Configure DataFusion session context.
 fn prepare_datafusion_session_context(
-    conf: &HashMap<String, String>,
-    comet_task_memory_manager: Arc<GlobalRef>,
+    batch_size: usize,
+    memory_pool: Arc<dyn MemoryPool>,
 ) -> CometResult<SessionContext> {
-    // Get the batch size from Comet JVM side
-    let batch_size = conf
-        .get("batch_size")
-        .ok_or(CometError::Internal(
-            "Config 'batch_size' is not specified from Comet JVM side".to_string(),
-        ))?
-        .parse::<usize>()?;
-
-    let mut rt_config = RuntimeConfig::new().with_disk_manager(DiskManagerConfig::NewOs);
-
-    // Set Comet memory pool for native
-    let memory_pool = CometMemoryPool::new(comet_task_memory_manager);
-    rt_config = rt_config.with_memory_pool(Arc::new(memory_pool));
+    let mut rt_config = RuntimeEnvBuilder::new().with_disk_manager(DiskManagerConfig::NewOs);
+    rt_config = rt_config.with_memory_pool(memory_pool);
 
     // Get Datafusion configuration from Spark Execution context
     // can be configured in Comet Spark JVM using Spark --conf parameters
     // e.g: spark-shell --conf spark.datafusion.sql_parser.parse_float_as_decimal=true
-    let mut session_config = SessionConfig::new()
+    let session_config = SessionConfig::new()
         .with_batch_size(batch_size)
         // DataFusion partial aggregates can emit duplicate rows so we disable the
         // skip partial aggregation feature because this is not compatible with Spark's
@@ -230,11 +265,8 @@ fn prepare_datafusion_session_context(
             &ScalarValue::Float64(Some(1.1)),
         );
 
-    for (key, value) in conf.iter().filter(|(k, _)| k.starts_with("datafusion.")) {
-        session_config = session_config.set_str(key, value);
-    }
-
-    let runtime = RuntimeEnv::try_new(rt_config).unwrap();
+    #[allow(deprecated)]
+    let runtime = RuntimeEnv::try_new(rt_config)?;
 
     let mut session_ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime));
 
@@ -243,12 +275,104 @@ fn prepare_datafusion_session_context(
     Ok(session_ctx)
 }
 
-fn parse_bool(conf: &HashMap<String, String>, name: &str) -> CometResult<bool> {
-    conf.get(name)
-        .map(String::as_str)
-        .unwrap_or("false")
-        .parse::<bool>()
-        .map_err(|e| CometError::Config(format!("Failed to parse boolean config {name}: {e}")))
+fn parse_memory_pool_config(
+    use_unified_memory_manager: bool,
+    memory_pool_type: String,
+    memory_limit: i64,
+    memory_limit_per_task: i64,
+) -> CometResult<MemoryPoolConfig> {
+    let memory_pool_config = if use_unified_memory_manager {
+        MemoryPoolConfig::new(MemoryPoolType::Unified, 0)
+    } else {
+        // Use the memory pool from DF
+        let pool_size = memory_limit as usize;
+        let pool_size_per_task = memory_limit_per_task as usize;
+        match memory_pool_type.as_str() {
+            "fair_spill_task_shared" => {
+                MemoryPoolConfig::new(MemoryPoolType::FairSpillTaskShared, pool_size_per_task)
+            }
+            "greedy_task_shared" => {
+                MemoryPoolConfig::new(MemoryPoolType::GreedyTaskShared, pool_size_per_task)
+            }
+            "fair_spill_global" => {
+                MemoryPoolConfig::new(MemoryPoolType::FairSpillGlobal, pool_size)
+            }
+            "greedy_global" => MemoryPoolConfig::new(MemoryPoolType::GreedyGlobal, pool_size),
+            "fair_spill" => MemoryPoolConfig::new(MemoryPoolType::FairSpill, pool_size_per_task),
+            "greedy" => MemoryPoolConfig::new(MemoryPoolType::Greedy, pool_size_per_task),
+            _ => {
+                return Err(CometError::Config(format!(
+                    "Unsupported memory pool type: {}",
+                    memory_pool_type
+                )))
+            }
+        }
+    };
+    Ok(memory_pool_config)
+}
+
+fn create_memory_pool(
+    memory_pool_config: &MemoryPoolConfig,
+    comet_task_memory_manager: Arc<GlobalRef>,
+    task_attempt_id: i64,
+) -> Arc<dyn MemoryPool> {
+    const NUM_TRACKED_CONSUMERS: usize = 10;
+    match memory_pool_config.pool_type {
+        MemoryPoolType::Unified => {
+            // Set Comet memory pool for native
+            let memory_pool = CometMemoryPool::new(comet_task_memory_manager);
+            Arc::new(memory_pool)
+        }
+        MemoryPoolType::Greedy => Arc::new(TrackConsumersPool::new(
+            GreedyMemoryPool::new(memory_pool_config.pool_size),
+            NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
+        )),
+        MemoryPoolType::FairSpill => Arc::new(TrackConsumersPool::new(
+            FairSpillPool::new(memory_pool_config.pool_size),
+            NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
+        )),
+        MemoryPoolType::GreedyGlobal => {
+            static GLOBAL_MEMORY_POOL_GREEDY: OnceCell<Arc<dyn MemoryPool>> = OnceCell::new();
+            let memory_pool = GLOBAL_MEMORY_POOL_GREEDY.get_or_init(|| {
+                Arc::new(TrackConsumersPool::new(
+                    GreedyMemoryPool::new(memory_pool_config.pool_size),
+                    NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
+                ))
+            });
+            Arc::clone(memory_pool)
+        }
+        MemoryPoolType::FairSpillGlobal => {
+            static GLOBAL_MEMORY_POOL_FAIR: OnceCell<Arc<dyn MemoryPool>> = OnceCell::new();
+            let memory_pool = GLOBAL_MEMORY_POOL_FAIR.get_or_init(|| {
+                Arc::new(TrackConsumersPool::new(
+                    FairSpillPool::new(memory_pool_config.pool_size),
+                    NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
+                ))
+            });
+            Arc::clone(memory_pool)
+        }
+        MemoryPoolType::GreedyTaskShared | MemoryPoolType::FairSpillTaskShared => {
+            let mut memory_pool_map = TASK_SHARED_MEMORY_POOLS.lock().unwrap();
+            let per_task_memory_pool =
+                memory_pool_map.entry(task_attempt_id).or_insert_with(|| {
+                    let pool: Arc<dyn MemoryPool> =
+                        if memory_pool_config.pool_type == MemoryPoolType::GreedyTaskShared {
+                            Arc::new(TrackConsumersPool::new(
+                                GreedyMemoryPool::new(memory_pool_config.pool_size),
+                                NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
+                            ))
+                        } else {
+                            Arc::new(TrackConsumersPool::new(
+                                FairSpillPool::new(memory_pool_config.pool_size),
+                                NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
+                            ))
+                        };
+                    PerTaskMemoryPool::new(pool)
+                });
+            per_task_memory_pool.num_plans += 1;
+            Arc::clone(&per_task_memory_pool.memory_pool)
+        }
+    }
 }
 
 /// Prepares arrow arrays for output.
@@ -257,7 +381,7 @@ fn prepare_output(
     array_addrs: jlongArray,
     schema_addrs: jlongArray,
     output_batch: RecordBatch,
-    exec_context: &mut ExecutionContext,
+    validate: bool,
 ) -> CometResult<jlong> {
     let array_address_array = unsafe { JLongArray::from_raw(array_addrs) };
     let num_cols = env.get_array_length(&array_address_array)? as usize;
@@ -281,7 +405,7 @@ fn prepare_output(
         )));
     }
 
-    if exec_context.debug_native {
+    if validate {
         // Validate the output arrays.
         for array in results.iter() {
             let array_data = array.to_data();
@@ -300,9 +424,6 @@ fn prepare_output(
 
         i += 1;
     }
-
-    // Update metrics
-    update_metrics(env, exec_context)?;
 
     Ok(num_rows as jlong)
 }
@@ -324,7 +445,7 @@ fn pull_input_batches(exec_context: &mut ExecutionContext) -> Result<(), CometEr
 /// Accept serialized query plan and the addresses of Arrow Arrays from Spark,
 /// then execute the query. Return addresses of arrow vector.
 /// # Safety
-/// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     e: JNIEnv,
@@ -360,7 +481,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 
             if exec_context.explain_native {
                 let formatted_plan_str =
-                    DisplayableExecutionPlan::new(root_op.as_ref()).indent(true);
+                    DisplayableExecutionPlan::new(root_op.native_plan.as_ref()).indent(true);
                 info!("Comet native query plan:\n{formatted_plan_str:}");
             }
 
@@ -369,6 +490,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 .root_op
                 .as_ref()
                 .unwrap()
+                .native_plan
                 .execute(0, task_ctx)?;
             exec_context.stream = Some(stream);
         } else {
@@ -381,31 +503,32 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             let next_item = exec_context.stream.as_mut().unwrap().next();
             let poll_output = exec_context.runtime.block_on(async { poll!(next_item) });
 
+            // Update metrics
+            update_metrics(&mut env, exec_context)?;
+
             match poll_output {
                 Poll::Ready(Some(output)) => {
+                    // prepare output for FFI transfer
                     return prepare_output(
                         &mut env,
                         array_addrs,
                         schema_addrs,
                         output?,
-                        exec_context,
+                        exec_context.debug_native,
                     );
                 }
                 Poll::Ready(None) => {
                     // Reaches EOF of output.
-
-                    // Update metrics
-                    update_metrics(&mut env, exec_context)?;
-
                     if exec_context.explain_native {
                         if let Some(plan) = &exec_context.root_op {
                             let formatted_plan_str =
-                                DisplayableExecutionPlan::with_metrics(plan.as_ref()).indent(true);
+                                DisplayableExecutionPlan::with_metrics(plan.native_plan.as_ref())
+                                    .indent(true);
                             info!(
-                                "Comet native query plan with metrics:\
-                            \n[Stage {} Partition {}] plan creation (including CometScans fetching first batches) took {:?}:\
+                                "Comet native query plan with metrics (Plan #{} Stage {} Partition {}):\
+                            \n plan creation (including CometScans fetching first batches) took {:?}:\
                             \n{formatted_plan_str:}",
-                                stage_id, partition, exec_context.plan_creation_time
+                                plan.plan_id, stage_id, partition, exec_context.plan_creation_time
                             );
                         }
                     }
@@ -415,9 +538,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 // A poll pending means there are more than one blocking operators,
                 // we don't need go back-forth between JVM/Native. Just keeping polling.
                 Poll::Pending => {
-                    // Update metrics
-                    update_metrics(&mut env, exec_context)?;
-
                     // Pull input batches
                     pull_input_batches(exec_context)?;
 
@@ -438,6 +558,22 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
 ) {
     try_unwrap_or_throw(&e, |_| unsafe {
         let execution_context = get_execution_context(exec_context);
+        if execution_context.memory_pool_config.pool_type == MemoryPoolType::FairSpillTaskShared
+            || execution_context.memory_pool_config.pool_type == MemoryPoolType::GreedyTaskShared
+        {
+            // Decrement the number of native plans using the per-task shared memory pool, and
+            // remove the memory pool if the released native plan is the last native plan using it.
+            let task_attempt_id = execution_context.task_attempt_id;
+            let mut memory_pool_map = TASK_SHARED_MEMORY_POOLS.lock().unwrap();
+            if let Some(per_task_memory_pool) = memory_pool_map.get_mut(&task_attempt_id) {
+                per_task_memory_pool.num_plans -= 1;
+                if per_task_memory_pool.num_plans == 0 {
+                    // Drop the memory pool from the per-task memory pool map if there are no
+                    // more native plans using it.
+                    memory_pool_map.remove(&task_attempt_id);
+                }
+            }
+        }
         let _: Box<ExecutionContext> = Box::from_raw(execution_context);
         Ok(())
     })
@@ -483,7 +619,7 @@ fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
 
 /// Used by Comet shuffle external sorter to write sorted records to disk.
 /// # Safety
-/// This function is inheritly unsafe since it deals with raw pointers passed from JNI.
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative(
     e: JNIEnv,
@@ -497,6 +633,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
     checksum_enabled: jboolean,
     checksum_algo: jint,
     current_checksum: jlong,
+    compression_codec: jstring,
+    compression_level: jint,
 ) -> jlongArray {
     try_unwrap_or_throw(&e, |mut env| unsafe {
         let data_types = convert_datatype_arrays(&mut env, serialized_datatypes)?;
@@ -524,6 +662,18 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
             Some(current_checksum as u32)
         };
 
+        let compression_codec: String = env
+            .get_string(&JString::from_raw(compression_codec))
+            .unwrap()
+            .into();
+
+        let compression_codec = match compression_codec.as_str() {
+            "zstd" => CompressionCodec::Zstd(compression_level),
+            "lz4" => CompressionCodec::Lz4Frame,
+            "snappy" => CompressionCodec::Snappy,
+            _ => CompressionCodec::Lz4Frame,
+        };
+
         let (written_bytes, checksum) = process_sorted_row_partition(
             row_num,
             batch_size as usize,
@@ -535,6 +685,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
             checksum_enabled,
             checksum_algo,
             current_checksum,
+            &compression_codec,
         )?;
 
         let checksum = if let Some(checksum) = checksum {
@@ -566,5 +717,26 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
         array.rdxsort();
 
         Ok(())
+    })
+}
+
+#[no_mangle]
+/// Used by Comet native shuffle reader
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
+    e: JNIEnv,
+    _class: JClass,
+    byte_buffer: JByteBuffer,
+    length: jint,
+    array_addrs: jlongArray,
+    schema_addrs: jlongArray,
+) -> jlong {
+    try_unwrap_or_throw(&e, |mut env| {
+        let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
+        let length = length as usize;
+        let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
+        let batch = read_ipc_compressed(slice)?;
+        prepare_output(&mut env, array_addrs, schema_addrs, batch, false)
     })
 }

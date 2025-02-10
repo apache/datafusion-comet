@@ -27,7 +27,7 @@ Official source releases can be downloaded from https://dist.apache.org/repos/di
 
 ```console
 # Pick the latest version
-export COMET_VERSION=0.3.0
+export COMET_VERSION=0.4.0
 # Download the tarball
 curl -O "https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-$COMET_VERSION/apache-datafusion-comet-$COMET_VERSION.tar.gz"
 # Unpack

@@ -1745,7 +1745,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             exprToProtoInternal(elements._1, inputs)
           })
           val thenSeq = branches.map(elements => {
-            allBranches = allBranches :+ elements._1
+            allBranches = allBranches :+ elements._2
             exprToProtoInternal(elements._2, inputs)
           })
           assert(whenSeq.length == thenSeq.length)
@@ -2276,6 +2276,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             withInfo(expr, "unsupported arguments for GetArrayStructFields", child)
             None
           }
+        case expr if expr.prettyName == "array_contains" =>
+          createBinaryExpr(
+            expr.children(0),
+            expr.children(1),
+            inputs,
+            (builder, binaryExpr) => builder.setArrayContains(binaryExpr))
         case _ if expr.prettyName == "array_append" =>
           createBinaryExpr(
             expr.children(0),
@@ -2518,7 +2524,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
    */
   def operator2Proto(op: SparkPlan, childOp: Operator*): Option[Operator] = {
     val conf = op.conf
-    val result = OperatorOuterClass.Operator.newBuilder()
+    val result = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
     childOp.foreach(result.addChildren)
 
     op match {
@@ -2863,11 +2869,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           case RightOuter => JoinType.RightOuter
           case FullOuter => JoinType.FullOuter
           case LeftSemi => JoinType.LeftSemi
-          // TODO: DF SMJ with join condition fails TPCH q21
-          case LeftAnti if condition.isEmpty => JoinType.LeftAnti
-          case LeftAnti =>
-            withInfo(join, "LeftAnti SMJ join with condition is not supported")
-            return None
+          case LeftAnti => JoinType.LeftAnti
           case _ =>
             // Spark doesn't support other join types
             withInfo(op, s"Unsupported join type ${join.joinType}")
@@ -2919,7 +2921,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case op if isCometSink(op) && op.output.forall(a => supportedDataType(a.dataType, true)) =>
         // These operators are source of Comet native execution chain
         val scanBuilder = OperatorOuterClass.Scan.newBuilder()
-        scanBuilder.setSource(op.simpleStringWithNodeId())
+        val source = op.simpleStringWithNodeId()
+        if (source.isEmpty) {
+          scanBuilder.setSource(op.getClass.getSimpleName)
+        } else {
+          scanBuilder.setSource(source)
+        }
 
         val scanTypes = op.output.flatten { attr =>
           serializeDataType(attr.dataType)

@@ -84,7 +84,8 @@ message Expr {
     GetArrayStructFields get_array_struct_fields = 57;
     BinaryExpr array_append = 58;
     ArrayInsert array_insert = 59;
-    ArraySize array_size = 60;
+    BinaryExpr array_contains = 60;
+    ArraySize array_size = 61;
   }
 }
 

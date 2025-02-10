@@ -15,8 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::sync::Arc;
-
 use arrow::{
     array::ArrayData,
     error::ArrowError,
@@ -52,10 +50,6 @@ pub trait SparkArrowConvert {
     where
         Self: Sized;
 
-    /// Convert Arrow Arrays to C data interface.
-    /// It returns a tuple (ArrowArray address, ArrowSchema address).
-    fn to_spark(&self) -> Result<(i64, i64), ExecutionError>;
-
     /// Move Arrow Arrays to C data interface.
     fn move_to_spark(&self, array: i64, schema: i64) -> Result<(), ExecutionError>;
 }
@@ -86,18 +80,6 @@ impl SparkArrowConvert for ArrayData {
         ffi_array.align_buffers();
 
         Ok(ffi_array)
-    }
-
-    /// Converts this ArrowData to pointers of Arrow C data interface.
-    /// Returned pointers are Arc-ed and should be freed manually.
-    #[allow(clippy::arc_with_non_send_sync)]
-    fn to_spark(&self) -> Result<(i64, i64), ExecutionError> {
-        let arrow_array = Arc::new(FFI_ArrowArray::new(self));
-        let arrow_schema = Arc::new(FFI_ArrowSchema::try_from(self.data_type())?);
-
-        let (array, schema) = (Arc::into_raw(arrow_array), Arc::into_raw(arrow_schema));
-
-        Ok((array as i64, schema as i64))
     }
 
     /// Move this ArrowData to pointers of Arrow C data interface.

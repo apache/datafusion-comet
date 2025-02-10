@@ -41,8 +41,7 @@ arrow-buffer = { workspace = true }
 arrow-data = { workspace = true }
 arrow-schema = { workspace = true }
 parquet = { workspace = true, default-features = false, features = ["experimental"] }
-half = { version = "2.4.1", default-features = false }
-futures = "0.3.28"
+futures = { workspace = true }
 mimalloc = { version = "*", default-features = false, optional = true }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 async-trait = "0.1"
@@ -54,15 +53,13 @@ lazy_static = "1.4.0"
 prost = "0.12.1"
 jni = "0.21"
 snap = "1.1"
-brotli = "3.3"
-flate2 = "1.0"
-lz4 = "1.24"
+# we disable default features in lz4_flex to force the use of the faster unsafe encoding and decoding implementation
+lz4_flex = { version = "0.11.3", default-features = false }
 zstd = "0.11"
 rand = { workspace = true}
 num = { workspace = true }
 bytes = "1.5.0"
 tempfile = "3.8.0"
-ahash = { version = "0.8", default-features = false }
 itertools = "0.11.0"
 paste = "1.0.14"
 datafusion-common = { workspace = true }
@@ -88,7 +85,6 @@ hex = "0.4.3"
 
 [features]
 default = []
-nightly = []
 
 [lib]
 name = "comet"
@@ -101,10 +97,6 @@ harness = false
 
 [[bench]]
 name = "bit_util"
-harness = false
-
-[[bench]]
-name = "hash"
 harness = false
 
 [[bench]]
@@ -121,10 +113,6 @@ harness = false
 
 [[bench]]
 name = "filter"
-harness = false
-
-[[bench]]
-name = "aggregate"
 harness = false
 
 [[bench]]

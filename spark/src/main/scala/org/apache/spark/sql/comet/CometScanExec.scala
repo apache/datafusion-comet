@@ -35,7 +35,7 @@ import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.comet.shims.ShimCometScanExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources._
-import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
+import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetOptions}
 import org.apache.spark.sql.execution.datasources.v2.DataSourceRDD
 import org.apache.spark.sql.execution.metric._
 import org.apache.spark.sql.types._
@@ -502,5 +502,11 @@ object CometScanExec extends DataTypeSupport {
       wrapped)
     scanExec.logicalLink.foreach(batchScanExec.setLogicalLink)
     batchScanExec
+  }
+
+  def isFileFormatSupported(fileFormat: FileFormat): Boolean = {
+    // Only support Spark's built-in Parquet scans, not others such as Delta which use a subclass
+    // of ParquetFileFormat.
+    fileFormat.getClass().equals(classOf[ParquetFileFormat])
   }
 }

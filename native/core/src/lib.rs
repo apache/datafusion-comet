@@ -17,7 +17,6 @@
 
 #![allow(incomplete_features)]
 #![allow(non_camel_case_types)]
-#![allow(dead_code)]
 #![allow(clippy::upper_case_acronyms)]
 // For prost generated struct
 #![allow(clippy::derive_partial_eq_without_eq)]
@@ -40,15 +39,12 @@ use log4rs::{
 use mimalloc::MiMalloc;
 use once_cell::sync::OnceCell;
 
-pub use data_type::*;
-
 use errors::{try_unwrap_or_throw, CometError, CometResult};
 
 #[macro_use]
 mod errors;
 #[macro_use]
 pub mod common;
-mod data_type;
 pub mod execution;
 mod jvm_bridge;
 pub mod parquet;
@@ -106,31 +102,4 @@ fn default_logger_config() -> CometResult<Config> {
         .appender(appender)
         .build(root)
         .map_err(|err| CometError::Config(err.to_string()))
-}
-
-// These are borrowed from hashbrown crate:
-//   https://github.com/rust-lang/hashbrown/blob/master/src/raw/mod.rs
-
-// On stable we can use #[cold] to get a equivalent effect: this attributes
-// suggests that the function is unlikely to be called
-#[cfg(not(feature = "nightly"))]
-#[inline]
-#[cold]
-fn cold() {}
-
-#[cfg(not(feature = "nightly"))]
-#[inline]
-fn likely(b: bool) -> bool {
-    if !b {
-        cold();
-    }
-    b
-}
-#[cfg(not(feature = "nightly"))]
-#[inline]
-fn unlikely(b: bool) -> bool {
-    if b {
-        cold();
-    }
-    b
 }

@@ -28,26 +28,22 @@ use crate::write_val_or_null;
 use crate::{
     common::bit::{self, BitReader},
     parquet::{data_type::*, ParquetMutableVector},
-    unlikely,
 };
 use arrow::datatypes::DataType as ArrowDataType;
+use datafusion_comet_spark_expr::utils::unlikely;
 
 pub fn get_decoder<T: DataType>(
     value_data: Buffer,
-    num_values: usize,
     encoding: Encoding,
     desc: ColumnDescPtr,
     read_options: ReadOptions,
 ) -> Box<dyn Decoder> {
     let decoder: Box<dyn Decoder> = match encoding {
-        Encoding::PLAIN | Encoding::PLAIN_DICTIONARY => Box::new(PlainDecoder::<T>::new(
-            value_data,
-            num_values,
-            desc,
-            read_options,
-        )),
+        Encoding::PLAIN | Encoding::PLAIN_DICTIONARY => {
+            Box::new(PlainDecoder::<T>::new(value_data, desc, read_options))
+        }
         // This is for dictionary indices
-        Encoding::RLE_DICTIONARY => Box::new(DictDecoder::new(value_data, num_values)),
+        Encoding::RLE_DICTIONARY => Box::new(DictDecoder::new(value_data)),
         _ => panic!("Unsupported encoding: {}", encoding),
     };
     decoder
@@ -108,17 +104,11 @@ pub struct PlainDecoder<T: DataType> {
 }
 
 impl<T: DataType> PlainDecoder<T> {
-    pub fn new(
-        value_data: Buffer,
-        num_values: usize,
-        desc: ColumnDescPtr,
-        read_options: ReadOptions,
-    ) -> Self {
+    pub fn new(value_data: Buffer, desc: ColumnDescPtr, read_options: ReadOptions) -> Self {
         let len = value_data.len();
         let inner = PlainDecoderInner {
             data: value_data.clone(),
             offset: 0,
-            value_count: num_values,
             bit_reader: BitReader::new(value_data, len),
             read_options,
             desc,
@@ -938,9 +928,6 @@ pub struct DictDecoder {
     /// Number of bits used to represent dictionary indices. Must be between `[0, 64]`.
     bit_width: usize,
 
-    /// The number of total values in `data`
-    value_count: usize,
-
     /// Bit reader
     bit_reader: BitReader,
 
@@ -955,12 +942,11 @@ pub struct DictDecoder {
 }
 
 impl DictDecoder {
-    pub fn new(buf: Buffer, num_values: usize) -> Self {
+    pub fn new(buf: Buffer) -> Self {
         let bit_width = buf.as_bytes()[0] as usize;
 
         Self {
             bit_width,
-            value_count: num_values,
             bit_reader: BitReader::new_all(buf.slice(1)),
             rle_left: 0,
             bit_packed_left: 0,

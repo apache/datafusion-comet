@@ -52,8 +52,9 @@ import org.apache.spark.util.random.XORShiftRandom
 
 import com.google.common.base.Objects
 
+import org.apache.comet.CometConf
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass, QueryPlanSerde}
-import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.serde.OperatorOuterClass.{CompressionCodec, Operator}
 import org.apache.comet.serde.QueryPlanSerde.serializeDataType
 import org.apache.comet.shims.ShimCometShuffleExchangeExec
 
@@ -77,12 +78,10 @@ case class CometShuffleExchangeExec(
     SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
-    "jvm_fetch_time" -> SQLMetrics.createNanoTimingMetric(
-      sparkContext,
-      "time fetching batches from JVM"),
     "numPartitions" -> SQLMetrics.createMetric(
       sparkContext,
-      "number of partitions")) ++ readMetrics ++ writeMetrics
+      "number of partitions")) ++ readMetrics ++ writeMetrics ++ CometMetricNode.shuffleMetrics(
+    sparkContext)
 
   override def nodeName: String = if (shuffleType == CometNativeShuffle) {
     "CometExchange"
@@ -239,7 +238,8 @@ object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
       partitioner = new Partitioner {
         override def numPartitions: Int = outputPartitioning.numPartitions
         override def getPartition(key: Any): Int = key.asInstanceOf[Int]
-      })
+      },
+      decodeTime = metrics("decode_time"))
     dependency
   }
 
@@ -436,7 +436,8 @@ object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
         serializer,
         shuffleWriterProcessor = ShuffleExchangeExec.createShuffleWriteProcessor(writeMetrics),
         shuffleType = CometColumnarShuffle,
-        schema = Some(fromAttributes(outputAttributes)))
+        schema = Some(fromAttributes(outputAttributes)),
+        decodeTime = writeMetrics("decode_time"))
 
     dependency
   }
@@ -480,19 +481,22 @@ class CometShuffleWriteProcessor(
     // Call native shuffle write
     val nativePlan = getNativePlan(tempDataFilename, tempIndexFilename)
 
+    val detailedMetrics = Seq(
+      "elapsed_compute",
+      "encode_time",
+      "repart_time",
+      "mempool_time",
+      "input_batches",
+      "spill_count",
+      "spilled_bytes")
+
     // Maps native metrics to SQL metrics
     val nativeSQLMetrics = Map(
       "output_rows" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_RECORDS_WRITTEN),
       "data_size" -> metrics("dataSize"),
-      "elapsed_compute" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_WRITE_TIME))
-
-    val nativeMetrics = if (metrics.contains("jvm_fetch_time")) {
-      CometMetricNode(
-        nativeSQLMetrics ++ Map("jvm_fetch_time" ->
-          metrics("jvm_fetch_time")))
-    } else {
-      CometMetricNode(nativeSQLMetrics)
-    }
+      "write_time" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_WRITE_TIME)) ++
+      metrics.filterKeys(detailedMetrics.contains)
+    val nativeMetrics = CometMetricNode(nativeSQLMetrics)
 
     // Getting rid of the fake partitionId
     val newInputs = inputs.asInstanceOf[Iterator[_ <: Product2[Any, Any]]].map(_._2)
@@ -538,7 +542,7 @@ class CometShuffleWriteProcessor(
   }
 
   def getNativePlan(dataFile: String, indexFile: String): Operator = {
-    val scanBuilder = OperatorOuterClass.Scan.newBuilder()
+    val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("ShuffleWriterInput")
     val opBuilder = OperatorOuterClass.Operator.newBuilder()
 
     val scanTypes = outputAttributes.flatten { attr =>
@@ -551,6 +555,20 @@ class CometShuffleWriteProcessor(
       val shuffleWriterBuilder = OperatorOuterClass.ShuffleWriter.newBuilder()
       shuffleWriterBuilder.setOutputDataFile(dataFile)
       shuffleWriterBuilder.setOutputIndexFile(indexFile)
+
+      if (SparkEnv.get.conf.getBoolean("spark.shuffle.compress", true)) {
+        val codec = CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_CODEC.get() match {
+          case "zstd" => CompressionCodec.Zstd
+          case "lz4" => CompressionCodec.Lz4
+          case "snappy" => CompressionCodec.Snappy
+          case other => throw new UnsupportedOperationException(s"invalid codec: $other")
+        }
+        shuffleWriterBuilder.setCodec(codec)
+      } else {
+        shuffleWriterBuilder.setCodec(CompressionCodec.None)
+      }
+      shuffleWriterBuilder.setCompressionLevel(
+        CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL.get)
 
       outputPartitioning match {
         case _: HashPartitioning =>

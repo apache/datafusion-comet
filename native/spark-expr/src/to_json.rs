@@ -19,6 +19,7 @@
 // of the Spark-specific compatibility features that we need (including
 // being able to specify Spark-compatible cast from all types to string)
 
+use crate::cast::SparkCastOptions;
 use crate::{spark_cast, EvalMode};
 use arrow_array::builder::StringBuilder;
 use arrow_array::{Array, ArrayRef, RecordBatch, StringArray, StructArray};
@@ -28,16 +29,28 @@ use datafusion_expr::ColumnarValue;
 use datafusion_physical_expr::PhysicalExpr;
 use std::any::Any;
 use std::fmt::{Debug, Display, Formatter};
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::sync::Arc;
 
 /// to_json function
-#[derive(Debug, Hash)]
+#[derive(Debug, Eq)]
 pub struct ToJson {
     /// The input to convert to JSON
     expr: Arc<dyn PhysicalExpr>,
     /// Timezone to use when converting timestamps to JSON
     timezone: String,
+}
+
+impl Hash for ToJson {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.expr.hash(state);
+        self.timezone.hash(state);
+    }
+}
+impl PartialEq for ToJson {
+    fn eq(&self, other: &Self) -> bool {
+        self.expr.eq(&other.expr) && self.timezone.eq(&other.timezone)
+    }
 }
 
 impl ToJson {
@@ -100,13 +113,6 @@ impl PhysicalExpr for ToJson {
             &self.timezone,
         )))
     }
-
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.expr.hash(&mut s);
-        self.timezone.hash(&mut s);
-        self.hash(&mut s);
-    }
 }
 
 /// Convert an array into a JSON value string representation
@@ -117,9 +123,7 @@ fn array_to_json_string(arr: &Arc<dyn Array>, timezone: &str) -> Result<ArrayRef
         spark_cast(
             ColumnarValue::Array(Arc::clone(arr)),
             &DataType::Utf8,
-            EvalMode::Legacy,
-            timezone,
-            false,
+            &SparkCastOptions::new(EvalMode::Legacy, timezone, false),
         )?
         .into_array(arr.len())
     }

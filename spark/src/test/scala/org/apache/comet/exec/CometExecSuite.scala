@@ -22,8 +22,6 @@ package org.apache.comet.exec
 import java.sql.Date
 import java.time.{Duration, Period}
 
-import scala.collection.JavaConverters._
-import scala.collection.mutable
 import scala.util.Random
 
 import org.scalactic.source.Position
@@ -39,6 +37,7 @@ import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHas
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
+import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.reuse.ReuseExchangeAndSubquery
@@ -67,8 +66,10 @@ class CometExecSuite extends CometTestBase {
   test("TopK operator should return correct results on dictionary column with nulls") {
     withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") {
       withTable("test_data") {
+        val data = (0 to 8000)
+          .flatMap(_ => Seq((1, null, "A"), (2, "BBB", "B"), (3, "BBB", "B"), (4, "BBB", "B")))
         val tableDF = spark.sparkContext
-          .parallelize(Seq((1, null, "A"), (2, "BBB", "B"), (3, "BBB", "B"), (4, "BBB", "B")), 3)
+          .parallelize(data, 3)
           .toDF("c1", "c2", "c3")
         tableDF
           .coalesce(1)
@@ -457,37 +458,6 @@ class CometExecSuite extends CometTestBase {
           val rows = nativeBroadcast.executeCollect()
           assert(rows.isEmpty)
         }
-      }
-    }
-  }
-
-  test("CometExec.executeColumnarCollectIterator can collect ColumnarBatch results") {
-    assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
-    withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
-      withParquetTable((0 until 50).map(i => (i, i + 1)), "tbl") {
-        val df = sql("SELECT _1 + 1, _2 + 2 FROM tbl WHERE _1 > 3")
-
-        val nativeProject = find(df.queryExecution.executedPlan) {
-          case _: CometProjectExec => true
-          case _ => false
-        }.get.asInstanceOf[CometProjectExec]
-
-        val (rows, batches) = nativeProject.executeColumnarCollectIterator()
-        assert(rows == 46)
-
-        val column1 = mutable.ArrayBuffer.empty[Int]
-        val column2 = mutable.ArrayBuffer.empty[Int]
-
-        batches.foreach(batch => {
-          batch.rowIterator().asScala.foreach { row =>
-            assert(row.numFields == 2)
-            column1 += row.getInt(0)
-            column2 += row.getInt(1)
-          }
-        })
-
-        assert(column1.toArray.sorted === (4 until 50).map(_ + 1).toArray)
-        assert(column2.toArray.sorted === (5 until 51).map(_ + 2).toArray)
       }
     }
   }
@@ -1882,6 +1852,14 @@ class CometExecSuite extends CometTestBase {
         checkSparkAnswerAndOperator("SELECT a, b.c, b.d FROM tbl")
       }
     }
+  }
+
+  test("Supported file formats for CometScanExec") {
+    assert(CometScanExec.isFileFormatSupported(new ParquetFileFormat()))
+
+    class CustomParquetFileFormat extends ParquetFileFormat {}
+
+    assert(!CometScanExec.isFileFormatSupported(new CustomParquetFileFormat()))
   }
 }
 

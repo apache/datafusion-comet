@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::timezone;
+use crate::utils::array_with_timezone;
+use crate::{EvalMode, SparkError, SparkResult};
 use arrow::{
     array::{
         cast::AsArray,
@@ -35,32 +38,25 @@ use arrow::{
 use arrow_array::builder::StringBuilder;
 use arrow_array::{DictionaryArray, StringArray, StructArray};
 use arrow_schema::{DataType, Field, Schema};
+use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use datafusion_common::{
     cast::as_generic_string_array, internal_err, Result as DataFusionResult, ScalarValue,
 };
 use datafusion_expr::ColumnarValue;
 use datafusion_physical_expr::PhysicalExpr;
-use std::str::FromStr;
-use std::{
-    any::Any,
-    fmt::{Debug, Display, Formatter},
-    hash::{Hash, Hasher},
-    num::Wrapping,
-    sync::Arc,
-};
-
-use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
-use datafusion::physical_expr_common::physical_expr::down_cast_any_ref;
 use num::{
     cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
     ToPrimitive,
 };
 use regex::Regex;
-
-use crate::timezone;
-use crate::utils::array_with_timezone;
-
-use crate::{EvalMode, SparkError, SparkResult};
+use std::str::FromStr;
+use std::{
+    any::Any,
+    fmt::{Debug, Display, Formatter},
+    hash::Hash,
+    num::Wrapping,
+    sync::Arc,
+};
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
@@ -134,18 +130,261 @@ impl TimeStampInfo {
     }
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Eq)]
 pub struct Cast {
     pub child: Arc<dyn PhysicalExpr>,
     pub data_type: DataType,
-    pub eval_mode: EvalMode,
+    pub cast_options: SparkCastOptions,
+}
 
-    /// When cast from/to timezone related types, we need timezone, which will be resolved with
-    /// session local timezone by an analyzer in Spark.
-    pub timezone: String,
+impl PartialEq for Cast {
+    fn eq(&self, other: &Self) -> bool {
+        self.child.eq(&other.child)
+            && self.data_type.eq(&other.data_type)
+            && self.cast_options.eq(&other.cast_options)
+    }
+}
 
-    /// Whether to allow casts that are known to be incompatible with Spark
-    pub allow_incompat: bool,
+impl Hash for Cast {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.child.hash(state);
+        self.data_type.hash(state);
+        self.cast_options.hash(state);
+    }
+}
+
+/// Determine if Comet supports a cast, taking options such as EvalMode and Timezone into account.
+pub fn cast_supported(
+    from_type: &DataType,
+    to_type: &DataType,
+    options: &SparkCastOptions,
+) -> bool {
+    use DataType::*;
+
+    let from_type = if let Dictionary(_, dt) = from_type {
+        dt
+    } else {
+        from_type
+    };
+
+    let to_type = if let Dictionary(_, dt) = to_type {
+        dt
+    } else {
+        to_type
+    };
+
+    if from_type == to_type {
+        return true;
+    }
+
+    match (from_type, to_type) {
+        (Boolean, _) => can_cast_from_boolean(to_type, options),
+        (UInt8 | UInt16 | UInt32 | UInt64, Int8 | Int16 | Int32 | Int64)
+            if options.allow_cast_unsigned_ints =>
+        {
+            true
+        }
+        (Int8, _) => can_cast_from_byte(to_type, options),
+        (Int16, _) => can_cast_from_short(to_type, options),
+        (Int32, _) => can_cast_from_int(to_type, options),
+        (Int64, _) => can_cast_from_long(to_type, options),
+        (Float32, _) => can_cast_from_float(to_type, options),
+        (Float64, _) => can_cast_from_double(to_type, options),
+        (Decimal128(p, s), _) => can_cast_from_decimal(p, s, to_type, options),
+        (Timestamp(_, None), _) => can_cast_from_timestamp_ntz(to_type, options),
+        (Timestamp(_, Some(_)), _) => can_cast_from_timestamp(to_type, options),
+        (Utf8 | LargeUtf8, _) => can_cast_from_string(to_type, options),
+        (_, Utf8 | LargeUtf8) => can_cast_to_string(from_type, options),
+        (Struct(from_fields), Struct(to_fields)) => from_fields
+            .iter()
+            .zip(to_fields.iter())
+            .all(|(a, b)| cast_supported(a.data_type(), b.data_type(), options)),
+        _ => false,
+    }
+}
+
+fn can_cast_from_string(to_type: &DataType, options: &SparkCastOptions) -> bool {
+    use DataType::*;
+    match to_type {
+        Boolean | Int8 | Int16 | Int32 | Int64 | Binary => true,
+        Float32 | Float64 => {
+            // https://github.com/apache/datafusion-comet/issues/326
+            // Does not support inputs ending with 'd' or 'f'. Does not support 'inf'.
+            // Does not support ANSI mode.
+            options.allow_incompat
+        }
+        Decimal128(_, _) => {
+            // https://github.com/apache/datafusion-comet/issues/325
+            // Does not support inputs ending with 'd' or 'f'. Does not support 'inf'.
+            // Does not support ANSI mode. Returns 0.0 instead of null if input contains no digits
+
+            options.allow_incompat
+        }
+        Date32 | Date64 => {
+            // https://github.com/apache/datafusion-comet/issues/327
+            // Only supports years between 262143 BC and 262142 AD
+            options.allow_incompat
+        }
+        Timestamp(_, _) if options.eval_mode == EvalMode::Ansi => {
+            // ANSI mode not supported
+            false
+        }
+        Timestamp(_, Some(tz)) if tz.as_ref() != "UTC" => {
+            // Cast will use UTC instead of $timeZoneId
+            options.allow_incompat
+        }
+        Timestamp(_, _) => {
+            // https://github.com/apache/datafusion-comet/issues/328
+            // Not all valid formats are supported
+            options.allow_incompat
+        }
+        _ => false,
+    }
+}
+
+fn can_cast_to_string(from_type: &DataType, options: &SparkCastOptions) -> bool {
+    use DataType::*;
+    match from_type {
+        Boolean | Int8 | Int16 | Int32 | Int64 | Date32 | Date64 | Timestamp(_, _) => true,
+        Float32 | Float64 => {
+            // There can be differences in precision.
+            // For example, the input \"1.4E-45\" will produce 1.0E-45 " +
+            // instead of 1.4E-45"))
+            true
+        }
+        Decimal128(_, _) => {
+            // https://github.com/apache/datafusion-comet/issues/1068
+            // There can be formatting differences in some case due to Spark using
+            // scientific notation where Comet does not
+            true
+        }
+        Binary => {
+            // https://github.com/apache/datafusion-comet/issues/377
+            // Only works for binary data representing valid UTF-8 strings
+            options.allow_incompat
+        }
+        Struct(fields) => fields
+            .iter()
+            .all(|f| can_cast_to_string(f.data_type(), options)),
+        _ => false,
+    }
+}
+
+fn can_cast_from_timestamp_ntz(to_type: &DataType, options: &SparkCastOptions) -> bool {
+    use DataType::*;
+    match to_type {
+        Timestamp(_, _) | Date32 | Date64 | Utf8 => {
+            // incompatible
+            options.allow_incompat
+        }
+        _ => {
+            // unsupported
+            false
+        }
+    }
+}
+
+fn can_cast_from_timestamp(to_type: &DataType, _options: &SparkCastOptions) -> bool {
+    use DataType::*;
+    match to_type {
+        Boolean | Int8 | Int16 => {
+            // https://github.com/apache/datafusion-comet/issues/352
+            // this seems like an edge case that isn't important for us to support
+            false
+        }
+        Int64 => {
+            // https://github.com/apache/datafusion-comet/issues/352
+            true
+        }
+        Date32 | Date64 | Utf8 | Decimal128(_, _) => true,
+        _ => {
+            // unsupported
+            false
+        }
+    }
+}
+
+fn can_cast_from_boolean(to_type: &DataType, _: &SparkCastOptions) -> bool {
+    use DataType::*;
+    matches!(to_type, Int8 | Int16 | Int32 | Int64 | Float32 | Float64)
+}
+
+fn can_cast_from_byte(to_type: &DataType, _: &SparkCastOptions) -> bool {
+    use DataType::*;
+    matches!(
+        to_type,
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Decimal128(_, _)
+    )
+}
+
+fn can_cast_from_short(to_type: &DataType, _: &SparkCastOptions) -> bool {
+    use DataType::*;
+    matches!(
+        to_type,
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Decimal128(_, _)
+    )
+}
+
+fn can_cast_from_int(to_type: &DataType, options: &SparkCastOptions) -> bool {
+    use DataType::*;
+    match to_type {
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Utf8 => true,
+        Decimal128(_, _) => {
+            // incompatible: no overflow check
+            options.allow_incompat
+        }
+        _ => false,
+    }
+}
+
+fn can_cast_from_long(to_type: &DataType, options: &SparkCastOptions) -> bool {
+    use DataType::*;
+    match to_type {
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 => true,
+        Decimal128(_, _) => {
+            // incompatible: no overflow check
+            options.allow_incompat
+        }
+        _ => false,
+    }
+}
+
+fn can_cast_from_float(to_type: &DataType, _: &SparkCastOptions) -> bool {
+    use DataType::*;
+    matches!(
+        to_type,
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float64 | Decimal128(_, _)
+    )
+}
+
+fn can_cast_from_double(to_type: &DataType, _: &SparkCastOptions) -> bool {
+    use DataType::*;
+    matches!(
+        to_type,
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Decimal128(_, _)
+    )
+}
+
+fn can_cast_from_decimal(
+    p1: &u8,
+    _s1: &i8,
+    to_type: &DataType,
+    options: &SparkCastOptions,
+) -> bool {
+    use DataType::*;
+    match to_type {
+        Int8 | Int16 | Int32 | Int64 | Float32 | Float64 => true,
+        Decimal128(p2, _) => {
+            if p2 < p1 {
+                // https://github.com/apache/datafusion/issues/13492
+                // Incompatible(Some("Casting to smaller precision is not supported"))
+                options.allow_incompat
+            } else {
+                true
+            }
+        }
+        _ => false,
+    }
 }
 
 macro_rules! cast_utf8_to_int {
@@ -547,31 +786,46 @@ impl Cast {
     pub fn new(
         child: Arc<dyn PhysicalExpr>,
         data_type: DataType,
-        eval_mode: EvalMode,
-        timezone: String,
-        allow_incompat: bool,
+        cast_options: SparkCastOptions,
     ) -> Self {
         Self {
             child,
             data_type,
-            timezone,
+            cast_options,
+        }
+    }
+}
+
+/// Spark cast options
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct SparkCastOptions {
+    /// Spark evaluation mode
+    pub eval_mode: EvalMode,
+    /// When cast from/to timezone related types, we need timezone, which will be resolved with
+    /// session local timezone by an analyzer in Spark.
+    pub timezone: String,
+    /// Allow casts that are supported but not guaranteed to be 100% compatible
+    pub allow_incompat: bool,
+    /// Support casting unsigned ints to signed ints (used by Parquet SchemaAdapter)
+    pub allow_cast_unsigned_ints: bool,
+}
+
+impl SparkCastOptions {
+    pub fn new(eval_mode: EvalMode, timezone: &str, allow_incompat: bool) -> Self {
+        Self {
             eval_mode,
+            timezone: timezone.to_string(),
             allow_incompat,
+            allow_cast_unsigned_ints: false,
         }
     }
 
-    pub fn new_without_timezone(
-        child: Arc<dyn PhysicalExpr>,
-        data_type: DataType,
-        eval_mode: EvalMode,
-        allow_incompat: bool,
-    ) -> Self {
+    pub fn new_without_timezone(eval_mode: EvalMode, allow_incompat: bool) -> Self {
         Self {
-            child,
-            data_type,
-            timezone: "".to_string(),
             eval_mode,
+            timezone: "".to_string(),
             allow_incompat,
+            allow_cast_unsigned_ints: false,
         }
     }
 }
@@ -582,33 +836,21 @@ impl Cast {
 pub fn spark_cast(
     arg: ColumnarValue,
     data_type: &DataType,
-    eval_mode: EvalMode,
-    timezone: &str,
-    allow_incompat: bool,
+    cast_options: &SparkCastOptions,
 ) -> DataFusionResult<ColumnarValue> {
     match arg {
         ColumnarValue::Array(array) => Ok(ColumnarValue::Array(cast_array(
             array,
             data_type,
-            eval_mode,
-            timezone.to_owned(),
-            allow_incompat,
+            cast_options,
         )?)),
         ColumnarValue::Scalar(scalar) => {
             // Note that normally CAST(scalar) should be fold in Spark JVM side. However, for
             // some cases e.g., scalar subquery, Spark will not fold it, so we need to handle it
             // here.
             let array = scalar.to_array()?;
-            let scalar = ScalarValue::try_from_array(
-                &cast_array(
-                    array,
-                    data_type,
-                    eval_mode,
-                    timezone.to_owned(),
-                    allow_incompat,
-                )?,
-                0,
-            )?;
+            let scalar =
+                ScalarValue::try_from_array(&cast_array(array, data_type, cast_options)?, 0)?;
             Ok(ColumnarValue::Scalar(scalar))
         }
     }
@@ -617,17 +859,16 @@ pub fn spark_cast(
 fn cast_array(
     array: ArrayRef,
     to_type: &DataType,
-    eval_mode: EvalMode,
-    timezone: String,
-    allow_incompat: bool,
+    cast_options: &SparkCastOptions,
 ) -> DataFusionResult<ArrayRef> {
-    let array = array_with_timezone(array, timezone.clone(), Some(to_type))?;
+    use DataType::*;
+    let array = array_with_timezone(array, cast_options.timezone.clone(), Some(to_type))?;
     let from_type = array.data_type().clone();
+
     let array = match &from_type {
-        DataType::Dictionary(key_type, value_type)
-            if key_type.as_ref() == &DataType::Int32
-                && (value_type.as_ref() == &DataType::Utf8
-                    || value_type.as_ref() == &DataType::LargeUtf8) =>
+        Dictionary(key_type, value_type)
+            if key_type.as_ref() == &Int32
+                && (value_type.as_ref() == &Utf8 || value_type.as_ref() == &LargeUtf8) =>
         {
             let dict_array = array
                 .as_any()
@@ -636,17 +877,11 @@ fn cast_array(
 
             let casted_dictionary = DictionaryArray::<Int32Type>::new(
                 dict_array.keys().clone(),
-                cast_array(
-                    Arc::clone(dict_array.values()),
-                    to_type,
-                    eval_mode,
-                    timezone,
-                    allow_incompat,
-                )?,
+                cast_array(Arc::clone(dict_array.values()), to_type, cast_options)?,
             );
 
             let casted_result = match to_type {
-                DataType::Dictionary(_, _) => Arc::new(casted_dictionary.clone()),
+                Dictionary(_, _) => Arc::new(casted_dictionary.clone()),
                 _ => take(casted_dictionary.values().as_ref(), dict_array.keys(), None)?,
             };
             return Ok(spark_cast_postprocess(casted_result, &from_type, to_type));
@@ -654,75 +889,70 @@ fn cast_array(
         _ => array,
     };
     let from_type = array.data_type();
+    let eval_mode = cast_options.eval_mode;
 
     let cast_result = match (from_type, to_type) {
-        (DataType::Utf8, DataType::Boolean) => spark_cast_utf8_to_boolean::<i32>(&array, eval_mode),
-        (DataType::LargeUtf8, DataType::Boolean) => {
-            spark_cast_utf8_to_boolean::<i64>(&array, eval_mode)
+        (Utf8, Boolean) => spark_cast_utf8_to_boolean::<i32>(&array, eval_mode),
+        (LargeUtf8, Boolean) => spark_cast_utf8_to_boolean::<i64>(&array, eval_mode),
+        (Utf8, Timestamp(_, _)) => {
+            cast_string_to_timestamp(&array, to_type, eval_mode, &cast_options.timezone)
         }
-        (DataType::Utf8, DataType::Timestamp(_, _)) => {
-            cast_string_to_timestamp(&array, to_type, eval_mode, &timezone)
-        }
-        (DataType::Utf8, DataType::Date32) => cast_string_to_date(&array, to_type, eval_mode),
-        (DataType::Int64, DataType::Int32)
-        | (DataType::Int64, DataType::Int16)
-        | (DataType::Int64, DataType::Int8)
-        | (DataType::Int32, DataType::Int16)
-        | (DataType::Int32, DataType::Int8)
-        | (DataType::Int16, DataType::Int8)
+        (Utf8, Date32) => cast_string_to_date(&array, to_type, eval_mode),
+        (Int64, Int32)
+        | (Int64, Int16)
+        | (Int64, Int8)
+        | (Int32, Int16)
+        | (Int32, Int8)
+        | (Int16, Int8)
             if eval_mode != EvalMode::Try =>
         {
             spark_cast_int_to_int(&array, eval_mode, from_type, to_type)
         }
-        (DataType::Utf8, DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64) => {
+        (Utf8, Int8 | Int16 | Int32 | Int64) => {
             cast_string_to_int::<i32>(to_type, &array, eval_mode)
         }
-        (
-            DataType::LargeUtf8,
-            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64,
-        ) => cast_string_to_int::<i64>(to_type, &array, eval_mode),
-        (DataType::Float64, DataType::Utf8) => spark_cast_float64_to_utf8::<i32>(&array, eval_mode),
-        (DataType::Float64, DataType::LargeUtf8) => {
-            spark_cast_float64_to_utf8::<i64>(&array, eval_mode)
+        (LargeUtf8, Int8 | Int16 | Int32 | Int64) => {
+            cast_string_to_int::<i64>(to_type, &array, eval_mode)
         }
-        (DataType::Float32, DataType::Utf8) => spark_cast_float32_to_utf8::<i32>(&array, eval_mode),
-        (DataType::Float32, DataType::LargeUtf8) => {
-            spark_cast_float32_to_utf8::<i64>(&array, eval_mode)
-        }
-        (DataType::Float32, DataType::Decimal128(precision, scale)) => {
+        (Float64, Utf8) => spark_cast_float64_to_utf8::<i32>(&array, eval_mode),
+        (Float64, LargeUtf8) => spark_cast_float64_to_utf8::<i64>(&array, eval_mode),
+        (Float32, Utf8) => spark_cast_float32_to_utf8::<i32>(&array, eval_mode),
+        (Float32, LargeUtf8) => spark_cast_float32_to_utf8::<i64>(&array, eval_mode),
+        (Float32, Decimal128(precision, scale)) => {
             cast_float32_to_decimal128(&array, *precision, *scale, eval_mode)
         }
-        (DataType::Float64, DataType::Decimal128(precision, scale)) => {
+        (Float64, Decimal128(precision, scale)) => {
             cast_float64_to_decimal128(&array, *precision, *scale, eval_mode)
         }
-        (DataType::Float32, DataType::Int8)
-        | (DataType::Float32, DataType::Int16)
-        | (DataType::Float32, DataType::Int32)
-        | (DataType::Float32, DataType::Int64)
-        | (DataType::Float64, DataType::Int8)
-        | (DataType::Float64, DataType::Int16)
-        | (DataType::Float64, DataType::Int32)
-        | (DataType::Float64, DataType::Int64)
-        | (DataType::Decimal128(_, _), DataType::Int8)
-        | (DataType::Decimal128(_, _), DataType::Int16)
-        | (DataType::Decimal128(_, _), DataType::Int32)
-        | (DataType::Decimal128(_, _), DataType::Int64)
+        (Float32, Int8)
+        | (Float32, Int16)
+        | (Float32, Int32)
+        | (Float32, Int64)
+        | (Float64, Int8)
+        | (Float64, Int16)
+        | (Float64, Int32)
+        | (Float64, Int64)
+        | (Decimal128(_, _), Int8)
+        | (Decimal128(_, _), Int16)
+        | (Decimal128(_, _), Int32)
+        | (Decimal128(_, _), Int64)
             if eval_mode != EvalMode::Try =>
         {
             spark_cast_nonintegral_numeric_to_integral(&array, eval_mode, from_type, to_type)
         }
-        (DataType::Struct(_), DataType::Utf8) => {
-            Ok(casts_struct_to_string(array.as_struct(), &timezone)?)
-        }
-        (DataType::Struct(_), DataType::Struct(_)) => Ok(cast_struct_to_struct(
+        (Struct(_), Utf8) => Ok(casts_struct_to_string(array.as_struct(), cast_options)?),
+        (Struct(_), Struct(_)) => Ok(cast_struct_to_struct(
             array.as_struct(),
             from_type,
             to_type,
-            eval_mode,
-            timezone,
-            allow_incompat,
+            cast_options,
         )?),
-        _ if is_datafusion_spark_compatible(from_type, to_type, allow_incompat) => {
+        (UInt8 | UInt16 | UInt32 | UInt64, Int8 | Int16 | Int32 | Int64)
+            if cast_options.allow_cast_unsigned_ints =>
+        {
+            Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
+        }
+        _ if is_datafusion_spark_compatible(from_type, to_type, cast_options.allow_incompat) => {
             // use DataFusion cast only when we know that it is compatible with Spark
             Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
         }
@@ -825,9 +1055,7 @@ fn cast_struct_to_struct(
     array: &StructArray,
     from_type: &DataType,
     to_type: &DataType,
-    eval_mode: EvalMode,
-    timezone: String,
-    allow_incompat: bool,
+    cast_options: &SparkCastOptions,
 ) -> DataFusionResult<ArrayRef> {
     match (from_type, to_type) {
         (DataType::Struct(_), DataType::Struct(to_fields)) => {
@@ -836,9 +1064,7 @@ fn cast_struct_to_struct(
                 let cast_field = cast_array(
                     Arc::clone(array.column(i)),
                     to_fields[i].data_type(),
-                    eval_mode,
-                    timezone.clone(),
-                    allow_incompat,
+                    cast_options,
                 )?;
                 cast_fields.push((Arc::clone(&to_fields[i]), cast_field));
             }
@@ -848,7 +1074,10 @@ fn cast_struct_to_struct(
     }
 }
 
-fn casts_struct_to_string(array: &StructArray, timezone: &str) -> DataFusionResult<ArrayRef> {
+fn casts_struct_to_string(
+    array: &StructArray,
+    spark_cast_options: &SparkCastOptions,
+) -> DataFusionResult<ArrayRef> {
     // cast each field to a string
     let string_arrays: Vec<ArrayRef> = array
         .columns()
@@ -857,9 +1086,7 @@ fn casts_struct_to_string(array: &StructArray, timezone: &str) -> DataFusionResu
             spark_cast(
                 ColumnarValue::Array(Arc::clone(arr)),
                 &DataType::Utf8,
-                EvalMode::Legacy,
-                timezone,
-                true,
+                spark_cast_options,
             )
             .and_then(|cv| cv.into_array(arr.len()))
         })
@@ -1464,22 +1691,8 @@ impl Display for Cast {
         write!(
             f,
             "Cast [data_type: {}, timezone: {}, child: {}, eval_mode: {:?}]",
-            self.data_type, self.timezone, self.child, &self.eval_mode
+            self.data_type, self.cast_options.timezone, self.child, &self.cast_options.eval_mode
         )
-    }
-}
-
-impl PartialEq<dyn Any> for Cast {
-    fn eq(&self, other: &dyn Any) -> bool {
-        down_cast_any_ref(other)
-            .downcast_ref::<Self>()
-            .map(|x| {
-                self.child.eq(&x.child)
-                    && self.timezone.eq(&x.timezone)
-                    && self.data_type.eq(&x.data_type)
-                    && self.eval_mode.eq(&x.eval_mode)
-            })
-            .unwrap_or(false)
     }
 }
 
@@ -1498,13 +1711,7 @@ impl PhysicalExpr for Cast {
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
         let arg = self.child.evaluate(batch)?;
-        spark_cast(
-            arg,
-            &self.data_type,
-            self.eval_mode,
-            &self.timezone,
-            self.allow_incompat,
-        )
+        spark_cast(arg, &self.data_type, &self.cast_options)
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -1519,22 +1726,10 @@ impl PhysicalExpr for Cast {
             1 => Ok(Arc::new(Cast::new(
                 Arc::clone(&children[0]),
                 self.data_type.clone(),
-                self.eval_mode,
-                self.timezone.clone(),
-                self.allow_incompat,
+                self.cast_options.clone(),
             ))),
             _ => internal_err!("Cast should have exactly one child"),
         }
-    }
-
-    fn dyn_hash(&self, state: &mut dyn Hasher) {
-        let mut s = state;
-        self.child.hash(&mut s);
-        self.data_type.hash(&mut s);
-        self.timezone.hash(&mut s);
-        self.eval_mode.hash(&mut s);
-        self.allow_incompat.hash(&mut s);
-        self.hash(&mut s);
     }
 }
 
@@ -2110,12 +2305,11 @@ mod tests {
 
         let timezone = "UTC".to_string();
         // test casting string dictionary array to timestamp array
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, &timezone, false);
         let result = cast_array(
             dict_array,
             &DataType::Timestamp(TimeUnit::Microsecond, Some(timezone.clone().into())),
-            EvalMode::Legacy,
-            timezone.clone(),
-            false,
+            &cast_options,
         )?;
         assert_eq!(
             *result.data_type(),
@@ -2320,12 +2514,11 @@ mod tests {
     fn test_cast_unsupported_timestamp_to_date() {
         // Since datafusion uses chrono::Datetime internally not all dates representable by TimestampMicrosecondType are supported
         let timestamps: PrimitiveArray<TimestampMicrosecondType> = vec![i64::MAX].into();
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
         let result = cast_array(
             Arc::new(timestamps.with_timezone("Europe/Copenhagen")),
             &DataType::Date32,
-            EvalMode::Legacy,
-            "UTC".to_owned(),
-            false,
+            &cast_options,
         );
         assert!(result.is_err())
     }
@@ -2333,12 +2526,11 @@ mod tests {
     #[test]
     fn test_cast_invalid_timezone() {
         let timestamps: PrimitiveArray<TimestampMicrosecondType> = vec![i64::MAX].into();
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "Not a valid timezone", false);
         let result = cast_array(
             Arc::new(timestamps.with_timezone("Europe/Copenhagen")),
             &DataType::Date32,
-            EvalMode::Legacy,
-            "Not a valid timezone".to_owned(),
-            false,
+            &cast_options,
         );
         assert!(result.is_err())
     }
@@ -2360,9 +2552,7 @@ mod tests {
         let string_array = cast_array(
             c,
             &DataType::Utf8,
-            EvalMode::Legacy,
-            "UTC".to_owned(),
-            false,
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
         )
         .unwrap();
         let string_array = string_array.as_string::<i32>();
@@ -2396,9 +2586,7 @@ mod tests {
         let cast_array = spark_cast(
             ColumnarValue::Array(c),
             &DataType::Struct(fields),
-            EvalMode::Legacy,
-            "UTC",
-            false,
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
         )
         .unwrap();
         if let ColumnarValue::Array(cast_array) = cast_array {
@@ -2429,9 +2617,7 @@ mod tests {
         let cast_array = spark_cast(
             ColumnarValue::Array(c),
             &DataType::Struct(fields),
-            EvalMode::Legacy,
-            "UTC",
-            false,
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
         )
         .unwrap();
         if let ColumnarValue::Array(cast_array) = cast_array {

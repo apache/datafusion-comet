@@ -19,7 +19,7 @@
 
 package org.apache.comet
 
-import java.util.Map
+import java.nio.ByteBuffer
 
 import org.apache.spark.CometTaskMemoryManager
 import org.apache.spark.sql.comet.CometMetricNode
@@ -45,13 +45,24 @@ class Native extends NativeBase {
    * @return
    *   the address to native query plan.
    */
+  // scalastyle:off
   @native def createPlan(
       id: Long,
-      configMap: Map[String, String],
       iterators: Array[CometBatchIterator],
       plan: Array[Byte],
       metrics: CometMetricNode,
-      taskMemoryManager: CometTaskMemoryManager): Long
+      taskMemoryManager: CometTaskMemoryManager,
+      batchSize: Int,
+      use_unified_memory_manager: Boolean,
+      memory_pool_type: String,
+      memory_limit: Long,
+      memory_limit_per_task: Long,
+      task_attempt_id: Long,
+      debug: Boolean,
+      explain: Boolean,
+      workerThreads: Int,
+      blockingThreads: Int): Long
+  // scalastyle:on
 
   /**
    * Execute a native query plan based on given input Arrow arrays.
@@ -109,9 +120,14 @@ class Native extends NativeBase {
    * @param currentChecksum
    *   the current checksum of the file. As the checksum is computed incrementally, this is used
    *   to resume the computation of checksum for previous written data.
+   * @param compressionCodec
+   *   the compression codec
+   * @param compressionLevel
+   *   the compression level
    * @return
    *   [the number of bytes written to disk, the checksum]
    */
+  // scalastyle:off
   @native def writeSortedFileNative(
       addresses: Array[Long],
       rowSizes: Array[Int],
@@ -121,7 +137,10 @@ class Native extends NativeBase {
       batchSize: Int,
       checksumEnabled: Boolean,
       checksumAlgo: Int,
-      currentChecksum: Long): Array[Long]
+      currentChecksum: Long,
+      compressionCodec: String,
+      compressionLevel: Int): Array[Long]
+  // scalastyle:on
 
   /**
    * Sorts partition ids of Spark unsafe rows in place. Used by Comet shuffle external sorter.
@@ -132,4 +151,22 @@ class Native extends NativeBase {
    *   the size of the array.
    */
   @native def sortRowPartitionsNative(addr: Long, size: Long): Unit
+
+  /**
+   * Decompress and decode a native shuffle block.
+   * @param shuffleBlock
+   *   the encoded anc compressed shuffle block.
+   * @param length
+   *   the limit of the byte buffer.
+   * @param addr
+   *   the address of the array of compressed and encoded bytes.
+   * @param size
+   *   the size of the array.
+   */
+  @native def decodeShuffleBlock(
+      shuffleBlock: ByteBuffer,
+      length: Int,
+      arrayAddrs: Array[Long],
+      schemaAddrs: Array[Long]): Long
+
 }

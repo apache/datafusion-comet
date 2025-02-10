@@ -88,7 +88,7 @@ object CometExecUtils {
    * child partition
    */
   def getLimitNativePlan(outputAttributes: Seq[Attribute], limit: Int): Option[Operator] = {
-    val scanBuilder = OperatorOuterClass.Scan.newBuilder()
+    val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("LimitInput")
     val scanOpBuilder = OperatorOuterClass.Operator.newBuilder()
 
     val scanTypes = outputAttributes.flatten { attr =>
@@ -118,7 +118,7 @@ object CometExecUtils {
       sortOrder: Seq[SortOrder],
       child: SparkPlan,
       limit: Int): Option[Operator] = {
-    val scanBuilder = OperatorOuterClass.Scan.newBuilder()
+    val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("TopKInput")
     val scanOpBuilder = OperatorOuterClass.Operator.newBuilder()
 
     val scanTypes = outputAttributes.flatten { attr =>

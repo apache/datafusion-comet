@@ -1,5 +1,5 @@
 == Physical Plan ==
-* ColumnarToRow (68)
+* CometColumnarToRow (68)
 +- CometTakeOrderedAndProject (67)
    +- CometProject (66)
       +- CometBroadcastHashJoin (65)
@@ -388,14 +388,14 @@ Arguments: [customer_id#25, customer_first_name#26, customer_last_name#27], [cus
 Input [3]: [customer_id#25, customer_first_name#26, customer_last_name#27]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[customer_id#25 ASC NULLS FIRST,customer_id#25 ASC NULLS FIRST,customer_id#25 ASC NULLS FIRST], output=[customer_id#25,customer_first_name#26,customer_last_name#27]), [customer_id#25, customer_first_name#26, customer_last_name#27], 100, [customer_id#25 ASC NULLS FIRST, customer_id#25 ASC NULLS FIRST, customer_id#25 ASC NULLS FIRST], [customer_id#25, customer_first_name#26, customer_last_name#27]
 
-(68) ColumnarToRow [codegen id : 1]
+(68) CometColumnarToRow [codegen id : 1]
 Input [3]: [customer_id#25, customer_first_name#26, customer_last_name#27]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 3 Hosting Expression = ss_sold_date_sk#7 IN dynamicpruning#8
 BroadcastExchange (72)
-+- * ColumnarToRow (71)
++- * CometColumnarToRow (71)
    +- CometFilter (70)
       +- CometScan parquet spark_catalog.default.date_dim (69)
 
@@ -411,7 +411,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int>
 Input [2]: [d_date_sk#9, d_year#10]
 Condition : (((isnotnull(d_year#10) AND (d_year#10 = 2001)) AND d_year#10 IN (2001,2002)) AND isnotnull(d_date_sk#9))
 
-(71) ColumnarToRow [codegen id : 1]
+(71) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#9, d_year#10]
 
 (72) BroadcastExchange
@@ -420,7 +420,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)
 
 Subquery:2 Hosting operator id = 19 Hosting Expression = ss_sold_date_sk#20 IN dynamicpruning#21
 BroadcastExchange (76)
-+- * ColumnarToRow (75)
++- * CometColumnarToRow (75)
    +- CometFilter (74)
       +- CometScan parquet spark_catalog.default.date_dim (73)
 
@@ -436,7 +436,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int>
 Input [2]: [d_date_sk#22, d_year#23]
 Condition : (((isnotnull(d_year#23) AND (d_year#23 = 2002)) AND d_year#23 IN (2001,2002)) AND isnotnull(d_date_sk#22))
 
-(75) ColumnarToRow [codegen id : 1]
+(75) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#22, d_year#23]
 
 (76) BroadcastExchange
