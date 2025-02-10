@@ -21,8 +21,8 @@ ThisBuild / resolvers ++= Seq(
 
 // Override Jackson versions
 ThisBuild / dependencyOverrides ++= Seq(
-  "com.fasterxml.jackson.core" % "jackson-databind" % "2.15.2",
-  "com.fasterxml.jackson.core" % "jackson-core" % "2.15.2",
+  "com.fasterxml.jackson.core" %% "jackson-databind" % "2.15.2",
+  "com.fasterxml.jackson.core" %% "jackson-core" % "2.15.2",
   "com.fasterxml.jackson.module" %% "jackson-module-scala" % "2.15.2")
 
 // -----------------------------------------------------------------------------
@@ -37,9 +37,10 @@ lazy val sparkScalaVersion =
 
 ThisBuild / parquetVersion := "1.13.1"
 ThisBuild / javaTarget := 0
-ThisBuild / sparkScalaVersion := ""
 ThisBuild / sparkVersion := {
-  val sparkProps = sys.props.map(_._1).filter(_.startsWith("spark")).toSeq
+  val sparkProps = sys.props.keys.collect {
+    case key if key.startsWith("spark") => key
+  }.toSeq
   sparkProps.size match {
     case 0 => {
       ThisBuild / sparkScalaVersion := "2.12.17"
@@ -49,23 +50,18 @@ ThisBuild / sparkVersion := {
       val prop = sparkProps(0)
       prop match {
         case "spark3.3" => {
-          ThisBuild / sparkScalaVersion := "2.12.15"
           ThisBuild / parquetVersion := "1.12.0"
           ThisBuild / slf4jVersion := "1.7.32"
           "3.3.2"
         }
         case "spark3.4" => {
-          ThisBuild / sparkScalaVersion := "2.12.17"
           "3.4.3"
         }
         case "spark3.5" => {
-          ThisBuild / sparkScalaVersion := "2.12.18"
           ThisBuild / slf4jVersion := "2.0.7"
           "3.5.1"
         }
         case "spark4.0" => {
-          ThisBuild / sparkScalaVersion := "2.12.14"
-          ThisBuild / semanticdbVersion := "4.9.5"
           ThisBuild / slf4jVersion := "2.0.13"
           ThisBuild / javaTarget := 17
           "4.0.0-preview1"
@@ -77,34 +73,32 @@ ThisBuild / sparkVersion := {
   }
 }
 
+ThisBuild / sparkScalaVersion := {
+  (ThisBuild / sparkVersion).value match {
+    case "3.3.2" => "2.12.15"
+    case "3.4.3" => "2.12.17"
+    case "3.5.1" => "2.12.18"
+    case "4.0.0-preview1" => "2.13.14"
+  }
+}
+
 ThisBuild / scalaVersion := {
-  val scalaProps = sys.props.map(_._1).filter(_.startsWith("scala")).toSeq
+  val scalaProps = sys.props.keys.collect {
+    case key if key.startsWith("scala") => key
+  }.toSeq
   scalaProps.size match {
-    case 0 => {
-      // Use value specified by selected Spark version
-      // If none such exists, use SBT's default
-      if ((ThisBuild / sparkScalaVersion).value != "") {
-        (ThisBuild / sparkScalaVersion).value
-      } else {
-        "2.12.17"
-      }
-    }
+    case 0 => (ThisBuild / sparkScalaVersion).value
     case 1 => {
       scalaProps(0) match {
-        case "scala2.12" | "" =>
-          // If the spark version selected a 2.12 Scala, use it.
-          // Otherwise, if the current sbt uses a 2.12 scala, use it.
-          // Otherwise, use 2.12.17
-          if ((ThisBuild / sparkScalaVersion).value.startsWith("2.12")) {
+        case "" => (ThisBuild / sparkScalaVersion).value
+        case "scala2.12" =>
+          // If spark requires 2.13, we ignore the scala2.12 definition
+          if ((ThisBuild / sparkScalaVersion).value.startsWith("2.13")) {
             (ThisBuild / sparkScalaVersion).value
-          } else if ((ThisBuild / scalaVersion).value.startsWith("2.12")) {
-            (ThisBuild / scalaVersion).value
           } else {
             "2.12.17"
           }
-        case "scala2.13" =>
-          ThisBuild / semanticdbVersion := "4.9.5"
-          "2.13.14"
+        case "scala2.13" => "2.13.14"
         case other => sys.error(s"Unsupported Scala version: $other")
       }
     }
@@ -144,9 +138,9 @@ val arrowDependencies = Seq(
 
 val testDependencies = Seq(
   "org.scalatest" %% "scalatest" % scalatestVersion,
-  "org.scalatestplus" %% "junit-4-13" % "3.2.9.0",
-  "junit" % "junit" % "4.13.2",
-  "org.assertj" % "assertj-core" % "3.24.2").map(_ % Test)
+  "org.scalatestplus" %% "junit-4-13" % "3.2.17.0",
+  "org.assertj" % "assertj-core" % "3.24.2")
+  .map(_ % Test)
 
 // -----------------------------------------------------------------------------
 // OS / Architecture / Java Detection
@@ -155,12 +149,11 @@ lazy val platform = settingKey[String]("OS Family to build for")
 lazy val archFolder = settingKey[String]("Architecture to build for")
 lazy val rustTarget = settingKey[String]("Rust target and toolchain to use")
 ThisBuild / rustTarget := {
-  val platformProps = sys.props
-    .map(_._1)
-    .filter { x =>
-      x == "Win-x86" || x == "Darwin-x86" || x == "Darwin-aarch64" || x == "Linux-amd64" || x == "Linux-aarch64"
-    }
-    .toSeq
+  val platformProps = sys.props.keys.collect {
+    case platform @ ("Win-x86" | "Darwin-x86" | "Darwin-aarch64" | "Linux-amd64" |
+        "Linux-aarch64") =>
+      platform
+  }.toSeq
 
   platformProps.size match {
     case 0 => {
@@ -237,7 +230,9 @@ ThisBuild / rustFlags := {
 }
 
 ThisBuild / javaTarget := {
-  val jdkProps = sys.props.map(_._1).filter(_.startsWith("jdk")).toSeq
+  val jdkProps = sys.props.keys.collect {
+    case key if key.startsWith("jdk") => key
+  }.toSeq
   jdkProps.size match {
     case 0 => {
       // If Spark version set a default, use it, otherwise, take the System property
@@ -285,6 +280,7 @@ val newerJavaOpts = Seq(
   "--add-opens=java.base/sun.util.calendar=ALL-UNNAMED")
 
 val commonSettings = Seq(
+  scalaVersion := (ThisBuild / scalaVersion).value,
   javacOptions ++= {
     val version = (ThisBuild / javaTarget).value.toString
     Seq("-target", version)
@@ -385,8 +381,7 @@ lazy val native = (project in file("native"))
       val log = streams.value.log
       val nativeDir = baseDirectory.value
       val buildType =
-        if (sys.props.contains("release") || sys.props.contains("apache-release")) "release"
-        else "debug"
+        sys.props.keys.find(Set("release", "apache-release")).fold("debug")(_ => "release")
 
       // To allow cross compilation
       val selectedTarget = (ThisBuild / rustTarget).value
@@ -412,8 +407,7 @@ lazy val native = (project in file("native"))
 
       val log = streams.value.log
       val buildType =
-        if (sys.props.contains("release") || sys.props.contains("apache-release")) "release"
-        else "debug"
+        sys.props.keys.find(Set("release", "apache-release")).fold("debug")(_ => "release")
       val resourceDir = (Compile / resourceManaged).value
       val nativeLibPath = s"org/apache/comet/$platform/$archFolder"
       val outDir = resourceDir / nativeLibPath
@@ -562,7 +556,7 @@ lazy val fuzzTesting = (project in file("fuzz-testing"))
   .settings(
     name := "fuzz-testing",
     libraryDependencies ++= Seq(
-      "org.scala-lang" % "scala-library" % (ThisBuild / scalaVersion).value % "provided",
+      "org.scala-lang" %% "scala-library" % (ThisBuild / scalaVersion).value % "provided",
       "org.apache.spark" %% "spark-sql" % (ThisBuild / sparkVersion).value % "provided",
       "org.rogach" %% "scallop" % "4.1.0"),
     Compile / mainClass := Some("org.apache.comet.FuzzTesting"))
