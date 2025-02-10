@@ -32,47 +32,78 @@ lazy val sparkVersion = settingKey[String]("Apache Spark version")
 lazy val parquetVersion = settingKey[String]("Apache Parquet version")
 lazy val slf4jVersion = settingKey[String]("SLF4J version")
 lazy val javaTarget = settingKey[Int]("Java target version")
+lazy val sparkScalaVersion = settingKey[String]("Default Scala version for the selected Spark version")
 
 ThisBuild / parquetVersion := "1.13.1"
 ThisBuild / javaTarget := 0
+ThisBuild / sparkScalaVersion := ""
 ThisBuild / sparkVersion := {
-  sys.props.getOrElse("sparkVersion", "") match {
-    case "3.3" =>
-      ThisBuild / scalaVersion := "2.12.15"
-      ThisBuild / parquetVersion := "1.12.0"
-      ThisBuild / slf4jVersion := "1.7.32"
-      "3.3.2"
-    case "3.4" | "" =>
-      ThisBuild / scalaVersion := "2.12.17"
+  val sparkProps = sys.props.map(_._1).filter(_.startsWith("spark")).toSeq
+  sparkProps.size match {
+    case 0 => {
+      ThisBuild / sparkScalaVersion := "2.12.17"
       "3.4.3"
-    case "3.5" =>
-      ThisBuild / scalaVersion := "2.12.18"
-      ThisBuild / slf4jVersion := "2.0.7"
-      "3.5.1"
-    case "4.0" =>
-      ThisBuild / scalaVersion := "2.12.14"
-      ThisBuild / semanticdbVersion := "4.9.5"
-      ThisBuild / slf4jVersion := "2.0.13"
-      ThisBuild / javaTarget := 17
-      "4.0.0-preview1"
-    case other => sys.error(s"Unsupported Spark version: $other")
+    }
+    case 1 => {
+      val prop = sparkProps(0)
+      prop match {
+        case "spark3.3" => {
+          ThisBuild / sparkScalaVersion := "2.12.15"
+          ThisBuild / parquetVersion := "1.12.0"
+          ThisBuild / slf4jVersion := "1.7.32"
+          "3.3.2"
+        }
+        case "spark3.4" => {
+          ThisBuild / sparkScalaVersion := "2.12.17"
+          "3.4.3"
+        }
+        case "spark3.5" => {
+          ThisBuild / sparkScalaVersion := "2.12.18"
+          ThisBuild / slf4jVersion := "2.0.7"
+          "3.5.1"
+        }
+        case "spark4.0" => {
+          ThisBuild / sparkScalaVersion := "2.12.14"
+          ThisBuild / semanticdbVersion := "4.9.5"
+          ThisBuild / slf4jVersion := "2.0.13"
+          ThisBuild / javaTarget := 17
+          "4.0.0-preview1"
+        }
+        case other => sys.error(s"Unsupported Spark version: $other")
+      }
+    }
+    case other => sys.error(s"Multiple spark definitions provided: $sparkProps")
   }
 }
 
 ThisBuild / scalaVersion := {
-  sys.props.getOrElse("scalaVersion", "") match {
-    case "2.12" | "" =>
+  val scalaProps = sys.props.map(_._1).filter(_.startsWith("scala")).toSeq
+  scalaProps.size match {
+    case 0 => {
       // Use value specified by selected Spark version
       // If none such exists, use SBT's default
-      if (!(ThisBuild / scalaVersion).value.startsWith("2.12")) {
+      if ((ThisBuild / sparkScalaVersion).value == "") {
         "2.12.17"
       } else {
-        (ThisBuild / scalaVersion).value
+        (ThisBuild / sparkScalaVersion).value
       }
-    case "2.13" =>
-      ThisBuild / semanticdbVersion := "4.9.5"
-      "2.13.14"
-    case other => sys.error(s"Unsupported Scala version: $other")
+    }
+    case 1 => {
+      scalaProps(0) match {
+        case "scala2.12" | "" =>
+          // If the spark version selected a 2.12 Scala, use it, otherwise use 2.12.17
+          if ((ThisBuild / sparkScalaVersion).value.startsWith("2.12")) {
+            (ThisBuild / sparkScalaVersion).value
+          } else {
+            "2.12.17"
+          }
+        case "scala2.13" =>
+          ThisBuild / semanticdbVersion := "4.9.5"
+          "2.13.14"
+        case other => sys.error(s"Unsupported Scala version: $other")
+      }
+    }
+    case other => sys.error(s"More than one Scala version definitions provided: $scalaProps")
   }
 }
 
@@ -119,54 +150,70 @@ lazy val platform = settingKey[String]("OS Family to build for")
 lazy val archFolder = settingKey[String]("Architecture to build for")
 lazy val rustTarget = settingKey[String]("Rust target and toolchain to use")
 ThisBuild / rustTarget := {
-  if (sys.props.contains("Win-x86")) {
-    ThisBuild / platform := "windows"
-    ThisBuild / archFolder := "amd64"
-    "x86_64-pc-windows-msvc"
-  } else if (sys.props.contains("Darwin-x86")) {
-    ThisBuild / platform := "darwin"
-    ThisBuild / archFolder := "amd64"
-    "x86_64-apple-darwin"
-  } else if (sys.props.contains("Darwin-aarch64")) {
-    ThisBuild / platform := "darwin"
-    ThisBuild / archFolder := "aarch64"
-    "aarch64-apple-darwin"
-  } else if (sys.props.contains("Linux-amd64")) {
-    ThisBuild / platform := "linux"
-    ThisBuild / archFolder := "amd64"
-    "x86_64-unknown-linux-gnu"
-  } else if (sys.props.contains("Linux-aarch64")) {
-    ThisBuild / platform := "linux"
-    ThisBuild / archFolder := "aarch64"
-    "aarch64-unknown-linux-gnu"
-  } else {
-    val family = System.getProperty("os.name").toLowerCase
-    val arch = System.getProperty("os.arch").toLowerCase
+  val platformProps = sys.props.map(_._1).filter {
+    x => x == "Win-x86" || x == "Darwin-x86" || x == "Darwin-aarch64" || x == "Linux-amd64" || x == "Linux-aarch64"
+  }.toSeq
 
-    val localPlatform =
-      if (family.contains("linux")) "linux"
-      else if (family.contains("mac") || family.contains("darwin")) "darwin"
-      else if (family.contains("win")) "windows"
-      else sys.error(s"Unsupported OS: $family")
+  platformProps.size match {
+    case 0 => {
+      val family = System.getProperty("os.name").toLowerCase
+      val arch = System.getProperty("os.arch").toLowerCase
 
-    ThisBuild / platform := localPlatform
+      val localPlatform =
+        if (family.contains("linux")) "linux"
+        else if (family.contains("mac") || family.contains("darwin")) "darwin"
+        else if (family.contains("win")) "windows" // Handled "darwin" cases earlier
+        else sys.error(s"Unsupported OS: $family")
 
-    val localArchFolder =
-      if (arch == "amd64" || arch == "x86_64") "amd64"
-      else if (arch == "aarch64" || arch == "arm64") "aarch64"
-      else sys.error(s"Unsupported architecture: $arch")
+      ThisBuild / platform := localPlatform
 
-    ThisBuild / archFolder := localArchFolder
+      val localArchFolder =
+        if (arch == "amd64" || arch == "x86_64") "amd64"
+        else if (arch == "aarch64" || arch == "arm64") "aarch64"
+        else sys.error(s"Unsupported architecture: $arch")
 
-    (localPlatform, localArchFolder) match {
-      case ("linux", "amd64") => "x86_64-unknown-linux-gnu"
-      case ("linux", "aarch64") => "aarch64-unknown-linux-gnu"
-      case ("darwin", "amd64") => "x86_64-apple-darwin"
-      case ("darwin", "aarch64") => "aarch64-apple-darwin"
-      case ("windows", "amd64") => "x86_64-pc-windows-msvc"
-      case (otherPlatform, otherArch) =>
-        sys.error(s"Unsupported platform/arch: $otherPlatform/$otherArch")
+      ThisBuild / archFolder := localArchFolder
+
+      (localPlatform, localArchFolder) match {
+        case ("linux", "amd64") => "x86_64-unknown-linux-gnu"
+        case ("linux", "aarch64") => "aarch64-unknown-linux-gnu"
+        case ("darwin", "amd64") => "x86_64-apple-darwin"
+        case ("darwin", "aarch64") => "aarch64-apple-darwin"
+        case ("windows", "amd64") => "x86_64-pc-windows-msvc"
+        case (otherPlatform, otherArch) =>
+          sys.error(s"Unsupported platform/arch: $otherPlatform/$otherArch")
+      }
     }
+    case 1 => {
+      platformProps(0) match {
+        case "Win-x86" => {
+          ThisBuild / platform := "windows"
+          ThisBuild / archFolder := "amd64"
+          "x86_64-pc-windows-msvc"
+        }
+        case "Darwin-x86" => {
+          ThisBuild / platform := "darwin"
+          ThisBuild / archFolder := "amd64"
+          "x86_64-apple-darwin"
+        }
+        case "Darwin-aarch64" => {
+          ThisBuild / platform := "darwin"
+          ThisBuild / archFolder := "aarch64"
+          "aarch64-apple-darwin"
+        }
+        case "Linux-amd64" => {
+          ThisBuild / platform := "linux"
+          ThisBuild / archFolder := "amd64"
+          "x86_64-unknown-linux-gnu"
+        }
+        case "Linux-aarch64" => {
+          ThisBuild / platform := "linux"
+          ThisBuild / archFolder := "aarch64"
+          "aarch64-unknown-linux-gnu"
+        }
+      }
+    }
+    case other => sys.error(s"Multiple platform definitions provided: $platformProps")
   }
 }
 
@@ -182,11 +229,10 @@ ThisBuild / rustFlags := {
 }
 
 ThisBuild / javaTarget := {
-  sys.props.getOrElse("jdkVersion", "") match {
-    case "1.8" | "8" => 8
-    case "11" => 11
-    case "17" => 17
-    case "" =>
+  val jdkProps = sys.props.map(_._1).filter(_.startsWith("jdk")).toSeq
+  jdkProps.size match {
+    case 0 => {
+      // If Spark version set a default, use it, otherwise, take the System property
       if ((ThisBuild / javaTarget).value == 0) {
         val parts = System.getProperty("java.version").split("\\.")
 
@@ -196,7 +242,16 @@ ThisBuild / javaTarget := {
         else
           parts(0).toInt
       } else (ThisBuild / javaTarget).value
-    case other => sys.error(s"Unsupported JDK version: $other")
+    }
+    case 1 => {
+      jdkProps(0) match {
+        case "jdk1.8" => 8
+        case "jdk11" => 11
+        case "jdk17" => 17
+        case other => sys.error(s"Unsupported JDK profile selected: $other")
+      }
+    }
+    case other => sys.error(s"Multiple JDK definitions provided: $jdkProps")
   }
 }
 
@@ -321,7 +376,7 @@ lazy val native = (project in file("native"))
     cargoTask := {
       val log = streams.value.log
       val nativeDir = baseDirectory.value
-      val buildType = sys.props.getOrElse("buildType", "debug")
+      val buildType = if (sys.props.contains("release") || sys.props.contains("apache-release")) "release" else "debug"
 
       // To allow cross compilation
       val selectedTarget = (ThisBuild / rustTarget).value
@@ -346,7 +401,7 @@ lazy val native = (project in file("native"))
       cargoTask.value
 
       val log = streams.value.log
-      val buildType = sys.props.getOrElse("buildType", "debug")
+      val buildType = if (sys.props.contains("release") || sys.props.contains("apache-release")) "release" else "debug"
       val resourceDir = (Compile / resourceManaged).value
       val nativeLibPath = s"org/apache/comet/$platform/$archFolder"
       val outDir = resourceDir / nativeLibPath
@@ -475,7 +530,7 @@ lazy val spark = (project in file("spark"))
     Compile / compile := (Compile / compile).dependsOn(Compile / PB.generate).value)
 
 // -----------------------------------------------------------------------------
-// spark-integration Subproject
+// spark-integration subproject, honestly not sure what this even does
 // -----------------------------------------------------------------------------
 lazy val sparkIntegration = (project in file("spark-integration"))
   .dependsOn(spark)
@@ -487,7 +542,7 @@ lazy val sparkIntegration = (project in file("spark-integration"))
       "org.apache.spark" %% "spark-sql" % (ThisBuild / sparkVersion).value % "provided") ++ arrowDependencies)
 
 // -----------------------------------------------------------------------------
-// fuzz-testing Subproject
+// fuzz-testing Subproject, left it to assemble separately
 // -----------------------------------------------------------------------------
 lazy val fuzzTesting = (project in file("fuzz-testing"))
   .dependsOn(spark)
