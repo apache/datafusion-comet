@@ -94,12 +94,12 @@ unsafe impl Sync for CometFairMemoryPool {}
 impl MemoryPool for CometFairMemoryPool {
     fn register(&self, _: &MemoryConsumer) {
         let mut state = self.state.lock();
-        state.num = state.num.checked_add(1).unwrap();
+        state.num = state.num.checked_add(1).expect("unexpected amount of register happened");
     }
 
     fn unregister(&self, _: &MemoryConsumer) {
         let mut state = self.state.lock();
-        state.num = state.num.checked_sub(1).unwrap();
+        state.num = state.num.checked_sub(1).expect("unexpected amount of unregister happened");
     }
 
     fn grow(&self, reservation: &MemoryReservation, additional: usize) {
