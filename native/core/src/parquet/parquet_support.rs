@@ -596,13 +596,10 @@ fn cast_array(
 ) -> DataFusionResult<ArrayRef> {
     use DataType::*;
     let array = match to_type {
-        Timestamp(_, None) => array,
+        Timestamp(_, None) => array, // array_with_timezone does not support to_type of NTZ.
         _ => array_with_timezone(array, parquet_options.timezone.clone(), Some(to_type))?,
     };
     let from_type = array.data_type().clone();
-
-    let _from_type = from_type.clone();
-    let _to_type = to_type.clone();
 
     let array = match &from_type {
         Dictionary(key_type, value_type)
