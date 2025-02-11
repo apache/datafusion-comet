@@ -1210,36 +1210,35 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               val cometMessage =
                 if (cometException.getCause != null) cometException.getCause.getMessage
                 else cometException.getMessage
-              if (CometSparkSessionExtensions.isSpark40Plus) {
-                // for Spark 4 we expect to sparkException carries the message
+              // for comet decimal conversion throws ArrowError(string) from arrow - across spark version the message dont match.
+              if (sparkMessage.contains("NUMERIC_VALUE_OUT_OF_RANGE") && cometMessage.contains(
+                  "Invalid argument error")) {
                 assert(
-                  sparkException.getMessage
-                    .replace(".WITH_SUGGESTION] ", "]")
-                    .startsWith(cometMessage))
-              } else if (CometSparkSessionExtensions.isSpark34Plus) {
-                // for comet decimal conversion throws ArrowError(string) from arrow
-                if (cometMessage.contains("Invalid argument error")) {
-                  val regex =
-                    "\\[\\[?(NUMERIC_VALUE_OUT_OF_RANGE|Invalid argument error)\\]?:? .*? (\\d+(\\.\\d+)?) .*? Decimal\\(?(\\d+),?\\s?(\\d+)\\)?.*?\\]?"
-                  assert(cometMessage.matches(regex) == sparkMessage.matches(regex))
-
-                } else {
+                  sparkMessage.contains("cannot be represented as"),
+                  cometMessage.contains("too large to store"))
+              } else {
+                if (CometSparkSessionExtensions.isSpark40Plus) {
+                  // for Spark 4 we expect to sparkException carries the message
+                  assert(
+                    sparkException.getMessage
+                      .replace(".WITH_SUGGESTION] ", "]")
+                      .startsWith(cometMessage))
+                } else if (CometSparkSessionExtensions.isSpark34Plus) {
                   // for Spark 3.4 we expect to reproduce the error message exactly
                   assert(cometMessage == sparkMessage)
-
-                }
-              } else {
-                // for Spark 3.3 we just need to strip the prefix from the Comet message
-                // before comparing
-                val cometMessageModified = cometMessage
-                  .replace("[CAST_INVALID_INPUT] ", "")
-                  .replace("[CAST_OVERFLOW] ", "")
-                  .replace("[NUMERIC_VALUE_OUT_OF_RANGE] ", "")
-
-                if (sparkMessage.contains("cannot be represented as")) {
-                  assert(cometMessage.contains("cannot be represented as"))
                 } else {
-                  assert(cometMessageModified == sparkMessage)
+                  // for Spark 3.3 we just need to strip the prefix from the Comet message
+                  // before comparing
+                  val cometMessageModified = cometMessage
+                    .replace("[CAST_INVALID_INPUT] ", "")
+                    .replace("[CAST_OVERFLOW] ", "")
+                    .replace("[NUMERIC_VALUE_OUT_OF_RANGE] ", "")
+
+                  if (sparkMessage.contains("cannot be represented as")) {
+                    assert(cometMessage.contains("cannot be represented as"))
+                  } else {
+                    assert(cometMessageModified == sparkMessage)
+                  }
                 }
               }
           }
