@@ -2387,7 +2387,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case _: ArrayIntersect => convert(CometArrayIntersect)
       case _: ArrayJoin => convert(CometArrayJoin)
       case _: ArraysOverlap => convert(CometArraysOverlap)
-      case _ if expr.prettyName == "array_except" =>
+      case _: ArrayExcept =>
         convert(CometArrayExcept)
       case _ =>
         withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)

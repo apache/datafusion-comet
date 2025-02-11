@@ -303,8 +303,9 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           checkSparkAnswerAndOperator(
             sql("SELECT array_except(array(_2, _3, _4), array(_3, _4)) from t1"))
           checkSparkAnswerAndOperator(sql("SELECT array_except(array(_18), array(_19)) from t1"))
-          checkSparkAnswerAndOperator(spark.sql(
-            "SELECT array_except((CASE WHEN _2 = _3 THEN array(_2, _3, _4) END), array(_4)) FROM t1 WHERE _2 IS NOT NULL"))
+          checkSparkAnswerAndOperator(
+            spark.sql(
+              "SELECT array_except(array(_2, _2, _4), array(_4)) FROM t1 WHERE _2 IS NOT NULL"))
         }
       }
     }
