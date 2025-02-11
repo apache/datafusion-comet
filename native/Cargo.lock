@@ -917,6 +917,7 @@ dependencies = [
  "num",
  "object_store",
  "once_cell",
+ "parking_lot",
  "parquet",
  "paste",
  "pprof",

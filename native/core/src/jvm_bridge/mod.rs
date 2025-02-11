@@ -46,13 +46,6 @@ macro_rules! jvalues {
     }}
 }
 
-/// Macro for create a new JNI string.
-macro_rules! jni_new_string {
-    ($env:expr, $value:expr) => {{
-        $crate::jvm_bridge::jni_map_error!($env, $env.new_string($value))
-    }};
-}
-
 /// Macro for calling a JNI method.
 /// The syntax is:
 /// jni_call!(env, comet_metric_node(metric_node).add(jname, value) -> ())?;
@@ -173,7 +166,6 @@ macro_rules! jni_new_global_ref {
 pub(crate) use jni_call;
 pub(crate) use jni_map_error;
 pub(crate) use jni_new_global_ref;
-pub(crate) use jni_new_string;
 pub(crate) use jni_static_call;
 pub(crate) use jvalues;
 
