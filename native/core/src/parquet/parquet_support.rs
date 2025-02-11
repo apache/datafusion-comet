@@ -32,19 +32,15 @@ use arrow::{
     util::display::FormatOptions,
 };
 use arrow_array::builder::StringBuilder;
-use arrow_array::temporal_conversions::{as_datetime, MICROSECONDS, MILLISECONDS, NANOSECONDS};
-use arrow_array::timezone::Tz;
-use arrow_array::types::{
-    ArrowTimestampType, TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType,
-};
+use arrow_array::temporal_conversions::{MICROSECONDS, MILLISECONDS, NANOSECONDS};
+use arrow_array::types::{TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType};
 use arrow_array::{ArrowNativeTypeOp, DictionaryArray, StringArray, StructArray};
 use arrow_schema::{DataType, TimeUnit};
-use chrono::{NaiveDate, NaiveDateTime, Offset, TimeZone, Timelike};
+use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use datafusion_comet_spark_expr::utils::array_with_timezone;
 use datafusion_comet_spark_expr::{timezone, EvalMode, SparkError, SparkResult};
 use datafusion_common::{cast::as_generic_string_array, Result as DataFusionResult, ScalarValue};
 use datafusion_expr::ColumnarValue;
-// use datafusion_physical_expr::PhysicalExpr;
 use num::{
     cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
     ToPrimitive,
@@ -606,33 +602,6 @@ const fn time_unit_multiple(unit: &TimeUnit) -> i64 {
     }
 }
 
-fn adjust_timestamp_to_timezone<T: ArrowTimestampType>(
-    array: PrimitiveArray<Int64Type>,
-    to_tz: &Tz,
-    cast_options: &CastOptions,
-) -> Result<PrimitiveArray<Int64Type>, ArrowError> {
-    // return Ok(array);
-    let adjust = |o| {
-        let local = as_datetime::<T>(o)?;
-        let offset = to_tz.offset_from_local_datetime(&local).single()?;
-        // println!["local: {}", local];
-        // println!["offset: {}", offset];
-        let value = T::make_value(local - offset.fix()); // This is the change, minus to plus.
-                                                         // println!["value: {:?}", value];
-        value
-    };
-    let adjusted = if cast_options.safe {
-        array.unary_opt::<_, Int64Type>(adjust)
-    } else {
-        array.try_unary::<_, Int64Type, _>(|o| {
-            adjust(o).ok_or_else(|| {
-                ArrowError::CastError("Cannot cast timezone to different timezone".to_string())
-            })
-        })?
-    };
-    Ok(adjusted)
-}
-
 fn make_timestamp_array(
     array: &PrimitiveArray<Int64Type>,
     unit: TimeUnit,
@@ -671,7 +640,10 @@ fn cast_array(
     // println!["cast_array"];
     // println!["{}", parquet_options.timezone];
     // println!["array: {:?}", array];
-    let array = array_with_timezone(array, parquet_options.timezone.clone(), Some(to_type))?;
+    let array = match to_type {
+        Timestamp(_, None) => array,
+        _ => array_with_timezone(array, parquet_options.timezone.clone(), Some(to_type))?,
+    };
     // println!["array: {:?}", array];
     let from_type = array.data_type().clone();
 
@@ -794,38 +766,6 @@ fn cast_array(
             };
             // println!["converted: {:?}", converted];
             return Ok(make_timestamp_array(&converted, *to_unit, None));
-            // Normalize timezone
-            let adjusted =
-                {
-                    let to_tz = Arc::new(parquet_options.timezone.as_str());
-                    let to_tz: Tz = to_tz.parse()?;
-                    match to_unit {
-                        TimeUnit::Second => adjust_timestamp_to_timezone::<TimestampSecondType>(
-                            converted,
-                            &to_tz,
-                            &PARQUET_OPTIONS,
-                        )?,
-                        TimeUnit::Millisecond => adjust_timestamp_to_timezone::<
-                            TimestampMillisecondType,
-                        >(
-                            converted, &to_tz, &PARQUET_OPTIONS
-                        )?,
-                        TimeUnit::Microsecond => adjust_timestamp_to_timezone::<
-                            TimestampMicrosecondType,
-                        >(
-                            converted, &to_tz, &PARQUET_OPTIONS
-                        )?,
-                        TimeUnit::Nanosecond => adjust_timestamp_to_timezone::<
-                            TimestampNanosecondType,
-                        >(
-                            converted, &to_tz, &PARQUET_OPTIONS
-                        )?,
-                    }
-                };
-            // println!["adjusted: {:?}", adjusted];
-            let timestamp_array = make_timestamp_array(&adjusted, *to_unit, None);
-            // println!["timestamp_array: {:?}", timestamp_array];
-            Ok(timestamp_array)
         }
 
         _ if parquet_options.is_adapting_schema
