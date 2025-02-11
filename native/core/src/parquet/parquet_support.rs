@@ -32,10 +32,8 @@ use arrow::{
     util::display::FormatOptions,
 };
 use arrow_array::builder::StringBuilder;
-use arrow_array::temporal_conversions::{MICROSECONDS, MILLISECONDS, NANOSECONDS};
-use arrow_array::types::{TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType};
-use arrow_array::{ArrowNativeTypeOp, DictionaryArray, StringArray, StructArray};
-use arrow_schema::{DataType, TimeUnit};
+use arrow_array::{DictionaryArray, StringArray, StructArray};
+use arrow_schema::DataType;
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use datafusion_comet_spark_expr::utils::array_with_timezone;
 use datafusion_comet_spark_expr::{timezone, EvalMode, SparkError, SparkResult};
@@ -46,7 +44,6 @@ use num::{
     ToPrimitive,
 };
 use regex::Regex;
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::{fmt::Debug, hash::Hash, num::Wrapping, sync::Arc};
@@ -592,45 +589,6 @@ pub fn spark_parquet_convert(
     }
 }
 
-/// Get the time unit as a multiple of a second
-const fn time_unit_multiple(unit: &TimeUnit) -> i64 {
-    match unit {
-        TimeUnit::Second => 1,
-        TimeUnit::Millisecond => MILLISECONDS,
-        TimeUnit::Microsecond => MICROSECONDS,
-        TimeUnit::Nanosecond => NANOSECONDS,
-    }
-}
-
-fn make_timestamp_array(
-    array: &PrimitiveArray<Int64Type>,
-    unit: TimeUnit,
-    tz: Option<Arc<str>>,
-) -> ArrayRef {
-    match unit {
-        TimeUnit::Second => Arc::new(
-            array
-                .reinterpret_cast::<TimestampSecondType>()
-                .with_timezone_opt(tz),
-        ),
-        TimeUnit::Millisecond => Arc::new(
-            array
-                .reinterpret_cast::<TimestampMillisecondType>()
-                .with_timezone_opt(tz),
-        ),
-        TimeUnit::Microsecond => Arc::new(
-            array
-                .reinterpret_cast::<TimestampMicrosecondType>()
-                .with_timezone_opt(tz),
-        ),
-        TimeUnit::Nanosecond => Arc::new(
-            array
-                .reinterpret_cast::<TimestampNanosecondType>()
-                .with_timezone_opt(tz),
-        ),
-    }
-}
-
 fn cast_array(
     array: ArrayRef,
     to_type: &DataType,
@@ -733,29 +691,8 @@ fn cast_array(
         {
             Ok(cast_with_options(&array, to_type, &PARQUET_OPTIONS)?)
         }
-        (Timestamp(from_unit, None), Timestamp(to_unit, None)) => {
-            let array = cast_with_options(&array, &Int64, &PARQUET_OPTIONS)?;
-            let time_array = array.as_primitive::<Int64Type>();
-            let from_size = time_unit_multiple(from_unit);
-            let to_size = time_unit_multiple(to_unit);
-            // we either divide or multiply, depending on size of each unit
-            // units are never the same when the types are the same
-            let converted = match from_size.cmp(&to_size) {
-                Ordering::Greater => {
-                    let divisor = from_size / to_size;
-                    time_array.unary::<_, Int64Type>(|o| o / divisor)
-                }
-                Ordering::Equal => time_array.clone(),
-                Ordering::Less => {
-                    let mul = to_size / from_size;
-                    if PARQUET_OPTIONS.safe {
-                        time_array.unary_opt::<_, Int64Type>(|o| o.checked_mul(mul))
-                    } else {
-                        time_array.try_unary::<_, Int64Type, _>(|o| o.mul_checked(mul))?
-                    }
-                }
-            };
-            return Ok(make_timestamp_array(&converted, *to_unit, None));
+        (Timestamp(_, None), Timestamp(_, None)) => {
+            Ok(cast_with_options(&array, to_type, &PARQUET_OPTIONS)?)
         }
 
         _ if parquet_options.is_adapting_schema
