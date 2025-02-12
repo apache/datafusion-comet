@@ -429,7 +429,7 @@ abstract class CometTestBase
     makeParquetFileAllTypes(path, dictionaryEnabled, 0, n)
   }
 
-  def getAllTypesParquetSchema: String = {
+  def getPrimitiveTypesParquetSchema: String = {
     if (CometSparkSessionExtensions.isComplexTypeReaderEnabled(conf) &&
       !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()) {
       // Comet complex type reader has different behavior for uint_8, uint_16 types.
@@ -553,7 +553,7 @@ abstract class CometTestBase
       randomSize: Int = 0): Unit = {
     // alwaysIncludeUnsignedIntTypes means we include unsignedIntTypes in the test even if the
     // reader does not support them
-    val schemaStr = getAllTypesParquetSchema
+    val schemaStr = getPrimitiveTypesParquetSchema
 
     val schema = MessageTypeParser.parseMessageType(schemaStr)
     val writer = createParquetWriter(
