@@ -834,7 +834,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val df = sql(
             "SELECT _2, MIN(_1) + java_method('java.lang.Math', 'random') " +
               "FROM tbl GROUP BY _2")
-          assert(getNumCometHashAggregate(df) == 1)
+          assert(getNumCometHashAggregate(df) == 2)
         }
       }
     }
