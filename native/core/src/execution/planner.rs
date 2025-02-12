@@ -66,9 +66,9 @@ use datafusion::{
 use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr};
 use datafusion_functions_nested::array_has::array_has_any_udf;
 use datafusion_functions_nested::concat::ArrayAppend;
+use datafusion_functions_nested::except::array_except_udf;
 use datafusion_functions_nested::remove::array_remove_all_udf;
 use datafusion_functions_nested::set_ops::array_intersect_udf;
-use datafusion_functions_nested::except::array_except_udf;
 use datafusion_functions_nested::string::array_to_string_udf;
 use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
