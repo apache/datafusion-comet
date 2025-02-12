@@ -216,7 +216,7 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_INITCAP_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("initCap", defaultValue = false)
 
-  val COMET_EXEC_AGGREGATE_ENABLED_ENFORCE_RESULTS: ConfigEntry[Boolean] =
+  val COMET_EXEC_AGGREGATE_ENFORCE_RESULTS: ConfigEntry[Boolean] =
     conf("spark.comet.exec.aggregate.enforceResults")
       .doc("Whether to enforce converting results in the Final stage of a HashAggregate, " +
         "When enabled, Final-mode hashAggregates will not be converted to Comet, this can cause " +
