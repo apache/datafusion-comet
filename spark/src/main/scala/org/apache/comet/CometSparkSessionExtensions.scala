@@ -25,9 +25,9 @@ import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, PlanExpression, Remainder}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, BindReferences, Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, PlanExpression, Remainder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
-import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNode
 import org.apache.spark.sql.catalyst.trees.TreePattern.PLAN_EXPRESSION
@@ -36,7 +36,7 @@ import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
@@ -47,7 +47,7 @@ import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.execution.datasources.v2.json.JsonScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashedRelationBroadcastMode, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DoubleType, FloatType}
@@ -1120,6 +1120,9 @@ class CometSparkSessionExtensions
         case ColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) => sparkToColumnar.child
         case ColumnarToRowExec(child: CometBroadcastExchangeExec) =>
           child
+        case ColumnarToRowExec(b @ BroadcastQueryStageExec(_, child, _))
+            if child.supportsColumnar =>
+          b
         case c @ ColumnarToRowExec(child) if child.exists(_.isInstanceOf[CometPlan]) =>
           val op = CometColumnarToRowExec(child)
           if (c.logicalLink.isEmpty) {
@@ -1167,12 +1170,16 @@ class CometSparkSessionExtensions
       CometSubqueryExecRule(EliminateRedundantTransitions(session))
   }
 
-  case class CometSubqueryExecRule(cometExecRule: Rule[SparkPlan]) extends Rule[SparkPlan] {
+  case class CometSubqueryExecRule(cometExecRule: Rule[SparkPlan])
+      extends Rule[SparkPlan]
+      with AdaptiveSparkPlanHelper {
 
     override def apply(plan: SparkPlan): SparkPlan = {
       if (!conf.dynamicPartitionPruningEnabled) {
         return plan
       }
+
+      val rootPlan = plan
 
       def cleanSubqueryPlan(plan: SparkPlan): SparkPlan = {
         plan transformUp {
@@ -1187,10 +1194,74 @@ class CometSparkSessionExtensions
         plan.transformUpWithPruning(_.containsAnyPattern(PLAN_EXPRESSION)) { case p =>
           p.transformExpressionsUpWithPruning(_.containsPattern(PLAN_EXPRESSION)) {
             case sub: ExecSubqueryExpression =>
-              val child = cleanSubqueryPlan(sub.plan.child)
-              val newChild = cometExecRule.apply(child)
-              val subquery = sub.plan.withNewChildren(Seq(newChild))
-              sub.withNewPlan(subquery.asInstanceOf[BaseSubqueryExec])
+              val newChild = sub.plan match {
+                case s @ SubqueryAdaptiveBroadcastExec(
+                      name,
+                      index,
+                      onlyInBroadcast,
+                      buildPlan,
+                      buildKeys,
+                      adaptivePlan: AdaptiveSparkPlanExec)
+                    if adaptivePlan.executedPlan.isInstanceOf[CometPlan] =>
+                  val packedKeys = BindReferences.bindReferences(
+                    HashJoin.rewriteKeyExpr(buildKeys),
+                    adaptivePlan.executedPlan.output)
+                  val mode = HashedRelationBroadcastMode(packedKeys)
+                  val exchange = BroadcastExchangeExec(mode, adaptivePlan.executedPlan)
+                  val cometExchange = cometExecRule.apply(cleanSubqueryPlan(exchange))
+
+                  val canReuseExchange =
+                    conf.exchangeReuseEnabled && buildKeys.nonEmpty && find(rootPlan) {
+                      case CometBroadcastHashJoinExec(
+                            _,
+                            _,
+                            _,
+                            _,
+                            _,
+                            _,
+                            _,
+                            _,
+                            BuildLeft,
+                            left,
+                            _,
+                            _) =>
+                        left.sameResult(cometExchange)
+                      case CometBroadcastHashJoinExec(
+                            _,
+                            _,
+                            _,
+                            _,
+                            _,
+                            _,
+                            _,
+                            _,
+                            BuildRight,
+                            _,
+                            right,
+                            _) =>
+                        right.sameResult(cometExchange)
+                      case _ => false
+                    }.isDefined
+
+                  if (canReuseExchange) {
+                    cometExchange.setLogicalLink(adaptivePlan.executedPlan.logicalLink.get)
+                    val newAdaptivePlan = adaptivePlan.copy(inputPlan = cometExchange)
+
+                    val broadcastValues =
+                      SubqueryBroadcastExec(name, index, buildKeys, newAdaptivePlan)
+                    broadcastValues
+
+                  } else {
+                    s
+                  }
+
+                case s: UnaryExecNode =>
+                  val child = cleanSubqueryPlan(sub.plan.child)
+                  val newChild = cometExecRule.apply(child)
+                  s.withNewChildren(Seq(newChild))
+                case o => o
+              }
+              sub.withNewPlan(newChild.asInstanceOf[BaseSubqueryExec])
           }
         }
       }
