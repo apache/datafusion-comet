@@ -743,7 +743,7 @@ class CometSparkSessionExtensions
               s
           }
 
-        case b: BroadcastExchangeExec
+        case b @ BroadcastExchangeExec(_: HashedRelationBroadcastMode, _)
             if isCometNative(b.child) &&
               CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf) &&
               isSpark34Plus => // Spark 3.4+ only
