@@ -95,7 +95,7 @@ allowed_expr+="|^org/apache/spark/CometDriverPlugin.*$"
 allowed_expr+="|^org/apache/spark/CometTaskMemoryManager.class$"
 allowed_expr+="|^org/apache/spark/CometTaskMemoryManager.*$"
 
-// TODO: add reason
+# TODO: add reason
 allowed_expr+="|^org/apache/spark/sql/execution/$"
 allowed_expr+="|^org/apache/spark/sql/execution/joins/$"
 allowed_expr+="|^org/apache/spark/sql/execution/joins/CometHashedRelation.*$"
