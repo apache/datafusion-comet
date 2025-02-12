@@ -1208,8 +1208,8 @@ class CometSparkSessionExtensions
                     adaptivePlan.executedPlan.output)
                   val mode = HashedRelationBroadcastMode(packedKeys)
                   val exchange = BroadcastExchangeExec(mode, adaptivePlan.executedPlan)
+                  exchange.setLogicalLink(adaptivePlan.executedPlan.logicalLink.get)
                   val cometExchange = cometExecRule.apply(cleanSubqueryPlan(exchange))
-
                   val canReuseExchange =
                     conf.exchangeReuseEnabled && buildKeys.nonEmpty && find(rootPlan) {
                       case CometBroadcastHashJoinExec(
@@ -1244,9 +1244,7 @@ class CometSparkSessionExtensions
                     }.isDefined
 
                   if (canReuseExchange) {
-                    cometExchange.setLogicalLink(adaptivePlan.executedPlan.logicalLink.get)
                     val newAdaptivePlan = adaptivePlan.copy(inputPlan = cometExchange)
-
                     val broadcastValues =
                       SubqueryBroadcastExec(name, index, buildKeys, newAdaptivePlan)
                     broadcastValues
