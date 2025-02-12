@@ -2128,7 +2128,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       // char types.
       // See https://github.com/apache/spark/pull/38151
       case s: StaticInvoke
-          if s.staticObject.isInstanceOf[Class[CharVarcharCodegenUtils]] &&
+          // classOf gets ther runtime class of T, which lets us compare directly
+          // Otherwise isInstanceOf[Class[_]] will always evaluate to true
+          if s.staticObject == classOf[CharVarcharCodegenUtils] &&
             s.dataType.isInstanceOf[StringType] &&
             s.functionName == "readSidePadding" &&
             s.arguments.size == 2 &&
