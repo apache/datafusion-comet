@@ -1198,8 +1198,8 @@ class CometSparkSessionExtensions
                 case s @ SubqueryAdaptiveBroadcastExec(
                       name,
                       index,
-                      onlyInBroadcast,
-                      buildPlan,
+                      _,
+                      _,
                       buildKeys,
                       adaptivePlan: AdaptiveSparkPlanExec)
                     if adaptivePlan.executedPlan.isInstanceOf[CometPlan] =>

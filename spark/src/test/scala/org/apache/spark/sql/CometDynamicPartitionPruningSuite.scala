@@ -349,7 +349,7 @@ abstract class CometDynamicPartitionPruningSuiteBase extends CometTestBase with 
        """.stripMargin)
 
       val found = df.queryExecution.executedPlan.exists {
-        case BroadcastHashJoinExec(_, _, p: ExistenceJoin, _, _, _, _, _) => true
+        case BroadcastHashJoinExec(_, _, _: ExistenceJoin, _, _, _, _, _) => true
         case _ => false
       }
 
