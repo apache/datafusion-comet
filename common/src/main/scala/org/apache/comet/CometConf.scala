@@ -221,8 +221,8 @@ object CometConf extends ShimCometConf {
       .doc("Whether to enforce converting results in the Final stage of a HashAggregate, " +
         "When enabled, Final-mode hashAggregates will not be converted to Comet, this can cause " +
         "issues when native shuffle is enabled. " +
-        "If this is disabled, unsupported result expressions will be separated into a ProjectExec " +
-        "to allow HashAggregate to complete natively. " +
+        "If this is disabled, unsupported result expressions will be " +
+        "separated into a ProjectExec to allow HashAggregate to complete natively. " +
         "This is disabled by default.")
       .booleanConf
       .createWithDefault(false)

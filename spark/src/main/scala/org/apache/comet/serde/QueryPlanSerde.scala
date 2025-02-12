@@ -2613,10 +2613,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
   def hashAgg2Proto(
       aggregate: BaseAggregateExec,
       childOp: Operator*): Option[(Boolean, Operator)] = {
+    val conf = aggregate.conf
+
     // Early validation of aggregate type
     if (!(aggregate.isInstanceOf[HashAggregateExec] ||
         aggregate.isInstanceOf[ObjectHashAggregateExec]) &&
-      CometConf.COMET_EXEC_AGGREGATE_ENABLED.get(aggregate.conf)) {
+      CometConf.COMET_EXEC_AGGREGATE_ENABLED.get(conf)) {
       val msg = s"unsupported Spark operator: ${aggregate.nodeName}"
       emitWarning(msg)
       withInfo(aggregate, msg)
@@ -2699,10 +2701,10 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       // If result expressions aren't supported,
       // propagate that so they will be separated into a ProjectExec
       if (resultExprs.exists(_.isEmpty)) {
-        if (COMET_EXEC_AGGREGATE_ENFORCE_RESULTS.get(conf)) {
+        if (CometConf.COMET_EXEC_AGGREGATE_ENFORCE_RESULTS.get(conf)) {
           val msg = s"Unsupported result expressions found in: ${resultExpressions}, " +
             s"not separating them into a ProjectExec because " +
-            s"${COMET_EXEC_AGGREGATE_ENFORCE_RESULTS} is disabled"
+            s"${CometConf.COMET_EXEC_AGGREGATE_ENFORCE_RESULTS} is disabled"
           emitWarning(msg)
           withInfo(aggregate, msg, resultExpressions: _*)
           return None
