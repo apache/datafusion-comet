@@ -994,25 +994,22 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                if filter.use_datafusion_filter {
-                    let filter = Arc::new(DataFusionFilterExec::try_new(
+                let filter: Arc<dyn ExecutionPlan> = if filter.use_datafusion_filter {
+                    Arc::new(DataFusionFilterExec::try_new(
                         predicate,
                         Arc::clone(&child.native_plan),
-                    )?);
-                    Ok((
-                        scans,
-                        Arc::new(SparkPlan::new(spark_plan.plan_id, filter, vec![child])),
-                    ))
+                    )?)
                 } else {
-                    let filter = Arc::new(CometFilterExec::try_new(
+                    Arc::new(CometFilterExec::try_new(
                         predicate,
                         Arc::clone(&child.native_plan),
-                    )?);
-                    Ok((
-                        scans,
-                        Arc::new(SparkPlan::new(spark_plan.plan_id, filter, vec![child])),
-                    ))
-                }
+                    )?)
+                };
+
+                Ok((
+                    scans,
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, filter, vec![child])),
+                ))
             }
             OpStruct::HashAgg(agg) => {
                 assert!(children.len() == 1);
