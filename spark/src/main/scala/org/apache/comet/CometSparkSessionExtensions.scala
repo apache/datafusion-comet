@@ -1408,7 +1408,7 @@ object CometSparkSessionExtensions extends Logging {
     sparkConf.getBoolean("spark.memory.offHeap.enabled", false)
   }
 
-  def cometShuffleUnifiedMemoryManagerEnabled(sparkConf: SparkConf): Boolean = {
+  def cometShuffleUnifiedMemoryManagerInTestEnabled(sparkConf: SparkConf): Boolean = {
     sparkConf.getBoolean(
       CometConf.COMET_COLUMNAR_SHUFFLE_UNIFIED_MEMORY_ALLOCATOR_IN_TEST.key,
       CometConf.COMET_COLUMNAR_SHUFFLE_UNIFIED_MEMORY_ALLOCATOR_IN_TEST.defaultValue.get)

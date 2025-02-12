@@ -108,7 +108,7 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
           CometConf.COMET_EXEC_ENABLED.key,
           CometConf.COMET_EXEC_ENABLED.defaultValue.get)
     ) && (!CometSparkSessionExtensions.cometUnifiedMemoryManagerEnabled(conf) ||
-      !CometSparkSessionExtensions.cometShuffleUnifiedMemoryManagerEnabled(conf))
+      !CometSparkSessionExtensions.cometShuffleUnifiedMemoryManagerInTestEnabled(conf))
   }
 }
 
