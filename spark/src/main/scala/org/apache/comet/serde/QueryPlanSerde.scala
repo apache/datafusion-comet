@@ -2703,7 +2703,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       if (resultExprs.exists(_.isEmpty)) {
         if (CometConf.COMET_EXEC_AGGREGATE_ENFORCE_RESULTS.get(conf)) {
           val msg = s"Unsupported result expressions found in: ${resultExpressions}, " +
-            s"not separating them into a ProjectExec because " +
+            "not separating them into a ProjectExec because " +
             s"${CometConf.COMET_EXEC_AGGREGATE_ENFORCE_RESULTS} is disabled"
           emitWarning(msg)
           withInfo(aggregate, msg, resultExpressions: _*)
