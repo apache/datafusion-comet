@@ -18,7 +18,8 @@
 //! Converts Spark physical plan to DataFusion physical plan
 
 use super::expressions::EvalMode;
-use crate::execution::operators::{CopyMode, FilterExec};
+use crate::execution::operators::CopyMode;
+use crate::execution::operators::FilterExec as CometFilterExec;
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -79,6 +80,7 @@ use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
 use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
+use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
 use datafusion_comet_proto::{
     spark_expression::{
         self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
@@ -992,14 +994,25 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                let filter = Arc::new(FilterExec::try_new(
-                    predicate,
-                    Arc::clone(&child.native_plan),
-                )?);
-                Ok((
-                    scans,
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, filter, vec![child])),
-                ))
+                if filter.use_datafusion_filter {
+                    let filter = Arc::new(DataFusionFilterExec::try_new(
+                        predicate,
+                        Arc::clone(&child.native_plan),
+                    )?);
+                    Ok((
+                        scans,
+                        Arc::new(SparkPlan::new(spark_plan.plan_id, filter, vec![child])),
+                    ))
+                } else {
+                    let filter = Arc::new(CometFilterExec::try_new(
+                        predicate,
+                        Arc::clone(&child.native_plan),
+                    )?);
+                    Ok((
+                        scans,
+                        Arc::new(SparkPlan::new(spark_plan.plan_id, filter, vec![child])),
+                    ))
+                }
             }
             OpStruct::HashAgg(agg) => {
                 assert!(children.len() == 1);

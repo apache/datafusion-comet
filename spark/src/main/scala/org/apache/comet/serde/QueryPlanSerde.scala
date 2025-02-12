@@ -23,13 +23,13 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, Complete, Corr, Count, CovPopulation, CovSample, Final, First, Last, Max, Min, Partial, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
+import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometScanExec, CometSinkPlaceHolder, CometSparkToColumnarExec, DecimalPrecision}
+import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
@@ -46,12 +46,11 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isCometScan, isSpark34Plus, withInfo}
-import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incompatible, RegExp, Unsupported}
+import org.apache.comet.expressions._
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
-import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, MapInfo, StructInfo}
+import org.apache.comet.serde.ExprOuterClass.DataType._
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
-import org.apache.comet.shims.CometExprShim
-import org.apache.comet.shims.ShimQueryPlanSerde
+import org.apache.comet.shims.{CometExprShim, ShimQueryPlanSerde}
 
 /**
  * An utility object for query plan and expression serialization.
@@ -2722,7 +2721,16 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         val cond = exprToProto(condition, child.output)
 
         if (cond.isDefined && childOp.nonEmpty) {
-          val filterBuilder = OperatorOuterClass.Filter.newBuilder().setPredicate(cond.get)
+          val filterBuilder = OperatorOuterClass.Filter
+            .newBuilder()
+            .setPredicate(cond.get)
+            .setUseDatafusionFilter(
+              CometConf.COMET_NATIVE_SCAN_IMPL
+                .get()
+                .equals(CometConf.SCAN_NATIVE_DATAFUSION) ||
+                CometConf.COMET_NATIVE_SCAN_IMPL
+                  .get()
+                  .equals(CometConf.SCAN_NATIVE_ICEBERG_COMPAT))
           Some(result.setFilter(filterBuilder).build())
         } else {
           withInfo(op, condition, child)
