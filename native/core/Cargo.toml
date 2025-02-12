@@ -78,7 +78,7 @@ object_store = { workspace = true }
 url = { workspace = true }
 chrono = { workspace = true }
 parking_lot = "0.12.3"
-datafusion-objectstore-hdfs = { path = "../hdfs", optional = true}
+datafusion-comet-objectstore-hdfs = { path = "../hdfs", optional = true}
 
 [dev-dependencies]
 pprof = { version = "0.14.0", features = ["flamegraph"] }
@@ -90,11 +90,11 @@ hex = "0.4.3"
 
 [features]
 default = []
-hdfs=["datafusion-objectstore-hdfs"]
+hdfs=["datafusion-comet-objectstore-hdfs"]
 
 # exclude optional packages from cargo machete verifications
 [package.metadata.cargo-machete]
-ignored = ["datafusion-objectstore-hdfs"]
+ignored = ["datafusion-comet-objectstore-hdfs"]
 
 [lib]
 name = "comet"

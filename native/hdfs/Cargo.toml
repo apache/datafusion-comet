@@ -21,8 +21,8 @@
 # Example: JAVA_HOME="/opt/homebrew/opt/openjdk@11" cargo build --features=hdfs
 
 [package]
-name = "datafusion-objectstore-hdfs"
-description = "Comet HDFS integration. Initiated by Yanghong Zhong <nju_yaho@apache.org> (https://github.com/datafusion-contrib/datafusion-objectstore-hdfs)"
+name = "datafusion-comet-objectstore-hdfs"
+description = "Comet HDFS integration"
 version = { workspace = true }
 homepage = { workspace = true }
 repository = { workspace = true }
