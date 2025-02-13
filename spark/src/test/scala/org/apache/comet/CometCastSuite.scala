@@ -32,7 +32,6 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType}
 
-import org.apache.comet.CometSparkSessionExtensions.usingDataFusionParquetReader
 import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible}
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
