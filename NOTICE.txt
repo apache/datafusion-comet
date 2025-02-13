@@ -10,4 +10,4 @@ Specifically:
 - Optimizer rule to replace SortMergeJoin with ShuffleHashJoin
 
 This produce includes software developed at
-Apache DataFusion HDFS ObjectStore Contrib Package(https://github.com/datafusion-contrib/datafusion-objectstore-hdfs)
+DataFusion HDFS ObjectStore Contrib Package(https://github.com/datafusion-contrib/datafusion-objectstore-hdfs)
