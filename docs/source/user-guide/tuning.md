@@ -28,6 +28,21 @@ Comet provides some tuning options to help you get the best performance from you
 The recommended way to share memory between Spark and Comet is to set `spark.memory.offHeap.enabled=true`. This allows
 Comet to share an off-heap memory pool with Spark. The size of the pool is specified by `spark.memory.offHeap.size`. For more details about Spark off-heap memory mode, please refer to Spark documentation: https://spark.apache.org/docs/latest/configuration.html.
 
+The type of pool can be specified with `spark.comet.exec.memoryPool`.
+
+The valid pool types are:
+
+- `unified` (default when `spark.memory.offHeap.enabled=true` is set)
+- `fair_unified`
+
+The `unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
+need to spill or have a single spillable operator.
+
+The `fair_unified` pool type prevents operators from using more than an even fraction of the available memory
+(i.e. `pool_size / num_reservations`). This pool works best when you know beforehand
+the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
+when there is sufficient memory in order to leave enough memory for other operators.
+
 ### Dedicated Comet Memory Pools
 
 Spark uses on-heap memory mode by default, i.e., the `spark.memory.offHeap.enabled` setting is not enabled. If Spark is under on-heap memory mode, Comet will use its own dedicated memory pools that
@@ -48,6 +63,7 @@ The valid pool types are:
 - `fair_spill`
 - `fair_spill_global`
 - `fair_spill_task_shared`
+- `unbounded`
 
 Pool types ending with `_global` use a single global memory pool between all tasks on same executor.
 
@@ -61,13 +77,19 @@ pool works well for queries that do not need to spill or have a single spillable
 
 The `fair_spill*` pool types use DataFusion's [FairSpillPool], which prevents spillable reservations from using more
 than an even fraction of the available memory sans any unspillable reservations
-(i.e. `(pool_size - unspillable_memory) / num_spillable_reservations)`). This pool works best when you know beforehand
+(i.e. `(pool_size - unspillable_memory) / num_spillable_reservations`). This pool works best when you know beforehand
 the query has multiple spillable operators that will likely all need to spill. Sometimes it will cause spills even
 when there was sufficient memory (reserved for other operators) to avoid doing so. Unspillable memory is allocated in
 a first-come, first-serve fashion
 
+The `unbounded` pool type uses DataFusion's [UnboundedMemoryPool], which enforces no limit. This option is useful for
+development/testing purposes, where there is no room to allow spilling and rather choose to fail the job.
+Spilling significantly slows down the job and this option is one way to measure the best performance scenario without
+adjusting how much memory to allocate.
+
 [GreedyMemoryPool]: https://docs.rs/datafusion/latest/datafusion/execution/memory_pool/struct.GreedyMemoryPool.html
 [FairSpillPool]: https://docs.rs/datafusion/latest/datafusion/execution/memory_pool/struct.FairSpillPool.html
+[UnboundedMemoryPool]: https://docs.rs/datafusion/latest/datafusion/execution/memory_pool/struct.UnboundedMemoryPool.html
 
 
 ### Determining How Much Memory to Allocate
