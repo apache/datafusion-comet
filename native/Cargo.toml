@@ -16,7 +16,8 @@
 # under the License.
 
 [workspace]
-members = ["core", "spark-expr", "proto"]
+default-members = ["core", "spark-expr", "proto"]
+members = ["core", "spark-expr", "proto", "hdfs"]
 resolver = "2"
 
 [workspace.package]
@@ -38,6 +39,8 @@ arrow-array = { version = "54.1.0" }
 arrow-buffer = { version = "54.1.0" }
 arrow-data = { version = "54.1.0" }
 arrow-schema = { version = "54.1.0" }
+async-trait = { version = "0.1" }
+bytes = { version = "1.10.0" }
 parquet = { version = "54.1.0", default-features = false, features = ["experimental"] }
 datafusion = { version = "45.0.0", default-features = false, features = ["unicode_expressions", "crypto_expressions"] }
 datafusion-common = { version = "45.0.0", default-features = false }
