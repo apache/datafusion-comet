@@ -76,7 +76,6 @@ datafusion-comet-spark-expr = { workspace = true }
 datafusion-comet-proto = { workspace = true }
 object_store = { workspace = true }
 url = { workspace = true }
-chrono = { workspace = true }
 parking_lot = "0.12.3"
 
 [dev-dependencies]

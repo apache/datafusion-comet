@@ -894,7 +894,6 @@ dependencies = [
  "assertables",
  "async-trait",
  "bytes",
- "chrono",
  "crc32fast",
  "criterion",
  "datafusion",
