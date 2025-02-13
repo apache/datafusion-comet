@@ -89,7 +89,7 @@ case class CometNativeScanExec(
       "time_elapsed_scanning_until_data" ->
         SQLMetrics.createNanoTimingMetric(
           sparkContext,
-          "Wall clock time elapsed for file scanning +" +
+          "Wall clock time elapsed for file scanning + " +
             "first record batch of decompression + decoding"),
       "time_elapsed_scanning_total" ->
         SQLMetrics.createNanoTimingMetric(
