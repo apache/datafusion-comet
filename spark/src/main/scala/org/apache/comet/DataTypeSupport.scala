@@ -37,7 +37,7 @@ trait DataTypeSupport {
 
   private def isGloballySupported(dt: DataType): Boolean = dt match {
     case ByteType | ShortType
-        if CometSparkSessionExtensions.isComplexTypeReaderEnabled(SQLConf.get) &&
+        if CometSparkSessionExtensions.usingParquetExec(SQLConf.get) &&
           !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get() =>
       false
     case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |

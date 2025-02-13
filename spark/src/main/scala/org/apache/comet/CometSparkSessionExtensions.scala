@@ -1352,13 +1352,9 @@ object CometSparkSessionExtensions extends Logging {
     org.apache.spark.SPARK_VERSION >= "4.0"
   }
 
-  def isComplexTypeReaderEnabled(conf: SQLConf): Boolean = {
+  def usingParquetExec(conf: SQLConf): Boolean = {
     CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_ICEBERG_COMPAT ||
     CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_DATAFUSION
-  }
-
-  def usingDataFusionParquetReader(conf: SQLConf): Boolean = {
-    isComplexTypeReaderEnabled(conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get(conf)
   }
 
   /** Calculates required memory overhead in MB per executor process for Comet. */
