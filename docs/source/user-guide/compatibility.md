@@ -49,7 +49,7 @@ provide the following benefits over the `native_comet` implementation:
 
 These new implementations are not fully implemented. Some of the current limitations are:
 
-- Scanning Parquet files containing unsigned 8 or 16-bit integers can produce incorrect results. By default, Comet
+- Scanning Parquet files containing unsigned 8 or 16-bit integers can produce results that don't match Spark. By default, Comet
 will fall back to Spark when using these scan implementations to read Parquet files containing 8 or 16-bit integers.
 This behavior can be disabled by setting `spark.comet.scan.allowIncompatible=true`.
 - These implementations do not yet fully support timestamps, decimals, or complex types.

@@ -17,8 +17,8 @@
   under the License.
 -->
 
-<!-- 
-  TO MODIFY THIS CONTENT MAKE SURE THAT YOU MAKE YOUR CHANGES TO THE TEMPLATE FILE  
+<!--
+  TO MODIFY THIS CONTENT MAKE SURE THAT YOU MAKE YOUR CHANGES TO THE TEMPLATE FILE
   (docs/templates/compatibility-template.md) AND NOT THE GENERATED FILE
   (docs/source/user-guide/compatibility.md) OTHERWISE YOUR CHANGES MAY BE LOST
 -->
@@ -49,7 +49,7 @@ provide the following benefits over the `native_comet` implementation:
 
 These new implementations are not fully implemented. Some of the current limitations are:
 
-- Scanning Parquet files containing unsigned 8 or 16-bit integers can produce incorrect results. By default, Comet  
+- Scanning Parquet files containing unsigned 8 or 16-bit integers can produce results that don't match Spark. By default, Comet  
   will fall back to Spark when using these scan implementations to read Parquet files containing 8 or 16-bit integers.
   This behavior can be disabled by setting `spark.comet.scan.allowIncompatible=true`.
 - These implementations do not yet fully support timestamps, decimals, or complex types.
@@ -78,7 +78,7 @@ will fall back to Spark but can be enabled by setting `spark.comet.expression.al
 
 ## Array Expressions
 
-Comet has experimental support for a number of array expressions. These are experimental and currently marked 
+Comet has experimental support for a number of array expressions. These are experimental and currently marked
 as incompatible and can be enabled by setting `spark.comet.expression.allowIncompatible=true`.
 
 ## Regular Expressions
@@ -113,5 +113,5 @@ The following cast operations are not compatible with Spark for all inputs and a
 
 ### Unsupported Casts
 
-Any cast not listed in the previous tables is currently unsupported. We are working on adding more. See the 
+Any cast not listed in the previous tables is currently unsupported. We are working on adding more. See the
 [tracking issue](https://github.com/apache/datafusion-comet/issues/286) for more details.
