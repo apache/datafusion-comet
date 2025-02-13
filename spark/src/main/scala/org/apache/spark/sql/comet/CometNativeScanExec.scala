@@ -94,7 +94,7 @@ case class CometNativeScanExec(
       "time_elapsed_scanning_total" ->
         SQLMetrics.createNanoTimingMetric(
           sparkContext,
-          "Total elapsed wall clock time for for scanning " +
+          "Elapsed wall clock time for for scanning " +
             "+ record batch decompression / decoding"),
       "time_elapsed_processing" ->
         SQLMetrics.createNanoTimingMetric(
@@ -121,39 +121,37 @@ case class CometNativeScanExec(
       "row_groups_pruned_statistics" ->
         SQLMetrics.createMetric(sparkContext, "Number of row groups pruned by statistics"),
       "bytes_scanned" ->
-        SQLMetrics.createSizeMetric(sparkContext, "Total number of bytes scanned"),
+        SQLMetrics.createSizeMetric(sparkContext, "Number of bytes scanned"),
       "pushdown_rows_pruned" ->
         SQLMetrics.createMetric(
           sparkContext,
-          "Total rows filtered out by predicates pushed into parquet scan"),
+          "Rows filtered out by predicates pushed into parquet scan"),
       "pushdown_rows_matched" ->
-        SQLMetrics.createMetric(
-          sparkContext,
-          "Total rows passed predicates pushed into parquet scan"),
+        SQLMetrics.createMetric(sparkContext, "Rows passed predicates pushed into parquet scan"),
       "row_pushdown_eval_time" ->
         SQLMetrics.createNanoTimingMetric(
           sparkContext,
-          "Total time spent evaluating row-level pushdown filters"),
+          "Time spent evaluating row-level pushdown filters"),
       "statistics_eval_time" ->
         SQLMetrics.createNanoTimingMetric(
           sparkContext,
-          "Total time spent evaluating row group-level statistics filters"),
+          "Time spent evaluating row group-level statistics filters"),
       "bloom_filter_eval_time" ->
         SQLMetrics.createNanoTimingMetric(
           sparkContext,
-          "Total time spent evaluating row group Bloom Filters"),
+          "Time spent evaluating row group Bloom Filters"),
       "page_index_rows_pruned" ->
-        SQLMetrics.createMetric(sparkContext, "Total rows filtered out by parquet page index"),
+        SQLMetrics.createMetric(sparkContext, "Rows filtered out by parquet page index"),
       "page_index_rows_matched" ->
-        SQLMetrics.createMetric(sparkContext, "Total rows passed through the parquet page index"),
+        SQLMetrics.createMetric(sparkContext, "Rows passed through the parquet page index"),
       "page_index_eval_time" ->
         SQLMetrics.createNanoTimingMetric(
           sparkContext,
-          "Total time spent evaluating parquet page index filters"),
+          "Time spent evaluating parquet page index filters"),
       "metadata_load_time" ->
         SQLMetrics.createNanoTimingMetric(
           sparkContext,
-          "Total time spent reading and parsing metadata from the footer"))
+          "Time spent reading and parsing metadata from the footer"))
   }
 }
 
