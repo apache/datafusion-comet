@@ -419,6 +419,18 @@ under the License.
 <h3>Unified Memory Management with Off-Heap Memory<a class="headerlink" href="#unified-memory-management-with-off-heap-memory" title="Link to this heading">¶</a></h3>
 <p>The recommended way to share memory between Spark and Comet is to set <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=true</span></code>. This allows
 Comet to share an off-heap memory pool with Spark. The size of the pool is specified by <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>. For more details about Spark off-heap memory mode, please refer to Spark documentation: https://spark.apache.org/docs/latest/configuration.html.</p>
+<p>The type of pool can be specified with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool</span></code>.</p>
+<p>The valid pool types are:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">unified</span></code> (default when <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=true</span></code> is set)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">fair_unified</span></code></p></li>
+</ul>
+<p>The <code class="docutils literal notranslate"><span class="pre">unified</span></code> pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
+need to spill or have a single spillable operator.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> pool type prevents operators from using more than an even fraction of the available memory
+(i.e. <code class="docutils literal notranslate"><span class="pre">pool_size</span> <span class="pre">/</span> <span class="pre">num_reservations</span></code>). This pool works best when you know beforehand
+the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
+when there is sufficient memory in order to leave enough memory for other operators.</p>
 </section>
 <section id="dedicated-comet-memory-pools">
 <h3>Dedicated Comet Memory Pools<a class="headerlink" href="#dedicated-comet-memory-pools" title="Link to this heading">¶</a></h3>
@@ -437,6 +449,7 @@ the memory overhead will be calculated by multiplying the executor memory by <co
 <li><p><code class="docutils literal notranslate"><span class="pre">fair_spill</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">fair_spill_global</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">fair_spill_task_shared</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">unbounded</span></code></p></li>
 </ul>
 <p>Pool types ending with <code class="docutils literal notranslate"><span class="pre">_global</span></code> use a single global memory pool between all tasks on same executor.</p>
 <p>Pool types ending with <code class="docutils literal notranslate"><span class="pre">_task_shared</span></code> share a single memory pool across all attempts for a single task.</p>
@@ -446,10 +459,14 @@ and cores per task.</p>
 pool works well for queries that do not need to spill or have a single spillable operator.</p>
 <p>The <code class="docutils literal notranslate"><span class="pre">fair_spill*</span></code> pool types use DataFusion’s <a class="reference external" href="https://docs.rs/datafusion/latest/datafusion/execution/memory_pool/struct.FairSpillPool.html">FairSpillPool</a>, which prevents spillable reservations from using more
 than an even fraction of the available memory sans any unspillable reservations
-(i.e. <code class="docutils literal notranslate"><span class="pre">(pool_size</span> <span class="pre">-</span> <span class="pre">unspillable_memory)</span> <span class="pre">/</span> <span class="pre">num_spillable_reservations)</span></code>). This pool works best when you know beforehand
+(i.e. <code class="docutils literal notranslate"><span class="pre">(pool_size</span> <span class="pre">-</span> <span class="pre">unspillable_memory)</span> <span class="pre">/</span> <span class="pre">num_spillable_reservations</span></code>). This pool works best when you know beforehand
 the query has multiple spillable operators that will likely all need to spill. Sometimes it will cause spills even
 when there was sufficient memory (reserved for other operators) to avoid doing so. Unspillable memory is allocated in
 a first-come, first-serve fashion</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">unbounded</span></code> pool type uses DataFusion’s <a class="reference external" href="https://docs.rs/datafusion/latest/datafusion/execution/memory_pool/struct.UnboundedMemoryPool.html">UnboundedMemoryPool</a>, which enforces no limit. This option is useful for
+development/testing purposes, where there is no room to allow spilling and rather choose to fail the job.
+Spilling significantly slows down the job and this option is one way to measure the best performance scenario without
+adjusting how much memory to allocate.</p>
 </section>
 <section id="determining-how-much-memory-to-allocate">
 <h3>Determining How Much Memory to Allocate<a class="headerlink" href="#determining-how-much-memory-to-allocate" title="Link to this heading">¶</a></h3>
