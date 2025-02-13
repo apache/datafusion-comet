@@ -19,6 +19,7 @@
 
 package org.apache.comet
 
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 trait DataTypeSupport {
@@ -35,11 +36,14 @@ trait DataTypeSupport {
   def isAdditionallySupported(dt: DataType): Boolean = false
 
   private def isGloballySupported(dt: DataType): Boolean = dt match {
+    case ByteType | ShortType
+        if CometSparkSessionExtensions.isComplexTypeReaderEnabled(SQLConf.get) &&
+          !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get() =>
+      false
     case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
         BinaryType | StringType | _: DecimalType | DateType | TimestampType =>
       true
     case t: DataType if t.typeName == "timestamp_ntz" =>
-      true
       true
     case _ => false
   }
