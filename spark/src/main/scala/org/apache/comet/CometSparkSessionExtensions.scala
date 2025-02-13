@@ -1357,6 +1357,10 @@ object CometSparkSessionExtensions extends Logging {
     CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_DATAFUSION
   }
 
+  def usingDataFusionParquetReader(conf: SQLConf): Boolean = {
+    isComplexTypeReaderEnabled(conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get(conf)
+  }
+
   /** Calculates required memory overhead in MB per executor process for Comet. */
   def getCometMemoryOverheadInMiB(sparkConf: SparkConf): Long = {
     // `spark.executor.memory` default value is 1g

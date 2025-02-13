@@ -119,9 +119,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
-          withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
-            checkSparkAnswerAndOperator("select * FROM tbl WHERE _2 > 100")
-          }
+          checkSparkAnswerAndOperator("select * FROM tbl WHERE _2 > 100")
         }
       }
     }
@@ -208,9 +206,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val path = new Path(dir.toURI.toString, "test.parquet")
           makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
           withParquetTable(path.toString, "tbl") {
-            withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
-              checkSparkAnswerAndOperator(f"SELECT _20 + CAST(2 as $intType) from tbl")
-            }
+            checkSparkAnswerAndOperator(f"SELECT _20 + CAST(2 as $intType) from tbl")
           }
         }
       }
@@ -223,16 +219,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
-          withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
-            val (sparkErr, cometErr) =
-              checkSparkMaybeThrows(sql(s"SELECT _20 + ${Int.MaxValue} FROM tbl"))
-            if (isSpark40Plus) {
-              assert(sparkErr.get.getMessage.contains("EXPRESSION_DECODING_FAILED"))
-            } else {
-              assert(sparkErr.get.getMessage.contains("integer overflow"))
-            }
-            assert(cometErr.get.getMessage.contains("`NaiveDate + TimeDelta` overflowed"))
+          val (sparkErr, cometErr) =
+            checkSparkMaybeThrows(sql(s"SELECT _20 + ${Int.MaxValue} FROM tbl"))
+          if (isSpark40Plus) {
+            assert(sparkErr.get.getMessage.contains("EXPRESSION_DECODING_FAILED"))
+          } else {
+            assert(sparkErr.get.getMessage.contains("integer overflow"))
           }
+          assert(cometErr.get.getMessage.contains("`NaiveDate + TimeDelta` overflowed"))
         }
       }
     }
@@ -245,9 +239,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val path = new Path(dir.toURI.toString, "test.parquet")
           makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
           withParquetTable(path.toString, "tbl") {
-            withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
-              checkSparkAnswerAndOperator(f"SELECT _20 + $intColumn FROM tbl")
-            }
+            checkSparkAnswerAndOperator(f"SELECT _20 + $intColumn FROM tbl")
           }
         }
       }
@@ -294,9 +286,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val path = new Path(dir.toURI.toString, "test.parquet")
           makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
           withParquetTable(path.toString, "tbl") {
-            withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
-              checkSparkAnswerAndOperator(f"SELECT _20 - $intColumn FROM tbl")
-            }
+            checkSparkAnswerAndOperator(f"SELECT _20 - $intColumn FROM tbl")
           }
         }
       }
@@ -2027,8 +2017,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         SQLConf.ANSI_ENABLED.key -> enabled.toString,
         CometConf.COMET_ANSI_MODE_ENABLED.key -> enabled.toString,
         CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true")(f)
+        CometConf.COMET_EXEC_ENABLED.key -> "true")(f)
     }
 
     def checkOverflow(query: String, dtype: String): Unit = {
@@ -2148,12 +2137,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
-          withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
-            checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'b', _2) FROM tbl")
-            checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'b', 2) FROM tbl")
-            checkSparkAnswerAndOperator(
-              "SELECT named_struct('a', named_struct('b', _1, 'c', _2)) FROM tbl")
-          }
+          checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'b', _2) FROM tbl")
+          checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'b', 2) FROM tbl")
+          checkSparkAnswerAndOperator(
+            "SELECT named_struct('a', named_struct('b', _1, 'c', _2)) FROM tbl")
         }
       }
     }
@@ -2165,17 +2152,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
-          withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
-            checkSparkAnswerAndOperator(
-              "SELECT named_struct('a', _1, 'a', _2) FROM tbl",
-              classOf[ProjectExec])
-            checkSparkAnswerAndOperator(
-              "SELECT named_struct('a', _1, 'a', 2) FROM tbl",
-              classOf[ProjectExec])
-            checkSparkAnswerAndOperator(
-              "SELECT named_struct('a', named_struct('b', _1, 'b', _2)) FROM tbl",
-              classOf[ProjectExec])
-          }
+          checkSparkAnswerAndOperator(
+            "SELECT named_struct('a', _1, 'a', _2) FROM tbl",
+            classOf[ProjectExec])
+          checkSparkAnswerAndOperator(
+            "SELECT named_struct('a', _1, 'a', 2) FROM tbl",
+            classOf[ProjectExec])
+          checkSparkAnswerAndOperator(
+            "SELECT named_struct('a', named_struct('b', _1, 'b', _2)) FROM tbl",
+            classOf[ProjectExec])
         }
       }
     }
@@ -2196,12 +2181,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withDictionary = dictionaryEnabled) {
 
         val fields = Range(1, 8).map(n => s"'col$n', _$n").mkString(", ")
-        withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
 
-          checkSparkAnswerAndOperator(s"SELECT to_json(named_struct($fields)) FROM tbl")
-          checkSparkAnswerAndOperator(
-            s"SELECT to_json(named_struct('nested', named_struct($fields))) FROM tbl")
-        }
+        checkSparkAnswerAndOperator(s"SELECT to_json(named_struct($fields)) FROM tbl")
+        checkSparkAnswerAndOperator(
+          s"SELECT to_json(named_struct('nested', named_struct($fields))) FROM tbl")
       }
     }
   }
@@ -2549,21 +2532,19 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
-          val df = spark.read.parquet(path.toString)
-          checkSparkAnswerAndOperator(df.select(array(col("_2"), col("_3"), col("_4"))))
-          checkSparkAnswerAndOperator(df.select(array(col("_4"), col("_11"), lit(null))))
-          checkSparkAnswerAndOperator(
-            df.select(array(array(col("_4")), array(col("_4"), lit(null)))))
-          checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_13"))))
-          // This ends up returning empty strings instead of nulls for the last element
-          checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_13"), lit(null))))
-          checkSparkAnswerAndOperator(df.select(array(array(col("_8")), array(col("_13")))))
-          checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_8"), lit(null))))
-          checkSparkAnswerAndOperator(df.select(array(struct("_4"), struct("_4"))))
-          checkSparkAnswerAndOperator(
-            df.select(array(struct(col("_8").alias("a")), struct(col("_13").alias("a")))))
-        }
+        val df = spark.read.parquet(path.toString)
+        checkSparkAnswerAndOperator(df.select(array(col("_2"), col("_3"), col("_4"))))
+        checkSparkAnswerAndOperator(df.select(array(col("_4"), col("_11"), lit(null))))
+        checkSparkAnswerAndOperator(
+          df.select(array(array(col("_4")), array(col("_4"), lit(null)))))
+        checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_13"))))
+        // This ends up returning empty strings instead of nulls for the last element
+        checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_13"), lit(null))))
+        checkSparkAnswerAndOperator(df.select(array(array(col("_8")), array(col("_13")))))
+        checkSparkAnswerAndOperator(df.select(array(col("_8"), col("_8"), lit(null))))
+        checkSparkAnswerAndOperator(df.select(array(struct("_4"), struct("_4"))))
+        checkSparkAnswerAndOperator(
+          df.select(array(struct(col("_8").alias("a")), struct(col("_13").alias("a")))))
       }
     }
   }
@@ -2644,19 +2625,17 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
           makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-          withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
-            val df = spark.read
-              .parquet(path.toString)
-              .select(
-                array(struct(col("_2"), col("_3"), col("_4"), col("_8")), lit(null)).alias("arr"))
-            checkSparkAnswerAndOperator(df.select("arr._2", "arr._3", "arr._4"))
+          val df = spark.read
+            .parquet(path.toString)
+            .select(
+              array(struct(col("_2"), col("_3"), col("_4"), col("_8")), lit(null)).alias("arr"))
+          checkSparkAnswerAndOperator(df.select("arr._2", "arr._3", "arr._4"))
 
-            val complex = spark.read
-              .parquet(path.toString)
-              .select(array(struct(struct(col("_4"), col("_8")).alias("nested"))).alias("arr"))
+          val complex = spark.read
+            .parquet(path.toString)
+            .select(array(struct(struct(col("_4"), col("_8")).alias("nested"))).alias("arr"))
 
-            checkSparkAnswerAndOperator(complex.select(col("arr.nested._4")))
-          }
+          checkSparkAnswerAndOperator(complex.select(col("arr.nested._4")))
         }
       }
     }

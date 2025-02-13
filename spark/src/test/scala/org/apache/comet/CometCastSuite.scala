@@ -32,6 +32,7 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType}
 
+import org.apache.comet.CometSparkSessionExtensions.usingDataFusionParquetReader
 import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible}
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -58,6 +59,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private val datePattern = "0123456789/" + whitespaceChars
 
   private val timestampPattern = "0123456789/:T" + whitespaceChars
+
+  lazy val usingDataFusionParquetReader: Boolean =
+    CometSparkSessionExtensions.usingDataFusionParquetReader(conf)
 
   test("all valid cast combinations covered") {
     val names = testNames
@@ -145,134 +149,148 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // CAST from ByteType
 
   test("cast ByteType to BooleanType") {
-    val hasIncompatibleType = CometSparkSessionExtensions.isComplexTypeReaderEnabled(
-      conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
-    castTest(generateBytes(), DataTypes.BooleanType, hasIncompatibleType = hasIncompatibleType)
+    castTest(
+      generateBytes(),
+      DataTypes.BooleanType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ByteType to ShortType") {
-    val hasIncompatibleType = CometSparkSessionExtensions.isComplexTypeReaderEnabled(
-      conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
-    castTest(generateBytes(), DataTypes.ShortType, hasIncompatibleType = hasIncompatibleType)
+    castTest(
+      generateBytes(),
+      DataTypes.ShortType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ByteType to IntegerType") {
-    val hasIncompatibleType = CometSparkSessionExtensions.isComplexTypeReaderEnabled(
-      conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
-    castTest(generateBytes(), DataTypes.IntegerType, hasIncompatibleType = hasIncompatibleType)
+    castTest(
+      generateBytes(),
+      DataTypes.IntegerType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ByteType to LongType") {
-    val hasIncompatibleType = CometSparkSessionExtensions.isComplexTypeReaderEnabled(
-      conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
-    castTest(generateBytes(), DataTypes.LongType, hasIncompatibleType = hasIncompatibleType)
+    castTest(
+      generateBytes(),
+      DataTypes.LongType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ByteType to FloatType") {
-    val hasIncompatibleType = CometSparkSessionExtensions.isComplexTypeReaderEnabled(
-      conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
-    castTest(generateBytes(), DataTypes.FloatType, hasIncompatibleType = hasIncompatibleType)
+    castTest(
+      generateBytes(),
+      DataTypes.FloatType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ByteType to DoubleType") {
-    val hasIncompatibleType = CometSparkSessionExtensions.isComplexTypeReaderEnabled(
-      conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
-    castTest(generateBytes(), DataTypes.DoubleType, hasIncompatibleType = hasIncompatibleType)
+    castTest(
+      generateBytes(),
+      DataTypes.DoubleType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ByteType to DecimalType(10,2)") {
-    val hasIncompatibleType = CometSparkSessionExtensions.isComplexTypeReaderEnabled(
-      conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
     castTest(
       generateBytes(),
       DataTypes.createDecimalType(10, 2),
-      hasIncompatibleType = hasIncompatibleType)
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ByteType to StringType") {
-    val hasIncompatibleType = CometSparkSessionExtensions.isComplexTypeReaderEnabled(
-      conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
-    castTest(generateBytes(), DataTypes.StringType, hasIncompatibleType = hasIncompatibleType)
+    castTest(
+      generateBytes(),
+      DataTypes.StringType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   ignore("cast ByteType to BinaryType") {
-    val hasIncompatibleType = CometSparkSessionExtensions.isComplexTypeReaderEnabled(
-      conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
-    castTest(generateBytes(), DataTypes.BinaryType, hasIncompatibleType = hasIncompatibleType)
+    castTest(
+      generateBytes(),
+      DataTypes.BinaryType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   ignore("cast ByteType to TimestampType") {
     // input: -1, expected: 1969-12-31 15:59:59.0, actual: 1969-12-31 15:59:59.999999
-    val hasIncompatibleType = CometSparkSessionExtensions.isComplexTypeReaderEnabled(
-      conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
-    castTest(generateBytes(), DataTypes.TimestampType, hasIncompatibleType = hasIncompatibleType)
+    castTest(
+      generateBytes(),
+      DataTypes.TimestampType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   // CAST from ShortType
 
   test("cast ShortType to BooleanType") {
-    val hasIncompatibleType = CometSparkSessionExtensions.isComplexTypeReaderEnabled(
-      conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
-    castTest(generateShorts(), DataTypes.BooleanType, hasIncompatibleType = hasIncompatibleType)
+    castTest(
+      generateShorts(),
+      DataTypes.BooleanType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ShortType to ByteType") {
     // https://github.com/apache/datafusion-comet/issues/311
-    val hasIncompatibleType = CometSparkSessionExtensions.isComplexTypeReaderEnabled(
-      conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
-    castTest(generateShorts(), DataTypes.ByteType, hasIncompatibleType = hasIncompatibleType)
+    castTest(
+      generateShorts(),
+      DataTypes.ByteType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ShortType to IntegerType") {
-    val hasIncompatibleType = CometSparkSessionExtensions.isComplexTypeReaderEnabled(
-      conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
-    castTest(generateShorts(), DataTypes.IntegerType, hasIncompatibleType = hasIncompatibleType)
+    castTest(
+      generateShorts(),
+      DataTypes.IntegerType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ShortType to LongType") {
-    val hasIncompatibleType = CometSparkSessionExtensions.isComplexTypeReaderEnabled(
-      conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
-    castTest(generateShorts(), DataTypes.LongType, hasIncompatibleType = hasIncompatibleType)
+    castTest(
+      generateShorts(),
+      DataTypes.LongType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ShortType to FloatType") {
-    val hasIncompatibleType = CometSparkSessionExtensions.isComplexTypeReaderEnabled(
-      conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
-    castTest(generateShorts(), DataTypes.FloatType, hasIncompatibleType = hasIncompatibleType)
+    castTest(
+      generateShorts(),
+      DataTypes.FloatType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ShortType to DoubleType") {
-    val hasIncompatibleType = CometSparkSessionExtensions.isComplexTypeReaderEnabled(
-      conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
-    castTest(generateShorts(), DataTypes.DoubleType, hasIncompatibleType = hasIncompatibleType)
+    castTest(
+      generateShorts(),
+      DataTypes.DoubleType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ShortType to DecimalType(10,2)") {
-    val hasIncompatibleType = CometSparkSessionExtensions.isComplexTypeReaderEnabled(
-      conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
     castTest(
       generateShorts(),
       DataTypes.createDecimalType(10, 2),
-      hasIncompatibleType = hasIncompatibleType)
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ShortType to StringType") {
-    val hasIncompatibleType = CometSparkSessionExtensions.isComplexTypeReaderEnabled(
-      conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
-    castTest(generateShorts(), DataTypes.StringType, hasIncompatibleType = hasIncompatibleType)
+    castTest(
+      generateShorts(),
+      DataTypes.StringType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   ignore("cast ShortType to BinaryType") {
-    val hasIncompatibleType = CometSparkSessionExtensions.isComplexTypeReaderEnabled(
-      conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
-    castTest(generateShorts(), DataTypes.BinaryType, hasIncompatibleType = hasIncompatibleType)
+    castTest(
+      generateShorts(),
+      DataTypes.BinaryType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   ignore("cast ShortType to TimestampType") {
     // input: -1003, expected: 1969-12-31 15:43:17.0, actual: 1969-12-31 15:59:59.998997
-    val hasIncompatibleType = CometSparkSessionExtensions.isComplexTypeReaderEnabled(
-      conf) && !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
-    castTest(generateShorts(), DataTypes.TimestampType, hasIncompatibleType = hasIncompatibleType)
+    castTest(
+      generateShorts(),
+      DataTypes.TimestampType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   // CAST from integer
@@ -906,24 +924,21 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
-          withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
-            // primitives
-            checkSparkAnswerAndOperator(
-              "SELECT CAST(struct(_1, _2, _3, _4, _5, _6, _7, _8) as string) FROM tbl")
-            checkSparkAnswerAndOperator(
-              "SELECT CAST(struct(_9, _10, _11, _12) as string) FROM tbl")
-            // decimals
-            // TODO add _16 when https://github.com/apache/datafusion-comet/issues/1068 is resolved
-            checkSparkAnswerAndOperator("SELECT CAST(struct(_15, _17) as string) FROM tbl")
-            // dates & timestamps
-            checkSparkAnswerAndOperator("SELECT CAST(struct(_18, _19, _20) as string) FROM tbl")
-            // named struct
-            checkSparkAnswerAndOperator(
-              "SELECT CAST(named_struct('a', _1, 'b', _2) as string) FROM tbl")
-            // nested struct
-            checkSparkAnswerAndOperator(
-              "SELECT CAST(named_struct('a', named_struct('b', _1, 'c', _2)) as string) FROM tbl")
-          }
+          // primitives
+          checkSparkAnswerAndOperator(
+            "SELECT CAST(struct(_1, _2, _3, _4, _5, _6, _7, _8) as string) FROM tbl")
+          checkSparkAnswerAndOperator("SELECT CAST(struct(_9, _10, _11, _12) as string) FROM tbl")
+          // decimals
+          // TODO add _16 when https://github.com/apache/datafusion-comet/issues/1068 is resolved
+          checkSparkAnswerAndOperator("SELECT CAST(struct(_15, _17) as string) FROM tbl")
+          // dates & timestamps
+          checkSparkAnswerAndOperator("SELECT CAST(struct(_18, _19, _20) as string) FROM tbl")
+          // named struct
+          checkSparkAnswerAndOperator(
+            "SELECT CAST(named_struct('a', _1, 'b', _2) as string) FROM tbl")
+          // nested struct
+          checkSparkAnswerAndOperator(
+            "SELECT CAST(named_struct('a', named_struct('b', _1, 'c', _2)) as string) FROM tbl")
         }
       }
     }
@@ -935,11 +950,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
-          withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
-            checkSparkAnswerAndOperator(
-              "SELECT CAST(CASE WHEN _1 THEN struct(_1, _2, _3, _4) ELSE null END as " +
-                "struct<_1:string, _2:string, _3:string, _4:string>) FROM tbl")
-          }
+          checkSparkAnswerAndOperator(
+            "SELECT CAST(CASE WHEN _1 THEN struct(_1, _2, _3, _4) ELSE null END as " +
+              "struct<_1:string, _2:string, _3:string, _4:string>) FROM tbl")
         }
       }
     }
