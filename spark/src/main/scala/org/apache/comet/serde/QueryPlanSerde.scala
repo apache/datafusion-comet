@@ -2725,12 +2725,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             .newBuilder()
             .setPredicate(cond.get)
             .setUseDatafusionFilter(
-              CometConf.COMET_NATIVE_SCAN_IMPL
-                .get()
-                .equals(CometConf.SCAN_NATIVE_DATAFUSION) ||
-                CometConf.COMET_NATIVE_SCAN_IMPL
-                  .get()
-                  .equals(CometConf.SCAN_NATIVE_ICEBERG_COMPAT))
+              CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_DATAFUSION ||
+                CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
           Some(result.setFilter(filterBuilder).build())
         } else {
           withInfo(op, condition, child)
