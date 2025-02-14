@@ -139,7 +139,7 @@ abstract class ParquetReadSuite extends CometTestBase {
             i.toDouble,
             DateTimeUtils.toJavaDate(i))
         }
-        if (!CometSparkSessionExtensions.usingParquetExec(
+        if (!CometSparkSessionExtensions.usingDataFusionParquetExec(
             conf) || CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()) {
           checkParquetScan(data)
         }
@@ -162,7 +162,7 @@ abstract class ParquetReadSuite extends CometTestBase {
             i.toDouble,
             DateTimeUtils.toJavaDate(i))
         }
-        if (!CometSparkSessionExtensions.usingParquetExec(
+        if (!CometSparkSessionExtensions.usingDataFusionParquetExec(
             conf) || CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()) {
           checkParquetScan(data)
         }
@@ -184,7 +184,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         DateTimeUtils.toJavaDate(i))
     }
     val filter = (row: Row) => row.getBoolean(0)
-    if (!CometSparkSessionExtensions.usingParquetExec(
+    if (!CometSparkSessionExtensions.usingDataFusionParquetExec(
         conf) || CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()) {
       checkParquetScan(data, filter)
     }
