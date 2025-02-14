@@ -126,6 +126,8 @@ class CometPluginsNonOverrideSuite extends CometTestBase {
     conf.set("spark.executor.memoryOverheadFactor", "0.5")
     conf.set("spark.plugins", "org.apache.spark.CometPlugin")
     conf.set("spark.comet.enabled", "true")
+    conf.set("spark.comet.exec.shuffle.enabled", "false")
+    conf.set("spark.comet.exec.enabled", "false")
     conf
   }
 
