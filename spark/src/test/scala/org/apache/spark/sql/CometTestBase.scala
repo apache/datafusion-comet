@@ -118,6 +118,7 @@ abstract class CometTestBase
     actualAnswer.toSeq.zip(expectedAnswer.toSeq).foreach {
       case (actual: Float, expected: Float) =>
         def isPosInfinity(value: Float): Boolean = {
+          // account for difference between Java and Rust
           value.isPosInfinity || value == 3.4028235e38
         }
 
@@ -127,7 +128,7 @@ abstract class CometTestBase
           // ok
         } else {
 
-          def almostEqual(a: Double, b: Double, tolerance: Double = 1e-6f): Boolean = {
+          def almostEqual(a: Float, b: Float, tolerance: Float = 1e-6f): Boolean = {
             Math.abs(a - b) <= tolerance * Math.max(Math.abs(a), Math.abs(b))
           }
 
@@ -138,7 +139,8 @@ abstract class CometTestBase
 
       case (actual: Double, expected: Double) =>
         def isPosInfinity(value: Double): Boolean = {
-          value.isPosInfinity || value == 3.4028235e38
+          // account for difference between Java and Rust
+          value.isPosInfinity || value == 1.7976931348623157e308
         }
 
         if ((actual.isNaN && expected.isNaN) ||

@@ -454,7 +454,7 @@ object CometBitXOrAgg extends CometAggregateExpressionSerde {
 
 trait CometCovBase extends CometAggregateExpressionSerde {
 
-  override def getSignature(): Signature = Fixed(Seq(NumericType))
+  override def getSignature(): Signature = Fixed(Seq(NumericType, NumericType))
 
   def convertCov(
       aggExpr: AggregateExpression,
@@ -490,7 +490,7 @@ trait CometCovBase extends CometAggregateExpressionSerde {
 
 object CometCovSample extends CometCovBase {
 
-  override def sql(): String = "cov_samp"
+  override def sql(): String = "covar_samp"
 
   override def convert(
       aggExpr: AggregateExpression,
@@ -512,7 +512,7 @@ object CometCovSample extends CometCovBase {
 
 object CometCovPopulation extends CometCovBase {
 
-  override def sql(): String = "cov_pop"
+  override def sql(): String = "covar_pop"
 
   override def convert(
       aggExpr: AggregateExpression,
@@ -597,8 +597,6 @@ object CometVariancePop extends CometVariance {
 }
 
 trait CometStddev extends CometAggregateExpressionSerde {
-
-  override def sql(): String = "stddev"
 
   override def getSignature(): Signature = Fixed(Seq(NumericType))
 

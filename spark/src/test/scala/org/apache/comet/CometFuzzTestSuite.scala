@@ -24,9 +24,10 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StructField}
+import org.apache.spark.sql.types.{DecimalType, StructField}
 
-import org.apache.comet.serde.{AnyType, ArgType, CometAggregateExpressionSerde, CometAverage, CometMax, CometMin, Fixed, IntegralType, NumericType, OrderedType}
+import org.apache.comet.serde.{CometAggregateExpressionSerde, CometAverage, CometCorr, CometCount, CometCovPopulation, CometCovSample, CometMax, CometMin, CometStddevPop, CometStddevSamp, CometSum, CometVariancePop, CometVarianceSamp, Fixed, NumericType}
+import org.apache.comet.serde.QueryPlanSerde.isMatch
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -104,29 +105,6 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  def isMatch(dt: DataType, at: ArgType): Boolean = {
-    at match {
-      case AnyType => true
-      case IntegralType =>
-        dt match {
-          case _: ByteType | _: ShortType | _: IntegerType | _: LongType => true
-          case _ => false
-        }
-      case NumericType =>
-        dt match {
-          case _: ByteType | _: ShortType | _: IntegerType | _: LongType => true
-          case _: FloatType | _: DoubleType => true
-          case _: DecimalType => true
-          case _ => false
-        }
-      case OrderedType =>
-        // TODO exclude map or other complex types that contain maps
-        true
-      case _ =>
-        false
-    }
-  }
-
 }
 
 object Exprs {
@@ -137,20 +115,17 @@ object Exprs {
    */
   val aggregate: Seq[CometAggregateExpressionSerde] = Seq(
     CometMin,
-    CometMax
-    // TODO add all aggregates
-  )
-//    ExprMeta("count", Seq(AnyType)),
-//    ExprMeta("sum", Seq(NumericType)),
-//    ExprMeta("avg", Seq(NumericType)),
-//    ExprMeta("median", Seq(NumericType)),
-//    ExprMeta("stddev", Seq(NumericType)),
-//    ExprMeta("stddev_pop", Seq(NumericType)),
-//    ExprMeta("stddev_samp", Seq(NumericType)),
-//    ExprMeta("variance", Seq(NumericType)),
-//    ExprMeta("var_pop", Seq(NumericType)),
-//    ExprMeta("var_samp", Seq(NumericType)),
-//    ExprMeta("corr", Seq(NumericType, NumericType)),
-//    ExprMeta("covar_pop", Seq(NumericType, NumericType)),
-//    ExprMeta("covar_samp", Seq(NumericType, NumericType)))
+    CometMax,
+    CometSum,
+    CometAverage,
+    CometCount,
+//    CometStddev,
+    CometStddevPop,
+    CometStddevSamp,
+//    CometVariance,
+    CometVarianceSamp,
+    CometVariancePop,
+    CometCorr,
+    CometCovSample,
+    CometCovPopulation)
 }
