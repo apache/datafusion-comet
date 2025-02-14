@@ -3011,6 +3011,10 @@ trait CometExpressionSerde {
  */
 trait CometAggregateExpressionSerde {
 
+  def sql(): String
+
+  def getSignature(): Signature
+
   /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into
    * native code.
@@ -3040,3 +3044,36 @@ trait CometAggregateExpressionSerde {
 
 /** Marker trait for an expression that is not guaranteed to be 100% compatible with Spark */
 trait IncompatExpr {}
+
+/** Represents the data type(s) that an argument accepts */
+sealed trait ArgType
+
+/** Supports any input type */
+case object AnyType extends ArgType
+
+/** Integral, floating-point, and decimal */
+case object NumericType extends ArgType
+
+/** Integral types (byte, short, int, long) */
+case object IntegralType extends ArgType
+
+/** Types that can ordered. Includes struct and array but excludes maps */
+case object OrderedType extends ArgType
+
+case class ConcreteTypes(dataTypes: Seq[DataType]) extends ArgType
+
+// Base trait for expression signatures
+trait Signature
+
+// A fixed number of arguments with specific types
+case class Fixed(types: Seq[ArgType]) extends Signature
+
+// A mix of fixed and optional arguments
+case class FixedWithOptional(fixed: Seq[ArgType], optional: Seq[ArgType]) extends Signature
+
+// A variadic signature, allowing for a range of arguments
+case class Variadic(minArgs: Option[Int], maxArgs: Option[Int], argType: ArgType)
+    extends Signature
+
+// A generic function signature that supports multiple forms
+case class Overloaded(variants: Seq[Signature]) extends Signature

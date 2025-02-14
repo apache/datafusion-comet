@@ -24,8 +24,9 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.types._
+import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StructField}
 
+import org.apache.comet.serde.{AnyType, ArgType, CometAggregateExpressionSerde, CometAverage, CometMax, CometMin, Fixed, IntegralType, NumericType, OrderedType}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -44,7 +45,8 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val table = spark.read.parquet(filename).coalesce(1)
       table.createOrReplaceTempView("t1")
 
-      val groupingFields: Array[StructField] = table.schema.fields.filterNot(isNumeric)
+      val groupingFields: Array[StructField] =
+        table.schema.fields.filterNot(f => isMatch(f.dataType, NumericType))
 
       // test grouping by each non-numeric column, grouping by all non-numeric columns, and no grouping
       val groupByIndividualCols: Seq[Seq[String]] = groupingFields.map(f => Seq(f.name)).toSeq
@@ -65,29 +67,34 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             for (group <- groupings) {
               for (agg <- Exprs.aggregate) {
 
-                // pick all compatible columns for all input args
-                val argFields: Seq[Array[StructField]] = agg.args.map(argType =>
-                  table.schema.fields.filter(f => isMatch(f.dataType, argType)))
+                agg.getSignature() match {
+                  case Fixed(dataTypes) =>
+                    // pick all compatible columns for all input args
+                    val argFields: Seq[Array[StructField]] = dataTypes.map(argType =>
+                      table.schema.fields.filter(f => isMatch(f.dataType, argType)))
 
-                // just pick the first compatible column for each type for now, but should randomize this or
-                // test all combinations
-                val args: Seq[StructField] = argFields.map(_.head)
+                    // just pick the first compatible column for each type for now, but should randomize this or
+                    // test all combinations
+                    val args: Seq[StructField] = argFields.map(_.head)
 
-                if (agg.name == "_avg" && args.head.dataType.isInstanceOf[DecimalType]) {
-                  // skip known issue
-                } else {
+                    if (agg == CometAverage && args.head.dataType.isInstanceOf[DecimalType]) {
+                      // skip known issue
+                    } else {
+                      val aggSql = s"${agg.sql()}(${args.map(_.name).mkString(",")})"
 
-                  val aggSql = s"${agg.name}(${args.map(_.name).mkString(",")})"
+                      val sql = if (group.isEmpty) {
+                        s"SELECT $aggSql FROM t1"
+                      } else {
+                        val groupCols = group.mkString(", ")
+                        s"SELECT $groupCols, $aggSql FROM t1 GROUP BY $groupCols ORDER BY $groupCols"
+                      }
+                      println(sql)
+                      checkSparkAnswerWithTol(sql)
+                      // TODO check operators
 
-                  val sql = if (group.isEmpty) {
-                    s"SELECT $aggSql FROM t1"
-                  } else {
-                    val groupCols = group.mkString(", ")
-                    s"SELECT $groupCols, $aggSql FROM t1 GROUP BY $groupCols ORDER BY $groupCols"
-                  }
-                  println(sql)
-                  checkSparkAnswerWithTol(sql)
-                  // TODO check operators
+                    }
+                  case _ =>
+                  // not supported by fuzz testing yet
                 }
               }
             }
@@ -97,18 +104,14 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  private def isNumeric(field: StructField) = {
-    field.dataType match {
-      case _: ByteType | _: ShortType | _: IntegerType | _: LongType => true
-      case _: FloatType | _: DoubleType => true
-      case _: DecimalType => true
-      case _ => false
-    }
-  }
-
   def isMatch(dt: DataType, at: ArgType): Boolean = {
     at match {
       case AnyType => true
+      case IntegralType =>
+        dt match {
+          case _: ByteType | _: ShortType | _: IntegerType | _: LongType => true
+          case _ => false
+        }
       case NumericType =>
         dt match {
           case _: ByteType | _: ShortType | _: IntegerType | _: LongType => true
@@ -116,10 +119,11 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           case _: DecimalType => true
           case _ => false
         }
-      case OrderedTypes =>
+      case OrderedType =>
         // TODO exclude map or other complex types that contain maps
         true
-      case _ => false
+      case _ =>
+        false
     }
   }
 
@@ -131,35 +135,22 @@ object Exprs {
    * Aggregate expressions. Note that `first` and `last` are excluded because they are
    * non-deterministic.
    */
-  val aggregate: Seq[ExprMeta] = Seq(
-    ExprMeta("min", Seq(OrderedTypes)),
-    ExprMeta("max", Seq(OrderedTypes)),
-    ExprMeta("count", Seq(AnyType)),
-    ExprMeta("sum", Seq(NumericType)),
-    ExprMeta("avg", Seq(NumericType)),
-    ExprMeta("median", Seq(NumericType)),
-    ExprMeta("stddev", Seq(NumericType)),
-    ExprMeta("stddev_pop", Seq(NumericType)),
-    ExprMeta("stddev_samp", Seq(NumericType)),
-    ExprMeta("variance", Seq(NumericType)),
-    ExprMeta("var_pop", Seq(NumericType)),
-    ExprMeta("var_samp", Seq(NumericType)),
-    ExprMeta("corr", Seq(NumericType, NumericType)),
-    ExprMeta("covar_pop", Seq(NumericType, NumericType)),
-    ExprMeta("covar_samp", Seq(NumericType, NumericType)))
+  val aggregate: Seq[CometAggregateExpressionSerde] = Seq(
+    CometMin,
+    CometMax
+    // TODO add all aggregates
+  )
+//    ExprMeta("count", Seq(AnyType)),
+//    ExprMeta("sum", Seq(NumericType)),
+//    ExprMeta("avg", Seq(NumericType)),
+//    ExprMeta("median", Seq(NumericType)),
+//    ExprMeta("stddev", Seq(NumericType)),
+//    ExprMeta("stddev_pop", Seq(NumericType)),
+//    ExprMeta("stddev_samp", Seq(NumericType)),
+//    ExprMeta("variance", Seq(NumericType)),
+//    ExprMeta("var_pop", Seq(NumericType)),
+//    ExprMeta("var_samp", Seq(NumericType)),
+//    ExprMeta("corr", Seq(NumericType, NumericType)),
+//    ExprMeta("covar_pop", Seq(NumericType, NumericType)),
+//    ExprMeta("covar_samp", Seq(NumericType, NumericType)))
 }
-
-/** Meta-data about a Spark expression */
-case class ExprMeta(name: String, args: Seq[ArgType])
-
-/** Represents that data type(s) that an argument accepts */
-sealed trait ArgType
-
-/** Supports any input type */
-case object AnyType extends ArgType
-
-/** Integral, floating-point, and decimal */
-case object NumericType extends ArgType
-
-/** Types that can ordered. Includes struct and array but excludes maps */
-case object OrderedTypes extends ArgType
