@@ -268,6 +268,27 @@ abstract class CometTestBase
     checkAnswerWithTol(dfComet, expected, absTol: Double)
   }
 
+  /**
+   * Check the answer of a Comet SQL query with Spark result using absolute tolerance.
+   */
+  protected def checkSparkAnswerAndOperatorWithTol(query: String, absTol: Double = 1e-6): Unit = {
+    checkSparkAnswerAndOperatorWithTol(sql(query), absTol)
+  }
+
+  /**
+   * Check the answer of a Comet DataFrame with Spark result using absolute tolerance.
+   */
+  protected def checkSparkAnswerAndOperatorWithTol(df: => DataFrame, absTol: Double): Unit = {
+    var expected: Array[Row] = Array.empty
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      val dfSpark = Dataset.ofRows(spark, df.logicalPlan)
+      expected = dfSpark.collect()
+    }
+    val dfComet = Dataset.ofRows(spark, df.logicalPlan)
+    checkAnswerWithTol(dfComet, expected, absTol: Double)
+    checkCometOperators(stripAQEPlan(dfComet.queryExecution.executedPlan))
+  }
+
   protected def checkSparkMaybeThrows(
       df: => DataFrame): (Option[Throwable], Option[Throwable]) = {
     var expected: Option[Throwable] = None

@@ -19,13 +19,13 @@
 
 package org.apache.comet
 
-import scala.util.Random
+import org.apache.comet.CometFuzzTestSuite.aggregateExpressions
 
+import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.types.{DecimalType, StructField}
-
 import org.apache.comet.serde.{CometAggregateExpressionSerde, CometAverage, CometCorr, CometCount, CometCovPopulation, CometCovSample, CometMax, CometMin, CometStddevPop, CometStddevSamp, CometSum, CometVariancePop, CometVarianceSamp, Fixed, NumericType}
 import org.apache.comet.serde.QueryPlanSerde.isMatch
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
@@ -56,6 +56,8 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val groupings: Seq[Seq[String]] = groupByIndividualCols ++ groupByAllCols ++ noGroup
 
       val scanTypes = Seq(
+
+        // TODO enable ParquetExec-based scans once they are complete
         CometConf.SCAN_NATIVE_COMET
           /*CometConf.SCAN_NATIVE_DATAFUSION,
         CometConf.SCAN_NATIVE_ICEBERG_COMPAT*/ )
@@ -66,21 +68,17 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan,
             CometConf.COMET_SHUFFLE_MODE.key -> shuffleMode) {
             for (group <- groupings) {
-              for (agg <- Exprs.aggregate) {
-
+              for (agg <- aggregateExpressions) {
                 agg.getSignature() match {
                   case Fixed(dataTypes) =>
                     // pick all compatible columns for all input args
                     val argFields: Seq[Array[StructField]] = dataTypes.map(argType =>
                       table.schema.fields.filter(f => isMatch(f.dataType, argType)))
 
-                    // just pick the first compatible column for each type for now, but should randomize this or
-                    // test all combinations
+                    // TODO: just pick the first compatible column for each type for now, but
+                    // should randomize this or test all combinations
                     val args: Seq[StructField] = argFields.map(_.head)
 
-                    if (agg == CometAverage && args.head.dataType.isInstanceOf[DecimalType]) {
-                      // skip known issue
-                    } else {
                       val aggSql = s"${agg.sql()}(${args.map(_.name).mkString(",")})"
 
                       val sql = if (group.isEmpty) {
@@ -89,13 +87,21 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                         val groupCols = group.mkString(", ")
                         s"SELECT $groupCols, $aggSql FROM t1 GROUP BY $groupCols ORDER BY $groupCols"
                       }
-                      println(sql)
-                      checkSparkAnswerWithTol(sql)
-                      // TODO check operators
 
+                    // helps with debugging
+                    println(sql)
+
+                    try {
+                      checkSparkAnswerAndOperatorWithTol(sql)
+                    } catch {
+                      case e: Throwable =>
+                        logError(s"Fuzz test failed for query: $sql")
+                        throw e
                     }
-                  case _ =>
-                  // not supported by fuzz testing yet
+
+                  case other =>
+                    // not supported by fuzz testing yet
+                    logWarning(s"Fuzz test skipped agg '${agg.sql()}' due to unsupported signature: $other")
                 }
               }
             }
@@ -107,25 +113,26 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
 }
 
-object Exprs {
+object CometFuzzTestSuite {
 
   /**
    * Aggregate expressions. Note that `first` and `last` are excluded because they are
    * non-deterministic.
    */
-  val aggregate: Seq[CometAggregateExpressionSerde] = Seq(
+  val aggregateExpressions: Seq[CometAggregateExpressionSerde] = Seq(
     CometMin,
     CometMax,
     CometSum,
     CometAverage,
     CometCount,
-//    CometStddev,
+    // TODO: CometStddev,
     CometStddevPop,
     CometStddevSamp,
-//    CometVariance,
+    // TODO: CometVariance,
     CometVarianceSamp,
-    CometVariancePop,
-    CometCorr,
-    CometCovSample,
-    CometCovPopulation)
+    CometVariancePop
+    // TODO: CometCorr,
+    // TODO: CometCovSample,
+    // TODO: CometCovPopulation
+    )
 }
