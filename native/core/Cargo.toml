@@ -44,7 +44,7 @@ parquet = { workspace = true, default-features = false, features = ["experimenta
 futures = { workspace = true }
 mimalloc = { version = "*", default-features = false, optional = true }
 tokio = { version = "1", features = ["rt-multi-thread"] }
-async-trait = "0.1"
+async-trait = { workspace = true }
 log = "0.4"
 log4rs = "1.2.0"
 thiserror = { workspace = true }
@@ -58,9 +58,9 @@ lz4_flex = { version = "0.11.3", default-features = false }
 zstd = "0.11"
 rand = { workspace = true}
 num = { workspace = true }
-bytes = "1.5.0"
+bytes = { workspace = true }
 tempfile = "3.8.0"
-itertools = "0.11.0"
+itertools = "0.14.0"
 paste = "1.0.14"
 datafusion-common = { workspace = true, features= ["object_store"] }
 datafusion = {  workspace = true }
@@ -77,6 +77,8 @@ datafusion-comet-proto = { workspace = true }
 object_store = { workspace = true }
 url = { workspace = true }
 chrono = { workspace = true }
+parking_lot = "0.12.3"
+datafusion-comet-objectstore-hdfs = { path = "../hdfs", optional = true}
 
 [dev-dependencies]
 pprof = { version = "0.14.0", features = ["flamegraph"] }
@@ -88,6 +90,11 @@ hex = "0.4.3"
 
 [features]
 default = []
+hdfs=["datafusion-comet-objectstore-hdfs"]
+
+# exclude optional packages from cargo machete verifications
+[package.metadata.cargo-machete]
+ignored = ["datafusion-comet-objectstore-hdfs"]
 
 [lib]
 name = "comet"

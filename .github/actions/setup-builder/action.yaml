@@ -34,6 +34,7 @@ runs:
       run: |
         apt-get update
         apt-get install -y protobuf-compiler
+        apt-get install -y clang
 
     - name: Install JDK ${{inputs.jdk-version}}
       uses: actions/setup-java@v4

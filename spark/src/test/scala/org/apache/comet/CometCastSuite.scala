@@ -59,6 +59,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private val timestampPattern = "0123456789/:T" + whitespaceChars
 
+  lazy val usingDataFusionParquetReader: Boolean =
+    CometSparkSessionExtensions.usingDataFusionParquetReader(conf)
+
   test("all valid cast combinations covered") {
     val names = testNames
 
@@ -145,88 +148,148 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // CAST from ByteType
 
   test("cast ByteType to BooleanType") {
-    castTest(generateBytes(), DataTypes.BooleanType)
+    castTest(
+      generateBytes(),
+      DataTypes.BooleanType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ByteType to ShortType") {
-    castTest(generateBytes(), DataTypes.ShortType)
+    castTest(
+      generateBytes(),
+      DataTypes.ShortType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ByteType to IntegerType") {
-    castTest(generateBytes(), DataTypes.IntegerType)
+    castTest(
+      generateBytes(),
+      DataTypes.IntegerType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ByteType to LongType") {
-    castTest(generateBytes(), DataTypes.LongType)
+    castTest(
+      generateBytes(),
+      DataTypes.LongType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ByteType to FloatType") {
-    castTest(generateBytes(), DataTypes.FloatType)
+    castTest(
+      generateBytes(),
+      DataTypes.FloatType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ByteType to DoubleType") {
-    castTest(generateBytes(), DataTypes.DoubleType)
+    castTest(
+      generateBytes(),
+      DataTypes.DoubleType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ByteType to DecimalType(10,2)") {
-    castTest(generateBytes(), DataTypes.createDecimalType(10, 2))
+    castTest(
+      generateBytes(),
+      DataTypes.createDecimalType(10, 2),
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ByteType to StringType") {
-    castTest(generateBytes(), DataTypes.StringType)
+    castTest(
+      generateBytes(),
+      DataTypes.StringType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   ignore("cast ByteType to BinaryType") {
-    castTest(generateBytes(), DataTypes.BinaryType)
+    castTest(
+      generateBytes(),
+      DataTypes.BinaryType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   ignore("cast ByteType to TimestampType") {
     // input: -1, expected: 1969-12-31 15:59:59.0, actual: 1969-12-31 15:59:59.999999
-    castTest(generateBytes(), DataTypes.TimestampType)
+    castTest(
+      generateBytes(),
+      DataTypes.TimestampType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   // CAST from ShortType
 
   test("cast ShortType to BooleanType") {
-    castTest(generateShorts(), DataTypes.BooleanType)
+    castTest(
+      generateShorts(),
+      DataTypes.BooleanType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ShortType to ByteType") {
     // https://github.com/apache/datafusion-comet/issues/311
-    castTest(generateShorts(), DataTypes.ByteType)
+    castTest(
+      generateShorts(),
+      DataTypes.ByteType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ShortType to IntegerType") {
-    castTest(generateShorts(), DataTypes.IntegerType)
+    castTest(
+      generateShorts(),
+      DataTypes.IntegerType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ShortType to LongType") {
-    castTest(generateShorts(), DataTypes.LongType)
+    castTest(
+      generateShorts(),
+      DataTypes.LongType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ShortType to FloatType") {
-    castTest(generateShorts(), DataTypes.FloatType)
+    castTest(
+      generateShorts(),
+      DataTypes.FloatType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ShortType to DoubleType") {
-    castTest(generateShorts(), DataTypes.DoubleType)
+    castTest(
+      generateShorts(),
+      DataTypes.DoubleType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ShortType to DecimalType(10,2)") {
-    castTest(generateShorts(), DataTypes.createDecimalType(10, 2))
+    castTest(
+      generateShorts(),
+      DataTypes.createDecimalType(10, 2),
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   test("cast ShortType to StringType") {
-    castTest(generateShorts(), DataTypes.StringType)
+    castTest(
+      generateShorts(),
+      DataTypes.StringType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   ignore("cast ShortType to BinaryType") {
-    castTest(generateShorts(), DataTypes.BinaryType)
+    castTest(
+      generateShorts(),
+      DataTypes.BinaryType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   ignore("cast ShortType to TimestampType") {
     // input: -1003, expected: 1969-12-31 15:43:17.0, actual: 1969-12-31 15:59:59.998997
-    castTest(generateShorts(), DataTypes.TimestampType)
+    castTest(
+      generateShorts(),
+      DataTypes.TimestampType,
+      hasIncompatibleType = usingDataFusionParquetReader)
   }
 
   // CAST from integer
@@ -348,8 +411,15 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateFloats(), DataTypes.DoubleType)
   }
 
-  test("cast FloatType to DecimalType(10,2)") {
+  ignore("cast FloatType to DecimalType(10,2)") {
+    // // https://github.com/apache/datafusion-comet/issues/1371
     castTest(generateFloats(), DataTypes.createDecimalType(10, 2))
+  }
+
+  test("cast FloatType to DecimalType(10,2) - allow incompat") {
+    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      castTest(generateFloats(), DataTypes.createDecimalType(10, 2))
+    }
   }
 
   test("cast FloatType to StringType") {
@@ -401,8 +471,15 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDoubles(), DataTypes.FloatType)
   }
 
-  test("cast DoubleType to DecimalType(10,2)") {
+  ignore("cast DoubleType to DecimalType(10,2)") {
+    // https://github.com/apache/datafusion-comet/issues/1371
     castTest(generateDoubles(), DataTypes.createDecimalType(10, 2))
+  }
+
+  test("cast DoubleType to DecimalType(10,2) - allow incompat") {
+    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      castTest(generateDoubles(), DataTypes.createDecimalType(10, 2))
+    }
   }
 
   test("cast DoubleType to StringType") {
@@ -1069,7 +1146,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  private def castTest(input: DataFrame, toType: DataType, testAnsi: Boolean = true): Unit = {
+  private def castTest(
+      input: DataFrame,
+      toType: DataType,
+      hasIncompatibleType: Boolean = false,
+      testAnsi: Boolean = true): Unit = {
 
     // we now support the TryCast expression in Spark 3.3
     withTempPath { dir =>
@@ -1079,12 +1160,20 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
         // cast() should return null for invalid inputs when ansi mode is disabled
         val df = spark.sql(s"select a, cast(a as ${toType.sql}) from t order by a")
-        checkSparkAnswerAndOperator(df)
+        if (hasIncompatibleType) {
+          checkSparkAnswer(df)
+        } else {
+          checkSparkAnswerAndOperator(df)
+        }
 
         // try_cast() should always return null for invalid inputs
         val df2 =
           spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
-        checkSparkAnswerAndOperator(df2)
+        if (hasIncompatibleType) {
+          checkSparkAnswer(df2)
+        } else {
+          checkSparkAnswerAndOperator(df2)
+        }
       }
 
       if (testAnsi) {
@@ -1140,7 +1229,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           // try_cast() should always return null for invalid inputs
           val df2 =
             spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
-          checkSparkAnswerAndOperator(df2)
+          if (hasIncompatibleType) {
+            checkSparkAnswer(df2)
+          } else {
+            checkSparkAnswerAndOperator(df2)
+          }
 
         }
       }

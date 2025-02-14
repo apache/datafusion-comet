@@ -99,6 +99,7 @@ message Projection {
 
 message Filter {
   spark.spark_expression.Expr predicate = 1;
+  bool use_datafusion_filter = 2;
 }
 
 message Sort {
