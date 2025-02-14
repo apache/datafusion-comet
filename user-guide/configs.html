@@ -327,6 +327,11 @@ KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License.
 -->
+<!--
+TO MODIFY THIS CONTENT MAKE SURE THAT YOU MAKE YOUR CHANGES TO THE TEMPLATE FILE
+(docs/templates/configs-template.md) AND NOT THE GENERATED FILE
+(docs/source/user-guide/configs.md) OTHERWISE YOUR CHANGES MAY BE LOST
+-->
 <section id="comet-configuration-settings">
 <h1>Comet Configuration Settings<a class="headerlink" href="#comet-configuration-settings" title="Link to this heading">¶</a></h1>
 <p>Comet provides the following configuration settings.</p>
@@ -552,7 +557,7 @@ under the License.
 </tr>
 <tr class="row-odd"><td><p>spark.comet.scan.allowIncompatible</p></td>
 <td><p>Comet is not currently fully compatible with Spark for all datatypes. Set this config to true to allow them anyway. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).</p></td>
-<td><p>true</p></td>
+<td><p>false</p></td>
 </tr>
 <tr class="row-even"><td><p>spark.comet.scan.enabled</p></td>
 <td><p>Whether to enable native scans. When this is turned on, Spark will use Comet to read supported data sources (currently only Parquet is supported natively). Note that to enable native vectorized execution, both this config and ‘spark.comet.exec.enabled’ need to be enabled.</p></td>
