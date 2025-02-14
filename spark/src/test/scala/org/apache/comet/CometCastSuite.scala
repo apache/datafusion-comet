@@ -25,12 +25,12 @@ import scala.util.Random
 import scala.util.matching.Regex
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType}
+import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType, StructField, StructType}
 
 import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible}
 
@@ -981,11 +981,14 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast between decimals with different precision and scale") {
-    // cast between default Decimal(38, 18) to Decimal(6,2)
-    val values = Seq(BigDecimal("12345.6789"), BigDecimal("9876.5432"), BigDecimal("123.4567"))
-    val df = withNulls(values)
-      .toDF("b")
-      .withColumn("a", col("b").cast(DecimalType(38, 28)))
+    val rowData = Seq(
+      Row(BigDecimal("12345.6789")),
+      Row(BigDecimal("9876.5432")),
+      Row(BigDecimal("123.4567")))
+    val df = spark.createDataFrame(
+      spark.sparkContext.parallelize(rowData),
+      StructType(Seq(StructField("a", DataTypes.createDecimalType(10, 4)))))
+
     castTest(df, DecimalType(6, 2))
   }
 
@@ -1210,12 +1213,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               val cometMessage =
                 if (cometException.getCause != null) cometException.getCause.getMessage
                 else cometException.getMessage
-              // for comet decimal conversion throws ArrowError(string) from arrow - across spark version the message dont match.
-              if (sparkMessage.contains("NUMERIC_VALUE_OUT_OF_RANGE") && cometMessage.contains(
-                  "Invalid argument error")) {
+              // for comet decimal conversion throws ArrowError(string) from arrow - across spark versions the message dont match.
+              if (sparkMessage.contains("cannot be represented as")) {
                 assert(
-                  sparkMessage.contains("cannot be represented as"),
-                  cometMessage.contains("too large to store"))
+                  cometMessage.contains("cannot be represented as") || cometMessage.contains(
+                    "too large to store"))
               } else {
                 if (CometSparkSessionExtensions.isSpark40Plus) {
                   // for Spark 4 we expect to sparkException carries the message
@@ -1235,7 +1237,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     .replace("[NUMERIC_VALUE_OUT_OF_RANGE] ", "")
 
                   if (sparkMessage.contains("cannot be represented as")) {
-                    assert(cometMessage.contains("cannot be represented as"))
+                    assert(
+                      cometMessage.contains("cannot be represented as") || cometMessage.contains(
+                        "too large to store"))
                   } else {
                     assert(cometMessageModified == sparkMessage)
                   }

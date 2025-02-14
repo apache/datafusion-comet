@@ -104,76 +104,77 @@ Spark.
 The following cast operations are generally compatible with Spark except for the differences noted here.
 
 | From Type | To Type | Notes |
-|-|-|-|
-| boolean | byte |  |
-| boolean | short |  |
+|-|---------|-|
+| boolean | byte    |  |
+| boolean | short   |  |
 | boolean | integer |  |
-| boolean | long |  |
-| boolean | float |  |
-| boolean | double |  |
-| boolean | string |  |
+| boolean | long    |  |
+| boolean | float   |  |
+| boolean | double  |  |
+| boolean | string  |  |
 | byte | boolean |  |
-| byte | short |  |
+| byte | short   |  |
 | byte | integer |  |
-| byte | long |  |
-| byte | float |  |
-| byte | double |  |
+| byte | long    |  |
+| byte | float   |  |
+| byte | double  |  |
 | byte | decimal |  |
-| byte | string |  |
+| byte | string  |  |
 | short | boolean |  |
-| short | byte |  |
+| short | byte    |  |
 | short | integer |  |
-| short | long |  |
-| short | float |  |
-| short | double |  |
+| short | long    |  |
+| short | float   |  |
+| short | double  |  |
 | short | decimal |  |
-| short | string |  |
+| short | string  |  |
 | integer | boolean |  |
-| integer | byte |  |
-| integer | short |  |
-| integer | long |  |
-| integer | float |  |
-| integer | double |  |
-| integer | string |  |
+| integer | byte    |  |
+| integer | short   |  |
+| integer | long    |  |
+| integer | float   |  |
+| integer | double  |  |
+| integer | string  |  |
 | long | boolean |  |
-| long | byte |  |
-| long | short |  |
+| long | byte    |  |
+| long | short   |  |
 | long | integer |  |
-| long | float |  |
-| long | double |  |
-| long | string |  |
+| long | float   |  |
+| long | double  |  |
+| long | string  |  |
 | float | boolean |  |
-| float | byte |  |
-| float | short |  |
+| float | byte    |  |
+| float | short   |  |
 | float | integer |  |
-| float | long |  |
-| float | double |  |
-| float | string | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
+| float | long    |  |
+| float | double  |  |
+| float | string  | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
 | double | boolean |  |
-| double | byte |  |
-| double | short |  |
+| double | byte    |  |
+| double | short   |  |
 | double | integer |  |
-| double | long |  |
-| double | float |  |
-| double | string | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
-| decimal | byte |  |
-| decimal | short |  |
+| double | long    |  |
+| double | float   |  |
+| double | string  | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
+| decimal | byte    |  |
+| decimal | short   |  |
 | decimal | integer |  |
-| decimal | long |  |
-| decimal | float |  |
-| decimal | double |  |
-| decimal | string | There can be formatting differences in some case due to Spark using scientific notation where Comet does not |
+| decimal | long    |  |
+| decimal | float   |  |
+| decimal | double  |  |
+| decimal | string  | There can be formatting differences in some case due to Spark using scientific notation where Comet does not |
+| decimal | decimal |  |
 | string | boolean |  |
-| string | byte |  |
-| string | short |  |
+| string | byte    |  |
+| string | short   |  |
 | string | integer |  |
-| string | long |  |
-| string | binary |  |
-| string | date | Only supports years between 262143 BC and 262142 AD |
-| date | string |  |
-| timestamp | long |  |
-| timestamp | string |  |
-| timestamp | date |  |
+| string | long    |  |
+| string | binary  |  |
+| string | date    | Only supports years between 262143 BC and 262142 AD |
+| date | string  |  |
+| timestamp | long    |  |
+| timestamp | string  |  |
+| timestamp | date    |  |
 
 ### Incompatible Casts
 
