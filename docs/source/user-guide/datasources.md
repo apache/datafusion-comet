@@ -109,5 +109,7 @@ Input [3]: [id#0, first_name#1, personal_info#4]
 
 Verify the native scan type should be `CometNativeScan`.
 
+More on [HDFS Reader](../../../native/hdfs/README.md)
+
 ## S3
 In progress 

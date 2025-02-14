@@ -1884,7 +1884,7 @@ pub(crate) fn register_object_store(
     // TODO: read the namenode configuration from file schema or from spark.defaultFS
     let url = ObjectStoreUrl::parse("hdfs://namenode:9000")?;
     if let Some(object_store) =
-        datafusion_objectstore_hdfs::object_store::hdfs::HadoopFileSystem::new(url.as_ref())
+        datafusion_comet_objectstore_hdfs::object_store::hdfs::HadoopFileSystem::new(url.as_ref())
     {
         session_context
             .runtime_env()
