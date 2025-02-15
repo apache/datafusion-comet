@@ -71,7 +71,6 @@ jobs:
         with:
           spark-version: ${{ matrix.spark-version.full }}
           spark-short-version: ${{ matrix.spark-version.short }}
-          comet-version: '0.7.0-SNAPSHOT' # TODO: get this from pom.xml
       - name: Run Spark tests
         run: |
           cd apache-spark
