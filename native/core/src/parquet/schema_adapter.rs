@@ -417,7 +417,8 @@ fn can_cast_to_string(from_type: &DataType, options: &SparkParquetOptions) -> bo
 fn can_convert_from_timestamp_ntz(to_type: &DataType, options: &SparkParquetOptions) -> bool {
     use DataType::*;
     match to_type {
-        Timestamp(_, _) | Date32 | Date64 | Utf8 => {
+        Timestamp(_, _) => true,
+        Date32 | Date64 | Utf8 => {
             // incompatible
             options.allow_incompat
         }

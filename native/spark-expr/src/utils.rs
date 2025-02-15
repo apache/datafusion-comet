@@ -72,9 +72,6 @@ pub fn array_with_timezone(
                 Some(DataType::Timestamp(_, Some(_))) => {
                     timestamp_ntz_to_timestamp(array, timezone.as_str(), Some(timezone.as_str()))
                 }
-                Some(DataType::Timestamp(_, None)) => {
-                    timestamp_ntz_to_timestamp(array, timezone.as_str(), None)
-                }
                 _ => {
                     // Not supported
                     panic!(
