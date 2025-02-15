@@ -59,8 +59,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private val timestampPattern = "0123456789/:T" + whitespaceChars
 
-  lazy val usingDataFusionParquetReader: Boolean =
-    CometSparkSessionExtensions.usingDataFusionParquetReader(conf)
+  lazy val usingParquetExecWithIncompatTypes: Boolean =
+    CometSparkSessionExtensions.usingDataFusionParquetExec(conf) &&
+      !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get(conf)
 
   test("all valid cast combinations covered") {
     val names = testNames
@@ -151,63 +152,63 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(
       generateBytes(),
       DataTypes.BooleanType,
-      hasIncompatibleType = usingDataFusionParquetReader)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ByteType to ShortType") {
     castTest(
       generateBytes(),
       DataTypes.ShortType,
-      hasIncompatibleType = usingDataFusionParquetReader)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ByteType to IntegerType") {
     castTest(
       generateBytes(),
       DataTypes.IntegerType,
-      hasIncompatibleType = usingDataFusionParquetReader)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ByteType to LongType") {
     castTest(
       generateBytes(),
       DataTypes.LongType,
-      hasIncompatibleType = usingDataFusionParquetReader)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ByteType to FloatType") {
     castTest(
       generateBytes(),
       DataTypes.FloatType,
-      hasIncompatibleType = usingDataFusionParquetReader)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ByteType to DoubleType") {
     castTest(
       generateBytes(),
       DataTypes.DoubleType,
-      hasIncompatibleType = usingDataFusionParquetReader)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ByteType to DecimalType(10,2)") {
     castTest(
       generateBytes(),
       DataTypes.createDecimalType(10, 2),
-      hasIncompatibleType = usingDataFusionParquetReader)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ByteType to StringType") {
     castTest(
       generateBytes(),
       DataTypes.StringType,
-      hasIncompatibleType = usingDataFusionParquetReader)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
   ignore("cast ByteType to BinaryType") {
     castTest(
       generateBytes(),
       DataTypes.BinaryType,
-      hasIncompatibleType = usingDataFusionParquetReader)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
   ignore("cast ByteType to TimestampType") {
@@ -215,7 +216,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(
       generateBytes(),
       DataTypes.TimestampType,
-      hasIncompatibleType = usingDataFusionParquetReader)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
   // CAST from ShortType
@@ -224,7 +225,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(
       generateShorts(),
       DataTypes.BooleanType,
-      hasIncompatibleType = usingDataFusionParquetReader)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ShortType to ByteType") {
@@ -232,56 +233,56 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(
       generateShorts(),
       DataTypes.ByteType,
-      hasIncompatibleType = usingDataFusionParquetReader)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ShortType to IntegerType") {
     castTest(
       generateShorts(),
       DataTypes.IntegerType,
-      hasIncompatibleType = usingDataFusionParquetReader)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ShortType to LongType") {
     castTest(
       generateShorts(),
       DataTypes.LongType,
-      hasIncompatibleType = usingDataFusionParquetReader)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ShortType to FloatType") {
     castTest(
       generateShorts(),
       DataTypes.FloatType,
-      hasIncompatibleType = usingDataFusionParquetReader)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ShortType to DoubleType") {
     castTest(
       generateShorts(),
       DataTypes.DoubleType,
-      hasIncompatibleType = usingDataFusionParquetReader)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ShortType to DecimalType(10,2)") {
     castTest(
       generateShorts(),
       DataTypes.createDecimalType(10, 2),
-      hasIncompatibleType = usingDataFusionParquetReader)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ShortType to StringType") {
     castTest(
       generateShorts(),
       DataTypes.StringType,
-      hasIncompatibleType = usingDataFusionParquetReader)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
   ignore("cast ShortType to BinaryType") {
     castTest(
       generateShorts(),
       DataTypes.BinaryType,
-      hasIncompatibleType = usingDataFusionParquetReader)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
   ignore("cast ShortType to TimestampType") {
@@ -289,7 +290,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(
       generateShorts(),
       DataTypes.TimestampType,
-      hasIncompatibleType = usingDataFusionParquetReader)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
   // CAST from integer

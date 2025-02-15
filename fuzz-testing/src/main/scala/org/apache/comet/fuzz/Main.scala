@@ -33,6 +33,8 @@ class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
     val numFiles: ScallopOption[Int] =
       opt[Int](required = true, descr = "Number of files to generate")
     val numRows: ScallopOption[Int] = opt[Int](required = true, descr = "Number of rows per file")
+    val randomSeed: ScallopOption[Long] =
+      opt[Long](required = false, descr = "Random seed to use")
     val generateArrays: ScallopOption[Boolean] =
       opt[Boolean](required = false, descr = "Whether to generate arrays")
     val generateStructs: ScallopOption[Boolean] =
@@ -48,6 +50,8 @@ class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
       opt[Int](required = false, descr = "Number of input files to use")
     val numQueries: ScallopOption[Int] =
       opt[Int](required = true, descr = "Number of queries to generate")
+    val randomSeed: ScallopOption[Long] =
+      opt[Long](required = false, descr = "Random seed to use")
   }
   addSubcommand(generateQueries)
   object runQueries extends Subcommand("run") {
@@ -67,11 +71,13 @@ object Main {
     .getOrCreate()
 
   def main(args: Array[String]): Unit = {
-    val r = new Random(42)
-
     val conf = new Conf(args.toIndexedSeq)
     conf.subcommand match {
       case Some(conf.generateData) =>
+        val r = conf.generateData.randomSeed.toOption match {
+          case Some(seed) => new Random(seed)
+          case None => new Random()
+        }
         val options = DataGenOptions(
           allowNull = true,
           generateArray = conf.generateData.generateArrays(),
@@ -87,6 +93,10 @@ object Main {
             options)
         }
       case Some(conf.generateQueries) =>
+        val r = conf.generateQueries.randomSeed.toOption match {
+          case Some(seed) => new Random(seed)
+          case None => new Random()
+        }
         QueryGen.generateRandomQueries(
           r,
           spark,
