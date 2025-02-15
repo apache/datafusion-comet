@@ -60,7 +60,6 @@ Create a PR against the main branch to prepare for developing the next release:
 - Update the Rust crate version to `0.2.0`.
 - Update the Maven version to `0.2.0-SNAPSHOT` (both in the `pom.xml` files and also in the diff files
   under `dev/diffs`).
-- Update the CI scripts under the `.github` directory.
 
 ### Generate the Change Log
 
