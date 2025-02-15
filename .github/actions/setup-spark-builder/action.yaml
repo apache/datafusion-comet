@@ -26,10 +26,6 @@ inputs:
     description: 'The Apache Spark version (e.g., 3.4.3) to build'
     required: true
     default: '3.4.3'
-  comet-version:
-    description: 'The Comet version to use for Spark'
-    required: true
-    default: '0.6.0'
 runs:
   using: "composite"
   steps:
@@ -46,7 +42,6 @@ runs:
       run: |
         cd apache-spark
         git apply ../dev/diffs/${{inputs.spark-version}}.diff
-        ../mvnw -nsu -q versions:set-property -Dproperty=comet.version  -DnewVersion=${{inputs.comet-version}} -DgenerateBackupPoms=false
 
     - name: Cache Maven dependencies
       uses: actions/cache@v4
