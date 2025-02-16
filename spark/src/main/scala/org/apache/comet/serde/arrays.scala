@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions.{ArrayJoin, ArrayRemove, Attrib
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProto, serializeDataType}
 import org.apache.comet.shims.CometExprShim
 
 object CometArrayRemove extends CometExpressionSerde with CometExprShim {
@@ -123,6 +123,31 @@ object CometArraysOverlap extends CometExpressionSerde with IncompatExpr {
       inputs,
       binding,
       (builder, binaryExpr) => builder.setArraysOverlap(binaryExpr))
+  }
+}
+
+object CometArrayCompact extends CometExpressionSerde with IncompatExpr {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val child = expr.children.head
+    val elementType = serializeDataType(child.dataType.asInstanceOf[ArrayType].elementType)
+    val srcExprProto = exprToProto(child, inputs, binding)
+    if (elementType.isDefined && srcExprProto.isDefined) {
+      val arrayCompactBuilder = ExprOuterClass.ArrayCompact
+        .newBuilder()
+        .setArrayExpr(srcExprProto.get)
+        .setItemDatatype(elementType.get)
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setArrayCompact(arrayCompactBuilder)
+          .build())
+    } else {
+      withInfo(expr, "unsupported arguments for ArrayCompact", expr.children: _*)
+      None
+    }
   }
 }
 
