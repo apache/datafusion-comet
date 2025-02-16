@@ -211,6 +211,7 @@ under the License.
         <includes>
           <include>libcomet.dylib</include>
           <include>libcomet.so</include>
+          <include>comet.dll</include>
         </includes>
         <targetPath>org/apache/comet/${platform}/${arch}</targetPath>
       </resource>
