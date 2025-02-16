@@ -1237,9 +1237,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     .replace("[NUMERIC_VALUE_OUT_OF_RANGE] ", "")
 
                   if (sparkMessage.contains("cannot be represented as")) {
-                    assert(
-                      cometMessage.contains("cannot be represented as") || cometMessage.contains(
-                        "too large to store"))
+                    assert(cometMessage.contains("too large to store"))
                   } else {
                     assert(cometMessageModified == sparkMessage)
                   }
