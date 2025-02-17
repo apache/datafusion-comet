@@ -104,7 +104,7 @@ impl SchemaAdapter for SparkSchemaAdapter {
         let mut field_mappings = vec![None; self.required_schema.fields().len()];
 
         for (file_idx, file_field) in file_schema.fields.iter().enumerate() {
-            if let Some((table_idx, table_field)) =
+            if let Some((table_idx, _table_field)) =
                 self.required_schema.fields().find(file_field.name())
             {
                 field_mappings[table_idx] = Some(projection.len());
