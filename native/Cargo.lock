@@ -926,7 +926,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet"
-version = "0.6.0-apple"
+version = "0.7.0-apple"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -992,7 +992,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-proto"
-version = "0.6.0-apple"
+version = "0.7.0-apple"
 dependencies = [
  "prost 0.12.6",
  "prost-build",
@@ -1000,7 +1000,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-spark-expr"
-version = "0.6.0-apple"
+version = "0.7.0-apple"
 dependencies = [
  "arrow",
  "arrow-array",
