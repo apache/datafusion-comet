@@ -272,6 +272,11 @@ it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pk
 
 Reply to the vote thread to close the vote and announce the release.
 
+## Update released version number in documentation
+
+- We provide direct links to the jar files in Maven
+- The Kubernetes page needs updating once the Docker image has been published to GitHub Container Regsistry
+
 ## Post Release Admin
 
 Register the release with the [Apache Reporter Service](https://reporter.apache.org/addrelease.html?datafusion) using
