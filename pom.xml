@@ -555,6 +555,20 @@ under the License.
     </profile>
 
     <profile>
+      <id>Win-amd64</id>
+      <activation>
+        <os>
+          <family>Windows</family>
+          <arch>amd64</arch>
+        </os>
+      </activation>
+      <properties>
+        <platform>win32</platform>
+        <arch>amd64</arch>
+      </properties>
+    </profile>
+
+    <profile>
       <id>Darwin-x86</id>
       <activation>
         <os>
