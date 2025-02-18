@@ -7,7 +7,7 @@ index a4b1b2c3c9f..6a532749978 100644
      <ivy.version>2.5.2</ivy.version>
      <oro.version>2.0.8</oro.version>
 +    <spark.version.short>4.0</spark.version.short>
-+    <comet.version>0.5.0-SNAPSHOT</comet.version>
++    <comet.version>0.6.0</comet.version>
      <!--
      If you change codahale.metrics.version, you also need to change
      the link to metrics.dropwizard.io in docs/monitoring.md.
