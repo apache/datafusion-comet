@@ -74,7 +74,7 @@ use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctio
 
 use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
-use crate::parquet::parquet_support::SparkParquetOptions;
+use crate::parquet::parquet_support::{register_object_store, SparkParquetOptions};
 use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
@@ -106,7 +106,6 @@ use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
 };
-use datafusion_execution::object_store::ObjectStoreUrl;
 use datafusion_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion_expr::{
     AggregateUDF, ReturnTypeArgs, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
@@ -1165,12 +1164,9 @@ impl PhysicalPlanner {
                     ))
                 });
 
-                let object_store = object_store::local::LocalFileSystem::new();
-                // register the object store with the runtime environment
-                let url = Url::try_from("file://").unwrap();
-                self.session_ctx
-                    .runtime_env()
-                    .register_object_store(&url, Arc::new(object_store));
+                // By default, local FS object store registered
+                // if `hdfs` feature enabled then HDFS file object store registered
+                let object_store_url = register_object_store(Arc::clone(&self.session_ctx))?;
 
                 // Generate file groups
                 let mut file_groups: Vec<Vec<PartitionedFile>> =
@@ -1229,8 +1225,6 @@ impl PhysicalPlanner {
 
                 // TODO: I think we can remove partition_count in the future, but leave for testing.
                 assert_eq!(file_groups.len(), partition_count);
-
-                let object_store_url = ObjectStoreUrl::local_filesystem();
                 let partition_fields: Vec<Field> = partition_schema
                     .fields()
                     .iter()
