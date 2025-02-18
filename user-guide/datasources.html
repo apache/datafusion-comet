@@ -130,7 +130,7 @@ under the License.
  </li>
  <li class="toctree-l1 current active">
   <a class="current reference internal" href="#">
-   Supported Data Sources
+   Supported Spark Data Sources
   </a>
  </li>
  <li class="toctree-l1">
@@ -286,20 +286,56 @@ under the License.
 
 <nav id="bd-toc-nav">
     <ul class="visible nav section-nav flex-column">
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#parquet">
-   Parquet
+ <li class="toc-h1 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#">
+   Supported Spark Data Sources
   </a>
+  <ul class="visible nav section-nav flex-column">
+   <li class="toc-h2 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#parquet">
+     Parquet
+    </a>
+   </li>
+   <li class="toc-h2 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#csv">
+     CSV
+    </a>
+   </li>
+   <li class="toc-h2 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#json">
+     JSON
+    </a>
+   </li>
+  </ul>
  </li>
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#csv">
-   CSV
+ <li class="toc-h1 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#supported-storages">
+   Supported Storages
   </a>
- </li>
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#json">
-   JSON
-  </a>
+  <ul class="visible nav section-nav flex-column">
+   <li class="toc-h2 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#local">
+     Local
+    </a>
+   </li>
+   <li class="toc-h2 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#hdfs">
+     HDFS
+    </a>
+    <ul class="nav section-nav flex-column">
+     <li class="toc-h3 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#using-experimental-native-datafusion-reader">
+       Using experimental native DataFusion reader
+      </a>
+     </li>
+    </ul>
+   </li>
+   <li class="toc-h2 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#s3">
+     S3
+    </a>
+   </li>
+  </ul>
  </li>
 </ul>
 
@@ -365,6 +401,77 @@ converted into Arrow format, allowing native execution to happen after that.</p>
 <h2>JSON<a class="headerlink" href="#json" title="Link to this heading">¶</a></h2>
 <p>Comet does not provide native JSON scan, but when <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.json.enabled</span></code> is enabled, data is immediately
 converted into Arrow format, allowing native execution to happen after that.</p>
+</section>
+</section>
+<section id="supported-storages">
+<h1>Supported Storages<a class="headerlink" href="#supported-storages" title="Link to this heading">¶</a></h1>
+<section id="local">
+<h2>Local<a class="headerlink" href="#local" title="Link to this heading">¶</a></h2>
+<p>In progress</p>
+</section>
+<section id="hdfs">
+<h2>HDFS<a class="headerlink" href="#hdfs" title="Link to this heading">¶</a></h2>
+<p>Apache DataFusion Comet native reader seamlessly scans files from remote HDFS for <a class="reference internal" href="#supported-spark-data-sources">supported formats</a></p>
+<section id="using-experimental-native-datafusion-reader">
+<h3>Using experimental native DataFusion reader<a class="headerlink" href="#using-experimental-native-datafusion-reader" title="Link to this heading">¶</a></h3>
+<p>Unlike to native Comet reader the Datafusion reader fully supports nested types processing. This reader is currently experimental only</p>
+<p>To build Comet with native DataFusion reader and remote HDFS support it is required to have a JDK installed</p>
+<p>Example:
+Build a Comet for <code class="docutils literal notranslate"><span class="pre">spark-3.4</span></code> provide a JDK path in <code class="docutils literal notranslate"><span class="pre">JAVA_HOME</span></code>
+Provide the JRE linker path in <code class="docutils literal notranslate"><span class="pre">RUSTFLAGS</span></code>, the path can vary depending on the system. Typically JRE linker is a part of installed JDK</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">JAVA_HOME</span><span class="o">=</span><span class="s2">&quot;/opt/homebrew/opt/openjdk@11&quot;</span>
+make<span class="w"> </span>release<span class="w"> </span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">&quot;-Pspark-3.4&quot;</span><span class="w"> </span><span class="nv">COMET_FEATURES</span><span class="o">=</span>hdfs<span class="w"> </span><span class="nv">RUSTFLAGS</span><span class="o">=</span><span class="s2">&quot;-L </span><span class="nv">$JAVA_HOME</span><span class="s2">/libexec/openjdk.jdk/Contents/Home/lib/server&quot;</span>
+</pre></div>
+</div>
+<p>Start Comet with experimental reader and HDFS support as <a class="reference internal" href="installation.html#run-spark-shell-with-comet-enabled"><span class="std std-ref">described</span></a>
+and add additional parameters</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>--conf<span class="w"> </span>spark.comet.scan.impl<span class="o">=</span>native_datafusion<span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>spark.hadoop.fs.defaultFS<span class="o">=</span><span class="s2">&quot;hdfs://namenode:9000&quot;</span><span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>spark.hadoop.dfs.client.use.datanode.hostname<span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>dfs.client.use.datanode.hostname<span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span>
+</pre></div>
+</div>
+<p>Query a struct type from Remote HDFS</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>spark.read.parquet<span class="o">(</span><span class="s2">&quot;hdfs://namenode:9000/user/data&quot;</span><span class="o">)</span>.show<span class="o">(</span><span class="nb">false</span><span class="o">)</span>
+
+root
+<span class="w"> </span><span class="p">|</span>--<span class="w"> </span>id:<span class="w"> </span>integer<span class="w"> </span><span class="o">(</span><span class="nv">nullable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="o">)</span>
+<span class="w"> </span><span class="p">|</span>--<span class="w"> </span>first_name:<span class="w"> </span>string<span class="w"> </span><span class="o">(</span><span class="nv">nullable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="o">)</span>
+<span class="w"> </span><span class="p">|</span>--<span class="w"> </span>personal_info:<span class="w"> </span>struct<span class="w"> </span><span class="o">(</span><span class="nv">nullable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="o">)</span>
+<span class="w"> </span><span class="p">|</span><span class="w">    </span><span class="p">|</span>--<span class="w"> </span>firstName:<span class="w"> </span>string<span class="w"> </span><span class="o">(</span><span class="nv">nullable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="o">)</span>
+<span class="w"> </span><span class="p">|</span><span class="w">    </span><span class="p">|</span>--<span class="w"> </span>lastName:<span class="w"> </span>string<span class="w"> </span><span class="o">(</span><span class="nv">nullable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="o">)</span>
+<span class="w"> </span><span class="p">|</span><span class="w">    </span><span class="p">|</span>--<span class="w"> </span>ageInYears:<span class="w"> </span>integer<span class="w"> </span><span class="o">(</span><span class="nv">nullable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="o">)</span>
+
+<span class="m">25</span>/01/30<span class="w"> </span><span class="m">16</span>:50:43<span class="w"> </span>INFO<span class="w"> </span>core/src/lib.rs:<span class="w"> </span>Comet<span class="w"> </span>native<span class="w"> </span>library<span class="w"> </span>version<span class="w"> </span><span class="m">0</span>.6.0<span class="w"> </span><span class="nv">initialized</span>
+<span class="o">==</span><span class="w"> </span>Physical<span class="w"> </span><span class="nv">Plan</span><span class="w"> </span><span class="o">==</span>
+*<span class="w"> </span>CometColumnarToRow<span class="w"> </span><span class="o">(</span><span class="m">2</span><span class="o">)</span>
++-<span class="w"> </span>CometNativeScan:<span class="w">  </span><span class="o">(</span><span class="m">1</span><span class="o">)</span>
+
+
+<span class="o">(</span><span class="m">1</span><span class="o">)</span><span class="w"> </span>CometNativeScan:<span class="w"> </span>
+Output<span class="w"> </span><span class="o">[</span><span class="m">3</span><span class="o">]</span>:<span class="w"> </span><span class="o">[</span>id#0,<span class="w"> </span>first_name#1,<span class="w"> </span>personal_info#4<span class="o">]</span>
+Arguments:<span class="w"> </span><span class="o">[</span>id#0,<span class="w"> </span>first_name#1,<span class="w"> </span>personal_info#4<span class="o">]</span>
+
+<span class="o">(</span><span class="m">2</span><span class="o">)</span><span class="w"> </span>CometColumnarToRow<span class="w"> </span><span class="o">[</span>codegen<span class="w"> </span>id<span class="w"> </span>:<span class="w"> </span><span class="m">1</span><span class="o">]</span>
+Input<span class="w"> </span><span class="o">[</span><span class="m">3</span><span class="o">]</span>:<span class="w"> </span><span class="o">[</span>id#0,<span class="w"> </span>first_name#1,<span class="w"> </span>personal_info#4<span class="o">]</span>
+
+
+<span class="m">25</span>/01/30<span class="w"> </span><span class="m">16</span>:50:44<span class="w"> </span>INFO<span class="w"> </span>fs-hdfs-0.1.12/src/hdfs.rs:<span class="w"> </span>Connecting<span class="w"> </span>to<span class="w"> </span>Namenode<span class="w"> </span><span class="o">(</span>hdfs://namenode:9000<span class="o">)</span>
++---+----------+-----------------+
+<span class="p">|</span>id<span class="w"> </span><span class="p">|</span>first_name<span class="p">|</span>personal_info<span class="w">    </span><span class="p">|</span>
++---+----------+-----------------+
+<span class="p">|</span><span class="m">2</span><span class="w">  </span><span class="p">|</span>Jane<span class="w">      </span><span class="p">|</span><span class="o">{</span>Jane,<span class="w"> </span>Smith,<span class="w"> </span><span class="m">34</span><span class="o">}</span><span class="p">|</span>
+<span class="p">|</span><span class="m">1</span><span class="w">  </span><span class="p">|</span>John<span class="w">      </span><span class="p">|</span><span class="o">{</span>John,<span class="w"> </span>Doe,<span class="w"> </span><span class="m">28</span><span class="o">}</span><span class="w">  </span><span class="p">|</span>
++---+----------+-----------------+
+</pre></div>
+</div>
+<p>Verify the native scan type should be <code class="docutils literal notranslate"><span class="pre">CometNativeScan</span></code>.</p>
+<p>More on <span class="xref myst">HDFS Reader</span></p>
+</section>
+</section>
+<section id="s3">
+<h2>S3<a class="headerlink" href="#s3" title="Link to this heading">¶</a></h2>
+<p>In progress</p>
 </section>
 </section>
 
