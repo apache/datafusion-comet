@@ -21,13 +21,11 @@ package org.apache.spark.sql.comet
 
 import org.scalactic.source.Position
 import org.scalatest.Tag
-
 import org.apache.spark.SparkException
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
 import org.apache.spark.sql.internal.SQLConf
-
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, usingDataFusionParquetExec}
 
 // This test checks if Comet reads ancient dates & timestamps that are before 1582, as if they are
 // read according to the `LegacyBehaviorPolicy.CORRECTED` mode (i.e., no rebase) in Spark.
@@ -62,6 +60,7 @@ abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
   }
 
   test("reading ancient timestamps before 1582") {
+    assume(!usingDataFusionParquetExec(conf))
     Seq(true, false).foreach { exceptionOnRebase =>
       withSQLConf(
         CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.key ->
@@ -87,6 +86,7 @@ abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
   }
 
   test("reading ancient int96 timestamps before 1582") {
+    assume(!usingDataFusionParquetExec(conf))
     Seq(true, false).foreach { exceptionOnRebase =>
       withSQLConf(
         CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.key ->
@@ -145,8 +145,8 @@ class ParquetDatetimeRebaseV1Suite extends ParquetDatetimeRebaseSuite {
 class ParquetDatetimeRebaseV2Suite extends ParquetDatetimeRebaseSuite {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
-    // Datasource V2 is not supported by complex readers so force the scan impl back
-    // to 'native_comet'
+    // Datasource V2 is not supported by the native (datafusion based) readers so force
+    // the scan impl back to 'native_comet'
     super.test(testName, testTags: _*)(
       withSQLConf(
         SQLConf.USE_V1_SOURCE_LIST.key -> "",
