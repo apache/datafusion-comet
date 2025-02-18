@@ -65,13 +65,13 @@ metadata:
 spec:
   type: Scala
   mode: cluster
-  image: ghcr.io/apache/datafusion-comet:spark-3.4-scala-2.12-0.2.0
+  image: ghcr.io/apache/datafusion-comet:spark-3.4-scala-2.12-0.5.0
   imagePullPolicy: IfNotPresent
   mainClass: org.apache.spark.examples.SparkPi
   mainApplicationFile: local:///opt/spark/examples/jars/spark-examples_2.12-3.4.2.jar
   sparkConf:
-    "spark.executor.extraClassPath": "/opt/spark/jars/comet-spark-spark3.4_2.12-0.2.0.jar"
-    "spark.driver.extraClassPath": "/opt/spark/jars/comet-spark-spark3.4_2.12-0.2.0.jar"
+    "spark.executor.extraClassPath": "/opt/spark/jars/comet-spark-spark3.4_2.12-0.5.0.jar"
+    "spark.driver.extraClassPath": "/opt/spark/jars/comet-spark-spark3.4_2.12-0.5.0.jar"
     "spark.plugins": "org.apache.spark.CometPlugin"
     "spark.comet.enabled": "true"
     "spark.comet.exec.enabled": "true"

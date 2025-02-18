@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::execution::operators::ExecutionError;
 use arrow::{
     array::{cast::AsArray, types::Int32Type, Array, ArrayRef},
     compute::{cast_with_options, take, CastOptions},
@@ -22,9 +23,11 @@ use arrow::{
 };
 use arrow_array::{DictionaryArray, StructArray};
 use arrow_schema::DataType;
+use datafusion::prelude::SessionContext;
 use datafusion_comet_spark_expr::utils::array_with_timezone;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_common::{Result as DataFusionResult, ScalarValue};
+use datafusion_execution::object_store::ObjectStoreUrl;
 use datafusion_expr::ColumnarValue;
 use std::collections::HashMap;
 use std::{fmt::Debug, hash::Hash, sync::Arc};
@@ -194,4 +197,40 @@ fn cast_struct_to_struct(
         }
         _ => unreachable!(),
     }
+}
+
+// Default object store which is local filesystem
+#[cfg(not(feature = "hdfs"))]
+pub(crate) fn register_object_store(
+    session_context: Arc<SessionContext>,
+) -> Result<ObjectStoreUrl, ExecutionError> {
+    let object_store = object_store::local::LocalFileSystem::new();
+    let url = ObjectStoreUrl::parse("file://")?;
+    session_context
+        .runtime_env()
+        .register_object_store(url.as_ref(), Arc::new(object_store));
+    Ok(url)
+}
+
+// HDFS object store
+#[cfg(feature = "hdfs")]
+pub(crate) fn register_object_store(
+    session_context: Arc<SessionContext>,
+) -> Result<ObjectStoreUrl, ExecutionError> {
+    // TODO: read the namenode configuration from file schema or from spark.defaultFS
+    let url = ObjectStoreUrl::parse("hdfs://namenode:9000")?;
+    if let Some(object_store) =
+        datafusion_comet_objectstore_hdfs::object_store::hdfs::HadoopFileSystem::new(url.as_ref())
+    {
+        session_context
+            .runtime_env()
+            .register_object_store(url.as_ref(), Arc::new(object_store));
+
+        return Ok(url);
+    }
+
+    Err(ExecutionError::GeneralError(format!(
+        "HDFS object store cannot be created for {}",
+        url
+    )))
 }
