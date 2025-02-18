@@ -85,7 +85,8 @@ abstract class ParquetReadSuite extends CometTestBase {
     // for native iceberg compat, CometScanExec supports some types that native_comet does not.
     // note that native_datafusion does not use CometScanExec so we need not include that in
     // the check
-    val usingNativeIcebergCompat =(CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
+    val usingNativeIcebergCompat =
+      (CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
     Seq(
       NullType -> false,
       BooleanType -> true,
@@ -103,7 +104,10 @@ abstract class ParquetReadSuite extends CometTestBase {
           StructField("f1", DecimalType.SYSTEM_DEFAULT),
           StructField("f2", StringType))) -> usingNativeIcebergCompat,
       MapType(keyType = LongType, valueType = DateType) -> false,
-      StructType(Seq(StructField("f1", ByteType), StructField("f2", StringType))) -> usingNativeIcebergCompat,
+      StructType(
+        Seq(
+          StructField("f1", ByteType),
+          StructField("f2", StringType))) -> usingNativeIcebergCompat,
       MapType(keyType = IntegerType, valueType = BinaryType) -> false).foreach {
       case (dt, expected) =>
         assert(CometScanExec.isTypeSupported(dt) == expected)
