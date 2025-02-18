@@ -935,6 +935,22 @@ impl PhysicalPlanner {
                     data_type,
                 )))
             }
+            (DataFusionOperator::Modulo, Ok(l), Ok(r))
+                if l.is_signed_integer() && r.is_signed_integer() =>
+            {
+                let data_type = return_type.map(to_arrow_datatype).unwrap();
+                let fun_expr = create_comet_physical_fun(
+                    "signed_integer_remainder",
+                    data_type.clone(),
+                    &self.session_ctx.state(),
+                )?;
+                Ok(Arc::new(ScalarFunctionExpr::new(
+                    "signed_integer_remainder",
+                    fun_expr,
+                    vec![left, right],
+                    data_type,
+                )))
+            }
             _ => Ok(Arc::new(BinaryExpr::new(left, op, right))),
         }
     }

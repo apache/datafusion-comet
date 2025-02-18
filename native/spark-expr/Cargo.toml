@@ -75,6 +75,10 @@ name = "decimal_div"
 harness = false
 
 [[bench]]
+name = "signed_integer_remainder"
+harness = false
+
+[[bench]]
 name = "aggregate"
 harness = false
 

@@ -2641,4 +2641,18 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("COMET-1412: test smallest signed integer value % -1") {
+    Seq[(String, Any)](
+      ("short", Short.MinValue),
+      ("int", Int.MinValue),
+      ("long", Long.MinValue),
+      ("double", Double.MinValue)).foreach { case (t, v) =>
+      withTable("t1") {
+        sql(s"create table t1(c1 $t, c2 short) using parquet")
+        sql(s"insert into t1 values($v, -1), (52, 10)")
+        checkSparkAnswerAndOperator("select c1 % c2, c1 % -1 from t1 order by c1")
+      }
+    }
+  }
+
 }
