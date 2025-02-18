@@ -21,9 +21,11 @@ package org.apache.spark.sql.comet
 
 import org.scalactic.source.Position
 import org.scalatest.Tag
+
 import org.apache.spark.SparkException
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
 import org.apache.spark.sql.internal.SQLConf
+
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, usingDataFusionParquetExec}
 
