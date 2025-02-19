@@ -56,8 +56,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Check Disk Space
-        run: df -h
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -65,3 +63,4 @@ jobs:
           push: true
           tags: ghcr.io/apache/datafusion-comet:spark-3.4-scala-2.12-${{ env.COMET_VERSION }}
           file: kube/Dockerfile
+          build-args: "--progress=plain"
