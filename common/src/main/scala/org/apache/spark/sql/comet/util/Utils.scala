@@ -19,7 +19,7 @@
 
 package org.apache.spark.sql.comet.util
 
-import java.io.{DataOutputStream, File}
+import java.io.{DataInputStream, DataOutputStream, File}
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
 
@@ -30,7 +30,7 @@ import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalV
 import org.apache.arrow.vector.complex.MapVector
 import org.apache.arrow.vector.complex.StructVector
 import org.apache.arrow.vector.dictionary.DictionaryProvider
-import org.apache.arrow.vector.ipc.ArrowStreamWriter
+import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter}
 import org.apache.arrow.vector.types._
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
 import org.apache.spark.{SparkEnv, SparkException}
@@ -39,7 +39,8 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
 
-import org.apache.comet.vector.CometVector
+import org.apache.comet.CometArrowAllocator
+import org.apache.comet.vector.{CometVector, NativeUtil}
 
 object Utils {
   def getConfPath(confFileName: String): String = {
@@ -223,6 +224,18 @@ object Utils {
       } else {
         (batch.numRows(), new ChunkedByteBuffer(Array.empty[ByteBuffer]))
       }
+    }
+  }
+
+  def deserializeBatches(
+      chunkedByteBuffers: Iterator[ChunkedByteBuffer]): Iterator[ColumnarBatch] = {
+    val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
+    chunkedByteBuffers.map { chunkedByteBuffer =>
+      val cbbis = chunkedByteBuffer.toInputStream()
+      val in = new DataInputStream(codec.compressedInputStream(cbbis))
+      val reader = new ArrowStreamReader(in, CometArrowAllocator)
+      reader.loadNextBatch()
+      NativeUtil.rootAsBatch(reader.getVectorSchemaRoot, reader)
     }
   }
 
