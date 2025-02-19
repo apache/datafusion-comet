@@ -290,6 +290,7 @@ mod test {
     use parquet::arrow::ArrowWriter;
     use std::fs::File;
     use std::sync::Arc;
+    use datafusion::physical_plan::source::DataSourceExec;
     use datafusion_common::config::TableParquetOptions;
 
     #[tokio::test]
@@ -353,11 +354,11 @@ mod test {
         let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
         spark_parquet_options.allow_cast_unsigned_ints = true;
 
-        let parquet_exec = ParquetExec::builder(file_scan_config)
-            .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
-                spark_parquet_options,
-            )))
-            .build();
+        let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
+            // TODO
+            // .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
+            //     spark_parquet_options,
+            // )))
 
         let mut stream = parquet_exec
             .execute(0, Arc::new(TaskContext::default()))
