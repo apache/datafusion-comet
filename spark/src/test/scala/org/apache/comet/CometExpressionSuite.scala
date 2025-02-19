@@ -2649,8 +2649,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       ("double", Double.MinValue)).foreach { case (t, v) =>
       withTable("t1") {
         sql(s"create table t1(c1 $t, c2 short) using parquet")
-        sql(s"insert into t1 values($v, -1), (52, 10)")
-        checkSparkAnswerAndOperator("select c1 % c2, c1 % -1 from t1 order by c1")
+        sql(s"insert into t1 values($v, -1), (52, 10), (10, 0)")
+        checkSparkAnswerAndOperator("select c1 % c2, c1 % 1 from t1 order by c1")
       }
     }
   }

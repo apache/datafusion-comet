@@ -26,13 +26,14 @@ macro_rules! signed_integer_rem {
     ($left:expr, $right:expr, $array_type:ty, $min_val:expr) => {{
         let left = $left.as_any().downcast_ref::<$array_type>().unwrap();
         let right = $right.as_any().downcast_ref::<$array_type>().unwrap();
-        let result: $array_type = arrow::compute::kernels::arity::binary(left, right, |l, r| {
-            if l == $min_val && r == -1 {
-                0
-            } else {
-                l.rem(r)
-            }
-        })?;
+        let result: $array_type =
+            arrow::compute::kernels::arity::try_binary(left, right, |l, r| {
+                if l == $min_val && r == -1 {
+                    Ok(0)
+                } else {
+                    Ok(l.rem(r))
+                }
+            })?;
         Ok(ColumnarValue::Array(Arc::new(result)))
     }};
 }
