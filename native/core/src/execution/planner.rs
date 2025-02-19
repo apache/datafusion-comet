@@ -1566,9 +1566,8 @@ impl PhysicalPlanner {
                 let window_agg = Arc::new(BoundedWindowAggExec::try_new(
                     window_expr?,
                     Arc::clone(&child.native_plan),
-                    //TODO partition_exprs.to_vec(),
                     InputOrderMode::Sorted,
-                    true, // TODO can_repartition ?
+                    !partition_exprs.is_empty(),
                 )?);
                 Ok((
                     scans,
