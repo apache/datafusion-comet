@@ -21,7 +21,7 @@ package org.apache.comet.rules
 
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide, JoinSelectionHelper}
 import org.apache.spark.sql.catalyst.plans.logical.Join
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.{SortExec, SparkPlan}
 import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
 
 /**
@@ -56,6 +56,11 @@ object RewriteJoin extends JoinSelectionHelper {
     Some(side)
   }
 
+  private def removeSort(plan: SparkPlan) = plan match {
+    case _: SortExec => plan.children.head
+    case _ => plan
+  }
+
   def rewrite(plan: SparkPlan): SparkPlan = plan match {
     case smj: SortMergeJoinExec =>
       getSmjBuildSide(smj) match {
@@ -66,8 +71,8 @@ object RewriteJoin extends JoinSelectionHelper {
             smj.joinType,
             buildSide,
             smj.condition,
-            smj.left,
-            smj.right,
+            removeSort(smj.left),
+            removeSort(smj.right),
             smj.isSkewJoin)
         case _ => plan
       }
