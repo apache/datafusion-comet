@@ -1260,7 +1260,6 @@ impl PhysicalPlanner {
                 );
                 file_scan_config = file_scan_config.with_projection(Some(projection_vector));
 
-
                 // TODO
                 // let mut builder = ParquetExecBuilder::new(file_scan_config)
                 //     .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
@@ -1270,7 +1269,7 @@ impl PhysicalPlanner {
                 if let Some(filter) = cnf_data_filters {
                     // TODO
                     //file_scan_config.with_predicate()
-                //     builder = builder.with_predicate(filter);
+                    //     builder = builder.with_predicate(filter);
                 }
 
                 let scan = DataSourceExec::new(Arc::new(file_scan_config));

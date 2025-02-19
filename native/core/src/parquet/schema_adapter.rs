@@ -279,19 +279,19 @@ mod test {
     use arrow_array::UInt32Array;
     use arrow_schema::SchemaRef;
     use datafusion::datasource::listing::PartitionedFile;
-    use datafusion::datasource::physical_plan::{FileScanConfig, ParquetExec, ParquetSource};
+    use datafusion::datasource::physical_plan::{FileScanConfig, ParquetSource};
     use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::execution::TaskContext;
+    use datafusion::physical_plan::source::DataSourceExec;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
     use datafusion_comet_spark_expr::EvalMode;
+    use datafusion_common::config::TableParquetOptions;
     use datafusion_common::DataFusionError;
     use futures::StreamExt;
     use parquet::arrow::ArrowWriter;
     use std::fs::File;
     use std::sync::Arc;
-    use datafusion::physical_plan::source::DataSourceExec;
-    use datafusion_common::config::TableParquetOptions;
 
     #[tokio::test]
     async fn parquet_roundtrip_int_as_string() -> Result<(), DataFusionError> {
@@ -346,19 +346,20 @@ mod test {
 
         let parquet_source = Arc::new(ParquetSource::new(TableParquetOptions::new()));
 
-        let file_scan_config = FileScanConfig::new(object_store_url, required_schema, parquet_source)
-            .with_file_groups(vec![vec![PartitionedFile::from_path(
-                filename.to_string(),
-            )?]]);
+        let file_scan_config =
+            FileScanConfig::new(object_store_url, required_schema, parquet_source)
+                .with_file_groups(vec![vec![PartitionedFile::from_path(
+                    filename.to_string(),
+                )?]]);
 
         let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
         spark_parquet_options.allow_cast_unsigned_ints = true;
 
         let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
-            // TODO
-            // .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
-            //     spark_parquet_options,
-            // )))
+        // TODO
+        // .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
+        //     spark_parquet_options,
+        // )))
 
         let mut stream = parquet_exec
             .execute(0, Arc::new(TaskContext::default()))
