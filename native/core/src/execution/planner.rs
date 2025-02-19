@@ -75,6 +75,7 @@ use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctio
 use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::parquet_support::{register_object_store, SparkParquetOptions};
+use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{FileScanConfig, ParquetSource};
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
@@ -1244,7 +1245,10 @@ impl PhysicalPlanner {
                 );
                 spark_parquet_options.allow_cast_unsigned_ints = true;
 
-                let parquet_source = ParquetSource::new(table_parquet_options);
+                let parquet_source = ParquetSource::new(table_parquet_options)
+                    .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
+                        spark_parquet_options,
+                    )));
 
                 let mut file_scan_config = FileScanConfig::new(
                     object_store_url,
@@ -1259,12 +1263,6 @@ impl PhysicalPlanner {
                     required_schema.fields.len() + partition_schema.fields.len()
                 );
                 file_scan_config = file_scan_config.with_projection(Some(projection_vector));
-
-                // TODO
-                // let mut builder = ParquetExecBuilder::new(file_scan_config)
-                //     .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
-                //         spark_parquet_options,
-                //     )));
 
                 if let Some(filter) = cnf_data_filters {
                     // TODO
