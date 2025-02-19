@@ -41,6 +41,7 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
+          cache: 'maven'
       - name: Extract Comet version
         id: extract_version
         run: |
