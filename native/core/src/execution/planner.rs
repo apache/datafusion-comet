@@ -1245,10 +1245,15 @@ impl PhysicalPlanner {
                 );
                 spark_parquet_options.allow_cast_unsigned_ints = true;
 
-                let parquet_source = ParquetSource::new(table_parquet_options)
+                let mut parquet_source = ParquetSource::new(table_parquet_options)
                     .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
                         spark_parquet_options,
                     )));
+
+                if let Some(filter) = cnf_data_filters {
+                    parquet_source =
+                        parquet_source.with_predicate(Arc::clone(&data_schema), filter);
+                }
 
                 let mut file_scan_config = FileScanConfig::new(
                     object_store_url,
@@ -1263,12 +1268,6 @@ impl PhysicalPlanner {
                     required_schema.fields.len() + partition_schema.fields.len()
                 );
                 file_scan_config = file_scan_config.with_projection(Some(projection_vector));
-
-                if let Some(filter) = cnf_data_filters {
-                    // TODO
-                    //file_scan_config.with_predicate()
-                    //     builder = builder.with_predicate(filter);
-                }
 
                 let scan = DataSourceExec::new(Arc::new(file_scan_config));
                 Ok((
