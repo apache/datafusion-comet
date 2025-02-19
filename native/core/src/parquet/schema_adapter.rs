@@ -344,7 +344,14 @@ mod test {
 
         let object_store_url = ObjectStoreUrl::local_filesystem();
 
-        let parquet_source = Arc::new(ParquetSource::new(TableParquetOptions::new()));
+        let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        spark_parquet_options.allow_cast_unsigned_ints = true;
+
+        let parquet_source = Arc::new(
+            ParquetSource::new(TableParquetOptions::new()).with_schema_adapter_factory(Arc::new(
+                SparkSchemaAdapterFactory::new(spark_parquet_options),
+            )),
+        );
 
         let file_scan_config =
             FileScanConfig::new(object_store_url, required_schema, parquet_source)
@@ -352,14 +359,7 @@ mod test {
                     filename.to_string(),
                 )?]]);
 
-        let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
-        spark_parquet_options.allow_cast_unsigned_ints = true;
-
         let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
-        // TODO
-        // .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
-        //     spark_parquet_options,
-        // )))
 
         let mut stream = parquet_exec
             .execute(0, Arc::new(TaskContext::default()))
