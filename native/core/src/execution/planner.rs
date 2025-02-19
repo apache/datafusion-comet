@@ -1260,21 +1260,20 @@ impl PhysicalPlanner {
                 );
                 file_scan_config = file_scan_config.with_projection(Some(projection_vector));
 
-                let datasource_exec = DataSourceExec::new(Arc::new(file_scan_config));
 
                 // TODO
                 // let mut builder = ParquetExecBuilder::new(file_scan_config)
-                //     .with_table_parquet_options(table_parquet_options)
                 //     .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
                 //         spark_parquet_options,
                 //     )));
 
-                // TODO
-                // if let Some(filter) = cnf_data_filters {
+                if let Some(filter) = cnf_data_filters {
+                    // TODO
+                    //file_scan_config.with_predicate()
                 //     builder = builder.with_predicate(filter);
-                // }
+                }
 
-                let scan = datasource_exec;
+                let scan = DataSourceExec::new(Arc::new(file_scan_config));
                 Ok((
                     vec![],
                     Arc::new(SparkPlan::new(spark_plan.plan_id, Arc::new(scan), vec![])),

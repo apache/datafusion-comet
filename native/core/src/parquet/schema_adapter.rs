@@ -279,7 +279,7 @@ mod test {
     use arrow_array::UInt32Array;
     use arrow_schema::SchemaRef;
     use datafusion::datasource::listing::PartitionedFile;
-    use datafusion::datasource::physical_plan::{FileScanConfig, ParquetExec};
+    use datafusion::datasource::physical_plan::{FileScanConfig, ParquetExec, ParquetSource};
     use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::execution::TaskContext;
     use datafusion::physical_plan::ExecutionPlan;
@@ -290,6 +290,7 @@ mod test {
     use parquet::arrow::ArrowWriter;
     use std::fs::File;
     use std::sync::Arc;
+    use datafusion_common::config::TableParquetOptions;
 
     #[tokio::test]
     async fn parquet_roundtrip_int_as_string() -> Result<(), DataFusionError> {
@@ -341,7 +342,10 @@ mod test {
         writer.close()?;
 
         let object_store_url = ObjectStoreUrl::local_filesystem();
-        let file_scan_config = FileScanConfig::new(object_store_url, required_schema)
+
+        let parquet_source = Arc::new(ParquetSource::new(TableParquetOptions::new()));
+
+        let file_scan_config = FileScanConfig::new(object_store_url, required_schema, parquet_source)
             .with_file_groups(vec![vec![PartitionedFile::from_path(
                 filename.to_string(),
             )?]]);
