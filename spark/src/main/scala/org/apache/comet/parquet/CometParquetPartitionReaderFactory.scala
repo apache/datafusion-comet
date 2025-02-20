@@ -71,6 +71,17 @@ case class CometParquetPartitionReaderFactory(
   // Comet specific configurations
   private val batchSize = CometConf.COMET_BATCH_SIZE.get(sqlConf)
 
+  @transient private lazy val usingDataFusionReader: Boolean = {
+    val conf = broadcastedConf.value.value
+    conf.getBoolean(
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key,
+      CometConf.COMET_NATIVE_SCAN_ENABLED.defaultValue.get) &&
+    conf
+      .get(
+        CometConf.COMET_NATIVE_SCAN_IMPL.key,
+        CometConf.COMET_NATIVE_SCAN_IMPL.defaultValueString)
+      .equalsIgnoreCase(CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
+  }
   // This is only called at executor on a Broadcast variable, so we don't want it to be
   // materialized at driver.
   @transient private lazy val preFetchEnabled = {
@@ -78,7 +89,8 @@ case class CometParquetPartitionReaderFactory(
 
     conf.getBoolean(
       CometConf.COMET_SCAN_PREFETCH_ENABLED.key,
-      CometConf.COMET_SCAN_PREFETCH_ENABLED.defaultValue.get)
+      CometConf.COMET_SCAN_PREFETCH_ENABLED.defaultValue.get) &&
+    !usingDataFusionReader // Turn off prefetch if native_iceberg_compat is enabled
   }
 
   private var cometReaders: Iterator[BatchReader] = _
