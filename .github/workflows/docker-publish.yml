@@ -28,7 +28,7 @@ on:
       - '*.*.*-rc*'
       - 'test-docker-publish-*'
     branches:
-      - 'fix_docker'
+      - 'fix-docker'
 
 jobs:
   docker:
