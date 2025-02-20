@@ -2641,4 +2641,17 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("test integral divide") {
+    withTable("t1", "t2") {
+      sql(s"create table t1(c1 long, c2 int) using parquet")
+      // TODO: COMET-1412: Support warping div on overflow for Long.MinValue / -1
+      sql(s"insert into t1 values(10, 0), (52, 10)")
+      checkSparkAnswerAndOperator("select c1 div c2, div(c1, c2) from t1 order by c1")
+
+      sql(s"create table t2(c1 decimal(10, 2), c2 decimal(10, 2)) using parquet")
+      sql(s"insert into t2 values(15.09, 5.0), (13.2, 2), (18.66, 0)")
+      checkSparkAnswerAndOperator("select c1 div c2, div(c1, c2) from t2 order by c1")
+    }
+  }
+
 }

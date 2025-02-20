@@ -631,6 +631,20 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         }
         None
 
+      case IntegralDivide(left, right, evalMode)
+        if supportedDataType(left.dataType) && !decimalBeforeSpark34(left.dataType) =>
+        // convert IntegralDivide(...) to Cast(Divide(...), LongType)
+        exprToProtoInternal(Cast(Divide(left, right, evalMode), LongType), inputs, binding)
+
+      case div @ IntegralDivide(left, _, _) =>
+        if (!supportedDataType(left.dataType)) {
+          withInfo(div, s"Unsupported datatype ${left.dataType}")
+        }
+        if (decimalBeforeSpark34(left.dataType)) {
+          withInfo(div, "Decimal support requires Spark 3.4 or later")
+        }
+        None
+
       case rem @ Remainder(left, right, _)
           if supportedDataType(left.dataType) && !decimalBeforeSpark34(left.dataType) =>
         val rightExpr = nullIfWhenPrimitive(right)
