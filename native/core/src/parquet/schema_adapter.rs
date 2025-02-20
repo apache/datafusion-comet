@@ -107,8 +107,8 @@ impl SchemaAdapter for SparkSchemaAdapter {
             if let Some((table_idx, _table_field)) =
                 self.required_schema.fields().find(file_field.name())
             {
-                    field_mappings[table_idx] = Some(projection.len());
-                    projection.push(file_idx);
+                field_mappings[table_idx] = Some(projection.len());
+                projection.push(file_idx);
             }
         }
 
