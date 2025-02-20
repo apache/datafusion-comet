@@ -2648,9 +2648,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       sql("insert into t1 values(10, 0), (52, 10)")
       checkSparkAnswerAndOperator("select c1 div c2, div(c1, c2) from t1 order by c1")
 
-      sql("create table t2(c1 decimal(10, 2), c2 decimal(10, 2)) using parquet")
-      sql("insert into t2 values(15.09, 5.0), (13.2, 2), (18.66, 0)")
-      checkSparkAnswerAndOperator("select c1 div c2, div(c1, c2) from t2 order by c1")
+      if (isSpark34Plus) {
+        // Decimal support requires Spark 3.4 or later
+        sql("create table t2(c1 decimal(10, 2), c2 decimal(10, 2)) using parquet")
+        sql("insert into t2 values(15.09, 5.0), (13.2, 2), (18.66, 0)")
+        checkSparkAnswerAndOperator("select c1 div c2, div(c1, c2) from t2 order by c1")
+      }
     }
   }
 
