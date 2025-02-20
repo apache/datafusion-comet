@@ -29,8 +29,6 @@ object CometComplexTypeBenchmark extends CometBenchmarkBase {
 
   override def runCometBenchmark(args: Array[String]): Unit = {
 
-    val benchmark = new Benchmark("CometComplexTypeBenchmark", 10, output = output)
-
     // create test data
     val schema = StructType(
       Seq(
@@ -47,30 +45,52 @@ object CometComplexTypeBenchmark extends CometBenchmarkBase {
     val df = spark.createDataFrame(spark.sparkContext.parallelize(data), schema)
     df.write.mode("overwrite").parquet("spark/target/complex_types.parquet")
 
-    benchmark.addCase("ComplexTypeBenchmark - Spark") { _ =>
+    var benchmark = new Benchmark("bench1", 10, output = output)
+    benchmark.addCase("read struct and array - Spark") { _ =>
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        doComplexTypeTest()
+        spark.read.parquet("spark/target/complex_types.parquet").createOrReplaceTempView("t1")
+        spark.sql("""SELECT SIZE(metadata.tags) AS tag_count, COUNT(*)
+                    |FROM t1
+                    |GROUP BY tag_count""".stripMargin)
       }
     }
 
-    for (scan <- Seq("native_comet", "native_datafusion", "native_iceberg_compat"))
-      benchmark.addCase(s"ComplexTypeBenchmark - Comet $scan") { _ =>
+    for (scan <- Seq("native_comet", "native_datafusion", "native_iceberg_compat")) {
+      benchmark.addCase(s"read struct and array - Comet $scan") { _ =>
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "true",
           CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan,
           CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
-          doComplexTypeTest()
+          spark.read.parquet("spark/target/complex_types.parquet").createOrReplaceTempView("t1")
+          spark.sql("""SELECT SIZE(metadata.tags) AS tag_count, COUNT(*)
+                      |FROM t1
+                      |GROUP BY tag_count""".stripMargin)
         }
       }
-
+    }
     benchmark.run()
 
+    benchmark = new Benchmark("bench2", 10, output = output)
+    benchmark.addCase("to_json - Spark") { _ =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.read.parquet("spark/target/complex_types.parquet").createOrReplaceTempView("t1")
+        spark.sql("SELECT to_json(metadata) FROM t1")
+      }
+    }
+
+    for (scan <- Seq("native_comet", "native_datafusion", "native_iceberg_compat")) {
+      benchmark.addCase(s"to_json - Comet $scan") { _ =>
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan,
+          CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
+          spark.read.parquet("spark/target/complex_types.parquet").createOrReplaceTempView("t1")
+          spark.sql("SELECT to_json(metadata) FROM t1")
+        }
+      }
+    }
+
+    benchmark.run()
   }
 
-  private def doComplexTypeTest(): Unit = {
-    spark.read.parquet("spark/target/complex_types.parquet").createOrReplaceTempView("t1")
-    spark.sql("""SELECT SIZE(metadata.tags) AS tag_count, COUNT(*)
-                |FROM t1
-                |GROUP BY tag_count""".stripMargin)
-  }
 }
