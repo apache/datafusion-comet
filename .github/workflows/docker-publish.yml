@@ -27,6 +27,8 @@ on:
       - '*.*.*'
       - '*.*.*-rc*'
       - 'test-docker-publish-*'
+  pull_request:
+    types: [opened, edited]
     branches:
       - 'fix-docker'
 
