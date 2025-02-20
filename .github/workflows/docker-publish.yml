@@ -29,6 +29,10 @@ on:
       - 'test-docker-publish-*'
     branches:
       - 'fix-docker'
+  pull_request:
+    types: [opened, edited]
+    branches:
+      - 'fix-docker'
 
 jobs:
   docker:
@@ -43,7 +47,6 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: 'maven'
       - name: Extract Comet version
         id: extract_version
         run: |
