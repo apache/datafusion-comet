@@ -71,5 +71,4 @@ jobs:
           push: true
           tags: ghcr.io/apache/datafusion-comet:spark-3.4-scala-2.12-${{ env.COMET_VERSION }}
           file: kube/Dockerfile
-          build-args: "--progress=plain"
           no-cache: true
