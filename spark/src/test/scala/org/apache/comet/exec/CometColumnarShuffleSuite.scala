@@ -740,6 +740,8 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllTypes(path, false, 10000, 10010)
+        // TODO: revisit this when we have resolution of https://github.com/apache/arrow-rs/issues/7040
+        // and https://github.com/apache/arrow-rs/issues/7097
         val fieldsToTest = if (CometSparkSessionExtensions.usingDataFusionParquetExec(conf)) {
           Seq(
             $"_1",
