@@ -632,7 +632,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         None
 
       case IntegralDivide(left, right, evalMode)
-        if supportedDataType(left.dataType) && !decimalBeforeSpark34(left.dataType) =>
+          if supportedDataType(left.dataType) && !decimalBeforeSpark34(left.dataType) =>
         // convert IntegralDivide(...) to Cast(Divide(...), LongType)
         exprToProtoInternal(Cast(Divide(left, right, evalMode), LongType), inputs, binding)
 
