@@ -27,6 +27,7 @@ on:
       - '*.*.*'
       - '*.*.*-rc*'
       - 'test-docker-publish-*'
+  workflow_dispatch:
 
 jobs:
   docker:
