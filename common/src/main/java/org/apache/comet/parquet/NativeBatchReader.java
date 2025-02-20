@@ -260,7 +260,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     } ////// End get requested schema
 
     String timeZoneId = conf.get("spark.sql.session.timeZone");
-    Schema arrowSchema = Utils$.MODULE$.toArrowSchema(sparkSchema, timeZoneId);
+    // Native code uses "UTC" always as the timeZoneId when converting from spark to arrow schema.
+    Schema arrowSchema = Utils$.MODULE$.toArrowSchema(sparkSchema, "UTC");
     ByteArrayOutputStream out = new ByteArrayOutputStream();
     WriteChannel writeChannel = new WriteChannel(Channels.newChannel(out));
     MessageSerializer.serialize(writeChannel, arrowSchema);
