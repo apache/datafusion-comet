@@ -1012,6 +1012,7 @@ abstract class ParquetReadSuite extends CometTestBase {
                 Seq(StructField("_1", LongType, false), StructField("_2", DoubleType, false)))
 
             withParquetDataFrame(data, schema = Some(readSchema)) { df =>
+              // TODO: validate with Spark 3.x and 'usingDataFusionParquetExec=true'
               if (enableSchemaEvolution || usingDataFusionParquetExec(conf)) {
                 checkAnswer(df, data.map(Row.fromTuple))
               } else {
