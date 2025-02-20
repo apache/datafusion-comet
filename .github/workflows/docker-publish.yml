@@ -27,6 +27,8 @@ on:
       - '*.*.*'
       - '*.*.*-rc*'
       - 'test-docker-publish-*'
+    branches:
+      - 'fix_docker'
 
 jobs:
   docker:
@@ -41,6 +43,7 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
+          cache: 'maven'
       - name: Extract Comet version
         id: extract_version
         run: |
@@ -56,6 +59,8 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check Disk Space
+        run: df -h
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -63,3 +68,5 @@ jobs:
           push: true
           tags: ghcr.io/apache/datafusion-comet:spark-3.4-scala-2.12-${{ env.COMET_VERSION }}
           file: kube/Dockerfile
+          build-args: "--progress=plain"
+          no-cache: true
