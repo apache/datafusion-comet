@@ -95,7 +95,7 @@ object RewriteJoin extends JoinSelectionHelper {
       }
       return BuildLeft
     }
-    if (rightRowCount <= leftRowCount) {
+    if (rightSize <= leftSize) {
       return BuildRight
     }
     BuildLeft
