@@ -57,6 +57,8 @@ jobs:
           large-packages: true
           docker-images: true
           swap-storage: true
+      - name: Check disk
+        run: df -h
       - name: Set up Java
         uses: actions/setup-java@v3
         with:
