@@ -978,7 +978,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-objectstore-hdfs"
-version = "0.7.0"
+version = "0.7.0-apple"
 dependencies = [
  "async-trait",
  "bytes",
