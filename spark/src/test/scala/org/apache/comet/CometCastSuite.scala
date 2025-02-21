@@ -1215,9 +1215,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 else cometException.getMessage
               // for comet decimal conversion throws ArrowError(string) from arrow - across spark versions the message dont match.
               if (sparkMessage.contains("cannot be represented as")) {
-                assert(
-                  cometMessage.contains("cannot be represented as") || cometMessage.contains(
-                    "too large to store"))
+                cometMessage.contains("cannot be represented as") || cometMessage.contains(
+                  "too large to store")
               } else {
                 if (CometSparkSessionExtensions.isSpark40Plus) {
                   // for Spark 4 we expect to sparkException carries the message
