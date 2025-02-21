@@ -64,6 +64,7 @@ under the License.
     <jacoco.version>0.8.11</jacoco.version>
     <semanticdb.version>4.8.8</semanticdb.version>
     <slf4j.version>2.0.6</slf4j.version>
+    <guava.version>33.2.1-jre</guava.version>
     <jni.dir>${project.basedir}/../native/target/debug</jni.dir>
     <platform>darwin</platform>
     <arch>x86_64</arch>
@@ -336,7 +337,7 @@ under the License.
       <dependency>
         <groupId>com.google.guava</groupId>
         <artifactId>guava</artifactId>
-        <version>14.0.1</version>
+        <version>${guava.version}</version>
       </dependency>
       <!-- End of shaded deps -->
 

@@ -117,6 +117,12 @@ under the License.
     <dependency>
       <groupId>com.google.guava</groupId>
       <artifactId>guava</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>*</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>org.codehaus.jackson</groupId>
@@ -224,6 +230,10 @@ under the License.
                 <relocation>
                   <pattern>com.google.common</pattern>
                   <shadedPattern>${comet.shade.packageName}.guava</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>com.google.thirdparty</pattern>
+                  <shadedPattern>${comet.shade.packageName}.guava.thirdparty</shadedPattern>
                 </relocation>
               </relocations>
             </configuration>
