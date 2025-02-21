@@ -18,8 +18,8 @@
 use crate::hash_funcs::*;
 use crate::{
     spark_ceil, spark_date_add, spark_date_sub, spark_decimal_div, spark_floor, spark_hex,
-    spark_isnan, spark_make_decimal, spark_read_side_padding, spark_round, spark_unhex,
-    spark_unscaled_value, SparkChrFunc,
+    spark_isnan, spark_make_decimal, spark_read_side_padding, spark_round,
+    spark_signed_integer_remainder, spark_unhex, spark_unscaled_value, SparkChrFunc,
 };
 use arrow_schema::DataType;
 use datafusion_common::{DataFusionError, Result as DataFusionResult};
@@ -89,6 +89,13 @@ pub fn create_comet_physical_fun(
         }
         "decimal_div" => {
             make_comet_scalar_udf!("decimal_div", spark_decimal_div, data_type)
+        }
+        "signed_integer_remainder" => {
+            make_comet_scalar_udf!(
+                "signed_integer_remainder",
+                spark_signed_integer_remainder,
+                data_type
+            )
         }
         "murmur3_hash" => {
             let func = Arc::new(spark_murmur3_hash);
