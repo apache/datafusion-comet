@@ -62,8 +62,10 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Check Disk Space
-        run: du -h --max-depth=1 /
+      - name: Check Disk Space 0
+        run: du -h --max-depth=1 /usr
+      - name: Check Disk Space 1
+        run: du -h --max-depth=1 /opt
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
