@@ -42,6 +42,12 @@ jobs:
       contents: read
       packages: write
     steps:
+      - name: Remove unnecessary files
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+      - name: Check disk
+        run: df -h
       - name: Set up Java
         uses: actions/setup-java@v3
         with:
@@ -62,8 +68,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Check Disk Space
-        run: df -h
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -71,5 +75,4 @@ jobs:
           push: true
           tags: ghcr.io/apache/datafusion-comet:spark-3.4-scala-2.12-${{ env.COMET_VERSION }}
           file: kube/Dockerfile
-          build-args: "--progress=plain"
           no-cache: true
