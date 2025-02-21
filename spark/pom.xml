@@ -213,6 +213,10 @@ under the License.
                   <pattern>com.google.common</pattern>
                   <shadedPattern>${comet.shade.packageName}.guava</shadedPattern>
                 </relocation>
+                <relocation>
+                  <pattern>com.google.thirdparty</pattern>
+                  <shadedPattern>${comet.shade.packageName}.guava.thirdparty</shadedPattern>
+                </relocation>
               </relocations>
             </configuration>
           </execution>
