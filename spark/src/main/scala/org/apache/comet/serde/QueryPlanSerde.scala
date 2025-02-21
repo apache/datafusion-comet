@@ -815,7 +815,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               case DataTypes.DateType | DataTypes.TimestampType =>
                 // TODO implement these types with tests for formatting options and timezone
                 false
-              case _: MapType | _: ArrayType =>
+              case ArrayType(elementType, _) => isSupportedType(elementType)
+              case _: MapType =>
                 // Spark supports map and array in StructsToJson but this is not yet
                 // implemented in Comet
                 false
