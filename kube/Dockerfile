@@ -58,6 +58,10 @@ COPY pom.xml /comet/pom.xml
 RUN mkdir -p /root/.m2 && \
     echo '<settings><mirrors><mirror><id>central</id><mirrorOf>central</mirrorOf><url>https://repo1.maven.org/maven2</url></mirror></mirrors></settings>' > /root/.m2/settings.xml
 
+RUN rm -rf /root/.rustup
+
+RUN df -h
+
 # Pick the JDK instead of JRE to compile Comet
 RUN cd /comet \
     && JAVA_HOME=$(readlink -f $(which javac) | sed "s/\/bin\/javac//") make release-nogit PROFILES="-Pspark-$SPARK_VERSION -Pscala-$SCALA_VERSION"
