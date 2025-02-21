@@ -63,7 +63,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Check Disk Space
-        run: df -h
+        run: du -h --max-depth=1 /
       - name: Build and push
         uses: docker/build-push-action@v6
         with:

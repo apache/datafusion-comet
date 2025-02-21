@@ -35,7 +35,7 @@ ENV SCALA_VERSION=2.12
 RUN mkdir /comet
 WORKDIR /comet
 
-RUN du -h --max-depth=1
+RUN du -h --max-depth=1 /
 
 # build native code first so that this layer can be re-used
 # if only Scala code gets modified
@@ -62,7 +62,7 @@ RUN mkdir -p /root/.m2 && \
 
 RUN rm -rf /root/.rustup
 
-RUN du -h --max-depth=1
+RUN du -h --max-depth=1 /
 
 # Pick the JDK instead of JRE to compile Comet
 RUN cd /comet \
