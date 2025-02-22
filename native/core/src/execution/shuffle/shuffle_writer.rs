@@ -17,14 +17,11 @@
 
 //! Defines the External shuffle repartition plan.
 
-use crate::errors::{CometError, CometResult};
 use crate::execution::shuffle::builders::{
     append_columns, make_batch, new_array_builders, slot_size,
 };
 use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
 use async_trait::async_trait;
-use bytes::Buf;
-use crc32fast::Hasher;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::{
     arrow::{array::*, datatypes::SchemaRef, error::ArrowError, record_batch::RecordBatch},
@@ -49,7 +46,6 @@ use datafusion_physical_expr::EquivalenceProperties;
 use futures::executor::block_on;
 use futures::{lock::Mutex, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
-use simd_adler32::Adler32;
 use std::io::Error;
 use std::{
     any::Any,
@@ -215,6 +211,42 @@ impl ShuffleWriterExec {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn external_shuffle(
+    mut input: SendableRecordBatchStream,
+    partition_id: usize,
+    output_data_file: String,
+    output_index_file: String,
+    partitioning: Partitioning,
+    metrics: ShuffleRepartitionerMetrics,
+    context: Arc<TaskContext>,
+    codec: CompressionCodec,
+    enable_fast_encoding: bool,
+) -> Result<SendableRecordBatchStream> {
+    let schema = input.schema();
+    let mut repartitioner = ShuffleRepartitioner::try_new(
+        partition_id,
+        output_data_file,
+        output_index_file,
+        Arc::clone(&schema),
+        partitioning,
+        metrics,
+        context.runtime_env(),
+        context.session_config().batch_size(),
+        codec,
+        enable_fast_encoding,
+    )?;
+
+    while let Some(batch) = input.next().await {
+        // Block on the repartitioner to insert the batch and shuffle the rows
+        // into the corresponding partition buffer.
+        // Otherwise, pull the next batch from the input stream might overwrite the
+        // current batch in the repartitioner.
+        block_on(repartitioner.insert_batch(batch?))?;
+    }
+    repartitioner.shuffle_write().await
+}
+
 struct PartitionBuffer {
     /// The schema of batches to be partitioned.
     schema: SchemaRef,
@@ -375,27 +407,6 @@ struct SpillInfo {
     offsets: Vec<u64>,
 }
 
-struct ShuffleRepartitioner {
-    output_data_file: String,
-    output_index_file: String,
-    schema: SchemaRef,
-    buffered_partitions: Vec<PartitionBuffer>,
-    spills: Mutex<Vec<SpillInfo>>,
-    /// Sort expressions
-    /// Partitioning scheme to use
-    partitioning: Partitioning,
-    num_output_partitions: usize,
-    runtime: Arc<RuntimeEnv>,
-    metrics: ShuffleRepartitionerMetrics,
-    reservation: MemoryReservation,
-    /// Hashes for each row in the current batch
-    hashes_buf: Vec<u32>,
-    /// Partition ids for each row in the current batch
-    partition_ids: Vec<u64>,
-    /// The configured batch size
-    batch_size: usize,
-}
-
 struct ShuffleRepartitionerMetrics {
     /// metrics
     baseline: BaselineMetrics,
@@ -439,6 +450,27 @@ impl ShuffleRepartitionerMetrics {
             data_size: MetricBuilder::new(metrics).counter("data_size", partition),
         }
     }
+}
+
+struct ShuffleRepartitioner {
+    output_data_file: String,
+    output_index_file: String,
+    schema: SchemaRef,
+    buffered_partitions: Vec<PartitionBuffer>,
+    spills: Mutex<Vec<SpillInfo>>,
+    /// Sort expressions
+    /// Partitioning scheme to use
+    partitioning: Partitioning,
+    num_output_partitions: usize,
+    runtime: Arc<RuntimeEnv>,
+    metrics: ShuffleRepartitionerMetrics,
+    reservation: MemoryReservation,
+    /// Hashes for each row in the current batch
+    hashes_buf: Vec<u32>,
+    /// Partition ids for each row in the current batch
+    partition_ids: Vec<u64>,
+    /// The configured batch size
+    batch_size: usize,
 }
 
 impl ShuffleRepartitioner {
@@ -860,6 +892,17 @@ impl ShuffleRepartitioner {
     }
 }
 
+impl Debug for ShuffleRepartitioner {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ShuffleRepartitioner")
+            .field("memory_used", &self.used())
+            .field("spilled_bytes", &self.spilled_bytes())
+            .field("spilled_count", &self.spill_count())
+            .field("data_size", &self.data_size())
+            .finish()
+    }
+}
+
 /// consume the `buffered_partitions` and do spill into a single temp shuffle output file
 fn spill_into(
     buffered_partitions: &mut [PartitionBuffer],
@@ -895,112 +938,6 @@ fn spill_into(
     // add one extra offset at last to ease partition length computation
     offsets[num_output_partitions] = spill_data.stream_position()?;
     Ok(offsets)
-}
-
-impl Debug for ShuffleRepartitioner {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ShuffleRepartitioner")
-            .field("memory_used", &self.used())
-            .field("spilled_bytes", &self.spilled_bytes())
-            .field("spilled_count", &self.spill_count())
-            .field("data_size", &self.data_size())
-            .finish()
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn external_shuffle(
-    mut input: SendableRecordBatchStream,
-    partition_id: usize,
-    output_data_file: String,
-    output_index_file: String,
-    partitioning: Partitioning,
-    metrics: ShuffleRepartitionerMetrics,
-    context: Arc<TaskContext>,
-    codec: CompressionCodec,
-    enable_fast_encoding: bool,
-) -> Result<SendableRecordBatchStream> {
-    let schema = input.schema();
-    let mut repartitioner = ShuffleRepartitioner::try_new(
-        partition_id,
-        output_data_file,
-        output_index_file,
-        Arc::clone(&schema),
-        partitioning,
-        metrics,
-        context.runtime_env(),
-        context.session_config().batch_size(),
-        codec,
-        enable_fast_encoding,
-    )?;
-
-    while let Some(batch) = input.next().await {
-        // Block on the repartitioner to insert the batch and shuffle the rows
-        // into the corresponding partition buffer.
-        // Otherwise, pull the next batch from the input stream might overwrite the
-        // current batch in the repartitioner.
-        block_on(repartitioner.insert_batch(batch?))?;
-    }
-    repartitioner.shuffle_write().await
-}
-
-/// Checksum algorithms for writing IPC bytes.
-#[derive(Clone)]
-pub(crate) enum Checksum {
-    /// CRC32 checksum algorithm.
-    CRC32(Hasher),
-    /// Adler32 checksum algorithm.
-    Adler32(Adler32),
-}
-
-impl Checksum {
-    pub(crate) fn try_new(algo: i32, initial_opt: Option<u32>) -> CometResult<Self> {
-        match algo {
-            0 => {
-                let hasher = if let Some(initial) = initial_opt {
-                    Hasher::new_with_initial(initial)
-                } else {
-                    Hasher::new()
-                };
-                Ok(Checksum::CRC32(hasher))
-            }
-            1 => {
-                let hasher = if let Some(initial) = initial_opt {
-                    // Note that Adler32 initial state is not zero.
-                    // i.e., `Adler32::from_checksum(0)` is not the same as `Adler32::new()`.
-                    Adler32::from_checksum(initial)
-                } else {
-                    Adler32::new()
-                };
-                Ok(Checksum::Adler32(hasher))
-            }
-            _ => Err(CometError::Internal(
-                "Unsupported checksum algorithm".to_string(),
-            )),
-        }
-    }
-
-    pub(crate) fn update(&mut self, cursor: &mut Cursor<&mut Vec<u8>>) -> CometResult<()> {
-        match self {
-            Checksum::CRC32(hasher) => {
-                std::io::Seek::seek(cursor, SeekFrom::Start(0))?;
-                hasher.update(cursor.chunk());
-                Ok(())
-            }
-            Checksum::Adler32(hasher) => {
-                std::io::Seek::seek(cursor, SeekFrom::Start(0))?;
-                hasher.write(cursor.chunk());
-                Ok(())
-            }
-        }
-    }
-
-    pub(crate) fn finalize(self) -> u32 {
-        match self {
-            Checksum::CRC32(hasher) => hasher.finalize(),
-            Checksum::Adler32(hasher) => hasher.finish(),
-        }
-    }
 }
 
 /// A stream that yields no record batches which represent end of output.

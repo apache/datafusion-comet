@@ -21,10 +21,9 @@ use crate::{
     errors::CometError,
     execution::{
         shuffle::{
-            codec::ShuffleBlockWriter,
+            codec::{Checksum, ShuffleBlockWriter},
             list::{append_list_element, SparkUnsafeArray},
             map::{append_map_elements, get_map_key_value_dt, SparkUnsafeMap},
-            shuffle_writer::Checksum,
         },
         utils::bytes_to_i128,
     },
