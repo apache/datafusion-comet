@@ -59,14 +59,6 @@ use std::{
 };
 use tokio::time::Instant;
 
-/// The status of appending rows to a partition buffer.
-enum AppendRowStatus {
-    /// The difference in memory usage after appending rows
-    MemDiff(Result<isize>),
-    /// The index of the next row to append
-    StartIndex(usize),
-}
-
 /// The shuffle writer operator maps each input partition to M output partitions based on a
 /// partitioning scheme. No guarantees are made about the order of the resulting partitions.
 #[derive(Debug)]
@@ -245,6 +237,14 @@ async fn external_shuffle(
         block_on(repartitioner.insert_batch(batch?))?;
     }
     repartitioner.shuffle_write().await
+}
+
+/// The status of appending rows to a partition buffer.
+enum AppendRowStatus {
+    /// The difference in memory usage after appending rows
+    MemDiff(Result<isize>),
+    /// The index of the next row to append
+    StartIndex(usize),
 }
 
 struct PartitionBuffer {
