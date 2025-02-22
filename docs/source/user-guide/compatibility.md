@@ -162,6 +162,7 @@ The following cast operations are generally compatible with Spark except for the
 | decimal | long |  |
 | decimal | float |  |
 | decimal | double |  |
+| decimal | decimal |  |
 | decimal | string | There can be formatting differences in some case due to Spark using scientific notation where Comet does not |
 | string | boolean |  |
 | string | byte |  |
