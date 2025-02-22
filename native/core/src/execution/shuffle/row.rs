@@ -21,9 +21,10 @@ use crate::{
     errors::CometError,
     execution::{
         shuffle::{
+            codec::ShuffleBlockWriter,
             list::{append_list_element, SparkUnsafeArray},
             map::{append_map_elements, get_map_key_value_dt, SparkUnsafeMap},
-            shuffle_writer::{Checksum, ShuffleBlockWriter},
+            shuffle_writer::Checksum,
         },
         utils::bytes_to_i128,
     },
@@ -292,7 +293,7 @@ macro_rules! downcast_builder_ref {
 }
 
 // Expose the macro for other modules.
-use crate::execution::shuffle::shuffle_writer::CompressionCodec;
+use crate::execution::shuffle::CompressionCodec;
 pub(crate) use downcast_builder_ref;
 
 /// Appends field of row to the given struct builder. `dt` is the data type of the field.
