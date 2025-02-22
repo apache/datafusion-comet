@@ -89,6 +89,36 @@ pub struct ShuffleWriterExec {
     enable_fast_encoding: bool,
 }
 
+impl ShuffleWriterExec {
+    /// Create a new ShuffleWriterExec
+    pub fn try_new(
+        input: Arc<dyn ExecutionPlan>,
+        partitioning: Partitioning,
+        codec: CompressionCodec,
+        output_data_file: String,
+        output_index_file: String,
+        enable_fast_encoding: bool,
+    ) -> Result<Self> {
+        let cache = PlanProperties::new(
+            EquivalenceProperties::new(Arc::clone(&input.schema())),
+            partitioning.clone(),
+            EmissionType::Final,
+            Boundedness::Bounded,
+        );
+
+        Ok(ShuffleWriterExec {
+            input,
+            partitioning,
+            metrics: ExecutionPlanMetricsSet::new(),
+            output_data_file,
+            output_index_file,
+            cache,
+            codec,
+            enable_fast_encoding,
+        })
+    }
+}
+
 impl DisplayAs for ShuffleWriterExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match t {
@@ -108,6 +138,22 @@ impl ExecutionPlan for ShuffleWriterExec {
     /// Return a reference to Any that can be used for downcasting
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn name(&self) -> &str {
+        "ShuffleWriterExec"
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
+
+    fn statistics(&self) -> Result<Statistics> {
+        self.input.statistics()
+    }
+
+    fn properties(&self) -> &PlanProperties {
+        &self.cache
     }
 
     /// Get the schema for this execution plan
@@ -162,52 +208,6 @@ impl ExecutionPlan for ShuffleWriterExec {
             )
             .try_flatten(),
         )))
-    }
-
-    fn metrics(&self) -> Option<MetricsSet> {
-        Some(self.metrics.clone_inner())
-    }
-
-    fn statistics(&self) -> Result<Statistics> {
-        self.input.statistics()
-    }
-
-    fn properties(&self) -> &PlanProperties {
-        &self.cache
-    }
-
-    fn name(&self) -> &str {
-        "ShuffleWriterExec"
-    }
-}
-
-impl ShuffleWriterExec {
-    /// Create a new ShuffleWriterExec
-    pub fn try_new(
-        input: Arc<dyn ExecutionPlan>,
-        partitioning: Partitioning,
-        codec: CompressionCodec,
-        output_data_file: String,
-        output_index_file: String,
-        enable_fast_encoding: bool,
-    ) -> Result<Self> {
-        let cache = PlanProperties::new(
-            EquivalenceProperties::new(Arc::clone(&input.schema())),
-            partitioning.clone(),
-            EmissionType::Final,
-            Boundedness::Bounded,
-        );
-
-        Ok(ShuffleWriterExec {
-            input,
-            partitioning,
-            metrics: ExecutionPlanMetricsSet::new(),
-            output_data_file,
-            output_index_file,
-            cache,
-            codec,
-            enable_fast_encoding,
-        })
     }
 }
 
