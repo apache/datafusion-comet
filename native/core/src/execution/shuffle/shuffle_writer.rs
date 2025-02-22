@@ -239,174 +239,6 @@ async fn external_shuffle(
     repartitioner.shuffle_write().await
 }
 
-/// The status of appending rows to a partition buffer.
-enum AppendRowStatus {
-    /// The difference in memory usage after appending rows
-    MemDiff(Result<isize>),
-    /// The index of the next row to append
-    StartIndex(usize),
-}
-
-struct PartitionBuffer {
-    /// The schema of batches to be partitioned.
-    schema: SchemaRef,
-    /// The "frozen" Arrow IPC bytes of active data. They are frozen when `flush` is called.
-    frozen: Vec<u8>,
-    /// Array builders for appending rows into buffering batches.
-    active: Vec<Box<dyn ArrayBuilder>>,
-    /// The estimation of memory size of active builders in bytes when they are filled.
-    active_slots_mem_size: usize,
-    /// Number of rows in active builders.
-    num_active_rows: usize,
-    /// The maximum number of rows in a batch. Once `num_active_rows` reaches `batch_size`,
-    /// the active array builders will be frozen and appended to frozen buffer `frozen`.
-    batch_size: usize,
-    /// Memory reservation for this partition buffer.
-    reservation: MemoryReservation,
-    /// Writer that performs encoding and compression
-    shuffle_block_writer: ShuffleBlockWriter,
-}
-
-impl PartitionBuffer {
-    fn try_new(
-        schema: SchemaRef,
-        batch_size: usize,
-        partition_id: usize,
-        runtime: &Arc<RuntimeEnv>,
-        codec: CompressionCodec,
-        enable_fast_encoding: bool,
-    ) -> Result<Self> {
-        let reservation = MemoryConsumer::new(format!("PartitionBuffer[{}]", partition_id))
-            .with_can_spill(true)
-            .register(&runtime.memory_pool);
-        let shuffle_block_writer =
-            ShuffleBlockWriter::try_new(schema.as_ref(), enable_fast_encoding, codec)?;
-        Ok(Self {
-            schema,
-            frozen: vec![],
-            active: vec![],
-            active_slots_mem_size: 0,
-            num_active_rows: 0,
-            batch_size,
-            reservation,
-            shuffle_block_writer,
-        })
-    }
-
-    /// Initializes active builders if necessary.
-    /// Returns error if memory reservation fails.
-    fn init_active_if_necessary(&mut self, metrics: &ShuffleRepartitionerMetrics) -> Result<isize> {
-        let mut mem_diff = 0;
-
-        if self.active.is_empty() {
-            // Estimate the memory size of active builders
-            if self.active_slots_mem_size == 0 {
-                self.active_slots_mem_size = self
-                    .schema
-                    .fields()
-                    .iter()
-                    .map(|field| slot_size(self.batch_size, field.data_type()))
-                    .sum::<usize>();
-            }
-
-            let mut mempool_timer = metrics.mempool_time.timer();
-            self.reservation.try_grow(self.active_slots_mem_size)?;
-            mempool_timer.stop();
-
-            let mut repart_timer = metrics.repart_time.timer();
-            self.active = new_array_builders(&self.schema, self.batch_size);
-            repart_timer.stop();
-
-            mem_diff += self.active_slots_mem_size as isize;
-        }
-        Ok(mem_diff)
-    }
-
-    /// Appends rows of specified indices from columns into active array builders.
-    fn append_rows(
-        &mut self,
-        columns: &[ArrayRef],
-        indices: &[usize],
-        start_index: usize,
-        metrics: &ShuffleRepartitionerMetrics,
-    ) -> AppendRowStatus {
-        let mut mem_diff = 0;
-        let mut start = start_index;
-
-        // lazy init because some partition may be empty
-        let init = self.init_active_if_necessary(metrics);
-        if init.is_err() {
-            return AppendRowStatus::StartIndex(start);
-        }
-        mem_diff += init.unwrap();
-
-        while start < indices.len() {
-            let end = (start + self.batch_size).min(indices.len());
-
-            let mut repart_timer = metrics.repart_time.timer();
-            self.active
-                .iter_mut()
-                .zip(columns)
-                .for_each(|(builder, column)| {
-                    append_columns(builder, column, &indices[start..end], column.data_type());
-                });
-            self.num_active_rows += end - start;
-            repart_timer.stop();
-
-            if self.num_active_rows >= self.batch_size {
-                let flush = self.flush(metrics);
-                if let Err(e) = flush {
-                    return AppendRowStatus::MemDiff(Err(e));
-                }
-                mem_diff += flush.unwrap();
-
-                let init = self.init_active_if_necessary(metrics);
-                if init.is_err() {
-                    return AppendRowStatus::StartIndex(end);
-                }
-                mem_diff += init.unwrap();
-            }
-            start = end;
-        }
-        AppendRowStatus::MemDiff(Ok(mem_diff))
-    }
-
-    /// flush active data into frozen bytes
-    fn flush(&mut self, metrics: &ShuffleRepartitionerMetrics) -> Result<isize> {
-        if self.num_active_rows == 0 {
-            return Ok(0);
-        }
-        let mut mem_diff = 0isize;
-
-        // active -> staging
-        let active = std::mem::take(&mut self.active);
-        let num_rows = self.num_active_rows;
-        self.num_active_rows = 0;
-
-        let mut mempool_timer = metrics.mempool_time.timer();
-        self.reservation.try_shrink(self.active_slots_mem_size)?;
-        mempool_timer.stop();
-
-        let mut repart_timer = metrics.repart_time.timer();
-        let frozen_batch = make_batch(Arc::clone(&self.schema), active, num_rows)?;
-        repart_timer.stop();
-
-        let frozen_capacity_old = self.frozen.capacity();
-        let mut cursor = Cursor::new(&mut self.frozen);
-        cursor.seek(SeekFrom::End(0))?;
-        self.shuffle_block_writer
-            .write_batch(&frozen_batch, &mut cursor, &metrics.encode_time)?;
-
-        mem_diff += (self.frozen.capacity() - frozen_capacity_old) as isize;
-        Ok(mem_diff)
-    }
-}
-
-struct SpillInfo {
-    file: RefCountedTempFile,
-    offsets: Vec<u64>,
-}
-
 struct ShuffleRepartitionerMetrics {
     /// metrics
     baseline: BaselineMetrics,
@@ -901,6 +733,174 @@ impl Debug for ShuffleRepartitioner {
             .field("data_size", &self.data_size())
             .finish()
     }
+}
+
+/// The status of appending rows to a partition buffer.
+enum AppendRowStatus {
+    /// The difference in memory usage after appending rows
+    MemDiff(Result<isize>),
+    /// The index of the next row to append
+    StartIndex(usize),
+}
+
+struct PartitionBuffer {
+    /// The schema of batches to be partitioned.
+    schema: SchemaRef,
+    /// The "frozen" Arrow IPC bytes of active data. They are frozen when `flush` is called.
+    frozen: Vec<u8>,
+    /// Array builders for appending rows into buffering batches.
+    active: Vec<Box<dyn ArrayBuilder>>,
+    /// The estimation of memory size of active builders in bytes when they are filled.
+    active_slots_mem_size: usize,
+    /// Number of rows in active builders.
+    num_active_rows: usize,
+    /// The maximum number of rows in a batch. Once `num_active_rows` reaches `batch_size`,
+    /// the active array builders will be frozen and appended to frozen buffer `frozen`.
+    batch_size: usize,
+    /// Memory reservation for this partition buffer.
+    reservation: MemoryReservation,
+    /// Writer that performs encoding and compression
+    shuffle_block_writer: ShuffleBlockWriter,
+}
+
+impl PartitionBuffer {
+    fn try_new(
+        schema: SchemaRef,
+        batch_size: usize,
+        partition_id: usize,
+        runtime: &Arc<RuntimeEnv>,
+        codec: CompressionCodec,
+        enable_fast_encoding: bool,
+    ) -> Result<Self> {
+        let reservation = MemoryConsumer::new(format!("PartitionBuffer[{}]", partition_id))
+            .with_can_spill(true)
+            .register(&runtime.memory_pool);
+        let shuffle_block_writer =
+            ShuffleBlockWriter::try_new(schema.as_ref(), enable_fast_encoding, codec)?;
+        Ok(Self {
+            schema,
+            frozen: vec![],
+            active: vec![],
+            active_slots_mem_size: 0,
+            num_active_rows: 0,
+            batch_size,
+            reservation,
+            shuffle_block_writer,
+        })
+    }
+
+    /// Initializes active builders if necessary.
+    /// Returns error if memory reservation fails.
+    fn init_active_if_necessary(&mut self, metrics: &ShuffleRepartitionerMetrics) -> Result<isize> {
+        let mut mem_diff = 0;
+
+        if self.active.is_empty() {
+            // Estimate the memory size of active builders
+            if self.active_slots_mem_size == 0 {
+                self.active_slots_mem_size = self
+                    .schema
+                    .fields()
+                    .iter()
+                    .map(|field| slot_size(self.batch_size, field.data_type()))
+                    .sum::<usize>();
+            }
+
+            let mut mempool_timer = metrics.mempool_time.timer();
+            self.reservation.try_grow(self.active_slots_mem_size)?;
+            mempool_timer.stop();
+
+            let mut repart_timer = metrics.repart_time.timer();
+            self.active = new_array_builders(&self.schema, self.batch_size);
+            repart_timer.stop();
+
+            mem_diff += self.active_slots_mem_size as isize;
+        }
+        Ok(mem_diff)
+    }
+
+    /// Appends rows of specified indices from columns into active array builders.
+    fn append_rows(
+        &mut self,
+        columns: &[ArrayRef],
+        indices: &[usize],
+        start_index: usize,
+        metrics: &ShuffleRepartitionerMetrics,
+    ) -> AppendRowStatus {
+        let mut mem_diff = 0;
+        let mut start = start_index;
+
+        // lazy init because some partition may be empty
+        let init = self.init_active_if_necessary(metrics);
+        if init.is_err() {
+            return AppendRowStatus::StartIndex(start);
+        }
+        mem_diff += init.unwrap();
+
+        while start < indices.len() {
+            let end = (start + self.batch_size).min(indices.len());
+
+            let mut repart_timer = metrics.repart_time.timer();
+            self.active
+                .iter_mut()
+                .zip(columns)
+                .for_each(|(builder, column)| {
+                    append_columns(builder, column, &indices[start..end], column.data_type());
+                });
+            self.num_active_rows += end - start;
+            repart_timer.stop();
+
+            if self.num_active_rows >= self.batch_size {
+                let flush = self.flush(metrics);
+                if let Err(e) = flush {
+                    return AppendRowStatus::MemDiff(Err(e));
+                }
+                mem_diff += flush.unwrap();
+
+                let init = self.init_active_if_necessary(metrics);
+                if init.is_err() {
+                    return AppendRowStatus::StartIndex(end);
+                }
+                mem_diff += init.unwrap();
+            }
+            start = end;
+        }
+        AppendRowStatus::MemDiff(Ok(mem_diff))
+    }
+
+    /// flush active data into frozen bytes
+    fn flush(&mut self, metrics: &ShuffleRepartitionerMetrics) -> Result<isize> {
+        if self.num_active_rows == 0 {
+            return Ok(0);
+        }
+        let mut mem_diff = 0isize;
+
+        // active -> staging
+        let active = std::mem::take(&mut self.active);
+        let num_rows = self.num_active_rows;
+        self.num_active_rows = 0;
+
+        let mut mempool_timer = metrics.mempool_time.timer();
+        self.reservation.try_shrink(self.active_slots_mem_size)?;
+        mempool_timer.stop();
+
+        let mut repart_timer = metrics.repart_time.timer();
+        let frozen_batch = make_batch(Arc::clone(&self.schema), active, num_rows)?;
+        repart_timer.stop();
+
+        let frozen_capacity_old = self.frozen.capacity();
+        let mut cursor = Cursor::new(&mut self.frozen);
+        cursor.seek(SeekFrom::End(0))?;
+        self.shuffle_block_writer
+            .write_batch(&frozen_batch, &mut cursor, &metrics.encode_time)?;
+
+        mem_diff += (self.frozen.capacity() - frozen_capacity_old) as isize;
+        Ok(mem_diff)
+    }
+}
+
+struct SpillInfo {
+    file: RefCountedTempFile,
+    offsets: Vec<u64>,
 }
 
 /// consume the `buffered_partitions` and do spill into a single temp shuffle output file
