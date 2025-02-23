@@ -738,7 +738,7 @@ struct PartitionBuffer {
     reservation: MemoryReservation,
     /// Spill file for intermediate shuffle output for this partition
     spill_file: Option<SpillFile>,
-    /// Spill file for intermediate shuffle output for this partition
+    /// Writer that performs encoding and compression
     shuffle_block_writer: ShuffleBlockWriter,
 }
 
