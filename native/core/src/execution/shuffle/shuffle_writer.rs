@@ -44,16 +44,16 @@ use datafusion::{
 use datafusion_comet_spark_expr::hash_funcs::murmur3::create_murmur3_hashes;
 use datafusion_physical_expr::EquivalenceProperties;
 use futures::executor::block_on;
-use futures::{lock::Mutex, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
+use parquet::file::reader::Length;
 use std::io::Error;
 use std::{
     any::Any,
     fmt,
     fmt::{Debug, Formatter},
     fs::{File, OpenOptions},
-    io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write},
-    path::Path,
+    io::{BufReader, BufWriter, Cursor, Seek, SeekFrom, Write},
     sync::Arc,
     task::{Context, Poll},
 };
@@ -289,12 +289,10 @@ struct ShuffleRepartitioner {
     output_index_file: String,
     schema: SchemaRef,
     buffered_partitions: Vec<PartitionBuffer>,
-    spills: Mutex<Vec<SpillInfo>>,
     /// Sort expressions
     /// Partitioning scheme to use
     partitioning: Partitioning,
     num_output_partitions: usize,
-    runtime: Arc<RuntimeEnv>,
     metrics: ShuffleRepartitionerMetrics,
     reservation: MemoryReservation,
     /// Hashes for each row in the current batch
@@ -350,10 +348,8 @@ impl ShuffleRepartitioner {
                     )
                 })
                 .collect::<Result<Vec<_>>>()?,
-            spills: Mutex::new(vec![]),
             partitioning,
             num_output_partitions,
-            runtime,
             metrics,
             reservation,
             hashes_buf,
@@ -550,9 +546,6 @@ impl ShuffleRepartitioner {
             output_batches[i] = std::mem::take(&mut buffered_partitions[i].frozen);
         }
 
-        let mut spills = self.spills.lock().await;
-        let output_spills = spills.drain(..).collect::<Vec<_>>();
-
         let data_file = self.output_data_file.clone();
         let index_file = self.output_index_file.clone();
 
@@ -572,16 +565,12 @@ impl ShuffleRepartitioner {
             output_data.write_all(&output_batches[i])?;
             output_batches[i].clear();
 
-            // append partition in each spills
-            for spill in &output_spills {
-                let length = spill.offsets[i + 1] - spill.offsets[i];
-                if length > 0 {
-                    let mut spill_file =
-                        BufReader::new(File::open(spill.file.path()).map_err(Self::to_df_err)?);
-                    spill_file.seek(SeekFrom::Start(spill.offsets[i]))?;
-                    std::io::copy(&mut spill_file.take(length), &mut output_data)
-                        .map_err(Self::to_df_err)?;
-                }
+            if self.buffered_partitions[i].spill_data.len() > 0 {
+                let mut spill_file = BufReader::new(
+                    File::open(self.buffered_partitions[i].spill_file.path())
+                        .map_err(Self::to_df_err)?,
+                );
+                std::io::copy(&mut spill_file, &mut output_data).map_err(Self::to_df_err)?;
             }
         }
         output_data.flush()?;
@@ -645,28 +634,13 @@ impl ShuffleRepartitioner {
             return Ok(0);
         }
 
-        let mut timer = self.metrics.write_time.timer();
-        let spillfile = self
-            .runtime
-            .disk_manager
-            .create_tmp_file("shuffle writer spill")?;
-        timer.stop();
+        for p in &mut self.buffered_partitions {
+            p.spill(&self.metrics)?;
+        }
 
-        let offsets = spill_into(
-            &mut self.buffered_partitions,
-            spillfile.path(),
-            self.num_output_partitions,
-            &self.metrics,
-        )?;
-
-        let mut spills = self.spills.lock().await;
         let used = self.reservation.size();
         self.metrics.spill_count.add(1);
-        self.metrics.spilled_bytes.add(used);
-        spills.push(SpillInfo {
-            file: spillfile,
-            offsets,
-        });
+        // self.metrics.spilled_bytes.add(used);
         Ok(used)
     }
 
@@ -759,6 +733,10 @@ struct PartitionBuffer {
     batch_size: usize,
     /// Memory reservation for this partition buffer.
     reservation: MemoryReservation,
+    /// Spill file for intermediate shuffle output for this partition
+    spill_file: RefCountedTempFile,
+    /// Spill file for intermediate shuffle output for this partition
+    spill_data: File,
     /// Writer that performs encoding and compression
     shuffle_block_writer: ShuffleBlockWriter,
 }
@@ -777,6 +755,21 @@ impl PartitionBuffer {
             .register(&runtime.memory_pool);
         let shuffle_block_writer =
             ShuffleBlockWriter::try_new(schema.as_ref(), enable_fast_encoding, codec)?;
+
+        // TODO include file creation time in shuffle write time metric
+        let spill_file = runtime
+            .disk_manager
+            .create_tmp_file("shuffle writer spill")?;
+
+        let spill_data = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(spill_file.path())
+            .map_err(|e| {
+                DataFusionError::Execution(format!("Error occurred while spilling {}", e))
+            })?;
+
         Ok(Self {
             schema,
             frozen: vec![],
@@ -785,6 +778,8 @@ impl PartitionBuffer {
             num_active_rows: 0,
             batch_size,
             reservation,
+            spill_file,
+            spill_data,
             shuffle_block_writer,
         })
     }
@@ -896,48 +891,15 @@ impl PartitionBuffer {
         mem_diff += (self.frozen.capacity() - frozen_capacity_old) as isize;
         Ok(mem_diff)
     }
-}
 
-struct SpillInfo {
-    file: RefCountedTempFile,
-    offsets: Vec<u64>,
-}
-
-/// consume the `buffered_partitions` and do spill into a single temp shuffle output file
-fn spill_into(
-    buffered_partitions: &mut [PartitionBuffer],
-    path: &Path,
-    num_output_partitions: usize,
-    metrics: &ShuffleRepartitionerMetrics,
-) -> Result<Vec<u64>> {
-    let mut output_batches: Vec<Vec<u8>> = vec![vec![]; num_output_partitions];
-
-    for i in 0..num_output_partitions {
-        buffered_partitions[i].flush(metrics)?;
-        output_batches[i] = std::mem::take(&mut buffered_partitions[i].frozen);
+    fn spill(&mut self, metrics: &ShuffleRepartitionerMetrics) -> Result<()> {
+        self.flush(metrics).unwrap();
+        let output_batches = std::mem::take(&mut self.frozen);
+        let mut write_timer = metrics.write_time.timer();
+        self.spill_data.write_all(&output_batches)?;
+        write_timer.stop();
+        Ok(())
     }
-    let path = path.to_owned();
-
-    let mut write_timer = metrics.write_time.timer();
-
-    let mut offsets = vec![0; num_output_partitions + 1];
-    let mut spill_data = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)
-        .map_err(|e| DataFusionError::Execution(format!("Error occurred while spilling {}", e)))?;
-
-    for i in 0..num_output_partitions {
-        offsets[i] = spill_data.stream_position()?;
-        spill_data.write_all(&output_batches[i])?;
-        output_batches[i].clear();
-    }
-    write_timer.stop();
-
-    // add one extra offset at last to ease partition length computation
-    offsets[num_output_partitions] = spill_data.stream_position()?;
-    Ok(offsets)
 }
 
 /// A stream that yields no record batches which represent end of output.
