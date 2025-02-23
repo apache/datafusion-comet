@@ -293,6 +293,7 @@ struct ShuffleRepartitioner {
     /// Partitioning scheme to use
     partitioning: Partitioning,
     num_output_partitions: usize,
+    runtime: Arc<RuntimeEnv>,
     metrics: ShuffleRepartitionerMetrics,
     reservation: MemoryReservation,
     /// Hashes for each row in the current batch
@@ -350,6 +351,7 @@ impl ShuffleRepartitioner {
                 .collect::<Result<Vec<_>>>()?,
             partitioning,
             num_output_partitions,
+            runtime,
             metrics,
             reservation,
             hashes_buf,
@@ -565,12 +567,14 @@ impl ShuffleRepartitioner {
             output_data.write_all(&output_batches[i])?;
             output_batches[i].clear();
 
-            if self.buffered_partitions[i].spill_data.len() > 0 {
-                let mut spill_file = BufReader::new(
-                    File::open(self.buffered_partitions[i].spill_file.path())
-                        .map_err(Self::to_df_err)?,
-                );
-                std::io::copy(&mut spill_file, &mut output_data).map_err(Self::to_df_err)?;
+            if let Some(spill_data) = &self.buffered_partitions[i].spill_data {
+                if spill_data.len() > 0 {
+                    let spill_file = self.buffered_partitions[i].spill_file.as_mut().unwrap();
+                    let mut spill_file = BufReader::new(
+                        File::open(spill_file.path()).map_err(Self::to_df_err)?,
+                    );
+                    std::io::copy(&mut spill_file, &mut output_data).map_err(Self::to_df_err)?;
+                }
             }
         }
         output_data.flush()?;
@@ -635,7 +639,7 @@ impl ShuffleRepartitioner {
         }
 
         for p in &mut self.buffered_partitions {
-            p.spill(&self.metrics)?;
+            p.spill(&self.runtime, &self.metrics)?;
         }
 
         let used = self.reservation.size();
@@ -734,9 +738,9 @@ struct PartitionBuffer {
     /// Memory reservation for this partition buffer.
     reservation: MemoryReservation,
     /// Spill file for intermediate shuffle output for this partition
-    spill_file: RefCountedTempFile,
+    spill_file: Option<RefCountedTempFile>,
     /// Spill file for intermediate shuffle output for this partition
-    spill_data: File,
+    spill_data: Option<File>,
     /// Writer that performs encoding and compression
     shuffle_block_writer: ShuffleBlockWriter,
 }
@@ -756,20 +760,6 @@ impl PartitionBuffer {
         let shuffle_block_writer =
             ShuffleBlockWriter::try_new(schema.as_ref(), enable_fast_encoding, codec)?;
 
-        // TODO include file creation time in shuffle write time metric
-        let spill_file = runtime
-            .disk_manager
-            .create_tmp_file("shuffle writer spill")?;
-
-        let spill_data = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(spill_file.path())
-            .map_err(|e| {
-                DataFusionError::Execution(format!("Error occurred while spilling {}", e))
-            })?;
-
         Ok(Self {
             schema,
             frozen: vec![],
@@ -778,8 +768,8 @@ impl PartitionBuffer {
             num_active_rows: 0,
             batch_size,
             reservation,
-            spill_file,
-            spill_data,
+            spill_file: None,
+            spill_data: None,
             shuffle_block_writer,
         })
     }
@@ -892,11 +882,32 @@ impl PartitionBuffer {
         Ok(mem_diff)
     }
 
-    fn spill(&mut self, metrics: &ShuffleRepartitionerMetrics) -> Result<()> {
+    fn spill(&mut self, runtime: &RuntimeEnv, metrics: &ShuffleRepartitionerMetrics) -> Result<()> {
         self.flush(metrics).unwrap();
         let output_batches = std::mem::take(&mut self.frozen);
         let mut write_timer = metrics.write_time.timer();
-        self.spill_data.write_all(&output_batches)?;
+        if self.spill_data.is_none() {
+            self.spill_file = Some(
+                runtime
+                    .disk_manager
+                    .create_tmp_file("shuffle writer spill")?,
+            );
+
+            self.spill_data = Some(
+                OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(self.spill_file.as_ref().unwrap().path())
+                    .map_err(|e| {
+                        DataFusionError::Execution(format!("Error occurred while spilling {}", e))
+                    })?,
+            );
+        }
+        self.spill_data
+            .as_ref()
+            .unwrap()
+            .write_all(&output_batches)?;
         write_timer.stop();
         Ok(())
     }
