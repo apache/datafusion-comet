@@ -89,6 +89,7 @@ message Expr {
     BinaryExpr array_intersect = 62;
     ArrayJoin array_join = 63;
     BinaryExpr arrays_overlap = 64;
+    ArraySize array_size = 65;
   }
 }
 
@@ -415,6 +416,10 @@ message ArrayInsert {
   Expr pos_expr = 2;
   Expr item_expr = 3;
   bool legacy_negative_index = 4;
+}
+
+message ArraySize {
+  Expr src_array_expr = 1;
 }
 
 message ArrayJoin {
