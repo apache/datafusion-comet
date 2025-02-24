@@ -625,7 +625,7 @@ impl ShuffleRepartitioner {
         self.metrics.data_size.value()
     }
 
-    async fn spill(&mut self) -> Result<usize> {
+    async fn spill(&mut self) -> Result<()> {
         log::debug!(
             "ShuffleRepartitioner spilling shuffle data of {} to disk while inserting ({} time(s) so far)",
             self.used(),
@@ -634,17 +634,17 @@ impl ShuffleRepartitioner {
 
         // we could always get a chance to free some memory as long as we are holding some
         if self.buffered_partitions.is_empty() {
-            return Ok(0);
+            return Ok(());
         }
 
+        let mut spilled_bytes = 0;
         for p in &mut self.buffered_partitions {
-            p.spill(&self.runtime, &self.metrics)?;
+            spilled_bytes += p.spill(&self.runtime, &self.metrics)?;
         }
 
-        let used = self.reservation.size();
         self.metrics.spill_count.add(1);
-        // self.metrics.spilled_bytes.add(used);
-        Ok(used)
+        self.metrics.spilled_bytes.add(spilled_bytes);
+        Ok(())
     }
 
     /// Appends rows of specified indices from columns into active array builders in the specified partition.
@@ -883,7 +883,7 @@ impl PartitionBuffer {
         Ok(mem_diff)
     }
 
-    fn spill(&mut self, runtime: &RuntimeEnv, metrics: &ShuffleRepartitionerMetrics) -> Result<()> {
+    fn spill(&mut self, runtime: &RuntimeEnv, metrics: &ShuffleRepartitionerMetrics) -> Result<usize> {
         self.flush(metrics).unwrap();
         let output_batches = std::mem::take(&mut self.frozen);
         let mut write_timer = metrics.write_time.timer();
@@ -910,7 +910,7 @@ impl PartitionBuffer {
             .file
             .write_all(&output_batches)?;
         write_timer.stop();
-        Ok(())
+        Ok(output_batches.len())
     }
 }
 
