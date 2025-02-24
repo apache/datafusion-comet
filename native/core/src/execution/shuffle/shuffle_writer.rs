@@ -883,7 +883,11 @@ impl PartitionBuffer {
         Ok(mem_diff)
     }
 
-    fn spill(&mut self, runtime: &RuntimeEnv, metrics: &ShuffleRepartitionerMetrics) -> Result<usize> {
+    fn spill(
+        &mut self,
+        runtime: &RuntimeEnv,
+        metrics: &ShuffleRepartitionerMetrics,
+    ) -> Result<usize> {
         self.flush(metrics).unwrap();
         let output_batches = std::mem::take(&mut self.frozen);
         let mut write_timer = metrics.write_time.timer();
