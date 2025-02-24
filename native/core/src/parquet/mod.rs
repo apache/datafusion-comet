@@ -52,7 +52,7 @@ use arrow::buffer::{Buffer, MutableBuffer};
 use arrow_array::{Array, RecordBatch};
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{FileScanConfig, ParquetSource};
-use datafusion::physical_plan::source::DataSourceExec;
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_common::config::TableParquetOptions;

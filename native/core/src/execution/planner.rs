@@ -78,9 +78,9 @@ use crate::parquet::parquet_support::{register_object_store, SparkParquetOptions
 use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{FileScanConfig, ParquetSource};
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
-use datafusion::physical_plan::source::DataSourceExec;
 use datafusion_comet_proto::{
     spark_expression::{
         self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
