@@ -29,6 +29,10 @@ on:
       - 'test-docker-publish-*'
     branches:
       - 'fix-docker'
+  pull_request:
+    types: [opened, edited]
+    branches:
+      - 'fix-docker'
 
 jobs:
   docker:
@@ -38,12 +42,22 @@ jobs:
       contents: read
       packages: write
     steps:
+      - name: Remove unnecessary files
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
+          docker system prune -af
+          sudo rm -rf /tmp/*
+          sudo rm -rf /opt/hostedtoolcache
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo apt-get clean
+          echo "Disk space after cleanup:"
+          df -h
       - name: Set up Java
         uses: actions/setup-java@v3
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: 'maven'
       - name: Extract Comet version
         id: extract_version
         run: |
@@ -59,8 +73,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Check Disk Space
-        run: df -h
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -68,5 +80,4 @@ jobs:
           push: true
           tags: ghcr.io/apache/datafusion-comet:spark-3.4-scala-2.12-${{ env.COMET_VERSION }}
           file: kube/Dockerfile
-          build-args: "--progress=plain"
           no-cache: true
