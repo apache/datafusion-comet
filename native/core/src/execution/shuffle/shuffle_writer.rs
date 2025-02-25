@@ -1867,9 +1867,9 @@ fn pmod(hash: u32, n: usize) -> usize {
 #[cfg(test)]
 mod test {
     use super::*;
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_plan::common::collect;
-    use datafusion::physical_plan::memory::MemorySourceConfig;
-    use datafusion::physical_plan::source::DataSourceExec;
     use datafusion::prelude::SessionContext;
     use datafusion_execution::config::SessionConfig;
     use datafusion_execution::runtime_env::RuntimeEnvBuilder;

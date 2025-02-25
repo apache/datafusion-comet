@@ -465,10 +465,10 @@ mod tests {
     use arrow::datatypes::*;
     use arrow_array::builder::{Decimal128Builder, StringBuilder};
     use arrow_array::RecordBatch;
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::TaskContext;
     use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
-    use datafusion::physical_plan::memory::MemorySourceConfig;
-    use datafusion::physical_plan::source::DataSourceExec;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_common::Result;
     use datafusion_expr::AggregateUDF;
