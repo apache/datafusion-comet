@@ -676,11 +676,10 @@ impl ShuffleRepartitioner {
 
                     let mut mempool_timer = self.metrics.mempool_time.timer();
                     self.reservation.free();
-                    let output = &mut self.buffered_partitions[partition_id];
-                    output.reservation.free();
                     mempool_timer.stop();
 
                     start_index = new_start;
+                    let output = &mut self.buffered_partitions[partition_id];
                     output_ret = output.append_rows(columns, indices, start_index, &self.metrics);
 
                     if let AppendRowStatus::StartIndex(new_start) = output_ret {
@@ -914,6 +913,9 @@ impl PartitionBuffer {
             .file
             .write_all(&output_batches)?;
         write_timer.stop();
+        let mut timer = metrics.mempool_time.timer();
+        self.reservation.free();
+        timer.stop();
         Ok(output_batches.len())
     }
 }
