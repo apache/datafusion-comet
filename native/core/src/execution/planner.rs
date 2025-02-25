@@ -94,7 +94,7 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, BitwiseNotExpr, Cast, CheckOverflow, Contains, Correlation,
+    ArrayInsert, ArraySize, Avg, AvgDecimal, BitwiseNotExpr, Cast, CheckOverflow, Contains, Correlation,
     Covariance, CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields, GetStructField,
     HourExpr, IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike, SecondExpr,
     SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
@@ -745,6 +745,13 @@ impl PhysicalPlanner {
                     DataType::Boolean,
                 ));
                 Ok(array_has_expr)
+            }
+            ExprStruct::ArraySize(expr) => {
+                let child = self.create_expr(
+                    expr.src_array_expr.as_ref().unwrap(),
+                    Arc::clone(&input_schema),
+                )?;
+                Ok(Arc::new(ArraySize::new(child)))
             }
             ExprStruct::ArrayRemove(expr) => {
                 let src_array_expr =
