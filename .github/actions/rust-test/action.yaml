@@ -41,7 +41,7 @@ runs:
       shell: bash
       run: |
         cd native
-        cargo install cargo-machete && cargo machete
+        cargo install cargo-machete --version 0.7.0 && cargo machete
 
     - name: Cache Maven dependencies
       uses: actions/cache@v4
