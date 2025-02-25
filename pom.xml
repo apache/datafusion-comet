@@ -59,7 +59,6 @@ under the License.
     <parquet.version>1.13.1</parquet.version>
     <parquet.maven.scope>provided</parquet.maven.scope>
     <arrow.version>16.0.0</arrow.version>
-    <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
     <spotless.version>2.43.0</spotless.version>
     <jacoco.version>0.8.11</jacoco.version>
     <semanticdb.version>4.8.8</semanticdb.version>
@@ -437,13 +436,6 @@ under the License.
             <artifactId>*</artifactId>
           </exclusion>
         </exclusions>
-      </dependency>
-
-      <dependency>
-        <groupId>org.codehaus.jackson</groupId>
-        <artifactId>jackson-mapper-asl</artifactId>
-        <version>${codehaus.jackson.version}</version>
-        <scope>test</scope>
       </dependency>
 
       <dependency>
