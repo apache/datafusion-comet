@@ -20,9 +20,11 @@ use arrow_array::{builder::StringBuilder, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use comet::execution::shuffle::{CompressionCodec, ShuffleBlockWriter, ShuffleWriterExec};
 use criterion::{criterion_group, criterion_main, Criterion};
+use datafusion::datasource::memory::MemorySourceConfig;
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_plan::metrics::Time;
 use datafusion::{
-    physical_plan::{common::collect, memory::MemoryExec, ExecutionPlan},
+    physical_plan::{common::collect, ExecutionPlan},
     prelude::SessionContext,
 };
 use datafusion_physical_expr::{expressions::Column, Partitioning};
@@ -88,7 +90,9 @@ fn create_shuffle_writer_exec(compression_codec: CompressionCodec) -> ShuffleWri
     let schema = batches[0].schema();
     let partitions = &[batches];
     ShuffleWriterExec::try_new(
-        Arc::new(MemoryExec::try_new(partitions, schema, None).unwrap()),
+        Arc::new(DataSourceExec::new(Arc::new(
+            MemorySourceConfig::try_new(partitions, Arc::clone(&schema), None).unwrap(),
+        ))),
         Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
         compression_codec,
         "/tmp/data.out".to_string(),

@@ -21,9 +21,10 @@ use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::SchemaRef;
 use comet::execution::expressions::bloom_filter_agg::BloomFilterAgg;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use datafusion::datasource::memory::MemorySourceConfig;
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
-use datafusion::physical_plan::memory::MemoryExec;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_common::ScalarValue;
 use datafusion_execution::TaskContext;
@@ -88,8 +89,9 @@ async fn agg_test(
     mode: AggregateMode,
 ) {
     let schema = &partitions[0][0].schema();
-    let scan: Arc<dyn ExecutionPlan> =
-        Arc::new(MemoryExec::try_new(partitions, Arc::clone(schema), None).unwrap());
+    let scan: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(Arc::new(
+        MemorySourceConfig::try_new(partitions, Arc::clone(schema), None).unwrap(),
+    )));
     let aggregate = create_aggregate(scan, c0.clone(), schema, aggregate_udf, alias, mode);
     let mut stream = aggregate
         .execute(0, Arc::new(TaskContext::default()))

@@ -51,8 +51,8 @@ use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
 use arrow::buffer::{Buffer, MutableBuffer};
 use arrow_array::{Array, RecordBatch};
 use datafusion::datasource::listing::PartitionedFile;
-use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
-use datafusion::datasource::physical_plan::FileScanConfig;
+use datafusion::datasource::physical_plan::{FileScanConfig, ParquetSource};
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_common::config::TableParquetOptions;
@@ -666,18 +666,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             start + length,
         );
         partitioned_file.object_meta.location = object_store_path;
-        // We build the file scan config with the *required* schema so that the reader knows
-        // the output schema we want
-        let file_scan_config = FileScanConfig::new(object_store_url, Arc::new(required_schema_arrow))
-                .with_file(partitioned_file)
-                // TODO: (ARROW NATIVE) - do partition columns in native
-                //   - will need partition schema and partition values to do so
-                // .with_table_partition_cols(partition_fields)
-                ;
-        let mut table_parquet_options = TableParquetOptions::new();
-        // TODO: Maybe these are configs?
-        table_parquet_options.global.pushdown_filters = true;
-        table_parquet_options.global.reorder_filters = true;
         let session_timezone: String = env
             .get_string(&JString::from_raw(session_timezone))
             .unwrap()
@@ -687,16 +675,30 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             SparkParquetOptions::new(EvalMode::Legacy, session_timezone.as_str(), false);
         spark_parquet_options.allow_cast_unsigned_ints = true;
 
-        let builder2 = ParquetExecBuilder::new(file_scan_config)
-            .with_table_parquet_options(table_parquet_options)
-            .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
-                spark_parquet_options,
-            )));
+        let mut table_parquet_options = TableParquetOptions::new();
+        // TODO: Maybe these are configs?
+        table_parquet_options.global.pushdown_filters = true;
+        table_parquet_options.global.reorder_filters = true;
+
+        let parquet_source = ParquetSource::new(table_parquet_options).with_schema_adapter_factory(
+            Arc::new(SparkSchemaAdapterFactory::new(spark_parquet_options)),
+        );
+        //.with_schema(Arc::new(required_schema_arrow));
+
+        // We build the file scan config with the *required* schema so that the reader knows
+        // the output schema we want
+        let file_scan_config = FileScanConfig::new(object_store_url, Arc::new(required_schema_arrow), Arc::new(parquet_source))
+            .with_file(partitioned_file)
+            // TODO: (ARROW NATIVE) - do partition columns in native
+            //   - will need partition schema and partition values to do so
+            // .with_table_partition_cols(partition_fields)
+            ;
 
         //TODO: (ARROW NATIVE) - predicate pushdown??
         // builder = builder.with_predicate(filter);
 
-        let scan = builder2.build();
+        let scan = Arc::new(DataSourceExec::new(Arc::new(file_scan_config)));
+
         let ctx = TaskContext::default();
         let partition_index: usize = 0;
         batch_stream = Some(scan.execute(partition_index, Arc::new(ctx))?);
