@@ -20,9 +20,9 @@ use arrow_array::{builder::StringBuilder, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use comet::execution::shuffle::{CompressionCodec, ShuffleBlockWriter, ShuffleWriterExec};
 use criterion::{criterion_group, criterion_main, Criterion};
-use datafusion::physical_plan::memory::MemorySourceConfig;
+use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::physical_plan::metrics::Time;
-use datafusion::physical_plan::source::DataSourceExec;
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::{
     physical_plan::{common::collect, ExecutionPlan},
     prelude::SessionContext,
