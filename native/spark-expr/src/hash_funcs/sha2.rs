@@ -17,10 +17,11 @@
 
 use crate::math_funcs::hex::hex_strings;
 use arrow_array::{Array, StringArray};
+use arrow_schema::DataType;
 use datafusion::functions::crypto::{sha224, sha256, sha384, sha512};
 use datafusion_common::cast::as_binary_array;
 use datafusion_common::{exec_err, DataFusionError, ScalarValue};
-use datafusion_expr::{ColumnarValue, ScalarUDF};
+use datafusion_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDF};
 use std::sync::Arc;
 
 /// `sha224` function that simulates Spark's `sha2` expression with bit width 224
@@ -53,7 +54,11 @@ fn wrap_digest_result_as_hex_string(
         ColumnarValue::Array(array) => array.len(),
         ColumnarValue::Scalar(_) => 1,
     };
-    let value = digest.invoke_batch(args, row_count)?;
+    let value = digest.invoke_with_args(ScalarFunctionArgs {
+        args: args.into(),
+        number_rows: row_count,
+        return_type: &DataType::Utf8,
+    })?;
     match value {
         ColumnarValue::Array(array) => {
             let binary_array = as_binary_array(&array)?;
