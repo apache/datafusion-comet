@@ -136,16 +136,9 @@ struct JoinParameters {
     pub join_type: DFJoinType,
 }
 
+#[derive(Default)]
 struct BinaryExprOptions {
     pub is_integral_div: bool,
-}
-
-impl Default for BinaryExprOptions {
-    fn default() -> Self {
-        Self {
-            is_integral_div: false,
-        }
-    }
 }
 
 pub const TEST_EXEC_CONTEXT_ID: i64 = -1;

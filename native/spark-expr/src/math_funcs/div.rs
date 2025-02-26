@@ -86,12 +86,10 @@ fn spark_decimal_div_internal(
             let div = if r.eq(&zero) { zero.clone() } else { &l / &r };
             let res = if is_integral_div {
                 div
+            } else if div.is_negative() {
+                div - &five
             } else {
-                if div.is_negative() {
-                    div - &five
-                } else {
-                    div + &five
-                }
+                div + &five
             } / &ten;
             res.to_i128().unwrap_or(i128::MAX)
         })?
@@ -104,12 +102,10 @@ fn spark_decimal_div_internal(
             let div = if r == 0 { 0 } else { l / r };
             let res = if is_integral_div {
                 div
+            } else if div.is_negative() {
+                div - 5
             } else {
-                if div.is_negative() {
-                    div - 5
-                } else {
-                    div + 5
-                }
+                div + 5
             } / 10;
             res.to_i128().unwrap_or(i128::MAX)
         })?
