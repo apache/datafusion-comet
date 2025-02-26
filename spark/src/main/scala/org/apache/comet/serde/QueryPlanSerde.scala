@@ -20,6 +20,7 @@
 package org.apache.comet.serde
 
 import scala.collection.JavaConverters._
+import scala.math.min
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
@@ -637,7 +638,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
         val dataType = (left.dataType, right.dataType) match {
           case (l: DecimalType, r: DecimalType) =>
-            div.resultDecimalType(l.precision, l.scale, r.precision, r.scale)
+            // copy from IntegralDivide.resultDecimalType
+            val intDig = l.precision - l.scale + r.scale
+            DecimalType(min(if (intDig == 0) 1 else intDig, DecimalType.MAX_PRECISION), 0)
           case _ => left.dataType
         }
 
