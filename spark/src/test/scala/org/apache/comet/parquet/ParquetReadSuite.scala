@@ -1026,7 +1026,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("scan metrics") {
-    val metricNames = Seq(
+    val cometScanMetricNames = Seq(
       "ParquetRowGroups",
       "ParquetNativeDecodeTime",
       "ParquetNativeLoadTime",
@@ -1035,14 +1035,29 @@ abstract class ParquetReadSuite extends CometTestBase {
       "ParquetInputFileReadSize",
       "ParquetInputFileReadThroughput")
 
+    val cometNativeScanMetricNames = Seq(
+      "time_elapsed_scanning_total",
+      "bytes_scanned",
+      "output_rows",
+      "time_elapsed_opening",
+      "time_elapsed_processing",
+      "time_elapsed_scanning_until_data")
+
     withParquetTable((0 until 10000).map(i => (i, i.toDouble)), "tbl") {
       val df = sql("SELECT * FROM tbl WHERE _1 > 0")
       val scans = df.queryExecution.executedPlan collect {
         case s: CometScanExec => s
         case s: CometBatchScanExec => s
+        case s: CometNativeScanExec => s
       }
       assert(scans.size == 1, s"Expect one scan node but found ${scans.size}")
       val metrics = scans.head.metrics
+
+      val metricNames = scans.head match {
+        case _: CometNativeScanExec => cometNativeScanMetricNames
+        case _ => cometScanMetricNames
+      }
+
       metricNames.foreach { metricName =>
         assert(metrics.contains(metricName), s"metric $metricName was not found")
       }

@@ -78,3 +78,6 @@ harness = false
 name = "aggregate"
 harness = false
 
+[[test]]
+name = "test_udf_registration"
+path = "tests/spark_expr_reg.rs"
