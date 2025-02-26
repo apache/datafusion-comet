@@ -27,14 +27,29 @@ use datafusion_common::DataFusionError;
 use num::{BigInt, Signed, ToPrimitive};
 use std::sync::Arc;
 
+pub fn spark_decimal_div(
+    args: &[ColumnarValue],
+    data_type: &DataType,
+) -> Result<ColumnarValue, DataFusionError> {
+    spark_decimal_div_internal(args, data_type, false)
+}
+
+pub fn spark_decimal_integral_div(
+    args: &[ColumnarValue],
+    data_type: &DataType,
+) -> Result<ColumnarValue, DataFusionError> {
+    spark_decimal_div_internal(args, data_type, true)
+}
+
 // Let Decimal(p3, s3) as return type i.e. Decimal(p1, s1) / Decimal(p2, s2) = Decimal(p3, s3).
 // Conversely, Decimal(p1, s1) = Decimal(p2, s2) * Decimal(p3, s3). This means that, in order to
 // get enough scale that matches with Spark behavior, it requires to widen s1 to s2 + s3 + 1. Since
 // both s2 and s3 are 38 at max., s1 is 77 at max. DataFusion division cannot handle such scale >
 // Decimal256Type::MAX_SCALE. Therefore, we need to implement this decimal division using BigInt.
-pub fn spark_decimal_div(
+fn spark_decimal_div_internal(
     args: &[ColumnarValue],
     data_type: &DataType,
+    is_integral_div: bool,
 ) -> Result<ColumnarValue, DataFusionError> {
     let left = &args[0];
     let right = &args[1];
@@ -69,10 +84,14 @@ pub fn spark_decimal_div(
             let l = BigInt::from(l) * &l_mul;
             let r = BigInt::from(r) * &r_mul;
             let div = if r.eq(&zero) { zero.clone() } else { &l / &r };
-            let res = if div.is_negative() {
-                div - &five
+            let res = if is_integral_div {
+                div
             } else {
-                div + &five
+                if div.is_negative() {
+                    div - &five
+                } else {
+                    div + &five
+                }
             } / &ten;
             res.to_i128().unwrap_or(i128::MAX)
         })?
@@ -83,7 +102,15 @@ pub fn spark_decimal_div(
             let l = l * l_mul;
             let r = r * r_mul;
             let div = if r == 0 { 0 } else { l / r };
-            let res = if div.is_negative() { div - 5 } else { div + 5 } / 10;
+            let res = if is_integral_div {
+                div
+            } else {
+                if div.is_negative() {
+                    div - 5
+                } else {
+                    div + 5
+                }
+            } / 10;
             res.to_i128().unwrap_or(i128::MAX)
         })?
     };

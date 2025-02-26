@@ -631,10 +631,32 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         }
         None
 
-      case IntegralDivide(left, right, evalMode)
+      case div @ IntegralDivide(left, right, _)
           if supportedDataType(left.dataType) && !decimalBeforeSpark34(left.dataType) =>
-        // convert IntegralDivide(...) to Cast(Divide(...), LongType)
-        exprToProtoInternal(Cast(Divide(left, right, evalMode), LongType), inputs, binding)
+        val rightExpr = nullIfWhenPrimitive(right)
+
+        val dataType = (left.dataType, right.dataType) match {
+          case (l: DecimalType, r: DecimalType) =>
+            div.resultDecimalType(l.precision, l.scale, r.precision, r.scale)
+          case _ => left.dataType
+        }
+
+        val divideExpr = createMathExpression(
+          expr,
+          left,
+          rightExpr,
+          inputs,
+          binding,
+          dataType,
+          getFailOnError(div),
+          (builder, mathExpr) => builder.setIntegralDivide(mathExpr))
+
+        if (divideExpr.isDefined) {
+          // cast result to long
+          castToProto(expr, None, LongType, divideExpr.get, CometEvalMode.LEGACY)
+        } else {
+          None
+        }
 
       case div @ IntegralDivide(left, _, _) =>
         if (!supportedDataType(left.dataType)) {

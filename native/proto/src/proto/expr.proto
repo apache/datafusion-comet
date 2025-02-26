@@ -89,6 +89,7 @@ message Expr {
     BinaryExpr array_intersect = 62;
     ArrayJoin array_join = 63;
     BinaryExpr arrays_overlap = 64;
+    MathExpr integral_divide = 65;
   }
 }
 
