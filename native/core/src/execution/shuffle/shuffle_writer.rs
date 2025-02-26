@@ -641,6 +641,7 @@ impl ShuffleRepartitioner {
         for p in &mut self.buffered_partitions {
             spilled_bytes += p.spill(&self.runtime, &self.metrics)?;
         }
+        self.reservation.free();
 
         self.metrics.spill_count.add(1);
         self.metrics.spilled_bytes.add(spilled_bytes);
@@ -1145,6 +1146,9 @@ mod test {
         assert!(repartitioner.buffered_partitions[0].spill_file.is_none());
         assert!(repartitioner.buffered_partitions[1].spill_file.is_none());
 
+        // TODO: note that we are currently double counting the memory usage
+        // because we reserve the memory twice - once at the repartitioner level
+        // and then again in each PartitionBuffer
         assert_eq!(212992, repartitioner.reservation.size());
         assert_eq!(
             106496,
@@ -1161,8 +1165,8 @@ mod test {
         assert!(repartitioner.buffered_partitions[0].spill_file.is_some());
         assert!(repartitioner.buffered_partitions[1].spill_file.is_some());
 
-        // TODO: after spill, all reservations should be freed, but they are not
-        assert_eq!(212992, repartitioner.reservation.size());
+        // after spill, all reservations should be freed
+        assert_eq!(0, repartitioner.reservation.size());
         assert_eq!(0, repartitioner.buffered_partitions[0].reservation.size());
         assert_eq!(0, repartitioner.buffered_partitions[1].reservation.size());
     }
