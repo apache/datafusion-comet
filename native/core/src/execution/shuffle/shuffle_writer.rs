@@ -760,7 +760,6 @@ impl PartitionBuffer {
             .register(&runtime.memory_pool);
         let shuffle_block_writer =
             ShuffleBlockWriter::try_new(schema.as_ref(), enable_fast_encoding, codec)?;
-
         Ok(Self {
             schema,
             frozen: vec![],
