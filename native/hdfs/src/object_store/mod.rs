@@ -15,29 +15,4 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! PoC of vectorization execution through JNI to Rust.
-pub mod expressions;
-pub mod jni_api;
-mod metrics;
-pub mod operators;
-pub(crate) mod planner;
-pub mod serde;
-pub mod shuffle;
-pub(crate) mod sort;
-pub(crate) mod spark_plan;
-pub(crate) mod util;
-pub use datafusion_comet_spark_expr::timezone;
-pub(crate) mod utils;
-
-mod fair_memory_pool;
-mod memory_pool;
-pub use memory_pool::*;
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        let result = 2 + 2;
-        assert_eq!(result, 4);
-    }
-}
+pub mod hdfs;

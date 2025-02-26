@@ -117,9 +117,50 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false") {
+          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        }
         withParquetTable(path.toString, "tbl") {
           checkSparkAnswerAndOperator("select * FROM tbl WHERE _2 > 100")
+        }
+      }
+    }
+  }
+
+  test("uint data type support") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      // TODO: Once the question of what to get back from uint_8, uint_16 types is resolved,
+      // we can also update this test to check for COMET_SCAN_ALLOW_INCOMPATIBLE=true
+      Seq(false).foreach { allowIncompatible =>
+        {
+          withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> allowIncompatible.toString) {
+            withTempDir { dir =>
+              val path = new Path(dir.toURI.toString, "testuint.parquet")
+              makeParquetFileAllTypes(
+                path,
+                dictionaryEnabled = dictionaryEnabled,
+                Byte.MinValue,
+                Byte.MaxValue)
+              withParquetTable(path.toString, "tbl") {
+                val qry = "select _9 from tbl order by _11"
+                if (CometSparkSessionExtensions.usingDataFusionParquetExec(conf)) {
+                  if (!allowIncompatible) {
+                    checkSparkAnswer(qry)
+                  } else {
+                    // need to convert the values to unsigned values
+                    val expected = (Byte.MinValue to Byte.MaxValue)
+                      .map(v => {
+                        if (v < 0) Byte.MaxValue.toShort - v else v
+                      })
+                      .toDF("a")
+                    checkAnswer(sql(qry), expected)
+                  }
+                } else {
+                  checkSparkAnswerAndOperator(qry)
+                }
+              }
+            }
+          }
         }
       }
     }
@@ -142,6 +183,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkSparkAnswerAndOperator(sqlString)
         }
       }
+
     }
   }
 
@@ -1233,32 +1275,36 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           -128,
           128,
           randomSize = 100)
-        withParquetTable(path.toString, "tbl") {
-          for (s <- Seq(-5, -1, 0, 1, 5, -1000, 1000, -323, -308, 308, -15, 15, -16, 16, null)) {
-            // array tests
-            // TODO: enable test for floats (_6, _7, _8, _13)
-            for (c <- Seq(2, 3, 4, 5, 9, 10, 11, 12, 15, 16, 17)) {
-              checkSparkAnswerAndOperator(s"select _${c}, round(_${c}, ${s}) FROM tbl")
-            }
-            // scalar tests
-            // Exclude the constant folding optimizer in order to actually execute the native round
-            // operations for scalar (literal) values.
-            // TODO: comment in the tests for float once supported
-            withSQLConf(
-              "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-              for (n <- Seq("0.0", "-0.0", "0.5", "-0.5", "1.2", "-1.2")) {
-                checkSparkAnswerAndOperator(s"select round(cast(${n} as tinyint), ${s}) FROM tbl")
-                // checkSparkAnswerAndCometOperators(s"select round(cast(${n} as float), ${s}) FROM tbl")
-                checkSparkAnswerAndOperator(
-                  s"select round(cast(${n} as decimal(38, 18)), ${s}) FROM tbl")
-                checkSparkAnswerAndOperator(
-                  s"select round(cast(${n} as decimal(20, 0)), ${s}) FROM tbl")
+        withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
+          withParquetTable(path.toString, "tbl") {
+            for (s <- Seq(-5, -1, 0, 1, 5, -1000, 1000, -323, -308, 308, -15, 15, -16, 16,
+                null)) {
+              // array tests
+              // TODO: enable test for floats (_6, _7, _8, _13)
+              for (c <- Seq(2, 3, 4, 5, 9, 10, 11, 12, 15, 16, 17)) {
+                checkSparkAnswerAndOperator(s"select _${c}, round(_${c}, ${s}) FROM tbl")
               }
-              // checkSparkAnswer(s"select round(double('infinity'), ${s}) FROM tbl")
-              // checkSparkAnswer(s"select round(double('-infinity'), ${s}) FROM tbl")
-              // checkSparkAnswer(s"select round(double('NaN'), ${s}) FROM tbl")
-              // checkSparkAnswer(
-              //   s"select round(double('0.000000000000000000000000000000000001'), ${s}) FROM tbl")
+              // scalar tests
+              // Exclude the constant folding optimizer in order to actually execute the native round
+              // operations for scalar (literal) values.
+              // TODO: comment in the tests for float once supported
+              withSQLConf(
+                "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+                for (n <- Seq("0.0", "-0.0", "0.5", "-0.5", "1.2", "-1.2")) {
+                  checkSparkAnswerAndOperator(
+                    s"select round(cast(${n} as tinyint), ${s}) FROM tbl")
+                  // checkSparkAnswerAndCometOperators(s"select round(cast(${n} as float), ${s}) FROM tbl")
+                  checkSparkAnswerAndOperator(
+                    s"select round(cast(${n} as decimal(38, 18)), ${s}) FROM tbl")
+                  checkSparkAnswerAndOperator(
+                    s"select round(cast(${n} as decimal(20, 0)), ${s}) FROM tbl")
+                }
+                // checkSparkAnswer(s"select round(double('infinity'), ${s}) FROM tbl")
+                // checkSparkAnswer(s"select round(double('-infinity'), ${s}) FROM tbl")
+                // checkSparkAnswer(s"select round(double('NaN'), ${s}) FROM tbl")
+                // checkSparkAnswer(
+                //   s"select round(double('0.000000000000000000000000000000000001'), ${s}) FROM tbl")
+              }
             }
           }
         }
@@ -1451,11 +1497,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "hex.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-
-        withParquetTable(path.toString, "tbl") {
-          checkSparkAnswerAndOperator(
-            "SELECT hex(_1), hex(_2), hex(_3), hex(_4), hex(_5), hex(_6), hex(_7), hex(_8), hex(_9), hex(_10), hex(_11), hex(_12), hex(_13), hex(_14), hex(_15), hex(_16), hex(_17), hex(_18), hex(_19), hex(_20) FROM tbl")
+        withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
+          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          withParquetTable(path.toString, "tbl") {
+            checkSparkAnswerAndOperator(
+              "SELECT hex(_1), hex(_2), hex(_3), hex(_4), hex(_5), hex(_6), hex(_7), hex(_8), hex(_9), hex(_10), hex(_11), hex(_12), hex(_13), hex(_14), hex(_15), hex(_16), hex(_17), hex(_18), hex(_19), hex(_20) FROM tbl")
+          }
         }
       }
     }

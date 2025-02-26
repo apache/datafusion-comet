@@ -504,8 +504,8 @@ object CometConf extends ShimCometConf {
     .doc(
       "The type of memory pool to be used for Comet native execution. " +
         "Available memory pool types are 'greedy', 'fair_spill', 'greedy_task_shared', " +
-        "'fair_spill_task_shared', 'greedy_global' and 'fair_spill_global', By default, " +
-        "this config is 'greedy_task_shared'.")
+        "'fair_spill_task_shared', 'greedy_global', 'fair_spill_global', and `unbounded`. " +
+        "For off-heap types are 'unified' and `fair_unified`.")
     .stringConf
     .createWithDefault("greedy_task_shared")
 
@@ -608,6 +608,14 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_SCAN_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.allowIncompatible")
+      .doc(
+        "Comet is not currently fully compatible with Spark for all datatypes. " +
+          s"Set this config to true to allow them anyway. $COMPAT_GUIDE.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXPR_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
     conf("spark.comet.expression.allowIncompatible")
       .doc(
@@ -631,6 +639,14 @@ object CometConf extends ShimCometConf {
           s"Set this config to true to allow them anyway. $COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)
+
+  val COMET_METRICS_UPDATE_INTERVAL: ConfigEntry[Long] =
+    conf("spark.comet.metrics.updateInterval")
+      .doc(
+        "The interval in milliseconds to update metrics. If interval is negative," +
+          " metrics will be updated upon task completion.")
+      .longConf
+      .createWithDefault(3000L)
 
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(

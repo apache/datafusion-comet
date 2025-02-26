@@ -23,13 +23,13 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, Complete, Corr, Count, CovPopulation, CovSample, Final, First, Last, Max, Min, Partial, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
+import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometScanExec, CometSinkPlaceHolder, CometSparkToColumnarExec, DecimalPrecision}
+import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
@@ -46,12 +46,11 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isCometScan, isSpark34Plus, withInfo}
-import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incompatible, RegExp, Unsupported}
+import org.apache.comet.expressions._
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
-import org.apache.comet.serde.ExprOuterClass.DataType.{DataTypeInfo, DecimalInfo, ListInfo, MapInfo, StructInfo}
+import org.apache.comet.serde.ExprOuterClass.DataType._
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
-import org.apache.comet.shims.CometExprShim
-import org.apache.comet.shims.ShimQueryPlanSerde
+import org.apache.comet.shims.{CometExprShim, ShimQueryPlanSerde}
 
 /**
  * An utility object for query plan and expression serialization.
@@ -175,35 +174,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     Some(dataType)
   }
 
-  private def sumDataTypeSupported(dt: DataType): Boolean = {
-    dt match {
-      case _: NumericType => true
-      case _ => false
-    }
-  }
-
-  private def avgDataTypeSupported(dt: DataType): Boolean = {
-    dt match {
-      case _: NumericType => true
-      // TODO: implement support for interval types
-      case _ => false
-    }
-  }
-
-  private def minMaxDataTypeSupported(dt: DataType): Boolean = {
-    dt match {
-      case _: NumericType | DateType | TimestampType | BooleanType => true
-      case _ => false
-    }
-  }
-
-  private def bitwiseAggTypeSupported(dt: DataType): Boolean = {
-    dt match {
-      case _: IntegerType | LongType | ShortType | ByteType => true
-      case _ => false
-    }
-  }
-
   def windowExprToProto(
       windowExpr: WindowExpression,
       output: Seq[Attribute],
@@ -216,21 +186,22 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             case _: Count =>
               Some(agg)
             case min: Min =>
-              if (minMaxDataTypeSupported(min.dataType)) {
+              if (AggSerde.minMaxDataTypeSupported(min.dataType)) {
                 Some(agg)
               } else {
                 withInfo(windowExpr, s"datatype ${min.dataType} is not supported", expr)
                 None
               }
             case max: Max =>
-              if (minMaxDataTypeSupported(max.dataType)) {
+              if (AggSerde.minMaxDataTypeSupported(max.dataType)) {
                 Some(agg)
               } else {
                 withInfo(windowExpr, s"datatype ${max.dataType} is not supported", expr)
                 None
               }
             case s: Sum =>
-              if (sumDataTypeSupported(s.dataType) && !s.dataType.isInstanceOf[DecimalType]) {
+              if (AggSerde.sumDataTypeSupported(s.dataType) && !s.dataType
+                  .isInstanceOf[DecimalType]) {
                 Some(agg)
               } else {
                 withInfo(windowExpr, s"datatype ${s.dataType} is not supported", expr)
@@ -380,440 +351,33 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       return None
     }
 
-    aggExpr.aggregateFunction match {
-      case s @ Sum(child, _) if sumDataTypeSupported(s.dataType) && isLegacyMode(s) =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(s.dataType)
-
-        if (childExpr.isDefined && dataType.isDefined) {
-          val sumBuilder = ExprOuterClass.Sum.newBuilder()
-          sumBuilder.setChild(childExpr.get)
-          sumBuilder.setDatatype(dataType.get)
-          sumBuilder.setFailOnError(getFailOnError(s))
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setSum(sumBuilder)
-              .build())
-        } else {
-          if (dataType.isEmpty) {
-            withInfo(aggExpr, s"datatype ${s.dataType} is not supported", child)
-          } else {
-            withInfo(aggExpr, child)
-          }
-          None
-        }
-      case s @ Average(child, _) if avgDataTypeSupported(s.dataType) && isLegacyMode(s) =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(s.dataType)
-
-        val sumDataType = if (child.dataType.isInstanceOf[DecimalType]) {
-
-          // This is input precision + 10 to be consistent with Spark
-          val precision = Math.min(
-            DecimalType.MAX_PRECISION,
-            child.dataType.asInstanceOf[DecimalType].precision + 10)
-          val newType =
-            DecimalType.apply(precision, child.dataType.asInstanceOf[DecimalType].scale)
-          serializeDataType(newType)
-        } else {
-          serializeDataType(child.dataType)
-        }
-
-        if (childExpr.isDefined && dataType.isDefined) {
-          val builder = ExprOuterClass.Avg.newBuilder()
-          builder.setChild(childExpr.get)
-          builder.setDatatype(dataType.get)
-          builder.setFailOnError(getFailOnError(s))
-          builder.setSumDatatype(sumDataType.get)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setAvg(builder)
-              .build())
-        } else if (dataType.isEmpty) {
-          withInfo(aggExpr, s"datatype ${s.dataType} is not supported", child)
-          None
-        } else {
-          withInfo(aggExpr, child)
-          None
-        }
-      case Count(children) =>
-        val exprChildren = children.map(exprToProto(_, inputs, binding))
-
-        if (exprChildren.forall(_.isDefined)) {
-          val countBuilder = ExprOuterClass.Count.newBuilder()
-          countBuilder.addAllChildren(exprChildren.map(_.get).asJava)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setCount(countBuilder)
-              .build())
-        } else {
-          withInfo(aggExpr, children: _*)
-          None
-        }
-      case min @ Min(child) if minMaxDataTypeSupported(min.dataType) =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(min.dataType)
-
-        if (childExpr.isDefined && dataType.isDefined) {
-          val minBuilder = ExprOuterClass.Min.newBuilder()
-          minBuilder.setChild(childExpr.get)
-          minBuilder.setDatatype(dataType.get)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setMin(minBuilder)
-              .build())
-        } else if (dataType.isEmpty) {
-          withInfo(aggExpr, s"datatype ${min.dataType} is not supported", child)
-          None
-        } else {
-          withInfo(aggExpr, child)
-          None
-        }
-      case max @ Max(child) if minMaxDataTypeSupported(max.dataType) =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(max.dataType)
-
-        if (childExpr.isDefined && dataType.isDefined) {
-          val maxBuilder = ExprOuterClass.Max.newBuilder()
-          maxBuilder.setChild(childExpr.get)
-          maxBuilder.setDatatype(dataType.get)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setMax(maxBuilder)
-              .build())
-        } else if (dataType.isEmpty) {
-          withInfo(aggExpr, s"datatype ${max.dataType} is not supported", child)
-          None
-        } else {
-          withInfo(aggExpr, child)
-          None
-        }
-      case first @ First(child, ignoreNulls)
-          if !ignoreNulls => // DataFusion doesn't support ignoreNulls true
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(first.dataType)
-
-        if (childExpr.isDefined && dataType.isDefined) {
-          val firstBuilder = ExprOuterClass.First.newBuilder()
-          firstBuilder.setChild(childExpr.get)
-          firstBuilder.setDatatype(dataType.get)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setFirst(firstBuilder)
-              .build())
-        } else if (dataType.isEmpty) {
-          withInfo(aggExpr, s"datatype ${first.dataType} is not supported", child)
-          None
-        } else {
-          withInfo(aggExpr, child)
-          None
-        }
-      case last @ Last(child, ignoreNulls)
-          if !ignoreNulls => // DataFusion doesn't support ignoreNulls true
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(last.dataType)
-
-        if (childExpr.isDefined && dataType.isDefined) {
-          val lastBuilder = ExprOuterClass.Last.newBuilder()
-          lastBuilder.setChild(childExpr.get)
-          lastBuilder.setDatatype(dataType.get)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setLast(lastBuilder)
-              .build())
-        } else if (dataType.isEmpty) {
-          withInfo(aggExpr, s"datatype ${last.dataType} is not supported", child)
-          None
-        } else {
-          withInfo(aggExpr, child)
-          None
-        }
-      case bitAnd @ BitAndAgg(child) if bitwiseAggTypeSupported(bitAnd.dataType) =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(bitAnd.dataType)
-
-        if (childExpr.isDefined && dataType.isDefined) {
-          val bitAndBuilder = ExprOuterClass.BitAndAgg.newBuilder()
-          bitAndBuilder.setChild(childExpr.get)
-          bitAndBuilder.setDatatype(dataType.get)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setBitAndAgg(bitAndBuilder)
-              .build())
-        } else if (dataType.isEmpty) {
-          withInfo(aggExpr, s"datatype ${bitAnd.dataType} is not supported", child)
-          None
-        } else {
-          withInfo(aggExpr, child)
-          None
-        }
-      case bitOr @ BitOrAgg(child) if bitwiseAggTypeSupported(bitOr.dataType) =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(bitOr.dataType)
-
-        if (childExpr.isDefined && dataType.isDefined) {
-          val bitOrBuilder = ExprOuterClass.BitOrAgg.newBuilder()
-          bitOrBuilder.setChild(childExpr.get)
-          bitOrBuilder.setDatatype(dataType.get)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setBitOrAgg(bitOrBuilder)
-              .build())
-        } else if (dataType.isEmpty) {
-          withInfo(aggExpr, s"datatype ${bitOr.dataType} is not supported", child)
-          None
-        } else {
-          withInfo(aggExpr, child)
-          None
-        }
-      case bitXor @ BitXorAgg(child) if bitwiseAggTypeSupported(bitXor.dataType) =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(bitXor.dataType)
-
-        if (childExpr.isDefined && dataType.isDefined) {
-          val bitXorBuilder = ExprOuterClass.BitXorAgg.newBuilder()
-          bitXorBuilder.setChild(childExpr.get)
-          bitXorBuilder.setDatatype(dataType.get)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setBitXorAgg(bitXorBuilder)
-              .build())
-        } else if (dataType.isEmpty) {
-          withInfo(aggExpr, s"datatype ${bitXor.dataType} is not supported", child)
-          None
-        } else {
-          withInfo(aggExpr, child)
-          None
-        }
-      case cov @ CovSample(child1, child2, nullOnDivideByZero) =>
-        val child1Expr = exprToProto(child1, inputs, binding)
-        val child2Expr = exprToProto(child2, inputs, binding)
-        val dataType = serializeDataType(cov.dataType)
-
-        if (child1Expr.isDefined && child2Expr.isDefined && dataType.isDefined) {
-          val covBuilder = ExprOuterClass.Covariance.newBuilder()
-          covBuilder.setChild1(child1Expr.get)
-          covBuilder.setChild2(child2Expr.get)
-          covBuilder.setNullOnDivideByZero(nullOnDivideByZero)
-          covBuilder.setDatatype(dataType.get)
-          covBuilder.setStatsTypeValue(0)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setCovariance(covBuilder)
-              .build())
-        } else {
-          None
-        }
-      case cov @ CovPopulation(child1, child2, nullOnDivideByZero) =>
-        val child1Expr = exprToProto(child1, inputs, binding)
-        val child2Expr = exprToProto(child2, inputs, binding)
-        val dataType = serializeDataType(cov.dataType)
-
-        if (child1Expr.isDefined && child2Expr.isDefined && dataType.isDefined) {
-          val covBuilder = ExprOuterClass.Covariance.newBuilder()
-          covBuilder.setChild1(child1Expr.get)
-          covBuilder.setChild2(child2Expr.get)
-          covBuilder.setNullOnDivideByZero(nullOnDivideByZero)
-          covBuilder.setDatatype(dataType.get)
-          covBuilder.setStatsTypeValue(1)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setCovariance(covBuilder)
-              .build())
-        } else {
-          None
-        }
-      case variance @ VarianceSamp(child, nullOnDivideByZero) =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(variance.dataType)
-
-        if (childExpr.isDefined && dataType.isDefined) {
-          val varBuilder = ExprOuterClass.Variance.newBuilder()
-          varBuilder.setChild(childExpr.get)
-          varBuilder.setNullOnDivideByZero(nullOnDivideByZero)
-          varBuilder.setDatatype(dataType.get)
-          varBuilder.setStatsTypeValue(0)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setVariance(varBuilder)
-              .build())
-        } else {
-          withInfo(aggExpr, child)
-          None
-        }
-      case variancePop @ VariancePop(child, nullOnDivideByZero) =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val dataType = serializeDataType(variancePop.dataType)
-
-        if (childExpr.isDefined && dataType.isDefined) {
-          val varBuilder = ExprOuterClass.Variance.newBuilder()
-          varBuilder.setChild(childExpr.get)
-          varBuilder.setNullOnDivideByZero(nullOnDivideByZero)
-          varBuilder.setDatatype(dataType.get)
-          varBuilder.setStatsTypeValue(1)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setVariance(varBuilder)
-              .build())
-        } else {
-          withInfo(aggExpr, child)
-          None
-        }
-
-      case std @ StddevSamp(child, nullOnDivideByZero) =>
-        if (CometConf.COMET_EXPR_STDDEV_ENABLED.get(conf)) {
-          val childExpr = exprToProto(child, inputs, binding)
-          val dataType = serializeDataType(std.dataType)
-
-          if (childExpr.isDefined && dataType.isDefined) {
-            val stdBuilder = ExprOuterClass.Stddev.newBuilder()
-            stdBuilder.setChild(childExpr.get)
-            stdBuilder.setNullOnDivideByZero(nullOnDivideByZero)
-            stdBuilder.setDatatype(dataType.get)
-            stdBuilder.setStatsTypeValue(0)
-
-            Some(
-              ExprOuterClass.AggExpr
-                .newBuilder()
-                .setStddev(stdBuilder)
-                .build())
-          } else {
-            withInfo(aggExpr, child)
-            None
-          }
-        } else {
-          withInfo(
-            aggExpr,
-            "stddev disabled by default because it can be slower than Spark. " +
-              s"Set ${CometConf.COMET_EXPR_STDDEV_ENABLED}=true to enable it.",
-            child)
-          None
-        }
-
-      case std @ StddevPop(child, nullOnDivideByZero) =>
-        if (CometConf.COMET_EXPR_STDDEV_ENABLED.get(conf)) {
-          val childExpr = exprToProto(child, inputs, binding)
-          val dataType = serializeDataType(std.dataType)
-
-          if (childExpr.isDefined && dataType.isDefined) {
-            val stdBuilder = ExprOuterClass.Stddev.newBuilder()
-            stdBuilder.setChild(childExpr.get)
-            stdBuilder.setNullOnDivideByZero(nullOnDivideByZero)
-            stdBuilder.setDatatype(dataType.get)
-            stdBuilder.setStatsTypeValue(1)
-
-            Some(
-              ExprOuterClass.AggExpr
-                .newBuilder()
-                .setStddev(stdBuilder)
-                .build())
-          } else {
-            withInfo(aggExpr, child)
-            None
-          }
-        } else {
-          withInfo(
-            aggExpr,
-            "stddev disabled by default because it can be slower than Spark. " +
-              s"Set ${CometConf.COMET_EXPR_STDDEV_ENABLED}=true to enable it.",
-            child)
-          None
-        }
-
-      case corr @ Corr(child1, child2, nullOnDivideByZero) =>
-        val child1Expr = exprToProto(child1, inputs, binding)
-        val child2Expr = exprToProto(child2, inputs, binding)
-        val dataType = serializeDataType(corr.dataType)
-
-        if (child1Expr.isDefined && child2Expr.isDefined && dataType.isDefined) {
-          val corrBuilder = ExprOuterClass.Correlation.newBuilder()
-          corrBuilder.setChild1(child1Expr.get)
-          corrBuilder.setChild2(child2Expr.get)
-          corrBuilder.setNullOnDivideByZero(nullOnDivideByZero)
-          corrBuilder.setDatatype(dataType.get)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setCorrelation(corrBuilder)
-              .build())
-        } else {
-          withInfo(aggExpr, child1, child2)
-          None
-        }
-
-      case bloom_filter @ BloomFilterAggregate(child, numItems, numBits, _, _) =>
-        // We ignore mutableAggBufferOffset and inputAggBufferOffset because they are
-        // implementation details for Spark's ObjectHashAggregate.
-        val childExpr = exprToProto(child, inputs, binding)
-        val numItemsExpr = exprToProto(numItems, inputs, binding)
-        val numBitsExpr = exprToProto(numBits, inputs, binding)
-        val dataType = serializeDataType(bloom_filter.dataType)
-
-        if (childExpr.isDefined &&
-          (child.dataType
-            .isInstanceOf[ByteType] ||
-            child.dataType
-              .isInstanceOf[ShortType] ||
-            child.dataType
-              .isInstanceOf[IntegerType] ||
-            child.dataType
-              .isInstanceOf[LongType] ||
-            child.dataType
-              .isInstanceOf[StringType]) &&
-          numItemsExpr.isDefined &&
-          numBitsExpr.isDefined &&
-          dataType.isDefined) {
-          val bloomFilterAggBuilder = ExprOuterClass.BloomFilterAgg.newBuilder()
-          bloomFilterAggBuilder.setChild(childExpr.get)
-          bloomFilterAggBuilder.setNumItems(numItemsExpr.get)
-          bloomFilterAggBuilder.setNumBits(numBitsExpr.get)
-          bloomFilterAggBuilder.setDatatype(dataType.get)
-
-          Some(
-            ExprOuterClass.AggExpr
-              .newBuilder()
-              .setBloomFilterAgg(bloomFilterAggBuilder)
-              .build())
-        } else {
-          withInfo(aggExpr, child, numItems, numBits)
-          None
-        }
-
+    val cometExpr: CometAggregateExpressionSerde = aggExpr.aggregateFunction match {
+      case _: Sum => CometSum
+      case _: Average => CometAverage
+      case _: Count => CometCount
+      case _: Min => CometMin
+      case _: Max => CometMax
+      case _: First => CometFirst
+      case _: Last => CometLast
+      case _: BitAndAgg => CometBitAndAgg
+      case _: BitOrAgg => CometBitOrAgg
+      case _: BitXorAgg => CometBitXOrAgg
+      case _: CovSample => CometCovSample
+      case _: CovPopulation => CometCovPopulation
+      case _: VarianceSamp => CometVarianceSamp
+      case _: VariancePop => CometVariancePop
+      case _: StddevSamp => CometStddevSamp
+      case _: StddevPop => CometStddevPop
+      case _: Corr => CometCorr
+      case _: BloomFilterAggregate => CometBloomFilterAggregate
       case fn =>
         val msg = s"unsupported Spark aggregate function: ${fn.prettyName}"
         emitWarning(msg)
         withInfo(aggExpr, msg, fn.children: _*)
-        None
+        return None
+
     }
+    cometExpr.convert(aggExpr, aggExpr.aggregateFunction, inputs, binding, conf)
   }
 
   def evalModeToProto(evalMode: CometEvalMode.Value): ExprOuterClass.EvalMode = {
@@ -901,7 +465,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
   }
 
   /**
-   * Convert a Spark expression to protobuf.
+   * Convert a Spark expression to a protocol-buffer representation of a native Comet/DataFusion
+   * expression.
+   *
+   * This method performs a transformation on the plan to handle decimal promotion and then calls
+   * into the recursive method [[exprToProtoInternal]].
    *
    * @param expr
    *   The input expression
@@ -910,7 +478,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
    * @param binding
    *   Whether to bind the expression to the input attributes
    * @return
-   *   The protobuf representation of the expression, or None if the expression is not supported
+   *   The protobuf representation of the expression, or None if the expression is not supported.
+   *   In the case where None is returned, the expression will be tagged with the reason(s) why it
+   *   is not supported.
    */
   def exprToProto(
       expr: Expression,
@@ -923,6 +493,21 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     exprToProtoInternal(newExpr, inputs, binding)
   }
 
+  /**
+   * Convert a Spark expression to a protocol-buffer representation of a native Comet/DataFusion
+   * expression.
+   *
+   * @param expr
+   *   The input expression
+   * @param inputs
+   *   The input attributes
+   * @param binding
+   *   Whether to bind the expression to the input attributes
+   * @return
+   *   The protobuf representation of the expression, or None if the expression is not supported.
+   *   In the case where None is returned, the expression will be tagged with the reason(s) why it
+   *   is not supported.
+   */
   def exprToProtoInternal(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -1250,7 +835,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           }
 
           if (isSupported) {
-            exprToProto(child, inputs, binding) match {
+            exprToProtoInternal(child, inputs, binding) match {
               case Some(p) =>
                 val toJson = ExprOuterClass.ToJson
                   .newBuilder()
@@ -2107,7 +1692,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       // char types.
       // See https://github.com/apache/spark/pull/38151
       case s: StaticInvoke
-          if s.staticObject.isInstanceOf[Class[CharVarcharCodegenUtils]] &&
+          // classOf gets ther runtime class of T, which lets us compare directly
+          // Otherwise isInstanceOf[Class[T]] will always evaluate to true for Class[_]
+          if s.staticObject == classOf[CharVarcharCodegenUtils] &&
             s.dataType.isInstanceOf[StringType] &&
             s.functionName == "readSidePadding" &&
             s.arguments.size == 2 &&
@@ -2222,7 +1809,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           return None
         }
 
-        val valExprs = struct.valExprs.map(exprToProto(_, inputs, binding))
+        val valExprs = struct.valExprs.map(exprToProtoInternal(_, inputs, binding))
 
         if (valExprs.forall(_.isDefined)) {
           val structBuilder = ExprOuterClass.CreateNamedStruct.newBuilder()
@@ -2240,7 +1827,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         }
 
       case GetStructField(child, ordinal, _) =>
-        exprToProto(child, inputs, binding).map { childExpr =>
+        exprToProtoInternal(child, inputs, binding).map { childExpr =>
           val getStructFieldBuilder = ExprOuterClass.GetStructField
             .newBuilder()
             .setChild(childExpr)
@@ -2253,7 +1840,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         }
 
       case CreateArray(children, _) =>
-        val childExprs = children.map(exprToProto(_, inputs, binding))
+        val childExprs = children.map(exprToProtoInternal(_, inputs, binding))
 
         if (childExprs.forall(_.isDefined)) {
           scalarExprToProto("make_array", childExprs: _*)
@@ -2263,8 +1850,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         }
 
       case GetArrayItem(child, ordinal, failOnError) =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val ordinalExpr = exprToProto(ordinal, inputs, binding)
+        val childExpr = exprToProtoInternal(child, inputs, binding)
+        val ordinalExpr = exprToProtoInternal(ordinal, inputs, binding)
 
         if (childExpr.isDefined && ordinalExpr.isDefined) {
           val listExtractBuilder = ExprOuterClass.ListExtract
@@ -2285,9 +1872,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         }
 
       case expr if expr.prettyName == "array_insert" =>
-        val srcExprProto = exprToProto(expr.children(0), inputs, binding)
-        val posExprProto = exprToProto(expr.children(1), inputs, binding)
-        val itemExprProto = exprToProto(expr.children(2), inputs, binding)
+        val srcExprProto = exprToProtoInternal(expr.children(0), inputs, binding)
+        val posExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
+        val itemExprProto = exprToProtoInternal(expr.children(2), inputs, binding)
         val legacyNegativeIndex =
           SQLConf.get.getConfString("spark.sql.legacy.negativeIndexInArrayInsert").toBoolean
         if (srcExprProto.isDefined && posExprProto.isDefined && itemExprProto.isDefined) {
@@ -2315,9 +1902,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
       case ElementAt(child, ordinal, defaultValue, failOnError)
           if child.dataType.isInstanceOf[ArrayType] =>
-        val childExpr = exprToProto(child, inputs, binding)
-        val ordinalExpr = exprToProto(ordinal, inputs, binding)
-        val defaultExpr = defaultValue.flatMap(exprToProto(_, inputs, binding))
+        val childExpr = exprToProtoInternal(child, inputs, binding)
+        val ordinalExpr = exprToProtoInternal(ordinal, inputs, binding)
+        val defaultExpr = defaultValue.flatMap(exprToProtoInternal(_, inputs, binding))
 
         if (childExpr.isDefined && ordinalExpr.isDefined &&
           defaultExpr.isDefined == defaultValue.isDefined) {
@@ -2341,7 +1928,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         }
 
       case GetArrayStructFields(child, _, ordinal, _, _) =>
-        val childExpr = exprToProto(child, inputs, binding)
+        val childExpr = exprToProtoInternal(child, inputs, binding)
 
         if (childExpr.isDefined) {
           val arrayStructFieldsBuilder = ExprOuterClass.GetArrayStructFields
@@ -2703,7 +2290,12 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         val cond = exprToProto(condition, child.output)
 
         if (cond.isDefined && childOp.nonEmpty) {
-          val filterBuilder = OperatorOuterClass.Filter.newBuilder().setPredicate(cond.get)
+          val filterBuilder = OperatorOuterClass.Filter
+            .newBuilder()
+            .setPredicate(cond.get)
+            .setUseDatafusionFilter(
+              CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_DATAFUSION ||
+                CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
           Some(result.setFilter(filterBuilder).build())
         } else {
           withInfo(op, condition, child)
@@ -3414,6 +3006,38 @@ trait CometExpressionSerde {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr]
+}
+
+/**
+ * Trait for providing serialization logic for aggregate expressions.
+ */
+trait CometAggregateExpressionSerde {
+
+  /**
+   * Convert a Spark expression into a protocol buffer representation that can be passed into
+   * native code.
+   *
+   * @param expr
+   *   The aggregate expression.
+   * @param expr
+   *   The aggregate function.
+   * @param inputs
+   *   The input attributes.
+   * @param binding
+   *   Whether the attributes are bound (this is only relevant in aggregate expressions).
+   * @param conf
+   *   SQLConf
+   * @return
+   *   Protocol buffer representation, or None if the expression could not be converted. In this
+   *   case it is expected that the input expression will have been tagged with reasons why it
+   *   could not be converted.
+   */
+  def convert(
+      aggExpr: AggregateExpression,
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr]
 }
 
 /** Marker trait for an expression that is not guaranteed to be 100% compatible with Spark */

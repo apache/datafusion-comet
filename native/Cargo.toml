@@ -16,11 +16,12 @@
 # under the License.
 
 [workspace]
-members = ["core", "spark-expr", "proto"]
+default-members = ["core", "spark-expr", "proto"]
+members = ["core", "spark-expr", "proto", "hdfs"]
 resolver = "2"
 
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0"
 homepage = "https://datafusion.apache.org/comet"
 repository = "https://github.com/apache/datafusion-comet"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
@@ -30,26 +31,28 @@ license = "Apache-2.0"
 edition = "2021"
 
 # Comet uses the same minimum Rust version as DataFusion
-rust-version = "1.79"
+rust-version = "1.81"
 
 [workspace.dependencies]
-arrow = { version = "53.4.0", features = ["prettyprint", "ffi", "chrono-tz"] }
-arrow-array = { version = "53.4.0" }
-arrow-buffer = { version = "53.4.0" }
-arrow-data = { version = "53.4.0" }
-arrow-schema = { version = "53.4.0" }
-parquet = { version = "53.4.0", default-features = false, features = ["experimental"] }
-datafusion = { version = "44.0.0", default-features = false, features = ["unicode_expressions", "crypto_expressions"] }
-datafusion-common = { version = "44.0.0", default-features = false }
-datafusion-functions = { version = "44.0.0", default-features = false, features = ["crypto_expressions"] }
-datafusion-functions-nested = { version = "44.0.0", default-features = false }
-datafusion-expr = { version = "44.0.0", default-features = false }
-datafusion-expr-common = { version = "44.0.0", default-features = false }
-datafusion-execution = { version = "44.0.0", default-features = false }
-datafusion-physical-plan = { version = "44.0.0", default-features = false }
-datafusion-physical-expr = { version = "44.0.0", default-features = false }
-datafusion-comet-spark-expr = { path = "spark-expr", version = "0.6.0" }
-datafusion-comet-proto = { path = "proto", version = "0.6.0" }
+arrow = { version = "54.1.0", features = ["prettyprint", "ffi", "chrono-tz"] }
+arrow-array = { version = "54.1.0" }
+arrow-buffer = { version = "54.1.0" }
+arrow-data = { version = "54.1.0" }
+arrow-schema = { version = "54.1.0" }
+async-trait = { version = "0.1" }
+bytes = { version = "1.10.0" }
+parquet = { version = "54.1.0", default-features = false, features = ["experimental"] }
+datafusion = { version = "45.0.0", default-features = false, features = ["unicode_expressions", "crypto_expressions"] }
+datafusion-common = { version = "45.0.0", default-features = false }
+datafusion-functions = { version = "45.0.0", default-features = false, features = ["crypto_expressions"] }
+datafusion-functions-nested = { version = "45.0.0", default-features = false }
+datafusion-expr = { version = "45.0.0", default-features = false }
+datafusion-expr-common = { version = "45.0.0", default-features = false }
+datafusion-execution = { version = "45.0.0", default-features = false }
+datafusion-physical-plan = { version = "45.0.0", default-features = false }
+datafusion-physical-expr = { version = "45.0.0", default-features = false }
+datafusion-comet-spark-expr = { path = "spark-expr", version = "0.7.0" }
+datafusion-comet-proto = { path = "proto", version = "0.7.0" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = { version = "0.8" }
 futures = "0.3.28"

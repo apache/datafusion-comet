@@ -18,7 +18,8 @@
 //! Converts Spark physical plan to DataFusion physical plan
 
 use super::expressions::EvalMode;
-use crate::execution::operators::{CopyMode, FilterExec};
+use crate::execution::operators::CopyMode;
+use crate::execution::operators::FilterExec as CometFilterExec;
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -53,7 +54,6 @@ use datafusion::{
         },
         PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
-    physical_optimizer::join_selection::swap_hash_join,
     physical_plan::{
         aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
         joins::{utils::JoinFilter, HashJoinExec, PartitionMode, SortMergeJoinExec},
@@ -74,12 +74,13 @@ use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctio
 
 use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
-use crate::parquet::parquet_support::SparkParquetOptions;
+use crate::parquet::parquet_support::{register_object_store, SparkParquetOptions};
 use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
 use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
+use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
 use datafusion_comet_proto::{
     spark_expression::{
         self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
@@ -105,9 +106,9 @@ use datafusion_common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
 };
-use datafusion_execution::object_store::ObjectStoreUrl;
+use datafusion_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion_expr::{
-    AggregateUDF, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    AggregateUDF, ReturnTypeArgs, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
     WindowFunctionDefinition,
 };
 use datafusion_functions_nested::array_has::ArrayHas;
@@ -585,15 +586,13 @@ impl PhysicalPlanner {
 
                 let else_phy_expr = match &case_when.else_expr {
                     None => None,
-                    Some(_) => {
-                        Some(self.create_expr(case_when.else_expr.as_ref().unwrap(), input_schema)?)
-                    }
+                    Some(_) => Some(self.create_expr(
+                        case_when.else_expr.as_ref().unwrap(),
+                        Arc::clone(&input_schema),
+                    )?),
                 };
-                Ok(Arc::new(CaseExpr::try_new(
-                    None,
-                    when_then_pairs,
-                    else_phy_expr,
-                )?))
+
+                create_case_expr(when_then_pairs, else_phy_expr, &input_schema)
             }
             ExprStruct::In(expr) => {
                 let value =
@@ -711,12 +710,11 @@ impl PhysicalPlanner {
                 let null_literal_expr: Arc<dyn PhysicalExpr> =
                     Arc::new(Literal::new(ScalarValue::Null));
 
-                let case_expr = CaseExpr::try_new(
-                    None,
+                create_case_expr(
                     vec![(is_null_expr, null_literal_expr)],
                     Some(array_append_expr),
-                )?;
-                Ok(Arc::new(case_expr))
+                    &input_schema,
+                )
             }
             ExprStruct::ArrayInsert(expr) => {
                 let src_array_expr = self.create_expr(
@@ -769,13 +767,11 @@ impl PhysicalPlanner {
                 let null_literal_expr: Arc<dyn PhysicalExpr> =
                     Arc::new(Literal::new(ScalarValue::Null));
 
-                let case_expr = CaseExpr::try_new(
-                    None,
+                create_case_expr(
                     vec![(is_null_expr, null_literal_expr)],
                     Some(array_remove_expr),
-                )?;
-
-                Ok(Arc::new(case_expr))
+                    &input_schema,
+                )
             }
             ExprStruct::ArrayIntersect(expr) => {
                 let left_expr =
@@ -1016,10 +1012,18 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                let filter = Arc::new(FilterExec::try_new(
-                    predicate,
-                    Arc::clone(&child.native_plan),
-                )?);
+                let filter: Arc<dyn ExecutionPlan> = if filter.use_datafusion_filter {
+                    Arc::new(DataFusionFilterExec::try_new(
+                        predicate,
+                        Arc::clone(&child.native_plan),
+                    )?)
+                } else {
+                    Arc::new(CometFilterExec::try_new(
+                        predicate,
+                        Arc::clone(&child.native_plan),
+                    )?)
+                };
+
                 Ok((
                     scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, filter, vec![child])),
@@ -1179,12 +1183,9 @@ impl PhysicalPlanner {
                     ))
                 });
 
-                let object_store = object_store::local::LocalFileSystem::new();
-                // register the object store with the runtime environment
-                let url = Url::try_from("file://").unwrap();
-                self.session_ctx
-                    .runtime_env()
-                    .register_object_store(&url, Arc::new(object_store));
+                // By default, local FS object store registered
+                // if `hdfs` feature enabled then HDFS file object store registered
+                let object_store_url = register_object_store(Arc::clone(&self.session_ctx))?;
 
                 // Generate file groups
                 let mut file_groups: Vec<Vec<PartitionedFile>> =
@@ -1243,8 +1244,6 @@ impl PhysicalPlanner {
 
                 // TODO: I think we can remove partition_count in the future, but leave for testing.
                 assert_eq!(file_groups.len(), partition_count);
-
-                let object_store_url = ObjectStoreUrl::local_filesystem();
                 let partition_fields: Vec<Field> = partition_schema
                     .fields()
                     .iter()
@@ -1529,7 +1528,7 @@ impl PhysicalPlanner {
                     ))
                 } else {
                     let swapped_hash_join =
-                        swap_hash_join(hash_join.as_ref(), PartitionMode::Partitioned)?;
+                        hash_join.as_ref().swap_inputs(PartitionMode::Partitioned)?;
 
                     let mut additional_native_plans = vec![];
                     if swapped_hash_join.as_any().is::<ProjectionExec>() {
@@ -1717,7 +1716,7 @@ impl PhysicalPlanner {
             Some(JoinFilter::new(
                 rewritten_physical_expr,
                 column_indices,
-                filter_schema,
+                filter_schema.into(),
             ))
         } else {
             None
@@ -2332,15 +2331,30 @@ impl PhysicalPlanner {
                         .coerce_types(&input_expr_types)
                         .unwrap_or_else(|_| input_expr_types.clone());
 
-                    let data_type = match fun_name {
-                        // workaround for https://github.com/apache/datafusion/issues/13716
-                        "datepart" => DataType::Int32,
-                        _ => {
-                            // TODO need to call `return_type_from_exprs` instead
-                            #[allow(deprecated)]
-                            func.inner().return_type(&coerced_types)?
-                        }
+                    // TODO this should try and find scalar
+                    let arguments = args
+                        .iter()
+                        .map(|e| {
+                            e.as_ref()
+                                .as_any()
+                                .downcast_ref::<Literal>()
+                                .map(|lit| lit.value())
+                        })
+                        .collect::<Vec<_>>();
+
+                    let nullables = arguments.iter().map(|_| true).collect::<Vec<_>>();
+
+                    let args = ReturnTypeArgs {
+                        arg_types: &coerced_types,
+                        scalar_arguments: &arguments,
+                        nullables: &nullables,
                     };
+
+                    let data_type = func
+                        .inner()
+                        .return_type_from_args(args)?
+                        .return_type()
+                        .clone();
 
                     (data_type, coerced_types)
                 }
@@ -2574,6 +2588,57 @@ fn convert_spark_types_to_arrow_schema(
         .collect_vec();
     let arrow_schema: SchemaRef = Arc::new(Schema::new(arrow_fields));
     arrow_schema
+}
+
+/// Create CASE WHEN expression and add casting as needed
+fn create_case_expr(
+    when_then_pairs: Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>,
+    else_expr: Option<Arc<dyn PhysicalExpr>>,
+    input_schema: &Schema,
+) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+    let then_types: Vec<DataType> = when_then_pairs
+        .iter()
+        .map(|x| x.1.data_type(input_schema))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let else_type: Option<DataType> = else_expr
+        .as_ref()
+        .map(|x| Arc::clone(x).data_type(input_schema))
+        .transpose()?
+        .or(Some(DataType::Null));
+
+    if let Some(coerce_type) = get_coerce_type_for_case_expression(&then_types, else_type.as_ref())
+    {
+        let cast_options = SparkCastOptions::new_without_timezone(EvalMode::Legacy, false);
+
+        let when_then_pairs = when_then_pairs
+            .iter()
+            .map(|x| {
+                let t: Arc<dyn PhysicalExpr> = Arc::new(Cast::new(
+                    Arc::clone(&x.1),
+                    coerce_type.clone(),
+                    cast_options.clone(),
+                ));
+                (Arc::clone(&x.0), t)
+            })
+            .collect::<Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>>();
+
+        let else_phy_expr: Option<Arc<dyn PhysicalExpr>> = else_expr.clone().map(|x| {
+            Arc::new(Cast::new(x, coerce_type.clone(), cast_options.clone()))
+                as Arc<dyn PhysicalExpr>
+        });
+        Ok(Arc::new(CaseExpr::try_new(
+            None,
+            when_then_pairs,
+            else_phy_expr,
+        )?))
+    } else {
+        Ok(Arc::new(CaseExpr::try_new(
+            None,
+            when_then_pairs,
+            else_expr.clone(),
+        )?))
+    }
 }
 
 #[cfg(test)]
@@ -2833,6 +2898,7 @@ mod tests {
             children: vec![child_op],
             op_struct: Some(OpStruct::Filter(spark_operator::Filter {
                 predicate: Some(expr),
+                use_datafusion_filter: false,
             })),
         }
     }
