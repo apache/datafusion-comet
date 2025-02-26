@@ -1055,7 +1055,6 @@ mod test {
     #[test]
     fn partition_buffer_memory() {
         let batch = create_batch(900);
-        println!("batch size: {}", batch.get_array_memory_size());
         let runtime_env = create_runtime(128 * 1024);
         let mut buffer = PartitionBuffer::try_new(
             batch.schema(),
@@ -1114,6 +1113,58 @@ mod test {
         // TODO reservation should not be zero
         assert_eq!(0, buffer.reservation.size());
         assert_eq!(0, buffer.frozen.len());
+    }
+
+    #[tokio::test]
+    async fn shuffle_repartitioner_memory() {
+        let batch = create_batch(900);
+        assert_eq!(8376, batch.get_array_memory_size());
+
+        let memory_limit = 512 * 1024;
+        let num_partitions = 2;
+        let runtime_env = create_runtime(memory_limit);
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let mut repartitioner = ShuffleRepartitioner::try_new(
+            0,
+            "/tmp/data.out".to_string(),
+            "/tmp/index.out".to_string(),
+            batch.schema(),
+            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+            ShuffleRepartitionerMetrics::new(&metrics_set, 0),
+            runtime_env,
+            1024,
+            CompressionCodec::Lz4Frame,
+            true,
+        )
+        .unwrap();
+
+        repartitioner.insert_batch(batch.clone()).await.unwrap();
+
+        assert_eq!(2, repartitioner.buffered_partitions.len());
+
+        assert!(repartitioner.buffered_partitions[0].spill_file.is_none());
+        assert!(repartitioner.buffered_partitions[1].spill_file.is_none());
+
+        assert_eq!(212992, repartitioner.reservation.size());
+        assert_eq!(
+            106496,
+            repartitioner.buffered_partitions[0].reservation.size()
+        );
+        assert_eq!(
+            106496,
+            repartitioner.buffered_partitions[1].reservation.size()
+        );
+
+        repartitioner.spill().await.unwrap();
+
+        // after spill, there should be spill files
+        assert!(repartitioner.buffered_partitions[0].spill_file.is_some());
+        assert!(repartitioner.buffered_partitions[1].spill_file.is_some());
+
+        // TODO: after spill, all reservations should be freed, but they are not
+        assert_eq!(212992, repartitioner.reservation.size());
+        assert_eq!(0, repartitioner.buffered_partitions[0].reservation.size());
+        assert_eq!(0, repartitioner.buffered_partitions[1].reservation.size());
     }
 
     fn create_runtime(memory_limit: usize) -> Arc<RuntimeEnv> {
