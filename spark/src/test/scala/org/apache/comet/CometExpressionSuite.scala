@@ -2660,28 +2660,33 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           randomSize = 10000)
         withParquetTable(path1.toString, "tbl1") {
           withParquetTable(path2.toString, "tbl2") {
-            checkSparkAnswerAndOperator("""
-                |select
-                | t1._2 div t2._2, div(t1._2, t2._2),
-                | t1._3 div t2._3, div(t1._3, t2._3),
-                | t1._4 div t2._4, div(t1._4, t2._4),
-                | t1._5 div t2._5, div(t1._5, t2._5),
-                | t1._9 div t2._9, div(t1._9, t2._9),
-                | t1._10 div t2._10, div(t1._10, t2._10),
-                | t1._11 div t2._11, div(t1._11, t2._11),
-                | t1._12 div t2._12, div(t1._12, t2._12)
-                | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
-                | order by t1._id""".stripMargin)
-
-            if (isSpark34Plus) {
-              // Decimal support requires Spark 3.4 or later
+            // disable broadcast, as comet on spark 3.3 does not support broadcast exchange
+            withSQLConf(
+              SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+              SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
               checkSparkAnswerAndOperator("""
                   |select
-                  | t1._15, t2._15, t1._15 div t2._15, div(t1._15, t2._15),
-                  | t1._16, t2._16, t1._16 div t2._16, div(t1._16, t2._16),
-                  | t1._17, t2._17, t1._17 div t2._17, div(t1._17, t2._17)
+                  | t1._2 div t2._2, div(t1._2, t2._2),
+                  | t1._3 div t2._3, div(t1._3, t2._3),
+                  | t1._4 div t2._4, div(t1._4, t2._4),
+                  | t1._5 div t2._5, div(t1._5, t2._5),
+                  | t1._9 div t2._9, div(t1._9, t2._9),
+                  | t1._10 div t2._10, div(t1._10, t2._10),
+                  | t1._11 div t2._11, div(t1._11, t2._11)
                   | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
                   | order by t1._id""".stripMargin)
+
+              if (isSpark34Plus) {
+                // decimal support requires Spark 3.4 or later
+                checkSparkAnswerAndOperator("""
+                    |select
+                    | t1._12 div t2._12, div(t1._12, t2._12),
+                    | t1._15 div t2._15, div(t1._15, t2._15),
+                    | t1._16 div t2._16, div(t1._16, t2._16),
+                    | t1._17 div t2._17, div(t1._17, t2._17)
+                    | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
+                    | order by t1._id""".stripMargin)
+              }
             }
           }
         }
