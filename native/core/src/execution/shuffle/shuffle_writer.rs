@@ -46,7 +46,6 @@ use datafusion_physical_expr::EquivalenceProperties;
 use futures::executor::block_on;
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
-use parquet::file::reader::Length;
 use std::io::Error;
 use std::{
     any::Any,
@@ -965,6 +964,7 @@ mod test {
     use datafusion_execution::config::SessionConfig;
     use datafusion_execution::runtime_env::RuntimeEnvBuilder;
     use datafusion_physical_expr::expressions::Column;
+    use parquet::file::reader::Length;
     use tokio::runtime::Runtime;
 
     #[test]
