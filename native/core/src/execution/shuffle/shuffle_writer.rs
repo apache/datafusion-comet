@@ -1169,6 +1169,19 @@ mod test {
         assert_eq!(0, repartitioner.reservation.size());
         assert_eq!(0, repartitioner.buffered_partitions[0].reservation.size());
         assert_eq!(0, repartitioner.buffered_partitions[1].reservation.size());
+
+        // insert another batch after spilling
+        repartitioner.insert_batch(batch.clone()).await.unwrap();
+
+        assert_eq!(212992, repartitioner.reservation.size());
+        assert_eq!(
+            106496,
+            repartitioner.buffered_partitions[0].reservation.size()
+        );
+        assert_eq!(
+            106496,
+            repartitioner.buffered_partitions[1].reservation.size()
+        );
     }
 
     fn create_runtime(memory_limit: usize) -> Arc<RuntimeEnv> {
