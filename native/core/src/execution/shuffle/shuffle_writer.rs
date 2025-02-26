@@ -712,6 +712,7 @@ impl Debug for ShuffleRepartitioner {
 }
 
 /// The status of appending rows to a partition buffer.
+#[derive(Debug)]
 enum AppendRowStatus {
     /// The difference in memory usage after appending rows
     MemDiff(Result<isize>),
@@ -760,11 +761,16 @@ impl PartitionBuffer {
             .register(&runtime.memory_pool);
         let shuffle_block_writer =
             ShuffleBlockWriter::try_new(schema.as_ref(), enable_fast_encoding, codec)?;
+        let active_slots_mem_size = schema
+            .fields()
+            .iter()
+            .map(|field| slot_size(batch_size, field.data_type()))
+            .sum::<usize>();
         Ok(Self {
             schema,
             frozen: vec![],
             active: vec![],
-            active_slots_mem_size: 0,
+            active_slots_mem_size,
             num_active_rows: 0,
             batch_size,
             reservation,
@@ -779,16 +785,6 @@ impl PartitionBuffer {
         let mut mem_diff = 0;
 
         if self.active.is_empty() {
-            // Estimate the memory size of active builders
-            if self.active_slots_mem_size == 0 {
-                self.active_slots_mem_size = self
-                    .schema
-                    .fields()
-                    .iter()
-                    .map(|field| slot_size(self.batch_size, field.data_type()))
-                    .sum::<usize>();
-            }
-
             let mut mempool_timer = metrics.mempool_time.timer();
             self.reservation.try_grow(self.active_slots_mem_size)?;
             mempool_timer.stop();
@@ -851,7 +847,8 @@ impl PartitionBuffer {
         AppendRowStatus::MemDiff(Ok(mem_diff))
     }
 
-    /// flush active data into frozen bytes
+    /// Flush active data into frozen bytes. This can reduce memory usage because the frozen
+    /// bytes are compressed.
     fn flush(&mut self, metrics: &ShuffleRepartitionerMetrics) -> Result<isize> {
         if self.num_active_rows == 0 {
             return Ok(0);
@@ -1053,6 +1050,79 @@ mod test {
     #[cfg(not(target_os = "macos"))] // Github MacOS runner fails with "Too many open files".
     fn test_large_number_of_partitions_spilling() {
         shuffle_write_test(10000, 100, 200, Some(10 * 1024 * 1024));
+    }
+
+    #[test]
+    fn partition_buffer_memory() {
+        let batch = create_batch(900);
+        println!("batch size: {}", batch.get_array_memory_size());
+        let runtime_env = create_runtime(128 * 1024);
+        let mut buffer = PartitionBuffer::try_new(
+            batch.schema(),
+            1024,
+            0,
+            &runtime_env,
+            CompressionCodec::Lz4Frame,
+            true,
+        )
+        .unwrap();
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let metrics = ShuffleRepartitionerMetrics::new(&metrics_set, 0);
+        let indices: Vec<usize> = (0..batch.num_rows()).collect();
+
+        assert_eq!(0, buffer.reservation.size());
+        assert!(buffer.spill_file.is_none());
+
+        // append first batch - should fit in memory
+        let status = buffer.append_rows(batch.columns(), &indices, 0, &metrics);
+        assert_eq!(
+            format!("{status:?}"),
+            format!("{:?}", AppendRowStatus::MemDiff(Ok(106496)))
+        );
+        assert_eq!(900, buffer.num_active_rows);
+        assert_eq!(106496, buffer.reservation.size());
+        assert_eq!(0, buffer.frozen.len());
+        assert!(buffer.spill_file.is_none());
+
+        // append second batch - should trigger flush to frozen bytes
+        let status = buffer.append_rows(batch.columns(), &indices, 0, &metrics);
+        assert_eq!(
+            format!("{status:?}"),
+            format!("{:?}", AppendRowStatus::MemDiff(Ok(126316)))
+        );
+        assert_eq!(0, buffer.num_active_rows);
+        assert_eq!(9914, buffer.frozen.len());
+        // note that the reservation does not include the frozen bytes
+        assert_eq!(106496, buffer.reservation.size());
+        assert!(buffer.spill_file.is_none());
+
+        // spill
+        buffer.spill(&runtime_env, &metrics).unwrap();
+        assert_eq!(0, buffer.num_active_rows);
+        assert_eq!(0, buffer.frozen.len());
+        // TODO should the reservation be zero when the array builders are still active?
+        assert_eq!(0, buffer.reservation.size());
+        assert!(buffer.spill_file.is_some());
+
+        // append after spill
+        let status = buffer.append_rows(batch.columns(), &indices, 0, &metrics);
+        assert_eq!(
+            format!("{status:?}"),
+            format!("{:?}", AppendRowStatus::MemDiff(Ok(0)))
+        );
+        assert_eq!(900, buffer.num_active_rows);
+        // TODO reservation should not be zero
+        assert_eq!(0, buffer.reservation.size());
+        assert_eq!(0, buffer.frozen.len());
+    }
+
+    fn create_runtime(memory_limit: usize) -> Arc<RuntimeEnv> {
+        Arc::new(
+            RuntimeEnvBuilder::new()
+                .with_memory_limit(memory_limit, 1.0)
+                .build()
+                .unwrap(),
+        )
     }
 
     fn shuffle_write_test(
