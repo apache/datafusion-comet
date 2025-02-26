@@ -216,6 +216,17 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_INITCAP_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("initCap", defaultValue = false)
 
+  val COMET_EXEC_AGGREGATE_ENFORCE_RESULTS: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.aggregate.enforceResults")
+      .doc("Whether to enforce converting results in the Final stage of a HashAggregate, " +
+        "When enabled, Final-mode hashAggregates will not be converted to Comet, this can cause " +
+        "issues when native shuffle is enabled. " +
+        "If this is disabled, unsupported result expressions will be " +
+        "separated into a ProjectExec to allow HashAggregate to complete natively. " +
+        "This is disabled by default.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
       .doc("Experimental support for Sort Merge Join with filter")

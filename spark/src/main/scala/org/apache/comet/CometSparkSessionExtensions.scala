@@ -25,7 +25,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, PlanExpression, Remainder}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, PlanExpression, Remainder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -375,6 +375,21 @@ class CometSparkSessionExtensions
         }
       }
 
+      // This bit of ad-hoc isn't great, but it is what it is
+      def transformHashAgg(op: BaseAggregateExec): Option[(Boolean, Operator)] = {
+        if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
+          QueryPlanSerde.hashAgg2Proto(
+            op,
+            op.children.map(_.asInstanceOf[CometNativeExec].nativeOp): _*)
+        } else {
+          withInfo(
+            op,
+            s"${op.nodeName} is not native because the following children are not native " +
+              s"${explainChildNotNative(op)}")
+          None
+        }
+      }
+
       plan.transformUp {
         // Fully native scan for V1
         case scan: CometScanExec
@@ -498,7 +513,7 @@ class CometSparkSessionExtensions
           val child = op.child
           val modes = aggExprs.map(_.mode).distinct
 
-          if (!modes.isEmpty && modes.size != 1) {
+          if (modes.nonEmpty && modes.size != 1) {
             // This shouldn't happen as all aggregation expressions should share the same mode.
             // Fallback to Spark nevertheless here.
             op
@@ -506,32 +521,58 @@ class CometSparkSessionExtensions
             // For a final mode HashAggregate, we only need to transform the HashAggregate
             // if there is Comet partial aggregation.
             val sparkFinalMode = {
-              !modes.isEmpty && modes.head == Final && findCometPartialAgg(child).isEmpty
+              modes.nonEmpty && modes.head == Final && findCometPartialAgg(child).isEmpty
             }
 
             if (sparkFinalMode) {
               op
             } else {
-              val newOp = transform1(op)
+              val newOp = transformHashAgg(op)
               newOp match {
-                case Some(nativeOp) =>
+                case Some((convertedWithResults, nativeOp)) =>
                   val modes = aggExprs.map(_.mode).distinct
                   // The aggExprs could be empty. For example, if the aggregate functions only have
                   // distinct aggregate functions or only have group by, the aggExprs is empty and
                   // modes is empty too. If aggExprs is not empty, we need to verify all the
                   // aggregates have the same mode.
-                  assert(modes.length == 1 || modes.length == 0)
-                  CometHashAggregateExec(
+                  assert(modes.length == 1 || modes.isEmpty)
+
+                  // Normally we guarantee that the output for this operator
+                  // will be the same as the Spark output
+                  // Except if the result expressions of the Final stage were not supported
+                  // Then we just keep the intermediate attributes(post aggregate)
+                  val (outputAttributes, resultExprs) = if (convertedWithResults) {
+                    (op.output, resultExpressions)
+                  } else {
+                    val attributes =
+                      op.groupingExpressions.map(_.toAttribute) ++ op.aggregateAttributes
+                    (
+                      attributes,
+                      attributes.map(x =>
+                        AttributeReference(x.name, x.dataType, x.nullable, x.metadata)(
+                          x.exprId,
+                          x.qualifier)))
+                  }
+                  val newOp = CometHashAggregateExec(
                     nativeOp,
                     op,
-                    op.output,
+                    outputAttributes,
                     groupingExprs,
                     aggExprs,
-                    resultExpressions,
+                    resultExprs,
                     child.output,
-                    if (modes.nonEmpty) Some(modes.head) else None,
+                    modes.headOption,
                     child,
                     SerializedPlan(None))
+
+                  if (convertedWithResults) {
+                    newOp
+                  } else {
+                    // If the results could not be converted to Comet,
+                    // create a ProjectExec that will use the output attributes,
+                    // to execute them in Spark.
+                    ProjectExec(resultExpressions, newOp)
+                  }
                 case None =>
                   op
               }
