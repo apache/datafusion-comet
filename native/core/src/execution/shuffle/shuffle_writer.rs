@@ -1100,7 +1100,6 @@ mod test {
         buffer.spill(&runtime_env, &metrics).unwrap();
         assert_eq!(0, buffer.num_active_rows);
         assert_eq!(0, buffer.frozen.len());
-        // TODO should the reservation be zero when the array builders are still active?
         assert_eq!(0, buffer.reservation.size());
         assert!(buffer.spill_file.is_some());
 
@@ -1111,7 +1110,7 @@ mod test {
             format!("{:?}", AppendRowStatus::MemDiff(Ok(0)))
         );
         assert_eq!(900, buffer.num_active_rows);
-        // TODO reservation should not be zero
+        // TODO reservation should not be zero because there are active builders again
         assert_eq!(0, buffer.reservation.size());
         assert_eq!(0, buffer.frozen.len());
     }
@@ -1149,6 +1148,7 @@ mod test {
         // TODO: note that we are currently double counting the memory usage
         // because we reserve the memory twice - once at the repartitioner level
         // and then again in each PartitionBuffer
+        // https://github.com/apache/datafusion-comet/issues/1448
         assert_eq!(212992, repartitioner.reservation.size());
         assert_eq!(
             106496,
