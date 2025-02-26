@@ -567,13 +567,13 @@ impl ShuffleRepartitioner {
             output_data.write_all(&output_batches[i])?;
             output_batches[i].clear();
 
+            // if we wrote a spill file for this partition then copy the
+            // contents into the shuffle file
             if let Some(spill_data) = self.buffered_partitions[i].spill_file.as_ref() {
-                if spill_data.file.len() > 0 {
-                    let mut spill_file = BufReader::new(
-                        File::open(spill_data.temp_file.path()).map_err(Self::to_df_err)?,
-                    );
-                    std::io::copy(&mut spill_file, &mut output_data).map_err(Self::to_df_err)?;
-                }
+                let mut spill_file = BufReader::new(
+                    File::open(spill_data.temp_file.path()).map_err(Self::to_df_err)?,
+                );
+                std::io::copy(&mut spill_file, &mut output_data).map_err(Self::to_df_err)?;
             }
         }
         output_data.flush()?;
@@ -595,8 +595,7 @@ impl ShuffleRepartitioner {
         write_time.stop();
 
         let mut mempool_timer = self.metrics.mempool_time.timer();
-        let used = self.reservation.size();
-        self.reservation.shrink(used);
+        self.reservation.free();
         mempool_timer.stop();
 
         elapsed_compute.stop();
@@ -737,7 +736,9 @@ struct PartitionBuffer {
     batch_size: usize,
     /// Memory reservation for this partition buffer.
     reservation: MemoryReservation,
-    /// Spill file for intermediate shuffle output for this partition
+    /// Spill file for intermediate shuffle output for this partition. Each spill event
+    /// will append to this file and the contents will be copied to the shuffle file at
+    /// the end of processing.
     spill_file: Option<SpillFile>,
     /// Writer that performs encoding and compression
     shuffle_block_writer: ShuffleBlockWriter,
@@ -1102,6 +1103,7 @@ mod test {
         assert_eq!(0, buffer.frozen.len());
         assert_eq!(0, buffer.reservation.size());
         assert!(buffer.spill_file.is_some());
+        assert_eq!(9914, buffer.spill_file.as_ref().unwrap().file.len());
 
         // append after spill
         let status = buffer.append_rows(batch.columns(), &indices, 0, &metrics);
