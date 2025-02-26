@@ -15,13 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod codec;
+pub(crate) mod builders;
+pub(crate) mod codec;
 mod list;
 mod map;
 pub mod row;
 mod shuffle_writer;
+
 pub use codec::BatchWriter;
 
-pub use shuffle_writer::{
-    read_ipc_compressed, CompressionCodec, ShuffleBlockWriter, ShuffleWriterExec,
-};
+pub use codec::{read_ipc_compressed, CompressionCodec, ShuffleBlockWriter};
+pub use shuffle_writer::ShuffleWriterExec;
