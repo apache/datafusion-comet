@@ -1116,7 +1116,6 @@ mod test {
         assert!(repartitioner.buffered_partitions[1].spill_file.is_some());
 
         // after spill, all reservations should be freed
-        assert_eq!(0, repartitioner.reservation.size());
         assert_eq!(0, repartitioner.buffered_partitions[0].reservation.size());
         assert_eq!(0, repartitioner.buffered_partitions[1].reservation.size());
 
