@@ -1,23 +1,26 @@
 == Physical Plan ==
-* CometColumnarToRow (19)
-+- CometTakeOrderedAndProject (18)
-   +- CometHashAggregate (17)
-      +- CometExchange (16)
-         +- CometHashAggregate (15)
-            +- CometProject (14)
-               +- CometBroadcastHashJoin (13)
-                  :- CometProject (3)
-                  :  +- CometFilter (2)
-                  :     +- CometScan parquet spark_catalog.default.item (1)
-                  +- CometBroadcastExchange (12)
-                     +- CometProject (11)
-                        +- CometFilter (10)
-                           +- CometHashAggregate (9)
-                              +- CometExchange (8)
-                                 +- CometHashAggregate (7)
-                                    +- CometProject (6)
-                                       +- CometFilter (5)
-                                          +- CometScan parquet spark_catalog.default.item (4)
+* CometColumnarToRow (22)
++- CometTakeOrderedAndProject (21)
+   +- CometHashAggregate (20)
+      +- CometColumnarExchange (19)
+         +- * HashAggregate (18)
+            +- * Project (17)
+               +- * BroadcastHashJoin Inner BuildRight (16)
+                  :- * CometColumnarToRow (4)
+                  :  +- CometProject (3)
+                  :     +- CometFilter (2)
+                  :        +- CometScan parquet spark_catalog.default.item (1)
+                  +- BroadcastExchange (15)
+                     +- * Project (14)
+                        +- * Filter (13)
+                           +- * HashAggregate (12)
+                              +- * CometColumnarToRow (11)
+                                 +- CometColumnarExchange (10)
+                                    +- * HashAggregate (9)
+                                       +- * Project (8)
+                                          +- * Filter (7)
+                                             +- * CometColumnarToRow (6)
+                                                +- CometScan parquet spark_catalog.default.item (5)
 
 
 (1) CometScan parquet spark_catalog.default.item
@@ -35,74 +38,90 @@ Condition : (((isnotnull(i_manufact_id#1) AND (i_manufact_id#1 >= 738)) AND (i_m
 Input [3]: [i_manufact_id#1, i_manufact#2, i_product_name#3]
 Arguments: [i_manufact#2, i_product_name#3], [i_manufact#2, i_product_name#3]
 
-(4) CometScan parquet spark_catalog.default.item
+(4) CometColumnarToRow [codegen id : 3]
+Input [2]: [i_manufact#2, i_product_name#3]
+
+(5) CometScan parquet spark_catalog.default.item
 Output [5]: [i_category#4, i_manufact#5, i_size#6, i_color#7, i_units#8]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [Or(Or(And(EqualTo(i_category,Women                                             ),Or(And(And(Or(EqualTo(i_color,powder              ),EqualTo(i_color,khaki               )),Or(EqualTo(i_units,Ounce     ),EqualTo(i_units,Oz        ))),Or(EqualTo(i_size,medium              ),EqualTo(i_size,extra large         ))),And(And(Or(EqualTo(i_color,brown               ),EqualTo(i_color,honeydew            )),Or(EqualTo(i_units,Bunch     ),EqualTo(i_units,Ton       ))),Or(EqualTo(i_size,N/A                 ),EqualTo(i_size,small               ))))),And(EqualTo(i_category,Men                                               ),Or(And(And(Or(EqualTo(i_color,floral              ),EqualTo(i_color,deep                )),Or(EqualTo(i_units,N/A       ),EqualTo(i_units,Dozen     ))),Or(EqualTo(i_size,petite              ),EqualTo(i_size,large               ))),And(And(Or(EqualTo(i_color,light               ),EqualTo(i_color,cornflower          )),Or(EqualTo(i_units,Box       ),EqualTo(i_units,Pound     ))),Or(EqualTo(i_size,medium              ),EqualTo(i_size,extra large         )))))),Or(And(EqualTo(i_category,Women                                             ),Or(And(And(Or(EqualTo(i_color,midnight            ),EqualTo(i_color,snow                )),Or(EqualTo(i_units,Pallet    ),EqualTo(i_units,Gross     ))),Or(EqualTo(i_size,medium              ),EqualTo(i_size,extra large         ))),And(And(Or(EqualTo(i_color,cyan                ),EqualTo(i_color,papaya              )),Or(EqualTo(i_units,Cup       ),EqualTo(i_units,Dram      ))),Or(EqualTo(i_size,N/A                 ),EqualTo(i_size,small               ))))),And(EqualTo(i_category,Men                                               ),Or(And(And(Or(EqualTo(i_color,orange              ),EqualTo(i_color,frosted             )),Or(EqualTo(i_units,Each      ),EqualTo(i_units,Tbl       ))),Or(EqualTo(i_size,petite              ),EqualTo(i_size,large               ))),And(And(Or(EqualTo(i_color,forest              ),EqualTo(i_color,ghost               )),Or(EqualTo(i_units,Lb        ),EqualTo(i_units,Bundle    ))),Or(EqualTo(i_size,medium              ),EqualTo(i_size,extra large         ))))))), IsNotNull(i_manufact)]
+PushedFilters: [IsNotNull(i_manufact)]
 ReadSchema: struct<i_category:string,i_manufact:string,i_size:string,i_color:string,i_units:string>
 
-(5) CometFilter
+(6) CometColumnarToRow [codegen id : 1]
 Input [5]: [i_category#4, i_manufact#5, i_size#6, i_color#7, i_units#8]
-Condition : (((((i_category#4 = Women                                             ) AND (((((i_color#7 = powder              ) OR (i_color#7 = khaki               )) AND ((i_units#8 = Ounce     ) OR (i_units#8 = Oz        ))) AND ((i_size#6 = medium              ) OR (i_size#6 = extra large         ))) OR ((((i_color#7 = brown               ) OR (i_color#7 = honeydew            )) AND ((i_units#8 = Bunch     ) OR (i_units#8 = Ton       ))) AND ((i_size#6 = N/A                 ) OR (i_size#6 = small               ))))) OR ((i_category#4 = Men                                               ) AND (((((i_color#7 = floral              ) OR (i_color#7 = deep                )) AND ((i_units#8 = N/A       ) OR (i_units#8 = Dozen     ))) AND ((i_size#6 = petite              ) OR (i_size#6 = large               ))) OR ((((i_color#7 = light               ) OR (i_color#7 = cornflower          )) AND ((i_units#8 = Box       ) OR (i_units#8 = Pound     ))) AND ((i_size#6 = medium              ) OR (i_size#6 = extra large         )))))) OR (((i_category#4 = Women                                             ) AND (((((i_color#7 = midnight            ) OR (i_color#7 = snow                )) AND ((i_units#8 = Pallet    ) OR (i_units#8 = Gross     ))) AND ((i_size#6 = medium              ) OR (i_size#6 = extra large         ))) OR ((((i_color#7 = cyan                ) OR (i_color#7 = papaya              )) AND ((i_units#8 = Cup       ) OR (i_units#8 = Dram      ))) AND ((i_size#6 = N/A                 ) OR (i_size#6 = small               ))))) OR ((i_category#4 = Men                                               ) AND (((((i_color#7 = orange              ) OR (i_color#7 = frosted             )) AND ((i_units#8 = Each      ) OR (i_units#8 = Tbl       ))) AND ((i_size#6 = petite              ) OR (i_size#6 = large               ))) OR ((((i_color#7 = forest              ) OR (i_color#7 = ghost               )) AND ((i_units#8 = Lb        ) OR (i_units#8 = Bundle    ))) AND ((i_size#6 = medium              ) OR (i_size#6 = extra large         ))))))) AND isnotnull(i_manufact#5))
 
-(6) CometProject
+(7) Filter [codegen id : 1]
 Input [5]: [i_category#4, i_manufact#5, i_size#6, i_color#7, i_units#8]
-Arguments: [i_manufact#5], [i_manufact#5]
+Condition : (((((rpad(i_category#4, 50,  ) = Women                                             ) AND (((((rpad(i_color#7, 20,  ) = powder              ) OR (rpad(i_color#7, 20,  ) = khaki               )) AND ((rpad(i_units#8, 10,  ) = Ounce     ) OR (rpad(i_units#8, 10,  ) = Oz        ))) AND ((rpad(i_size#6, 20,  ) = medium              ) OR (rpad(i_size#6, 20,  ) = extra large         ))) OR ((((rpad(i_color#7, 20,  ) = brown               ) OR (rpad(i_color#7, 20,  ) = honeydew            )) AND ((rpad(i_units#8, 10,  ) = Bunch     ) OR (rpad(i_units#8, 10,  ) = Ton       ))) AND ((rpad(i_size#6, 20,  ) = N/A                 ) OR (rpad(i_size#6, 20,  ) = small               ))))) OR ((rpad(i_category#4, 50,  ) = Men                                               ) AND (((((rpad(i_color#7, 20,  ) = floral              ) OR (rpad(i_color#7, 20,  ) = deep                )) AND ((rpad(i_units#8, 10,  ) = N/A       ) OR (rpad(i_units#8, 10,  ) = Dozen     ))) AND ((rpad(i_size#6, 20,  ) = petite              ) OR (rpad(i_size#6, 20,  ) = large               ))) OR ((((rpad(i_color#7, 20,  ) = light               ) OR (rpad(i_color#7, 20,  ) = cornflower          )) AND ((rpad(i_units#8, 10,  ) = Box       ) OR (rpad(i_units#8, 10,  ) = Pound     ))) AND ((rpad(i_size#6, 20,  ) = medium              ) OR (rpad(i_size#6, 20,  ) = extra large         )))))) OR (((rpad(i_category#4, 50,  ) = Women                                             ) AND (((((rpad(i_color#7, 20,  ) = midnight            ) OR (rpad(i_color#7, 20,  ) = snow                )) AND ((rpad(i_units#8, 10,  ) = Pallet    ) OR (rpad(i_units#8, 10,  ) = Gross     ))) AND ((rpad(i_size#6, 20,  ) = medium              ) OR (rpad(i_size#6, 20,  ) = extra large         ))) OR ((((rpad(i_color#7, 20,  ) = cyan                ) OR (rpad(i_color#7, 20,  ) = papaya              )) AND ((rpad(i_units#8, 10,  ) = Cup       ) OR (rpad(i_units#8, 10,  ) = Dram      ))) AND ((rpad(i_size#6, 20,  ) = N/A                 ) OR (rpad(i_size#6, 20,  ) = small               ))))) OR ((rpad(i_category#4, 50,  ) = Men                                               ) AND (((((rpad(i_color#7, 20,  ) = orange              ) OR (rpad(i_color#7, 20,  ) = frosted             )) AND ((rpad(i_units#8, 10,  ) = Each      ) OR (rpad(i_units#8, 10,  ) = Tbl       ))) AND ((rpad(i_size#6, 20,  ) = petite              ) OR (rpad(i_size#6, 20,  ) = large               ))) OR ((((rpad(i_color#7, 20,  ) = forest              ) OR (rpad(i_color#7, 20,  ) = ghost               )) AND ((rpad(i_units#8, 10,  ) = Lb        ) OR (rpad(i_units#8, 10,  ) = Bundle    ))) AND ((rpad(i_size#6, 20,  ) = medium              ) OR (rpad(i_size#6, 20,  ) = extra large         ))))))) AND isnotnull(i_manufact#5))
 
-(7) CometHashAggregate
+(8) Project [codegen id : 1]
+Output [1]: [i_manufact#5]
+Input [5]: [i_category#4, i_manufact#5, i_size#6, i_color#7, i_units#8]
+
+(9) HashAggregate [codegen id : 1]
 Input [1]: [i_manufact#5]
 Keys [1]: [i_manufact#5]
 Functions [1]: [partial_count(1)]
+Aggregate Attributes [1]: [count#9]
+Results [2]: [i_manufact#5, count#10]
 
-(8) CometExchange
-Input [2]: [i_manufact#5, count#9]
-Arguments: hashpartitioning(i_manufact#5, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+(10) CometColumnarExchange
+Input [2]: [i_manufact#5, count#10]
+Arguments: hashpartitioning(i_manufact#5, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
-(9) CometHashAggregate
-Input [2]: [i_manufact#5, count#9]
+(11) CometColumnarToRow [codegen id : 2]
+Input [2]: [i_manufact#5, count#10]
+
+(12) HashAggregate [codegen id : 2]
+Input [2]: [i_manufact#5, count#10]
 Keys [1]: [i_manufact#5]
 Functions [1]: [count(1)]
+Aggregate Attributes [1]: [count(1)#11]
+Results [2]: [count(1)#11 AS item_cnt#12, i_manufact#5]
 
-(10) CometFilter
-Input [2]: [item_cnt#10, i_manufact#5]
-Condition : (item_cnt#10 > 0)
+(13) Filter [codegen id : 2]
+Input [2]: [item_cnt#12, i_manufact#5]
+Condition : (item_cnt#12 > 0)
 
-(11) CometProject
-Input [2]: [item_cnt#10, i_manufact#5]
-Arguments: [i_manufact#5], [i_manufact#5]
+(14) Project [codegen id : 2]
+Output [1]: [i_manufact#5]
+Input [2]: [item_cnt#12, i_manufact#5]
 
-(12) CometBroadcastExchange
+(15) BroadcastExchange
 Input [1]: [i_manufact#5]
-Arguments: [i_manufact#5]
+Arguments: HashedRelationBroadcastMode(List(input[0, string, true]),false), [plan_id=2]
 
-(13) CometBroadcastHashJoin
-Left output [2]: [i_manufact#2, i_product_name#3]
-Right output [1]: [i_manufact#5]
-Arguments: [i_manufact#2], [i_manufact#5], Inner, BuildRight
+(16) BroadcastHashJoin [codegen id : 3]
+Left keys [1]: [i_manufact#2]
+Right keys [1]: [i_manufact#5]
+Join type: Inner
+Join condition: None
 
-(14) CometProject
+(17) Project [codegen id : 3]
+Output [1]: [i_product_name#3]
 Input [3]: [i_manufact#2, i_product_name#3, i_manufact#5]
-Arguments: [i_product_name#3], [i_product_name#3]
 
-(15) CometHashAggregate
+(18) HashAggregate [codegen id : 3]
+Input [1]: [i_product_name#3]
+Keys [1]: [i_product_name#3]
+Functions: []
+Aggregate Attributes: []
+Results [1]: [i_product_name#3]
+
+(19) CometColumnarExchange
+Input [1]: [i_product_name#3]
+Arguments: hashpartitioning(i_product_name#3, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
+
+(20) CometHashAggregate
 Input [1]: [i_product_name#3]
 Keys [1]: [i_product_name#3]
 Functions: []
 
-(16) CometExchange
-Input [1]: [i_product_name#3]
-Arguments: hashpartitioning(i_product_name#3, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
-
-(17) CometHashAggregate
-Input [1]: [i_product_name#3]
-Keys [1]: [i_product_name#3]
-Functions: []
-
-(18) CometTakeOrderedAndProject
+(21) CometTakeOrderedAndProject
 Input [1]: [i_product_name#3]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_product_name#3 ASC NULLS FIRST], output=[i_product_name#3]), [i_product_name#3], 100, [i_product_name#3 ASC NULLS FIRST], [i_product_name#3]
 
-(19) CometColumnarToRow [codegen id : 1]
+(22) CometColumnarToRow [codegen id : 4]
 Input [1]: [i_product_name#3]
 
