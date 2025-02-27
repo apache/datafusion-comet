@@ -156,7 +156,7 @@ object CometMetricNode {
       "encode_time" -> SQLMetrics.createNanoTimingMetric(sc, "encoding and compression time"),
       "decode_time" -> SQLMetrics.createNanoTimingMetric(sc, "decoding and decompression time"),
       "spill_count" -> SQLMetrics.createMetric(sc, "number of spills"),
-      "spilled_bytes" -> SQLMetrics.createMetric(sc, "spilled bytes"),
+      "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "spilled bytes"),
       "input_batches" -> SQLMetrics.createMetric(sc, "number of input batches"))
   }
 
