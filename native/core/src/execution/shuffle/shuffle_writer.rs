@@ -1041,7 +1041,6 @@ mod test {
 
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
-    #[cfg(not(target_os = "macos"))] // Github MacOS runner fails with "Too many open files".
     fn test_large_number_of_partitions() {
         shuffle_write_test(10000, 10, 200, Some(10 * 1024 * 1024));
         shuffle_write_test(10000, 10, 2000, Some(10 * 1024 * 1024));
@@ -1049,7 +1048,6 @@ mod test {
 
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
-    #[cfg(not(target_os = "macos"))] // Github MacOS runner fails with "Too many open files".
     fn test_large_number_of_partitions_spilling() {
         shuffle_write_test(10000, 100, 200, Some(10 * 1024 * 1024));
     }
