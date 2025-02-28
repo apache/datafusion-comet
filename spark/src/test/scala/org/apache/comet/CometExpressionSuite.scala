@@ -1811,7 +1811,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             "spark.sql.decimalOperations.allowPrecisionLoss" -> allowPrecisionLoss.toString) {
             val a = makeNum(p1, s1)
             val b = makeNum(p2, s2)
-            var ops = Seq("+", "-", "*", "/", "%")
+            val ops = Seq("+", "-", "*", "/", "%", "div")
             for (op <- ops) {
               checkSparkAnswerAndOperator(s"select a, b, a $op b from $table")
               checkSparkAnswerAndOperator(s"select $a, b, $a $op b from $table")
