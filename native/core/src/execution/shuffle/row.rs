@@ -3324,13 +3324,11 @@ pub fn process_sorted_row_partition(
         let n = std::cmp::min(batch_size, row_num - current_row);
 
         let mut data_builders: Vec<Box<dyn ArrayBuilder>> = vec![];
-        dbg!("make_builders start");
         schema.iter().try_for_each(|dt| {
             make_builders(dt, n, prefer_dictionary_ratio)
                 .map(|builder| data_builders.push(builder))?;
             Ok::<(), CometError>(())
         })?;
-        dbg!("make_builders finish");
 
         // Appends rows to the array builders.
         let mut row_start: usize = current_row;
