@@ -957,6 +957,9 @@ impl PhysicalPlanner {
             ) => {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
                 let func_name = if options.is_integral_div {
+                    // Decimal256 division in Arrow may overflow, so we still need this variant of decimal_div.
+                    // Otherwise, we may be able to reuse the previous case-match instead of here,
+                    // see more: https://github.com/apache/datafusion-comet/pull/1428#discussion_r1972648463
                     "decimal_integral_div"
                 } else {
                     "decimal_div"
