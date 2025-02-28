@@ -136,6 +136,11 @@ struct JoinParameters {
     pub join_type: DFJoinType,
 }
 
+#[derive(Default)]
+struct BinaryExprOptions {
+    pub is_integral_div: bool,
+}
+
 pub const TEST_EXEC_CONTEXT_ID: i64 = -1;
 
 /// The query planner for converting Spark query plans to DataFusion query plans.
@@ -210,6 +215,16 @@ impl PhysicalPlanner {
                 expr.return_type.as_ref(),
                 DataFusionOperator::Divide,
                 input_schema,
+            ),
+            ExprStruct::IntegralDivide(expr) => self.create_binary_expr_with_options(
+                expr.left.as_ref().unwrap(),
+                expr.right.as_ref().unwrap(),
+                expr.return_type.as_ref(),
+                DataFusionOperator::Divide,
+                input_schema,
+                BinaryExprOptions {
+                    is_integral_div: true,
+                },
             ),
             ExprStruct::Remainder(expr) => self.create_binary_expr(
                 expr.left.as_ref().unwrap(),
@@ -874,6 +889,25 @@ impl PhysicalPlanner {
         op: DataFusionOperator,
         input_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        self.create_binary_expr_with_options(
+            left,
+            right,
+            return_type,
+            op,
+            input_schema,
+            BinaryExprOptions::default(),
+        )
+    }
+
+    fn create_binary_expr_with_options(
+        &self,
+        left: &Expr,
+        right: &Expr,
+        return_type: Option<&spark_expression::DataType>,
+        op: DataFusionOperator,
+        input_schema: SchemaRef,
+        options: BinaryExprOptions,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         let left = self.create_expr(left, Arc::clone(&input_schema))?;
         let right = self.create_expr(right, Arc::clone(&input_schema))?;
         match (
@@ -922,13 +956,21 @@ impl PhysicalPlanner {
                 Ok(DataType::Decimal128(_p2, _s2)),
             ) => {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
+                let func_name = if options.is_integral_div {
+                    // Decimal256 division in Arrow may overflow, so we still need this variant of decimal_div.
+                    // Otherwise, we may be able to reuse the previous case-match instead of here,
+                    // see more: https://github.com/apache/datafusion-comet/pull/1428#discussion_r1972648463
+                    "decimal_integral_div"
+                } else {
+                    "decimal_div"
+                };
                 let fun_expr = create_comet_physical_fun(
-                    "decimal_div",
+                    func_name,
                     data_type.clone(),
                     &self.session_ctx.state(),
                 )?;
                 Ok(Arc::new(ScalarFunctionExpr::new(
-                    "decimal_div",
+                    func_name,
                     fun_expr,
                     vec![left, right],
                     data_type,

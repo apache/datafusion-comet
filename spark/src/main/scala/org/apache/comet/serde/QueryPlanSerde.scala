@@ -20,6 +20,7 @@
 package org.apache.comet.serde
 
 import scala.collection.JavaConverters._
+import scala.math.min
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
@@ -623,6 +624,44 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           (builder, mathExpr) => builder.setDivide(mathExpr))
 
       case div @ Divide(left, _, _) =>
+        if (!supportedDataType(left.dataType)) {
+          withInfo(div, s"Unsupported datatype ${left.dataType}")
+        }
+        if (decimalBeforeSpark34(left.dataType)) {
+          withInfo(div, "Decimal support requires Spark 3.4 or later")
+        }
+        None
+
+      case div @ IntegralDivide(left, right, _)
+          if supportedDataType(left.dataType) && !decimalBeforeSpark34(left.dataType) =>
+        val rightExpr = nullIfWhenPrimitive(right)
+
+        val dataType = (left.dataType, right.dataType) match {
+          case (l: DecimalType, r: DecimalType) =>
+            // copy from IntegralDivide.resultDecimalType
+            val intDig = l.precision - l.scale + r.scale
+            DecimalType(min(if (intDig == 0) 1 else intDig, DecimalType.MAX_PRECISION), 0)
+          case _ => left.dataType
+        }
+
+        val divideExpr = createMathExpression(
+          expr,
+          left,
+          rightExpr,
+          inputs,
+          binding,
+          dataType,
+          getFailOnError(div),
+          (builder, mathExpr) => builder.setIntegralDivide(mathExpr))
+
+        if (divideExpr.isDefined) {
+          // cast result to long
+          castToProto(expr, None, LongType, divideExpr.get, CometEvalMode.LEGACY)
+        } else {
+          None
+        }
+
+      case div @ IntegralDivide(left, _, _) =>
         if (!supportedDataType(left.dataType)) {
           withInfo(div, s"Unsupported datatype ${left.dataType}")
         }
