@@ -669,7 +669,7 @@ impl Debug for ShuffleRepartitioner {
 enum AppendRowStatus {
     /// Rows were appended
     Appended,
-    /// The index of the next row to append
+    /// Not all rows were appended due to lack of available memory
     StartIndex(usize),
 }
 
@@ -736,9 +736,7 @@ impl PartitionBuffer {
 
     /// Initializes active builders if necessary.
     /// Returns error if memory reservation fails.
-    fn init_active_if_necessary(&mut self, metrics: &ShuffleRepartitionerMetrics) -> Result<isize> {
-        let mut mem_diff = 0;
-
+    fn init_active_if_necessary(&mut self, metrics: &ShuffleRepartitionerMetrics) -> Result<()> {
         if self.active.is_empty() {
             let mut mempool_timer = metrics.mempool_time.timer();
             self.reservation.try_grow(self.active_slots_mem_size)?;
@@ -747,10 +745,8 @@ impl PartitionBuffer {
             let mut repart_timer = metrics.repart_time.timer();
             self.active = new_array_builders(&self.schema, self.batch_size);
             repart_timer.stop();
-
-            mem_diff += self.active_slots_mem_size as isize;
         }
-        Ok(mem_diff)
+        Ok(())
     }
 
     /// Appends rows of specified indices from columns into active array builders.
@@ -763,14 +759,17 @@ impl PartitionBuffer {
     ) -> Result<AppendRowStatus> {
         let mut start = start_index;
 
-        // lazy init because some partition may be empty
-        let init = self.init_active_if_necessary(metrics);
-        if init.is_err() {
-            return Ok(AppendRowStatus::StartIndex(start));
-        }
-
+        // loop until all indices are processed
         while start < indices.len() {
             let end = (start + self.batch_size).min(indices.len());
+
+            // lazy init because some partition may be empty
+            // could not allocate memory for builders, so abort
+            // and return the current index
+            let init = self.init_active_if_necessary(metrics);
+            if init.is_err() {
+                return Ok(AppendRowStatus::StartIndex(start));
+            }
 
             let mut repart_timer = metrics.repart_time.timer();
             self.active
@@ -781,21 +780,11 @@ impl PartitionBuffer {
                 });
             self.num_active_rows += end - start;
             repart_timer.stop();
+            start = end;
 
             if self.num_active_rows >= self.batch_size {
-                let flush = self.flush(metrics);
-                if let Err(e) = flush {
-                    return Err(e);
-                }
-                flush.unwrap();
-
-                let init = self.init_active_if_necessary(metrics);
-                if init.is_err() {
-                    return Ok(AppendRowStatus::StartIndex(end));
-                }
-                init.unwrap();
+                self.flush(metrics)?;
             }
-            start = end;
         }
         Ok(AppendRowStatus::Appended)
     }
@@ -1045,7 +1034,7 @@ mod test {
         assert_eq!(0, buffer.num_active_rows);
         assert_eq!(9914, buffer.frozen.len());
         // note that the reservation does not include the frozen bytes
-        assert_eq!(106496, buffer.reservation.size());
+        assert_eq!(0, buffer.reservation.size());
         assert!(buffer.spill_file.is_none());
 
         // spill
@@ -1065,8 +1054,7 @@ mod test {
             format!("{:?}", AppendRowStatus::Appended)
         );
         assert_eq!(900, buffer.num_active_rows);
-        // TODO reservation should not be zero because there are active builders again
-        assert_eq!(0, buffer.reservation.size());
+        assert_eq!(106496, buffer.reservation.size());
         assert_eq!(0, buffer.frozen.len());
     }
 
