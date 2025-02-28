@@ -19,8 +19,6 @@
 
 package org.apache.comet.exec
 
-import scala.reflect.runtime.universe._
-
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
