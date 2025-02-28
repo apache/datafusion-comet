@@ -285,7 +285,6 @@ struct ShuffleRepartitioner {
     output_index_file: String,
     schema: SchemaRef,
     buffered_partitions: Vec<PartitionBuffer>,
-    /// Sort expressions
     /// Partitioning scheme to use
     partitioning: Partitioning,
     num_output_partitions: usize,
@@ -480,6 +479,9 @@ impl ShuffleRepartitioner {
                     buffered_partitions.len()
                 );
 
+                // TODO the single partition case could be optimized to avoid appending all
+                // rows from the batch into builders and then recreating the batch
+                // https://github.com/apache/datafusion-comet/issues/1453
                 let indices = (0..input.num_rows()).collect::<Vec<usize>>();
 
                 self.append_rows_to_partition(input.columns(), &indices, 0)
