@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql
 
+import java.util.concurrent.atomic.AtomicInteger
+
 import scala.concurrent.duration._
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
@@ -461,6 +463,7 @@ abstract class CometTestBase
          |  optional INT64                    _18(TIMESTAMP(MILLIS,true));
          |  optional INT64                    _19(TIMESTAMP(MICROS,true));
          |  optional INT32                    _20(DATE);
+         |  optional INT32                    _id;
          |}
         """.stripMargin
       } else {
@@ -486,6 +489,7 @@ abstract class CometTestBase
          |  optional INT64                    _18(TIMESTAMP(MILLIS,true));
          |  optional INT64                    _19(TIMESTAMP(MICROS,true));
          |  optional INT32                    _20(DATE);
+         |  optional INT32                    _id;
          |}
         """.stripMargin
       }
@@ -514,6 +518,7 @@ abstract class CometTestBase
          |  optional INT64                    _18(TIMESTAMP(MILLIS,true));
          |  optional INT64                    _19(TIMESTAMP(MICROS,true));
          |  optional INT32                    _20(DATE);
+         |  optional INT32                    _id;
          |}
         """.stripMargin
       } else {
@@ -539,6 +544,7 @@ abstract class CometTestBase
          |  optional INT64                    _18(TIMESTAMP(MILLIS,true));
          |  optional INT64                    _19(TIMESTAMP(MICROS,true));
          |  optional INT32                    _20(DATE);
+         |  optional INT32                    _id;
          |}
         """.stripMargin
       }
@@ -563,6 +569,8 @@ abstract class CometTestBase
       dictionaryEnabled = dictionaryEnabled,
       pageSize = pageSize,
       dictionaryPageSize = pageSize)
+
+    val idGenerator = new AtomicInteger(0)
 
     val rand = scala.util.Random
     val data = (begin until end).map { i =>
@@ -596,6 +604,7 @@ abstract class CometTestBase
           record.add(17, i.toLong)
           record.add(18, i.toLong)
           record.add(19, i)
+          record.add(20, idGenerator.getAndIncrement())
         case _ =>
       }
       writer.write(record)
@@ -623,6 +632,7 @@ abstract class CometTestBase
       record.add(17, i)
       record.add(18, i)
       record.add(19, i.toInt)
+      record.add(20, idGenerator.getAndIncrement())
       writer.write(record)
     }
 
