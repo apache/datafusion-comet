@@ -1,4 +1,4 @@
-WholeStageCodegen (1)
+WholeStageCodegen (5)
   CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [s_store_name,sum(ss_net_profit)]
@@ -30,23 +30,37 @@ WholeStageCodegen (1)
                           CometScan parquet spark_catalog.default.store [s_store_sk,s_store_name,s_zip]
                   CometBroadcastExchange [ca_zip] #5
                     CometHashAggregate [ca_zip]
-                      CometExchange [ca_zip] #6
-                        CometHashAggregate [ca_zip]
-                          CometBroadcastHashJoin [ca_zip,ca_zip]
-                            CometProject [ca_zip] [ca_zip]
-                              CometFilter [ca_zip]
-                                CometScan parquet spark_catalog.default.customer_address [ca_zip]
-                            CometBroadcastExchange [ca_zip] #7
-                              CometProject [ca_zip]
-                                CometFilter [ca_zip,cnt]
-                                  CometHashAggregate [ca_zip,cnt,ca_zip,count,count(1)]
-                                    CometExchange [ca_zip] #8
-                                      CometHashAggregate [ca_zip,count]
-                                        CometProject [ca_zip]
-                                          CometBroadcastHashJoin [ca_address_sk,ca_zip,c_current_addr_sk]
-                                            CometFilter [ca_address_sk,ca_zip]
-                                              CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_zip]
-                                            CometBroadcastExchange [c_current_addr_sk] #9
-                                              CometProject [c_current_addr_sk]
-                                                CometFilter [c_current_addr_sk,c_preferred_cust_flag]
-                                                  CometScan parquet spark_catalog.default.customer [c_current_addr_sk,c_preferred_cust_flag]
+                      CometColumnarExchange [ca_zip] #6
+                        WholeStageCodegen (4)
+                          HashAggregate [ca_zip]
+                            BroadcastHashJoin [ca_zip,ca_zip]
+                              CometColumnarToRow
+                                InputAdapter
+                                  CometProject [ca_zip] [ca_zip]
+                                    CometFilter [ca_zip]
+                                      CometScan parquet spark_catalog.default.customer_address [ca_zip]
+                              InputAdapter
+                                BroadcastExchange #7
+                                  WholeStageCodegen (3)
+                                    Project [ca_zip]
+                                      Filter [cnt]
+                                        HashAggregate [ca_zip,count] [count(1),ca_zip,cnt,count]
+                                          CometColumnarToRow
+                                            InputAdapter
+                                              CometColumnarExchange [ca_zip] #8
+                                                WholeStageCodegen (2)
+                                                  HashAggregate [ca_zip] [count,count]
+                                                    Project [ca_zip]
+                                                      BroadcastHashJoin [ca_address_sk,c_current_addr_sk]
+                                                        CometColumnarToRow
+                                                          InputAdapter
+                                                            CometFilter [ca_address_sk,ca_zip]
+                                                              CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_zip]
+                                                        InputAdapter
+                                                          BroadcastExchange #9
+                                                            WholeStageCodegen (1)
+                                                              Project [c_current_addr_sk]
+                                                                Filter [c_preferred_cust_flag,c_current_addr_sk]
+                                                                  CometColumnarToRow
+                                                                    InputAdapter
+                                                                      CometScan parquet spark_catalog.default.customer [c_current_addr_sk,c_preferred_cust_flag]

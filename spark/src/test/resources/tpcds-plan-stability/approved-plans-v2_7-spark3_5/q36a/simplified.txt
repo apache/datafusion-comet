@@ -1,54 +1,78 @@
 TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,gross_margin,i_class]
-  WholeStageCodegen (2)
+  WholeStageCodegen (14)
     Project [gross_margin,i_category,i_class,lochierarchy,rank_within_parent]
       InputAdapter
         Window [gross_margin,lochierarchy,_w0]
-          WholeStageCodegen (1)
+          WholeStageCodegen (13)
             CometColumnarToRow
               InputAdapter
                 CometSort [gross_margin,i_category,i_class,lochierarchy,_w0]
                   CometExchange [lochierarchy,_w0] #1
                     CometHashAggregate [gross_margin,i_category,i_class,lochierarchy,_w0,t_category,t_class]
-                      CometExchange [gross_margin,i_category,i_class,t_category,t_class,lochierarchy] #2
-                        CometHashAggregate [gross_margin,i_category,i_class,t_category,t_class,lochierarchy]
-                          CometUnion [gross_margin,i_category,i_class,t_category,t_class,lochierarchy]
-                            CometHashAggregate [gross_margin,i_category,i_class,t_category,t_class,lochierarchy,sum,sum,sum(UnscaledValue(ss_net_profit)),sum(UnscaledValue(ss_ext_sales_price))]
-                              CometExchange [i_category,i_class] #3
-                                CometHashAggregate [i_category,i_class,sum,sum,ss_net_profit,ss_ext_sales_price]
-                                  CometProject [ss_ext_sales_price,ss_net_profit,i_class,i_category]
-                                    CometBroadcastHashJoin [ss_store_sk,ss_ext_sales_price,ss_net_profit,i_class,i_category,s_store_sk]
-                                      CometProject [ss_store_sk,ss_ext_sales_price,ss_net_profit,i_class,i_category]
-                                        CometBroadcastHashJoin [ss_item_sk,ss_store_sk,ss_ext_sales_price,ss_net_profit,i_item_sk,i_class,i_category]
-                                          CometProject [ss_item_sk,ss_store_sk,ss_ext_sales_price,ss_net_profit]
-                                            CometBroadcastHashJoin [ss_item_sk,ss_store_sk,ss_ext_sales_price,ss_net_profit,ss_sold_date_sk,d_date_sk]
-                                              CometFilter [ss_item_sk,ss_store_sk,ss_ext_sales_price,ss_net_profit,ss_sold_date_sk]
-                                                CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_store_sk,ss_ext_sales_price,ss_net_profit,ss_sold_date_sk]
-                                                  SubqueryBroadcast [d_date_sk] #1
-                                                    BroadcastExchange #4
+                      CometColumnarExchange [gross_margin,i_category,i_class,t_category,t_class,lochierarchy] #2
+                        WholeStageCodegen (12)
+                          HashAggregate [gross_margin,i_category,i_class,t_category,t_class,lochierarchy]
+                            InputAdapter
+                              Union
+                                WholeStageCodegen (3)
+                                  HashAggregate [i_category,i_class,sum,sum] [sum(UnscaledValue(ss_net_profit)),sum(UnscaledValue(ss_ext_sales_price)),gross_margin,t_category,t_class,lochierarchy,sum,sum]
+                                    CometColumnarToRow
+                                      InputAdapter
+                                        CometColumnarExchange [i_category,i_class] #3
+                                          WholeStageCodegen (2)
+                                            HashAggregate [i_category,i_class,ss_net_profit,ss_ext_sales_price] [sum,sum,sum,sum]
+                                              Project [ss_ext_sales_price,ss_net_profit,i_class,i_category]
+                                                BroadcastHashJoin [ss_store_sk,s_store_sk]
+                                                  CometColumnarToRow
+                                                    InputAdapter
+                                                      CometProject [ss_store_sk,ss_ext_sales_price,ss_net_profit,i_class,i_category]
+                                                        CometBroadcastHashJoin [ss_item_sk,ss_store_sk,ss_ext_sales_price,ss_net_profit,i_item_sk,i_class,i_category]
+                                                          CometProject [ss_item_sk,ss_store_sk,ss_ext_sales_price,ss_net_profit]
+                                                            CometBroadcastHashJoin [ss_item_sk,ss_store_sk,ss_ext_sales_price,ss_net_profit,ss_sold_date_sk,d_date_sk]
+                                                              CometFilter [ss_item_sk,ss_store_sk,ss_ext_sales_price,ss_net_profit,ss_sold_date_sk]
+                                                                CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_store_sk,ss_ext_sales_price,ss_net_profit,ss_sold_date_sk]
+                                                                  SubqueryBroadcast [d_date_sk] #1
+                                                                    BroadcastExchange #4
+                                                                      WholeStageCodegen (1)
+                                                                        CometColumnarToRow
+                                                                          InputAdapter
+                                                                            CometProject [d_date_sk]
+                                                                              CometFilter [d_date_sk,d_year]
+                                                                                CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                                              CometBroadcastExchange [d_date_sk] #5
+                                                                CometProject [d_date_sk]
+                                                                  CometFilter [d_date_sk,d_year]
+                                                                    CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                                          CometBroadcastExchange [i_item_sk,i_class,i_category] #6
+                                                            CometFilter [i_item_sk,i_class,i_category]
+                                                              CometScan parquet spark_catalog.default.item [i_item_sk,i_class,i_category]
+                                                  InputAdapter
+                                                    BroadcastExchange #7
                                                       WholeStageCodegen (1)
-                                                        CometColumnarToRow
-                                                          InputAdapter
-                                                            CometProject [d_date_sk]
-                                                              CometFilter [d_date_sk,d_year]
-                                                                CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
-                                              CometBroadcastExchange [d_date_sk] #5
-                                                CometProject [d_date_sk]
-                                                  CometFilter [d_date_sk,d_year]
-                                                    CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
-                                          CometBroadcastExchange [i_item_sk,i_class,i_category] #6
-                                            CometFilter [i_item_sk,i_class,i_category]
-                                              CometScan parquet spark_catalog.default.item [i_item_sk,i_class,i_category]
-                                      CometBroadcastExchange [s_store_sk] #7
-                                        CometProject [s_store_sk]
-                                          CometFilter [s_store_sk,s_state]
-                                            CometScan parquet spark_catalog.default.store [s_store_sk,s_state]
-                            CometHashAggregate [gross_margin,i_category,i_class,t_category,t_class,lochierarchy,sum,isEmpty,sum,isEmpty,sum(ss_net_profit),sum(ss_ext_sales_price)]
-                              CometExchange [i_category] #8
-                                CometHashAggregate [i_category,sum,isEmpty,sum,isEmpty,ss_net_profit,ss_ext_sales_price]
-                                  CometHashAggregate [ss_net_profit,ss_ext_sales_price,i_category,i_class,sum,sum,sum(UnscaledValue(ss_net_profit)),sum(UnscaledValue(ss_ext_sales_price))]
-                                    ReusedExchange [i_category,i_class,sum,sum] #3
-                            CometHashAggregate [gross_margin,i_category,i_class,t_category,t_class,lochierarchy,sum,isEmpty,sum,isEmpty,sum(ss_net_profit),sum(ss_ext_sales_price)]
-                              CometExchange #9
-                                CometHashAggregate [sum,isEmpty,sum,isEmpty,ss_net_profit,ss_ext_sales_price]
-                                  CometHashAggregate [ss_net_profit,ss_ext_sales_price,i_category,i_class,sum,sum,sum(UnscaledValue(ss_net_profit)),sum(UnscaledValue(ss_ext_sales_price))]
-                                    ReusedExchange [i_category,i_class,sum,sum] #3
+                                                        Project [s_store_sk]
+                                                          Filter [s_state,s_store_sk]
+                                                            CometColumnarToRow
+                                                              InputAdapter
+                                                                CometScan parquet spark_catalog.default.store [s_store_sk,s_state]
+                                WholeStageCodegen (7)
+                                  HashAggregate [i_category,sum,isEmpty,sum,isEmpty] [sum(ss_net_profit),sum(ss_ext_sales_price),gross_margin,i_class,t_category,t_class,lochierarchy,sum,isEmpty,sum,isEmpty]
+                                    CometColumnarToRow
+                                      InputAdapter
+                                        CometColumnarExchange [i_category] #8
+                                          WholeStageCodegen (6)
+                                            HashAggregate [i_category,ss_net_profit,ss_ext_sales_price] [sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty]
+                                              HashAggregate [i_category,i_class,sum,sum] [sum(UnscaledValue(ss_net_profit)),sum(UnscaledValue(ss_ext_sales_price)),ss_net_profit,ss_ext_sales_price,sum,sum]
+                                                CometColumnarToRow
+                                                  InputAdapter
+                                                    ReusedExchange [i_category,i_class,sum,sum] #3
+                                WholeStageCodegen (11)
+                                  HashAggregate [sum,isEmpty,sum,isEmpty] [sum(ss_net_profit),sum(ss_ext_sales_price),gross_margin,i_category,i_class,t_category,t_class,lochierarchy,sum,isEmpty,sum,isEmpty]
+                                    CometColumnarToRow
+                                      InputAdapter
+                                        CometColumnarExchange #9
+                                          WholeStageCodegen (10)
+                                            HashAggregate [ss_net_profit,ss_ext_sales_price] [sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty]
+                                              HashAggregate [i_category,i_class,sum,sum] [sum(UnscaledValue(ss_net_profit)),sum(UnscaledValue(ss_ext_sales_price)),ss_net_profit,ss_ext_sales_price,sum,sum]
+                                                CometColumnarToRow
+                                                  InputAdapter
+                                                    ReusedExchange [i_category,i_class,sum,sum] #3

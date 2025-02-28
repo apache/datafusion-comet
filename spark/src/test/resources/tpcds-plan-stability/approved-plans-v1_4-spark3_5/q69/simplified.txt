@@ -57,10 +57,10 @@ TakeOrderedAndProject [cd_gender,cd_marital_status,cd_education_status,cd_purcha
                         InputAdapter
                           BroadcastExchange #7
                             WholeStageCodegen (3)
-                              CometColumnarToRow
-                                InputAdapter
-                                  CometProject [ca_address_sk]
-                                    CometFilter [ca_address_sk,ca_state]
+                              Project [ca_address_sk]
+                                Filter [ca_state,ca_address_sk]
+                                  CometColumnarToRow
+                                    InputAdapter
                                       CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_state]
                     InputAdapter
                       BroadcastExchange #8
