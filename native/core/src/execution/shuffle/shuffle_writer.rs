@@ -612,9 +612,7 @@ impl ShuffleRepartitioner {
         columns: &[ArrayRef],
         indices: &[usize],
         partition_id: usize,
-    ) -> Result<isize> {
-        let mut mem_diff = 0;
-
+    ) -> Result<()> {
         let output = &mut self.buffered_partitions[partition_id];
 
         // If the range of indices is not big enough, just appending the rows into
@@ -624,8 +622,7 @@ impl ShuffleRepartitioner {
 
         loop {
             match output_ret {
-                AppendRowStatus::MemDiff(l) => {
-                    mem_diff += l;
+                AppendRowStatus::Appended => {
                     break;
                 }
                 AppendRowStatus::StartIndex(new_start) => {
@@ -652,7 +649,7 @@ impl ShuffleRepartitioner {
             }
         }
 
-        Ok(mem_diff)
+        Ok(())
     }
 }
 
@@ -670,8 +667,8 @@ impl Debug for ShuffleRepartitioner {
 /// The status of appending rows to a partition buffer.
 #[derive(Debug)]
 enum AppendRowStatus {
-    /// The difference in memory usage after appending rows
-    MemDiff(isize),
+    /// Rows were appended
+    Appended,
     /// The index of the next row to append
     StartIndex(usize),
 }
@@ -764,7 +761,6 @@ impl PartitionBuffer {
         start_index: usize,
         metrics: &ShuffleRepartitionerMetrics,
     ) -> Result<AppendRowStatus> {
-        let mut mem_diff = 0;
         let mut start = start_index;
 
         // lazy init because some partition may be empty
@@ -772,7 +768,6 @@ impl PartitionBuffer {
         if init.is_err() {
             return Ok(AppendRowStatus::StartIndex(start));
         }
-        mem_diff += init.unwrap();
 
         while start < indices.len() {
             let end = (start + self.batch_size).min(indices.len());
@@ -792,26 +787,25 @@ impl PartitionBuffer {
                 if let Err(e) = flush {
                     return Err(e);
                 }
-                mem_diff += flush.unwrap();
+                flush.unwrap();
 
                 let init = self.init_active_if_necessary(metrics);
                 if init.is_err() {
                     return Ok(AppendRowStatus::StartIndex(end));
                 }
-                mem_diff += init.unwrap();
+                init.unwrap();
             }
             start = end;
         }
-        Ok(AppendRowStatus::MemDiff(mem_diff))
+        Ok(AppendRowStatus::Appended)
     }
 
     /// Flush active data into frozen bytes. This can reduce memory usage because the frozen
     /// bytes are compressed.
-    fn flush(&mut self, metrics: &ShuffleRepartitionerMetrics) -> Result<isize> {
+    fn flush(&mut self, metrics: &ShuffleRepartitionerMetrics) -> Result<()> {
         if self.num_active_rows == 0 {
-            return Ok(0);
+            return Ok(());
         }
-        let mut mem_diff = 0isize;
 
         // active -> staging
         let active = std::mem::take(&mut self.active);
@@ -826,14 +820,12 @@ impl PartitionBuffer {
         let frozen_batch = make_batch(Arc::clone(&self.schema), active, num_rows)?;
         repart_timer.stop();
 
-        let frozen_capacity_old = self.frozen.capacity();
         let mut cursor = Cursor::new(&mut self.frozen);
         cursor.seek(SeekFrom::End(0))?;
         self.shuffle_block_writer
             .write_batch(&frozen_batch, &mut cursor, &metrics.encode_time)?;
 
-        mem_diff += (self.frozen.capacity() - frozen_capacity_old) as isize;
-        Ok(mem_diff)
+        Ok(())
     }
 
     fn spill(
@@ -1035,7 +1027,7 @@ mod test {
             .unwrap();
         assert_eq!(
             format!("{status:?}"),
-            format!("{:?}", AppendRowStatus::MemDiff(106496))
+            format!("{:?}", AppendRowStatus::Appended)
         );
         assert_eq!(900, buffer.num_active_rows);
         assert_eq!(106496, buffer.reservation.size());
@@ -1048,7 +1040,7 @@ mod test {
             .unwrap();
         assert_eq!(
             format!("{status:?}"),
-            format!("{:?}", AppendRowStatus::MemDiff(126316))
+            format!("{:?}", AppendRowStatus::Appended)
         );
         assert_eq!(0, buffer.num_active_rows);
         assert_eq!(9914, buffer.frozen.len());
@@ -1070,7 +1062,7 @@ mod test {
             .unwrap();
         assert_eq!(
             format!("{status:?}"),
-            format!("{:?}", AppendRowStatus::MemDiff(0))
+            format!("{:?}", AppendRowStatus::Appended)
         );
         assert_eq!(900, buffer.num_active_rows);
         // TODO reservation should not be zero because there are active builders again
