@@ -3195,60 +3195,63 @@ fn make_builders(
         }
         DataType::List(field) => {
             // Disable dictionary encoding for array element
-            let value_builder =
+            let mut value_builder =
                 make_builders(field.data_type(), NESTED_TYPE_BUILDER_CAPACITY, 1.0)?;
+
+            // List builders created using `with_field` to override the ListBuilder default field
+            // name which is `item`
             match field.data_type() {
                 DataType::Boolean => {
                     let builder = downcast_builder!(BooleanBuilder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(field.clone()))
                 }
                 DataType::Int8 => {
                     let builder = downcast_builder!(Int8Builder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(field.clone()))
                 }
                 DataType::Int16 => {
                     let builder = downcast_builder!(Int16Builder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(field.clone()))
                 }
                 DataType::Int32 => {
                     let builder = downcast_builder!(Int32Builder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(field.clone()))
                 }
                 DataType::Int64 => {
                     let builder = downcast_builder!(Int64Builder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(field.clone()))
                 }
                 DataType::Float32 => {
                     let builder = downcast_builder!(Float32Builder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(field.clone()))
                 }
                 DataType::Float64 => {
                     let builder = downcast_builder!(Float64Builder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(field.clone()))
                 }
                 DataType::Decimal128(_, _) => {
                     let builder = downcast_builder!(Decimal128Builder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(field.clone()))
                 }
                 DataType::Timestamp(TimeUnit::Microsecond, _) => {
                     let builder = downcast_builder!(TimestampMicrosecondBuilder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(field.clone()))
                 }
                 DataType::Date32 => {
                     let builder = downcast_builder!(Date32Builder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(field.clone()))
                 }
                 DataType::Binary => {
                     let builder = downcast_builder!(BinaryBuilder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(field.clone()))
                 }
                 DataType::Utf8 => {
                     let builder = downcast_builder!(StringBuilder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(field.clone()))
                 }
                 DataType::Struct(_) => {
                     let builder = downcast_builder!(StructBuilder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(field.clone()))
                 }
                 // TODO: nested list is not supported. Due to the design of `ListBuilder`, it has
                 // a `T: ArrayBuilder` as type parameter. It makes hard to construct an arbitrarily
@@ -3319,11 +3322,13 @@ pub fn process_sorted_row_partition(
         let n = std::cmp::min(batch_size, row_num - current_row);
 
         let mut data_builders: Vec<Box<dyn ArrayBuilder>> = vec![];
+        dbg!("make_builders start");
         schema.iter().try_for_each(|dt| {
             make_builders(dt, n, prefer_dictionary_ratio)
                 .map(|builder| data_builders.push(builder))?;
             Ok::<(), CometError>(())
         })?;
+        dbg!("make_builders finish");
 
         // Appends rows to the array builders.
         let mut row_start: usize = current_row;
