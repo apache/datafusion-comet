@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions.{ArrayJoin, ArrayRemove, Attrib
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProto, optExprWithInfo, scalarExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProto, scalarExprToProtoWithReturnType}
 import org.apache.comet.shims.CometExprShim
 
 object CometArrayRemove extends CometExpressionSerde with CometExprShim {
