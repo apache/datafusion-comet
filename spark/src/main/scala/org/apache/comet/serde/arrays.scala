@@ -19,11 +19,11 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayJoin, ArrayRemove, Attribute, Expression}
-import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, StructType}
+import org.apache.spark.sql.catalyst.expressions.{ArrayJoin, ArrayRemove, Attribute, Expression, Literal}
+import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProto, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProto, optExprWithInfo, scalarExprToProtoWithReturnType}
 import org.apache.comet.shims.CometExprShim
 
 object CometArrayRemove extends CometExpressionSerde with CometExprShim {
@@ -132,21 +132,21 @@ object CometArrayCompact extends CometExpressionSerde with IncompatExpr {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val child = expr.children.head
-    val elementType = serializeDataType(child.dataType.asInstanceOf[ArrayType].elementType)
-    val srcExprProto = exprToProto(child, inputs, binding)
-    if (elementType.isDefined && srcExprProto.isDefined) {
-      val arrayCompactBuilder = ExprOuterClass.ArrayCompact
-        .newBuilder()
-        .setArrayExpr(srcExprProto.get)
-        .setItemDatatype(elementType.get)
-      Some(
-        ExprOuterClass.Expr
-          .newBuilder()
-          .setArrayCompact(arrayCompactBuilder)
-          .build())
-    } else {
-      withInfo(expr, "unsupported arguments for ArrayCompact", expr.children: _*)
-      None
+    val elementType = child.dataType.asInstanceOf[ArrayType].elementType
+
+    val arrayExprProto = exprToProto(child, inputs, binding)
+    val nullLiteralProto = exprToProto(Literal(null, elementType), Seq.empty)
+
+    val arrayCompactScalarExpr = scalarExprToProtoWithReturnType(
+      "array_remove_all",
+      ArrayType(elementType = elementType),
+      arrayExprProto,
+      nullLiteralProto)
+    arrayCompactScalarExpr match {
+      case None =>
+        withInfo(expr, "unsupported arguments for ArrayCompact", expr.children: _*)
+        None
+      case expr => expr
     }
   }
 }
