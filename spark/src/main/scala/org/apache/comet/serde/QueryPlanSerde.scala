@@ -2176,6 +2176,119 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     case _ => false
   }
 
+  def hashAgg2Proto(
+      aggregate: BaseAggregateExec,
+      childOp: Operator*): Option[(Boolean, Operator)] = {
+    val conf = aggregate.conf
+
+    // Early validation of aggregate type
+    if (!(aggregate.isInstanceOf[HashAggregateExec] ||
+        aggregate.isInstanceOf[ObjectHashAggregateExec]) &&
+      CometConf.COMET_EXEC_AGGREGATE_ENABLED.get(conf)) {
+      val msg = s"unsupported Spark operator: ${aggregate.nodeName}"
+      emitWarning(msg)
+      withInfo(aggregate, msg)
+      return None
+    }
+
+    // Extract all needed values upfront
+    val result = Operator.newBuilder().setPlanId(aggregate.id)
+    childOp.foreach(result.addChildren)
+
+    val groupingExpressions = aggregate.groupingExpressions
+    val aggregateExpressions = aggregate.aggregateExpressions
+    val aggregateAttributes = aggregate.aggregateAttributes
+    val resultExpressions = aggregate.resultExpressions
+    val child = aggregate.child
+
+    // Basic validation
+    if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) {
+      withInfo(aggregate, "No group by or aggregation")
+      return None
+    }
+
+    if (aggregateExpressions.exists(_.filter.isDefined)) {
+      withInfo(aggregate, "Aggregate expression with filter is not supported")
+      return None
+    }
+
+    val groupingExprs = groupingExpressions.map(exprToProto(_, child.output))
+    val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
+    hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
+
+    // Handle case with no aggregate expressions
+    if (aggregateExpressions.isEmpty) {
+      val attributes = groupingExpressions.map(_.toAttribute) ++ aggregateAttributes
+      val resultExprs = resultExpressions.map(exprToProto(_, attributes))
+
+      if (resultExprs.exists(_.isEmpty)) {
+        val msg = s"Unsupported result expressions found in: ${resultExpressions}"
+        emitWarning(msg)
+        withInfo(aggregate, msg, resultExpressions: _*)
+        return None
+      }
+
+      hashAggBuilder.addAllResultExprs(resultExprs.map(_.get).asJava)
+      return Some((true, result.setHashAgg(hashAggBuilder).build()))
+    }
+
+    // Handle case with aggregate expressions
+    val modes = aggregateExpressions.map(_.mode).distinct
+    if (modes.size != 1) {
+      withInfo(aggregate, "All aggregate expressions do not have the same mode")
+      return None
+    }
+
+    val mode = modes.head match {
+      case Partial => CometAggregateMode.Partial
+      case Final => CometAggregateMode.Final
+      case _ =>
+        withInfo(aggregate, s"Unsupported aggregation mode ${modes.head}")
+        return None
+    }
+
+    val binding = mode != CometAggregateMode.Final
+    val output = child.output
+    val aggExprs = aggregateExpressions.map(aggExprToProto(_, output, binding, aggregate.conf))
+
+    if (childOp.isEmpty || !groupingExprs.forall(_.isDefined) || !aggExprs.forall(_.isDefined)) {
+      val allChildren = groupingExpressions ++ aggregateExpressions ++ aggregateAttributes
+      withInfo(aggregate, allChildren: _*)
+      return None
+    }
+
+    hashAggBuilder.addAllAggExprs(aggExprs.map(_.get).asJava)
+
+    // Handle final mode result building
+    val resultsSerialized = if (mode == CometAggregateMode.Final) {
+      val attributes = groupingExpressions.map(_.toAttribute) ++ aggregateAttributes
+      val resultExprs = resultExpressions.map(exprToProto(_, attributes))
+
+      // If result expressions aren't supported,
+      // propagate that so they will be separated into a ProjectExec
+      if (resultExprs.exists(_.isEmpty)) {
+        if (CometConf.COMET_EXEC_AGGREGATE_ENFORCE_RESULTS.get(conf)) {
+          val msg = s"Unsupported result expressions found in: ${resultExpressions}, " +
+            "not separating them into a ProjectExec because " +
+            s"${CometConf.COMET_EXEC_AGGREGATE_ENFORCE_RESULTS} is disabled"
+          emitWarning(msg)
+          withInfo(aggregate, msg, resultExpressions: _*)
+          return None
+        }
+
+        false
+      } else {
+        hashAggBuilder.addAllResultExprs(resultExprs.map(_.get).asJava)
+        true
+      }
+    } else {
+      true
+    }
+
+    hashAggBuilder.setModeValue(mode.getNumber)
+    Some((resultsSerialized, result.setHashAgg(hashAggBuilder).build()))
+  }
+
   /**
    * Convert a Spark plan operator to a protobuf Comet operator.
    *
@@ -2407,110 +2520,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           Some(result.setWindow(windowBuilder).build())
         } else {
           None
-        }
-
-      case aggregate: BaseAggregateExec
-          if (aggregate.isInstanceOf[HashAggregateExec] ||
-            aggregate.isInstanceOf[ObjectHashAggregateExec]) &&
-            CometConf.COMET_EXEC_AGGREGATE_ENABLED.get(conf) =>
-        val groupingExpressions = aggregate.groupingExpressions
-        val aggregateExpressions = aggregate.aggregateExpressions
-        val aggregateAttributes = aggregate.aggregateAttributes
-        val resultExpressions = aggregate.resultExpressions
-        val child = aggregate.child
-
-        if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) {
-          withInfo(op, "No group by or aggregation")
-          return None
-        }
-
-        // Aggregate expressions with filter are not supported yet.
-        if (aggregateExpressions.exists(_.filter.isDefined)) {
-          withInfo(op, "Aggregate expression with filter is not supported")
-          return None
-        }
-
-        val groupingExprs = groupingExpressions.map(exprToProto(_, child.output))
-
-        // In some of the cases, the aggregateExpressions could be empty.
-        // For example, if the aggregate functions only have group by or if the aggregate
-        // functions only have distinct aggregate functions:
-        //
-        // SELECT COUNT(distinct col2), col1 FROM test group by col1
-        //  +- HashAggregate (keys =[col1# 6], functions =[count (distinct col2#7)] )
-        //    +- Exchange hashpartitioning (col1#6, 10), ENSURE_REQUIREMENTS, [plan_id = 36]
-        //      +- HashAggregate (keys =[col1#6], functions =[partial_count (distinct col2#7)] )
-        //        +- HashAggregate (keys =[col1#6, col2#7], functions =[] )
-        //          +- Exchange hashpartitioning (col1#6, col2#7, 10), ENSURE_REQUIREMENTS, ...
-        //            +- HashAggregate (keys =[col1#6, col2#7], functions =[] )
-        //              +- FileScan parquet spark_catalog.default.test[col1#6, col2#7] ......
-        // If the aggregateExpressions is empty, we only want to build groupingExpressions,
-        // and skip processing of aggregateExpressions.
-        if (aggregateExpressions.isEmpty) {
-          val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
-          hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
-          val attributes = groupingExpressions.map(_.toAttribute) ++ aggregateAttributes
-          val resultExprs = resultExpressions.map(exprToProto(_, attributes))
-          if (resultExprs.exists(_.isEmpty)) {
-            val msg = s"Unsupported result expressions found in: ${resultExpressions}"
-            emitWarning(msg)
-            withInfo(op, msg, resultExpressions: _*)
-            return None
-          }
-          hashAggBuilder.addAllResultExprs(resultExprs.map(_.get).asJava)
-          Some(result.setHashAgg(hashAggBuilder).build())
-        } else {
-          val modes = aggregateExpressions.map(_.mode).distinct
-
-          if (modes.size != 1) {
-            // This shouldn't happen as all aggregation expressions should share the same mode.
-            // Fallback to Spark nevertheless here.
-            withInfo(op, "All aggregate expressions do not have the same mode")
-            return None
-          }
-
-          val mode = modes.head match {
-            case Partial => CometAggregateMode.Partial
-            case Final => CometAggregateMode.Final
-            case _ =>
-              withInfo(op, s"Unsupported aggregation mode ${modes.head}")
-              return None
-          }
-
-          // In final mode, the aggregate expressions are bound to the output of the
-          // child and partial aggregate expressions buffer attributes produced by partial
-          // aggregation. This is done in Spark `HashAggregateExec` internally. In Comet,
-          // we don't have to do this because we don't use the merging expression.
-          val binding = mode != CometAggregateMode.Final
-          // `output` is only used when `binding` is true (i.e., non-Final)
-          val output = child.output
-
-          val aggExprs =
-            aggregateExpressions.map(aggExprToProto(_, output, binding, op.conf))
-          if (childOp.nonEmpty && groupingExprs.forall(_.isDefined) &&
-            aggExprs.forall(_.isDefined)) {
-            val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
-            hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
-            hashAggBuilder.addAllAggExprs(aggExprs.map(_.get).asJava)
-            if (mode == CometAggregateMode.Final) {
-              val attributes = groupingExpressions.map(_.toAttribute) ++ aggregateAttributes
-              val resultExprs = resultExpressions.map(exprToProto(_, attributes))
-              if (resultExprs.exists(_.isEmpty)) {
-                val msg = s"Unsupported result expressions found in: ${resultExpressions}"
-                emitWarning(msg)
-                withInfo(op, msg, resultExpressions: _*)
-                return None
-              }
-              hashAggBuilder.addAllResultExprs(resultExprs.map(_.get).asJava)
-            }
-            hashAggBuilder.setModeValue(mode.getNumber)
-            Some(result.setHashAgg(hashAggBuilder).build())
-          } else {
-            val allChildren: Seq[Expression] =
-              groupingExpressions ++ aggregateExpressions ++ aggregateAttributes
-            withInfo(op, allChildren: _*)
-            None
-          }
         }
 
       case join: HashJoin =>
