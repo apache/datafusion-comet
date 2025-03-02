@@ -62,13 +62,8 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
         Math.max((executorMemory * memoryOverheadFactor).toLong, memoryOverheadMinMib)
       }
 
-      val cometMemOverhead =
-        if (CometSparkSessionExtensions.cometUnifiedMemoryManagerEnabled(sc.getConf)) {
-          CometSparkSessionExtensions.getCometMemoryOverheadInMiB(sc.getConf)
-        } else {
-          // comet shuffle unified memory manager is disabled, so we need to add overhead memory
-          CometSparkSessionExtensions.getCometShuffleMemorySizeInMiB(sc.getConf)
-        }
+      // shouldOverrideMemoryConf guarantees that Comet is unified mode is disabled
+      val cometMemOverhead = CometSparkSessionExtensions.getCometShuffleMemorySizeInMiB(sc.getConf)
       sc.conf.set(EXECUTOR_MEMORY_OVERHEAD.key, s"${execMemOverhead + cometMemOverhead}M")
       val newExecMemOverhead = sc.getConf.getSizeAsMb(EXECUTOR_MEMORY_OVERHEAD.key)
 
