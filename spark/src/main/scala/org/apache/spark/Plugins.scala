@@ -100,15 +100,19 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
    * unified memory manager.
    */
   private def shouldOverrideMemoryConf(conf: SparkConf): Boolean = {
-    conf.getBoolean(CometConf.COMET_ENABLED.key, true) && (
-      conf.getBoolean(
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key,
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.defaultValue.get) ||
+    // short-circuit if InTestEnabled otherwise would always return true in production use
+    if (CometSparkSessionExtensions.cometShuffleUnifiedMemoryManagerInTestEnabled(conf)) {
+      false
+    } else {
+      conf.getBoolean(CometConf.COMET_ENABLED.key, true) && (
         conf.getBoolean(
-          CometConf.COMET_EXEC_ENABLED.key,
-          CometConf.COMET_EXEC_ENABLED.defaultValue.get)
-    ) && (!CometSparkSessionExtensions.cometUnifiedMemoryManagerEnabled(conf) ||
-      !CometSparkSessionExtensions.cometShuffleUnifiedMemoryManagerInTestEnabled(conf))
+          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key,
+          CometConf.COMET_EXEC_SHUFFLE_ENABLED.defaultValue.get) ||
+          conf.getBoolean(
+            CometConf.COMET_EXEC_ENABLED.key,
+            CometConf.COMET_EXEC_ENABLED.defaultValue.get)
+      ) && (!CometSparkSessionExtensions.cometUnifiedMemoryManagerEnabled(conf))
+    }
   }
 }
 
