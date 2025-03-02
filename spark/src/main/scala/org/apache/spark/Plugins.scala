@@ -63,7 +63,8 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
       }
 
       // shouldOverrideMemoryConf guarantees that Comet is unified mode is disabled
-      val cometMemOverhead = CometSparkSessionExtensions.getCometShuffleMemorySizeInMiB(sc.getConf)
+      val cometMemOverhead =
+        CometSparkSessionExtensions.getCometShuffleMemorySizeInMiB(sc.getConf)
       sc.conf.set(EXECUTOR_MEMORY_OVERHEAD.key, s"${execMemOverhead + cometMemOverhead}M")
       val newExecMemOverhead = sc.getConf.getSizeAsMb(EXECUTOR_MEMORY_OVERHEAD.key)
 
