@@ -460,15 +460,21 @@ impl PhysicalPlanner {
                 )))
             }
             ExprStruct::Lpad(expr) => {
-                let input = self.create_expr(expr.input.as_ref().unwrap(), input_schema)?;
+                let input = self.create_expr(expr.input.as_ref().unwrap(), input_schema.clone())?;
+                let count = self.create_expr(expr.count.as_ref().unwrap(), input_schema.clone())?;
+                let chars = self.create_expr(expr.chars.as_ref().unwrap(), input_schema)?;
                 let udf = Arc::new(ScalarUDF::new_from_impl(LPadFunc::new()));
-                let scalar_expr = ScalarFunctionExpr::new("lpad", udf, vec![input], DataType::Utf8);
+                let scalar_expr =
+                    ScalarFunctionExpr::new("lpad", udf, vec![input, count, chars], DataType::Utf8);
                 Ok(Arc::new(scalar_expr))
             }
             ExprStruct::Rpad(expr) => {
-                let input = self.create_expr(expr.input.as_ref().unwrap(), input_schema)?;
+                let input = self.create_expr(expr.input.as_ref().unwrap(), input_schema.clone())?;
+                let count = self.create_expr(expr.count.as_ref().unwrap(), input_schema.clone())?;
+                let chars = self.create_expr(expr.chars.as_ref().unwrap(), input_schema)?;
                 let udf = Arc::new(ScalarUDF::new_from_impl(RPadFunc::new()));
-                let scalar_expr = ScalarFunctionExpr::new("rpad", udf, vec![input], DataType::Utf8);
+                let scalar_expr =
+                    ScalarFunctionExpr::new("rpad", udf, vec![input, count, chars], DataType::Utf8);
                 Ok(Arc::new(scalar_expr))
             }
             ExprStruct::StringSpace(expr) => {

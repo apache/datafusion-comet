@@ -240,7 +240,7 @@ message MathExpr {
 message StringPad {
   Expr input = 1;
   Expr count = 2;
-  string chars = 3;
+  Expr chars = 3;
 }
 
 enum EvalMode {

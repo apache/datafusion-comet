@@ -1588,13 +1588,13 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
       case StringLPad(srcStr, size, chars) =>
         val arg0 = exprToProtoInternal(srcStr, inputs, binding)
-        val arg1 = exprToProtoInternal(size, inputs, binding)
+        val arg1 = exprToProtoInternal(Cast(size, LongType), inputs, binding)
         val arg2 = exprToProtoInternal(chars, inputs, binding)
         scalarExprToProto("lpad", arg0, arg1, arg2)
 
       case StringRPad(srcStr, size, chars) =>
         val arg0 = exprToProtoInternal(srcStr, inputs, binding)
-        val arg1 = exprToProtoInternal(size, inputs, binding)
+        val arg1 = exprToProtoInternal(Cast(size, LongType), inputs, binding)
         val arg2 = exprToProtoInternal(chars, inputs, binding)
         scalarExprToProto("rpad", arg0, arg1, arg2)
 
