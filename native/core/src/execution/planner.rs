@@ -460,8 +460,8 @@ impl PhysicalPlanner {
                 )))
             }
             ExprStruct::Lpad(expr) => {
-                let input = self.create_expr(expr.input.as_ref().unwrap(), input_schema.clone())?;
-                let count = self.create_expr(expr.count.as_ref().unwrap(), input_schema.clone())?;
+                let input = self.create_expr(expr.input.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let count = self.create_expr(expr.count.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let chars = self.create_expr(expr.chars.as_ref().unwrap(), input_schema)?;
                 let udf = Arc::new(ScalarUDF::new_from_impl(LPadFunc::new()));
                 let scalar_expr =
@@ -469,8 +469,8 @@ impl PhysicalPlanner {
                 Ok(Arc::new(scalar_expr))
             }
             ExprStruct::Rpad(expr) => {
-                let input = self.create_expr(expr.input.as_ref().unwrap(), input_schema.clone())?;
-                let count = self.create_expr(expr.count.as_ref().unwrap(), input_schema.clone())?;
+                let input = self.create_expr(expr.input.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let count = self.create_expr(expr.count.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let chars = self.create_expr(expr.chars.as_ref().unwrap(), input_schema)?;
                 let udf = Arc::new(ScalarUDF::new_from_impl(RPadFunc::new()));
                 let scalar_expr =
