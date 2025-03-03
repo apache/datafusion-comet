@@ -229,7 +229,7 @@ impl Accumulator for VarianceAccumulator {
         };
 
         Ok(ScalarValue::Float64(match self.count {
-            count if count == 0.0 => None,
+            0.0 => None,
             count if count == 1.0 && StatsType::Sample == self.stats_type => {
                 if self.null_on_divide_by_zero {
                     None
