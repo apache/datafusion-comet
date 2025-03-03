@@ -2127,12 +2127,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val gen = new DataGenerator(new Random(42))
     withTable(table) {
       // generate some data
-      // newline characters are intentionally omitted for now
-      val dataChars = "\t abc123"
+      val dataChars = "\n\t abc123"
       sql(s"create table $table(id int, name varchar(20)) using parquet")
       gen.generateStrings(100, dataChars, 6).zipWithIndex.foreach { x =>
         sql(s"insert into $table values(${x._2}, '${x._1}')")
       }
+      // test 2-arg version
+      checkSparkAnswerAndOperator(
+        s"SELECT id, lpad(name, 10), rpad(name, 10) FROM $table ORDER BY id")
+      // test 3-arg version
       checkSparkAnswerAndOperator(
         s"SELECT id, lpad(name, 10, ' '), rpad(name, 10, ' ') FROM $table ORDER BY id")
     }
