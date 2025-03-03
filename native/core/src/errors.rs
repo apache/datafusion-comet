@@ -558,7 +558,9 @@ mod tests {
         });
 
         #[allow(static_mut_refs)]
-        unsafe { JVM.as_ref().unwrap() }
+        unsafe {
+            JVM.as_ref().unwrap()
+        }
     }
 
     fn attach_current_thread() -> AttachGuard<'static> {
