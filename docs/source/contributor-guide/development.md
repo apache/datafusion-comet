@@ -103,9 +103,9 @@ First, Comet needs to be installed for each Spark version to be tested:
 ./mvnw install -DskipTests -Pspark-4.0
 ```
 
-The tests can be run with:
-
 Note that the output files get written to `$SPARK_HOME`.
+
+The tests can be run with:
 
 ```sh
 export SPARK_HOME=`pwd`
