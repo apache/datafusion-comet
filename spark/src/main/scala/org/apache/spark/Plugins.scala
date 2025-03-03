@@ -51,18 +51,17 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
     CometDriverPlugin.registerCometSessionExtension(sc.conf)
 
     if (shouldOverrideMemoryConf(sc.getConf)) {
-      val execMemOverhead =
-        if (sc.getConf.contains(EXECUTOR_MEMORY_OVERHEAD.key)) {
-          sc.getConf.getSizeAsMb(EXECUTOR_MEMORY_OVERHEAD.key)
-        } else {
-          // By default, executorMemory * spark.executor.memoryOverheadFactor, with minimum of 384MB
-          val executorMemory =
-            sc.getConf.getSizeAsMb(EXECUTOR_MEMORY.key, EXECUTOR_MEMORY_DEFAULT)
-          val memoryOverheadFactor = getMemoryOverheadFactor(sc.getConf)
-          val memoryOverheadMinMib = getMemoryOverheadMinMib(sc.getConf)
+      val execMemOverhead = if (sc.getConf.contains(EXECUTOR_MEMORY_OVERHEAD.key)) {
+        sc.getConf.getSizeAsMb(EXECUTOR_MEMORY_OVERHEAD.key)
+      } else {
+        // By default, executorMemory * spark.executor.memoryOverheadFactor, with minimum of 384MB
+        val executorMemory =
+          sc.getConf.getSizeAsMb(EXECUTOR_MEMORY.key, EXECUTOR_MEMORY_DEFAULT)
+        val memoryOverheadFactor = getMemoryOverheadFactor(sc.getConf)
+        val memoryOverheadMinMib = getMemoryOverheadMinMib(sc.getConf)
 
-          Math.max((executorMemory * memoryOverheadFactor).toLong, memoryOverheadMinMib)
-        }
+        Math.max((executorMemory * memoryOverheadFactor).toLong, memoryOverheadMinMib)
+      }
 
       val cometMemOverhead =
         if (!CometSparkSessionExtensions.cometUnifiedMemoryManagerEnabled(sc.getConf)) {
@@ -72,8 +71,7 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
           CometSparkSessionExtensions.getCometShuffleMemorySizeInMiB(sc.getConf)
         }
       sc.conf.set(EXECUTOR_MEMORY_OVERHEAD.key, s"${execMemOverhead + cometMemOverhead}M")
-      val newExecMemOverhead =
-        sc.getConf.getSizeAsMb(EXECUTOR_MEMORY_OVERHEAD.key)
+      val newExecMemOverhead = sc.getConf.getSizeAsMb(EXECUTOR_MEMORY_OVERHEAD.key)
 
       logInfo(s"""
          Overriding Spark memory configuration for Comet:
@@ -110,10 +108,8 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
         conf.getBoolean(
           CometConf.COMET_EXEC_ENABLED.key,
           CometConf.COMET_EXEC_ENABLED.defaultValue.get)
-    ) && (
-      !CometSparkSessionExtensions.cometUnifiedMemoryManagerEnabled(conf) ||
-        !CometSparkSessionExtensions.cometShuffleUnifiedMemoryManagerInTestEnabled(conf)
-    )
+    ) && (!CometSparkSessionExtensions.cometUnifiedMemoryManagerEnabled(conf) ||
+      !CometSparkSessionExtensions.cometShuffleUnifiedMemoryManagerInTestEnabled(conf))
   }
 }
 
