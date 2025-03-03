@@ -1586,6 +1586,18 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case StringTrimBoth(srcStr, trimStr, _) =>
         trim(expr, srcStr, trimStr, inputs, binding, "btrim")
 
+      case StringLPad(srcStr, size, chars) =>
+        val arg0 = exprToProtoInternal(srcStr, inputs, binding)
+        val arg1 = exprToProtoInternal(size, inputs, binding)
+        val arg2 = exprToProtoInternal(chars, inputs, binding)
+        scalarExprToProto("lpad", arg0, arg1, arg2)
+
+      case StringRPad(srcStr, size, chars) =>
+        val arg0 = exprToProtoInternal(srcStr, inputs, binding)
+        val arg1 = exprToProtoInternal(size, inputs, binding)
+        val arg2 = exprToProtoInternal(chars, inputs, binding)
+        scalarExprToProto("rpad", arg0, arg1, arg2)
+
       case Upper(child) =>
         if (CometConf.COMET_CASE_CONVERSION_ENABLED.get()) {
           val castExpr = Cast(child, StringType)
