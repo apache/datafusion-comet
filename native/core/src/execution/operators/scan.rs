@@ -404,7 +404,7 @@ struct ScanStream<'a> {
     cast_time: Time,
 }
 
-impl<'a> ScanStream<'a> {
+impl ScanStream<'_> {
     pub fn new(
         scan: ScanExec,
         schema: SchemaRef,
@@ -453,7 +453,7 @@ impl<'a> ScanStream<'a> {
     }
 }
 
-impl<'a> Stream for ScanStream<'a> {
+impl Stream for ScanStream<'_> {
     type Item = DataFusionResult<RecordBatch>;
 
     fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -485,7 +485,7 @@ impl<'a> Stream for ScanStream<'a> {
     }
 }
 
-impl<'a> RecordBatchStream for ScanStream<'a> {
+impl RecordBatchStream for ScanStream<'_> {
     /// Get the schema
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
