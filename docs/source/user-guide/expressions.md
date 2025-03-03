@@ -35,13 +35,14 @@ The following Spark expressions are currently available. Any known compatibility
 
 ## Binary Arithmetic
 
-| Expression      | Notes |
-| --------------- | ----- |
-| Add (`+`)       |       |
-| Subtract (`-`)  |       |
-| Multiply (`*`)  |       |
-| Divide (`/`)    |       |
-| Remainder (`%`) |       |
+| Expression             | Notes |
+|------------------------| ----- |
+| Add (`+`)              |       |
+| Subtract (`-`)         |       |
+| Multiply (`*`)         |       |
+| Divide (`/`)           |       |
+| IntegralDivide (`div`) |       |
+| Remainder (`%`)        |       |
 
 ## Conditional Expressions
 
