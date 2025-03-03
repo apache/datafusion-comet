@@ -465,9 +465,10 @@ mod tests {
     use arrow::datatypes::*;
     use arrow_array::builder::{Decimal128Builder, StringBuilder};
     use arrow_array::RecordBatch;
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::TaskContext;
     use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
-    use datafusion::physical_plan::memory::MemoryExec;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_common::Result;
     use datafusion_expr::AggregateUDF;
@@ -495,8 +496,9 @@ mod tests {
 
         let data_type = DataType::Decimal128(8, 2);
         let schema = Arc::clone(&partitions[0][0].schema());
-        let scan: Arc<dyn ExecutionPlan> =
-            Arc::new(MemoryExec::try_new(partitions, Arc::clone(&schema), None).unwrap());
+        let scan: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(Arc::new(
+            MemorySourceConfig::try_new(partitions, Arc::clone(&schema), None).unwrap(),
+        )));
 
         let aggregate_udf = Arc::new(AggregateUDF::new_from_impl(SumDecimal::try_new(
             data_type.clone(),

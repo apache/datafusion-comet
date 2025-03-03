@@ -25,7 +25,7 @@ use arrow::array::ArrayRef;
 use arrow_array::BinaryArray;
 use datafusion::error::Result;
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion_common::{downcast_value, DataFusionError, ScalarValue};
+use datafusion_common::{downcast_value, ScalarValue};
 use datafusion_expr::{
     function::{AccumulatorArgs, StateFieldsArgs},
     Accumulator, AggregateUDFImpl, Signature,
