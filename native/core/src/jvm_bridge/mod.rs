@@ -209,9 +209,9 @@ pub struct JVMClasses<'a> {
     pub comet_task_memory_manager: CometTaskMemoryManager<'a>,
 }
 
-unsafe impl<'a> Send for JVMClasses<'a> {}
+unsafe impl Send for JVMClasses<'_> {}
 
-unsafe impl<'a> Sync for JVMClasses<'a> {}
+unsafe impl Sync for JVMClasses<'_> {}
 
 /// Keeps global references to JVM classes. Used for JNI calls to JVM.
 static JVM_CLASSES: OnceCell<JVMClasses> = OnceCell::new();

@@ -551,11 +551,13 @@ mod tests {
 
             let jvm = JavaVM::new(jvm_args).unwrap_or_else(|e| panic!("{:#?}", e));
 
+            #[allow(static_mut_refs)]
             unsafe {
                 JVM = Some(Arc::new(jvm));
             }
         });
 
+        #[allow(static_mut_refs)]
         unsafe { JVM.as_ref().unwrap() }
     }
 
