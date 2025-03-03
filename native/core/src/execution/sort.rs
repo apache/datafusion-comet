@@ -20,7 +20,6 @@ use std::{cmp, mem, ptr};
 /// This is a copy of the `rdxsort-rs` crate, with the following changes:
 /// - removed `Rdx` implementations for all types except for i64 which is the packed representation
 ///   of row addresses and partition ids from Spark.
-
 pub trait Rdx {
     /// Sets the number of buckets used by the generic implementation.
     fn cfg_nbuckets() -> usize;
