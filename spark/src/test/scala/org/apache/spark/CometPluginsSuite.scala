@@ -160,7 +160,10 @@ class CometPluginsUnifiedModeOverrideSuite extends CometTestBase {
     conf
   }
 
-  /** Since using unified memory, executor memory should not be overridden */
+  /*
+   * Since using unified memory, but not shuffle unified memory
+   * executor memory should be overridden by adding comet shuffle memory size
+   */
   test("executor memory overhead is correctly overridden") {
     val execMemOverhead1 = spark.conf.get("spark.executor.memoryOverhead")
     val execMemOverhead2 = spark.sessionState.conf.getConfString("spark.executor.memoryOverhead")
