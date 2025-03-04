@@ -118,14 +118,6 @@ class CometSparkSessionExtensions
 
           // data source v1
           case scanExec: FileSourceScanExec =>
-            // TODO we only enable full native scan if COMET_EXEC_ENABLED is enabled
-            // but this is not really what we want .. we currently insert `CometScanExec`
-            // here and then it gets replaced with `CometNativeScanExec` in `CometExecRule`
-            // but that only happens if `COMET_EXEC_ENABLED` is enabled
-            if (!COMET_EXEC_ENABLED.get()) {
-              return scanExec
-            }
-
             if (COMET_DPP_FALLBACK_ENABLED.get() &&
               scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
               withInfo(scanExec, "DPP not supported")
@@ -138,15 +130,44 @@ class CometSparkSessionExtensions
                   withInfo(scanExec, s"fileFormat $fileFormat not supported")
                   return scanExec
                 }
-                if (!CometNativeScanExec.isSchemaSupported(scanExec.requiredSchema)) {
-                  withInfo(scanExec, s"requiredSchema ${scanExec.requiredSchema} not supported")
-                  return scanExec
+
+                COMET_NATIVE_SCAN_IMPL.get() match {
+                  case SCAN_NATIVE_DATAFUSION =>
+                    // TODO we only enable full native scan if COMET_EXEC_ENABLED is enabled
+                    // but this is not really what we want .. we currently insert `CometScanExec`
+                    // here and then it gets replaced with `CometNativeScanExec` in `CometExecRule`
+                    // but that only happens if `COMET_EXEC_ENABLED` is enabled
+                    if (!COMET_EXEC_ENABLED.get()) {
+                      withInfo(
+                        scanExec,
+                        s"Native scan not enabled when ${COMET_EXEC_ENABLED.key} is not enabled")
+                      return scanExec
+                    }
+                    if (!CometNativeScanExec.isSchemaSupported(scanExec.requiredSchema)) {
+                      withInfo(
+                        scanExec,
+                        s"requiredSchema ${scanExec.requiredSchema} not supported")
+                      return scanExec
+                    }
+                    if (!CometNativeScanExec.isSchemaSupported(partitionSchema)) {
+                      withInfo(scanExec, s"partitionSchema $partitionSchema not supported")
+                      return scanExec
+                    }
+                    CometScanExec(scanExec, session)
+
+                  case SCAN_NATIVE_COMET | SCAN_NATIVE_ICEBERG_COMPAT =>
+                    if (!CometScanExec.isSchemaSupported(scanExec.requiredSchema)) {
+                      withInfo(
+                        scanExec,
+                        s"requiredSchema ${scanExec.requiredSchema} not supported")
+                      return scanExec
+                    }
+                    if (!CometScanExec.isSchemaSupported(partitionSchema)) {
+                      withInfo(scanExec, s"partitionSchema $partitionSchema not supported")
+                      return scanExec
+                    }
+                    CometScanExec(scanExec, session)
                 }
-                if (!CometNativeScanExec.isSchemaSupported(partitionSchema)) {
-                  withInfo(scanExec, s"partitionSchema ${partitionSchema} not supported")
-                  return scanExec
-                }
-                CometScanExec(scanExec, session)
 
               case other =>
                 withInfo(scanExec, s"Relation ${other.getClass.getName} not supported")
