@@ -85,7 +85,6 @@ The following Spark expressions are currently available. Any known compatibility
 | Replace         |                                                                                                             |
 | Reverse         |                                                                                                             |
 | StartsWith      |                                                                                                             |
-| StringLPad      |                                                                                                             |
 | StringRPad      |                                                                                                             |
 | StringSpace     |                                                                                                             |
 | StringTrim      |                                                                                                             |
