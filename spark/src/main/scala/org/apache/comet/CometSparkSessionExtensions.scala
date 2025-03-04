@@ -53,7 +53,7 @@ import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark34Plus, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark34Plus, isSpark40Plus, shouldApplySparkToColumnar, withInfo}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.rules.RewriteJoin
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -154,66 +154,48 @@ class CometSparkSessionExtensions
             }
 
           // data source V2
-          case scanExec: BatchScanExec
-              if scanExec.scan.isInstanceOf[ParquetScan] &&
-                CometBatchScanExec.isSchemaSupported(
-                  scanExec.scan.asInstanceOf[ParquetScan].readDataSchema) &&
-                CometBatchScanExec.isSchemaSupported(
-                  scanExec.scan.asInstanceOf[ParquetScan].readPartitionSchema) &&
-                // Comet does not support pushedAggregate
-                scanExec.scan.asInstanceOf[ParquetScan].pushedAggregate.isEmpty =>
-            val cometScan = CometParquetScan(scanExec.scan.asInstanceOf[ParquetScan])
-            logInfo("Comet extension enabled for Scan")
-            CometBatchScanExec(
-              scanExec.copy(scan = cometScan),
-              runtimeFilters = scanExec.runtimeFilters)
-
-          // If it is a `ParquetScan` but unsupported by Comet, attach the exact
-          // reason to the plan.
-          case scanExec: BatchScanExec if scanExec.scan.isInstanceOf[ParquetScan] =>
-            val requiredSchema = scanExec.scan.asInstanceOf[ParquetScan].readDataSchema
-            val info1 = createMessage(
-              !CometBatchScanExec.isSchemaSupported(requiredSchema),
-              s"Schema $requiredSchema is not supported")
-            val readPartitionSchema = scanExec.scan.asInstanceOf[ParquetScan].readPartitionSchema
-            val info2 = createMessage(
-              !CometBatchScanExec.isSchemaSupported(readPartitionSchema),
-              s"Partition schema $readPartitionSchema is not supported")
-            // Comet does not support pushedAggregate
-            val info3 = createMessage(
-              scanExec.scan.asInstanceOf[ParquetScan].pushedAggregate.isDefined,
-              "Comet does not support pushed aggregate")
-            withInfos(scanExec, Seq(info1, info2, info3).flatten.toSet)
-            scanExec
-
-          // Other datasource V2 scan
           case scanExec: BatchScanExec =>
             scanExec.scan match {
+              case p: ParquetScan =>
+                if (!CometBatchScanExec.isSchemaSupported(p.readDataSchema)) {
+                  withInfo(scanExec, s"readDataSchema ${p.readDataSchema} is not supported")
+                  return scanExec
+                }
+                if (!CometBatchScanExec.isSchemaSupported(p.readPartitionSchema)) {
+                  withInfo(scanExec, s"readPartitionSchema ${p.readDataSchema} is not supported")
+                  return scanExec
+                }
+                if (p.pushedAggregate.nonEmpty) {
+                  withInfo(scanExec, "Comet does not support pushed aggregate")
+                  return scanExec
+                }
+                val cometScan = CometParquetScan(scanExec.scan.asInstanceOf[ParquetScan])
+                CometBatchScanExec(
+                  scanExec.copy(scan = cometScan),
+                  runtimeFilters = scanExec.runtimeFilters)
+
               // Iceberg scan, supported cases
-              case s: SupportsComet
-                  if s.isCometEnabled &&
-                    CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema()) =>
-                logInfo(s"Comet extension enabled for ${scanExec.scan.getClass.getSimpleName}")
+              case s: SupportsComet =>
+                if (!s.isCometEnabled) {
+                  withInfo(
+                    scanExec,
+                    "Comet extension is not enabled for ${s.getClass.getSimpleName}: " +
+                      "not enabled on data source side")
+                  return scanExec
+                }
+                if (!CometBatchScanExec.isSchemaSupported(s.readSchema())) {
+                  withInfo(
+                    scanExec,
+                    s"Comet extension is not enabled for ${s.getClass.getSimpleName}: " +
+                      s"readDataSchema ${s.readSchema()} is not supported")
+                  return scanExec
+                }
                 // When reading from Iceberg, we automatically enable type promotion
                 SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
                 CometBatchScanExec(
                   scanExec.clone().asInstanceOf[BatchScanExec],
                   runtimeFilters = scanExec.runtimeFilters)
 
-              // Iceberg scan but disabled or unsupported by Comet
-              case s: SupportsComet =>
-                val info1 = createMessage(
-                  !s.isCometEnabled,
-                  "Comet extension is not enabled for " +
-                    s"${scanExec.scan.getClass.getSimpleName}: not enabled on data source side")
-                val info2 = createMessage(
-                  !CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema()),
-                  "Comet extension is not enabled for " +
-                    s"${scanExec.scan.getClass.getSimpleName}: Schema not supported")
-                withInfos(scanExec, Seq(info1, info2).flatten.toSet)
-
-              // If it is data source V2 other than Parquet or Iceberg,
-              // attach the unsupported reason to the plan.
               case _ =>
                 withInfo(scanExec, "Comet Scan only supports Parquet")
                 scanExec
