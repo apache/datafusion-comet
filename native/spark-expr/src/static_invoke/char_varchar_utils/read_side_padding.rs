@@ -77,7 +77,11 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
                 let char_len = string.chars().count();
                 if length <= char_len {
                     if truncate {
-                        let idx = string.char_indices().nth(length).map(|(i, _)| i).unwrap_or(string.len());
+                        let idx = string
+                            .char_indices()
+                            .nth(length)
+                            .map(|(i, _)| i)
+                            .unwrap_or(string.len());
                         builder.append_value(&string[..idx]);
                     } else {
                         builder.append_value(string);
