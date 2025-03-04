@@ -31,19 +31,20 @@ import org.apache.comet.CometConf
 class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
-    super.test(testName, testTags: _*) {
-      withSQLConf(
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION) {
-        testFun
-      }
-    }
+    Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach(scan =>
+      super.test(s"$testName - $scan", testTags: _*) {
+        withSQLConf(
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan) {
+          testFun
+        }
+      })
   }
 
-  test("native reader - read simple struct fields") {
+  test("native reader - read simple STRUCT fields") {
     testSingleLineQuery(
       """
         |select named_struct('firstName', 'John', 'lastName', 'Doe', 'age', 35) as personal_info union all
@@ -52,7 +53,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       "select personal_info.* from tbl")
   }
 
-  test("native reader - read simple array fields") {
+  test("native reader - read simple ARRAY fields") {
     testSingleLineQuery(
       """
         |select array(1, 2, 3) as arr union all
