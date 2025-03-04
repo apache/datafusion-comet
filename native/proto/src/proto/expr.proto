@@ -90,8 +90,6 @@ message Expr {
     ArrayJoin array_join = 63;
     BinaryExpr arrays_overlap = 64;
     MathExpr integral_divide = 65;
-    StringPad lpad = 66;
-    StringPad rpad = 67;
   }
 }
 
@@ -235,12 +233,6 @@ message MathExpr {
   Expr right = 2;
   bool fail_on_error = 3;
   DataType return_type = 4;
-}
-
-message StringPad {
-  Expr input = 1;
-  Expr count = 2;
-  Expr chars = 3;
 }
 
 enum EvalMode {

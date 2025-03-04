@@ -79,8 +79,6 @@ use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
 use datafusion::datasource::physical_plan::FileScanConfig;
-use datafusion::functions::unicode::lpad::LPadFunc;
-use datafusion::functions::unicode::rpad::RPadFunc;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
 use datafusion_comet_proto::{
@@ -458,28 +456,6 @@ impl PhysicalPlanner {
                     start as i64,
                     len as u64,
                 )))
-            }
-            ExprStruct::Lpad(expr) => {
-                let input =
-                    self.create_expr(expr.input.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let count =
-                    self.create_expr(expr.count.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let chars = self.create_expr(expr.chars.as_ref().unwrap(), input_schema)?;
-                let udf = Arc::new(ScalarUDF::new_from_impl(LPadFunc::new()));
-                let scalar_expr =
-                    ScalarFunctionExpr::new("lpad", udf, vec![input, count, chars], DataType::Utf8);
-                Ok(Arc::new(scalar_expr))
-            }
-            ExprStruct::Rpad(expr) => {
-                let input =
-                    self.create_expr(expr.input.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let count =
-                    self.create_expr(expr.count.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let chars = self.create_expr(expr.chars.as_ref().unwrap(), input_schema)?;
-                let udf = Arc::new(ScalarUDF::new_from_impl(RPadFunc::new()));
-                let scalar_expr =
-                    ScalarFunctionExpr::new("rpad", udf, vec![input, count, chars], DataType::Utf8);
-                Ok(Arc::new(scalar_expr))
             }
             ExprStruct::StringSpace(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;

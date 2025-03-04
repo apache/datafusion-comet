@@ -2115,29 +2115,39 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       sql(s"create table $table(col1 CHAR(2)) using parquet")
       sql(s"insert into $table values('é')") // unicode 'e\\u{301}'
       sql(s"insert into $table values('é')") // unicode '\\u{e9}'
-      sql(s"insert into $table values('')")
+      sql(s"insert into $table values('\n')")
+      sql(s"insert into $table values('\n')")
+      sql(s"insert into $table values('\t')")
       sql(s"insert into $table values('ab')")
 
       checkSparkAnswerAndOperator(s"SELECT * FROM $table")
     }
   }
 
-  test("pad") {
-    val table = "pad"
+  test("rpad") {
+    val table = "rpad"
     val gen = new DataGenerator(new Random(42))
     withTable(table) {
       // generate some data
-      val dataChars = "\n\t abc123"
-      sql(s"create table $table(id int, name varchar(20)) using parquet")
-      gen.generateStrings(100, dataChars, 6).zipWithIndex.foreach { x =>
-        sql(s"insert into $table values(${x._2}, '${x._1}')")
+      val dataChars = "abc123"
+      sql(s"create table $table(id int, name1 char(8), name2 varchar(8)) using parquet")
+      val testData = gen.generateStrings(100, dataChars, 6) ++ Seq(
+        "é", // unicode 'e\\u{301}'
+        "é" // unicode '\\u{e9}'
+      )
+      testData.zipWithIndex.foreach { x =>
+        sql(s"insert into $table values(${x._2}, '${x._1}', '${x._1}')")
       }
       // test 2-arg version
       checkSparkAnswerAndOperator(
-        s"SELECT id, lpad(name, 10), rpad(name, 10) FROM $table ORDER BY id")
+        s"SELECT id, rpad(name1, 10), rpad(name2, 10) FROM $table ORDER BY id")
       // test 3-arg version
-      checkSparkAnswerAndOperator(
-        s"SELECT id, lpad(name, 10, ' '), rpad(name, 10, ' ') FROM $table ORDER BY id")
+      for (length <- Seq(2, 10)) {
+        checkSparkAnswerAndOperator(
+          s"SELECT id, name1, rpad(name1, $length, ' ') FROM $table ORDER BY id")
+        checkSparkAnswerAndOperator(
+          s"SELECT id, name2, rpad(name2, $length, ' ') FROM $table ORDER BY id")
+      }
     }
   }
 

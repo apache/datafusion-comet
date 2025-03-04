@@ -1586,18 +1586,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case StringTrimBoth(srcStr, trimStr, _) =>
         trim(expr, srcStr, trimStr, inputs, binding, "btrim")
 
-      case StringLPad(srcStr, size, chars) =>
-        val arg0 = exprToProtoInternal(srcStr, inputs, binding)
-        val arg1 = exprToProtoInternal(Cast(size, LongType), inputs, binding)
-        val arg2 = exprToProtoInternal(chars, inputs, binding)
-        scalarExprToProto("lpad", arg0, arg1, arg2)
-
-      case StringRPad(srcStr, size, chars) =>
-        val arg0 = exprToProtoInternal(srcStr, inputs, binding)
-        val arg1 = exprToProtoInternal(Cast(size, LongType), inputs, binding)
-        val arg2 = exprToProtoInternal(chars, inputs, binding)
-        scalarExprToProto("rpad", arg0, arg1, arg2)
-
       case Upper(child) =>
         if (CometConf.COMET_CASE_CONVERSION_ENABLED.get()) {
           val castExpr = Cast(child, StringType)
@@ -1765,6 +1753,28 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         } else {
           withInfo(expr, s.arguments: _*)
           None
+        }
+
+      // read-side padding in Spark 3.5.2+ is represented by rpad function
+      case StringRPad(srcStr, size, chars) =>
+        chars match {
+          case Literal(str, DataTypes.StringType) if str.toString == " " =>
+            val arg0 = exprToProtoInternal(srcStr, inputs, binding)
+            val arg1 = exprToProtoInternal(size, inputs, binding)
+            if (arg0.isDefined && arg1.isDefined) {
+              val builder = ExprOuterClass.ScalarFunc.newBuilder()
+              builder.setFunc("rpad")
+              builder.addArgs(arg0.get)
+              builder.addArgs(arg1.get)
+              Some(ExprOuterClass.Expr.newBuilder().setScalarFunc(builder).build())
+            } else {
+              withInfo(expr, "rpad unsupported arguments", srcStr, size)
+              None
+            }
+
+          case _ =>
+            withInfo(expr, "rpad only supports padding with spaces")
+            None
         }
 
       case KnownFloatingPointNormalized(NormalizeNaNAndZero(expr)) =>
