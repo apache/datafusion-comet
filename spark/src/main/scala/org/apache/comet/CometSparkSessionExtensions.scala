@@ -116,11 +116,42 @@ class CometSparkSessionExtensions
             withInfo(scan, "Metadata column is not supported")
             scan
 
-          case scanExec: FileSourceScanExec
-              if COMET_DPP_FALLBACK_ENABLED.get() &&
-                scanExec.partitionFilters.exists(isDynamicPruningFilter) =>
-            withInfo(scanExec, "DPP not supported")
-            scanExec
+          // data source v1
+          case scanExec: FileSourceScanExec =>
+            // TODO we only enable full native scan if COMET_EXEC_ENABLED is enabled
+            // but this is not really what we want .. we currently insert `CometScanExec`
+            // here and then it gets replaced with `CometNativeScanExec` in `CometExecRule`
+            // but that only happens if `COMET_EXEC_ENABLED` is enabled
+            if (!COMET_EXEC_ENABLED.get()) {
+              return scanExec
+            }
+
+            if (COMET_DPP_FALLBACK_ENABLED.get() &&
+              scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
+              withInfo(scanExec, "DPP not supported")
+              return scanExec
+            }
+
+            scanExec.relation match {
+              case HadoopFsRelation(_, partitionSchema, _, _, fileFormat, _) =>
+                if (!CometScanExec.isFileFormatSupported(fileFormat)) {
+                  withInfo(scanExec, "fileFormat not supported")
+                  return scanExec
+                }
+                if (!CometNativeScanExec.isSchemaSupported(scanExec.requiredSchema)) {
+                  withInfo(scanExec, "requiredSchema not supported")
+                  return scanExec
+                }
+                if (!CometNativeScanExec.isSchemaSupported(partitionSchema)) {
+                  withInfo(scanExec, "partitionSchema not supported")
+                  return scanExec
+                }
+                CometScanExec(scanExec, session)
+
+              case _ =>
+                withInfo(scanExec, "Relation not supported")
+                scanExec
+            }
 
           // data source V2
           case scanExec: BatchScanExec
@@ -187,69 +218,6 @@ class CometSparkSessionExtensions
                 withInfo(scanExec, "Comet Scan only supports Parquet")
                 scanExec
             }
-
-          // data source V1
-          case scanExec @ FileSourceScanExec(
-                HadoopFsRelation(_, partitionSchema, _, _, fileFormat, _),
-                _: Seq[_],
-                requiredSchema,
-                _,
-                _,
-                _,
-                _,
-                _,
-                _)
-              if CometScanExec.isFileFormatSupported(fileFormat)
-                && CometNativeScanExec.isSchemaSupported(requiredSchema)
-                && CometNativeScanExec.isSchemaSupported(partitionSchema)
-                // TODO we only enable full native scan if COMET_EXEC_ENABLED is enabled
-                // but this is not really what we want .. we currently insert `CometScanExec`
-                // here and then it gets replaced with `CometNativeScanExec` in `CometExecRule`
-                // but that only happens if `COMET_EXEC_ENABLED` is enabled
-                && COMET_EXEC_ENABLED.get()
-                && COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_DATAFUSION =>
-            logInfo("Comet extension enabled for v1 full native Scan")
-            CometScanExec(scanExec, session)
-
-          // data source V1
-          case scanExec @ FileSourceScanExec(
-                HadoopFsRelation(_, partitionSchema, _, _, fileFormat, _),
-                _: Seq[_],
-                requiredSchema,
-                _,
-                _,
-                _,
-                _,
-                _,
-                _)
-              if CometScanExec.isFileFormatSupported(fileFormat)
-                && CometScanExec.isSchemaSupported(requiredSchema)
-                && CometScanExec.isSchemaSupported(partitionSchema) =>
-            logInfo("Comet extension enabled for v1 Scan")
-            CometScanExec(scanExec, session)
-
-          // data source v1 not supported case
-          case scanExec @ FileSourceScanExec(
-                HadoopFsRelation(_, partitionSchema, _, _, fileFormat, _),
-                _: Seq[_],
-                requiredSchema,
-                _,
-                _,
-                _,
-                _,
-                _,
-                _) =>
-            val info1 = createMessage(
-              !CometScanExec.isFileFormatSupported(fileFormat),
-              s"File format $fileFormat is not supported")
-            val info2 = createMessage(
-              !CometScanExec.isSchemaSupported(requiredSchema),
-              s"Schema $requiredSchema is not supported")
-            val info3 = createMessage(
-              !CometScanExec.isSchemaSupported(partitionSchema),
-              s"Partition schema $partitionSchema is not supported")
-            withInfo(scanExec, Seq(info1, info2, info3).flatten.mkString(","))
-            scanExec
         }
       }
     }
