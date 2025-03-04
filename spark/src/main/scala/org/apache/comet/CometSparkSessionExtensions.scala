@@ -135,21 +135,21 @@ class CometSparkSessionExtensions
             scanExec.relation match {
               case HadoopFsRelation(_, partitionSchema, _, _, fileFormat, _) =>
                 if (!CometScanExec.isFileFormatSupported(fileFormat)) {
-                  withInfo(scanExec, "fileFormat not supported")
+                  withInfo(scanExec, s"fileFormat $fileFormat not supported")
                   return scanExec
                 }
                 if (!CometNativeScanExec.isSchemaSupported(scanExec.requiredSchema)) {
-                  withInfo(scanExec, "requiredSchema not supported")
+                  withInfo(scanExec, s"requiredSchema ${scanExec.requiredSchema} not supported")
                   return scanExec
                 }
                 if (!CometNativeScanExec.isSchemaSupported(partitionSchema)) {
-                  withInfo(scanExec, "partitionSchema not supported")
+                  withInfo(scanExec, s"partitionSchema ${partitionSchema} not supported")
                   return scanExec
                 }
                 CometScanExec(scanExec, session)
 
-              case _ =>
-                withInfo(scanExec, "Relation not supported")
+              case other =>
+                withInfo(scanExec, s"Relation ${other.getClass.getName} not supported")
                 scanExec
             }
 
