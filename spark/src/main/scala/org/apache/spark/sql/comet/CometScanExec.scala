@@ -487,9 +487,10 @@ object CometScanExec extends DataTypeSupport {
 
   override def isAdditionallySupported(dt: DataType): Boolean = {
     if (CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
-      // TODO add array and map
+      // TODO add map
       dt match {
         case s: StructType => s.fields.map(_.dataType).forall(isTypeSupported)
+        case a: ArrayType => isTypeSupported(a.elementType)
         case _ => false
       }
     } else {
