@@ -279,12 +279,14 @@ mod test {
     use arrow_array::UInt32Array;
     use arrow_schema::SchemaRef;
     use datafusion::datasource::listing::PartitionedFile;
-    use datafusion::datasource::physical_plan::{FileScanConfig, ParquetExec};
+    use datafusion::datasource::physical_plan::{FileScanConfig, ParquetSource};
+    use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::execution::TaskContext;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
     use datafusion_comet_spark_expr::EvalMode;
+    use datafusion_common::config::TableParquetOptions;
     use datafusion_common::DataFusionError;
     use futures::StreamExt;
     use parquet::arrow::ArrowWriter;
@@ -341,19 +343,23 @@ mod test {
         writer.close()?;
 
         let object_store_url = ObjectStoreUrl::local_filesystem();
-        let file_scan_config = FileScanConfig::new(object_store_url, required_schema)
-            .with_file_groups(vec![vec![PartitionedFile::from_path(
-                filename.to_string(),
-            )?]]);
 
         let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
         spark_parquet_options.allow_cast_unsigned_ints = true;
 
-        let parquet_exec = ParquetExec::builder(file_scan_config)
-            .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
-                spark_parquet_options,
-            )))
-            .build();
+        let parquet_source = Arc::new(
+            ParquetSource::new(TableParquetOptions::new()).with_schema_adapter_factory(Arc::new(
+                SparkSchemaAdapterFactory::new(spark_parquet_options),
+            )),
+        );
+
+        let file_scan_config =
+            FileScanConfig::new(object_store_url, required_schema, parquet_source)
+                .with_file_groups(vec![vec![PartitionedFile::from_path(
+                    filename.to_string(),
+                )?]]);
+
+        let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
 
         let mut stream = parquet_exec
             .execute(0, Arc::new(TaskContext::default()))

@@ -27,6 +27,7 @@ use datafusion_common::types::NativeType;
 use datafusion_common::{internal_err, Result, ScalarValue};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::{AggregateUDFImpl, Signature, Volatility};
+use datafusion_expr_common::signature::Coercion;
 use datafusion_physical_expr::expressions::format_state_name;
 use datafusion_physical_expr::expressions::StatsType;
 
@@ -56,11 +57,11 @@ impl Stddev {
         Self {
             name: name.into(),
             signature: Signature::coercible(
-                vec![
+                vec![Coercion::new_exact(
                     datafusion_expr_common::signature::TypeSignatureClass::Native(Arc::new(
                         NativeType::Float64,
                     )),
-                ],
+                )],
                 Volatility::Immutable,
             ),
             stats_type,
