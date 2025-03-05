@@ -683,7 +683,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         let parquet_source = ParquetSource::new(table_parquet_options).with_schema_adapter_factory(
             Arc::new(SparkSchemaAdapterFactory::new(spark_parquet_options)),
         );
-        //.with_schema(Arc::new(required_schema_arrow));
 
         // We build the file scan config with the *required* schema so that the reader knows
         // the output schema we want
