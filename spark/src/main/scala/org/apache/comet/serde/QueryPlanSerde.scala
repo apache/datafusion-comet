@@ -1745,11 +1745,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           exprToProtoInternal(s.arguments(1), inputs, binding))
 
         if (argsExpr.forall(_.isDefined)) {
-          val builder = ExprOuterClass.ScalarFunc.newBuilder()
-          builder.setFunc("read_side_padding")
-          argsExpr.foreach(arg => builder.addArgs(arg.get))
-
-          Some(ExprOuterClass.Expr.newBuilder().setScalarFunc(builder).build())
+          scalarExprToProto("read_side_padding", argsExpr: _*)
         } else {
           withInfo(expr, s.arguments: _*)
           None
@@ -1762,11 +1758,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             val arg0 = exprToProtoInternal(srcStr, inputs, binding)
             val arg1 = exprToProtoInternal(size, inputs, binding)
             if (arg0.isDefined && arg1.isDefined) {
-              val builder = ExprOuterClass.ScalarFunc.newBuilder()
-              builder.setFunc("rpad")
-              builder.addArgs(arg0.get)
-              builder.addArgs(arg1.get)
-              Some(ExprOuterClass.Expr.newBuilder().setScalarFunc(builder).build())
+              scalarExprToProto("rpad", arg0, arg1)
             } else {
               withInfo(expr, "rpad unsupported arguments", srcStr, size)
               None
