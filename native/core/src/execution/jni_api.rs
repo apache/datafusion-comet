@@ -221,6 +221,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         let memory_pool =
             create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
 
+        println!("Created memory pool: {:?}", memory_pool);
+
         // We need to keep the session context alive. Some session state like temporary
         // dictionaries are stored in session context. If it is dropped, the temporary
         // dictionaries will be dropped as well.

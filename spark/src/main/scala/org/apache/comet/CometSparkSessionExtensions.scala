@@ -100,9 +100,6 @@ class CometSparkSessionExtensions
         plan
       } else {
 
-        def isDynamicPruningFilter(e: Expression): Boolean =
-          e.exists(_.isInstanceOf[PlanExpression[_]])
-
         def hasMetadataCol(plan: SparkPlan): Boolean = {
           plan.expressions.exists(_.exists {
             case a: Attribute =>
@@ -118,112 +115,122 @@ class CometSparkSessionExtensions
 
           // data source v1
           case scanExec: FileSourceScanExec =>
-            if (COMET_DPP_FALLBACK_ENABLED.get() &&
-              scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
-              withInfo(scanExec, "DPP not supported")
-              return scanExec
-            }
-
-            scanExec.relation match {
-              case HadoopFsRelation(_, partitionSchema, _, _, fileFormat, _) =>
-                if (!CometScanExec.isFileFormatSupported(fileFormat)) {
-                  withInfo(scanExec, s"fileFormat $fileFormat not supported")
-                  return scanExec
-                }
-
-                COMET_NATIVE_SCAN_IMPL.get() match {
-                  case SCAN_NATIVE_DATAFUSION =>
-                    // TODO we only enable full native scan if COMET_EXEC_ENABLED is enabled
-                    // but this is not really what we want .. we currently insert `CometScanExec`
-                    // here and then it gets replaced with `CometNativeScanExec` in `CometExecRule`
-                    // but that only happens if `COMET_EXEC_ENABLED` is enabled
-                    if (!COMET_EXEC_ENABLED.get()) {
-                      withInfo(
-                        scanExec,
-                        s"Native scan not enabled when ${COMET_EXEC_ENABLED.key} is not enabled")
-                      return scanExec
-                    }
-                    if (!CometNativeScanExec.isSchemaSupported(scanExec.requiredSchema)) {
-                      withInfo(
-                        scanExec,
-                        s"requiredSchema ${scanExec.requiredSchema} not supported")
-                      return scanExec
-                    }
-                    if (!CometNativeScanExec.isSchemaSupported(partitionSchema)) {
-                      withInfo(scanExec, s"partitionSchema $partitionSchema not supported")
-                      return scanExec
-                    }
-                    CometScanExec(scanExec, session)
-
-                  case SCAN_NATIVE_COMET | SCAN_NATIVE_ICEBERG_COMPAT =>
-                    if (!CometScanExec.isSchemaSupported(scanExec.requiredSchema)) {
-                      withInfo(
-                        scanExec,
-                        s"requiredSchema ${scanExec.requiredSchema} not supported")
-                      return scanExec
-                    }
-                    if (!CometScanExec.isSchemaSupported(partitionSchema)) {
-                      withInfo(scanExec, s"partitionSchema $partitionSchema not supported")
-                      return scanExec
-                    }
-                    CometScanExec(scanExec, session)
-                }
-
-              case other =>
-                withInfo(scanExec, s"Relation ${other.getClass.getName} not supported")
-                scanExec
-            }
+            transformScan(scanExec)
 
           // data source V2
           case scanExec: BatchScanExec =>
-            scanExec.scan match {
-              case p: ParquetScan =>
-                if (!CometBatchScanExec.isSchemaSupported(p.readDataSchema)) {
-                  withInfo(scanExec, s"readDataSchema ${p.readDataSchema} is not supported")
-                  return scanExec
-                }
-                if (!CometBatchScanExec.isSchemaSupported(p.readPartitionSchema)) {
-                  withInfo(scanExec, s"readPartitionSchema ${p.readDataSchema} is not supported")
-                  return scanExec
-                }
-                if (p.pushedAggregate.nonEmpty) {
-                  withInfo(scanExec, "Comet does not support pushed aggregate")
-                  return scanExec
-                }
-                val cometScan = CometParquetScan(scanExec.scan.asInstanceOf[ParquetScan])
-                CometBatchScanExec(
-                  scanExec.copy(scan = cometScan),
-                  runtimeFilters = scanExec.runtimeFilters)
+            transformBatchScan(scanExec)
 
-              // Iceberg scan, supported cases
-              case s: SupportsComet =>
-                if (!s.isCometEnabled) {
-                  withInfo(
-                    scanExec,
-                    "Comet extension is not enabled for ${s.getClass.getSimpleName}: " +
-                      "not enabled on data source side")
-                  return scanExec
-                }
-                if (!CometBatchScanExec.isSchemaSupported(s.readSchema())) {
-                  withInfo(
-                    scanExec,
-                    s"Comet extension is not enabled for ${s.getClass.getSimpleName}: " +
-                      s"readDataSchema ${s.readSchema()} is not supported")
-                  return scanExec
-                }
-                // When reading from Iceberg, we automatically enable type promotion
-                SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
-                CometBatchScanExec(
-                  scanExec.clone().asInstanceOf[BatchScanExec],
-                  runtimeFilters = scanExec.runtimeFilters)
-
-              case _ =>
-                withInfo(scanExec, "Comet Scan only supports Parquet")
-                scanExec
-            }
         }
       }
     }
+
+    private def transformScan(scanExec: FileSourceScanExec): SparkPlan = {
+
+      def isDynamicPruningFilter(e: Expression): Boolean =
+        e.exists(_.isInstanceOf[PlanExpression[_]])
+
+      if (COMET_DPP_FALLBACK_ENABLED.get() &&
+        scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
+        withInfo(scanExec, "DPP not supported")
+        return scanExec
+      }
+
+      scanExec.relation match {
+        case HadoopFsRelation(_, partitionSchema, _, _, fileFormat, _) =>
+          if (!CometScanExec.isFileFormatSupported(fileFormat)) {
+            withInfo(scanExec, s"fileFormat $fileFormat not supported")
+            return scanExec
+          }
+
+          COMET_NATIVE_SCAN_IMPL.get() match {
+            case SCAN_NATIVE_DATAFUSION =>
+              // TODO we only enable full native scan if COMET_EXEC_ENABLED is enabled
+              // but this is not really what we want .. we currently insert `CometScanExec`
+              // here and then it gets replaced with `CometNativeScanExec` in `CometExecRule`
+              // but that only happens if `COMET_EXEC_ENABLED` is enabled
+              if (!COMET_EXEC_ENABLED.get()) {
+                withInfo(
+                  scanExec,
+                  s"Native scan not enabled when ${COMET_EXEC_ENABLED.key} is not enabled")
+                return scanExec
+              }
+              if (!CometNativeScanExec.isSchemaSupported(scanExec.requiredSchema)) {
+                withInfo(scanExec, s"requiredSchema ${scanExec.requiredSchema} not supported")
+                return scanExec
+              }
+              if (!CometNativeScanExec.isSchemaSupported(partitionSchema)) {
+                withInfo(scanExec, s"partitionSchema $partitionSchema not supported")
+                return scanExec
+              }
+              CometScanExec(scanExec, session)
+
+            case SCAN_NATIVE_COMET | SCAN_NATIVE_ICEBERG_COMPAT =>
+              if (!CometScanExec.isSchemaSupported(scanExec.requiredSchema)) {
+                withInfo(scanExec, s"requiredSchema ${scanExec.requiredSchema} not supported")
+                return scanExec
+              }
+              if (!CometScanExec.isSchemaSupported(partitionSchema)) {
+                withInfo(scanExec, s"partitionSchema $partitionSchema not supported")
+                return scanExec
+              }
+              CometScanExec(scanExec, session)
+          }
+
+        case other =>
+          withInfo(scanExec, s"Relation ${other.getClass.getName} not supported")
+          scanExec
+      }
+    }
+
+    private def transformBatchScan(scanExec: BatchScanExec): SparkPlan = {
+      scanExec.scan match {
+        case p: ParquetScan =>
+          if (!CometBatchScanExec.isSchemaSupported(p.readDataSchema)) {
+            withInfo(scanExec, s"readDataSchema ${p.readDataSchema} is not supported")
+            return scanExec
+          }
+          if (!CometBatchScanExec.isSchemaSupported(p.readPartitionSchema)) {
+            withInfo(scanExec, s"readPartitionSchema ${p.readDataSchema} is not supported")
+            return scanExec
+          }
+          if (p.pushedAggregate.nonEmpty) {
+            withInfo(scanExec, "Comet does not support pushed aggregate")
+            return scanExec
+          }
+          val cometScan = CometParquetScan(scanExec.scan.asInstanceOf[ParquetScan])
+          CometBatchScanExec(
+            scanExec.copy(scan = cometScan),
+            runtimeFilters = scanExec.runtimeFilters)
+
+        // Iceberg scan, supported cases
+        case s: SupportsComet =>
+          if (!s.isCometEnabled) {
+            withInfo(
+              scanExec,
+              "Comet extension is not enabled for ${s.getClass.getSimpleName}: " +
+                "not enabled on data source side")
+            return scanExec
+          }
+          if (!CometBatchScanExec.isSchemaSupported(s.readSchema())) {
+            withInfo(
+              scanExec,
+              s"Comet extension is not enabled for ${s.getClass.getSimpleName}: " +
+                s"readDataSchema ${s.readSchema()} is not supported")
+            return scanExec
+          }
+          // When reading from Iceberg, we automatically enable type promotion
+          SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
+          CometBatchScanExec(
+            scanExec.clone().asInstanceOf[BatchScanExec],
+            runtimeFilters = scanExec.runtimeFilters)
+
+        case _ =>
+          withInfo(scanExec, "Comet Scan only supports Parquet")
+          scanExec
+      }
+    }
+
   }
 
   case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
