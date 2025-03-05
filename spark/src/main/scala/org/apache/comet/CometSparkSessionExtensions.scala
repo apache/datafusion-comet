@@ -1409,6 +1409,11 @@ object CometSparkSessionExtensions extends Logging {
     }
   }
 
+  /** Calculates Comet shuffle memory size in MB */
+  def getCometShuffleMemorySizeInMiB(sparkConf: SparkConf, conf: SQLConf = SQLConf.get): Long = {
+    ByteUnit.BYTE.toMiB(getCometShuffleMemorySize(sparkConf, conf))
+  }
+
   def cometUnifiedMemoryManagerEnabled(sparkConf: SparkConf): Boolean = {
     sparkConf.getBoolean("spark.memory.offHeap.enabled", false)
   }

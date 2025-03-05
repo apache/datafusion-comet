@@ -55,7 +55,8 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
         sc.getConf.getSizeAsMb(EXECUTOR_MEMORY_OVERHEAD.key)
       } else {
         // By default, executorMemory * spark.executor.memoryOverheadFactor, with minimum of 384MB
-        val executorMemory = sc.getConf.getSizeAsMb(EXECUTOR_MEMORY.key, EXECUTOR_MEMORY_DEFAULT)
+        val executorMemory =
+          sc.getConf.getSizeAsMb(EXECUTOR_MEMORY.key, EXECUTOR_MEMORY_DEFAULT)
         val memoryOverheadFactor = getMemoryOverheadFactor(sc.getConf)
         val memoryOverheadMinMib = getMemoryOverheadMinMib(sc.getConf)
 
@@ -67,7 +68,7 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
           CometSparkSessionExtensions.getCometMemoryOverheadInMiB(sc.getConf)
         } else {
           // comet shuffle unified memory manager is disabled, so we need to add overhead memory
-          CometSparkSessionExtensions.getCometShuffleMemorySize(sc.getConf)
+          CometSparkSessionExtensions.getCometShuffleMemorySizeInMiB(sc.getConf)
         }
       sc.conf.set(EXECUTOR_MEMORY_OVERHEAD.key, s"${execMemOverhead + cometMemOverhead}M")
       val newExecMemOverhead = sc.getConf.getSizeAsMb(EXECUTOR_MEMORY_OVERHEAD.key)
