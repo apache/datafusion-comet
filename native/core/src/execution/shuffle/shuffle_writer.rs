@@ -909,8 +909,9 @@ mod test {
     use super::*;
     use crate::execution::shuffle::read_ipc_compressed;
     use arrow_schema::{DataType, Field, Schema};
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_plan::common::collect;
-    use datafusion::physical_plan::memory::MemoryExec;
     use datafusion::prelude::SessionContext;
     use datafusion_execution::config::SessionConfig;
     use datafusion_execution::runtime_env::RuntimeEnvBuilder;
@@ -1152,7 +1153,9 @@ mod test {
 
         let partitions = &[batches];
         let exec = ShuffleWriterExec::try_new(
-            Arc::new(MemoryExec::try_new(partitions, batch.schema(), None).unwrap()),
+            Arc::new(DataSourceExec::new(Arc::new(
+                MemorySourceConfig::try_new(partitions, batch.schema(), None).unwrap(),
+            ))),
             Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
             CompressionCodec::Zstd(1),
             "/tmp/data.out".to_string(),

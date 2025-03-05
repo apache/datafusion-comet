@@ -20,12 +20,13 @@ use arrow_array::builder::{Decimal128Builder, StringBuilder};
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::SchemaRef;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use datafusion::datasource::memory::MemorySourceConfig;
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::TaskContext;
 use datafusion::functions_aggregate::average::avg_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
-use datafusion::physical_plan::memory::MemoryExec;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_comet_spark_expr::AvgDecimal;
 use datafusion_comet_spark_expr::SumDecimal;
@@ -119,8 +120,9 @@ async fn agg_test(
     alias: &str,
 ) {
     let schema = &partitions[0][0].schema();
-    let scan: Arc<dyn ExecutionPlan> =
-        Arc::new(MemoryExec::try_new(partitions, Arc::clone(schema), None).unwrap());
+    let scan: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(Arc::new(
+        MemorySourceConfig::try_new(partitions, Arc::clone(schema), None).unwrap(),
+    )));
     let aggregate = create_aggregate(scan, c0.clone(), c1.clone(), schema, aggregate_udf, alias);
     let mut stream = aggregate
         .execute(0, Arc::new(TaskContext::default()))

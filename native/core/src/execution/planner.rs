@@ -77,8 +77,8 @@ use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::parquet_support::{register_object_store, SparkParquetOptions};
 use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
 use datafusion::datasource::listing::PartitionedFile;
-use datafusion::datasource::physical_plan::parquet::ParquetExecBuilder;
-use datafusion::datasource::physical_plan::FileScanConfig;
+use datafusion::datasource::physical_plan::{FileScanConfig, ParquetSource};
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
 use datafusion_comet_proto::{
@@ -1274,16 +1274,6 @@ impl PhysicalPlanner {
                         Field::new(field.name(), field.data_type().clone(), field.is_nullable())
                     })
                     .collect_vec();
-                let mut file_scan_config =
-                    FileScanConfig::new(object_store_url, Arc::clone(&data_schema))
-                        .with_file_groups(file_groups)
-                        .with_table_partition_cols(partition_fields);
-
-                assert_eq!(
-                    projection_vector.len(),
-                    required_schema.fields.len() + partition_schema.fields.len()
-                );
-                file_scan_config = file_scan_config.with_projection(Some(projection_vector));
 
                 let mut table_parquet_options = TableParquetOptions::new();
                 // TODO: Maybe these are configs?
@@ -1297,17 +1287,31 @@ impl PhysicalPlanner {
                 );
                 spark_parquet_options.allow_cast_unsigned_ints = true;
 
-                let mut builder = ParquetExecBuilder::new(file_scan_config)
-                    .with_table_parquet_options(table_parquet_options)
+                let mut parquet_source = ParquetSource::new(table_parquet_options)
                     .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
                         spark_parquet_options,
                     )));
 
                 if let Some(filter) = cnf_data_filters {
-                    builder = builder.with_predicate(filter);
+                    parquet_source =
+                        parquet_source.with_predicate(Arc::clone(&data_schema), filter);
                 }
 
-                let scan = builder.build();
+                let mut file_scan_config = FileScanConfig::new(
+                    object_store_url,
+                    Arc::clone(&data_schema),
+                    Arc::new(parquet_source),
+                )
+                .with_file_groups(file_groups)
+                .with_table_partition_cols(partition_fields);
+
+                assert_eq!(
+                    projection_vector.len(),
+                    required_schema.fields.len() + partition_schema.fields.len()
+                );
+                file_scan_config = file_scan_config.with_projection(Some(projection_vector));
+
+                let scan = DataSourceExec::new(Arc::new(file_scan_config));
                 Ok((
                     vec![],
                     Arc::new(SparkPlan::new(spark_plan.plan_id, Arc::new(scan), vec![])),
@@ -1604,8 +1608,8 @@ impl PhysicalPlanner {
                 let window_agg = Arc::new(BoundedWindowAggExec::try_new(
                     window_expr?,
                     Arc::clone(&child.native_plan),
-                    partition_exprs.to_vec(),
                     InputOrderMode::Sorted,
+                    !partition_exprs.is_empty(),
                 )?);
                 Ok((
                     scans,
