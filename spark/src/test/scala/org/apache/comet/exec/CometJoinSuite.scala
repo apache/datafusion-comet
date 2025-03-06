@@ -201,7 +201,9 @@ class CometJoinSuite extends CometTestBase {
   }
 
   test("HashJoin struct key") {
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(
+      !CometConf.isExperimentalNativeScan
+    ) // https://github.com/apache/datafusion-comet/issues/1441
     withSQLConf(
       "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
       SQLConf.PREFER_SORTMERGEJOIN.key -> "false",

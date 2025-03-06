@@ -337,7 +337,9 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("test multiple pages with different sizes and nulls") {
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(
+      !CometConf.isExperimentalNativeScan
+    ) // https://github.com/apache/datafusion-comet/issues/1441
     def makeRawParquetFile(
         path: Path,
         dictionaryEnabled: Boolean,

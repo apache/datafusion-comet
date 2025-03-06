@@ -900,7 +900,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast TimestampType to LongType") {
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(
+      !CometConf.isExperimentalNativeScan
+    ) // https://github.com/apache/datafusion-comet/issues/1441
     assume(CometSparkSessionExtensions.isSpark33Plus)
     castTest(generateTimestampsExtended(), DataTypes.LongType)
   }
@@ -924,19 +926,25 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast TimestampType to StringType") {
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(
+      !CometConf.isExperimentalNativeScan
+    ) // https://github.com/apache/datafusion-comet/issues/1441
     castTest(generateTimestamps(), DataTypes.StringType)
   }
 
   test("cast TimestampType to DateType") {
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(
+      !CometConf.isExperimentalNativeScan
+    ) // https://github.com/apache/datafusion-comet/issues/1441
     castTest(generateTimestamps(), DataTypes.DateType)
   }
 
   // Complex Types
 
   test("cast StructType to StringType") {
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(
+      !CometConf.isExperimentalNativeScan
+    ) // https://github.com/apache/datafusion-comet/issues/1441
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
