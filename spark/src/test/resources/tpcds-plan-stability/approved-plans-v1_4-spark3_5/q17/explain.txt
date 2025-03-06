@@ -109,12 +109,12 @@ Arguments: [ss_item_sk#1, ss_store_sk#3, ss_quantity#5, ss_sold_date_sk#6, sr_re
 Output [2]: [d_date_sk#19, d_quarter_name#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
-PushedFilters: [IsNotNull(d_quarter_name), EqualTo(d_quarter_name,2001Q1), IsNotNull(d_date_sk)]
+PushedFilters: [IsNotNull(d_quarter_name), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_quarter_name:string>
 
 (14) CometFilter
 Input [2]: [d_date_sk#19, d_quarter_name#20]
-Condition : ((isnotnull(d_quarter_name#20) AND (d_quarter_name#20 = 2001Q1)) AND isnotnull(d_date_sk#19))
+Condition : ((isnotnull(d_quarter_name#20) AND (rpad(d_quarter_name#20, 6,  ) = 2001Q1)) AND isnotnull(d_date_sk#19))
 
 (15) CometProject
 Input [2]: [d_date_sk#19, d_quarter_name#20]
@@ -137,12 +137,12 @@ Arguments: [ss_item_sk#1, ss_store_sk#3, ss_quantity#5, sr_return_quantity#11, s
 Output [2]: [d_date_sk#21, d_quarter_name#22]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
-PushedFilters: [In(d_quarter_name, [2001Q1,2001Q2,2001Q3]), IsNotNull(d_date_sk)]
+PushedFilters: [IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_quarter_name:string>
 
 (20) CometFilter
 Input [2]: [d_date_sk#21, d_quarter_name#22]
-Condition : (d_quarter_name#22 IN (2001Q1,2001Q2,2001Q3) AND isnotnull(d_date_sk#21))
+Condition : (rpad(d_quarter_name#22, 6,  ) IN (2001Q1,2001Q2,2001Q3) AND isnotnull(d_date_sk#21))
 
 (21) CometProject
 Input [2]: [d_date_sk#21, d_quarter_name#22]
@@ -256,12 +256,12 @@ BroadcastExchange (47)
 Output [2]: [d_date_sk#19, d_quarter_name#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
-PushedFilters: [IsNotNull(d_quarter_name), EqualTo(d_quarter_name,2001Q1), IsNotNull(d_date_sk)]
+PushedFilters: [IsNotNull(d_quarter_name), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_quarter_name:string>
 
 (44) CometFilter
 Input [2]: [d_date_sk#19, d_quarter_name#20]
-Condition : ((isnotnull(d_quarter_name#20) AND (d_quarter_name#20 = 2001Q1)) AND isnotnull(d_date_sk#19))
+Condition : ((isnotnull(d_quarter_name#20) AND (rpad(d_quarter_name#20, 6,  ) = 2001Q1)) AND isnotnull(d_date_sk#19))
 
 (45) CometProject
 Input [2]: [d_date_sk#19, d_quarter_name#20]
@@ -286,12 +286,12 @@ BroadcastExchange (52)
 Output [2]: [d_date_sk#21, d_quarter_name#22]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
-PushedFilters: [In(d_quarter_name, [2001Q1,2001Q2,2001Q3]), IsNotNull(d_date_sk)]
+PushedFilters: [IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_quarter_name:string>
 
 (49) CometFilter
 Input [2]: [d_date_sk#21, d_quarter_name#22]
-Condition : (d_quarter_name#22 IN (2001Q1,2001Q2,2001Q3) AND isnotnull(d_date_sk#21))
+Condition : (rpad(d_quarter_name#22, 6,  ) IN (2001Q1,2001Q2,2001Q3) AND isnotnull(d_date_sk#21))
 
 (50) CometProject
 Input [2]: [d_date_sk#21, d_quarter_name#22]
