@@ -1992,6 +1992,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case _: ArrayIntersect => convert(CometArrayIntersect)
       case _: ArrayJoin => convert(CometArrayJoin)
       case _: ArraysOverlap => convert(CometArraysOverlap)
+      case _ @ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
+        convert(CometArrayCompact)
       case _ =>
         withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
         None
