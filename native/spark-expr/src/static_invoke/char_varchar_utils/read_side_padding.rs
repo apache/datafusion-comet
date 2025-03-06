@@ -26,11 +26,25 @@ use std::sync::Arc;
 
 /// Similar to DataFusion `rpad`, but not to truncate when the string is already longer than length
 pub fn spark_read_side_padding(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+    spark_read_side_padding2(args, false)
+}
+
+/// Custom `rpad` because DataFusion's `rpad` has differences in unicode handling
+pub fn spark_rpad(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+    spark_read_side_padding2(args, true)
+}
+
+fn spark_read_side_padding2(
+    args: &[ColumnarValue],
+    truncate: bool,
+) -> Result<ColumnarValue, DataFusionError> {
     match args {
         [ColumnarValue::Array(array), ColumnarValue::Scalar(ScalarValue::Int32(Some(length)))] => {
             match array.data_type() {
-                DataType::Utf8 => spark_read_side_padding_internal::<i32>(array, *length),
-                DataType::LargeUtf8 => spark_read_side_padding_internal::<i64>(array, *length),
+                DataType::Utf8 => spark_read_side_padding_internal::<i32>(array, *length, truncate),
+                DataType::LargeUtf8 => {
+                    spark_read_side_padding_internal::<i64>(array, *length, truncate)
+                }
                 // TODO: handle Dictionary types
                 other => Err(DataFusionError::Internal(format!(
                     "Unsupported data type {other:?} for function read_side_padding",
@@ -46,6 +60,7 @@ pub fn spark_read_side_padding(args: &[ColumnarValue]) -> Result<ColumnarValue, 
 fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
     array: &ArrayRef,
     length: i32,
+    truncate: bool,
 ) -> Result<ColumnarValue, DataFusionError> {
     let string_array = as_generic_string_array::<T>(array)?;
     let length = 0.max(length) as usize;
@@ -61,7 +76,16 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
                 // https://stackoverflow.com/a/46290728
                 let char_len = string.chars().count();
                 if length <= char_len {
-                    builder.append_value(string);
+                    if truncate {
+                        let idx = string
+                            .char_indices()
+                            .nth(length)
+                            .map(|(i, _)| i)
+                            .unwrap_or(string.len());
+                        builder.append_value(&string[..idx]);
+                    } else {
+                        builder.append_value(string);
+                    }
                 } else {
                     // write_str updates only the value buffer, not null nor offset buffer
                     // This is convenient for concatenating str(s)
