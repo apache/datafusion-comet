@@ -52,7 +52,7 @@ under the License.
     <scala.plugin.version>4.7.2</scala.plugin.version>
     <scalatest.version>3.2.9</scalatest.version>
     <scalatest-maven-plugin.version>2.0.2</scalatest-maven-plugin.version>
-    <spark.version>3.4.3</spark.version>
+    <spark.version>3.4.4</spark.version>
     <spark.version.short>3.4</spark.version.short>
     <spark.maven.scope>provided</spark.maven.scope>
     <protobuf.version>3.25.5</protobuf.version>
@@ -552,7 +552,7 @@ under the License.
       <id>spark-3.3</id>
       <properties>
         <scala.version>2.12.15</scala.version>
-        <spark.version>3.3.2</spark.version>
+        <spark.version>3.3.4</spark.version>
         <spark.version.short>3.3</spark.version.short>
         <parquet.version>1.12.0</parquet.version>
         <slf4j.version>1.7.32</slf4j.version>
