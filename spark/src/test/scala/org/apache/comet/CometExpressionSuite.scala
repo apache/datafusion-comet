@@ -2122,6 +2122,33 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("rpad") {
+    val table = "rpad"
+    val gen = new DataGenerator(new Random(42))
+    withTable(table) {
+      // generate some data
+      val dataChars = "abc123"
+      sql(s"create table $table(id int, name1 char(8), name2 varchar(8)) using parquet")
+      val testData = gen.generateStrings(100, dataChars, 6) ++ Seq(
+        "é", // unicode 'e\\u{301}'
+        "é" // unicode '\\u{e9}'
+      )
+      testData.zipWithIndex.foreach { x =>
+        sql(s"insert into $table values(${x._2}, '${x._1}', '${x._1}')")
+      }
+      // test 2-arg version
+      checkSparkAnswerAndOperator(
+        s"SELECT id, rpad(name1, 10), rpad(name2, 10) FROM $table ORDER BY id")
+      // test 3-arg version
+      for (length <- Seq(2, 10)) {
+        checkSparkAnswerAndOperator(
+          s"SELECT id, name1, rpad(name1, $length, ' ') FROM $table ORDER BY id")
+        checkSparkAnswerAndOperator(
+          s"SELECT id, name2, rpad(name2, $length, ' ') FROM $table ORDER BY id")
+      }
+    }
+  }
+
   test("isnan") {
     Seq("true", "false").foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary) {

@@ -68,7 +68,7 @@ The following Spark expressions are currently available. Any known compatibility
 ## String Functions
 
 | Expression      | Notes                                                                                                       |
-| --------------- | ----------------------------------------------------------------------------------------------------------- |
+|-----------------| ----------------------------------------------------------------------------------------------------------- |
 | Ascii           |                                                                                                             |
 | BitLength       |                                                                                                             |
 | Chr             |                                                                                                             |
@@ -85,6 +85,7 @@ The following Spark expressions are currently available. Any known compatibility
 | Replace         |                                                                                                             |
 | Reverse         |                                                                                                             |
 | StartsWith      |                                                                                                             |
+| StringRPad      |                                                                                                             |
 | StringSpace     |                                                                                                             |
 | StringTrim      |                                                                                                             |
 | StringTrimBoth  |                                                                                                             |
