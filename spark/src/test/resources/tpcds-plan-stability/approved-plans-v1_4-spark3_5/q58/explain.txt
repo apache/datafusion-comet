@@ -203,7 +203,7 @@ Arguments: [item_id#21, cs_item_rev#22]
 (33) CometBroadcastHashJoin
 Left output [2]: [item_id#11, ss_item_rev#12]
 Right output [2]: [item_id#21, cs_item_rev#22]
-Arguments: [item_id#11], [item_id#21], Inner, ((((cast(ss_item_rev#12 as decimal(19,3)) >= (0.9 * cs_item_rev#22)) AND (cast(ss_item_rev#12 as decimal(20,3)) <= (1.1 * cs_item_rev#22))) AND (cast(cs_item_rev#22 as decimal(19,3)) >= (0.9 * ss_item_rev#12))) AND (cast(cs_item_rev#22 as decimal(20,3)) <= (1.1 * ss_item_rev#12))), BuildRight
+Arguments: [rpad(item_id#11, 16,  )], [rpad(item_id#21, 16,  )], Inner, ((((cast(ss_item_rev#12 as decimal(19,3)) >= (0.9 * cs_item_rev#22)) AND (cast(ss_item_rev#12 as decimal(20,3)) <= (1.1 * cs_item_rev#22))) AND (cast(cs_item_rev#22 as decimal(19,3)) >= (0.9 * ss_item_rev#12))) AND (cast(cs_item_rev#22 as decimal(20,3)) <= (1.1 * ss_item_rev#12))), BuildRight
 
 (34) CometProject
 Input [4]: [item_id#11, ss_item_rev#12, item_id#21, cs_item_rev#22]
@@ -270,7 +270,7 @@ Arguments: [item_id#31, ws_item_rev#32]
 (48) CometBroadcastHashJoin
 Left output [3]: [item_id#11, ss_item_rev#12, cs_item_rev#22]
 Right output [2]: [item_id#31, ws_item_rev#32]
-Arguments: [item_id#11], [item_id#31], Inner, ((((((((cast(ss_item_rev#12 as decimal(19,3)) >= (0.9 * ws_item_rev#32)) AND (cast(ss_item_rev#12 as decimal(20,3)) <= (1.1 * ws_item_rev#32))) AND (cast(cs_item_rev#22 as decimal(19,3)) >= (0.9 * ws_item_rev#32))) AND (cast(cs_item_rev#22 as decimal(20,3)) <= (1.1 * ws_item_rev#32))) AND (cast(ws_item_rev#32 as decimal(19,3)) >= (0.9 * ss_item_rev#12))) AND (cast(ws_item_rev#32 as decimal(20,3)) <= (1.1 * ss_item_rev#12))) AND (cast(ws_item_rev#32 as decimal(19,3)) >= (0.9 * cs_item_rev#22))) AND (cast(ws_item_rev#32 as decimal(20,3)) <= (1.1 * cs_item_rev#22))), BuildRight
+Arguments: [rpad(item_id#11, 16,  )], [rpad(item_id#31, 16,  )], Inner, ((((((((cast(ss_item_rev#12 as decimal(19,3)) >= (0.9 * ws_item_rev#32)) AND (cast(ss_item_rev#12 as decimal(20,3)) <= (1.1 * ws_item_rev#32))) AND (cast(cs_item_rev#22 as decimal(19,3)) >= (0.9 * ws_item_rev#32))) AND (cast(cs_item_rev#22 as decimal(20,3)) <= (1.1 * ws_item_rev#32))) AND (cast(ws_item_rev#32 as decimal(19,3)) >= (0.9 * ss_item_rev#12))) AND (cast(ws_item_rev#32 as decimal(20,3)) <= (1.1 * ss_item_rev#12))) AND (cast(ws_item_rev#32 as decimal(19,3)) >= (0.9 * cs_item_rev#22))) AND (cast(ws_item_rev#32 as decimal(20,3)) <= (1.1 * cs_item_rev#22))), BuildRight
 
 (49) CometProject
 Input [5]: [item_id#11, ss_item_rev#12, cs_item_rev#22, item_id#31, ws_item_rev#32]

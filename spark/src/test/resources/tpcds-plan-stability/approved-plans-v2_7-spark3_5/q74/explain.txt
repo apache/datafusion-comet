@@ -228,7 +228,7 @@ Arguments: [customer_id#25, customer_first_name#26, customer_last_name#27, year_
 (33) CometBroadcastHashJoin
 Left output [2]: [customer_id#12, year_total#13]
 Right output [4]: [customer_id#25, customer_first_name#26, customer_last_name#27, year_total#28]
-Arguments: [customer_id#12], [customer_id#25], Inner, BuildRight
+Arguments: [rpad(customer_id#12, 16,  )], [rpad(customer_id#25, 16,  )], Inner, BuildRight
 
 (34) CometScan parquet spark_catalog.default.customer
 Output [4]: [c_customer_sk#29, c_customer_id#30, c_first_name#31, c_last_name#32]
@@ -303,7 +303,7 @@ Arguments: [customer_id#40, year_total#41]
 (49) CometBroadcastHashJoin
 Left output [6]: [customer_id#12, year_total#13, customer_id#25, customer_first_name#26, customer_last_name#27, year_total#28]
 Right output [2]: [customer_id#40, year_total#41]
-Arguments: [customer_id#12], [customer_id#40], Inner, BuildRight
+Arguments: [rpad(customer_id#12, 16,  )], [rpad(customer_id#40, 16,  )], Inner, BuildRight
 
 (50) CometProject
 Input [8]: [customer_id#12, year_total#13, customer_id#25, customer_first_name#26, customer_last_name#27, year_total#28, customer_id#40, year_total#41]
@@ -378,7 +378,7 @@ Arguments: [customer_id#53, year_total#54]
 (65) CometBroadcastHashJoin
 Left output [7]: [customer_id#12, year_total#13, customer_id#25, customer_first_name#26, customer_last_name#27, year_total#28, year_total#41]
 Right output [2]: [customer_id#53, year_total#54]
-Arguments: [customer_id#12], [customer_id#53], Inner, (CASE WHEN (year_total#41 > 0.00) THEN (year_total#54 / year_total#41) END > CASE WHEN (year_total#13 > 0.00) THEN (year_total#28 / year_total#13) END), BuildRight
+Arguments: [rpad(customer_id#12, 16,  )], [rpad(customer_id#53, 16,  )], Inner, (CASE WHEN (year_total#41 > 0.00) THEN (year_total#54 / year_total#41) END > CASE WHEN (year_total#13 > 0.00) THEN (year_total#28 / year_total#13) END), BuildRight
 
 (66) CometProject
 Input [9]: [customer_id#12, year_total#13, customer_id#25, customer_first_name#26, customer_last_name#27, year_total#28, year_total#41, customer_id#53, year_total#54]

@@ -69,12 +69,12 @@ Arguments: [ss_cdemo_sk#1, ss_addr_sk#2, ss_quantity#4, ss_sales_price#5, ss_net
 Output [3]: [cd_demo_sk#10, cd_marital_status#11, cd_education_status#12]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_demographics]
-PushedFilters: [IsNotNull(cd_demo_sk), Or(Or(And(EqualTo(cd_marital_status,M),EqualTo(cd_education_status,4 yr Degree         )),And(EqualTo(cd_marital_status,D),EqualTo(cd_education_status,2 yr Degree         ))),And(EqualTo(cd_marital_status,S),EqualTo(cd_education_status,College             )))]
+PushedFilters: [IsNotNull(cd_demo_sk)]
 ReadSchema: struct<cd_demo_sk:int,cd_marital_status:string,cd_education_status:string>
 
 (9) CometFilter
 Input [3]: [cd_demo_sk#10, cd_marital_status#11, cd_education_status#12]
-Condition : (isnotnull(cd_demo_sk#10) AND ((((cd_marital_status#11 = M) AND (cd_education_status#12 = 4 yr Degree         )) OR ((cd_marital_status#11 = D) AND (cd_education_status#12 = 2 yr Degree         ))) OR ((cd_marital_status#11 = S) AND (cd_education_status#12 = College             ))))
+Condition : (isnotnull(cd_demo_sk#10) AND ((((rpad(cd_marital_status#11, 1,  ) = M) AND (rpad(cd_education_status#12, 20,  ) = 4 yr Degree         )) OR ((rpad(cd_marital_status#11, 1,  ) = D) AND (rpad(cd_education_status#12, 20,  ) = 2 yr Degree         ))) OR ((rpad(cd_marital_status#11, 1,  ) = S) AND (rpad(cd_education_status#12, 20,  ) = College             ))))
 
 (10) CometBroadcastExchange
 Input [3]: [cd_demo_sk#10, cd_marital_status#11, cd_education_status#12]
@@ -83,7 +83,7 @@ Arguments: [cd_demo_sk#10, cd_marital_status#11, cd_education_status#12]
 (11) CometBroadcastHashJoin
 Left output [6]: [ss_cdemo_sk#1, ss_addr_sk#2, ss_quantity#4, ss_sales_price#5, ss_net_profit#6, ss_sold_date_sk#7]
 Right output [3]: [cd_demo_sk#10, cd_marital_status#11, cd_education_status#12]
-Arguments: [ss_cdemo_sk#1], [cd_demo_sk#10], Inner, ((((((cd_marital_status#11 = M) AND (cd_education_status#12 = 4 yr Degree         )) AND (ss_sales_price#5 >= 100.00)) AND (ss_sales_price#5 <= 150.00)) OR ((((cd_marital_status#11 = D) AND (cd_education_status#12 = 2 yr Degree         )) AND (ss_sales_price#5 >= 50.00)) AND (ss_sales_price#5 <= 100.00))) OR ((((cd_marital_status#11 = S) AND (cd_education_status#12 = College             )) AND (ss_sales_price#5 >= 150.00)) AND (ss_sales_price#5 <= 200.00))), BuildRight
+Arguments: [ss_cdemo_sk#1], [cd_demo_sk#10], Inner, ((((((rpad(cd_marital_status#11, 1,  ) = M) AND (rpad(cd_education_status#12, 20,  ) = 4 yr Degree         )) AND (ss_sales_price#5 >= 100.00)) AND (ss_sales_price#5 <= 150.00)) OR ((((rpad(cd_marital_status#11, 1,  ) = D) AND (rpad(cd_education_status#12, 20,  ) = 2 yr Degree         )) AND (ss_sales_price#5 >= 50.00)) AND (ss_sales_price#5 <= 100.00))) OR ((((rpad(cd_marital_status#11, 1,  ) = S) AND (rpad(cd_education_status#12, 20,  ) = College             )) AND (ss_sales_price#5 >= 150.00)) AND (ss_sales_price#5 <= 200.00))), BuildRight
 
 (12) CometProject
 Input [9]: [ss_cdemo_sk#1, ss_addr_sk#2, ss_quantity#4, ss_sales_price#5, ss_net_profit#6, ss_sold_date_sk#7, cd_demo_sk#10, cd_marital_status#11, cd_education_status#12]
@@ -93,12 +93,12 @@ Arguments: [ss_addr_sk#2, ss_quantity#4, ss_net_profit#6, ss_sold_date_sk#7], [s
 Output [3]: [ca_address_sk#13, ca_state#14, ca_country#15]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [IsNotNull(ca_country), EqualTo(ca_country,United States), IsNotNull(ca_address_sk), Or(Or(In(ca_state, [CO,OH,TX]),In(ca_state, [KY,MN,OR])),In(ca_state, [CA,MS,VA]))]
+PushedFilters: [IsNotNull(ca_country), EqualTo(ca_country,United States), IsNotNull(ca_address_sk)]
 ReadSchema: struct<ca_address_sk:int,ca_state:string,ca_country:string>
 
 (14) CometFilter
 Input [3]: [ca_address_sk#13, ca_state#14, ca_country#15]
-Condition : (((isnotnull(ca_country#15) AND (ca_country#15 = United States)) AND isnotnull(ca_address_sk#13)) AND ((ca_state#14 IN (CO,OH,TX) OR ca_state#14 IN (OR,MN,KY)) OR ca_state#14 IN (VA,CA,MS)))
+Condition : (((isnotnull(ca_country#15) AND (ca_country#15 = United States)) AND isnotnull(ca_address_sk#13)) AND ((rpad(ca_state#14, 2,  ) IN (CO,OH,TX) OR rpad(ca_state#14, 2,  ) IN (OR,MN,KY)) OR rpad(ca_state#14, 2,  ) IN (VA,CA,MS)))
 
 (15) CometProject
 Input [3]: [ca_address_sk#13, ca_state#14, ca_country#15]
@@ -111,7 +111,7 @@ Arguments: [ca_address_sk#13, ca_state#14]
 (17) CometBroadcastHashJoin
 Left output [4]: [ss_addr_sk#2, ss_quantity#4, ss_net_profit#6, ss_sold_date_sk#7]
 Right output [2]: [ca_address_sk#13, ca_state#14]
-Arguments: [ss_addr_sk#2], [ca_address_sk#13], Inner, ((((ca_state#14 IN (CO,OH,TX) AND (ss_net_profit#6 >= 0.00)) AND (ss_net_profit#6 <= 2000.00)) OR ((ca_state#14 IN (OR,MN,KY) AND (ss_net_profit#6 >= 150.00)) AND (ss_net_profit#6 <= 3000.00))) OR ((ca_state#14 IN (VA,CA,MS) AND (ss_net_profit#6 >= 50.00)) AND (ss_net_profit#6 <= 25000.00))), BuildRight
+Arguments: [ss_addr_sk#2], [ca_address_sk#13], Inner, ((((rpad(ca_state#14, 2,  ) IN (CO,OH,TX) AND (ss_net_profit#6 >= 0.00)) AND (ss_net_profit#6 <= 2000.00)) OR ((rpad(ca_state#14, 2,  ) IN (OR,MN,KY) AND (ss_net_profit#6 >= 150.00)) AND (ss_net_profit#6 <= 3000.00))) OR ((rpad(ca_state#14, 2,  ) IN (VA,CA,MS) AND (ss_net_profit#6 >= 50.00)) AND (ss_net_profit#6 <= 25000.00))), BuildRight
 
 (18) CometProject
 Input [6]: [ss_addr_sk#2, ss_quantity#4, ss_net_profit#6, ss_sold_date_sk#7, ca_address_sk#13, ca_state#14]
