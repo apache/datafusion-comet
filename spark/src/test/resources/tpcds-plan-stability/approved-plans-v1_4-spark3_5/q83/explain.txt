@@ -192,7 +192,7 @@ Arguments: [item_id#19, cr_item_qty#20]
 (31) CometBroadcastHashJoin
 Left output [2]: [item_id#21, sr_item_qty#22]
 Right output [2]: [item_id#19, cr_item_qty#20]
-Arguments: [item_id#21], [item_id#19], Inner, BuildRight
+Arguments: [rpad(item_id#21, 16,  )], [rpad(item_id#19, 16,  )], Inner, BuildRight
 
 (32) CometProject
 Input [4]: [item_id#21, sr_item_qty#22, item_id#19, cr_item_qty#20]
@@ -255,7 +255,7 @@ Arguments: [item_id#31, wr_item_qty#32]
 (45) CometBroadcastHashJoin
 Left output [3]: [item_id#21, sr_item_qty#22, cr_item_qty#20]
 Right output [2]: [item_id#31, wr_item_qty#32]
-Arguments: [item_id#21], [item_id#31], Inner, BuildRight
+Arguments: [rpad(item_id#21, 16,  )], [rpad(item_id#31, 16,  )], Inner, BuildRight
 
 (46) CometProject
 Input [5]: [item_id#21, sr_item_qty#22, cr_item_qty#20, item_id#31, wr_item_qty#32]

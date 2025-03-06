@@ -1,12 +1,12 @@
 == Physical Plan ==
-* CometColumnarToRow (48)
-+- CometTakeOrderedAndProject (47)
-   +- CometProject (46)
-      +- CometBroadcastHashJoin (45)
-         :- CometProject (40)
-         :  +- CometBroadcastHashJoin (39)
-         :     :- CometProject (35)
-         :     :  +- CometBroadcastHashJoin (34)
+* CometColumnarToRow (63)
++- CometTakeOrderedAndProject (62)
+   +- CometProject (61)
+      +- CometBroadcastHashJoin (60)
+         :- CometProject (55)
+         :  +- CometBroadcastHashJoin (54)
+         :     :- CometProject (50)
+         :     :  +- CometBroadcastHashJoin (49)
          :     :     :- CometFilter (17)
          :     :     :  +- CometHashAggregate (16)
          :     :     :     +- CometExchange (15)
@@ -24,29 +24,44 @@
          :     :     :                 +- CometBroadcastExchange (11)
          :     :     :                    +- CometFilter (10)
          :     :     :                       +- CometScan parquet spark_catalog.default.customer_address (9)
-         :     :     +- CometBroadcastExchange (33)
-         :     :        +- CometFilter (32)
-         :     :           +- CometHashAggregate (31)
-         :     :              +- CometExchange (30)
-         :     :                 +- CometHashAggregate (29)
-         :     :                    +- CometHashAggregate (28)
-         :     :                       +- CometExchange (27)
-         :     :                          +- CometHashAggregate (26)
-         :     :                             +- CometProject (25)
-         :     :                                +- CometBroadcastHashJoin (24)
-         :     :                                   :- CometProject (22)
-         :     :                                   :  +- CometBroadcastHashJoin (21)
-         :     :                                   :     :- CometFilter (19)
-         :     :                                   :     :  +- CometScan parquet spark_catalog.default.web_returns (18)
-         :     :                                   :     +- ReusedExchange (20)
-         :     :                                   +- ReusedExchange (23)
-         :     +- CometBroadcastExchange (38)
-         :        +- CometFilter (37)
-         :           +- CometScan parquet spark_catalog.default.customer (36)
-         +- CometBroadcastExchange (44)
-            +- CometProject (43)
-               +- CometFilter (42)
-                  +- CometScan parquet spark_catalog.default.customer_address (41)
+         :     :     +- CometBroadcastExchange (48)
+         :     :        +- CometFilter (47)
+         :     :           +- CometHashAggregate (46)
+         :     :              +- CometHashAggregate (45)
+         :     :                 +- CometProject (44)
+         :     :                    +- CometBroadcastHashJoin (43)
+         :     :                       :- CometHashAggregate (30)
+         :     :                       :  +- CometExchange (29)
+         :     :                       :     +- CometHashAggregate (28)
+         :     :                       :        +- CometProject (27)
+         :     :                       :           +- CometBroadcastHashJoin (26)
+         :     :                       :              :- CometProject (22)
+         :     :                       :              :  +- CometBroadcastHashJoin (21)
+         :     :                       :              :     :- CometFilter (19)
+         :     :                       :              :     :  +- CometScan parquet spark_catalog.default.web_returns (18)
+         :     :                       :              :     +- ReusedExchange (20)
+         :     :                       :              +- CometBroadcastExchange (25)
+         :     :                       :                 +- CometFilter (24)
+         :     :                       :                    +- CometScan parquet spark_catalog.default.customer_address (23)
+         :     :                       +- CometBroadcastExchange (42)
+         :     :                          +- CometHashAggregate (41)
+         :     :                             +- CometExchange (40)
+         :     :                                +- CometHashAggregate (39)
+         :     :                                   +- CometProject (38)
+         :     :                                      +- CometBroadcastHashJoin (37)
+         :     :                                         :- CometProject (35)
+         :     :                                         :  +- CometBroadcastHashJoin (34)
+         :     :                                         :     :- CometFilter (32)
+         :     :                                         :     :  +- CometScan parquet spark_catalog.default.web_returns (31)
+         :     :                                         :     +- ReusedExchange (33)
+         :     :                                         +- ReusedExchange (36)
+         :     +- CometBroadcastExchange (53)
+         :        +- CometFilter (52)
+         :           +- CometScan parquet spark_catalog.default.customer (51)
+         +- CometBroadcastExchange (59)
+            +- CometProject (58)
+               +- CometFilter (57)
+                  +- CometScan parquet spark_catalog.default.customer_address (56)
 
 
 (1) CometScan parquet spark_catalog.default.web_returns
@@ -93,12 +108,12 @@ Arguments: [wr_returning_customer_sk#1, wr_returning_addr_sk#2, wr_return_amt#3]
 Output [2]: [ca_address_sk#8, ca_state#9]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [IsNotNull(ca_address_sk), IsNotNull(ca_state)]
+PushedFilters: [IsNotNull(ca_address_sk)]
 ReadSchema: struct<ca_address_sk:int,ca_state:string>
 
 (10) CometFilter
 Input [2]: [ca_address_sk#8, ca_state#9]
-Condition : (isnotnull(ca_address_sk#8) AND isnotnull(ca_state#9))
+Condition : isnotnull(ca_address_sk#8)
 
 (11) CometBroadcastExchange
 Input [2]: [ca_address_sk#8, ca_state#9]
@@ -132,177 +147,250 @@ Input [3]: [ctr_customer_sk#11, ctr_state#12, ctr_total_return#13]
 Condition : isnotnull(ctr_total_return#13)
 
 (18) CometScan parquet spark_catalog.default.web_returns
-Output [4]: [wr_returning_customer_sk#14, wr_returning_addr_sk#15, wr_return_amt#16, wr_returned_date_sk#17]
+Output [2]: [wr_returning_addr_sk#2, wr_returned_date_sk#4]
 Batched: true
 Location: InMemoryFileIndex []
-PartitionFilters: [isnotnull(wr_returned_date_sk#17), dynamicpruningexpression(wr_returned_date_sk#17 IN dynamicpruning#18)]
+PartitionFilters: [isnotnull(wr_returned_date_sk#4), dynamicpruningexpression(wr_returned_date_sk#4 IN dynamicpruning#14)]
+PushedFilters: [IsNotNull(wr_returning_addr_sk)]
+ReadSchema: struct<wr_returning_addr_sk:int>
+
+(19) CometFilter
+Input [2]: [wr_returning_addr_sk#2, wr_returned_date_sk#4]
+Condition : isnotnull(wr_returning_addr_sk#2)
+
+(20) ReusedExchange [Reuses operator id: 6]
+Output [1]: [d_date_sk#6]
+
+(21) CometBroadcastHashJoin
+Left output [2]: [wr_returning_addr_sk#2, wr_returned_date_sk#4]
+Right output [1]: [d_date_sk#6]
+Arguments: [wr_returned_date_sk#4], [d_date_sk#6], Inner, BuildRight
+
+(22) CometProject
+Input [3]: [wr_returning_addr_sk#2, wr_returned_date_sk#4, d_date_sk#6]
+Arguments: [wr_returning_addr_sk#2], [wr_returning_addr_sk#2]
+
+(23) CometScan parquet spark_catalog.default.customer_address
+Output [2]: [ca_address_sk#8, ca_state#9]
+Batched: true
+Location [not included in comparison]/{warehouse_dir}/customer_address]
+PushedFilters: [IsNotNull(ca_state), IsNotNull(ca_address_sk)]
+ReadSchema: struct<ca_address_sk:int,ca_state:string>
+
+(24) CometFilter
+Input [2]: [ca_address_sk#8, ca_state#9]
+Condition : (isnotnull(ca_state#9) AND isnotnull(ca_address_sk#8))
+
+(25) CometBroadcastExchange
+Input [2]: [ca_address_sk#8, ca_state#9]
+Arguments: [ca_address_sk#8, ca_state#9]
+
+(26) CometBroadcastHashJoin
+Left output [1]: [wr_returning_addr_sk#2]
+Right output [2]: [ca_address_sk#8, ca_state#9]
+Arguments: [wr_returning_addr_sk#2], [ca_address_sk#8], Inner, BuildRight
+
+(27) CometProject
+Input [3]: [wr_returning_addr_sk#2, ca_address_sk#8, ca_state#9]
+Arguments: [ctr_state#12], [ca_state#9 AS ctr_state#12]
+
+(28) CometHashAggregate
+Input [1]: [ctr_state#12]
+Keys [1]: [ctr_state#12]
+Functions: []
+
+(29) CometExchange
+Input [1]: [ctr_state#12]
+Arguments: hashpartitioning(ctr_state#12, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+
+(30) CometHashAggregate
+Input [1]: [ctr_state#12]
+Keys [1]: [ctr_state#12]
+Functions: []
+
+(31) CometScan parquet spark_catalog.default.web_returns
+Output [4]: [wr_returning_customer_sk#15, wr_returning_addr_sk#16, wr_return_amt#17, wr_returned_date_sk#18]
+Batched: true
+Location: InMemoryFileIndex []
+PartitionFilters: [isnotnull(wr_returned_date_sk#18), dynamicpruningexpression(wr_returned_date_sk#18 IN dynamicpruning#19)]
 PushedFilters: [IsNotNull(wr_returning_addr_sk)]
 ReadSchema: struct<wr_returning_customer_sk:int,wr_returning_addr_sk:int,wr_return_amt:decimal(7,2)>
 
-(19) CometFilter
-Input [4]: [wr_returning_customer_sk#14, wr_returning_addr_sk#15, wr_return_amt#16, wr_returned_date_sk#17]
-Condition : isnotnull(wr_returning_addr_sk#15)
-
-(20) ReusedExchange [Reuses operator id: 6]
-Output [1]: [d_date_sk#19]
-
-(21) CometBroadcastHashJoin
-Left output [4]: [wr_returning_customer_sk#14, wr_returning_addr_sk#15, wr_return_amt#16, wr_returned_date_sk#17]
-Right output [1]: [d_date_sk#19]
-Arguments: [wr_returned_date_sk#17], [d_date_sk#19], Inner, BuildRight
-
-(22) CometProject
-Input [5]: [wr_returning_customer_sk#14, wr_returning_addr_sk#15, wr_return_amt#16, wr_returned_date_sk#17, d_date_sk#19]
-Arguments: [wr_returning_customer_sk#14, wr_returning_addr_sk#15, wr_return_amt#16], [wr_returning_customer_sk#14, wr_returning_addr_sk#15, wr_return_amt#16]
-
-(23) ReusedExchange [Reuses operator id: 11]
-Output [2]: [ca_address_sk#20, ca_state#21]
-
-(24) CometBroadcastHashJoin
-Left output [3]: [wr_returning_customer_sk#14, wr_returning_addr_sk#15, wr_return_amt#16]
-Right output [2]: [ca_address_sk#20, ca_state#21]
-Arguments: [wr_returning_addr_sk#15], [ca_address_sk#20], Inner, BuildRight
-
-(25) CometProject
-Input [5]: [wr_returning_customer_sk#14, wr_returning_addr_sk#15, wr_return_amt#16, ca_address_sk#20, ca_state#21]
-Arguments: [wr_returning_customer_sk#14, wr_return_amt#16, ca_state#21], [wr_returning_customer_sk#14, wr_return_amt#16, ca_state#21]
-
-(26) CometHashAggregate
-Input [3]: [wr_returning_customer_sk#14, wr_return_amt#16, ca_state#21]
-Keys [2]: [wr_returning_customer_sk#14, ca_state#21]
-Functions [1]: [partial_sum(UnscaledValue(wr_return_amt#16))]
-
-(27) CometExchange
-Input [3]: [wr_returning_customer_sk#14, ca_state#21, sum#22]
-Arguments: hashpartitioning(wr_returning_customer_sk#14, ca_state#21, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
-
-(28) CometHashAggregate
-Input [3]: [wr_returning_customer_sk#14, ca_state#21, sum#22]
-Keys [2]: [wr_returning_customer_sk#14, ca_state#21]
-Functions [1]: [sum(UnscaledValue(wr_return_amt#16))]
-
-(29) CometHashAggregate
-Input [2]: [ctr_state#23, ctr_total_return#24]
-Keys [1]: [ctr_state#23]
-Functions [1]: [partial_avg(ctr_total_return#24)]
-
-(30) CometExchange
-Input [3]: [ctr_state#23, sum#25, count#26]
-Arguments: hashpartitioning(ctr_state#23, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
-
-(31) CometHashAggregate
-Input [3]: [ctr_state#23, sum#25, count#26]
-Keys [1]: [ctr_state#23]
-Functions [1]: [avg(ctr_total_return#24)]
-
 (32) CometFilter
-Input [2]: [(avg(ctr_total_return) * 1.2)#27, ctr_state#23]
-Condition : isnotnull((avg(ctr_total_return) * 1.2)#27)
+Input [4]: [wr_returning_customer_sk#15, wr_returning_addr_sk#16, wr_return_amt#17, wr_returned_date_sk#18]
+Condition : isnotnull(wr_returning_addr_sk#16)
 
-(33) CometBroadcastExchange
-Input [2]: [(avg(ctr_total_return) * 1.2)#27, ctr_state#23]
-Arguments: [(avg(ctr_total_return) * 1.2)#27, ctr_state#23]
+(33) ReusedExchange [Reuses operator id: 6]
+Output [1]: [d_date_sk#20]
 
 (34) CometBroadcastHashJoin
-Left output [3]: [ctr_customer_sk#11, ctr_state#12, ctr_total_return#13]
-Right output [2]: [(avg(ctr_total_return) * 1.2)#27, ctr_state#23]
-Arguments: [ctr_state#12], [ctr_state#23], Inner, (cast(ctr_total_return#13 as decimal(24,7)) > (avg(ctr_total_return) * 1.2)#27), BuildRight
+Left output [4]: [wr_returning_customer_sk#15, wr_returning_addr_sk#16, wr_return_amt#17, wr_returned_date_sk#18]
+Right output [1]: [d_date_sk#20]
+Arguments: [wr_returned_date_sk#18], [d_date_sk#20], Inner, BuildRight
 
 (35) CometProject
-Input [5]: [ctr_customer_sk#11, ctr_state#12, ctr_total_return#13, (avg(ctr_total_return) * 1.2)#27, ctr_state#23]
+Input [5]: [wr_returning_customer_sk#15, wr_returning_addr_sk#16, wr_return_amt#17, wr_returned_date_sk#18, d_date_sk#20]
+Arguments: [wr_returning_customer_sk#15, wr_returning_addr_sk#16, wr_return_amt#17], [wr_returning_customer_sk#15, wr_returning_addr_sk#16, wr_return_amt#17]
+
+(36) ReusedExchange [Reuses operator id: 25]
+Output [2]: [ca_address_sk#21, ca_state#22]
+
+(37) CometBroadcastHashJoin
+Left output [3]: [wr_returning_customer_sk#15, wr_returning_addr_sk#16, wr_return_amt#17]
+Right output [2]: [ca_address_sk#21, ca_state#22]
+Arguments: [wr_returning_addr_sk#16], [ca_address_sk#21], Inner, BuildRight
+
+(38) CometProject
+Input [5]: [wr_returning_customer_sk#15, wr_returning_addr_sk#16, wr_return_amt#17, ca_address_sk#21, ca_state#22]
+Arguments: [wr_returning_customer_sk#15, wr_return_amt#17, ca_state#22], [wr_returning_customer_sk#15, wr_return_amt#17, ca_state#22]
+
+(39) CometHashAggregate
+Input [3]: [wr_returning_customer_sk#15, wr_return_amt#17, ca_state#22]
+Keys [2]: [wr_returning_customer_sk#15, ca_state#22]
+Functions [1]: [partial_sum(UnscaledValue(wr_return_amt#17))]
+
+(40) CometExchange
+Input [3]: [wr_returning_customer_sk#15, ca_state#22, sum#23]
+Arguments: hashpartitioning(wr_returning_customer_sk#15, ca_state#22, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
+
+(41) CometHashAggregate
+Input [3]: [wr_returning_customer_sk#15, ca_state#22, sum#23]
+Keys [2]: [wr_returning_customer_sk#15, ca_state#22]
+Functions [1]: [sum(UnscaledValue(wr_return_amt#17))]
+
+(42) CometBroadcastExchange
+Input [2]: [ctr_state#24, ctr_total_return#25]
+Arguments: [ctr_state#24, ctr_total_return#25]
+
+(43) CometBroadcastHashJoin
+Left output [1]: [ctr_state#26]
+Right output [2]: [ctr_state#24, ctr_total_return#25]
+Arguments: [rpad(ctr_state#26, 2,  )], [rpad(ctr_state#24, 2,  )], Inner, BuildRight
+
+(44) CometProject
+Input [3]: [ctr_state#26, ctr_state#24, ctr_total_return#25]
+Arguments: [ctr_state#26, ctr_total_return#25], [ctr_state#26, ctr_total_return#25]
+
+(45) CometHashAggregate
+Input [2]: [ctr_state#26, ctr_total_return#25]
+Keys [1]: [ctr_state#26]
+Functions [1]: [partial_avg(ctr_total_return#25)]
+
+(46) CometHashAggregate
+Input [3]: [ctr_state#26, sum#27, count#28]
+Keys [1]: [ctr_state#26]
+Functions [1]: [avg(ctr_total_return#25)]
+
+(47) CometFilter
+Input [2]: [(avg(ctr_total_return) * 1.2)#29, ctr_state#26]
+Condition : isnotnull((avg(ctr_total_return) * 1.2)#29)
+
+(48) CometBroadcastExchange
+Input [2]: [(avg(ctr_total_return) * 1.2)#29, ctr_state#26]
+Arguments: [(avg(ctr_total_return) * 1.2)#29, ctr_state#26]
+
+(49) CometBroadcastHashJoin
+Left output [3]: [ctr_customer_sk#11, ctr_state#12, ctr_total_return#13]
+Right output [2]: [(avg(ctr_total_return) * 1.2)#29, ctr_state#26]
+Arguments: [coalesce(ctr_state#12, ), isnull(ctr_state#12)], [coalesce(ctr_state#26, ), isnull(ctr_state#26)], Inner, (cast(ctr_total_return#13 as decimal(24,7)) > (avg(ctr_total_return) * 1.2)#29), BuildRight
+
+(50) CometProject
+Input [5]: [ctr_customer_sk#11, ctr_state#12, ctr_total_return#13, (avg(ctr_total_return) * 1.2)#29, ctr_state#26]
 Arguments: [ctr_customer_sk#11, ctr_total_return#13], [ctr_customer_sk#11, ctr_total_return#13]
 
-(36) CometScan parquet spark_catalog.default.customer
-Output [14]: [c_customer_sk#28, c_customer_id#29, c_current_addr_sk#30, c_salutation#31, c_first_name#32, c_last_name#33, c_preferred_cust_flag#34, c_birth_day#35, c_birth_month#36, c_birth_year#37, c_birth_country#38, c_login#39, c_email_address#40, c_last_review_date#41]
+(51) CometScan parquet spark_catalog.default.customer
+Output [14]: [c_customer_sk#30, c_customer_id#31, c_current_addr_sk#32, c_salutation#33, c_first_name#34, c_last_name#35, c_preferred_cust_flag#36, c_birth_day#37, c_birth_month#38, c_birth_year#39, c_birth_country#40, c_login#41, c_email_address#42, c_last_review_date#43]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer]
 PushedFilters: [IsNotNull(c_customer_sk), IsNotNull(c_current_addr_sk)]
 ReadSchema: struct<c_customer_sk:int,c_customer_id:string,c_current_addr_sk:int,c_salutation:string,c_first_name:string,c_last_name:string,c_preferred_cust_flag:string,c_birth_day:int,c_birth_month:int,c_birth_year:int,c_birth_country:string,c_login:string,c_email_address:string,c_last_review_date:int>
 
-(37) CometFilter
-Input [14]: [c_customer_sk#28, c_customer_id#29, c_current_addr_sk#30, c_salutation#31, c_first_name#32, c_last_name#33, c_preferred_cust_flag#34, c_birth_day#35, c_birth_month#36, c_birth_year#37, c_birth_country#38, c_login#39, c_email_address#40, c_last_review_date#41]
-Condition : (isnotnull(c_customer_sk#28) AND isnotnull(c_current_addr_sk#30))
+(52) CometFilter
+Input [14]: [c_customer_sk#30, c_customer_id#31, c_current_addr_sk#32, c_salutation#33, c_first_name#34, c_last_name#35, c_preferred_cust_flag#36, c_birth_day#37, c_birth_month#38, c_birth_year#39, c_birth_country#40, c_login#41, c_email_address#42, c_last_review_date#43]
+Condition : (isnotnull(c_customer_sk#30) AND isnotnull(c_current_addr_sk#32))
 
-(38) CometBroadcastExchange
-Input [14]: [c_customer_sk#28, c_customer_id#29, c_current_addr_sk#30, c_salutation#31, c_first_name#32, c_last_name#33, c_preferred_cust_flag#34, c_birth_day#35, c_birth_month#36, c_birth_year#37, c_birth_country#38, c_login#39, c_email_address#40, c_last_review_date#41]
-Arguments: [c_customer_sk#28, c_customer_id#29, c_current_addr_sk#30, c_salutation#31, c_first_name#32, c_last_name#33, c_preferred_cust_flag#34, c_birth_day#35, c_birth_month#36, c_birth_year#37, c_birth_country#38, c_login#39, c_email_address#40, c_last_review_date#41]
+(53) CometBroadcastExchange
+Input [14]: [c_customer_sk#30, c_customer_id#31, c_current_addr_sk#32, c_salutation#33, c_first_name#34, c_last_name#35, c_preferred_cust_flag#36, c_birth_day#37, c_birth_month#38, c_birth_year#39, c_birth_country#40, c_login#41, c_email_address#42, c_last_review_date#43]
+Arguments: [c_customer_sk#30, c_customer_id#31, c_current_addr_sk#32, c_salutation#33, c_first_name#34, c_last_name#35, c_preferred_cust_flag#36, c_birth_day#37, c_birth_month#38, c_birth_year#39, c_birth_country#40, c_login#41, c_email_address#42, c_last_review_date#43]
 
-(39) CometBroadcastHashJoin
+(54) CometBroadcastHashJoin
 Left output [2]: [ctr_customer_sk#11, ctr_total_return#13]
-Right output [14]: [c_customer_sk#28, c_customer_id#29, c_current_addr_sk#30, c_salutation#31, c_first_name#32, c_last_name#33, c_preferred_cust_flag#34, c_birth_day#35, c_birth_month#36, c_birth_year#37, c_birth_country#38, c_login#39, c_email_address#40, c_last_review_date#41]
-Arguments: [ctr_customer_sk#11], [c_customer_sk#28], Inner, BuildRight
+Right output [14]: [c_customer_sk#30, c_customer_id#31, c_current_addr_sk#32, c_salutation#33, c_first_name#34, c_last_name#35, c_preferred_cust_flag#36, c_birth_day#37, c_birth_month#38, c_birth_year#39, c_birth_country#40, c_login#41, c_email_address#42, c_last_review_date#43]
+Arguments: [ctr_customer_sk#11], [c_customer_sk#30], Inner, BuildRight
 
-(40) CometProject
-Input [16]: [ctr_customer_sk#11, ctr_total_return#13, c_customer_sk#28, c_customer_id#29, c_current_addr_sk#30, c_salutation#31, c_first_name#32, c_last_name#33, c_preferred_cust_flag#34, c_birth_day#35, c_birth_month#36, c_birth_year#37, c_birth_country#38, c_login#39, c_email_address#40, c_last_review_date#41]
-Arguments: [ctr_total_return#13, c_customer_id#29, c_current_addr_sk#30, c_salutation#31, c_first_name#32, c_last_name#33, c_preferred_cust_flag#34, c_birth_day#35, c_birth_month#36, c_birth_year#37, c_birth_country#38, c_login#39, c_email_address#40, c_last_review_date#41], [ctr_total_return#13, c_customer_id#29, c_current_addr_sk#30, c_salutation#31, c_first_name#32, c_last_name#33, c_preferred_cust_flag#34, c_birth_day#35, c_birth_month#36, c_birth_year#37, c_birth_country#38, c_login#39, c_email_address#40, c_last_review_date#41]
+(55) CometProject
+Input [16]: [ctr_customer_sk#11, ctr_total_return#13, c_customer_sk#30, c_customer_id#31, c_current_addr_sk#32, c_salutation#33, c_first_name#34, c_last_name#35, c_preferred_cust_flag#36, c_birth_day#37, c_birth_month#38, c_birth_year#39, c_birth_country#40, c_login#41, c_email_address#42, c_last_review_date#43]
+Arguments: [ctr_total_return#13, c_customer_id#31, c_current_addr_sk#32, c_salutation#33, c_first_name#34, c_last_name#35, c_preferred_cust_flag#36, c_birth_day#37, c_birth_month#38, c_birth_year#39, c_birth_country#40, c_login#41, c_email_address#42, c_last_review_date#43], [ctr_total_return#13, c_customer_id#31, c_current_addr_sk#32, c_salutation#33, c_first_name#34, c_last_name#35, c_preferred_cust_flag#36, c_birth_day#37, c_birth_month#38, c_birth_year#39, c_birth_country#40, c_login#41, c_email_address#42, c_last_review_date#43]
 
-(41) CometScan parquet spark_catalog.default.customer_address
-Output [2]: [ca_address_sk#42, ca_state#43]
+(56) CometScan parquet spark_catalog.default.customer_address
+Output [2]: [ca_address_sk#44, ca_state#45]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [IsNotNull(ca_state), EqualTo(ca_state,GA), IsNotNull(ca_address_sk)]
+PushedFilters: [IsNotNull(ca_state), IsNotNull(ca_address_sk)]
 ReadSchema: struct<ca_address_sk:int,ca_state:string>
 
-(42) CometFilter
-Input [2]: [ca_address_sk#42, ca_state#43]
-Condition : ((isnotnull(ca_state#43) AND (ca_state#43 = GA)) AND isnotnull(ca_address_sk#42))
+(57) CometFilter
+Input [2]: [ca_address_sk#44, ca_state#45]
+Condition : ((isnotnull(ca_state#45) AND (rpad(ca_state#45, 2,  ) = GA)) AND isnotnull(ca_address_sk#44))
 
-(43) CometProject
-Input [2]: [ca_address_sk#42, ca_state#43]
-Arguments: [ca_address_sk#42], [ca_address_sk#42]
+(58) CometProject
+Input [2]: [ca_address_sk#44, ca_state#45]
+Arguments: [ca_address_sk#44], [ca_address_sk#44]
 
-(44) CometBroadcastExchange
-Input [1]: [ca_address_sk#42]
-Arguments: [ca_address_sk#42]
+(59) CometBroadcastExchange
+Input [1]: [ca_address_sk#44]
+Arguments: [ca_address_sk#44]
 
-(45) CometBroadcastHashJoin
-Left output [14]: [ctr_total_return#13, c_customer_id#29, c_current_addr_sk#30, c_salutation#31, c_first_name#32, c_last_name#33, c_preferred_cust_flag#34, c_birth_day#35, c_birth_month#36, c_birth_year#37, c_birth_country#38, c_login#39, c_email_address#40, c_last_review_date#41]
-Right output [1]: [ca_address_sk#42]
-Arguments: [c_current_addr_sk#30], [ca_address_sk#42], Inner, BuildRight
+(60) CometBroadcastHashJoin
+Left output [14]: [ctr_total_return#13, c_customer_id#31, c_current_addr_sk#32, c_salutation#33, c_first_name#34, c_last_name#35, c_preferred_cust_flag#36, c_birth_day#37, c_birth_month#38, c_birth_year#39, c_birth_country#40, c_login#41, c_email_address#42, c_last_review_date#43]
+Right output [1]: [ca_address_sk#44]
+Arguments: [c_current_addr_sk#32], [ca_address_sk#44], Inner, BuildRight
 
-(46) CometProject
-Input [15]: [ctr_total_return#13, c_customer_id#29, c_current_addr_sk#30, c_salutation#31, c_first_name#32, c_last_name#33, c_preferred_cust_flag#34, c_birth_day#35, c_birth_month#36, c_birth_year#37, c_birth_country#38, c_login#39, c_email_address#40, c_last_review_date#41, ca_address_sk#42]
-Arguments: [c_customer_id#29, c_salutation#31, c_first_name#32, c_last_name#33, c_preferred_cust_flag#34, c_birth_day#35, c_birth_month#36, c_birth_year#37, c_birth_country#38, c_login#39, c_email_address#40, c_last_review_date#41, ctr_total_return#13], [c_customer_id#29, c_salutation#31, c_first_name#32, c_last_name#33, c_preferred_cust_flag#34, c_birth_day#35, c_birth_month#36, c_birth_year#37, c_birth_country#38, c_login#39, c_email_address#40, c_last_review_date#41, ctr_total_return#13]
+(61) CometProject
+Input [15]: [ctr_total_return#13, c_customer_id#31, c_current_addr_sk#32, c_salutation#33, c_first_name#34, c_last_name#35, c_preferred_cust_flag#36, c_birth_day#37, c_birth_month#38, c_birth_year#39, c_birth_country#40, c_login#41, c_email_address#42, c_last_review_date#43, ca_address_sk#44]
+Arguments: [c_customer_id#31, c_salutation#33, c_first_name#34, c_last_name#35, c_preferred_cust_flag#36, c_birth_day#37, c_birth_month#38, c_birth_year#39, c_birth_country#40, c_login#41, c_email_address#42, c_last_review_date#43, ctr_total_return#13], [c_customer_id#31, c_salutation#33, c_first_name#34, c_last_name#35, c_preferred_cust_flag#36, c_birth_day#37, c_birth_month#38, c_birth_year#39, c_birth_country#40, c_login#41, c_email_address#42, c_last_review_date#43, ctr_total_return#13]
 
-(47) CometTakeOrderedAndProject
-Input [13]: [c_customer_id#29, c_salutation#31, c_first_name#32, c_last_name#33, c_preferred_cust_flag#34, c_birth_day#35, c_birth_month#36, c_birth_year#37, c_birth_country#38, c_login#39, c_email_address#40, c_last_review_date#41, ctr_total_return#13]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[c_customer_id#29 ASC NULLS FIRST,c_salutation#31 ASC NULLS FIRST,c_first_name#32 ASC NULLS FIRST,c_last_name#33 ASC NULLS FIRST,c_preferred_cust_flag#34 ASC NULLS FIRST,c_birth_day#35 ASC NULLS FIRST,c_birth_month#36 ASC NULLS FIRST,c_birth_year#37 ASC NULLS FIRST,c_birth_country#38 ASC NULLS FIRST,c_login#39 ASC NULLS FIRST,c_email_address#40 ASC NULLS FIRST,c_last_review_date#41 ASC NULLS FIRST,ctr_total_return#13 ASC NULLS FIRST], output=[c_customer_id#29,c_salutation#31,c_first_name#32,c_last_name#33,c_preferred_cust_flag#34,c_birth_day#35,c_birth_month#36,c_birth_year#37,c_birth_country#38,c_login#39,c_email_address#40,c_last_review_date#41,ctr_total_return#13]), [c_customer_id#29, c_salutation#31, c_first_name#32, c_last_name#33, c_preferred_cust_flag#34, c_birth_day#35, c_birth_month#36, c_birth_year#37, c_birth_country#38, c_login#39, c_email_address#40, c_last_review_date#41, ctr_total_return#13], 100, [c_customer_id#29 ASC NULLS FIRST, c_salutation#31 ASC NULLS FIRST, c_first_name#32 ASC NULLS FIRST, c_last_name#33 ASC NULLS FIRST, c_preferred_cust_flag#34 ASC NULLS FIRST, c_birth_day#35 ASC NULLS FIRST, c_birth_month#36 ASC NULLS FIRST, c_birth_year#37 ASC NULLS FIRST, c_birth_country#38 ASC NULLS FIRST, c_login#39 ASC NULLS FIRST, c_email_address#40 ASC NULLS FIRST, c_last_review_date#41 ASC NULLS FIRST, ctr_total_return#13 ASC NULLS FIRST], [c_customer_id#29, c_salutation#31, c_first_name#32, c_last_name#33, c_preferred_cust_flag#34, c_birth_day#35, c_birth_month#36, c_birth_year#37, c_birth_country#38, c_login#39, c_email_address#40, c_last_review_date#41, ctr_total_return#13]
+(62) CometTakeOrderedAndProject
+Input [13]: [c_customer_id#31, c_salutation#33, c_first_name#34, c_last_name#35, c_preferred_cust_flag#36, c_birth_day#37, c_birth_month#38, c_birth_year#39, c_birth_country#40, c_login#41, c_email_address#42, c_last_review_date#43, ctr_total_return#13]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[c_customer_id#31 ASC NULLS FIRST,c_salutation#33 ASC NULLS FIRST,c_first_name#34 ASC NULLS FIRST,c_last_name#35 ASC NULLS FIRST,c_preferred_cust_flag#36 ASC NULLS FIRST,c_birth_day#37 ASC NULLS FIRST,c_birth_month#38 ASC NULLS FIRST,c_birth_year#39 ASC NULLS FIRST,c_birth_country#40 ASC NULLS FIRST,c_login#41 ASC NULLS FIRST,c_email_address#42 ASC NULLS FIRST,c_last_review_date#43 ASC NULLS FIRST,ctr_total_return#13 ASC NULLS FIRST], output=[c_customer_id#31,c_salutation#33,c_first_name#34,c_last_name#35,c_preferred_cust_flag#36,c_birth_day#37,c_birth_month#38,c_birth_year#39,c_birth_country#40,c_login#41,c_email_address#42,c_last_review_date#43,ctr_total_return#13]), [c_customer_id#31, c_salutation#33, c_first_name#34, c_last_name#35, c_preferred_cust_flag#36, c_birth_day#37, c_birth_month#38, c_birth_year#39, c_birth_country#40, c_login#41, c_email_address#42, c_last_review_date#43, ctr_total_return#13], 100, [c_customer_id#31 ASC NULLS FIRST, c_salutation#33 ASC NULLS FIRST, c_first_name#34 ASC NULLS FIRST, c_last_name#35 ASC NULLS FIRST, c_preferred_cust_flag#36 ASC NULLS FIRST, c_birth_day#37 ASC NULLS FIRST, c_birth_month#38 ASC NULLS FIRST, c_birth_year#39 ASC NULLS FIRST, c_birth_country#40 ASC NULLS FIRST, c_login#41 ASC NULLS FIRST, c_email_address#42 ASC NULLS FIRST, c_last_review_date#43 ASC NULLS FIRST, ctr_total_return#13 ASC NULLS FIRST], [c_customer_id#31, c_salutation#33, c_first_name#34, c_last_name#35, c_preferred_cust_flag#36, c_birth_day#37, c_birth_month#38, c_birth_year#39, c_birth_country#40, c_login#41, c_email_address#42, c_last_review_date#43, ctr_total_return#13]
 
-(48) CometColumnarToRow [codegen id : 1]
-Input [13]: [c_customer_id#29, c_salutation#31, c_first_name#32, c_last_name#33, c_preferred_cust_flag#34, c_birth_day#35, c_birth_month#36, c_birth_year#37, c_birth_country#38, c_login#39, c_email_address#40, c_last_review_date#41, ctr_total_return#13]
+(63) CometColumnarToRow [codegen id : 1]
+Input [13]: [c_customer_id#31, c_salutation#33, c_first_name#34, c_last_name#35, c_preferred_cust_flag#36, c_birth_day#37, c_birth_month#38, c_birth_year#39, c_birth_country#40, c_login#41, c_email_address#42, c_last_review_date#43, ctr_total_return#13]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = wr_returned_date_sk#4 IN dynamicpruning#5
-BroadcastExchange (53)
-+- * CometColumnarToRow (52)
-   +- CometProject (51)
-      +- CometFilter (50)
-         +- CometScan parquet spark_catalog.default.date_dim (49)
+BroadcastExchange (68)
++- * CometColumnarToRow (67)
+   +- CometProject (66)
+      +- CometFilter (65)
+         +- CometScan parquet spark_catalog.default.date_dim (64)
 
 
-(49) CometScan parquet spark_catalog.default.date_dim
+(64) CometScan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#6, d_year#7]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), EqualTo(d_year,2002), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int>
 
-(50) CometFilter
+(65) CometFilter
 Input [2]: [d_date_sk#6, d_year#7]
 Condition : ((isnotnull(d_year#7) AND (d_year#7 = 2002)) AND isnotnull(d_date_sk#6))
 
-(51) CometProject
+(66) CometProject
 Input [2]: [d_date_sk#6, d_year#7]
 Arguments: [d_date_sk#6], [d_date_sk#6]
 
-(52) CometColumnarToRow [codegen id : 1]
+(67) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#6]
 
-(53) BroadcastExchange
+(68) BroadcastExchange
 Input [1]: [d_date_sk#6]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=4]
 
-Subquery:2 Hosting operator id = 18 Hosting Expression = wr_returned_date_sk#17 IN dynamicpruning#5
+Subquery:2 Hosting operator id = 18 Hosting Expression = wr_returned_date_sk#4 IN dynamicpruning#5
+
+Subquery:3 Hosting operator id = 31 Hosting Expression = wr_returned_date_sk#18 IN dynamicpruning#5
 
 

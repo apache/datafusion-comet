@@ -206,11 +206,11 @@ Input [8]: [i_category#20, i_brand#21, s_store_name#22, s_company_name#23, d_yea
 
 (36) BroadcastExchange
 Input [6]: [i_category#20, i_brand#21, s_store_name#22, s_company_name#23, sum_sales#29, rn#28]
-Arguments: HashedRelationBroadcastMode(List(input[0, string, true], input[1, string, true], input[2, string, true], input[3, string, true], (input[5, int, false] + 1)),false), [plan_id=4]
+Arguments: HashedRelationBroadcastMode(List(rpad(input[0, string, true], 50,  ), rpad(input[1, string, true], 50,  ), input[2, string, true], input[3, string, true], (input[5, int, false] + 1)),false), [plan_id=4]
 
 (37) BroadcastHashJoin [codegen id : 7]
-Left keys [5]: [i_category#3, i_brand#2, s_store_name#13, s_company_name#14, rn#18]
-Right keys [5]: [i_category#20, i_brand#21, s_store_name#22, s_company_name#23, (rn#28 + 1)]
+Left keys [5]: [rpad(i_category#3, 50,  ), rpad(i_brand#2, 50,  ), s_store_name#13, s_company_name#14, rn#18]
+Right keys [5]: [rpad(i_category#20, 50,  ), rpad(i_brand#21, 50,  ), s_store_name#22, s_company_name#23, (rn#28 + 1)]
 Join type: Inner
 Join condition: None
 
@@ -238,11 +238,11 @@ Input [8]: [i_category#30, i_brand#31, s_store_name#32, s_company_name#33, d_yea
 
 (44) BroadcastExchange
 Input [6]: [i_category#30, i_brand#31, s_store_name#32, s_company_name#33, sum_sales#37, rn#36]
-Arguments: HashedRelationBroadcastMode(List(input[0, string, true], input[1, string, true], input[2, string, true], input[3, string, true], (input[5, int, false] - 1)),false), [plan_id=5]
+Arguments: HashedRelationBroadcastMode(List(rpad(input[0, string, true], 50,  ), rpad(input[1, string, true], 50,  ), input[2, string, true], input[3, string, true], (input[5, int, false] - 1)),false), [plan_id=5]
 
 (45) BroadcastHashJoin [codegen id : 7]
-Left keys [5]: [i_category#3, i_brand#2, s_store_name#13, s_company_name#14, rn#18]
-Right keys [5]: [i_category#30, i_brand#31, s_store_name#32, s_company_name#33, (rn#36 - 1)]
+Left keys [5]: [rpad(i_category#3, 50,  ), rpad(i_brand#2, 50,  ), s_store_name#13, s_company_name#14, rn#18]
+Right keys [5]: [rpad(i_category#30, 50,  ), rpad(i_brand#31, 50,  ), s_store_name#32, s_company_name#33, (rn#36 - 1)]
 Join type: Inner
 Join condition: None
 

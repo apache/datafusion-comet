@@ -58,12 +58,12 @@ Condition : ((isnotnull(cs_bill_cdemo_sk#2) AND isnotnull(cs_bill_customer_sk#1)
 Output [4]: [cd_demo_sk#11, cd_gender#12, cd_education_status#13, cd_dep_count#14]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_demographics]
-PushedFilters: [IsNotNull(cd_gender), IsNotNull(cd_education_status), EqualTo(cd_gender,F), EqualTo(cd_education_status,Unknown             ), IsNotNull(cd_demo_sk)]
+PushedFilters: [IsNotNull(cd_gender), IsNotNull(cd_education_status), IsNotNull(cd_demo_sk)]
 ReadSchema: struct<cd_demo_sk:int,cd_gender:string,cd_education_status:string,cd_dep_count:int>
 
 (4) CometFilter
 Input [4]: [cd_demo_sk#11, cd_gender#12, cd_education_status#13, cd_dep_count#14]
-Condition : ((((isnotnull(cd_gender#12) AND isnotnull(cd_education_status#13)) AND (cd_gender#12 = F)) AND (cd_education_status#13 = Unknown             )) AND isnotnull(cd_demo_sk#11))
+Condition : ((((isnotnull(cd_gender#12) AND isnotnull(cd_education_status#13)) AND (rpad(cd_gender#12, 1,  ) = F)) AND (rpad(cd_education_status#13, 20,  ) = Unknown             )) AND isnotnull(cd_demo_sk#11))
 
 (5) CometProject
 Input [4]: [cd_demo_sk#11, cd_gender#12, cd_education_status#13, cd_dep_count#14]
@@ -138,12 +138,12 @@ Arguments: [cs_item_sk#3, cs_quantity#4, cs_list_price#5, cs_sales_price#6, cs_c
 Output [4]: [ca_address_sk#21, ca_county#22, ca_state#23, ca_country#24]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [In(ca_state, [IN,MS,ND,NM,OK,VA]), IsNotNull(ca_address_sk)]
+PushedFilters: [IsNotNull(ca_address_sk)]
 ReadSchema: struct<ca_address_sk:int,ca_county:string,ca_state:string,ca_country:string>
 
 (21) CometFilter
 Input [4]: [ca_address_sk#21, ca_county#22, ca_state#23, ca_country#24]
-Condition : (ca_state#23 IN (MS,IN,ND,OK,NM,VA) AND isnotnull(ca_address_sk#21))
+Condition : (rpad(ca_state#23, 2,  ) IN (MS,IN,ND,OK,NM,VA) AND isnotnull(ca_address_sk#21))
 
 (22) CometBroadcastExchange
 Input [4]: [ca_address_sk#21, ca_county#22, ca_state#23, ca_country#24]
