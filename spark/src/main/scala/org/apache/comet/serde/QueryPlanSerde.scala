@@ -70,7 +70,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     case s: StructType if allowComplex =>
       s.fields.map(_.dataType).forall(supportedDataType(_, allowComplex))
     case a: ArrayType if allowComplex =>
-      supportedDataType(a.elementType)
+      supportedDataType(a.elementType, allowComplex)
     case dt =>
       emitWarning(s"unsupported Spark data type: $dt")
       false
@@ -2822,7 +2822,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         fields.map(f => f.name).distinct.length == fields.length
       case ArrayType(ArrayType(_, _), _) => false // TODO: nested array is not supported
       case ArrayType(MapType(_, _, _), _) => false // TODO: map array element is not supported
-      case ArrayType(_, _) => false // TODO: array type is not supported
+      case ArrayType(elementType, _) =>
+        supportedDataType(elementType)
       case MapType(MapType(_, _, _), _, _) => false // TODO: nested map is not supported
       case MapType(_, MapType(_, _, _), _) => false
       case MapType(StructType(_), _, _) => false // TODO: struct map key/value is not supported
