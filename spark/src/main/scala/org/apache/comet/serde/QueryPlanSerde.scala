@@ -2807,8 +2807,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         fields.map(f => f.name).distinct.length == fields.length
       case ArrayType(ArrayType(_, _), _) => false // TODO: nested array is not supported
       case ArrayType(MapType(_, _, _), _) => false // TODO: map array element is not supported
-      case ArrayType(elementType, _) =>
-        supportedDataType(elementType)
+      case ArrayType(_, _) => false // TODO: array type is not supported
       case MapType(MapType(_, _, _), _, _) => false // TODO: nested map is not supported
       case MapType(_, MapType(_, _, _), _) => false
       case MapType(StructType(_), _, _) => false // TODO: struct map key/value is not supported
