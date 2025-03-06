@@ -490,7 +490,7 @@ object CometScanExec extends DataTypeSupport {
       // TODO add map
       dt match {
         case s: StructType => s.fields.map(_.dataType).forall(isTypeSupported)
-        case a: ArrayType => isTypeSupported(a.elementType)
+        // case a: ArrayType => isTypeSupported(a.elementType)
         case _ => false
       }
     } else {
