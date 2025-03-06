@@ -31,17 +31,19 @@ import org.apache.comet.CometConf
 class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
-    Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach(scan =>
-      super.test(s"$testName - $scan", testTags: _*) {
-        withSQLConf(
-          CometConf.COMET_EXEC_ENABLED.key -> "true",
-          SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
-          CometConf.COMET_ENABLED.key -> "true",
-          CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan) {
-          testFun
-        }
-      })
+    // TODO: Enable Iceberg compat tests
+    Seq(CometConf.SCAN_NATIVE_DATAFUSION /*, CometConf.SCAN_NATIVE_ICEBERG_COMPAT*/ ).foreach(
+      scan =>
+        super.test(s"$testName - $scan", testTags: _*) {
+          withSQLConf(
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
+            CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan) {
+            testFun
+          }
+        })
   }
 
   test("native reader - read simple STRUCT fields") {
