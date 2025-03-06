@@ -900,7 +900,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast TimestampType to LongType") {
-    // https://github.com/apache/datafusion-comet/issues/1441assume(!CometConf.isExperimentalNativeScan)
+    // https://github.com/apache/datafusion-comet/issues/1441
+    assume(!CometConf.isExperimentalNativeScan)
     assume(CometSparkSessionExtensions.isSpark33Plus)
     castTest(generateTimestampsExtended(), DataTypes.LongType)
   }
