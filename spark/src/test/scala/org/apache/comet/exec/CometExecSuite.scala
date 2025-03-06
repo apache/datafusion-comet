@@ -818,9 +818,8 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("explain native plan") {
-    assume(
-      !CometConf.isExperimentalNativeScan
-    ) // https://github.com/apache/datafusion-comet/issues/1441
+    // https://github.com/apache/datafusion-comet/issues/1441
+    assume(!CometConf.isExperimentalNativeScan)
     // there are no assertions in this test to prove that the explain feature
     // wrote the expected output to stdout, but we at least test that enabling
     // the config does not cause any exceptions.
