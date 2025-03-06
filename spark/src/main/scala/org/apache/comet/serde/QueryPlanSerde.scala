@@ -69,7 +69,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     case s: StructType if allowStruct =>
       s.fields.map(_.dataType).forall(supportedDataType(_, allowStruct))
     case a: ArrayType if allowComplex =>
-      supportedDataType(a.elementType)
+      supportedDataType(a.elementType, allowComplex)
     case dt =>
       emitWarning(s"unsupported Spark data type: $dt")
       false
