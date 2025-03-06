@@ -298,7 +298,7 @@ fn array_insert<O: OffsetSizeTrait>(
         _ => unreachable!(),
     };
     let new_array = GenericListArray::<O>::try_new(
-        Arc::new(Field::new("item", data_type.clone(), true)),
+        Arc::new(Field::new("element", data_type.clone(), true)),
         OffsetBuffer::new(new_offsets.into()),
         data,
         Some(NullBuffer::new(new_nulls.into())),
