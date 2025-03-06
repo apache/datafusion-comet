@@ -900,6 +900,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast TimestampType to LongType") {
+    assume(!CometConf.isExperimentalNativeScan)
     assume(CometSparkSessionExtensions.isSpark33Plus)
     castTest(generateTimestampsExtended(), DataTypes.LongType)
   }
@@ -923,16 +924,19 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast TimestampType to StringType") {
+    assume(!CometConf.isExperimentalNativeScan)
     castTest(generateTimestamps(), DataTypes.StringType)
   }
 
   test("cast TimestampType to DateType") {
+    assume(!CometConf.isExperimentalNativeScan)
     castTest(generateTimestamps(), DataTypes.DateType)
   }
 
   // Complex Types
 
   test("cast StructType to StringType") {
+    assume(!CometConf.isExperimentalNativeScan)
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")

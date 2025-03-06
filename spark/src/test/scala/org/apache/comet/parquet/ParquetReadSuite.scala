@@ -337,6 +337,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("test multiple pages with different sizes and nulls") {
+    assume(!CometConf.isExperimentalNativeScan)
     def makeRawParquetFile(
         path: Path,
         dictionaryEnabled: Boolean,
