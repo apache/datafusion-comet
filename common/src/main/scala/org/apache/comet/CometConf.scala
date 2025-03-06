@@ -101,7 +101,7 @@ object CometConf extends ShimCometConf {
       .getOrElse("COMET_PARQUET_SCAN_IMPL", SCAN_NATIVE_COMET)
       .toLowerCase(Locale.ROOT))
 
-  val isExperimentalNativeScan: Boolean = COMET_NATIVE_SCAN_IMPL.get() match {
+  def isExperimentalNativeScan: Boolean = COMET_NATIVE_SCAN_IMPL.get() match {
     case SCAN_NATIVE_DATAFUSION | SCAN_NATIVE_ICEBERG_COMPAT => true
     case SCAN_NATIVE_COMET => false
   }
