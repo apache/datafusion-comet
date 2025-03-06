@@ -111,7 +111,7 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
         {
             DatatypeStruct::List(info) => {
                 let field = Field::new(
-                    "item",
+                    "element",
                     to_arrow_datatype(info.element_type.as_ref().unwrap()),
                     info.contains_null,
                 );

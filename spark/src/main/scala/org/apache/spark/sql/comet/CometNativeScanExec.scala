@@ -182,7 +182,7 @@ object CometNativeScanExec extends DataTypeSupport {
       case null => null
     }
 
-    val newArgs = mapProductIterator(scanExec, transform(_))
+    val newArgs = mapProductIterator(scanExec, transform)
     val wrapped = scanExec.makeCopy(newArgs).asInstanceOf[FileSourceScanExec]
     val batchScanExec = CometNativeScanExec(
       nativeOp,
@@ -202,9 +202,10 @@ object CometNativeScanExec extends DataTypeSupport {
   }
 
   override def isAdditionallySupported(dt: DataType): Boolean = {
-    // TODO add array and map
+    // TODO add map
     dt match {
       case s: StructType => s.fields.map(_.dataType).forall(isTypeSupported)
+      case a: ArrayType => isTypeSupported(a.elementType)
       case _ => false
     }
   }
