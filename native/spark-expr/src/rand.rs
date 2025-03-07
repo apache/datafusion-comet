@@ -30,7 +30,6 @@ use std::sync::{Arc, Mutex};
 
 /// Adoption of the XOR-shift algorithm used in Apache Spark.
 /// See: https://github.com/apache/spark/blob/91f3fdd25852b43095dd5273358fc394ffd11b66/core/src/main/scala/org/apache/spark/util/random/XORShiftRandom.scala
-
 /// Normalization multiplier used in mapping from a random i64 value to the f64 interval [0.0, 1.0).
 /// Corresponds to the java implementation: https://github.com/openjdk/jdk/blob/07c9f7138affdf0d42ecdc30adcb854515569985/src/java.base/share/classes/java/util/Random.java#L302
 /// Due to the lack of hexadecimal float literals support in rust, the scientific notation is used instead.
