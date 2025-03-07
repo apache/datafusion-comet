@@ -76,6 +76,41 @@ jobs:
           # upload test reports only for java 17
           upload-test-reports: ${{ matrix.java_version == '17' }}
 
+  linux-test-native-datafusion-scan:
+    env:
+      COMET_PARQUET_SCAN_IMPL: "native_datafusion"
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        java_version: [17]
+        test-target: [rust, java]
+        spark-version: ['3.5']
+        scala-version: ['2.12']
+        is_push_event:
+          - ${{ github.event_name == 'push' }}
+      fail-fast: false
+    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}/${{ matrix.test-target }}-native-datafusion
+    runs-on: ${{ matrix.os }}
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{env.RUST_VERSION}}
+          jdk-version: ${{ matrix.java_version }}
+      - if: matrix.test-target == 'rust'
+        name: Rust test steps
+        uses: ./.github/actions/rust-test
+      - if: matrix.test-target == 'java'
+        name: Java test steps
+        uses: ./.github/actions/java-test
+        with:
+          maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
+          # upload test reports only for java 17
+          upload-test-reports: ${{ matrix.java_version == '17' }}
+
   linux-test-with-spark4_0:
     strategy:
       matrix:
