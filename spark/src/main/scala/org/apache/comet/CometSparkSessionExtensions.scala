@@ -145,7 +145,21 @@ class CometSparkSessionExtensions
 
           // we perform different type checking depending on which native scan is enabled
           COMET_NATIVE_SCAN_IMPL.get() match {
-            case SCAN_NATIVE_DATAFUSION | SCAN_NATIVE_ICEBERG_COMPAT =>
+            case SCAN_NATIVE_DATAFUSION =>
+              if (!CometNativeScanExec.isSchemaSupported(scanExec.requiredSchema)) {
+                withInfo(scanExec, s"requiredSchema ${scanExec.requiredSchema} not supported")
+                return scanExec
+              }
+              if (!CometNativeScanExec.isSchemaSupported(partitionSchema)) {
+                withInfo(scanExec, s"partitionSchema $partitionSchema not supported")
+                return scanExec
+              }
+              QueryPlanSerde.operator2Proto(scanExec) match {
+                case Some(nativeOp) => CometNativeScanExec(nativeOp, scanExec, scanExec.session)
+                case _ => CometScanExec(scanExec, session)
+              }
+
+            case SCAN_NATIVE_ICEBERG_COMPAT =>
               if (!CometNativeScanExec.isSchemaSupported(scanExec.requiredSchema)) {
                 withInfo(scanExec, s"requiredSchema ${scanExec.requiredSchema} not supported")
                 return scanExec
@@ -229,7 +243,7 @@ class CometSparkSessionExtensions
       plan.transformUp {
         case s: ShuffleExchangeExec
             if isCometPlan(s.child) && isCometNativeShuffleMode(conf) &&
-              QueryPlanSerde.supportPartitioning(s.child.output, s.outputPartitioning)._1 =>
+              QueryPlanSerde.nativeShuffleSupported(s.child.output, s)._1 =>
           logInfo("Comet extension enabled for Native Shuffle")
 
           // Switch to use Decimal128 regardless of precision, since Arrow native execution
@@ -242,7 +256,7 @@ class CometSparkSessionExtensions
         case s: ShuffleExchangeExec
             if (!s.child.supportsColumnar || isCometPlan(s.child)) && isCometJVMShuffleMode(
               conf) &&
-              QueryPlanSerde.supportPartitioningTypes(s.child.output, s.outputPartitioning)._1 &&
+              QueryPlanSerde.columnarShuffleSupported(s.child.output, s)._1 &&
               !isShuffleOperator(s.child) =>
           logInfo("Comet extension enabled for JVM Columnar Shuffle")
           CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
@@ -346,10 +360,7 @@ class CometSparkSessionExtensions
 
       plan.transformUp {
         // Fully native scan for V1
-        case scan: CometScanExec
-            if COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_DATAFUSION) =>
-          val nativeOp = QueryPlanSerde.operator2Proto(scan).get
-          CometNativeScanExec(nativeOp, scan.wrapped, scan.session)
+        case scan: CometNativeScanExec => scan
 
         // Comet JVM + native scan for V1 and V2
         case op if isCometScan(op) =>
@@ -790,7 +801,7 @@ class CometSparkSessionExtensions
         case s: ShuffleExchangeExec =>
           val nativePrecondition = isCometShuffleEnabled(conf) &&
             isCometNativeShuffleMode(conf) &&
-            QueryPlanSerde.supportPartitioning(s.child.output, s.outputPartitioning)._1
+            QueryPlanSerde.nativeShuffleSupported(s.child.output, s)._1
 
           val nativeShuffle: Option[SparkPlan] =
             if (nativePrecondition) {
@@ -824,7 +835,7 @@ class CometSparkSessionExtensions
             // If the child of ShuffleExchangeExec is also a ShuffleExchangeExec, we should not
             // convert it to CometColumnarShuffle,
             if (isCometShuffleEnabled(conf) && isCometJVMShuffleMode(conf) &&
-              QueryPlanSerde.supportPartitioningTypes(s.child.output, s.outputPartitioning)._1 &&
+              QueryPlanSerde.columnarShuffleSupported(s.child.output, s)._1 &&
               !isShuffleOperator(s.child)) {
 
               val newOp = QueryPlanSerde.operator2Proto(s)
@@ -858,16 +869,16 @@ class CometSparkSessionExtensions
             val columnarShuffleEnabled = isCometJVMShuffleMode(conf)
             val msg2 = createMessage(
               isShuffleEnabled && !columnarShuffleEnabled && !QueryPlanSerde
-                .supportPartitioning(s.child.output, outputPartitioning)
+                .nativeShuffleSupported(s.child.output, s)
                 ._1,
               "Native shuffle: " +
-                s"${QueryPlanSerde.supportPartitioning(s.child.output, outputPartitioning)._2}")
+                s"${QueryPlanSerde.nativeShuffleSupported(s.child.output, s)._2}")
             val typeInfo = QueryPlanSerde
-              .supportPartitioningTypes(s.child.output, outputPartitioning)
+              .columnarShuffleSupported(s.child.output, s)
               ._2
             val msg3 = createMessage(
               isShuffleEnabled && columnarShuffleEnabled && !QueryPlanSerde
-                .supportPartitioningTypes(s.child.output, outputPartitioning)
+                .columnarShuffleSupported(s.child.output, s)
                 ._1,
               "JVM shuffle: " +
                 s"$typeInfo")

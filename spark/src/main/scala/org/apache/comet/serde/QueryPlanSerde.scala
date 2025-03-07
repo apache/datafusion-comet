@@ -2800,12 +2800,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
   }
 
   /**
-   * Check if the datatypes of shuffle input are supported. This is used for Columnar shuffle
-   * which supports struct/array.
+   * Perform checks to determine if shuffle can be supported as Comet columnar shuffle.
    */
-  def supportPartitioningTypes(
+  def columnarShuffleSupported(
       inputs: Seq[Attribute],
-      partitioning: Partitioning): (Boolean, String) = {
+      s: ShuffleExchangeExec): (Boolean, String) = {
     def supportedDataType(dt: DataType): Boolean = dt match {
       case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
           _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: DecimalType |
@@ -2831,8 +2830,19 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         false
     }
 
+    // check input types
+    val inputTypes = s.child.inputSet.map(_.dataType).toSet
+    for (inputType <- inputTypes) {
+      if (!supportedDataType(inputType)) {
+        val msg = s"Input data type $inputType is not supported in columnar shuffle"
+        emitWarning(msg)
+        return (false, msg)
+      }
+    }
+
+    // check partitioning types
     var msg = ""
-    val supported = partitioning match {
+    val supported = s.outputPartitioning match {
       case HashPartitioning(expressions, _) =>
         val supported =
           expressions.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
@@ -2854,7 +2864,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         }
         supported
       case _ =>
-        msg = s"unsupported Spark partitioning: ${partitioning.getClass.getName}"
+        msg = s"unsupported Spark partitioning: ${s.outputPartitioning.getClass.getName}"
         false
     }
 
@@ -2867,11 +2877,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
   }
 
   /**
-   * Whether the given Spark partitioning is supported by Comet.
+   * Perform checks to determine if shuffle can be supported as Comet native shuffle.
    */
-  def supportPartitioning(
+  def nativeShuffleSupported(
       inputs: Seq[Attribute],
-      partitioning: Partitioning): (Boolean, String) = {
+      s: ShuffleExchangeExec): (Boolean, String) = {
     def supportedDataType(dt: DataType): Boolean = dt match {
       case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
           _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: DecimalType |
@@ -2882,8 +2892,19 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         false
     }
 
+    // check input types
+    val inputTypes = s.child.inputSet.map(_.dataType).toSet
+    for (inputType <- inputTypes) {
+      if (!supportedDataType(inputType)) {
+        val msg = s"Input data type $inputType is not supported in native shuffle"
+        emitWarning(msg)
+        return (false, msg)
+      }
+    }
+
+    // check partitioning types
     var msg = ""
-    val supported = partitioning match {
+    val supported = s.outputPartitioning match {
       case HashPartitioning(expressions, _) =>
         val supported =
           expressions.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
@@ -2895,7 +2916,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         supported
       case SinglePartition => inputs.forall(attr => supportedDataType(attr.dataType))
       case _ =>
-        msg = s"unsupported Spark partitioning: ${partitioning.getClass.getName}"
+        msg = s"unsupported Spark partitioning: ${s.outputPartitioning.getClass.getName}"
         false
     }
 
