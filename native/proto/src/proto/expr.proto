@@ -85,7 +85,12 @@ message Expr {
     BinaryExpr array_append = 58;
     ArrayInsert array_insert = 59;
     BinaryExpr array_contains = 60;
-    UnaryExpr rand = 61;
+    BinaryExpr array_remove = 61;
+    BinaryExpr array_intersect = 62;
+    ArrayJoin array_join = 63;
+    BinaryExpr arrays_overlap = 64;
+    MathExpr integral_divide = 65;
+    UnaryExpr rand = 66;
   }
 }
 
@@ -412,6 +417,12 @@ message ArrayInsert {
   Expr pos_expr = 2;
   Expr item_expr = 3;
   bool legacy_negative_index = 4;
+}
+
+message ArrayJoin {
+  Expr array_expr = 1;
+  Expr delimiter_expr = 2;
+  Expr null_replacement_expr = 3;
 }
 
 message DataType {

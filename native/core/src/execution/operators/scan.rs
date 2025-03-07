@@ -304,11 +304,7 @@ fn scan_schema(input_batch: &InputBatch, data_types: &[DataType]) -> SchemaRef {
                 .map(|(idx, c)| {
                     let datatype = ScanExec::unpack_dictionary_type(c.data_type());
                     // We don't use the field name. Put a placeholder.
-                    if matches!(datatype, DataType::Dictionary(_, _)) {
-                        Field::new_dict(format!("col_{}", idx), datatype, true, idx as i64, false)
-                    } else {
-                        Field::new(format!("col_{}", idx), datatype, true)
-                    }
+                    Field::new(format!("col_{}", idx), datatype, true)
                 })
                 .collect::<Vec<Field>>()
         }
@@ -408,7 +404,7 @@ struct ScanStream<'a> {
     cast_time: Time,
 }
 
-impl<'a> ScanStream<'a> {
+impl ScanStream<'_> {
     pub fn new(
         scan: ScanExec,
         schema: SchemaRef,
@@ -457,7 +453,7 @@ impl<'a> ScanStream<'a> {
     }
 }
 
-impl<'a> Stream for ScanStream<'a> {
+impl Stream for ScanStream<'_> {
     type Item = DataFusionResult<RecordBatch>;
 
     fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -489,7 +485,7 @@ impl<'a> Stream for ScanStream<'a> {
     }
 }
 
-impl<'a> RecordBatchStream for ScanStream<'a> {
+impl RecordBatchStream for ScanStream<'_> {
     /// Get the schema
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)

@@ -17,22 +17,14 @@
 
 //! Defines the External shuffle repartition plan.
 
-use crate::{
-    common::bit::ceil,
-    errors::{CometError, CometResult},
+use crate::execution::shuffle::builders::{
+    append_columns, make_batch, new_array_builders, slot_size,
 };
-use arrow::{datatypes::*, ipc::writer::StreamWriter};
+use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
 use async_trait::async_trait;
-use bytes::Buf;
-use crc32fast::Hasher;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::{
-    arrow::{
-        array::*,
-        datatypes::{DataType, SchemaRef, TimeUnit},
-        error::{ArrowError, Result as ArrowResult},
-        record_batch::RecordBatch,
-    },
+    arrow::{array::*, datatypes::SchemaRef, error::ArrowError, record_batch::RecordBatch},
     error::{DataFusionError, Result},
     execution::{
         context::TaskContext,
@@ -49,32 +41,22 @@ use datafusion::{
         RecordBatchStream, SendableRecordBatchStream, Statistics,
     },
 };
-use datafusion_comet_spark_expr::spark_hash::create_murmur3_hashes;
+use datafusion_comet_spark_expr::hash_funcs::murmur3::create_murmur3_hashes;
 use datafusion_physical_expr::EquivalenceProperties;
 use futures::executor::block_on;
-use futures::{lock::Mutex, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
-use simd_adler32::Adler32;
 use std::io::Error;
 use std::{
     any::Any,
     fmt,
     fmt::{Debug, Formatter},
     fs::{File, OpenOptions},
-    io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write},
-    path::Path,
+    io::{BufReader, BufWriter, Cursor, Seek, SeekFrom, Write},
     sync::Arc,
     task::{Context, Poll},
 };
 use tokio::time::Instant;
-
-/// The status of appending rows to a partition buffer.
-enum AppendRowStatus {
-    /// The difference in memory usage after appending rows
-    MemDiff(Result<isize>),
-    /// The index of the next row to append
-    StartIndex(usize),
-}
 
 /// The shuffle writer operator maps each input partition to M output partitions based on a
 /// partitioning scheme. No guarantees are made about the order of the resulting partitions.
@@ -90,15 +72,53 @@ pub struct ShuffleWriterExec {
     output_index_file: String,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
+    /// Cache for expensive-to-compute plan properties
     cache: PlanProperties,
+    /// The compression codec to use when compressing shuffle blocks
     codec: CompressionCodec,
+    /// When true, Comet will use a fast proprietary encoding rather than using Arrow IPC
+    enable_fast_encoding: bool,
+}
+
+impl ShuffleWriterExec {
+    /// Create a new ShuffleWriterExec
+    pub fn try_new(
+        input: Arc<dyn ExecutionPlan>,
+        partitioning: Partitioning,
+        codec: CompressionCodec,
+        output_data_file: String,
+        output_index_file: String,
+        enable_fast_encoding: bool,
+    ) -> Result<Self> {
+        let cache = PlanProperties::new(
+            EquivalenceProperties::new(Arc::clone(&input.schema())),
+            partitioning.clone(),
+            EmissionType::Final,
+            Boundedness::Bounded,
+        );
+
+        Ok(ShuffleWriterExec {
+            input,
+            partitioning,
+            metrics: ExecutionPlanMetricsSet::new(),
+            output_data_file,
+            output_index_file,
+            cache,
+            codec,
+            enable_fast_encoding,
+        })
+    }
 }
 
 impl DisplayAs for ShuffleWriterExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "ShuffleWriterExec: partitioning={:?}", self.partitioning)
+                write!(
+                    f,
+                    "ShuffleWriterExec: partitioning={:?}, fast_encoding={}, compression={:?}",
+                    self.partitioning, self.enable_fast_encoding, self.codec
+                )
             }
         }
     }
@@ -109,6 +129,22 @@ impl ExecutionPlan for ShuffleWriterExec {
     /// Return a reference to Any that can be used for downcasting
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn name(&self) -> &str {
+        "ShuffleWriterExec"
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
+
+    fn statistics(&self) -> Result<Statistics> {
+        self.input.statistics()
+    }
+
+    fn properties(&self) -> &PlanProperties {
+        &self.cache
     }
 
     /// Get the schema for this execution plan
@@ -131,6 +167,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                 self.codec.clone(),
                 self.output_data_file.clone(),
                 self.output_index_file.clone(),
+                self.enable_fast_encoding,
             )?)),
             _ => panic!("ShuffleWriterExec wrong number of children"),
         }
@@ -149,496 +186,53 @@ impl ExecutionPlan for ShuffleWriterExec {
             futures::stream::once(
                 external_shuffle(
                     input,
-                    partition,
                     self.output_data_file.clone(),
                     self.output_index_file.clone(),
                     self.partitioning.clone(),
                     metrics,
                     context,
                     self.codec.clone(),
+                    self.enable_fast_encoding,
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
             .try_flatten(),
         )))
     }
-
-    fn metrics(&self) -> Option<MetricsSet> {
-        Some(self.metrics.clone_inner())
-    }
-
-    fn statistics(&self) -> Result<Statistics> {
-        self.input.statistics()
-    }
-
-    fn properties(&self) -> &PlanProperties {
-        &self.cache
-    }
-
-    fn name(&self) -> &str {
-        "ShuffleWriterExec"
-    }
 }
 
-impl ShuffleWriterExec {
-    /// Create a new ShuffleWriterExec
-    pub fn try_new(
-        input: Arc<dyn ExecutionPlan>,
-        partitioning: Partitioning,
-        codec: CompressionCodec,
-        output_data_file: String,
-        output_index_file: String,
-    ) -> Result<Self> {
-        let cache = PlanProperties::new(
-            EquivalenceProperties::new(Arc::clone(&input.schema())),
-            partitioning.clone(),
-            EmissionType::Final,
-            Boundedness::Bounded,
-        );
-
-        Ok(ShuffleWriterExec {
-            input,
-            partitioning,
-            metrics: ExecutionPlanMetricsSet::new(),
-            output_data_file,
-            output_index_file,
-            cache,
-            codec,
-        })
-    }
-}
-
-struct PartitionBuffer {
-    /// The schema of batches to be partitioned.
-    schema: SchemaRef,
-    /// The "frozen" Arrow IPC bytes of active data. They are frozen when `flush` is called.
-    frozen: Vec<u8>,
-    /// Array builders for appending rows into buffering batches.
-    active: Vec<Box<dyn ArrayBuilder>>,
-    /// The estimation of memory size of active builders in bytes when they are filled.
-    active_slots_mem_size: usize,
-    /// Number of rows in active builders.
-    num_active_rows: usize,
-    /// The maximum number of rows in a batch. Once `num_active_rows` reaches `batch_size`,
-    /// the active array builders will be frozen and appended to frozen buffer `frozen`.
-    batch_size: usize,
-    /// Memory reservation for this partition buffer.
-    reservation: MemoryReservation,
-    codec: CompressionCodec,
-}
-
-impl PartitionBuffer {
-    fn new(
-        schema: SchemaRef,
-        batch_size: usize,
-        partition_id: usize,
-        runtime: &Arc<RuntimeEnv>,
-        codec: CompressionCodec,
-    ) -> Self {
-        let reservation = MemoryConsumer::new(format!("PartitionBuffer[{}]", partition_id))
-            .with_can_spill(true)
-            .register(&runtime.memory_pool);
-
-        Self {
-            schema,
-            frozen: vec![],
-            active: vec![],
-            active_slots_mem_size: 0,
-            num_active_rows: 0,
-            batch_size,
-            reservation,
-            codec,
-        }
-    }
-
-    /// Initializes active builders if necessary.
-    /// Returns error if memory reservation fails.
-    fn init_active_if_necessary(&mut self, metrics: &ShuffleRepartitionerMetrics) -> Result<isize> {
-        let mut mem_diff = 0;
-
-        if self.active.is_empty() {
-            // Estimate the memory size of active builders
-            if self.active_slots_mem_size == 0 {
-                self.active_slots_mem_size = self
-                    .schema
-                    .fields()
-                    .iter()
-                    .map(|field| slot_size(self.batch_size, field.data_type()))
-                    .sum::<usize>();
-            }
-
-            let mut mempool_timer = metrics.mempool_time.timer();
-            self.reservation.try_grow(self.active_slots_mem_size)?;
-            mempool_timer.stop();
-
-            let mut repart_timer = metrics.repart_time.timer();
-            self.active = new_array_builders(&self.schema, self.batch_size);
-            repart_timer.stop();
-
-            mem_diff += self.active_slots_mem_size as isize;
-        }
-        Ok(mem_diff)
-    }
-
-    /// Appends rows of specified indices from columns into active array builders.
-    fn append_rows(
-        &mut self,
-        columns: &[ArrayRef],
-        indices: &[usize],
-        start_index: usize,
-        metrics: &ShuffleRepartitionerMetrics,
-    ) -> AppendRowStatus {
-        let mut mem_diff = 0;
-        let mut start = start_index;
-
-        // lazy init because some partition may be empty
-        let init = self.init_active_if_necessary(metrics);
-        if init.is_err() {
-            return AppendRowStatus::StartIndex(start);
-        }
-        mem_diff += init.unwrap();
-
-        while start < indices.len() {
-            let end = (start + self.batch_size).min(indices.len());
-
-            let mut repart_timer = metrics.repart_time.timer();
-            self.active
-                .iter_mut()
-                .zip(columns)
-                .for_each(|(builder, column)| {
-                    append_columns(builder, column, &indices[start..end], column.data_type());
-                });
-            self.num_active_rows += end - start;
-            repart_timer.stop();
-
-            if self.num_active_rows >= self.batch_size {
-                let flush = self.flush(&metrics.ipc_time);
-                if let Err(e) = flush {
-                    return AppendRowStatus::MemDiff(Err(e));
-                }
-                mem_diff += flush.unwrap();
-
-                let init = self.init_active_if_necessary(metrics);
-                if init.is_err() {
-                    return AppendRowStatus::StartIndex(end);
-                }
-                mem_diff += init.unwrap();
-            }
-            start = end;
-        }
-        AppendRowStatus::MemDiff(Ok(mem_diff))
-    }
-
-    /// flush active data into frozen bytes
-    fn flush(&mut self, ipc_time: &Time) -> Result<isize> {
-        if self.num_active_rows == 0 {
-            return Ok(0);
-        }
-        let mut mem_diff = 0isize;
-
-        // active -> staging
-        let active = std::mem::take(&mut self.active);
-        let num_rows = self.num_active_rows;
-        self.num_active_rows = 0;
-        self.reservation.try_shrink(self.active_slots_mem_size)?;
-
-        let frozen_batch = make_batch(Arc::clone(&self.schema), active, num_rows)?;
-
-        let frozen_capacity_old = self.frozen.capacity();
-        let mut cursor = Cursor::new(&mut self.frozen);
-        cursor.seek(SeekFrom::End(0))?;
-        write_ipc_compressed(&frozen_batch, &mut cursor, &self.codec, ipc_time)?;
-
-        mem_diff += (self.frozen.capacity() - frozen_capacity_old) as isize;
-        Ok(mem_diff)
-    }
-}
-
-fn slot_size(len: usize, data_type: &DataType) -> usize {
-    match data_type {
-        DataType::Boolean => ceil(len, 8),
-        DataType::Int8 => len,
-        DataType::Int16 => len * 2,
-        DataType::Int32 => len * 4,
-        DataType::Int64 => len * 8,
-        DataType::UInt8 => len,
-        DataType::UInt16 => len * 2,
-        DataType::UInt32 => len * 4,
-        DataType::UInt64 => len * 8,
-        DataType::Float32 => len * 4,
-        DataType::Float64 => len * 8,
-        DataType::Date32 => len * 4,
-        DataType::Date64 => len * 8,
-        DataType::Time32(TimeUnit::Second) => len * 4,
-        DataType::Time32(TimeUnit::Millisecond) => len * 4,
-        DataType::Time64(TimeUnit::Microsecond) => len * 8,
-        DataType::Time64(TimeUnit::Nanosecond) => len * 8,
-        // TODO: this is not accurate, but should be good enough for now
-        DataType::Utf8 => len * 100 + len * 4,
-        DataType::LargeUtf8 => len * 100 + len * 8,
-        DataType::Decimal128(_, _) => len * 16,
-        DataType::Dictionary(key_type, value_type) => {
-            // TODO: this is not accurate, but should be good enough for now
-            slot_size(len, key_type.as_ref()) + slot_size(len / 10, value_type.as_ref())
-        }
-        // TODO: this is not accurate, but should be good enough for now
-        DataType::Binary => len * 100 + len * 4,
-        DataType::LargeBinary => len * 100 + len * 8,
-        DataType::FixedSizeBinary(s) => len * (*s as usize),
-        DataType::Timestamp(_, _) => len * 8,
-        dt => unimplemented!(
-            "{}",
-            format!("data type {dt} not supported in shuffle write")
-        ),
-    }
-}
-
-fn append_columns(
-    to: &mut Box<dyn ArrayBuilder>,
-    from: &Arc<dyn Array>,
-    indices: &[usize],
-    data_type: &DataType,
-) {
-    /// Append values from `from` to `to` using `indices`.
-    macro_rules! append {
-        ($arrowty:ident) => {{
-            type B = paste::paste! {[< $arrowty Builder >]};
-            type A = paste::paste! {[< $arrowty Array >]};
-            let t = to.as_any_mut().downcast_mut::<B>().unwrap();
-            let f = from.as_any().downcast_ref::<A>().unwrap();
-            for &i in indices {
-                if f.is_valid(i) {
-                    t.append_value(f.value(i));
-                } else {
-                    t.append_null();
-                }
-            }
-        }};
-    }
-
-    /// Some array builder (e.g. `FixedSizeBinary`) its `append_value` method returning
-    /// a `Result`.
-    macro_rules! append_unwrap {
-        ($arrowty:ident) => {{
-            type B = paste::paste! {[< $arrowty Builder >]};
-            type A = paste::paste! {[< $arrowty Array >]};
-            let t = to.as_any_mut().downcast_mut::<B>().unwrap();
-            let f = from.as_any().downcast_ref::<A>().unwrap();
-            for &i in indices {
-                if f.is_valid(i) {
-                    t.append_value(f.value(i)).unwrap();
-                } else {
-                    t.append_null();
-                }
-            }
-        }};
-    }
-
-    /// Appends values from a dictionary array to a dictionary builder.
-    macro_rules! append_dict {
-        ($kt:ty, $builder:ty, $dict_array:ty) => {{
-            let t = to.as_any_mut().downcast_mut::<$builder>().unwrap();
-            let f = from
-                .as_any()
-                .downcast_ref::<DictionaryArray<$kt>>()
-                .unwrap()
-                .downcast_dict::<$dict_array>()
-                .unwrap();
-            for &i in indices {
-                if f.is_valid(i) {
-                    t.append_value(f.value(i));
-                } else {
-                    t.append_null();
-                }
-            }
-        }};
-    }
-
-    macro_rules! append_dict_helper {
-        ($kt:ident, $ty:ty, $dict_array:ty) => {{
-            match $kt.as_ref() {
-                DataType::Int8 => append_dict!(Int8Type, PrimitiveDictionaryBuilder<Int8Type, $ty>, $dict_array),
-                DataType::Int16 => append_dict!(Int16Type, PrimitiveDictionaryBuilder<Int16Type, $ty>, $dict_array),
-                DataType::Int32 => append_dict!(Int32Type, PrimitiveDictionaryBuilder<Int32Type, $ty>, $dict_array),
-                DataType::Int64 => append_dict!(Int64Type, PrimitiveDictionaryBuilder<Int64Type, $ty>, $dict_array),
-                DataType::UInt8 => append_dict!(UInt8Type, PrimitiveDictionaryBuilder<UInt8Type, $ty>, $dict_array),
-                DataType::UInt16 => {
-                    append_dict!(UInt16Type, PrimitiveDictionaryBuilder<UInt16Type, $ty>, $dict_array)
-                }
-                DataType::UInt32 => {
-                    append_dict!(UInt32Type, PrimitiveDictionaryBuilder<UInt32Type, $ty>, $dict_array)
-                }
-                DataType::UInt64 => {
-                    append_dict!(UInt64Type, PrimitiveDictionaryBuilder<UInt64Type, $ty>, $dict_array)
-                }
-                _ => unreachable!("Unknown key type for dictionary"),
-            }
-        }};
-    }
-
-    macro_rules! primitive_append_dict_helper {
-        ($kt:ident, $vt:ident) => {
-            match $vt.as_ref() {
-                DataType::Int8 => {
-                    append_dict_helper!($kt, Int8Type, Int8Array)
-                }
-                DataType::Int16 => {
-                    append_dict_helper!($kt, Int16Type, Int16Array)
-                }
-                DataType::Int32 => {
-                    append_dict_helper!($kt, Int32Type, Int32Array)
-                }
-                DataType::Int64 => {
-                    append_dict_helper!($kt, Int64Type, Int64Array)
-                }
-                DataType::UInt8 => {
-                    append_dict_helper!($kt, UInt8Type, UInt8Array)
-                }
-                DataType::UInt16 => {
-                    append_dict_helper!($kt, UInt16Type, UInt16Array)
-                }
-                DataType::UInt32 => {
-                    append_dict_helper!($kt, UInt32Type, UInt32Array)
-                }
-                DataType::UInt64 => {
-                    append_dict_helper!($kt, UInt64Type, UInt64Array)
-                }
-                DataType::Float32 => {
-                    append_dict_helper!($kt, Float32Type, Float32Array)
-                }
-                DataType::Float64 => {
-                    append_dict_helper!($kt, Float64Type, Float64Array)
-                }
-                DataType::Decimal128(_, _) => {
-                    append_dict_helper!($kt, Decimal128Type, Decimal128Array)
-                }
-                DataType::Timestamp(TimeUnit::Microsecond, _) => {
-                    append_dict_helper!($kt, TimestampMicrosecondType, TimestampMicrosecondArray)
-                }
-                DataType::Date32 => {
-                    append_dict_helper!($kt, Date32Type, Date32Array)
-                }
-                DataType::Date64 => {
-                    append_dict_helper!($kt, Date64Type, Date64Array)
-                }
-                t => unimplemented!("{:?} is not supported for appending dictionary builder", t),
-            }
-        };
-    }
-
-    macro_rules! append_byte_dict {
-        ($kt:ident, $byte_type:ty, $array_type:ty) => {{
-            match $kt.as_ref() {
-                DataType::Int8 => {
-                    append_dict!(Int8Type, GenericByteDictionaryBuilder<Int8Type, $byte_type>, $array_type)
-                }
-                DataType::Int16 => {
-                    append_dict!(Int16Type,  GenericByteDictionaryBuilder<Int16Type, $byte_type>, $array_type)
-                }
-                DataType::Int32 => {
-                    append_dict!(Int32Type,  GenericByteDictionaryBuilder<Int32Type, $byte_type>, $array_type)
-                }
-                DataType::Int64 => {
-                    append_dict!(Int64Type,  GenericByteDictionaryBuilder<Int64Type, $byte_type>, $array_type)
-                }
-                DataType::UInt8 => {
-                    append_dict!(UInt8Type,  GenericByteDictionaryBuilder<UInt8Type, $byte_type>, $array_type)
-                }
-                DataType::UInt16 => {
-                    append_dict!(UInt16Type, GenericByteDictionaryBuilder<UInt16Type, $byte_type>, $array_type)
-                }
-                DataType::UInt32 => {
-                    append_dict!(UInt32Type, GenericByteDictionaryBuilder<UInt32Type, $byte_type>, $array_type)
-                }
-                DataType::UInt64 => {
-                    append_dict!(UInt64Type, GenericByteDictionaryBuilder<UInt64Type, $byte_type>, $array_type)
-                }
-                _ => unreachable!("Unknown key type for dictionary"),
-            }
-        }};
-    }
-
-    match data_type {
-        DataType::Boolean => append!(Boolean),
-        DataType::Int8 => append!(Int8),
-        DataType::Int16 => append!(Int16),
-        DataType::Int32 => append!(Int32),
-        DataType::Int64 => append!(Int64),
-        DataType::UInt8 => append!(UInt8),
-        DataType::UInt16 => append!(UInt16),
-        DataType::UInt32 => append!(UInt32),
-        DataType::UInt64 => append!(UInt64),
-        DataType::Float32 => append!(Float32),
-        DataType::Float64 => append!(Float64),
-        DataType::Date32 => append!(Date32),
-        DataType::Date64 => append!(Date64),
-        DataType::Time32(TimeUnit::Second) => append!(Time32Second),
-        DataType::Time32(TimeUnit::Millisecond) => append!(Time32Millisecond),
-        DataType::Time64(TimeUnit::Microsecond) => append!(Time64Microsecond),
-        DataType::Time64(TimeUnit::Nanosecond) => append!(Time64Nanosecond),
-        DataType::Timestamp(TimeUnit::Microsecond, _) => {
-            append!(TimestampMicrosecond)
-        }
-        DataType::Utf8 => append!(String),
-        DataType::LargeUtf8 => append!(LargeString),
-        DataType::Decimal128(_, _) => append!(Decimal128),
-        DataType::Dictionary(key_type, value_type) if value_type.is_primitive() => {
-            primitive_append_dict_helper!(key_type, value_type)
-        }
-        DataType::Dictionary(key_type, value_type)
-            if matches!(value_type.as_ref(), DataType::Utf8) =>
-        {
-            append_byte_dict!(key_type, GenericStringType<i32>, StringArray)
-        }
-        DataType::Dictionary(key_type, value_type)
-            if matches!(value_type.as_ref(), DataType::LargeUtf8) =>
-        {
-            append_byte_dict!(key_type, GenericStringType<i64>, LargeStringArray)
-        }
-        DataType::Dictionary(key_type, value_type)
-            if matches!(value_type.as_ref(), DataType::Binary) =>
-        {
-            append_byte_dict!(key_type, GenericBinaryType<i32>, BinaryArray)
-        }
-        DataType::Dictionary(key_type, value_type)
-            if matches!(value_type.as_ref(), DataType::LargeBinary) =>
-        {
-            append_byte_dict!(key_type, GenericBinaryType<i64>, LargeBinaryArray)
-        }
-        DataType::Binary => append!(Binary),
-        DataType::LargeBinary => append!(LargeBinary),
-        DataType::FixedSizeBinary(_) => append_unwrap!(FixedSizeBinary),
-        t => unimplemented!(
-            "{}",
-            format!("data type {} not supported in shuffle write", t)
-        ),
-    }
-}
-
-struct SpillInfo {
-    file: RefCountedTempFile,
-    offsets: Vec<u64>,
-}
-
-struct ShuffleRepartitioner {
+#[allow(clippy::too_many_arguments)]
+async fn external_shuffle(
+    mut input: SendableRecordBatchStream,
     output_data_file: String,
     output_index_file: String,
-    schema: SchemaRef,
-    buffered_partitions: Vec<PartitionBuffer>,
-    spills: Mutex<Vec<SpillInfo>>,
-    /// Sort expressions
-    /// Partitioning scheme to use
     partitioning: Partitioning,
-    num_output_partitions: usize,
-    runtime: Arc<RuntimeEnv>,
     metrics: ShuffleRepartitionerMetrics,
-    reservation: MemoryReservation,
-    /// Hashes for each row in the current batch
-    hashes_buf: Vec<u32>,
-    /// Partition ids for each row in the current batch
-    partition_ids: Vec<u64>,
-    /// The configured batch size
-    batch_size: usize,
+    context: Arc<TaskContext>,
+    codec: CompressionCodec,
+    enable_fast_encoding: bool,
+) -> Result<SendableRecordBatchStream> {
+    let schema = input.schema();
+    let mut repartitioner = ShuffleRepartitioner::try_new(
+        output_data_file,
+        output_index_file,
+        Arc::clone(&schema),
+        partitioning,
+        metrics,
+        context.runtime_env(),
+        context.session_config().batch_size(),
+        codec,
+        enable_fast_encoding,
+    )?;
+
+    while let Some(batch) = input.next().await {
+        // Block on the repartitioner to insert the batch and shuffle the rows
+        // into the corresponding partition buffer.
+        // Otherwise, pull the next batch from the input stream might overwrite the
+        // current batch in the repartitioner.
+        block_on(repartitioner.insert_batch(batch?))?;
+    }
+    repartitioner.shuffle_write().await
 }
 
 struct ShuffleRepartitionerMetrics {
@@ -652,7 +246,7 @@ struct ShuffleRepartitionerMetrics {
     mempool_time: Time,
 
     /// Time encoding batches to IPC format
-    ipc_time: Time,
+    encode_time: Time,
 
     /// Time spent writing to disk. Maps to "shuffleWriteTime" in Spark SQL Metrics.
     write_time: Time,
@@ -676,7 +270,7 @@ impl ShuffleRepartitionerMetrics {
             baseline: BaselineMetrics::new(metrics, partition),
             repart_time: MetricBuilder::new(metrics).subset_time("repart_time", partition),
             mempool_time: MetricBuilder::new(metrics).subset_time("mempool_time", partition),
-            ipc_time: MetricBuilder::new(metrics).subset_time("ipc_time", partition),
+            encode_time: MetricBuilder::new(metrics).subset_time("encode_time", partition),
             write_time: MetricBuilder::new(metrics).subset_time("write_time", partition),
             input_batches: MetricBuilder::new(metrics).counter("input_batches", partition),
             spill_count: MetricBuilder::new(metrics).spill_count(partition),
@@ -686,10 +280,27 @@ impl ShuffleRepartitionerMetrics {
     }
 }
 
+struct ShuffleRepartitioner {
+    output_data_file: String,
+    output_index_file: String,
+    schema: SchemaRef,
+    buffered_partitions: Vec<PartitionBuffer>,
+    /// Partitioning scheme to use
+    partitioning: Partitioning,
+    num_output_partitions: usize,
+    runtime: Arc<RuntimeEnv>,
+    metrics: ShuffleRepartitionerMetrics,
+    /// Hashes for each row in the current batch
+    hashes_buf: Vec<u32>,
+    /// Partition ids for each row in the current batch
+    partition_ids: Vec<u64>,
+    /// The configured batch size
+    batch_size: usize,
+}
+
 impl ShuffleRepartitioner {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        partition_id: usize,
+    pub fn try_new(
         output_data_file: String,
         output_index_file: String,
         schema: SchemaRef,
@@ -698,11 +309,9 @@ impl ShuffleRepartitioner {
         runtime: Arc<RuntimeEnv>,
         batch_size: usize,
         codec: CompressionCodec,
-    ) -> Self {
+        enable_fast_encoding: bool,
+    ) -> Result<Self> {
         let num_output_partitions = partitioning.partition_count();
-        let reservation = MemoryConsumer::new(format!("ShuffleRepartitioner[{}]", partition_id))
-            .with_can_spill(true)
-            .register(&runtime.memory_pool);
 
         let mut hashes_buf = Vec::with_capacity(batch_size);
         let mut partition_ids = Vec::with_capacity(batch_size);
@@ -714,31 +323,30 @@ impl ShuffleRepartitioner {
             partition_ids.set_len(batch_size);
         }
 
-        Self {
+        Ok(Self {
             output_data_file,
             output_index_file,
             schema: Arc::clone(&schema),
             buffered_partitions: (0..num_output_partitions)
                 .map(|partition_id| {
-                    PartitionBuffer::new(
+                    PartitionBuffer::try_new(
                         Arc::clone(&schema),
                         batch_size,
                         partition_id,
                         &runtime,
                         codec.clone(),
+                        enable_fast_encoding,
                     )
                 })
-                .collect::<Vec<_>>(),
-            spills: Mutex::new(vec![]),
+                .collect::<Result<Vec<_>>>()?,
             partitioning,
             num_output_partitions,
             runtime,
             metrics,
-            reservation,
             hashes_buf,
             partition_ids,
             batch_size,
-        }
+        })
     }
 
     /// Shuffles rows in input batch into corresponding partition buffer.
@@ -790,6 +398,8 @@ impl ShuffleRepartitioner {
             Partitioning::Hash(exprs, _) => {
                 let (partition_starts, shuffled_partition_ids): (Vec<usize>, Vec<usize>) = {
                     let mut timer = self.metrics.repart_time.timer();
+
+                    // evaluate partition expressions
                     let arrays = exprs
                         .iter()
                         .map(|expr| expr.evaluate(&input)?.into_array(input.num_rows()))
@@ -852,41 +462,12 @@ impl ShuffleRepartitioner {
                     .enumerate()
                     .filter(|(_, (start, end))| start < end)
                 {
-                    let mut mem_diff = self
-                        .append_rows_to_partition(
-                            input.columns(),
-                            &shuffled_partition_ids[start..end],
-                            partition_id,
-                        )
-                        .await?;
-
-                    if mem_diff > 0 {
-                        let mem_increase = mem_diff as usize;
-
-                        let try_grow = {
-                            let mut mempool_timer = self.metrics.mempool_time.timer();
-                            let result = self.reservation.try_grow(mem_increase);
-                            mempool_timer.stop();
-                            result
-                        };
-
-                        if try_grow.is_err() {
-                            self.spill().await?;
-                            let mut mempool_timer = self.metrics.mempool_time.timer();
-                            self.reservation.free();
-                            self.reservation.try_grow(mem_increase)?;
-                            mempool_timer.stop();
-                            mem_diff = 0;
-                        }
-                    }
-
-                    if mem_diff < 0 {
-                        let mem_used = self.reservation.size();
-                        let mem_decrease = mem_used.min(-mem_diff as usize);
-                        let mut mempool_timer = self.metrics.mempool_time.timer();
-                        self.reservation.shrink(mem_decrease);
-                        mempool_timer.stop();
-                    }
+                    self.append_rows_to_partition(
+                        input.columns(),
+                        &shuffled_partition_ids[start..end],
+                        partition_id,
+                    )
+                    .await?;
                 }
             }
             Partitioning::UnknownPartitioning(n) if *n == 1 => {
@@ -898,6 +479,9 @@ impl ShuffleRepartitioner {
                     buffered_partitions.len()
                 );
 
+                // TODO the single partition case could be optimized to avoid appending all
+                // rows from the batch into builders and then recreating the batch
+                // https://github.com/apache/datafusion-comet/issues/1453
                 let indices = (0..input.num_rows()).collect::<Vec<usize>>();
 
                 self.append_rows_to_partition(input.columns(), &indices, 0)
@@ -923,12 +507,9 @@ impl ShuffleRepartitioner {
         let mut output_batches: Vec<Vec<u8>> = vec![vec![]; num_output_partitions];
         let mut offsets = vec![0; num_output_partitions + 1];
         for i in 0..num_output_partitions {
-            buffered_partitions[i].flush(&self.metrics.ipc_time)?;
+            buffered_partitions[i].flush(&self.metrics)?;
             output_batches[i] = std::mem::take(&mut buffered_partitions[i].frozen);
         }
-
-        let mut spills = self.spills.lock().await;
-        let output_spills = spills.drain(..).collect::<Vec<_>>();
 
         let data_file = self.output_data_file.clone();
         let index_file = self.output_index_file.clone();
@@ -949,16 +530,13 @@ impl ShuffleRepartitioner {
             output_data.write_all(&output_batches[i])?;
             output_batches[i].clear();
 
-            // append partition in each spills
-            for spill in &output_spills {
-                let length = spill.offsets[i + 1] - spill.offsets[i];
-                if length > 0 {
-                    let mut spill_file =
-                        BufReader::new(File::open(spill.file.path()).map_err(Self::to_df_err)?);
-                    spill_file.seek(SeekFrom::Start(spill.offsets[i]))?;
-                    std::io::copy(&mut spill_file.take(length), &mut output_data)
-                        .map_err(Self::to_df_err)?;
-                }
+            // if we wrote a spill file for this partition then copy the
+            // contents into the shuffle file
+            if let Some(spill_data) = self.buffered_partitions[i].spill_file.as_ref() {
+                let mut spill_file = BufReader::new(
+                    File::open(spill_data.temp_file.path()).map_err(Self::to_df_err)?,
+                );
+                std::io::copy(&mut spill_file, &mut output_data).map_err(Self::to_df_err)?;
             }
         }
         output_data.flush()?;
@@ -979,11 +557,6 @@ impl ShuffleRepartitioner {
 
         write_time.stop();
 
-        let mut mempool_timer = self.metrics.mempool_time.timer();
-        let used = self.reservation.size();
-        self.reservation.shrink(used);
-        mempool_timer.stop();
-
         elapsed_compute.stop();
 
         // shuffle writer always has empty output
@@ -995,7 +568,10 @@ impl ShuffleRepartitioner {
     }
 
     fn used(&self) -> usize {
-        self.reservation.size()
+        self.buffered_partitions
+            .iter()
+            .map(|b| b.reservation.size())
+            .sum()
     }
 
     fn spilled_bytes(&self) -> usize {
@@ -1010,7 +586,7 @@ impl ShuffleRepartitioner {
         self.metrics.data_size.value()
     }
 
-    async fn spill(&mut self) -> Result<usize> {
+    async fn spill(&mut self) -> Result<()> {
         log::debug!(
             "ShuffleRepartitioner spilling shuffle data of {} to disk while inserting ({} time(s) so far)",
             self.used(),
@@ -1019,33 +595,17 @@ impl ShuffleRepartitioner {
 
         // we could always get a chance to free some memory as long as we are holding some
         if self.buffered_partitions.is_empty() {
-            return Ok(0);
+            return Ok(());
         }
 
-        let mut timer = self.metrics.write_time.timer();
+        let mut spilled_bytes = 0;
+        for p in &mut self.buffered_partitions {
+            spilled_bytes += p.spill(&self.runtime, &self.metrics)?;
+        }
 
-        let spillfile = self
-            .runtime
-            .disk_manager
-            .create_tmp_file("shuffle writer spill")?;
-        let offsets = spill_into(
-            &mut self.buffered_partitions,
-            spillfile.path(),
-            self.num_output_partitions,
-            &self.metrics.ipc_time,
-        )?;
-
-        timer.stop();
-
-        let mut spills = self.spills.lock().await;
-        let used = self.reservation.size();
         self.metrics.spill_count.add(1);
-        self.metrics.spilled_bytes.add(used);
-        spills.push(SpillInfo {
-            file: spillfile,
-            offsets,
-        });
-        Ok(used)
+        self.metrics.spilled_bytes.add(spilled_bytes);
+        Ok(())
     }
 
     /// Appends rows of specified indices from columns into active array builders in the specified partition.
@@ -1054,35 +614,28 @@ impl ShuffleRepartitioner {
         columns: &[ArrayRef],
         indices: &[usize],
         partition_id: usize,
-    ) -> Result<isize> {
-        let mut mem_diff = 0;
-
+    ) -> Result<()> {
         let output = &mut self.buffered_partitions[partition_id];
 
         // If the range of indices is not big enough, just appending the rows into
         // active array builders instead of directly adding them as a record batch.
         let mut start_index: usize = 0;
-        let mut output_ret = output.append_rows(columns, indices, start_index, &self.metrics);
+        let mut output_ret = output.append_rows(columns, indices, start_index, &self.metrics)?;
 
         loop {
             match output_ret {
-                AppendRowStatus::MemDiff(l) => {
-                    mem_diff += l?;
+                AppendRowStatus::Appended => {
                     break;
                 }
                 AppendRowStatus::StartIndex(new_start) => {
-                    // Cannot allocate enough memory for the array builders in the partition,
-                    // spill partitions and retry.
+                    // Cannot allocate enough memory for the array builders in this partition,
+                    // spill all partitions and retry.
                     self.spill().await?;
 
-                    let mut mempool_timer = self.metrics.mempool_time.timer();
-                    self.reservation.free();
-                    let output = &mut self.buffered_partitions[partition_id];
-                    output.reservation.free();
-                    mempool_timer.stop();
-
                     start_index = new_start;
-                    output_ret = output.append_rows(columns, indices, start_index, &self.metrics);
+                    let output = &mut self.buffered_partitions[partition_id];
+                    output_ret =
+                        output.append_rows(columns, indices, start_index, &self.metrics)?;
 
                     if let AppendRowStatus::StartIndex(new_start) = output_ret {
                         if new_start == start_index {
@@ -1098,41 +651,8 @@ impl ShuffleRepartitioner {
             }
         }
 
-        Ok(mem_diff)
+        Ok(())
     }
-}
-
-/// consume the `buffered_partitions` and do spill into a single temp shuffle output file
-fn spill_into(
-    buffered_partitions: &mut [PartitionBuffer],
-    path: &Path,
-    num_output_partitions: usize,
-    ipc_time: &Time,
-) -> Result<Vec<u64>> {
-    let mut output_batches: Vec<Vec<u8>> = vec![vec![]; num_output_partitions];
-
-    for i in 0..num_output_partitions {
-        buffered_partitions[i].flush(ipc_time)?;
-        output_batches[i] = std::mem::take(&mut buffered_partitions[i].frozen);
-    }
-    let path = path.to_owned();
-
-    let mut offsets = vec![0; num_output_partitions + 1];
-    let mut spill_data = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)
-        .map_err(|e| DataFusionError::Execution(format!("Error occurred while spilling {}", e)))?;
-
-    for i in 0..num_output_partitions {
-        offsets[i] = spill_data.stream_position()?;
-        spill_data.write_all(&output_batches[i])?;
-        output_batches[i].clear();
-    }
-    // add one extra offset at last to ease partition length computation
-    offsets[num_output_partitions] = spill_data.stream_position()?;
-    Ok(offsets)
 }
 
 impl Debug for ShuffleRepartitioner {
@@ -1146,459 +666,206 @@ impl Debug for ShuffleRepartitioner {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn external_shuffle(
-    mut input: SendableRecordBatchStream,
-    partition_id: usize,
-    output_data_file: String,
-    output_index_file: String,
-    partitioning: Partitioning,
-    metrics: ShuffleRepartitionerMetrics,
-    context: Arc<TaskContext>,
-    codec: CompressionCodec,
-) -> Result<SendableRecordBatchStream> {
-    let schema = input.schema();
-    let mut repartitioner = ShuffleRepartitioner::new(
-        partition_id,
-        output_data_file,
-        output_index_file,
-        Arc::clone(&schema),
-        partitioning,
-        metrics,
-        context.runtime_env(),
-        context.session_config().batch_size(),
-        codec,
-    );
-
-    while let Some(batch) = input.next().await {
-        // Block on the repartitioner to insert the batch and shuffle the rows
-        // into the corresponding partition buffer.
-        // Otherwise, pull the next batch from the input stream might overwrite the
-        // current batch in the repartitioner.
-        block_on(repartitioner.insert_batch(batch?))?;
-    }
-    repartitioner.shuffle_write().await
+/// The status of appending rows to a partition buffer.
+#[derive(Debug)]
+enum AppendRowStatus {
+    /// Rows were appended
+    Appended,
+    /// Not all rows were appended due to lack of available memory
+    StartIndex(usize),
 }
 
-fn new_array_builders(schema: &SchemaRef, batch_size: usize) -> Vec<Box<dyn ArrayBuilder>> {
-    schema
-        .fields()
-        .iter()
-        .map(|field| {
-            let dt = field.data_type();
-            if matches!(dt, DataType::Dictionary(_, _)) {
-                make_dict_builder(dt, batch_size)
-            } else {
-                make_builder(dt, batch_size)
-            }
-        })
-        .collect::<Vec<_>>()
-}
-
-macro_rules! primitive_dict_builder_inner_helper {
-    ($kt:ty, $vt:ty, $capacity:ident) => {
-        Box::new(PrimitiveDictionaryBuilder::<$kt, $vt>::with_capacity(
-            $capacity,
-            $capacity / 100,
-        ))
-    };
-}
-
-macro_rules! primitive_dict_builder_helper {
-    ($kt:ty, $vt:ident, $capacity:ident) => {
-        match $vt.as_ref() {
-            DataType::Int8 => {
-                primitive_dict_builder_inner_helper!($kt, Int8Type, $capacity)
-            }
-            DataType::Int16 => {
-                primitive_dict_builder_inner_helper!($kt, Int16Type, $capacity)
-            }
-            DataType::Int32 => {
-                primitive_dict_builder_inner_helper!($kt, Int32Type, $capacity)
-            }
-            DataType::Int64 => {
-                primitive_dict_builder_inner_helper!($kt, Int64Type, $capacity)
-            }
-            DataType::UInt8 => {
-                primitive_dict_builder_inner_helper!($kt, UInt8Type, $capacity)
-            }
-            DataType::UInt16 => {
-                primitive_dict_builder_inner_helper!($kt, UInt16Type, $capacity)
-            }
-            DataType::UInt32 => {
-                primitive_dict_builder_inner_helper!($kt, UInt32Type, $capacity)
-            }
-            DataType::UInt64 => {
-                primitive_dict_builder_inner_helper!($kt, UInt64Type, $capacity)
-            }
-            DataType::Float32 => {
-                primitive_dict_builder_inner_helper!($kt, Float32Type, $capacity)
-            }
-            DataType::Float64 => {
-                primitive_dict_builder_inner_helper!($kt, Float64Type, $capacity)
-            }
-            DataType::Decimal128(p, s) => {
-                let keys_builder = PrimitiveBuilder::<$kt>::new();
-                let values_builder =
-                    Decimal128Builder::new().with_data_type(DataType::Decimal128(*p, *s));
-                Box::new(
-                    PrimitiveDictionaryBuilder::<$kt, Decimal128Type>::new_from_empty_builders(
-                        keys_builder,
-                        values_builder,
-                    ),
-                )
-            }
-            DataType::Timestamp(TimeUnit::Microsecond, timezone) => {
-                let keys_builder = PrimitiveBuilder::<$kt>::new();
-                let values_builder = TimestampMicrosecondBuilder::new()
-                    .with_data_type(DataType::Timestamp(TimeUnit::Microsecond, timezone.clone()));
-                Box::new(
-                    PrimitiveDictionaryBuilder::<$kt, TimestampMicrosecondType>::new_from_empty_builders(
-                        keys_builder,
-                        values_builder,
-                    ),
-                )
-            }
-            DataType::Date32 => {
-                primitive_dict_builder_inner_helper!($kt, Date32Type, $capacity)
-            }
-            DataType::Date64 => {
-                primitive_dict_builder_inner_helper!($kt, Date64Type, $capacity)
-            }
-            t => unimplemented!("{:?} is not supported", t),
-        }
-    };
-}
-
-macro_rules! byte_dict_builder_inner_helper {
-    ($kt:ty, $capacity:ident, $builder:ident) => {
-        Box::new($builder::<$kt>::with_capacity(
-            $capacity,
-            $capacity / 100,
-            $capacity,
-        ))
-    };
-}
-
-/// Returns a dictionary array builder with capacity `capacity` that corresponds to the datatype
-/// `DataType` This function is useful to construct arrays from an arbitrary vectors with
-/// known/expected schema.
-/// TODO: move this to the upstream.
-fn make_dict_builder(datatype: &DataType, capacity: usize) -> Box<dyn ArrayBuilder> {
-    match datatype {
-        DataType::Dictionary(key_type, value_type) if value_type.is_primitive() => {
-            match key_type.as_ref() {
-                DataType::Int8 => primitive_dict_builder_helper!(Int8Type, value_type, capacity),
-                DataType::Int16 => primitive_dict_builder_helper!(Int16Type, value_type, capacity),
-                DataType::Int32 => primitive_dict_builder_helper!(Int32Type, value_type, capacity),
-                DataType::Int64 => primitive_dict_builder_helper!(Int64Type, value_type, capacity),
-                DataType::UInt8 => primitive_dict_builder_helper!(UInt8Type, value_type, capacity),
-                DataType::UInt16 => {
-                    primitive_dict_builder_helper!(UInt16Type, value_type, capacity)
-                }
-                DataType::UInt32 => {
-                    primitive_dict_builder_helper!(UInt32Type, value_type, capacity)
-                }
-                DataType::UInt64 => {
-                    primitive_dict_builder_helper!(UInt64Type, value_type, capacity)
-                }
-                _ => unreachable!(""),
-            }
-        }
-        DataType::Dictionary(key_type, value_type)
-            if matches!(value_type.as_ref(), DataType::Utf8) =>
-        {
-            match key_type.as_ref() {
-                DataType::Int8 => {
-                    byte_dict_builder_inner_helper!(Int8Type, capacity, StringDictionaryBuilder)
-                }
-                DataType::Int16 => {
-                    byte_dict_builder_inner_helper!(Int16Type, capacity, StringDictionaryBuilder)
-                }
-                DataType::Int32 => {
-                    byte_dict_builder_inner_helper!(Int32Type, capacity, StringDictionaryBuilder)
-                }
-                DataType::Int64 => {
-                    byte_dict_builder_inner_helper!(Int64Type, capacity, StringDictionaryBuilder)
-                }
-                DataType::UInt8 => {
-                    byte_dict_builder_inner_helper!(UInt8Type, capacity, StringDictionaryBuilder)
-                }
-                DataType::UInt16 => {
-                    byte_dict_builder_inner_helper!(UInt16Type, capacity, StringDictionaryBuilder)
-                }
-                DataType::UInt32 => {
-                    byte_dict_builder_inner_helper!(UInt32Type, capacity, StringDictionaryBuilder)
-                }
-                DataType::UInt64 => {
-                    byte_dict_builder_inner_helper!(UInt64Type, capacity, StringDictionaryBuilder)
-                }
-                _ => unreachable!(""),
-            }
-        }
-        DataType::Dictionary(key_type, value_type)
-            if matches!(value_type.as_ref(), DataType::LargeUtf8) =>
-        {
-            match key_type.as_ref() {
-                DataType::Int8 => byte_dict_builder_inner_helper!(
-                    Int8Type,
-                    capacity,
-                    LargeStringDictionaryBuilder
-                ),
-                DataType::Int16 => byte_dict_builder_inner_helper!(
-                    Int16Type,
-                    capacity,
-                    LargeStringDictionaryBuilder
-                ),
-                DataType::Int32 => byte_dict_builder_inner_helper!(
-                    Int32Type,
-                    capacity,
-                    LargeStringDictionaryBuilder
-                ),
-                DataType::Int64 => byte_dict_builder_inner_helper!(
-                    Int64Type,
-                    capacity,
-                    LargeStringDictionaryBuilder
-                ),
-                DataType::UInt8 => byte_dict_builder_inner_helper!(
-                    UInt8Type,
-                    capacity,
-                    LargeStringDictionaryBuilder
-                ),
-                DataType::UInt16 => {
-                    byte_dict_builder_inner_helper!(
-                        UInt16Type,
-                        capacity,
-                        LargeStringDictionaryBuilder
-                    )
-                }
-                DataType::UInt32 => {
-                    byte_dict_builder_inner_helper!(
-                        UInt32Type,
-                        capacity,
-                        LargeStringDictionaryBuilder
-                    )
-                }
-                DataType::UInt64 => {
-                    byte_dict_builder_inner_helper!(
-                        UInt64Type,
-                        capacity,
-                        LargeStringDictionaryBuilder
-                    )
-                }
-                _ => unreachable!(""),
-            }
-        }
-        DataType::Dictionary(key_type, value_type)
-            if matches!(value_type.as_ref(), DataType::Binary) =>
-        {
-            match key_type.as_ref() {
-                DataType::Int8 => {
-                    byte_dict_builder_inner_helper!(Int8Type, capacity, BinaryDictionaryBuilder)
-                }
-                DataType::Int16 => {
-                    byte_dict_builder_inner_helper!(Int16Type, capacity, BinaryDictionaryBuilder)
-                }
-                DataType::Int32 => {
-                    byte_dict_builder_inner_helper!(Int32Type, capacity, BinaryDictionaryBuilder)
-                }
-                DataType::Int64 => {
-                    byte_dict_builder_inner_helper!(Int64Type, capacity, BinaryDictionaryBuilder)
-                }
-                DataType::UInt8 => {
-                    byte_dict_builder_inner_helper!(UInt8Type, capacity, BinaryDictionaryBuilder)
-                }
-                DataType::UInt16 => {
-                    byte_dict_builder_inner_helper!(UInt16Type, capacity, BinaryDictionaryBuilder)
-                }
-                DataType::UInt32 => {
-                    byte_dict_builder_inner_helper!(UInt32Type, capacity, BinaryDictionaryBuilder)
-                }
-                DataType::UInt64 => {
-                    byte_dict_builder_inner_helper!(UInt64Type, capacity, BinaryDictionaryBuilder)
-                }
-                _ => unreachable!(""),
-            }
-        }
-        DataType::Dictionary(key_type, value_type)
-            if matches!(value_type.as_ref(), DataType::LargeBinary) =>
-        {
-            match key_type.as_ref() {
-                DataType::Int8 => byte_dict_builder_inner_helper!(
-                    Int8Type,
-                    capacity,
-                    LargeBinaryDictionaryBuilder
-                ),
-                DataType::Int16 => byte_dict_builder_inner_helper!(
-                    Int16Type,
-                    capacity,
-                    LargeBinaryDictionaryBuilder
-                ),
-                DataType::Int32 => byte_dict_builder_inner_helper!(
-                    Int32Type,
-                    capacity,
-                    LargeBinaryDictionaryBuilder
-                ),
-                DataType::Int64 => byte_dict_builder_inner_helper!(
-                    Int64Type,
-                    capacity,
-                    LargeBinaryDictionaryBuilder
-                ),
-                DataType::UInt8 => byte_dict_builder_inner_helper!(
-                    UInt8Type,
-                    capacity,
-                    LargeBinaryDictionaryBuilder
-                ),
-                DataType::UInt16 => {
-                    byte_dict_builder_inner_helper!(
-                        UInt16Type,
-                        capacity,
-                        LargeBinaryDictionaryBuilder
-                    )
-                }
-                DataType::UInt32 => {
-                    byte_dict_builder_inner_helper!(
-                        UInt32Type,
-                        capacity,
-                        LargeBinaryDictionaryBuilder
-                    )
-                }
-                DataType::UInt64 => {
-                    byte_dict_builder_inner_helper!(
-                        UInt64Type,
-                        capacity,
-                        LargeBinaryDictionaryBuilder
-                    )
-                }
-                _ => unreachable!(""),
-            }
-        }
-        t => panic!("Data type {t:?} is not currently supported"),
-    }
-}
-
-fn make_batch(
+struct PartitionBuffer {
+    /// The schema of batches to be partitioned.
     schema: SchemaRef,
-    mut arrays: Vec<Box<dyn ArrayBuilder>>,
-    row_count: usize,
-) -> ArrowResult<RecordBatch> {
-    let columns = arrays.iter_mut().map(|array| array.finish()).collect();
-    let options = RecordBatchOptions::new().with_row_count(Option::from(row_count));
-    RecordBatch::try_new_with_options(schema, columns, &options)
+    /// The "frozen" Arrow IPC bytes of active data. They are frozen when `flush` is called.
+    frozen: Vec<u8>,
+    /// Array builders for appending rows into buffering batches.
+    active: Vec<Box<dyn ArrayBuilder>>,
+    /// The estimation of memory size of active builders in bytes when they are filled.
+    active_slots_mem_size: usize,
+    /// Number of rows in active builders.
+    num_active_rows: usize,
+    /// The maximum number of rows in a batch. Once `num_active_rows` reaches `batch_size`,
+    /// the active array builders will be frozen and appended to frozen buffer `frozen`.
+    batch_size: usize,
+    /// Memory reservation for this partition buffer.
+    reservation: MemoryReservation,
+    /// Spill file for intermediate shuffle output for this partition. Each spill event
+    /// will append to this file and the contents will be copied to the shuffle file at
+    /// the end of processing.
+    spill_file: Option<SpillFile>,
+    /// Writer that performs encoding and compression
+    shuffle_block_writer: ShuffleBlockWriter,
 }
 
-/// Checksum algorithms for writing IPC bytes.
-#[derive(Clone)]
-pub(crate) enum Checksum {
-    /// CRC32 checksum algorithm.
-    CRC32(Hasher),
-    /// Adler32 checksum algorithm.
-    Adler32(Adler32),
+struct SpillFile {
+    temp_file: RefCountedTempFile,
+    file: File,
 }
 
-impl Checksum {
-    pub(crate) fn try_new(algo: i32, initial_opt: Option<u32>) -> CometResult<Self> {
-        match algo {
-            0 => {
-                let hasher = if let Some(initial) = initial_opt {
-                    Hasher::new_with_initial(initial)
-                } else {
-                    Hasher::new()
-                };
-                Ok(Checksum::CRC32(hasher))
-            }
-            1 => {
-                let hasher = if let Some(initial) = initial_opt {
-                    // Note that Adler32 initial state is not zero.
-                    // i.e., `Adler32::from_checksum(0)` is not the same as `Adler32::new()`.
-                    Adler32::from_checksum(initial)
-                } else {
-                    Adler32::new()
-                };
-                Ok(Checksum::Adler32(hasher))
-            }
-            _ => Err(CometError::Internal(
-                "Unsupported checksum algorithm".to_string(),
-            )),
-        }
+impl PartitionBuffer {
+    fn try_new(
+        schema: SchemaRef,
+        batch_size: usize,
+        partition_id: usize,
+        runtime: &Arc<RuntimeEnv>,
+        codec: CompressionCodec,
+        enable_fast_encoding: bool,
+    ) -> Result<Self> {
+        let reservation = MemoryConsumer::new(format!("PartitionBuffer[{}]", partition_id))
+            .with_can_spill(true)
+            .register(&runtime.memory_pool);
+        let shuffle_block_writer =
+            ShuffleBlockWriter::try_new(schema.as_ref(), enable_fast_encoding, codec)?;
+        let active_slots_mem_size = schema
+            .fields()
+            .iter()
+            .map(|field| slot_size(batch_size, field.data_type()))
+            .sum::<usize>();
+        Ok(Self {
+            schema,
+            frozen: vec![],
+            active: vec![],
+            active_slots_mem_size,
+            num_active_rows: 0,
+            batch_size,
+            reservation,
+            spill_file: None,
+            shuffle_block_writer,
+        })
     }
 
-    pub(crate) fn update(&mut self, cursor: &mut Cursor<&mut Vec<u8>>) -> CometResult<()> {
-        match self {
-            Checksum::CRC32(hasher) => {
-                std::io::Seek::seek(cursor, SeekFrom::Start(0))?;
-                hasher.update(cursor.chunk());
-                Ok(())
+    /// Initializes active builders if necessary.
+    /// Returns error if memory reservation fails.
+    fn allocate_active_builders(&mut self, metrics: &ShuffleRepartitionerMetrics) -> Result<()> {
+        if self.active.is_empty() {
+            let mut mempool_timer = metrics.mempool_time.timer();
+            self.reservation.try_grow(self.active_slots_mem_size)?;
+            mempool_timer.stop();
+
+            let mut repart_timer = metrics.repart_time.timer();
+            self.active = new_array_builders(&self.schema, self.batch_size);
+            repart_timer.stop();
+        }
+        Ok(())
+    }
+
+    /// Appends rows of specified indices from columns into active array builders.
+    fn append_rows(
+        &mut self,
+        columns: &[ArrayRef],
+        indices: &[usize],
+        start_index: usize,
+        metrics: &ShuffleRepartitionerMetrics,
+    ) -> Result<AppendRowStatus> {
+        let mut start = start_index;
+
+        // loop until all indices are processed
+        while start < indices.len() {
+            let end = (start + self.batch_size).min(indices.len());
+
+            // allocate builders
+            if self.allocate_active_builders(metrics).is_err() {
+                // could not allocate memory for builders, so abort
+                // and return the current index
+                return Ok(AppendRowStatus::StartIndex(start));
             }
-            Checksum::Adler32(hasher) => {
-                std::io::Seek::seek(cursor, SeekFrom::Start(0))?;
-                hasher.write(cursor.chunk());
-                Ok(())
+
+            let mut repart_timer = metrics.repart_time.timer();
+            self.active
+                .iter_mut()
+                .zip(columns)
+                .for_each(|(builder, column)| {
+                    append_columns(builder, column, &indices[start..end], column.data_type());
+                });
+            self.num_active_rows += end - start;
+            repart_timer.stop();
+            start = end;
+
+            if self.num_active_rows >= self.batch_size {
+                self.flush(metrics)?;
             }
         }
+        Ok(AppendRowStatus::Appended)
     }
 
-    pub(crate) fn finalize(self) -> u32 {
-        match self {
-            Checksum::CRC32(hasher) => hasher.finalize(),
-            Checksum::Adler32(hasher) => hasher.finish(),
+    /// Flush active data into frozen bytes. This can reduce memory usage because the frozen
+    /// bytes are compressed.
+    fn flush(&mut self, metrics: &ShuffleRepartitionerMetrics) -> Result<()> {
+        if self.num_active_rows == 0 {
+            return Ok(());
         }
+
+        // active -> staging
+        let active = std::mem::take(&mut self.active);
+        let num_rows = self.num_active_rows;
+        self.num_active_rows = 0;
+
+        let mut repart_timer = metrics.repart_time.timer();
+        let frozen_batch = make_batch(Arc::clone(&self.schema), active, num_rows)?;
+        repart_timer.stop();
+
+        let mut cursor = Cursor::new(&mut self.frozen);
+        cursor.seek(SeekFrom::End(0))?;
+        let bytes_written = self.shuffle_block_writer.write_batch(
+            &frozen_batch,
+            &mut cursor,
+            &metrics.encode_time,
+        )?;
+
+        // we typically expect the frozen bytes to take up less memory than
+        // the builders due to compression but there could be edge cases where
+        // this is not the case
+        let mut mempool_timer = metrics.mempool_time.timer();
+        if self.active_slots_mem_size >= bytes_written {
+            self.reservation
+                .try_shrink(self.active_slots_mem_size - bytes_written)?;
+        } else {
+            self.reservation
+                .try_grow(bytes_written - self.active_slots_mem_size)?;
+        }
+        mempool_timer.stop();
+
+        Ok(())
     }
-}
 
-#[derive(Debug, Clone)]
-pub enum CompressionCodec {
-    None,
-    Zstd(i32),
-}
-
-/// Writes given record batch as Arrow IPC bytes into given writer.
-/// Returns number of bytes written.
-pub fn write_ipc_compressed<W: Write + Seek>(
-    batch: &RecordBatch,
-    output: &mut W,
-    codec: &CompressionCodec,
-    ipc_time: &Time,
-) -> Result<usize> {
-    if batch.num_rows() == 0 {
-        return Ok(0);
+    fn spill(
+        &mut self,
+        runtime: &RuntimeEnv,
+        metrics: &ShuffleRepartitionerMetrics,
+    ) -> Result<usize> {
+        self.flush(metrics).unwrap();
+        let output_batches = std::mem::take(&mut self.frozen);
+        let mut write_timer = metrics.write_time.timer();
+        if self.spill_file.is_none() {
+            let spill_file = runtime
+                .disk_manager
+                .create_tmp_file("shuffle writer spill")?;
+            let spill_data = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(spill_file.path())
+                .map_err(|e| {
+                    DataFusionError::Execution(format!("Error occurred while spilling {}", e))
+                })?;
+            self.spill_file = Some(SpillFile {
+                temp_file: spill_file,
+                file: spill_data,
+            });
+        }
+        self.spill_file
+            .as_mut()
+            .unwrap()
+            .file
+            .write_all(&output_batches)?;
+        write_timer.stop();
+        let mut timer = metrics.mempool_time.timer();
+        self.reservation.free();
+        timer.stop();
+        Ok(output_batches.len())
     }
-
-    let mut timer = ipc_time.timer();
-    let start_pos = output.stream_position()?;
-
-    // write ipc_length placeholder
-    output.write_all(&[0u8; 8])?;
-
-    let output = match codec {
-        CompressionCodec::None => {
-            let mut arrow_writer = StreamWriter::try_new(output, &batch.schema())?;
-            arrow_writer.write(batch)?;
-            arrow_writer.finish()?;
-            arrow_writer.into_inner()?
-        }
-        CompressionCodec::Zstd(level) => {
-            let encoder = zstd::Encoder::new(output, *level)?;
-            let mut arrow_writer = StreamWriter::try_new(encoder, &batch.schema())?;
-            arrow_writer.write(batch)?;
-            arrow_writer.finish()?;
-            let zstd_encoder = arrow_writer.into_inner()?;
-            zstd_encoder.finish()?
-        }
-    };
-
-    // fill ipc length
-    let end_pos = output.stream_position()?;
-    let ipc_length = end_pos - start_pos - 8;
-
-    // fill ipc length
-    output.seek(SeekFrom::Start(start_pos))?;
-    output.write_all(&ipc_length.to_le_bytes()[..])?;
-    output.seek(SeekFrom::Start(end_pos))?;
-
-    timer.stop();
-
-    Ok((end_pos - start_pos) as usize)
 }
 
 /// A stream that yields no record batches which represent end of output.
@@ -1640,28 +907,47 @@ fn pmod(hash: u32, n: usize) -> usize {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::execution::shuffle::read_ipc_compressed;
+    use arrow_schema::{DataType, Field, Schema};
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_plan::common::collect;
-    use datafusion::physical_plan::memory::MemoryExec;
     use datafusion::prelude::SessionContext;
     use datafusion_execution::config::SessionConfig;
     use datafusion_execution::runtime_env::RuntimeEnvBuilder;
     use datafusion_physical_expr::expressions::Column;
+    use parquet::file::reader::Length;
     use tokio::runtime::Runtime;
 
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
-    fn write_ipc_zstd() {
+    fn roundtrip_ipc() {
         let batch = create_batch(8192);
-        let mut output = vec![];
-        let mut cursor = Cursor::new(&mut output);
-        write_ipc_compressed(
-            &batch,
-            &mut cursor,
-            &CompressionCodec::Zstd(1),
-            &Time::default(),
-        )
-        .unwrap();
-        assert_eq!(40218, output.len());
+        for fast_encoding in [true, false] {
+            for codec in &[
+                CompressionCodec::None,
+                CompressionCodec::Zstd(1),
+                CompressionCodec::Snappy,
+                CompressionCodec::Lz4Frame,
+            ] {
+                let mut output = vec![];
+                let mut cursor = Cursor::new(&mut output);
+                let writer = ShuffleBlockWriter::try_new(
+                    batch.schema().as_ref(),
+                    fast_encoding,
+                    codec.clone(),
+                )
+                .unwrap();
+                let length = writer
+                    .write_batch(&batch, &mut cursor, &Time::default())
+                    .unwrap();
+                assert_eq!(length, output.len());
+
+                let ipc_without_length_prefix = &output[16..];
+                let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
+                assert_eq!(batch, batch2);
+            }
+        }
     }
 
     #[test]
@@ -1707,7 +993,6 @@ mod test {
 
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
-    #[cfg(not(target_os = "macos"))] // Github MacOS runner fails with "Too many open files".
     fn test_large_number_of_partitions() {
         shuffle_write_test(10000, 10, 200, Some(10 * 1024 * 1024));
         shuffle_write_test(10000, 10, 2000, Some(10 * 1024 * 1024));
@@ -1715,9 +1000,145 @@ mod test {
 
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
-    #[cfg(not(target_os = "macos"))] // Github MacOS runner fails with "Too many open files".
     fn test_large_number_of_partitions_spilling() {
         shuffle_write_test(10000, 100, 200, Some(10 * 1024 * 1024));
+    }
+
+    #[test]
+    fn partition_buffer_memory() {
+        let batch = create_batch(900);
+        let runtime_env = create_runtime(128 * 1024);
+        let mut buffer = PartitionBuffer::try_new(
+            batch.schema(),
+            1024,
+            0,
+            &runtime_env,
+            CompressionCodec::Lz4Frame,
+            true,
+        )
+        .unwrap();
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let metrics = ShuffleRepartitionerMetrics::new(&metrics_set, 0);
+        let indices: Vec<usize> = (0..batch.num_rows()).collect();
+
+        assert_eq!(0, buffer.reservation.size());
+        assert!(buffer.spill_file.is_none());
+
+        // append first batch - should fit in memory
+        let status = buffer
+            .append_rows(batch.columns(), &indices, 0, &metrics)
+            .unwrap();
+        assert_eq!(
+            format!("{status:?}"),
+            format!("{:?}", AppendRowStatus::Appended)
+        );
+        assert_eq!(900, buffer.num_active_rows);
+        assert_eq!(106496, buffer.reservation.size());
+        assert_eq!(0, buffer.frozen.len());
+        assert!(buffer.spill_file.is_none());
+
+        // append second batch - should trigger flush to frozen bytes
+        let status = buffer
+            .append_rows(batch.columns(), &indices, 0, &metrics)
+            .unwrap();
+        assert_eq!(
+            format!("{status:?}"),
+            format!("{:?}", AppendRowStatus::Appended)
+        );
+        assert_eq!(0, buffer.num_active_rows);
+        assert_eq!(9914, buffer.frozen.len());
+        assert_eq!(9914, buffer.reservation.size());
+        assert!(buffer.spill_file.is_none());
+
+        // spill
+        buffer.spill(&runtime_env, &metrics).unwrap();
+        assert_eq!(0, buffer.num_active_rows);
+        assert_eq!(0, buffer.frozen.len());
+        assert_eq!(0, buffer.reservation.size());
+        assert!(buffer.spill_file.is_some());
+        assert_eq!(9914, buffer.spill_file.as_ref().unwrap().file.len());
+
+        // append after spill
+        let status = buffer
+            .append_rows(batch.columns(), &indices, 0, &metrics)
+            .unwrap();
+        assert_eq!(
+            format!("{status:?}"),
+            format!("{:?}", AppendRowStatus::Appended)
+        );
+        assert_eq!(900, buffer.num_active_rows);
+        assert_eq!(106496, buffer.reservation.size());
+        assert_eq!(0, buffer.frozen.len());
+    }
+
+    #[tokio::test]
+    async fn shuffle_repartitioner_memory() {
+        let batch = create_batch(900);
+        assert_eq!(8376, batch.get_array_memory_size());
+
+        let memory_limit = 512 * 1024;
+        let num_partitions = 2;
+        let runtime_env = create_runtime(memory_limit);
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let mut repartitioner = ShuffleRepartitioner::try_new(
+            "/tmp/data.out".to_string(),
+            "/tmp/index.out".to_string(),
+            batch.schema(),
+            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+            ShuffleRepartitionerMetrics::new(&metrics_set, 0),
+            runtime_env,
+            1024,
+            CompressionCodec::Lz4Frame,
+            true,
+        )
+        .unwrap();
+
+        repartitioner.insert_batch(batch.clone()).await.unwrap();
+
+        assert_eq!(2, repartitioner.buffered_partitions.len());
+
+        assert!(repartitioner.buffered_partitions[0].spill_file.is_none());
+        assert!(repartitioner.buffered_partitions[1].spill_file.is_none());
+
+        assert_eq!(
+            106496,
+            repartitioner.buffered_partitions[0].reservation.size()
+        );
+        assert_eq!(
+            106496,
+            repartitioner.buffered_partitions[1].reservation.size()
+        );
+
+        repartitioner.spill().await.unwrap();
+
+        // after spill, there should be spill files
+        assert!(repartitioner.buffered_partitions[0].spill_file.is_some());
+        assert!(repartitioner.buffered_partitions[1].spill_file.is_some());
+
+        // after spill, all reservations should be freed
+        assert_eq!(0, repartitioner.buffered_partitions[0].reservation.size());
+        assert_eq!(0, repartitioner.buffered_partitions[1].reservation.size());
+
+        // insert another batch after spilling
+        repartitioner.insert_batch(batch.clone()).await.unwrap();
+
+        assert_eq!(
+            106496,
+            repartitioner.buffered_partitions[0].reservation.size()
+        );
+        assert_eq!(
+            106496,
+            repartitioner.buffered_partitions[1].reservation.size()
+        );
+    }
+
+    fn create_runtime(memory_limit: usize) -> Arc<RuntimeEnv> {
+        Arc::new(
+            RuntimeEnvBuilder::new()
+                .with_memory_limit(memory_limit, 1.0)
+                .build()
+                .unwrap(),
+        )
     }
 
     fn shuffle_write_test(
@@ -1732,11 +1153,14 @@ mod test {
 
         let partitions = &[batches];
         let exec = ShuffleWriterExec::try_new(
-            Arc::new(MemoryExec::try_new(partitions, batch.schema(), None).unwrap()),
+            Arc::new(DataSourceExec::new(Arc::new(
+                MemorySourceConfig::try_new(partitions, batch.schema(), None).unwrap(),
+            ))),
             Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
             CompressionCodec::Zstd(1),
             "/tmp/data.out".to_string(),
             "/tmp/index.out".to_string(),
+            true,
         )
         .unwrap();
 

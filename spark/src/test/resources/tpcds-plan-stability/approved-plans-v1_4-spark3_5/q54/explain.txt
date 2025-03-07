@@ -97,12 +97,12 @@ Child 1 Input [3]: [sold_date_sk#11, customer_sk#12, item_sk#13]
 Output [3]: [i_item_sk#14, i_class#15, i_category#16]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_category), IsNotNull(i_class), EqualTo(i_category,Women                                             ), EqualTo(i_class,maternity                                         ), IsNotNull(i_item_sk)]
+PushedFilters: [IsNotNull(i_category), IsNotNull(i_class), IsNotNull(i_item_sk)]
 ReadSchema: struct<i_item_sk:int,i_class:string,i_category:string>
 
 (9) CometFilter
 Input [3]: [i_item_sk#14, i_class#15, i_category#16]
-Condition : ((((isnotnull(i_category#16) AND isnotnull(i_class#15)) AND (i_category#16 = Women                                             )) AND (i_class#15 = maternity                                         )) AND isnotnull(i_item_sk#14))
+Condition : ((((isnotnull(i_category#16) AND isnotnull(i_class#15)) AND (rpad(i_category#16, 50,  ) = Women                                             )) AND (rpad(i_class#15, 50,  ) = maternity                                         )) AND isnotnull(i_item_sk#14))
 
 (10) CometProject
 Input [3]: [i_item_sk#14, i_class#15, i_category#16]
@@ -254,7 +254,7 @@ Arguments: [s_county#29, s_state#30]
 (41) CometBroadcastHashJoin
 Left output [5]: [c_customer_sk#20, ss_ext_sales_price#23, ss_sold_date_sk#24, ca_county#27, ca_state#28]
 Right output [2]: [s_county#29, s_state#30]
-Arguments: [ca_county#27, ca_state#28], [s_county#29, s_state#30], Inner, BuildRight
+Arguments: [ca_county#27, rpad(ca_state#28, 2,  )], [s_county#29, rpad(s_state#30, 2,  )], Inner, BuildRight
 
 (42) CometProject
 Input [7]: [c_customer_sk#20, ss_ext_sales_price#23, ss_sold_date_sk#24, ca_county#27, ca_state#28, s_county#29, s_state#30]

@@ -21,6 +21,9 @@ define spark_jvm_17_extra_args
 $(shell ./mvnw help:evaluate -Dexpression=extraJavaTestArgs | grep -v '\[')
 endef
 
+# Build optional Comet native features (like hdfs e.g)
+FEATURES_ARG := $(shell ! [ -z $(COMET_FEATURES) ] && echo '--features=$(COMET_FEATURES)')
+
 all: core jvm
 
 core:
@@ -95,7 +98,7 @@ release-linux: clean
 	cd native && RUSTFLAGS="-Ctarget-cpu=native -Ctarget-feature=-prefer-256-bit" cargo build --release
 	./mvnw install -Prelease -DskipTests $(PROFILES)
 release:
-	cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo build --release
+	cd native && RUSTFLAGS="$(RUSTFLAGS) -Ctarget-cpu=native" cargo build --release $(FEATURES_ARG)
 	./mvnw install -Prelease -DskipTests $(PROFILES)
 release-nogit:
 	cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo build --release

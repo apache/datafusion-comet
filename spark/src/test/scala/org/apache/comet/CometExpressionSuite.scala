@@ -36,7 +36,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType}
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark40Plus}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -117,9 +117,50 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false") {
+          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        }
         withParquetTable(path.toString, "tbl") {
           checkSparkAnswerAndOperator("select * FROM tbl WHERE _2 > 100")
+        }
+      }
+    }
+  }
+
+  test("uint data type support") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      // TODO: Once the question of what to get back from uint_8, uint_16 types is resolved,
+      // we can also update this test to check for COMET_SCAN_ALLOW_INCOMPATIBLE=true
+      Seq(false).foreach { allowIncompatible =>
+        {
+          withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> allowIncompatible.toString) {
+            withTempDir { dir =>
+              val path = new Path(dir.toURI.toString, "testuint.parquet")
+              makeParquetFileAllTypes(
+                path,
+                dictionaryEnabled = dictionaryEnabled,
+                Byte.MinValue,
+                Byte.MaxValue)
+              withParquetTable(path.toString, "tbl") {
+                val qry = "select _9 from tbl order by _11"
+                if (CometSparkSessionExtensions.usingDataFusionParquetExec(conf)) {
+                  if (!allowIncompatible) {
+                    checkSparkAnswer(qry)
+                  } else {
+                    // need to convert the values to unsigned values
+                    val expected = (Byte.MinValue to Byte.MaxValue)
+                      .map(v => {
+                        if (v < 0) Byte.MaxValue.toShort - v else v
+                      })
+                      .toDF("a")
+                    checkAnswer(sql(qry), expected)
+                  }
+                } else {
+                  checkSparkAnswerAndOperator(qry)
+                }
+              }
+            }
+          }
         }
       }
     }
@@ -142,6 +183,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkSparkAnswerAndOperator(sqlString)
         }
       }
+
     }
   }
 
@@ -1233,32 +1275,36 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           -128,
           128,
           randomSize = 100)
-        withParquetTable(path.toString, "tbl") {
-          for (s <- Seq(-5, -1, 0, 1, 5, -1000, 1000, -323, -308, 308, -15, 15, -16, 16, null)) {
-            // array tests
-            // TODO: enable test for floats (_6, _7, _8, _13)
-            for (c <- Seq(2, 3, 4, 5, 9, 10, 11, 12, 15, 16, 17)) {
-              checkSparkAnswerAndOperator(s"select _${c}, round(_${c}, ${s}) FROM tbl")
-            }
-            // scalar tests
-            // Exclude the constant folding optimizer in order to actually execute the native round
-            // operations for scalar (literal) values.
-            // TODO: comment in the tests for float once supported
-            withSQLConf(
-              "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-              for (n <- Seq("0.0", "-0.0", "0.5", "-0.5", "1.2", "-1.2")) {
-                checkSparkAnswerAndOperator(s"select round(cast(${n} as tinyint), ${s}) FROM tbl")
-                // checkSparkAnswerAndCometOperators(s"select round(cast(${n} as float), ${s}) FROM tbl")
-                checkSparkAnswerAndOperator(
-                  s"select round(cast(${n} as decimal(38, 18)), ${s}) FROM tbl")
-                checkSparkAnswerAndOperator(
-                  s"select round(cast(${n} as decimal(20, 0)), ${s}) FROM tbl")
+        withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
+          withParquetTable(path.toString, "tbl") {
+            for (s <- Seq(-5, -1, 0, 1, 5, -1000, 1000, -323, -308, 308, -15, 15, -16, 16,
+                null)) {
+              // array tests
+              // TODO: enable test for floats (_6, _7, _8, _13)
+              for (c <- Seq(2, 3, 4, 5, 9, 10, 11, 12, 15, 16, 17)) {
+                checkSparkAnswerAndOperator(s"select _${c}, round(_${c}, ${s}) FROM tbl")
               }
-              // checkSparkAnswer(s"select round(double('infinity'), ${s}) FROM tbl")
-              // checkSparkAnswer(s"select round(double('-infinity'), ${s}) FROM tbl")
-              // checkSparkAnswer(s"select round(double('NaN'), ${s}) FROM tbl")
-              // checkSparkAnswer(
-              //   s"select round(double('0.000000000000000000000000000000000001'), ${s}) FROM tbl")
+              // scalar tests
+              // Exclude the constant folding optimizer in order to actually execute the native round
+              // operations for scalar (literal) values.
+              // TODO: comment in the tests for float once supported
+              withSQLConf(
+                "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+                for (n <- Seq("0.0", "-0.0", "0.5", "-0.5", "1.2", "-1.2")) {
+                  checkSparkAnswerAndOperator(
+                    s"select round(cast(${n} as tinyint), ${s}) FROM tbl")
+                  // checkSparkAnswerAndCometOperators(s"select round(cast(${n} as float), ${s}) FROM tbl")
+                  checkSparkAnswerAndOperator(
+                    s"select round(cast(${n} as decimal(38, 18)), ${s}) FROM tbl")
+                  checkSparkAnswerAndOperator(
+                    s"select round(cast(${n} as decimal(20, 0)), ${s}) FROM tbl")
+                }
+                // checkSparkAnswer(s"select round(double('infinity'), ${s}) FROM tbl")
+                // checkSparkAnswer(s"select round(double('-infinity'), ${s}) FROM tbl")
+                // checkSparkAnswer(s"select round(double('NaN'), ${s}) FROM tbl")
+                // checkSparkAnswer(
+                //   s"select round(double('0.000000000000000000000000000000000001'), ${s}) FROM tbl")
+              }
             }
           }
         }
@@ -1364,8 +1410,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           sql(s"create table $table(id int, name varchar(20)) using parquet")
           sql(
             s"insert into $table values(1, 'james smith'), (2, 'michael rose'), " +
-              "(3, 'robert williams'), (4, 'rames rose'), (5, 'james smith')")
-          checkSparkAnswerAndOperator(s"SELECT initcap(name) FROM $table")
+              "(3, 'robert williams'), (4, 'rames rose'), (5, 'james smith'), " +
+              "(6, 'robert rose-smith'), (7, 'james ähtäri')")
+          if (CometConf.COMET_EXEC_INITCAP_ENABLED.get()) {
+            // TODO: remove this if clause https://github.com/apache/datafusion-comet/issues/1052
+            checkSparkAnswerAndOperator(s"SELECT initcap(name) FROM $table")
+          } else {
+            checkSparkAnswer(s"SELECT initcap(name) FROM $table")
+          }
         }
       }
     }
@@ -1445,11 +1497,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "hex.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-
-        withParquetTable(path.toString, "tbl") {
-          checkSparkAnswerAndOperator(
-            "SELECT hex(_1), hex(_2), hex(_3), hex(_4), hex(_5), hex(_6), hex(_7), hex(_8), hex(_9), hex(_10), hex(_11), hex(_12), hex(_13), hex(_14), hex(_15), hex(_16), hex(_17), hex(_18), hex(_19), hex(_20) FROM tbl")
+        withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
+          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          withParquetTable(path.toString, "tbl") {
+            checkSparkAnswerAndOperator(
+              "SELECT hex(_1), hex(_2), hex(_3), hex(_4), hex(_5), hex(_6), hex(_7), hex(_8), hex(_9), hex(_10), hex(_11), hex(_12), hex(_13), hex(_14), hex(_15), hex(_16), hex(_17), hex(_18), hex(_19), hex(_20) FROM tbl")
+          }
         }
       }
     }
@@ -1765,7 +1818,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             "spark.sql.decimalOperations.allowPrecisionLoss" -> allowPrecisionLoss.toString) {
             val a = makeNum(p1, s1)
             val b = makeNum(p2, s2)
-            var ops = Seq("+", "-", "*", "/", "%")
+            val ops = Seq("+", "-", "*", "/", "%", "div")
             for (op <- ops) {
               checkSparkAnswerAndOperator(s"select a, b, a $op b from $table")
               checkSparkAnswerAndOperator(s"select $a, b, $a $op b from $table")
@@ -1922,6 +1975,49 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+
+  test("hash function with decimal input") {
+    val testPrecisionScales: Seq[(Int, Int)] = Seq(
+      (1, 0),
+      (17, 2),
+      (18, 2),
+      (19, 2),
+      (DecimalType.MAX_PRECISION, DecimalType.MAX_SCALE - 1))
+    for ((p, s) <- testPrecisionScales) {
+      withTable("t1") {
+        sql(s"create table t1(c1 decimal($p, $s)) using parquet")
+        sql("insert into t1 values(1.23), (-1.23), (0.0), (null)")
+        if (p <= 18) {
+          checkSparkAnswerAndOperator("select c1, hash(c1) from t1 order by c1")
+        } else {
+          // not supported natively yet
+          checkSparkAnswer("select c1, hash(c1) from t1 order by c1")
+        }
+      }
+    }
+  }
+
+  test("xxhash64 function with decimal input") {
+    val testPrecisionScales: Seq[(Int, Int)] = Seq(
+      (1, 0),
+      (17, 2),
+      (18, 2),
+      (19, 2),
+      (DecimalType.MAX_PRECISION, DecimalType.MAX_SCALE - 1))
+    for ((p, s) <- testPrecisionScales) {
+      withTable("t1") {
+        sql(s"create table t1(c1 decimal($p, $s)) using parquet")
+        sql("insert into t1 values(1.23), (-1.23), (0.0), (null)")
+        if (p <= 18) {
+          checkSparkAnswerAndOperator("select c1, xxhash64(c1) from t1 order by c1")
+        } else {
+          // not supported natively yet
+          checkSparkAnswer("select c1, xxhash64(c1) from t1 order by c1")
+        }
+      }
+    }
+  }
+
   test("unary negative integer overflow test") {
     def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
       withSQLConf(
@@ -2023,6 +2119,33 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       sql(s"insert into $table values('ab')")
 
       checkSparkAnswerAndOperator(s"SELECT * FROM $table")
+    }
+  }
+
+  test("rpad") {
+    val table = "rpad"
+    val gen = new DataGenerator(new Random(42))
+    withTable(table) {
+      // generate some data
+      val dataChars = "abc123"
+      sql(s"create table $table(id int, name1 char(8), name2 varchar(8)) using parquet")
+      val testData = gen.generateStrings(100, dataChars, 6) ++ Seq(
+        "é", // unicode 'e\\u{301}'
+        "é" // unicode '\\u{e9}'
+      )
+      testData.zipWithIndex.foreach { x =>
+        sql(s"insert into $table values(${x._2}, '${x._1}', '${x._1}')")
+      }
+      // test 2-arg version
+      checkSparkAnswerAndOperator(
+        s"SELECT id, rpad(name1, 10), rpad(name2, 10) FROM $table ORDER BY id")
+      // test 3-arg version
+      for (length <- Seq(2, 10)) {
+        checkSparkAnswerAndOperator(
+          s"SELECT id, name1, rpad(name1, $length, ' ') FROM $table ORDER BY id")
+        checkSparkAnswerAndOperator(
+          s"SELECT id, name2, rpad(name2, $length, ' ') FROM $table ORDER BY id")
+      }
     }
   }
 
@@ -2195,7 +2318,111 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  ignore("get_struct_field - select primitive fields") {
+  test("get_struct_field - select primitive fields") {
+    withTempPath { dir =>
+      // create input file with Comet disabled
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(5)
+          // Add both a null struct and null inner value
+          .select(when(col("id") > 1, struct(when(col("id") > 2, col("id")).alias("id")))
+            .alias("nested1"))
+
+        df.write.parquet(dir.toString())
+      }
+      val df = spark.read.parquet(dir.toString()).select("nested1.id")
+      // Comet's original scan does not support structs.
+      // The plan will have a Comet Scan only if scan impl is native_full or native_recordbatch
+      if (!CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_COMET)) {
+        checkSparkAnswerAndOperator(df)
+      } else {
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  test("get_struct_field - select subset of struct") {
+    withTempPath { dir =>
+      // create input file with Comet disabled
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(5)
+          // Add both a null struct and null inner value
+          .select(
+            when(
+              col("id") > 1,
+              struct(
+                when(col("id") > 2, col("id")).alias("id"),
+                when(col("id") > 2, struct(when(col("id") > 3, col("id")).alias("id")))
+                  .as("nested2")))
+              .alias("nested1"))
+
+        df.write.parquet(dir.toString())
+      }
+
+      val df = spark.read.parquet(dir.toString())
+      // Comet's original scan does not support structs.
+      // The plan will have a Comet Scan only if scan impl is native_full or native_recordbatch
+      if (!CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_COMET)) {
+        checkSparkAnswerAndOperator(df.select("nested1.id"))
+        checkSparkAnswerAndOperator(df.select("nested1.nested2"))
+        checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
+        checkSparkAnswerAndOperator(df.select("nested1.id", "nested1.nested2.id"))
+      } else {
+        checkSparkAnswer(df.select("nested1.id"))
+        checkSparkAnswer(df.select("nested1.nested2"))
+        checkSparkAnswer(df.select("nested1.nested2.id"))
+        checkSparkAnswer(df.select("nested1.id", "nested1.nested2.id"))
+      }
+    }
+  }
+
+  test("get_struct_field - read entire struct") {
+    withTempPath { dir =>
+      // create input file with Comet disabled
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(5)
+          // Add both a null struct and null inner value
+          .select(
+            when(
+              col("id") > 1,
+              struct(
+                when(col("id") > 2, col("id")).alias("id"),
+                when(col("id") > 2, struct(when(col("id") > 3, col("id")).alias("id")))
+                  .as("nested2")))
+              .alias("nested1"))
+
+        df.write.parquet(dir.toString())
+      }
+
+      val df = spark.read.parquet(dir.toString()).select("nested1.id")
+      // Comet's original scan does not support structs.
+      // The plan will have a Comet Scan only if scan impl is native_full or native_recordbatch
+      if (!CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_COMET)) {
+        checkSparkAnswerAndOperator(df)
+      } else {
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  private def testV1AndV2(testName: String)(f: => Unit): Unit = {
+    test(s"$testName - V1") {
+      withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") { f }
+    }
+
+    // The test will fail because it will  produce a different plan and the operator check will fail
+    // We could get the test to pass anyway by skipping the operator check, but when V2 does get supported,
+    // we want to make sure we enable the operator check and marking the test as ignore will make it
+    // more obvious
+    //
+    ignore(s"$testName - V2") {
+      withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") { f }
+    }
+  }
+
+  testV1AndV2("get_struct_field with DataFusion ParquetExec - simple case") {
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2208,16 +2435,55 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         df.write.parquet(dir.toString())
       }
 
-      Seq("", "parquet").foreach { v1List =>
-        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
-          val df = spark.read.parquet(dir.toString())
-          checkSparkAnswerAndOperator(df.select("nested1.id"))
-        }
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+        CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
+
+        val df = spark.read.parquet(dir.toString())
+        checkSparkAnswerAndOperator(df.select("nested1.id"))
       }
     }
   }
 
-  ignore("get_struct_field - select subset of struct") {
+  testV1AndV2("get_struct_field with DataFusion ParquetExec - select subset of struct") {
+    withTempPath { dir =>
+      // create input file with Comet disabled
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(5)
+          // Add both a null struct and null inner value
+          .select(
+            when(
+              col("id") > 1,
+              struct(
+                when(col("id") > 2, col("id")).alias("id"),
+                when(col("id") > 2, struct(when(col("id") > 3, col("id")).alias("id")))
+                  .as("nested2")))
+              .alias("nested1"))
+
+        df.write.parquet(dir.toString())
+      }
+
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+        CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
+
+        val df = spark.read.parquet(dir.toString())
+
+        checkSparkAnswerAndOperator(df.select("nested1.id"))
+
+        checkSparkAnswerAndOperator(df.select("nested1.id", "nested1.nested2.id"))
+
+        // unsupported cast from Int64 to Struct([Field { name: "id", data_type: Int64, ...
+        // checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
+      }
+    }
+  }
+
+  // TODO this is not using DataFusion's ParquetExec for some reason
+  ignore("get_struct_field with DataFusion ParquetExec - read entire struct") {
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2237,38 +2503,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
 
       Seq("", "parquet").foreach { v1List =>
-        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
-          val df = spark.read.parquet(dir.toString())
-          checkSparkAnswerAndOperator(df.select("nested1.id"))
-          checkSparkAnswerAndOperator(df.select("nested1.nested2"))
-          checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
-          checkSparkAnswerAndOperator(df.select("nested1.id", "nested1.nested2.id"))
-        }
-      }
-    }
-  }
+        withSQLConf(
+          SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
 
-  ignore("get_struct_field - read entire struct") {
-    withTempPath { dir =>
-      // create input file with Comet disabled
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val df = spark
-          .range(5)
-          // Add both a null struct and null inner value
-          .select(
-            when(
-              col("id") > 1,
-              struct(
-                when(col("id") > 2, col("id")).alias("id"),
-                when(col("id") > 2, struct(when(col("id") > 3, col("id")).alias("id")))
-                  .as("nested2")))
-              .alias("nested1"))
-
-        df.write.parquet(dir.toString())
-      }
-
-      Seq("", "parquet").foreach { v1List =>
-        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
           val df = spark.read.parquet(dir.toString())
           checkSparkAnswerAndOperator(df.select("nested1"))
         }
@@ -2278,12 +2517,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   ignore("read map[int, int] from parquet") {
     withTempPath { dir =>
-      // create input file with Comet disabled
+// create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         val df = spark
           .range(5)
-          // Spark does not allow null as a key but does allow null as a
-          // value, and the entire map be null
+// Spark does not allow null as a key but does allow null as a
+// value, and the entire map be null
           .select(
             when(col("id") > 1, map(col("id"), when(col("id") > 2, col("id")))).alias("map1"))
         df.write.parquet(dir.toString())
@@ -2302,12 +2541,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   ignore("read array[int] from parquet") {
     withTempPath { dir =>
-      // create input file with Comet disabled
+// create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         val df = spark
           .range(5)
-          // Spark does not allow null as a key but does allow null as a
-          // value, and the entire map be null
+// Spark does not allow null as a key but does allow null as a
+// value, and the entire map be null
           .select(when(col("id") > 1, sequence(lit(0), col("id") * 2)).alias("array1"))
         df.write.parquet(dir.toString())
       }
@@ -2436,97 +2675,56 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("array_append") {
-    assume(isSpark34Plus)
+  test("test integral divide") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        spark.read.parquet(path.toString).createOrReplaceTempView("t1");
-        checkSparkAnswerAndOperator(spark.sql("Select array_append(array(_1),false) from t1"))
-        checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_append(array(_2, _3, _4), 4) FROM t1"))
-        checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_append(array(_2, _3, _4), null) FROM t1"));
-        checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_append(array(_6, _7), CAST(6.5 AS DOUBLE)) FROM t1"));
-        checkSparkAnswerAndOperator(spark.sql("SELECT array_append(array(_8), 'test') FROM t1"));
-        checkSparkAnswerAndOperator(spark.sql("SELECT array_append(array(_19), _19) FROM t1"));
-        checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_append((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
+        val path1 = new Path(dir.toURI.toString, "test1.parquet")
+        val path2 = new Path(dir.toURI.toString, "test2.parquet")
+        makeParquetFileAllTypes(
+          path1,
+          dictionaryEnabled = dictionaryEnabled,
+          0,
+          0,
+          randomSize = 10000)
+        makeParquetFileAllTypes(
+          path2,
+          dictionaryEnabled = dictionaryEnabled,
+          0,
+          0,
+          randomSize = 10000)
+        withParquetTable(path1.toString, "tbl1") {
+          withParquetTable(path2.toString, "tbl2") {
+            // disable broadcast, as comet on spark 3.3 does not support broadcast exchange
+            withSQLConf(
+              SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+              SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+              checkSparkAnswerAndOperator("""
+                  |select
+                  | t1._2 div t2._2, div(t1._2, t2._2),
+                  | t1._3 div t2._3, div(t1._3, t2._3),
+                  | t1._4 div t2._4, div(t1._4, t2._4),
+                  | t1._5 div t2._5, div(t1._5, t2._5),
+                  | t1._9 div t2._9, div(t1._9, t2._9),
+                  | t1._10 div t2._10, div(t1._10, t2._10),
+                  | t1._11 div t2._11, div(t1._11, t2._11)
+                  | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
+                  | order by t1._id""".stripMargin)
+
+              if (isSpark34Plus) {
+                // decimal support requires Spark 3.4 or later
+                checkSparkAnswerAndOperator("""
+                    |select
+                    | t1._12 div t2._12, div(t1._12, t2._12),
+                    | t1._15 div t2._15, div(t1._15, t2._15),
+                    | t1._16 div t2._16, div(t1._16, t2._16),
+                    | t1._17 div t2._17, div(t1._17, t2._17)
+                    | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
+                    | order by t1._id""".stripMargin)
+              }
+            }
+          }
+        }
       }
-    }
-  }
-
-  test("array_prepend") {
-    assume(isSpark35Plus) // in Spark 3.5 array_prepend is implemented via array_insert
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        spark.read.parquet(path.toString).createOrReplaceTempView("t1");
-        checkSparkAnswerAndOperator(spark.sql("Select array_prepend(array(_1),false) from t1"))
-        checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_prepend(array(_2, _3, _4), 4) FROM t1"))
-        checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_prepend(array(_2, _3, _4), null) FROM t1"));
-        checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_prepend(array(_6, _7), CAST(6.5 AS DOUBLE)) FROM t1"));
-        checkSparkAnswerAndOperator(spark.sql("SELECT array_prepend(array(_8), 'test') FROM t1"));
-        checkSparkAnswerAndOperator(spark.sql("SELECT array_prepend(array(_19), _19) FROM t1"));
-        checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_prepend((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
-      }
-    }
-  }
-
-  test("ArrayInsert") {
-    assume(isSpark34Plus)
-    Seq(true, false).foreach(dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
-        val df = spark.read
-          .parquet(path.toString)
-          .withColumn("arr", array(col("_4"), lit(null), col("_4")))
-          .withColumn("arrInsertResult", expr("array_insert(arr, 1, 1)"))
-          .withColumn("arrInsertNegativeIndexResult", expr("array_insert(arr, -1, 1)"))
-          .withColumn("arrPosGreaterThanSize", expr("array_insert(arr, 8, 1)"))
-          .withColumn("arrNegPosGreaterThanSize", expr("array_insert(arr, -8, 1)"))
-          .withColumn("arrInsertNone", expr("array_insert(arr, 1, null)"))
-        checkSparkAnswerAndOperator(df.select("arrInsertResult"))
-        checkSparkAnswerAndOperator(df.select("arrInsertNegativeIndexResult"))
-        checkSparkAnswerAndOperator(df.select("arrPosGreaterThanSize"))
-        checkSparkAnswerAndOperator(df.select("arrNegPosGreaterThanSize"))
-        checkSparkAnswerAndOperator(df.select("arrInsertNone"))
-      })
-  }
-
-  test("ArrayInsertUnsupportedArgs") {
-    // This test checks that the else branch in ArrayInsert
-    // mapping to the comet is valid and fallback to spark is working fine.
-    assume(isSpark34Plus)
-    withTempDir { dir =>
-      val path = new Path(dir.toURI.toString, "test.parquet")
-      makeParquetFileAllTypes(path, dictionaryEnabled = false, 10000)
-      val df = spark.read
-        .parquet(path.toString)
-        .withColumn("arr", array(col("_4"), lit(null), col("_4")))
-        .withColumn("idx", udf((_: Int) => 1).apply(col("_4")))
-        .withColumn("arrUnsupportedArgs", expr("array_insert(arr, idx, 1)"))
-      checkSparkAnswer(df.select("arrUnsupportedArgs"))
-    }
-  }
-
-  test("array_contains") {
-    withTempDir { dir =>
-      val path = new Path(dir.toURI.toString, "test.parquet")
-      makeParquetFileAllTypes(path, dictionaryEnabled = false, n = 10000)
-      spark.read.parquet(path.toString).createOrReplaceTempView("t1");
-      checkSparkAnswerAndOperator(
-        spark.sql("SELECT array_contains(array(_2, _3, _4), _2) FROM t1"))
-      checkSparkAnswerAndOperator(
-        spark.sql("SELECT array_contains((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
     }
   }
 

@@ -46,13 +46,6 @@ macro_rules! jvalues {
     }}
 }
 
-/// Macro for create a new JNI string.
-macro_rules! jni_new_string {
-    ($env:expr, $value:expr) => {{
-        $crate::jvm_bridge::jni_map_error!($env, $env.new_string($value))
-    }};
-}
-
 /// Macro for calling a JNI method.
 /// The syntax is:
 /// jni_call!(env, comet_metric_node(metric_node).add(jname, value) -> ())?;
@@ -173,7 +166,6 @@ macro_rules! jni_new_global_ref {
 pub(crate) use jni_call;
 pub(crate) use jni_map_error;
 pub(crate) use jni_new_global_ref;
-pub(crate) use jni_new_string;
 pub(crate) use jni_static_call;
 pub(crate) use jvalues;
 
@@ -217,9 +209,9 @@ pub struct JVMClasses<'a> {
     pub comet_task_memory_manager: CometTaskMemoryManager<'a>,
 }
 
-unsafe impl<'a> Send for JVMClasses<'a> {}
+unsafe impl Send for JVMClasses<'_> {}
 
-unsafe impl<'a> Sync for JVMClasses<'a> {}
+unsafe impl Sync for JVMClasses<'_> {}
 
 /// Keeps global references to JVM classes. Used for JNI calls to JVM.
 static JVM_CLASSES: OnceCell<JVMClasses> = OnceCell::new();

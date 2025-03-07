@@ -55,14 +55,21 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
         sc.getConf.getSizeAsMb(EXECUTOR_MEMORY_OVERHEAD.key)
       } else {
         // By default, executorMemory * spark.executor.memoryOverheadFactor, with minimum of 384MB
-        val executorMemory = sc.getConf.getSizeAsMb(EXECUTOR_MEMORY.key, EXECUTOR_MEMORY_DEFAULT)
+        val executorMemory =
+          sc.getConf.getSizeAsMb(EXECUTOR_MEMORY.key, EXECUTOR_MEMORY_DEFAULT)
         val memoryOverheadFactor = getMemoryOverheadFactor(sc.getConf)
         val memoryOverheadMinMib = getMemoryOverheadMinMib(sc.getConf)
 
         Math.max((executorMemory * memoryOverheadFactor).toLong, memoryOverheadMinMib)
       }
 
-      val cometMemOverhead = CometSparkSessionExtensions.getCometMemoryOverheadInMiB(sc.getConf)
+      val cometMemOverhead =
+        if (!CometSparkSessionExtensions.cometUnifiedMemoryManagerEnabled(sc.getConf)) {
+          CometSparkSessionExtensions.getCometMemoryOverheadInMiB(sc.getConf)
+        } else {
+          // comet shuffle unified memory manager is disabled, so we need to add overhead memory
+          CometSparkSessionExtensions.getCometShuffleMemorySizeInMiB(sc.getConf)
+        }
       sc.conf.set(EXECUTOR_MEMORY_OVERHEAD.key, s"${execMemOverhead + cometMemOverhead}M")
       val newExecMemOverhead = sc.getConf.getSizeAsMb(EXECUTOR_MEMORY_OVERHEAD.key)
 
@@ -90,13 +97,19 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
 
   /**
    * Whether we should override Spark memory configuration for Comet. This only returns true when
-   * Comet native execution is enabled and/or Comet shuffle is enabled
+   * Comet native execution is enabled and/or Comet shuffle is enabled and Comet doesn't use
+   * unified memory manager.
    */
   private def shouldOverrideMemoryConf(conf: SparkConf): Boolean = {
     conf.getBoolean(CometConf.COMET_ENABLED.key, true) && (
-      conf.getBoolean(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, false) ||
-        conf.getBoolean(CometConf.COMET_EXEC_ENABLED.key, false)
-    )
+      conf.getBoolean(
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key,
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.defaultValue.get) ||
+        conf.getBoolean(
+          CometConf.COMET_EXEC_ENABLED.key,
+          CometConf.COMET_EXEC_ENABLED.defaultValue.get)
+    ) && (!CometSparkSessionExtensions.cometUnifiedMemoryManagerEnabled(conf) ||
+      !CometSparkSessionExtensions.cometShuffleUnifiedMemoryManagerInTestEnabled(conf))
   }
 }
 

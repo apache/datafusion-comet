@@ -77,10 +77,14 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
   private val approvedAnsiPlans: Seq[String] = Seq("q83", "q83.sf100")
 
   private def getDirForTest(name: String): File = {
-    val goldenFileName = if (SQLConf.get.ansiEnabled && approvedAnsiPlans.contains(name)) {
+    var goldenFileName = if (SQLConf.get.ansiEnabled && approvedAnsiPlans.contains(name)) {
       name + ".ansi"
     } else {
       name
+    }
+    val nativeImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
+    if (!nativeImpl.equals(CometConf.SCAN_NATIVE_COMET)) {
+      goldenFileName = s"$goldenFileName.$nativeImpl"
     }
     new File(goldenFilePath, goldenFileName)
   }
@@ -91,8 +95,8 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       actualExplain: String): Boolean = {
     val simplifiedFile = new File(dir, "simplified.txt")
     val expectedSimplified = FileUtils.readFileToString(simplifiedFile, StandardCharsets.UTF_8)
-    lazy val explainFile = new File(dir, "explain.txt")
-    lazy val expectedExplain = FileUtils.readFileToString(explainFile, StandardCharsets.UTF_8)
+    val explainFile = new File(dir, "explain.txt")
+    val expectedExplain = FileUtils.readFileToString(explainFile, StandardCharsets.UTF_8)
     expectedSimplified == actualSimplifiedPlan && expectedExplain == actualExplain
   }
 
@@ -257,12 +261,21 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     val queryString = resourceToString(
       s"$tpcdsGroup/$query.sql",
       classLoader = Thread.currentThread().getContextClassLoader)
+
+    // Comet does not yet support DPP yet with full native scan enabled
+    // https://github.com/apache/datafusion-comet/issues/121
+    val dppEnabled = CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_COMET
+
     // Disable char/varchar read-side handling for better performance.
     withSQLConf(
+      CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true",
       CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "false",
+      SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> dppEnabled.toString,
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_FALLBACK_TO_COLUMNAR.key -> "true",
       CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key -> "true",
       CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true", // needed for v1.4/q9, v1.4/q44, v2.7.0/q6, v2.7.0/q64
       "spark.sql.readSideCharPadding" -> "false",
@@ -291,6 +304,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     conf.set(MEMORY_OFFHEAP_SIZE.key, "2g")
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
+    conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "1g")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
 
@@ -313,9 +327,11 @@ class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
   override val goldenFilePath: String =
     new File(baseResourcePath, planName).getAbsolutePath
 
-  tpcdsQueries.foreach { q =>
-    test(s"check simplified (tpcds-v1.4/$q)") {
-      testQuery("tpcds", q)
+  if (CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_COMET)) {
+    tpcdsQueries.foreach { q =>
+      test(s"check simplified (tpcds-v1.4/$q)") {
+        testQuery("tpcds", q)
+      }
     }
   }
 }
@@ -331,9 +347,11 @@ class CometTPCDSV2_7_PlanStabilitySuite extends CometPlanStabilitySuite {
   override val goldenFilePath: String =
     new File(baseResourcePath, planName).getAbsolutePath
 
-  tpcdsQueriesV2_7_0.foreach { q =>
-    test(s"check simplified (tpcds-v2.7.0/$q)") {
-      testQuery("tpcds-v2.7.0", q)
+  if (CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_COMET)) {
+    tpcdsQueriesV2_7_0.foreach { q =>
+      test(s"check simplified (tpcds-v2.7.0/$q)") {
+        testQuery("tpcds-v2.7.0", q)
+      }
     }
   }
 }

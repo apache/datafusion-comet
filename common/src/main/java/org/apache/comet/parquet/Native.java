@@ -234,4 +234,56 @@ public final class Native extends NativeBase {
    * @param handle the handle to the native Parquet column reader
    */
   public static native void closeColumnReader(long handle);
+
+  ///////////// Arrow Native Parquet Reader APIs
+  // TODO: Add partitionValues(?), improve requiredColumns to use a projection mask that corresponds
+  // to arrow.
+  //      Add batch size, datetimeRebaseModeSpec, metrics(how?)...
+
+  /**
+   * Initialize a record batch reader for a PartitionedFile
+   *
+   * @param filePath
+   * @param start
+   * @param length
+   * @return a handle to the record batch reader, used in subsequent calls.
+   */
+  public static native long initRecordBatchReader(
+      String filePath,
+      long fileSize,
+      long start,
+      long length,
+      byte[] requiredSchema,
+      String sessionTimezone);
+
+  // arrow native version of read batch
+  /**
+   * Read the next batch of data into memory on native side
+   *
+   * @param handle
+   * @return the number of rows read
+   */
+  public static native int readNextRecordBatch(long handle);
+
+  // arrow native equivalent of currentBatch. 'columnNum' is number of the column in the record
+  // batch
+  /**
+   * Load the column corresponding to columnNum in the currently loaded record batch into JVM
+   *
+   * @param handle
+   * @param columnNum
+   * @param arrayAddr
+   * @param schemaAddr
+   */
+  public static native void currentColumnBatch(
+      long handle, int columnNum, long arrayAddr, long schemaAddr);
+
+  // arrow native version to close record batch reader
+
+  /**
+   * Close the record batch reader. Free the resources
+   *
+   * @param handle
+   */
+  public static native void closeRecordBatchReader(long handle);
 }

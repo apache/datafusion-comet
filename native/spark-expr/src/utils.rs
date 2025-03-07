@@ -19,7 +19,7 @@ use arrow_array::{
     cast::as_primitive_array,
     types::{Int32Type, TimestampMicrosecondType},
 };
-use arrow_schema::{ArrowError, DataType, DECIMAL128_MAX_PRECISION};
+use arrow_schema::{ArrowError, DataType, TimeUnit, DECIMAL128_MAX_PRECISION};
 use std::sync::Arc;
 
 use crate::timezone::Tz;
@@ -27,7 +27,8 @@ use arrow::{
     array::{as_dictionary_array, Array, ArrayRef, PrimitiveArray},
     temporal_conversions::as_datetime,
 };
-use arrow_data::decimal::{MAX_DECIMAL_FOR_EACH_PRECISION, MIN_DECIMAL_FOR_EACH_PRECISION};
+use arrow_array::types::TimestampMillisecondType;
+use arrow_data::decimal::{MAX_DECIMAL128_FOR_EACH_PRECISION, MIN_DECIMAL128_FOR_EACH_PRECISION};
 use chrono::{DateTime, Offset, TimeZone};
 
 /// Preprocesses input arrays to add timezone information from Spark to Arrow array datatype or
@@ -81,9 +82,21 @@ pub fn array_with_timezone(
                 }
             }
         }
-        DataType::Timestamp(_, Some(_)) => {
+        DataType::Timestamp(TimeUnit::Microsecond, Some(_)) => {
             assert!(!timezone.is_empty());
             let array = as_primitive_array::<TimestampMicrosecondType>(&array);
+            let array_with_timezone = array.clone().with_timezone(timezone.clone());
+            let array = Arc::new(array_with_timezone) as ArrayRef;
+            match to_type {
+                Some(DataType::Utf8) | Some(DataType::Date32) => {
+                    pre_timestamp_cast(array, timezone)
+                }
+                _ => Ok(array),
+            }
+        }
+        DataType::Timestamp(TimeUnit::Millisecond, Some(_)) => {
+            assert!(!timezone.is_empty());
+            let array = as_primitive_array::<TimestampMillisecondType>(&array);
             let array_with_timezone = array.clone().with_timezone(timezone.clone());
             let array = Arc::new(array_with_timezone) as ArrayRef;
             match to_type {
@@ -128,7 +141,7 @@ fn timestamp_ntz_to_timestamp(
 ) -> Result<ArrayRef, ArrowError> {
     assert!(!tz.is_empty());
     match array.data_type() {
-        DataType::Timestamp(_, None) => {
+        DataType::Timestamp(TimeUnit::Microsecond, None) => {
             let array = as_primitive_array::<TimestampMicrosecondType>(&array);
             let tz: Tz = tz.parse()?;
             let array: PrimitiveArray<TimestampMicrosecondType> = array.try_unary(|value| {
@@ -138,6 +151,25 @@ fn timestamp_ntz_to_timestamp(
                         let datetime: DateTime<Tz> =
                             tz.from_local_datetime(&local_datetime).unwrap();
                         datetime.timestamp_micros()
+                    })
+            })?;
+            let array_with_tz = if let Some(to_tz) = to_timezone {
+                array.with_timezone(to_tz)
+            } else {
+                array
+            };
+            Ok(Arc::new(array_with_tz))
+        }
+        DataType::Timestamp(TimeUnit::Millisecond, None) => {
+            let array = as_primitive_array::<TimestampMillisecondType>(&array);
+            let tz: Tz = tz.parse()?;
+            let array: PrimitiveArray<TimestampMillisecondType> = array.try_unary(|value| {
+                as_datetime::<TimestampMillisecondType>(value)
+                    .ok_or_else(|| datetime_cast_err(value))
+                    .map(|local_datetime| {
+                        let datetime: DateTime<Tz> =
+                            tz.from_local_datetime(&local_datetime).unwrap();
+                        datetime.timestamp_millis()
                     })
             })?;
             let array_with_tz = if let Some(to_tz) = to_timezone {
@@ -186,8 +218,8 @@ fn pre_timestamp_cast(array: ArrayRef, timezone: String) -> Result<ArrayRef, Arr
 #[inline]
 pub fn is_valid_decimal_precision(value: i128, precision: u8) -> bool {
     precision <= DECIMAL128_MAX_PRECISION
-        && value >= MIN_DECIMAL_FOR_EACH_PRECISION[precision as usize - 1]
-        && value <= MAX_DECIMAL_FOR_EACH_PRECISION[precision as usize - 1]
+        && value >= MIN_DECIMAL128_FOR_EACH_PRECISION[precision as usize]
+        && value <= MAX_DECIMAL128_FOR_EACH_PRECISION[precision as usize]
 }
 
 // These are borrowed from hashbrown crate:

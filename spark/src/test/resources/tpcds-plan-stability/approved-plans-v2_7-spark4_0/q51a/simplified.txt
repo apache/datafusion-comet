@@ -1,5 +1,5 @@
 TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store_cumulative]
-  WholeStageCodegen (46)
+  WholeStageCodegen (40)
     Filter [web_cumulative,store_cumulative]
       HashAggregate [item_sk,d_date,web_sales,store_sales,max,max] [max(web_sales),max(store_sales),web_cumulative,store_cumulative,max,max]
         HashAggregate [item_sk,d_date,web_sales,store_sales,web_sales,store_sales] [max,max,max,max]
@@ -7,38 +7,38 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
             BroadcastHashJoin [item_sk,item_sk,rk,rk]
               InputAdapter
                 Window [item_sk,d_date]
-                  WholeStageCodegen (22)
-                    Sort [item_sk,d_date]
+                  WholeStageCodegen (19)
+                    CometColumnarToRow
                       InputAdapter
-                        Exchange [item_sk] #1
-                          WholeStageCodegen (21)
-                            Project [item_sk,item_sk,d_date,d_date,cume_sales,cume_sales]
-                              Filter [item_sk,item_sk]
-                                SortMergeJoin [item_sk,d_date,item_sk,d_date]
-                                  InputAdapter
-                                    WholeStageCodegen (10)
-                                      Sort [item_sk,d_date]
-                                        InputAdapter
-                                          Exchange [item_sk,d_date] #2
-                                            WholeStageCodegen (9)
-                                              HashAggregate [item_sk,d_date,sumws,sum,isEmpty] [sum(sumws),cume_sales,sum,isEmpty]
-                                                InputAdapter
-                                                  Exchange [item_sk,d_date,sumws] #3
-                                                    WholeStageCodegen (8)
-                                                      HashAggregate [item_sk,d_date,sumws,sumws] [sum,isEmpty,sum,isEmpty]
-                                                        Project [item_sk,d_date,sumws,sumws]
-                                                          BroadcastHashJoin [item_sk,item_sk,rk,rk]
-                                                            Project [item_sk,d_date,sumws,rk]
-                                                              InputAdapter
-                                                                Window [ws_item_sk,d_date]
-                                                                  WholeStageCodegen (3)
-                                                                    Sort [ws_item_sk,d_date]
-                                                                      InputAdapter
-                                                                        Exchange [ws_item_sk] #4
-                                                                          WholeStageCodegen (2)
-                                                                            HashAggregate [ws_item_sk,d_date,sum] [sum(UnscaledValue(ws_sales_price)),item_sk,sumws,sum]
+                        CometSort [item_sk,d_date,web_sales,store_sales]
+                          CometExchange [item_sk] #1
+                            CometProject [item_sk,item_sk,d_date,d_date,cume_sales,cume_sales] [item_sk,d_date,web_sales,store_sales]
+                              CometFilter [item_sk,d_date,cume_sales,item_sk,d_date,cume_sales]
+                                CometSortMergeJoin [item_sk,d_date,cume_sales,item_sk,d_date,cume_sales]
+                                  CometSort [item_sk,d_date,cume_sales]
+                                    CometColumnarExchange [item_sk,d_date] #2
+                                      WholeStageCodegen (9)
+                                        HashAggregate [item_sk,d_date,sumws,sum,isEmpty] [sum(sumws),cume_sales,sum,isEmpty]
+                                          CometColumnarToRow
+                                            InputAdapter
+                                              CometColumnarExchange [item_sk,d_date,sumws] #3
+                                                WholeStageCodegen (8)
+                                                  HashAggregate [item_sk,d_date,sumws,sumws] [sum,isEmpty,sum,isEmpty]
+                                                    Project [item_sk,d_date,sumws,sumws]
+                                                      BroadcastHashJoin [item_sk,item_sk,rk,rk]
+                                                        Project [item_sk,d_date,sumws,rk]
+                                                          InputAdapter
+                                                            Window [ws_item_sk,d_date]
+                                                              WholeStageCodegen (3)
+                                                                CometColumnarToRow
+                                                                  InputAdapter
+                                                                    CometSort [item_sk,d_date,sumws,ws_item_sk]
+                                                                      CometColumnarExchange [ws_item_sk] #4
+                                                                        WholeStageCodegen (2)
+                                                                          HashAggregate [ws_item_sk,d_date,sum] [sum(UnscaledValue(ws_sales_price)),item_sk,sumws,sum]
+                                                                            CometColumnarToRow
                                                                               InputAdapter
-                                                                                Exchange [ws_item_sk,d_date] #5
+                                                                                CometColumnarExchange [ws_item_sk,d_date] #5
                                                                                   WholeStageCodegen (1)
                                                                                     HashAggregate [ws_item_sk,d_date,ws_sales_price] [sum,sum]
                                                                                       CometColumnarToRow
@@ -59,41 +59,42 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                                                                 CometProject [d_date_sk,d_date]
                                                                                                   CometFilter [d_date_sk,d_date,d_month_seq]
                                                                                                     CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date,d_month_seq]
-                                                            InputAdapter
-                                                              BroadcastExchange #8
-                                                                WholeStageCodegen (7)
-                                                                  Project [item_sk,sumws,rk]
-                                                                    InputAdapter
-                                                                      Window [ws_item_sk,d_date]
-                                                                        WholeStageCodegen (6)
-                                                                          Sort [ws_item_sk,d_date]
-                                                                            InputAdapter
-                                                                              ReusedExchange [item_sk,d_date,sumws,ws_item_sk] #4
-                                  InputAdapter
-                                    WholeStageCodegen (20)
-                                      Sort [item_sk,d_date]
-                                        InputAdapter
-                                          Exchange [item_sk,d_date] #9
-                                            WholeStageCodegen (19)
-                                              HashAggregate [item_sk,d_date,sumss,sum,isEmpty] [sum(sumss),cume_sales,sum,isEmpty]
-                                                InputAdapter
-                                                  Exchange [item_sk,d_date,sumss] #10
-                                                    WholeStageCodegen (18)
-                                                      HashAggregate [item_sk,d_date,sumss,sumss] [sum,isEmpty,sum,isEmpty]
-                                                        Project [item_sk,d_date,sumss,sumss]
-                                                          BroadcastHashJoin [item_sk,item_sk,rk,rk]
-                                                            Project [item_sk,d_date,sumss,rk]
-                                                              InputAdapter
-                                                                Window [ss_item_sk,d_date]
-                                                                  WholeStageCodegen (13)
-                                                                    Sort [ss_item_sk,d_date]
-                                                                      InputAdapter
-                                                                        Exchange [ss_item_sk] #11
-                                                                          WholeStageCodegen (12)
-                                                                            HashAggregate [ss_item_sk,d_date,sum] [sum(UnscaledValue(ss_sales_price)),item_sk,sumss,sum]
+                                                        InputAdapter
+                                                          BroadcastExchange #8
+                                                            WholeStageCodegen (7)
+                                                              Project [item_sk,sumws,rk]
+                                                                InputAdapter
+                                                                  Window [ws_item_sk,d_date]
+                                                                    WholeStageCodegen (6)
+                                                                      CometColumnarToRow
+                                                                        InputAdapter
+                                                                          CometSort [item_sk,d_date,sumws,ws_item_sk]
+                                                                            ReusedExchange [item_sk,d_date,sumws,ws_item_sk] #4
+                                  CometSort [item_sk,d_date,cume_sales]
+                                    CometColumnarExchange [item_sk,d_date] #9
+                                      WholeStageCodegen (18)
+                                        HashAggregate [item_sk,d_date,sumss,sum,isEmpty] [sum(sumss),cume_sales,sum,isEmpty]
+                                          CometColumnarToRow
+                                            InputAdapter
+                                              CometColumnarExchange [item_sk,d_date,sumss] #10
+                                                WholeStageCodegen (17)
+                                                  HashAggregate [item_sk,d_date,sumss,sumss] [sum,isEmpty,sum,isEmpty]
+                                                    Project [item_sk,d_date,sumss,sumss]
+                                                      BroadcastHashJoin [item_sk,item_sk,rk,rk]
+                                                        Project [item_sk,d_date,sumss,rk]
+                                                          InputAdapter
+                                                            Window [ss_item_sk,d_date]
+                                                              WholeStageCodegen (12)
+                                                                CometColumnarToRow
+                                                                  InputAdapter
+                                                                    CometSort [item_sk,d_date,sumss,ss_item_sk]
+                                                                      CometColumnarExchange [ss_item_sk] #11
+                                                                        WholeStageCodegen (11)
+                                                                          HashAggregate [ss_item_sk,d_date,sum] [sum(UnscaledValue(ss_sales_price)),item_sk,sumss,sum]
+                                                                            CometColumnarToRow
                                                                               InputAdapter
-                                                                                Exchange [ss_item_sk,d_date] #12
-                                                                                  WholeStageCodegen (11)
+                                                                                CometColumnarExchange [ss_item_sk,d_date] #12
+                                                                                  WholeStageCodegen (10)
                                                                                     HashAggregate [ss_item_sk,d_date,ss_sales_price] [sum,sum]
                                                                                       CometColumnarToRow
                                                                                         InputAdapter
@@ -103,23 +104,25 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                                                                 CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_sales_price,ss_sold_date_sk]
                                                                                                   ReusedSubquery [d_date_sk] #1
                                                                                               ReusedExchange [d_date_sk,d_date] #7
-                                                            InputAdapter
-                                                              BroadcastExchange #13
-                                                                WholeStageCodegen (17)
-                                                                  Project [item_sk,sumss,rk]
-                                                                    InputAdapter
-                                                                      Window [ss_item_sk,d_date]
-                                                                        WholeStageCodegen (16)
-                                                                          Sort [ss_item_sk,d_date]
-                                                                            InputAdapter
-                                                                              ReusedExchange [item_sk,d_date,sumss,ss_item_sk] #11
+                                                        InputAdapter
+                                                          BroadcastExchange #13
+                                                            WholeStageCodegen (16)
+                                                              Project [item_sk,sumss,rk]
+                                                                InputAdapter
+                                                                  Window [ss_item_sk,d_date]
+                                                                    WholeStageCodegen (15)
+                                                                      CometColumnarToRow
+                                                                        InputAdapter
+                                                                          CometSort [item_sk,d_date,sumss,ss_item_sk]
+                                                                            ReusedExchange [item_sk,d_date,sumss,ss_item_sk] #11
               InputAdapter
                 BroadcastExchange #14
-                  WholeStageCodegen (45)
+                  WholeStageCodegen (39)
                     Project [item_sk,web_sales,store_sales,rk]
                       InputAdapter
                         Window [item_sk,d_date]
-                          WholeStageCodegen (44)
-                            Sort [item_sk,d_date]
+                          WholeStageCodegen (38)
+                            CometColumnarToRow
                               InputAdapter
-                                ReusedExchange [item_sk,d_date,web_sales,store_sales] #1
+                                CometSort [item_sk,d_date,web_sales,store_sales]
+                                  ReusedExchange [item_sk,d_date,web_sales,store_sales] #1

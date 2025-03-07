@@ -26,23 +26,39 @@ import org.rogach.scallop.ScallopOption
 
 import org.apache.spark.sql.SparkSession
 
+import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
+
 class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
   object generateData extends Subcommand("data") {
-    val numFiles: ScallopOption[Int] = opt[Int](required = true)
-    val numRows: ScallopOption[Int] = opt[Int](required = true)
-    val numColumns: ScallopOption[Int] = opt[Int](required = true)
-    val excludeNegativeZero: ScallopOption[Boolean] = opt[Boolean](required = false)
+    val numFiles: ScallopOption[Int] =
+      opt[Int](required = true, descr = "Number of files to generate")
+    val numRows: ScallopOption[Int] = opt[Int](required = true, descr = "Number of rows per file")
+    val randomSeed: ScallopOption[Long] =
+      opt[Long](required = false, descr = "Random seed to use")
+    val generateArrays: ScallopOption[Boolean] =
+      opt[Boolean](required = false, descr = "Whether to generate arrays")
+    val generateStructs: ScallopOption[Boolean] =
+      opt[Boolean](required = false, descr = "Whether to generate structs")
+    val generateMaps: ScallopOption[Boolean] =
+      opt[Boolean](required = false, descr = "Whether to generate maps")
+    val excludeNegativeZero: ScallopOption[Boolean] =
+      opt[Boolean](required = false, descr = "Whether to exclude negative zero")
   }
   addSubcommand(generateData)
   object generateQueries extends Subcommand("queries") {
-    val numFiles: ScallopOption[Int] = opt[Int](required = false)
-    val numQueries: ScallopOption[Int] = opt[Int](required = true)
+    val numFiles: ScallopOption[Int] =
+      opt[Int](required = false, descr = "Number of input files to use")
+    val numQueries: ScallopOption[Int] =
+      opt[Int](required = true, descr = "Number of queries to generate")
+    val randomSeed: ScallopOption[Long] =
+      opt[Long](required = false, descr = "Random seed to use")
   }
   addSubcommand(generateQueries)
   object runQueries extends Subcommand("run") {
-    val filename: ScallopOption[String] = opt[String](required = true)
-    val numFiles: ScallopOption[Int] = opt[Int](required = false)
-    val showMatchingResults: ScallopOption[Boolean] = opt[Boolean](required = false)
+    val filename: ScallopOption[String] =
+      opt[String](required = true, descr = "File to write queries to")
+    val numFiles: ScallopOption[Int] =
+      opt[Int](required = false, descr = "Number of input files to use")
   }
   addSubcommand(runQueries)
   verify()
@@ -55,30 +71,39 @@ object Main {
     .getOrCreate()
 
   def main(args: Array[String]): Unit = {
-    val r = new Random(42)
-
     val conf = new Conf(args.toIndexedSeq)
     conf.subcommand match {
       case Some(conf.generateData) =>
-        DataGen.generateRandomFiles(
-          r,
-          spark,
-          numFiles = conf.generateData.numFiles(),
-          numRows = conf.generateData.numRows(),
-          numColumns = conf.generateData.numColumns(),
+        val r = conf.generateData.randomSeed.toOption match {
+          case Some(seed) => new Random(seed)
+          case None => new Random()
+        }
+        val options = DataGenOptions(
+          allowNull = true,
+          generateArray = conf.generateData.generateArrays(),
+          generateStruct = conf.generateData.generateStructs(),
+          generateMap = conf.generateData.generateMaps(),
           generateNegativeZero = !conf.generateData.excludeNegativeZero())
+        for (i <- 0 until conf.generateData.numFiles()) {
+          ParquetGenerator.makeParquetFile(
+            r,
+            spark,
+            s"test$i.parquet",
+            numRows = conf.generateData.numRows(),
+            options)
+        }
       case Some(conf.generateQueries) =>
+        val r = conf.generateQueries.randomSeed.toOption match {
+          case Some(seed) => new Random(seed)
+          case None => new Random()
+        }
         QueryGen.generateRandomQueries(
           r,
           spark,
           numFiles = conf.generateQueries.numFiles(),
           conf.generateQueries.numQueries())
       case Some(conf.runQueries) =>
-        QueryRunner.runQueries(
-          spark,
-          conf.runQueries.numFiles(),
-          conf.runQueries.filename(),
-          conf.runQueries.showMatchingResults())
+        QueryRunner.runQueries(spark, conf.runQueries.numFiles(), conf.runQueries.filename())
       case _ =>
         // scalastyle:off println
         println("Invalid subcommand")

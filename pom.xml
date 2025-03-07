@@ -30,7 +30,7 @@ under the License.
   </parent>
   <groupId>org.apache.datafusion</groupId>
   <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-  <version>0.5.0-SNAPSHOT</version>
+  <version>0.7.0-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>Comet Project Parent POM</name>
 
@@ -55,7 +55,7 @@ under the License.
     <spark.version>3.4.3</spark.version>
     <spark.version.short>3.4</spark.version.short>
     <spark.maven.scope>provided</spark.maven.scope>
-    <protobuf.version>3.19.6</protobuf.version>
+    <protobuf.version>3.25.5</protobuf.version>
     <parquet.version>1.13.1</parquet.version>
     <parquet.maven.scope>provided</parquet.maven.scope>
     <arrow.version>16.0.0</arrow.version>
@@ -64,6 +64,7 @@ under the License.
     <jacoco.version>0.8.11</jacoco.version>
     <semanticdb.version>4.8.8</semanticdb.version>
     <slf4j.version>2.0.6</slf4j.version>
+    <guava.version>33.2.1-jre</guava.version>
     <jni.dir>${project.basedir}/../native/target/debug</jni.dir>
     <platform>darwin</platform>
     <arch>x86_64</arch>
@@ -259,7 +260,7 @@ under the License.
       <dependency>
         <groupId>com.google.guava</groupId>
         <artifactId>guava</artifactId>
-        <version>14.0.1</version>
+        <version>${guava.version}</version>
       </dependency>
       <!-- End of shaded deps -->
 
@@ -478,6 +479,20 @@ under the License.
     </profile>
 
     <profile>
+      <id>Win-amd64</id>
+      <activation>
+        <os>
+          <family>Windows</family>
+          <arch>amd64</arch>
+        </os>
+      </activation>
+      <properties>
+        <platform>win32</platform>
+        <arch>amd64</arch>
+      </properties>
+    </profile>
+
+    <profile>
       <id>Darwin-x86</id>
       <activation>
         <os>
@@ -559,7 +574,7 @@ under the License.
       <id>spark-3.5</id>
       <properties>
         <scala.version>2.12.18</scala.version>
-        <spark.version>3.5.1</spark.version>
+        <spark.version>3.5.4</spark.version>
         <spark.version.short>3.5</spark.version.short>
         <parquet.version>1.13.1</parquet.version>
         <slf4j.version>2.0.7</slf4j.version>

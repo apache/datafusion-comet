@@ -100,6 +100,8 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
 
     // Comet specific configurations
     val capacity = CometConf.COMET_BATCH_SIZE.get(sqlConf)
+    val nativeIcebergCompat =
+      CometConf.COMET_NATIVE_SCAN_IMPL.get(sqlConf).equals(CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
 
     (file: PartitionedFile) => {
       val sharedConf = broadcastedHadoopConf.value.value
@@ -134,22 +136,54 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
       }
       pushed.foreach(p => ParquetInputFormat.setFilterPredicate(sharedConf, p))
 
-      val batchReader = new BatchReader(
-        sharedConf,
-        file,
-        footer,
-        capacity,
-        requiredSchema,
-        isCaseSensitive,
-        useFieldId,
-        ignoreMissingIds,
-        datetimeRebaseSpec.mode == CORRECTED,
-        partitionSchema,
-        file.partitionValues,
-        JavaConverters.mapAsJavaMap(metrics))
-      val iter = new RecordReaderIterator(batchReader)
+      val recordBatchReader =
+        if (nativeIcebergCompat) {
+          val batchReader = new NativeBatchReader(
+            sharedConf,
+            file,
+            footer,
+            capacity,
+            requiredSchema,
+            isCaseSensitive,
+            useFieldId,
+            ignoreMissingIds,
+            datetimeRebaseSpec.mode == CORRECTED,
+            partitionSchema,
+            file.partitionValues,
+            JavaConverters.mapAsJavaMap(metrics))
+          try {
+            batchReader.init()
+          } catch {
+            case e: Throwable =>
+              batchReader.close()
+              throw e
+          }
+          batchReader
+        } else {
+          val batchReader = new BatchReader(
+            sharedConf,
+            file,
+            footer,
+            capacity,
+            requiredSchema,
+            isCaseSensitive,
+            useFieldId,
+            ignoreMissingIds,
+            datetimeRebaseSpec.mode == CORRECTED,
+            partitionSchema,
+            file.partitionValues,
+            JavaConverters.mapAsJavaMap(metrics))
+          try {
+            batchReader.init()
+          } catch {
+            case e: Throwable =>
+              batchReader.close()
+              throw e
+          }
+          batchReader
+        }
+      val iter = new RecordReaderIterator(recordBatchReader)
       try {
-        batchReader.init()
         iter.asInstanceOf[Iterator[InternalRow]]
       } catch {
         case e: Throwable =>

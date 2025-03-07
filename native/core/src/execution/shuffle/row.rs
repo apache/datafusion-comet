@@ -21,9 +21,9 @@ use crate::{
     errors::CometError,
     execution::{
         shuffle::{
+            codec::{Checksum, ShuffleBlockWriter},
             list::{append_list_element, SparkUnsafeArray},
             map::{append_map_elements, get_map_key_value_dt, SparkUnsafeMap},
-            shuffle_writer::{write_ipc_compressed, Checksum},
         },
         utils::bytes_to_i128,
     },
@@ -292,7 +292,7 @@ macro_rules! downcast_builder_ref {
 }
 
 // Expose the macro for other modules.
-use crate::execution::shuffle::shuffle_writer::CompressionCodec;
+use crate::execution::shuffle::CompressionCodec;
 pub(crate) use downcast_builder_ref;
 
 /// Appends field of row to the given struct builder. `dt` is the data type of the field.
@@ -3297,6 +3297,8 @@ pub fn process_sorted_row_partition(
     // this is the initial checksum for this method, as it also gets updated iteratively
     // inside the loop within the method across batches.
     initial_checksum: Option<u32>,
+    codec: &CompressionCodec,
+    enable_fast_encoding: bool,
 ) -> Result<(i64, Option<u32>), CometError> {
     // TODO: We can tune this parameter automatically based on row size and cache size.
     let row_step = 10;
@@ -3359,9 +3361,12 @@ pub fn process_sorted_row_partition(
 
         // we do not collect metrics in Native_writeSortedFileNative
         let ipc_time = Time::default();
-        // compression codec is not configurable for CometBypassMergeSortShuffleWriter
-        let codec = CompressionCodec::Zstd(1);
-        written += write_ipc_compressed(&batch, &mut cursor, &codec, &ipc_time)?;
+        let block_writer = ShuffleBlockWriter::try_new(
+            batch.schema().as_ref(),
+            enable_fast_encoding,
+            codec.clone(),
+        )?;
+        written += block_writer.write_batch(&batch, &mut cursor, &ipc_time)?;
 
         if let Some(checksum) = &mut current_checksum {
             checksum.update(&mut cursor)?;
@@ -3430,24 +3435,10 @@ fn builder_to_array(
 }
 
 fn make_batch(arrays: Vec<ArrayRef>, row_count: usize) -> Result<RecordBatch, ArrowError> {
-    let mut dict_id = 0;
     let fields = arrays
         .iter()
         .enumerate()
-        .map(|(i, array)| match array.data_type() {
-            DataType::Dictionary(_, _) => {
-                let field = Field::new_dict(
-                    format!("c{}", i),
-                    array.data_type().clone(),
-                    true,
-                    dict_id,
-                    false,
-                );
-                dict_id += 1;
-                field
-            }
-            _ => Field::new(format!("c{}", i), array.data_type().clone(), true),
-        })
+        .map(|(i, array)| Field::new(format!("c{}", i), array.data_type().clone(), true))
         .collect::<Vec<_>>();
     let schema = Arc::new(Schema::new(fields));
     let options = RecordBatchOptions::new().with_row_count(Option::from(row_count));

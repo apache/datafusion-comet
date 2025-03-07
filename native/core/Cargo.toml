@@ -44,7 +44,7 @@ parquet = { workspace = true, default-features = false, features = ["experimenta
 futures = { workspace = true }
 mimalloc = { version = "*", default-features = false, optional = true }
 tokio = { version = "1", features = ["rt-multi-thread"] }
-async-trait = "0.1"
+async-trait = { workspace = true }
 log = "0.4"
 log4rs = "1.2.0"
 thiserror = { workspace = true }
@@ -52,14 +52,17 @@ serde = { version = "1", features = ["derive"] }
 lazy_static = "1.4.0"
 prost = "0.12.1"
 jni = "0.21"
+snap = "1.1"
+# we disable default features in lz4_flex to force the use of the faster unsafe encoding and decoding implementation
+lz4_flex = { version = "0.11.3", default-features = false }
 zstd = "0.11"
 rand = { workspace = true}
 num = { workspace = true }
-bytes = "1.5.0"
+bytes = { workspace = true }
 tempfile = "3.8.0"
-itertools = "0.11.0"
+itertools = "0.14.0"
 paste = "1.0.14"
-datafusion-common = { workspace = true }
+datafusion-common = { workspace = true, features= ["object_store"] }
 datafusion = {  workspace = true }
 datafusion-functions-nested = { workspace = true }
 datafusion-expr = {  workspace = true }
@@ -71,9 +74,13 @@ crc32fast = "1.3.2"
 simd-adler32 = "0.3.7"
 datafusion-comet-spark-expr = { workspace = true }
 datafusion-comet-proto = { workspace = true }
+object_store = { workspace = true }
+url = { workspace = true }
+parking_lot = "0.12.3"
+datafusion-comet-objectstore-hdfs = { path = "../hdfs", optional = true}
 
 [dev-dependencies]
-pprof = { version = "0.13.0", features = ["flamegraph"] }
+pprof = { version = "0.14.0", features = ["flamegraph"] }
 criterion = { version = "0.5.1", features = ["async_tokio"] }
 jni = { version = "0.21", features = ["invocation"] }
 lazy_static = "1.4"
@@ -82,6 +89,11 @@ hex = "0.4.3"
 
 [features]
 default = []
+hdfs=["datafusion-comet-objectstore-hdfs"]
+
+# exclude optional packages from cargo machete verifications
+[package.metadata.cargo-machete]
+ignored = ["datafusion-comet-objectstore-hdfs"]
 
 [lib]
 name = "comet"

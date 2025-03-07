@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::spark_hash::spark_compatible_murmur3_hash;
+use crate::hash_funcs::murmur3::spark_compatible_murmur3_hash;
 use arrow_array::builder::Float64Builder;
 use arrow_array::{Float64Array, RecordBatch};
 use arrow_schema::{DataType, Schema};
@@ -36,7 +36,7 @@ use std::sync::{Arc, Mutex};
 /// Due to the lack of hexadecimal float literals support in rust, the scientific notation is used instead.
 const DOUBLE_UNIT: f64 = 1.1102230246251565e-16;
 
-/// Spark-compatible initial seed which is actually a part of  the scala standard library murmurhash3 implementation.
+/// Spark-compatible initial seed which is actually a part of the scala standard library murmurhash3 implementation.
 /// The references:
 /// https://github.com/apache/spark/blob/91f3fdd25852b43095dd5273358fc394ffd11b66/core/src/main/scala/org/apache/spark/util/random/XORShiftRandom.scala#L63
 /// https://github.com/scala/scala/blob/360d5da544d84b821c40e4662ad08703b51a44e1/src/library/scala/util/hashing/MurmurHash3.scala#L331

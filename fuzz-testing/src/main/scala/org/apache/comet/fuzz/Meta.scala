@@ -103,8 +103,16 @@ object Meta {
   val miscScalarFunc: Seq[Function] =
     Seq(Function("isnan", 1), Function("isnull", 1), Function("isnotnull", 1))
 
+  val arrayScalarFunc: Seq[Function] = Seq(
+    Function("array", 2),
+    Function("array_remove", 2),
+    Function("array_insert", 2),
+    Function("array_contains", 2),
+    Function("array_intersect", 2),
+    Function("array_append", 2))
+
   val scalarFunc: Seq[Function] = stringScalarFunc ++ dateScalarFunc ++
-    mathScalarFunc ++ miscScalarFunc
+    mathScalarFunc ++ miscScalarFunc ++ arrayScalarFunc
 
   val aggFunc: Seq[Function] = Seq(
     Function("min", 1),
@@ -124,7 +132,8 @@ object Meta {
 
   val unaryArithmeticOps: Seq[String] = Seq("+", "-")
 
-  val binaryArithmeticOps: Seq[String] = Seq("+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>")
+  val binaryArithmeticOps: Seq[String] =
+    Seq("+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>", "div")
 
   val comparisonOps: Seq[String] = Seq("=", "<=>", ">", ">=", "<", "<=")
 

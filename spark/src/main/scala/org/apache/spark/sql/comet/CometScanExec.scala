@@ -131,8 +131,15 @@ case class CometScanExec(
   // exposed for testing
   lazy val bucketedScan: Boolean = wrapped.bucketedScan
 
-  override lazy val (outputPartitioning, outputOrdering): (Partitioning, Seq[SortOrder]) =
-    (wrapped.outputPartitioning, wrapped.outputOrdering)
+  override lazy val (outputPartitioning, outputOrdering): (Partitioning, Seq[SortOrder]) = {
+    if (bucketedScan) {
+      (wrapped.outputPartitioning, wrapped.outputOrdering)
+    } else {
+      val files = selectedPartitions.flatMap(partition => partition.files)
+      val numPartitions = files.length
+      (UnknownPartitioning(numPartitions), wrapped.outputOrdering)
+    }
+  }
 
   @transient
   private lazy val pushedDownFilters = getPushedDownFilters(relation, dataFilters)
@@ -406,9 +413,20 @@ case class CometScanExec(
       readFile: (PartitionedFile) => Iterator[InternalRow],
       partitions: Seq[FilePartition]): RDD[InternalRow] = {
     val hadoopConf = relation.sparkSession.sessionState.newHadoopConfWithOptions(relation.options)
+    val usingDataFusionReader: Boolean = {
+      hadoopConf.getBoolean(
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key,
+        CometConf.COMET_NATIVE_SCAN_ENABLED.defaultValue.get) &&
+      hadoopConf
+        .get(
+          CometConf.COMET_NATIVE_SCAN_IMPL.key,
+          CometConf.COMET_NATIVE_SCAN_IMPL.defaultValueString)
+        .equalsIgnoreCase(CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
+    }
     val prefetchEnabled = hadoopConf.getBoolean(
       CometConf.COMET_SCAN_PREFETCH_ENABLED.key,
-      CometConf.COMET_SCAN_PREFETCH_ENABLED.defaultValue.get)
+      CometConf.COMET_SCAN_PREFETCH_ENABLED.defaultValue.get) &&
+      !usingDataFusionReader
 
     val sqlConf = fsRelation.sparkSession.sessionState.conf
     if (prefetchEnabled) {
@@ -465,6 +483,19 @@ case class CometScanExec(
 }
 
 object CometScanExec extends DataTypeSupport {
+
+  override def isAdditionallySupported(dt: DataType): Boolean = {
+    if (CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
+      // TODO add array and map
+      dt match {
+        case s: StructType => s.fields.map(_.dataType).forall(isTypeSupported)
+        case _ => false
+      }
+    } else {
+      false
+    }
+  }
+
   def apply(scanExec: FileSourceScanExec, session: SparkSession): CometScanExec = {
     // TreeNode.mapProductIterator is protected method.
     def mapProductIterator[B: ClassTag](product: Product, f: Any => B): Array[B] = {
