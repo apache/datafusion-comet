@@ -29,10 +29,12 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.function.Function;
 
 import scala.Option;
 import scala.collection.Seq;
@@ -643,21 +645,31 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
   // method not found exception.
   @SuppressWarnings("unchecked")
   private Option<AccumulatorV2<?, ?>> getTaskAccumulator(TaskMetrics taskMetrics) {
-    Method externalAccumsMethod;
-    try {
-      externalAccumsMethod = TaskMetrics.class.getDeclaredMethod("externalAccums");
-      externalAccumsMethod.setAccessible(true);
-      String returnType = externalAccumsMethod.getReturnType().getName();
-      if (returnType.equals("scala.collection.mutable.Buffer")) {
-        return ((Buffer<AccumulatorV2<?, ?>>) externalAccumsMethod.invoke(taskMetrics))
-            .lastOption();
-      } else if (returnType.equals("scala.collection.Seq")) {
-        return ((Seq<AccumulatorV2<?, ?>>) externalAccumsMethod.invoke(taskMetrics)).lastOption();
-      } else {
-        return Option.apply(null); // None
+    Optional<Method> externalAccumsMethod =
+        Arrays.stream(TaskMetrics.class.getDeclaredMethods())
+            .filter(
+                m -> Arrays.asList("externalAccums", "withExternalAccums").contains(m.getName()))
+            .findFirst();
+    if (externalAccumsMethod.isPresent()) {
+      Method method = externalAccumsMethod.get();
+      method.setAccessible(true);
+      String methodName = method.getName();
+      try {
+        if (methodName.equals("externalAccums")) {
+          String returnType = method.getReturnType().getName();
+          if (returnType.equals("scala.collection.mutable.Buffer")) {
+            return ((Buffer<AccumulatorV2<?, ?>>) method.invoke(taskMetrics)).lastOption();
+          } else if (returnType.equals("scala.collection.Seq")) {
+            return ((Seq<AccumulatorV2<?, ?>>) method.invoke(taskMetrics)).lastOption();
+          }
+        } else if (methodName.equals("withExternalAccums")) {
+          return ((Buffer<AccumulatorV2<?, ?>>) method.invoke(taskMetrics, Function.identity()))
+              .lastOption();
+        }
+      } catch (InvocationTargetException | IllegalAccessException e) {
+        LOG.warn("Exception found finding externalAccums/withExternalAccums: " + e.getMessage());
       }
-    } catch (NoSuchMethodException | InvocationTargetException | IllegalAccessException e) {
-      return Option.apply(null); // None
     }
+    return Option.apply(null); // None
   }
 }
