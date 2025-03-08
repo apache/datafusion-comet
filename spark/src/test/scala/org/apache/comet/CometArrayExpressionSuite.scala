@@ -183,39 +183,43 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
 
   test("ArrayInsert") {
     assume(isSpark34Plus)
-    Seq(true, false).foreach(dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
-        val df = spark.read
-          .parquet(path.toString)
-          .withColumn("arr", array(col("_4"), lit(null), col("_4")))
-          .withColumn("arrInsertResult", expr("array_insert(arr, 1, 1)"))
-          .withColumn("arrInsertNegativeIndexResult", expr("array_insert(arr, -1, 1)"))
-          .withColumn("arrPosGreaterThanSize", expr("array_insert(arr, 8, 1)"))
-          .withColumn("arrNegPosGreaterThanSize", expr("array_insert(arr, -8, 1)"))
-          .withColumn("arrInsertNone", expr("array_insert(arr, 1, null)"))
-        checkSparkAnswerAndOperator(df.select("arrInsertResult"))
-        checkSparkAnswerAndOperator(df.select("arrInsertNegativeIndexResult"))
-        checkSparkAnswerAndOperator(df.select("arrPosGreaterThanSize"))
-        checkSparkAnswerAndOperator(df.select("arrNegPosGreaterThanSize"))
-        checkSparkAnswerAndOperator(df.select("arrInsertNone"))
-      })
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+      Seq(true, false).foreach(dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
+          val df = spark.read
+            .parquet(path.toString)
+            .withColumn("arr", array(col("_4"), lit(null), col("_4")))
+            .withColumn("arrInsertResult", expr("array_insert(arr, 1, 1)"))
+            .withColumn("arrInsertNegativeIndexResult", expr("array_insert(arr, -1, 1)"))
+            .withColumn("arrPosGreaterThanSize", expr("array_insert(arr, 8, 1)"))
+            .withColumn("arrNegPosGreaterThanSize", expr("array_insert(arr, -8, 1)"))
+            .withColumn("arrInsertNone", expr("array_insert(arr, 1, null)"))
+          checkSparkAnswerAndOperator(df.select("arrInsertResult"))
+          checkSparkAnswerAndOperator(df.select("arrInsertNegativeIndexResult"))
+          checkSparkAnswerAndOperator(df.select("arrPosGreaterThanSize"))
+          checkSparkAnswerAndOperator(df.select("arrNegPosGreaterThanSize"))
+          checkSparkAnswerAndOperator(df.select("arrInsertNone"))
+        })
+    }
   }
 
   test("ArrayInsertUnsupportedArgs") {
     // This test checks that the else branch in ArrayInsert
     // mapping to the comet is valid and fallback to spark is working fine.
     assume(isSpark34Plus)
-    withTempDir { dir =>
-      val path = new Path(dir.toURI.toString, "test.parquet")
-      makeParquetFileAllTypes(path, dictionaryEnabled = false, 10000)
-      val df = spark.read
-        .parquet(path.toString)
-        .withColumn("arr", array(col("_4"), lit(null), col("_4")))
-        .withColumn("idx", udf((_: Int) => 1).apply(col("_4")))
-        .withColumn("arrUnsupportedArgs", expr("array_insert(arr, idx, 1)"))
-      checkSparkAnswer(df.select("arrUnsupportedArgs"))
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = false, 10000)
+        val df = spark.read
+          .parquet(path.toString)
+          .withColumn("arr", array(col("_4"), lit(null), col("_4")))
+          .withColumn("idx", udf((_: Int) => 1).apply(col("_4")))
+          .withColumn("arrUnsupportedArgs", expr("array_insert(arr, idx, 1)"))
+        checkSparkAnswer(df.select("arrUnsupportedArgs"))
+      }
     }
   }
 
