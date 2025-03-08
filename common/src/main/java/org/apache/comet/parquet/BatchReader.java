@@ -21,6 +21,7 @@ package org.apache.comet.parquet;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URI;
@@ -29,15 +30,13 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.function.Function;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import scala.Option;
-import scala.collection.Seq;
 import scala.collection.mutable.Buffer;
 
 import org.slf4j.Logger;
@@ -645,30 +644,22 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
   // method not found exception.
   @SuppressWarnings("unchecked")
   private Option<AccumulatorV2<?, ?>> getTaskAccumulator(TaskMetrics taskMetrics) {
-    Optional<Method> externalAccumsMethod =
-        Arrays.stream(TaskMetrics.class.getDeclaredMethods())
-            .filter(
-                m -> Arrays.asList("externalAccums", "withExternalAccums").contains(m.getName()))
-            .findFirst();
-    if (externalAccumsMethod.isPresent()) {
-      Method method = externalAccumsMethod.get();
+    ReentrantReadWriteLock.ReadLock readLock = null;
+    try {
+      Method method = TaskMetrics.class.getDeclaredMethod("_externalAccums");
       method.setAccessible(true);
-      String methodName = method.getName();
-      try {
-        if (methodName.equals("externalAccums")) {
-          String returnType = method.getReturnType().getName();
-          if (returnType.equals("scala.collection.mutable.Buffer")) {
-            return ((Buffer<AccumulatorV2<?, ?>>) method.invoke(taskMetrics)).lastOption();
-          } else if (returnType.equals("scala.collection.Seq")) {
-            return ((Seq<AccumulatorV2<?, ?>>) method.invoke(taskMetrics)).lastOption();
-          }
-        } else if (methodName.equals("withExternalAccums")) {
-          return ((Buffer<AccumulatorV2<?, ?>>) method.invoke(taskMetrics, Function.identity()))
-              .lastOption();
-        }
-      } catch (InvocationTargetException | IllegalAccessException e) {
-        LOG.warn("Exception found finding externalAccums/withExternalAccums: " + e.getMessage());
-      }
+      Field field = TaskMetrics.class.getDeclaredField("readLock");
+      field.setAccessible(true);
+      readLock = (ReentrantReadWriteLock.ReadLock) field.get(taskMetrics);
+      readLock.lock();
+      return ((Buffer<AccumulatorV2<?, ?>>) method.invoke(taskMetrics)).lastOption();
+    } catch (NoSuchFieldException
+        | IllegalAccessException
+        | NoSuchMethodException
+        | InvocationTargetException e) {
+      LOG.warn("Exception found finding readLock: " + e.getMessage());
+    } finally {
+      if (readLock != null) readLock.unlock();
     }
     return Option.apply(null); // None
   }
