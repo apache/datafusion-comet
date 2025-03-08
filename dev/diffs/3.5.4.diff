@@ -1449,7 +1449,7 @@ index 5a413c77754..a6f97dccb67 100644
            val df = spark.read.parquet(path).selectExpr(projection: _*)
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 2f8e401e743..1d0d5b9155e 100644
+index 2f8e401e743..dbcf3171946 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -27,9 +27,11 @@ import org.scalatest.time.SpanSugar._
@@ -1855,6 +1855,17 @@ index 2f8e401e743..1d0d5b9155e 100644
          }.size == (if (firstAccess) 2 else 0))
          assert(collect(initialExecutedPlan) {
            case i: InMemoryTableScanLike => i
+@@ -2980,7 +3023,9 @@ class AdaptiveQueryExecSuite
+ 
+       val plan = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
+       assert(plan.inputPlan.isInstanceOf[TakeOrderedAndProjectExec])
+-      assert(plan.finalPhysicalPlan.isInstanceOf[WindowExec])
++      assert(
++        plan.finalPhysicalPlan.isInstanceOf[WindowExec] ||
++        plan.finalPhysicalPlan.find(_.isInstanceOf[CometWindowExec]).nonEmpty)
+       plan.inputPlan.output.zip(plan.finalPhysicalPlan.output).foreach { case (o1, o2) =>
+         assert(o1.semanticEquals(o2), "Different output column order after AQE optimization")
+       }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileSourceCustomMetadataStructSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileSourceCustomMetadataStructSuite.scala
 index 05872d41131..a2c328b9742 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileSourceCustomMetadataStructSuite.scala
