@@ -1924,34 +1924,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case expr if expr.prettyName == "array_insert" =>
-        val srcExprProto = exprToProtoInternal(expr.children(0), inputs, binding)
-        val posExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
-        val itemExprProto = exprToProtoInternal(expr.children(2), inputs, binding)
-        val legacyNegativeIndex =
-          SQLConf.get.getConfString("spark.sql.legacy.negativeIndexInArrayInsert").toBoolean
-        if (srcExprProto.isDefined && posExprProto.isDefined && itemExprProto.isDefined) {
-          val arrayInsertBuilder = ExprOuterClass.ArrayInsert
-            .newBuilder()
-            .setSrcArrayExpr(srcExprProto.get)
-            .setPosExpr(posExprProto.get)
-            .setItemExpr(itemExprProto.get)
-            .setLegacyNegativeIndex(legacyNegativeIndex)
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setArrayInsert(arrayInsertBuilder)
-              .build())
-        } else {
-          withInfo(
-            expr,
-            "unsupported arguments for ArrayInsert",
-            expr.children(0),
-            expr.children(1),
-            expr.children(2))
-          None
-        }
+      case expr if expr.prettyName == "array_insert" => convert(CometArrayInsert)
 
       case ElementAt(child, ordinal, defaultValue, failOnError)
           if child.dataType.isInstanceOf[ArrayType] =>
@@ -2908,7 +2881,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
   }
 
   // Utility method. Adds explain info if the result of calling exprToProto is None
-  private def optExprWithInfo(
+  def optExprWithInfo(
       optExpr: Option[Expr],
       expr: Expression,
       childExpr: Expression*): Option[Expr] = {
