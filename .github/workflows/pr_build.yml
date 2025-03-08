@@ -92,11 +92,10 @@ jobs:
           upload-test-reports: ${{ matrix.java_version == '17' }}
 
   linux-test-native-datafusion-scan:
-    env:
-      COMET_PARQUET_SCAN_IMPL: "native_datafusion"
     strategy:
       matrix:
         os: [ubuntu-latest]
+        scan_impl: ['native_datafusion', 'native_iceberg_compat']
         java_version: [17]
         spark-version: ['3.5']
         scala-version: ['2.12']
@@ -105,6 +104,8 @@ jobs:
       fail-fast: false
     name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}/native-datafusion
     runs-on: ${{ matrix.os }}
+    env:
+      COMET_PARQUET_SCAN_IMPL: ${{ matrix.scan_impl }}
     container:
       image: amd64/rust
     steps:
