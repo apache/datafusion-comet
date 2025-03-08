@@ -2008,6 +2008,15 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case _: ArraysOverlap => convert(CometArraysOverlap)
       case _ @ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
         convert(CometArrayCompact)
+
+      case Rand(child, _) =>
+        createUnaryExpr(
+          expr,
+          child,
+          inputs,
+          binding,
+          (builder, unaryExpr) => builder.setRand(unaryExpr))
+
       case _ =>
         withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
         None

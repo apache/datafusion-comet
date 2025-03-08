@@ -48,6 +48,8 @@ mod string_funcs;
 mod datetime_funcs;
 pub use agg_funcs::*;
 
+pub mod rand;
+
 pub use cast::{spark_cast, Cast, SparkCastOptions};
 mod conditional_funcs;
 mod conversion_funcs;

@@ -93,6 +93,7 @@ use datafusion_comet_proto::{
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
+use datafusion_comet_spark_expr::rand::RandExpr;
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, BitwiseNotExpr, Cast, CheckOverflow, Contains, Correlation,
     Covariance, CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields, GetStructField,
@@ -147,6 +148,7 @@ pub const TEST_EXEC_CONTEXT_ID: i64 = -1;
 pub struct PhysicalPlanner {
     // The execution context id of this planner.
     exec_context_id: i64,
+    partition: i32,
     execution_props: ExecutionProps,
     session_ctx: Arc<SessionContext>,
 }
@@ -157,6 +159,7 @@ impl Default for PhysicalPlanner {
         let execution_props = ExecutionProps::new();
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
+            partition: 0,
             execution_props,
             session_ctx,
         }
@@ -164,10 +167,11 @@ impl Default for PhysicalPlanner {
 }
 
 impl PhysicalPlanner {
-    pub fn new(session_ctx: Arc<SessionContext>) -> Self {
+    pub fn new(session_ctx: Arc<SessionContext>, partition: i32) -> Self {
         let execution_props = ExecutionProps::new();
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
+            partition,
             execution_props,
             session_ctx,
         }
@@ -176,6 +180,7 @@ impl PhysicalPlanner {
     pub fn with_exec_id(self, exec_context_id: i64) -> Self {
         Self {
             exec_context_id,
+            partition: self.partition,
             execution_props: self.execution_props,
             session_ctx: Arc::clone(&self.session_ctx),
         }
@@ -844,6 +849,10 @@ impl PhysicalPlanner {
                     DataType::Boolean,
                 ));
                 Ok(array_has_any_expr)
+            }
+            ExprStruct::Rand(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
+                Ok(Arc::new(RandExpr::new(child, self.partition)))
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",
