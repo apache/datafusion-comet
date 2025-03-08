@@ -102,7 +102,7 @@ jobs:
         is_push_event:
           - ${{ github.event_name == 'push' }}
       fail-fast: false
-    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}/native-datafusion
+    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}/${{ matrix.scan_impl }}
     runs-on: ${{ matrix.os }}
     env:
       COMET_PARQUET_SCAN_IMPL: ${{ matrix.scan_impl }}
