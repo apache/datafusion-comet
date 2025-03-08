@@ -37,7 +37,6 @@ WORKDIR /comet
 
 # build native code first so that this layer can be re-used
 # if only Scala code gets modified
-COPY rust-toolchain.toml /comet/rust-toolchain.toml
 COPY native /comet/native
 RUN cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo build --release
 
