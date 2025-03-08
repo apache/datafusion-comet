@@ -30,6 +30,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -37,6 +38,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import scala.Option;
+import scala.collection.Seq;
 import scala.collection.mutable.Buffer;
 
 import org.slf4j.Logger;
@@ -644,6 +646,26 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
   // method not found exception.
   @SuppressWarnings("unchecked")
   private Option<AccumulatorV2<?, ?>> getTaskAccumulator(TaskMetrics taskMetrics) {
+    Optional<Method> externalAccumsMethod =
+        Arrays.stream(TaskMetrics.class.getDeclaredMethods())
+            .filter(m -> "externalAccums".equals((m.getName())))
+            .findFirst();
+    if (externalAccumsMethod.isPresent()) {
+      Method method = externalAccumsMethod.get();
+      method.setAccessible(true);
+      try {
+        String returnType = method.getReturnType().getName();
+        if (returnType.equals("scala.collection.mutable.Buffer")) {
+          return ((Buffer<AccumulatorV2<?, ?>>) method.invoke(taskMetrics)).lastOption();
+        } else if (returnType.equals("scala.collection.Seq")) {
+          return ((Seq<AccumulatorV2<?, ?>>) method.invoke(taskMetrics)).lastOption();
+        }
+      } catch (InvocationTargetException | IllegalAccessException e) {
+        LOG.warn("Exception on finding externalAccums: " + e.getMessage());
+      }
+      return Option.apply(null); // None
+    }
+
     ReentrantReadWriteLock.ReadLock readLock = null;
     try {
       Method method = TaskMetrics.class.getDeclaredMethod("_externalAccums");
@@ -657,7 +679,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
         | IllegalAccessException
         | NoSuchMethodException
         | InvocationTargetException e) {
-      LOG.warn("Exception found finding readLock: " + e.getMessage());
+      LOG.warn("Exception on finding _externalAccums/readLock: " + e.getMessage());
     } finally {
       if (readLock != null) readLock.unlock();
     }
