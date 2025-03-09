@@ -1214,10 +1214,13 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 if (cometException.getCause != null) cometException.getCause.getMessage
                 else cometException.getMessage
               // for comet decimal conversion throws ArrowError(string) from arrow - across spark versions the message dont match.
-              if (sparkMessage.contains("cannot be represented as")) {
-                cometMessage.contains("cannot be represented as") || cometMessage.contains(
-                  "too large to store")
+              if (df.schema("a").dataType.typeName.contains("decimal") && toType.typeName
+                  .contains("decimal")) {
+                assert(
+                  cometMessage.contains("too large to store"),
+                  sparkMessage.contains("cannot be represented as"))
               } else {
+
                 if (CometSparkSessionExtensions.isSpark40Plus) {
                   // for Spark 4 we expect to sparkException carries the message
                   assert(
@@ -1236,7 +1239,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     .replace("[NUMERIC_VALUE_OUT_OF_RANGE] ", "")
 
                   if (sparkMessage.contains("cannot be represented as")) {
-                    assert(cometMessage.contains("too large to store"))
+                    assert(cometMessage.contains("cannot be represented as"))
                   } else {
                     assert(cometMessageModified == sparkMessage)
                   }
