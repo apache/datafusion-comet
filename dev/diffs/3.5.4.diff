@@ -1449,7 +1449,7 @@ index 5a413c77754..a6f97dccb67 100644
            val df = spark.read.parquet(path).selectExpr(projection: _*)
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 2f8e401e743..dbcf3171946 100644
+index 2f8e401e743..e1c231e2099 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -27,9 +27,11 @@ import org.scalatest.time.SpanSugar._
@@ -1811,6 +1811,15 @@ index 2f8e401e743..dbcf3171946 100644
      CostEvaluator.instantiate(
        classOf[SimpleShuffleSortCostEvaluator].getCanonicalName, spark.sparkContext.getConf)
      intercept[IllegalArgumentException] {
+@@ -2417,7 +2457,7 @@ class AdaptiveQueryExecSuite
+   }
+ 
+   test("SPARK-48037: Fix SortShuffleWriter lacks shuffle write related metrics " +
+-    "resulting in potentially inaccurate data") {
++    "resulting in potentially inaccurate data", IgnoreComet("Github Actions get stuck")) {
+     withTable("t3") {
+       withSQLConf(
+         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
 @@ -2452,6 +2492,7 @@ class AdaptiveQueryExecSuite
            val (_, adaptive) = runAdaptiveAndVerifyResult(query)
            assert(adaptive.collect {
