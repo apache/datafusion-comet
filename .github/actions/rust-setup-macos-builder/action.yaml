@@ -1,0 +1,59 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Prepare Builder for MacOS
+description: 'Prepare Build Environment'
+inputs:
+  rust-version:
+    description: 'version of rust to install (e.g. nightly)'
+    required: true
+    default: 'stable'
+  protoc-architecture:
+    description: 'OS architecture for protobuf compiler'
+    required: true
+    default: 'x86_64'
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install Build Dependencies
+      shell: bash
+      run: |
+        # Install protobuf
+        mkdir -p $HOME/d/protoc
+        cd $HOME/d/protoc
+        export PROTO_ZIP="protoc-21.4-osx-${{inputs.protoc-architecture}}.zip"
+        curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.4/$PROTO_ZIP
+        unzip $PROTO_ZIP
+        echo "$HOME/d/protoc/bin" >> $GITHUB_PATH
+        export PATH=$PATH:$HOME/d/protoc/bin
+        # install openssl and setup DYLD_LIBRARY_PATH
+        brew install openssl
+        OPENSSL_LIB_PATH=`brew --prefix openssl`/lib
+        echo "openssl lib path is: ${OPENSSL_LIB_PATH}"
+        echo "DYLD_LIBRARY_PATH=$OPENSSL_LIB_PATH:$DYLD_LIBRARY_PATH" >> $GITHUB_ENV
+        # output the current status of SIP for later debugging
+        csrutil status || true
+
+    - name: Setup Rust toolchain
+      shell: bash
+      # rustfmt is needed for the substrait build script
+      run: |
+        echo "Installing ${{inputs.rust-version}}"
+        rustup toolchain install ${{inputs.rust-version}}
+        rustup default ${{inputs.rust-version}}
+        rustup component add rustfmt clippy

@@ -53,8 +53,8 @@ jobs:
       image: amd64/rust
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-builder
+      - name: Setup Rust toolchain
+        uses: ./.github/actions/rust-setup-builder
         with:
           rust-version: ${{env.RUST_VERSION}}
       - name: Rust test steps
@@ -181,8 +181,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-macos-builder
+      - name: Setup Rust toolchain
+        uses: ./.github/actions/rust-setup-macos-builder
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java_version }}
@@ -217,8 +217,8 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-macos-builder
+      - name: Setup Rust toolchain
+        uses: ./.github/actions/rust-setup-macos-builder
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-architecture: aarch64
