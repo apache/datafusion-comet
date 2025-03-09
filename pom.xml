@@ -65,7 +65,6 @@ under the License.
     <semanticdb.version>4.8.8</semanticdb.version>
     <slf4j.version>2.0.6</slf4j.version>
     <guava.version>33.2.1-jre</guava.version>
-    <asm.version>9.5</asm.version>
     <jni.dir>${project.basedir}/../native/target/debug</jni.dir>
     <platform>darwin</platform>
     <arch>x86_64</arch>
@@ -797,24 +796,24 @@ under the License.
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-shade-plugin</artifactId>
-          <version>3.5.0</version>
+          <version>3.2.4</version>
           <dependencies>
             <dependency>
               <groupId>org.ow2.asm</groupId>
               <artifactId>asm</artifactId>
-              <version>${asm.version}</version>
+              <version>9.1</version>
             </dependency>
             <dependency>
               <groupId>org.ow2.asm</groupId>
               <artifactId>asm-commons</artifactId>
-              <version>${asm.version}</version>
+              <version>9.1</version>
             </dependency>
           </dependencies>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-surefire-plugin</artifactId>
-          <version>3.1.2</version>
+          <version>3.1.0</version>
           <configuration>
             <systemPropertyVariables>
               <log4j.configurationFile>file:src/test/resources/log4j2.properties</log4j.configurationFile>
@@ -825,7 +824,7 @@ under the License.
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-source-plugin</artifactId>
-          <version>3.3.0</version>
+          <version>3.1.0</version>
           <configuration>
             <attach>true</attach>
           </configuration>
@@ -842,7 +841,7 @@ under the License.
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-compiler-plugin</artifactId>
-          <version>3.11.0</version>
+          <version>3.10.1</version>
           <configuration>
             <source>${java.version}</source>
             <target>${java.version}</target>
@@ -896,7 +895,7 @@ under the License.
         <plugin>
           <groupId>org.codehaus.mojo</groupId>
           <artifactId>build-helper-maven-plugin</artifactId>
-          <version>3.4.0</version>
+          <version>3.2.0</version>
         </plugin>
       </plugins>
     </pluginManagement>
@@ -1014,7 +1013,7 @@ under the License.
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-enforcer-plugin</artifactId>
-        <version>3.3.0</version>
+        <version>3.1.0</version>
         <executions>
           <execution>
             <id>no-duplicate-declared-dependencies</id>
@@ -1077,7 +1076,7 @@ under the License.
           <dependency>
             <groupId>org.codehaus.mojo</groupId>
             <artifactId>extra-enforcer-rules</artifactId>
-            <version>1.7.0</version>
+            <version>1.6.1</version>
           </dependency>
         </dependencies>
       </plugin>
