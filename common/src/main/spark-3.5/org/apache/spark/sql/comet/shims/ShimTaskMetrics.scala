@@ -27,5 +27,5 @@ import org.apache.spark.util.AccumulatorV2
 object ShimTaskMetrics {
 
   def getTaskAccumulator(taskMetrics: TaskMetrics): Option[AccumulatorV2[_, _]] =
-    taskMetrics.withExternalAccums(identity[ArrayBuffer[AccumulatorV2[_, _]]](_)).lastOption
+    taskMetrics.withExternalAccums((a: ArrayBuffer[AccumulatorV2[_, _]]) => a.toArray).lastOption
 }
