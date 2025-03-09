@@ -19,9 +19,8 @@
 
 package org.apache.comet.shims
 
-import java.lang.reflect.InvocationTargetException
-
-import scala.collection.mutable.Buffer
+import scala.collection.TraversableLike
+import scala.collection.mutable.ArrayBuffer
 
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.paths.SparkPath
@@ -41,20 +40,15 @@ object ShimBatchReader {
       0
     )
 
-  // Signature of externalAccums changed from returning a Buffer to returning a Seq. If comet is
-  // expecting a Buffer but the Spark version returns a Seq or vice versa, we get a
-  // method not found exception.
   def getTaskAccumulator(taskMetrics: TaskMetrics) = {
-    try {
-      val externalAccumsMethod = classOf[TaskMetrics].getDeclaredMethod("externalAccums")
-      externalAccumsMethod.setAccessible(true)
-      val returnType = externalAccumsMethod.getReturnType.getName
-      if (returnType == "scala.collection.mutable.Buffer") externalAccumsMethod.invoke(taskMetrics).asInstanceOf[Buffer[AccumulatorV2[_, _]]].lastOption
-      else if (returnType == "scala.collection.Seq") externalAccumsMethod.invoke(taskMetrics).asInstanceOf[Seq[AccumulatorV2[_, _]]].lastOption
-      else None
-    } catch {
-      case _ @ (_: NoSuchMethodException | _: InvocationTargetException | _: IllegalAccessException) =>
-        None
-    }
+    classOf[TaskMetrics].getDeclaredMethods.flatMap{
+      case m if m.getName == "externalAccums" =>
+        m.setAccessible(true)
+        m.invoke(taskMetrics).asInstanceOf[TraversableLike[AccumulatorV2[_, _], _]].lastOption
+      case m if m.getName == "withExternalAccums" =>
+        m.setAccessible(true)
+        m.invoke(taskMetrics, identity[ArrayBuffer[AccumulatorV2[_, _]]](_)).asInstanceOf[ArrayBuffer[AccumulatorV2[_, _]]].lastOption
+      case _ => None
+    }.headOption
   }
 }
