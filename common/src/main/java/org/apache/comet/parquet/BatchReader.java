@@ -59,6 +59,7 @@ import org.apache.spark.TaskContext;
 import org.apache.spark.TaskContext$;
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.comet.parquet.CometParquetReadSupport;
+import org.apache.spark.sql.comet.shims.ShimTaskMetrics;
 import org.apache.spark.sql.execution.datasources.PartitionedFile;
 import org.apache.spark.sql.execution.datasources.parquet.ParquetToSparkSchemaConverter;
 import org.apache.spark.sql.execution.metric.SQLMetric;
@@ -346,7 +347,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     // thread, it won't update the accumulator.
     if (taskContext != null) {
       Option<AccumulatorV2<?, ?>> accu =
-          ShimBatchReader.getTaskAccumulator(taskContext.taskMetrics());
+          ShimTaskMetrics.getTaskAccumulator(taskContext.taskMetrics());
       if (accu.isDefined() && accu.get().getClass().getSimpleName().equals("NumRowGroupsAcc")) {
         @SuppressWarnings("unchecked")
         AccumulatorV2<Integer, Integer> intAccum = (AccumulatorV2<Integer, Integer>) accu.get();

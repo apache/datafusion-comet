@@ -17,21 +17,15 @@
  * under the License.
  */
 
-package org.apache.comet.shims
+package org.apache.spark.sql.comet.shims
 
-import org.apache.spark.paths.SparkPath
-import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.execution.datasources.PartitionedFile
+import scala.collection.mutable.ArrayBuffer
 
-object ShimBatchReader {
+import org.apache.spark.executor.TaskMetrics
+import org.apache.spark.util.AccumulatorV2
 
-  def newPartitionedFile(partitionValues: InternalRow, file: String): PartitionedFile =
-    PartitionedFile(
-      partitionValues,
-      SparkPath.fromPathString(file),
-      -1, // -1 means we read the entire file
-      -1,
-      Array.empty[String],
-      0,
-      0)
+object ShimTaskMetrics {
+
+  def getTaskAccumulator(taskMetrics: TaskMetrics): Option[AccumulatorV2[_, _]] =
+    taskMetrics.withExternalAccums(identity[ArrayBuffer[AccumulatorV2[_, _]]](_)).lastOption
 }

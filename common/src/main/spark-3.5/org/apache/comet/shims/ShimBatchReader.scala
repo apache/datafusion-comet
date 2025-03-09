@@ -19,14 +19,9 @@
 
 package org.apache.comet.shims
 
-import scala.collection.Traversable
-import scala.collection.mutable.ArrayBuffer
-
-import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.paths.SparkPath
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.datasources.PartitionedFile
-import org.apache.spark.util.AccumulatorV2
 
 object ShimBatchReader {
 
@@ -40,16 +35,4 @@ object ShimBatchReader {
       0,
       0,
       Map.empty)
-
-  def getTaskAccumulator(taskMetrics: TaskMetrics): Option[AccumulatorV2[_, _]] = {
-    classOf[TaskMetrics].getDeclaredMethods.flatMap{
-      case m if m.getName == "externalAccums" =>
-        m.setAccessible(true)
-        m.invoke(taskMetrics).asInstanceOf[Traversable[AccumulatorV2[_, _]]].lastOption
-      case m if m.getName == "withExternalAccums" =>
-        m.setAccessible(true)
-        m.invoke(taskMetrics, identity[ArrayBuffer[AccumulatorV2[_, _]]](_)).asInstanceOf[ArrayBuffer[AccumulatorV2[_, _]]].lastOption
-      case _ => None
-    }.headOption
-  }
 }
