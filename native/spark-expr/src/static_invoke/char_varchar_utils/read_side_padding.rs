@@ -54,7 +54,7 @@ fn spark_read_side_padding2(
                     } else {
                         spark_read_side_padding_internal::<i64>(dict.values(), *length, truncate)?
                     };
-                    // col consists of an array, so to_arrau() argument is not used. Can be anything
+                    // col consists of an array, so arg of to_array() is not used. Can be anything
                     let values = col.to_array(0)?;
                     let result = DictionaryArray::try_new(dict.keys().clone(), values)?;
                     Ok(ColumnarValue::Array(make_array(result.into())))

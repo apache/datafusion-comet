@@ -19,7 +19,7 @@
 
 package org.apache.comet.shims
 
-import scala.collection.TraversableLike
+import scala.collection.Traversable
 
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.sql.catalyst.InternalRow
@@ -38,11 +38,11 @@ object ShimBatchReader {
       0,
       0)
 
-  def getTaskAccumulator(taskMetrics: TaskMetrics) = {
+  def getTaskAccumulator(taskMetrics: TaskMetrics): Option[AccumulatorV2[_, _]] = {
     classOf[TaskMetrics].getDeclaredMethods.flatMap{
       case m if m.getName == "externalAccums" =>
         m.setAccessible(true)
-        m.invoke(taskMetrics).asInstanceOf[TraversableLike[AccumulatorV2[_, _], _]].lastOption
+        m.invoke(taskMetrics).asInstanceOf[Traversable[AccumulatorV2[_, _]]].lastOption
       case _ => None
     }.headOption
   }
