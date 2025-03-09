@@ -211,7 +211,7 @@ object CometArrayJoin extends CometExpressionSerde with IncompatExpr {
         val nullReplacementExprProto = exprToProto(nullReplacementExpr, inputs, binding)
 
         val arrayJoinScalarExpr = scalarExprToProto(
-          "array_join",
+          "array_to_string",
           arrayExprProto,
           delimiterExprProto,
           nullReplacementExprProto)
