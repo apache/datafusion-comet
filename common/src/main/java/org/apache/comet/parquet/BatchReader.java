@@ -673,8 +673,11 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
       Field field = TaskMetrics.class.getDeclaredField("readLock");
       field.setAccessible(true);
       readLock = (ReentrantReadWriteLock.ReadLock) field.get(taskMetrics);
-      // readLock.lock();
-      return ((Buffer<AccumulatorV2<?, ?>>) method.invoke(taskMetrics)).lastOption();
+      readLock.lock();
+      Option<AccumulatorV2<?, ?>> result = ((Buffer<AccumulatorV2<?, ?>>) method.invoke(taskMetrics)).lastOption();
+      readLock.unlock();
+      readLock = null;
+      return result;
     } catch (NoSuchFieldException
         | IllegalAccessException
         | NoSuchMethodException
