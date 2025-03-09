@@ -21,25 +21,18 @@ package org.apache.comet.parquet;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import scala.Option;
-import scala.collection.Seq;
-import scala.collection.mutable.Buffer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -64,7 +57,6 @@ import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.Type;
 import org.apache.spark.TaskContext;
 import org.apache.spark.TaskContext$;
-import org.apache.spark.executor.TaskMetrics;
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.comet.parquet.CometParquetReadSupport;
 import org.apache.spark.sql.execution.datasources.PartitionedFile;
@@ -353,7 +345,8 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     // Note that this tries to get thread local TaskContext object, if this is called at other
     // thread, it won't update the accumulator.
     if (taskContext != null) {
-      Option<AccumulatorV2<?, ?>> accu = getTaskAccumulator(taskContext.taskMetrics());
+      Option<AccumulatorV2<?, ?>> accu =
+          ShimBatchReader.getTaskAccumulator(taskContext.taskMetrics());
       if (accu.isDefined() && accu.get().getClass().getSimpleName().equals("NumRowGroupsAcc")) {
         @SuppressWarnings("unchecked")
         AccumulatorV2<Integer, Integer> intAccum = (AccumulatorV2<Integer, Integer>) accu.get();
@@ -639,53 +632,5 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
         }
       }
     }
-  }
-
-  // Signature of externalAccums changed from returning a Buffer to returning a Seq. If comet is
-  // expecting a Buffer but the Spark version returns a Seq or vice versa, we get a
-  // method not found exception.
-  @SuppressWarnings("unchecked")
-  private Option<AccumulatorV2<?, ?>> getTaskAccumulator(TaskMetrics taskMetrics) {
-    Optional<Method> externalAccumsMethod =
-        Arrays.stream(TaskMetrics.class.getDeclaredMethods())
-            .filter(m -> "externalAccums".equals((m.getName())))
-            .findFirst();
-    if (externalAccumsMethod.isPresent()) {
-      Method method = externalAccumsMethod.get();
-      method.setAccessible(true);
-      try {
-        String returnType = method.getReturnType().getName();
-        if (returnType.equals("scala.collection.mutable.Buffer")) {
-          return ((Buffer<AccumulatorV2<?, ?>>) method.invoke(taskMetrics)).lastOption();
-        } else if (returnType.equals("scala.collection.Seq")) {
-          return ((Seq<AccumulatorV2<?, ?>>) method.invoke(taskMetrics)).lastOption();
-        }
-      } catch (InvocationTargetException | IllegalAccessException e) {
-        LOG.warn("Exception on finding externalAccums: " + e.getMessage());
-      }
-      return Option.apply(null); // None
-    }
-
-    ReentrantReadWriteLock.ReadLock readLock = null;
-    try {
-      Method method = TaskMetrics.class.getDeclaredMethod("_externalAccums");
-      method.setAccessible(true);
-      Field field = TaskMetrics.class.getDeclaredField("readLock");
-      field.setAccessible(true);
-      readLock = (ReentrantReadWriteLock.ReadLock) field.get(taskMetrics);
-      readLock.lock();
-      Option<AccumulatorV2<?, ?>> result = ((Buffer<AccumulatorV2<?, ?>>) method.invoke(taskMetrics)).lastOption();
-      readLock.unlock();
-      readLock = null;
-      return result;
-    } catch (NoSuchFieldException
-        | IllegalAccessException
-        | NoSuchMethodException
-        | InvocationTargetException e) {
-      LOG.warn("Exception on finding _externalAccums/readLock: " + e.getMessage());
-    } finally {
-      if (readLock != null) readLock.unlock();
-    }
-    return Option.apply(null); // None
   }
 }

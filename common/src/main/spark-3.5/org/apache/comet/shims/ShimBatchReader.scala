@@ -19,9 +19,15 @@
 
 package org.apache.comet.shims
 
+import java.lang.reflect.InvocationTargetException
+
+import scala.collection.mutable.ArrayBuffer
+
+import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.paths.SparkPath
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.datasources.PartitionedFile
+import org.apache.spark.util.AccumulatorV2
 
 object ShimBatchReader {
 
@@ -35,4 +41,15 @@ object ShimBatchReader {
       0,
       0,
       Map.empty)
+
+  def getTaskAccumulator(taskMetrics: TaskMetrics) = {
+    try {
+      val externalAccumsMethod = classOf[TaskMetrics].getDeclaredMethod("withExternalAccums")
+      externalAccumsMethod.setAccessible(true)
+      externalAccumsMethod.invoke(taskMetrics, identity[ArrayBuffer[AccumulatorV2[_, _]]](_)).asInstanceOf[ArrayBuffer[AccumulatorV2[_, _]]].lastOption
+    } catch {
+      case _ @ (_: NoSuchMethodException | _: InvocationTargetException | _: IllegalAccessException) =>
+         None
+    }
+  }
 }

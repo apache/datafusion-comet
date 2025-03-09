@@ -19,9 +19,15 @@
 
 package org.apache.comet.shims
 
+import java.lang.reflect.InvocationTargetException
+
+import scala.collection.mutable.Buffer
+
+import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.paths.SparkPath
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.datasources.PartitionedFile
+import org.apache.spark.util.AccumulatorV2
 
 object ShimBatchReader {
   def newPartitionedFile(partitionValues: InternalRow, file: String): PartitionedFile =
@@ -34,4 +40,21 @@ object ShimBatchReader {
       0,
       0
     )
+
+  // Signature of externalAccums changed from returning a Buffer to returning a Seq. If comet is
+  // expecting a Buffer but the Spark version returns a Seq or vice versa, we get a
+  // method not found exception.
+  def getTaskAccumulator(taskMetrics: TaskMetrics) = {
+    try {
+      val externalAccumsMethod = classOf[TaskMetrics].getDeclaredMethod("externalAccums")
+      externalAccumsMethod.setAccessible(true)
+      val returnType = externalAccumsMethod.getReturnType.getName
+      if (returnType == "scala.collection.mutable.Buffer") externalAccumsMethod.invoke(taskMetrics).asInstanceOf[Buffer[AccumulatorV2[_, _]]].lastOption
+      else if (returnType == "scala.collection.Seq") externalAccumsMethod.invoke(taskMetrics).asInstanceOf[Seq[AccumulatorV2[_, _]]].lastOption
+      else None
+    } catch {
+      case _ @ (_: NoSuchMethodException | _: InvocationTargetException | _: IllegalAccessException) =>
+        None
+    }
+  }
 }
