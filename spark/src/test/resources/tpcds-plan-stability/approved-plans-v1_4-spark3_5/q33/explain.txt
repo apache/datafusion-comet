@@ -145,12 +145,11 @@ Condition : isnotnull(i_item_sk#11)
 Output [2]: [i_category#13, i_manufact_id#14]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_category)]
 ReadSchema: struct<i_category:string,i_manufact_id:int>
 
 (18) CometFilter
 Input [2]: [i_category#13, i_manufact_id#14]
-Condition : (isnotnull(i_category#13) AND (rpad(i_category#13, 50,  ) = Electronics                                       ))
+Condition : (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#13, 50, true, false, true) = Electronics                                       )
 
 (19) CometProject
 Input [2]: [i_category#13, i_manufact_id#14]
