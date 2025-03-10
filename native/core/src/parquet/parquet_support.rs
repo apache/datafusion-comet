@@ -260,7 +260,6 @@ pub(crate) fn prepare_object_store(
         }
     };
     let object_store_url = ObjectStoreUrl::parse(url_key.clone())?;
-    // runtime_env.register_object_store(object_store_url.as_ref(), Arc::from(object_store));
     runtime_env.register_object_store(&url, Arc::from(object_store));
     Ok((object_store_url, object_store_path))
 }
