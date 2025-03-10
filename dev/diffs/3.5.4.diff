@@ -1449,7 +1449,7 @@ index 5a413c77754..a6f97dccb67 100644
            val df = spark.read.parquet(path).selectExpr(projection: _*)
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 2f8e401e743..d0e18bd95ba 100644
+index 2f8e401e743..076cbc89a98 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -27,9 +27,11 @@ import org.scalatest.time.SpanSugar._
@@ -1487,11 +1487,14 @@ index 2f8e401e743..d0e18bd95ba 100644
      val planBefore = dfAdaptive.queryExecution.executedPlan
 +    println("EEEEE")
      assert(planBefore.toString.startsWith("AdaptiveSparkPlan isFinalPlan=false"))
+-    val result = dfAdaptive.collect()
+-    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+-      if (!skipCheckAnswer) {
 +    println("FFFFF")
-     val result = dfAdaptive.collect()
-+    println("GGGGG")
-     withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
-       if (!skipCheckAnswer) {
++    if (!skipCheckAnswer) {
++      val result = dfAdaptive.collect()
++      println("GGGGG")
++      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
          val df = sql(query)
          checkAnswer(df, result)
        }
