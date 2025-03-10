@@ -1213,14 +1213,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               val cometMessage =
                 if (cometException.getCause != null) cometException.getCause.getMessage
                 else cometException.getMessage
-              // for comet decimal conversion throws ArrowError(string) from arrow - across spark versions the message dont match.
+              // this if branch should only check decimal to decimal cast and errors when output precision, scale causes overflow.
               if (df.schema("a").dataType.typeName.contains("decimal") && toType.typeName
-                  .contains("decimal")) {
-                assert(
-                  cometMessage.contains("too large to store") ==
-                    sparkMessage.contains("cannot be represented as"))
+                  .contains("decimal") && sparkMessage.contains("cannot be represented as")) {
+                assert(cometMessage.contains("too large to store"))
               } else {
-
                 if (CometSparkSessionExtensions.isSpark40Plus) {
                   // for Spark 4 we expect to sparkException carries the message
                   assert(
