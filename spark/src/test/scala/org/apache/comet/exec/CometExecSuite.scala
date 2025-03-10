@@ -525,6 +525,9 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("Comet native metrics: scan") {
+    // https://github.com/apache/datafusion-comet/issues/1441
+    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
+
     withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "native-scan.parquet")
