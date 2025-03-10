@@ -136,12 +136,12 @@ Condition : isnotnull(ca_address_sk#13)
 Output [2]: [c_current_addr_sk#15, c_preferred_cust_flag#16]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer]
-PushedFilters: [IsNotNull(c_preferred_cust_flag), IsNotNull(c_current_addr_sk)]
+PushedFilters: [IsNotNull(c_preferred_cust_flag), EqualTo(c_preferred_cust_flag,Y), IsNotNull(c_current_addr_sk)]
 ReadSchema: struct<c_current_addr_sk:int,c_preferred_cust_flag:string>
 
 (20) CometFilter
 Input [2]: [c_current_addr_sk#15, c_preferred_cust_flag#16]
-Condition : ((isnotnull(c_preferred_cust_flag#16) AND (rpad(c_preferred_cust_flag#16, 1,  ) = Y)) AND isnotnull(c_current_addr_sk#15))
+Condition : ((isnotnull(c_preferred_cust_flag#16) AND (c_preferred_cust_flag#16 = Y)) AND isnotnull(c_current_addr_sk#15))
 
 (21) CometProject
 Input [2]: [c_current_addr_sk#15, c_preferred_cust_flag#16]

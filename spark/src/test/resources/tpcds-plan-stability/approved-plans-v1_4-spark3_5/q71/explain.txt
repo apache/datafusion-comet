@@ -163,12 +163,12 @@ Arguments: [i_brand_id#2, i_brand#3, ext_price#13, time_sk#15], [i_brand_id#2, i
 Output [4]: [t_time_sk#34, t_hour#35, t_minute#36, t_meal_time#37]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/time_dim]
-PushedFilters: [IsNotNull(t_time_sk)]
+PushedFilters: [Or(EqualTo(t_meal_time,breakfast           ),EqualTo(t_meal_time,dinner              )), IsNotNull(t_time_sk)]
 ReadSchema: struct<t_time_sk:int,t_hour:int,t_minute:int,t_meal_time:string>
 
 (27) CometFilter
 Input [4]: [t_time_sk#34, t_hour#35, t_minute#36, t_meal_time#37]
-Condition : (((rpad(t_meal_time#37, 20,  ) = breakfast           ) OR (rpad(t_meal_time#37, 20,  ) = dinner              )) AND isnotnull(t_time_sk#34))
+Condition : (((t_meal_time#37 = breakfast           ) OR (t_meal_time#37 = dinner              )) AND isnotnull(t_time_sk#34))
 
 (28) CometProject
 Input [4]: [t_time_sk#34, t_hour#35, t_minute#36, t_meal_time#37]

@@ -228,7 +228,7 @@ Arguments: [customer_id#35, customer_first_name#36, customer_last_name#37, custo
 (33) CometBroadcastHashJoin
 Left output [2]: [customer_id#17, year_total#18]
 Right output [5]: [customer_id#35, customer_first_name#36, customer_last_name#37, customer_email_address#38, year_total#39]
-Arguments: [rpad(customer_id#17, 16,  )], [rpad(customer_id#35, 16,  )], Inner, BuildRight
+Arguments: [customer_id#17], [customer_id#35], Inner, BuildRight
 
 (34) CometScan parquet spark_catalog.default.customer
 Output [8]: [c_customer_sk#40, c_customer_id#41, c_first_name#42, c_last_name#43, c_preferred_cust_flag#44, c_birth_country#45, c_login#46, c_email_address#47]
@@ -303,7 +303,7 @@ Arguments: [customer_id#56, year_total#57]
 (49) CometBroadcastHashJoin
 Left output [7]: [customer_id#17, year_total#18, customer_id#35, customer_first_name#36, customer_last_name#37, customer_email_address#38, year_total#39]
 Right output [2]: [customer_id#56, year_total#57]
-Arguments: [rpad(customer_id#17, 16,  )], [rpad(customer_id#56, 16,  )], Inner, BuildRight
+Arguments: [customer_id#17], [customer_id#56], Inner, BuildRight
 
 (50) CometProject
 Input [9]: [customer_id#17, year_total#18, customer_id#35, customer_first_name#36, customer_last_name#37, customer_email_address#38, year_total#39, customer_id#56, year_total#57]
@@ -378,7 +378,7 @@ Arguments: [customer_id#74, year_total#75]
 (65) CometBroadcastHashJoin
 Left output [8]: [customer_id#17, year_total#18, customer_id#35, customer_first_name#36, customer_last_name#37, customer_email_address#38, year_total#39, year_total#57]
 Right output [2]: [customer_id#74, year_total#75]
-Arguments: [rpad(customer_id#17, 16,  )], [rpad(customer_id#74, 16,  )], Inner, (CASE WHEN (year_total#57 > 0.00) THEN (year_total#75 / year_total#57) ELSE 0E-20 END > CASE WHEN (year_total#18 > 0.00) THEN (year_total#39 / year_total#18) ELSE 0E-20 END), BuildRight
+Arguments: [customer_id#17], [customer_id#74], Inner, (CASE WHEN (year_total#57 > 0.00) THEN (year_total#75 / year_total#57) ELSE 0E-20 END > CASE WHEN (year_total#18 > 0.00) THEN (year_total#39 / year_total#18) ELSE 0E-20 END), BuildRight
 
 (66) CometProject
 Input [10]: [customer_id#17, year_total#18, customer_id#35, customer_first_name#36, customer_last_name#37, customer_email_address#38, year_total#39, year_total#57, customer_id#74, year_total#75]

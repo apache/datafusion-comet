@@ -258,12 +258,12 @@ Arguments: [ss_promo_sk#3, ss_ext_sales_price#5, ss_net_profit#6, sr_return_amt#
 Output [2]: [p_promo_sk#20, p_channel_tv#21]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/promotion]
-PushedFilters: [IsNotNull(p_channel_tv), IsNotNull(p_promo_sk)]
+PushedFilters: [IsNotNull(p_channel_tv), EqualTo(p_channel_tv,N), IsNotNull(p_promo_sk)]
 ReadSchema: struct<p_promo_sk:int,p_channel_tv:string>
 
 (30) CometFilter
 Input [2]: [p_promo_sk#20, p_channel_tv#21]
-Condition : ((isnotnull(p_channel_tv#21) AND (rpad(p_channel_tv#21, 1,  ) = N)) AND isnotnull(p_promo_sk#20))
+Condition : ((isnotnull(p_channel_tv#21) AND (p_channel_tv#21 = N)) AND isnotnull(p_promo_sk#20))
 
 (31) CometProject
 Input [2]: [p_promo_sk#20, p_channel_tv#21]

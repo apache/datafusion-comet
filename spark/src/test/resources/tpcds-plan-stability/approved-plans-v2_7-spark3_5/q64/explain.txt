@@ -450,7 +450,7 @@ Output [2]: [cd_demo_sk#49, cd_marital_status#50]
 (60) CometBroadcastHashJoin
 Left output [16]: [ss_item_sk#1, ss_hdemo_sk#4, ss_addr_sk#5, ss_promo_sk#7, ss_wholesale_cost#9, ss_list_price#10, ss_coupon_amt#11, d_year#33, s_store_name#35, s_zip#36, c_current_cdemo_sk#38, c_current_hdemo_sk#39, c_current_addr_sk#40, d_year#44, d_year#46, cd_marital_status#48]
 Right output [2]: [cd_demo_sk#49, cd_marital_status#50]
-Arguments: [c_current_cdemo_sk#38], [cd_demo_sk#49], Inner, NOT (rpad(cd_marital_status#48, 1,  ) = rpad(cd_marital_status#50, 1,  )), BuildRight
+Arguments: [c_current_cdemo_sk#38], [cd_demo_sk#49], Inner, NOT (cd_marital_status#48 = cd_marital_status#50), BuildRight
 
 (61) CometProject
 Input [18]: [ss_item_sk#1, ss_hdemo_sk#4, ss_addr_sk#5, ss_promo_sk#7, ss_wholesale_cost#9, ss_list_price#10, ss_coupon_amt#11, d_year#33, s_store_name#35, s_zip#36, c_current_cdemo_sk#38, c_current_hdemo_sk#39, c_current_addr_sk#40, d_year#44, d_year#46, cd_marital_status#48, cd_demo_sk#49, cd_marital_status#50]
@@ -592,12 +592,12 @@ Arguments: [ss_item_sk#1, ss_wholesale_cost#9, ss_list_price#10, ss_coupon_amt#1
 Output [4]: [i_item_sk#68, i_current_price#69, i_color#70, i_product_name#71]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_current_price), GreaterThanOrEqual(i_current_price,64.00), LessThanOrEqual(i_current_price,74.00), GreaterThanOrEqual(i_current_price,65.00), LessThanOrEqual(i_current_price,79.00), IsNotNull(i_item_sk)]
+PushedFilters: [IsNotNull(i_current_price), In(i_color, [burlywood           ,floral              ,indian              ,medium              ,purple              ,spring              ]), GreaterThanOrEqual(i_current_price,64.00), LessThanOrEqual(i_current_price,74.00), GreaterThanOrEqual(i_current_price,65.00), LessThanOrEqual(i_current_price,79.00), IsNotNull(i_item_sk)]
 ReadSchema: struct<i_item_sk:int,i_current_price:decimal(7,2),i_color:string,i_product_name:string>
 
 (92) CometFilter
 Input [4]: [i_item_sk#68, i_current_price#69, i_color#70, i_product_name#71]
-Condition : ((((((isnotnull(i_current_price#69) AND rpad(i_color#70, 20,  ) IN (purple              ,burlywood           ,indian              ,spring              ,floral              ,medium              )) AND (i_current_price#69 >= 64.00)) AND (i_current_price#69 <= 74.00)) AND (i_current_price#69 >= 65.00)) AND (i_current_price#69 <= 79.00)) AND isnotnull(i_item_sk#68))
+Condition : ((((((isnotnull(i_current_price#69) AND i_color#70 IN (purple              ,burlywood           ,indian              ,spring              ,floral              ,medium              )) AND (i_current_price#69 >= 64.00)) AND (i_current_price#69 <= 74.00)) AND (i_current_price#69 >= 65.00)) AND (i_current_price#69 <= 79.00)) AND isnotnull(i_item_sk#68))
 
 (93) CometProject
 Input [4]: [i_item_sk#68, i_current_price#69, i_color#70, i_product_name#71]
@@ -628,11 +628,11 @@ Functions [4]: [count(1), sum(UnscaledValue(ss_wholesale_cost#9)), sum(UnscaledV
 
 (99) CometExchange
 Input [17]: [product_name#76, item_sk#77, store_name#78, store_zip#79, b_street_number#80, b_streen_name#81, b_city#82, b_zip#83, c_street_number#84, c_street_name#85, c_city#86, c_zip#87, syear#88, cnt#89, s1#90, s2#91, s3#92]
-Arguments: hashpartitioning(item_sk#77, store_name#78, rpad(store_zip#79, 10,  ), 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=5]
+Arguments: hashpartitioning(item_sk#77, store_name#78, store_zip#79, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=5]
 
 (100) CometSort
 Input [17]: [product_name#76, item_sk#77, store_name#78, store_zip#79, b_street_number#80, b_streen_name#81, b_city#82, b_zip#83, c_street_number#84, c_street_name#85, c_city#86, c_zip#87, syear#88, cnt#89, s1#90, s2#91, s3#92]
-Arguments: [product_name#76, item_sk#77, store_name#78, store_zip#79, b_street_number#80, b_streen_name#81, b_city#82, b_zip#83, c_street_number#84, c_street_name#85, c_city#86, c_zip#87, syear#88, cnt#89, s1#90, s2#91, s3#92], [item_sk#77 ASC NULLS FIRST, store_name#78 ASC NULLS FIRST, rpad(store_zip#79, 10,  ) ASC NULLS FIRST]
+Arguments: [product_name#76, item_sk#77, store_name#78, store_zip#79, b_street_number#80, b_streen_name#81, b_city#82, b_zip#83, c_street_number#84, c_street_name#85, c_city#86, c_zip#87, syear#88, cnt#89, s1#90, s2#91, s3#92], [item_sk#77 ASC NULLS FIRST, store_name#78 ASC NULLS FIRST, store_zip#79 ASC NULLS FIRST]
 
 (101) CometScan parquet spark_catalog.default.store_sales
 Output [12]: [ss_item_sk#93, ss_customer_sk#94, ss_cdemo_sk#95, ss_hdemo_sk#96, ss_addr_sk#97, ss_store_sk#98, ss_promo_sk#99, ss_ticket_number#100, ss_wholesale_cost#101, ss_list_price#102, ss_coupon_amt#103, ss_sold_date_sk#104]
@@ -801,7 +801,7 @@ Output [2]: [cd_demo_sk#134, cd_marital_status#135]
 (139) CometBroadcastHashJoin
 Left output [16]: [ss_item_sk#93, ss_hdemo_sk#96, ss_addr_sk#97, ss_promo_sk#99, ss_wholesale_cost#101, ss_list_price#102, ss_coupon_amt#103, d_year#118, s_store_name#120, s_zip#121, c_current_cdemo_sk#123, c_current_hdemo_sk#124, c_current_addr_sk#125, d_year#129, d_year#131, cd_marital_status#133]
 Right output [2]: [cd_demo_sk#134, cd_marital_status#135]
-Arguments: [c_current_cdemo_sk#123], [cd_demo_sk#134], Inner, NOT (rpad(cd_marital_status#133, 1,  ) = rpad(cd_marital_status#135, 1,  )), BuildRight
+Arguments: [c_current_cdemo_sk#123], [cd_demo_sk#134], Inner, NOT (cd_marital_status#133 = cd_marital_status#135), BuildRight
 
 (140) CometProject
 Input [18]: [ss_item_sk#93, ss_hdemo_sk#96, ss_addr_sk#97, ss_promo_sk#99, ss_wholesale_cost#101, ss_list_price#102, ss_coupon_amt#103, d_year#118, s_store_name#120, s_zip#121, c_current_cdemo_sk#123, c_current_hdemo_sk#124, c_current_addr_sk#125, d_year#129, d_year#131, cd_marital_status#133, cd_demo_sk#134, cd_marital_status#135]
@@ -915,16 +915,16 @@ Functions [4]: [count(1), sum(UnscaledValue(ss_wholesale_cost#101)), sum(Unscale
 
 (167) CometExchange
 Input [8]: [item_sk#158, store_name#159, store_zip#160, syear#161, cnt#162, s1#163, s2#164, s3#165]
-Arguments: hashpartitioning(item_sk#158, store_name#159, rpad(store_zip#160, 10,  ), 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=7]
+Arguments: hashpartitioning(item_sk#158, store_name#159, store_zip#160, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=7]
 
 (168) CometSort
 Input [8]: [item_sk#158, store_name#159, store_zip#160, syear#161, cnt#162, s1#163, s2#164, s3#165]
-Arguments: [item_sk#158, store_name#159, store_zip#160, syear#161, cnt#162, s1#163, s2#164, s3#165], [item_sk#158 ASC NULLS FIRST, store_name#159 ASC NULLS FIRST, rpad(store_zip#160, 10,  ) ASC NULLS FIRST]
+Arguments: [item_sk#158, store_name#159, store_zip#160, syear#161, cnt#162, s1#163, s2#164, s3#165], [item_sk#158 ASC NULLS FIRST, store_name#159 ASC NULLS FIRST, store_zip#160 ASC NULLS FIRST]
 
 (169) CometSortMergeJoin
 Left output [17]: [product_name#76, item_sk#77, store_name#78, store_zip#79, b_street_number#80, b_streen_name#81, b_city#82, b_zip#83, c_street_number#84, c_street_name#85, c_city#86, c_zip#87, syear#88, cnt#89, s1#90, s2#91, s3#92]
 Right output [8]: [item_sk#158, store_name#159, store_zip#160, syear#161, cnt#162, s1#163, s2#164, s3#165]
-Arguments: [item_sk#77, store_name#78, rpad(store_zip#79, 10,  )], [item_sk#158, store_name#159, rpad(store_zip#160, 10,  )], Inner, (cnt#162 <= cnt#89)
+Arguments: [item_sk#77, store_name#78, store_zip#79], [item_sk#158, store_name#159, store_zip#160], Inner, (cnt#162 <= cnt#89)
 
 (170) CometProject
 Input [25]: [product_name#76, item_sk#77, store_name#78, store_zip#79, b_street_number#80, b_streen_name#81, b_city#82, b_zip#83, c_street_number#84, c_street_name#85, c_city#86, c_zip#87, syear#88, cnt#89, s1#90, s2#91, s3#92, item_sk#158, store_name#159, store_zip#160, syear#161, cnt#162, s1#163, s2#164, s3#165]

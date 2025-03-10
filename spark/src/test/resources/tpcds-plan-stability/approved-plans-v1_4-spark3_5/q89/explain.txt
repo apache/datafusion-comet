@@ -33,12 +33,12 @@ TakeOrderedAndProject (28)
 Output [4]: [i_item_sk#1, i_brand#2, i_class#3, i_category#4]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_item_sk)]
+PushedFilters: [Or(And(In(i_category, [Books                                             ,Electronics                                       ,Sports                                            ]),In(i_class, [computers                                         ,football                                          ,stereo                                            ])),And(In(i_category, [Jewelry                                           ,Men                                               ,Women                                             ]),In(i_class, [birdal                                            ,dresses                                           ,shirts                                            ]))), IsNotNull(i_item_sk)]
 ReadSchema: struct<i_item_sk:int,i_brand:string,i_class:string,i_category:string>
 
 (2) CometFilter
 Input [4]: [i_item_sk#1, i_brand#2, i_class#3, i_category#4]
-Condition : (((rpad(i_category#4, 50,  ) IN (Books                                             ,Electronics                                       ,Sports                                            ) AND rpad(i_class#3, 50,  ) IN (computers                                         ,stereo                                            ,football                                          )) OR (rpad(i_category#4, 50,  ) IN (Men                                               ,Jewelry                                           ,Women                                             ) AND rpad(i_class#3, 50,  ) IN (shirts                                            ,birdal                                            ,dresses                                           ))) AND isnotnull(i_item_sk#1))
+Condition : (((i_category#4 IN (Books                                             ,Electronics                                       ,Sports                                            ) AND i_class#3 IN (computers                                         ,stereo                                            ,football                                          )) OR (i_category#4 IN (Men                                               ,Jewelry                                           ,Women                                             ) AND i_class#3 IN (shirts                                            ,birdal                                            ,dresses                                           ))) AND isnotnull(i_item_sk#1))
 
 (3) CometScan parquet spark_catalog.default.store_sales
 Output [4]: [ss_item_sk#5, ss_store_sk#6, ss_sales_price#7, ss_sold_date_sk#8]

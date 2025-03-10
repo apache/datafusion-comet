@@ -229,7 +229,7 @@ Arguments: [customer_id#35, customer_preferred_cust_flag#36, year_total#37]
 (33) CometBroadcastHashJoin
 Left output [2]: [customer_id#17, year_total#18]
 Right output [3]: [customer_id#35, customer_preferred_cust_flag#36, year_total#37]
-Arguments: [rpad(customer_id#17, 16,  )], [rpad(customer_id#35, 16,  )], Inner, BuildRight
+Arguments: [customer_id#17], [customer_id#35], Inner, BuildRight
 
 (34) CometProject
 Input [5]: [customer_id#17, year_total#18, customer_id#35, customer_preferred_cust_flag#36, year_total#37]
@@ -308,7 +308,7 @@ Arguments: [customer_id#54, year_total#55]
 (50) CometBroadcastHashJoin
 Left output [4]: [customer_id#17, year_total#18, customer_preferred_cust_flag#36, year_total#37]
 Right output [2]: [customer_id#54, year_total#55]
-Arguments: [rpad(customer_id#17, 16,  )], [rpad(customer_id#54, 16,  )], Inner, BuildRight
+Arguments: [customer_id#17], [customer_id#54], Inner, BuildRight
 
 (51) CometProject
 Input [6]: [customer_id#17, year_total#18, customer_preferred_cust_flag#36, year_total#37, customer_id#54, year_total#55]
@@ -383,7 +383,7 @@ Arguments: [customer_id#72, year_total#73]
 (66) CometBroadcastHashJoin
 Left output [5]: [customer_id#17, year_total#18, customer_preferred_cust_flag#36, year_total#37, year_total#55]
 Right output [2]: [customer_id#72, year_total#73]
-Arguments: [rpad(customer_id#17, 16,  )], [rpad(customer_id#72, 16,  )], Inner, (CASE WHEN (year_total#55 > 0.00) THEN (year_total#73 / year_total#55) END > CASE WHEN (year_total#18 > 0.00) THEN (year_total#37 / year_total#18) END), BuildRight
+Arguments: [customer_id#17], [customer_id#72], Inner, (CASE WHEN (year_total#55 > 0.00) THEN (year_total#73 / year_total#55) END > CASE WHEN (year_total#18 > 0.00) THEN (year_total#37 / year_total#18) END), BuildRight
 
 (67) CometProject
 Input [7]: [customer_id#17, year_total#18, customer_preferred_cust_flag#36, year_total#37, year_total#55, customer_id#72, year_total#73]

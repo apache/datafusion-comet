@@ -206,11 +206,11 @@ Input [7]: [i_category#19, i_brand#20, cc_name#21, d_year#22, d_moy#23, sum_sale
 
 (36) BroadcastExchange
 Input [5]: [i_category#19, i_brand#20, cc_name#21, sum_sales#27, rn#26]
-Arguments: HashedRelationBroadcastMode(List(rpad(input[0, string, true], 50,  ), rpad(input[1, string, true], 50,  ), input[2, string, true], (input[4, int, false] + 1)),false), [plan_id=4]
+Arguments: HashedRelationBroadcastMode(List(input[0, string, true], input[1, string, true], input[2, string, true], (input[4, int, false] + 1)),false), [plan_id=4]
 
 (37) BroadcastHashJoin [codegen id : 7]
-Left keys [4]: [rpad(i_category#3, 50,  ), rpad(i_brand#2, 50,  ), cc_name#13, rn#17]
-Right keys [4]: [rpad(i_category#19, 50,  ), rpad(i_brand#20, 50,  ), cc_name#21, (rn#26 + 1)]
+Left keys [4]: [i_category#3, i_brand#2, cc_name#13, rn#17]
+Right keys [4]: [i_category#19, i_brand#20, cc_name#21, (rn#26 + 1)]
 Join type: Inner
 Join condition: None
 
@@ -238,11 +238,11 @@ Input [7]: [i_category#28, i_brand#29, cc_name#30, d_year#31, d_moy#32, sum_sale
 
 (44) BroadcastExchange
 Input [5]: [i_category#28, i_brand#29, cc_name#30, sum_sales#34, rn#33]
-Arguments: HashedRelationBroadcastMode(List(rpad(input[0, string, true], 50,  ), rpad(input[1, string, true], 50,  ), input[2, string, true], (input[4, int, false] - 1)),false), [plan_id=5]
+Arguments: HashedRelationBroadcastMode(List(input[0, string, true], input[1, string, true], input[2, string, true], (input[4, int, false] - 1)),false), [plan_id=5]
 
 (45) BroadcastHashJoin [codegen id : 7]
-Left keys [4]: [rpad(i_category#3, 50,  ), rpad(i_brand#2, 50,  ), cc_name#13, rn#17]
-Right keys [4]: [rpad(i_category#28, 50,  ), rpad(i_brand#29, 50,  ), cc_name#30, (rn#33 - 1)]
+Left keys [4]: [i_category#3, i_brand#2, cc_name#13, rn#17]
+Right keys [4]: [i_category#28, i_brand#29, cc_name#30, (rn#33 - 1)]
 Join type: Inner
 Join condition: None
 

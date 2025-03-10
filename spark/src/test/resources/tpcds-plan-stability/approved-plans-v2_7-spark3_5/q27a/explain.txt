@@ -86,12 +86,12 @@ Condition : ((isnotnull(ss_cdemo_sk#2) AND isnotnull(ss_store_sk#3)) AND isnotnu
 Output [4]: [cd_demo_sk#10, cd_gender#11, cd_marital_status#12, cd_education_status#13]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_demographics]
-PushedFilters: [IsNotNull(cd_gender), IsNotNull(cd_marital_status), IsNotNull(cd_education_status), IsNotNull(cd_demo_sk)]
+PushedFilters: [IsNotNull(cd_gender), IsNotNull(cd_marital_status), IsNotNull(cd_education_status), EqualTo(cd_gender,F), EqualTo(cd_marital_status,W), EqualTo(cd_education_status,Primary             ), IsNotNull(cd_demo_sk)]
 ReadSchema: struct<cd_demo_sk:int,cd_gender:string,cd_marital_status:string,cd_education_status:string>
 
 (4) CometFilter
 Input [4]: [cd_demo_sk#10, cd_gender#11, cd_marital_status#12, cd_education_status#13]
-Condition : ((((((isnotnull(cd_gender#11) AND isnotnull(cd_marital_status#12)) AND isnotnull(cd_education_status#13)) AND (rpad(cd_gender#11, 1,  ) = F)) AND (rpad(cd_marital_status#12, 1,  ) = W)) AND (rpad(cd_education_status#13, 20,  ) = Primary             )) AND isnotnull(cd_demo_sk#10))
+Condition : ((((((isnotnull(cd_gender#11) AND isnotnull(cd_marital_status#12)) AND isnotnull(cd_education_status#13)) AND (cd_gender#11 = F)) AND (cd_marital_status#12 = W)) AND (cd_education_status#13 = Primary             )) AND isnotnull(cd_demo_sk#10))
 
 (5) CometProject
 Input [4]: [cd_demo_sk#10, cd_gender#11, cd_marital_status#12, cd_education_status#13]
@@ -142,12 +142,12 @@ Arguments: [ss_item_sk#1, ss_store_sk#3, ss_quantity#4, ss_list_price#5, ss_sale
 Output [2]: [s_store_sk#16, s_state#17]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store]
-PushedFilters: [IsNotNull(s_state), IsNotNull(s_store_sk)]
+PushedFilters: [IsNotNull(s_state), EqualTo(s_state,TN), IsNotNull(s_store_sk)]
 ReadSchema: struct<s_store_sk:int,s_state:string>
 
 (16) CometFilter
 Input [2]: [s_store_sk#16, s_state#17]
-Condition : ((isnotnull(s_state#17) AND (rpad(s_state#17, 2,  ) = TN)) AND isnotnull(s_store_sk#16))
+Condition : ((isnotnull(s_state#17) AND (s_state#17 = TN)) AND isnotnull(s_store_sk#16))
 
 (17) CometBroadcastExchange
 Input [2]: [s_store_sk#16, s_state#17]
@@ -240,12 +240,12 @@ Arguments: [ss_item_sk#32, ss_store_sk#34, ss_quantity#35, ss_list_price#36, ss_
 Output [2]: [s_store_sk#43, s_state#44]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store]
-PushedFilters: [IsNotNull(s_state), IsNotNull(s_store_sk)]
+PushedFilters: [IsNotNull(s_state), EqualTo(s_state,TN), IsNotNull(s_store_sk)]
 ReadSchema: struct<s_store_sk:int,s_state:string>
 
 (37) CometFilter
 Input [2]: [s_store_sk#43, s_state#44]
-Condition : ((isnotnull(s_state#44) AND (rpad(s_state#44, 2,  ) = TN)) AND isnotnull(s_store_sk#43))
+Condition : ((isnotnull(s_state#44) AND (s_state#44 = TN)) AND isnotnull(s_store_sk#43))
 
 (38) CometProject
 Input [2]: [s_store_sk#43, s_state#44]

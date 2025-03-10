@@ -143,12 +143,12 @@ Arguments: [ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#
 Output [2]: [sm_ship_mode_sk#21, sm_carrier#22]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/ship_mode]
-PushedFilters: [IsNotNull(sm_ship_mode_sk)]
+PushedFilters: [In(sm_carrier, [BARIAN              ,DHL                 ]), IsNotNull(sm_ship_mode_sk)]
 ReadSchema: struct<sm_ship_mode_sk:int,sm_carrier:string>
 
 (20) CometFilter
 Input [2]: [sm_ship_mode_sk#21, sm_carrier#22]
-Condition : (rpad(sm_carrier#22, 20,  ) IN (DHL                 ,BARIAN              ) AND isnotnull(sm_ship_mode_sk#21))
+Condition : (sm_carrier#22 IN (DHL                 ,BARIAN              ) AND isnotnull(sm_ship_mode_sk#21))
 
 (21) CometProject
 Input [2]: [sm_ship_mode_sk#21, sm_carrier#22]

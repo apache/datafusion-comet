@@ -91,7 +91,7 @@ Arguments: [d_day_name#3, ss_sales_price#5, s_store_id#8, s_store_name#9], [d_da
 (15) CometHashAggregate
 Input [4]: [d_day_name#3, ss_sales_price#5, s_store_id#8, s_store_name#9]
 Keys [2]: [s_store_name#9, s_store_id#8]
-Functions [7]: [partial_sum(UnscaledValue(CASE WHEN (rpad(d_day_name#3, 9,  ) = Sunday   ) THEN ss_sales_price#5 END)), partial_sum(UnscaledValue(CASE WHEN (rpad(d_day_name#3, 9,  ) = Monday   ) THEN ss_sales_price#5 END)), partial_sum(UnscaledValue(CASE WHEN (rpad(d_day_name#3, 9,  ) = Tuesday  ) THEN ss_sales_price#5 END)), partial_sum(UnscaledValue(CASE WHEN (rpad(d_day_name#3, 9,  ) = Wednesday) THEN ss_sales_price#5 END)), partial_sum(UnscaledValue(CASE WHEN (rpad(d_day_name#3, 9,  ) = Thursday ) THEN ss_sales_price#5 END)), partial_sum(UnscaledValue(CASE WHEN (rpad(d_day_name#3, 9,  ) = Friday   ) THEN ss_sales_price#5 END)), partial_sum(UnscaledValue(CASE WHEN (rpad(d_day_name#3, 9,  ) = Saturday ) THEN ss_sales_price#5 END))]
+Functions [7]: [partial_sum(UnscaledValue(CASE WHEN (d_day_name#3 = Sunday   ) THEN ss_sales_price#5 END)), partial_sum(UnscaledValue(CASE WHEN (d_day_name#3 = Monday   ) THEN ss_sales_price#5 END)), partial_sum(UnscaledValue(CASE WHEN (d_day_name#3 = Tuesday  ) THEN ss_sales_price#5 END)), partial_sum(UnscaledValue(CASE WHEN (d_day_name#3 = Wednesday) THEN ss_sales_price#5 END)), partial_sum(UnscaledValue(CASE WHEN (d_day_name#3 = Thursday ) THEN ss_sales_price#5 END)), partial_sum(UnscaledValue(CASE WHEN (d_day_name#3 = Friday   ) THEN ss_sales_price#5 END)), partial_sum(UnscaledValue(CASE WHEN (d_day_name#3 = Saturday ) THEN ss_sales_price#5 END))]
 
 (16) CometExchange
 Input [9]: [s_store_name#9, s_store_id#8, sum#11, sum#12, sum#13, sum#14, sum#15, sum#16, sum#17]
@@ -100,7 +100,7 @@ Arguments: hashpartitioning(s_store_name#9, s_store_id#8, 5), ENSURE_REQUIREMENT
 (17) CometHashAggregate
 Input [9]: [s_store_name#9, s_store_id#8, sum#11, sum#12, sum#13, sum#14, sum#15, sum#16, sum#17]
 Keys [2]: [s_store_name#9, s_store_id#8]
-Functions [7]: [sum(UnscaledValue(CASE WHEN (rpad(d_day_name#3, 9,  ) = Sunday   ) THEN ss_sales_price#5 END)), sum(UnscaledValue(CASE WHEN (rpad(d_day_name#3, 9,  ) = Monday   ) THEN ss_sales_price#5 END)), sum(UnscaledValue(CASE WHEN (rpad(d_day_name#3, 9,  ) = Tuesday  ) THEN ss_sales_price#5 END)), sum(UnscaledValue(CASE WHEN (rpad(d_day_name#3, 9,  ) = Wednesday) THEN ss_sales_price#5 END)), sum(UnscaledValue(CASE WHEN (rpad(d_day_name#3, 9,  ) = Thursday ) THEN ss_sales_price#5 END)), sum(UnscaledValue(CASE WHEN (rpad(d_day_name#3, 9,  ) = Friday   ) THEN ss_sales_price#5 END)), sum(UnscaledValue(CASE WHEN (rpad(d_day_name#3, 9,  ) = Saturday ) THEN ss_sales_price#5 END))]
+Functions [7]: [sum(UnscaledValue(CASE WHEN (d_day_name#3 = Sunday   ) THEN ss_sales_price#5 END)), sum(UnscaledValue(CASE WHEN (d_day_name#3 = Monday   ) THEN ss_sales_price#5 END)), sum(UnscaledValue(CASE WHEN (d_day_name#3 = Tuesday  ) THEN ss_sales_price#5 END)), sum(UnscaledValue(CASE WHEN (d_day_name#3 = Wednesday) THEN ss_sales_price#5 END)), sum(UnscaledValue(CASE WHEN (d_day_name#3 = Thursday ) THEN ss_sales_price#5 END)), sum(UnscaledValue(CASE WHEN (d_day_name#3 = Friday   ) THEN ss_sales_price#5 END)), sum(UnscaledValue(CASE WHEN (d_day_name#3 = Saturday ) THEN ss_sales_price#5 END))]
 
 (18) CometTakeOrderedAndProject
 Input [9]: [s_store_name#9, s_store_id#8, sun_sales#18, mon_sales#19, tue_sales#20, wed_sales#21, thu_sales#22, fri_sales#23, sat_sales#24]
