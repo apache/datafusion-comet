@@ -1217,8 +1217,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               if (df.schema("a").dataType.typeName.contains("decimal") && toType.typeName
                   .contains("decimal")) {
                 assert(
-                  cometMessage.contains("too large to store"),
-                  sparkMessage.contains("cannot be represented as"))
+                  cometMessage.contains("too large to store") ==
+                    sparkMessage.contains("cannot be represented as"))
               } else {
 
                 if (CometSparkSessionExtensions.isSpark40Plus) {
