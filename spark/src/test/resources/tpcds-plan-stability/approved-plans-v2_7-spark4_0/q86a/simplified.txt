@@ -15,7 +15,7 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
                             InputAdapter
                               Union
                                 WholeStageCodegen (2)
-                                  HashAggregate [i_category,i_class,sum] [sum(UnscaledValue(ws_net_paid)),total_sum,g_category,g_class,lochierarchy,sum]
+                                  HashAggregate [i_category,i_class,sum] [sum(UnscaledValue(ws_net_paid)),total_sum,i_category,i_class,g_category,g_class,lochierarchy,sum]
                                     CometColumnarToRow
                                       InputAdapter
                                         CometColumnarExchange [i_category,i_class] #3
@@ -42,8 +42,9 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
                                                               CometFilter [d_date_sk,d_month_seq]
                                                                 CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
                                                       CometBroadcastExchange [i_item_sk,i_class,i_category] #6
-                                                        CometFilter [i_item_sk,i_class,i_category]
-                                                          CometScan parquet spark_catalog.default.item [i_item_sk,i_class,i_category]
+                                                        CometProject [i_class,i_category] [i_item_sk,i_class,i_category]
+                                                          CometFilter [i_item_sk,i_class,i_category]
+                                                            CometScan parquet spark_catalog.default.item [i_item_sk,i_class,i_category]
                                 WholeStageCodegen (5)
                                   HashAggregate [i_category,sum,isEmpty] [sum(total_sum),total_sum,i_class,g_category,g_class,lochierarchy,sum,isEmpty]
                                     CometColumnarToRow
