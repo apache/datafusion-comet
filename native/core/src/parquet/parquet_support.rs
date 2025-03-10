@@ -282,7 +282,7 @@ mod tests {
         let s3_url = "s3a://test_bucket/comet/spark-warehouse/part-00000.snappy.parquet";
         let hdfs_url = "hdfs://localhost:8020/comet/spark-warehouse/part-00000.snappy.parquet";
 
-        let all_urls = vec![local_file_system_url, s3_url, hdfs_url];
+        let all_urls = [local_file_system_url, s3_url, hdfs_url];
         let expected: Vec<Result<(ObjectStoreUrl, Path), ExecutionError>> = vec![
             Ok((
                 ObjectStoreUrl::parse("file://").unwrap(),
