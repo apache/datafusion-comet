@@ -31,7 +31,6 @@ import org.apache.spark.sql.internal.SQLConf;
 import org.apache.spark.unsafe.array.LongArray;
 import org.apache.spark.unsafe.memory.MemoryBlock;
 import org.apache.spark.unsafe.memory.UnsafeMemoryAllocator;
-import org.apache.spark.util.Utils;
 
 import org.apache.comet.CometSparkSessionExtensions$;
 
@@ -71,7 +70,6 @@ public final class CometTestShuffleMemoryAllocator extends CometShuffleMemoryAll
   CometTestShuffleMemoryAllocator(
       SparkConf conf, TaskMemoryManager taskMemoryManager, long pageSize) {
     super(taskMemoryManager, pageSize, MemoryMode.OFF_HEAP);
-    assert (Utils.isTesting());
     this.pageSize = pageSize;
     this.totalMemory =
         CometSparkSessionExtensions$.MODULE$.getCometShuffleMemorySize(conf, SQLConf.get());

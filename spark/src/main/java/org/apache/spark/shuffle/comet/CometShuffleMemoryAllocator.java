@@ -48,11 +48,11 @@ public final class CometShuffleMemoryAllocator extends CometShuffleMemoryAllocat
   public static CometShuffleMemoryAllocatorTrait getInstance(
       SparkConf conf, TaskMemoryManager taskMemoryManager, long pageSize) {
     boolean isSparkTesting = Utils.isTesting();
-    boolean useUnifiedMemAllocator =
+    boolean useTestAllocator =
         (boolean)
             CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_UNIFIED_MEMORY_ALLOCATOR_IN_TEST().get();
 
-    if (isSparkTesting && !useUnifiedMemAllocator) {
+    if (isSparkTesting || useTestAllocator) {
       synchronized (CometShuffleMemoryAllocator.class) {
         if (INSTANCE == null) {
           // CometTestShuffleMemoryAllocator handles pages by itself so it can be a singleton.
@@ -60,18 +60,18 @@ public final class CometShuffleMemoryAllocator extends CometShuffleMemoryAllocat
         }
       }
       return INSTANCE;
-    } else {
-      if (taskMemoryManager.getTungstenMemoryMode() != MemoryMode.OFF_HEAP) {
-        throw new IllegalArgumentException(
-            "CometShuffleMemoryAllocator should be used with off-heap "
-                + "memory mode, but got "
-                + taskMemoryManager.getTungstenMemoryMode());
-      }
-
-      // CometShuffleMemoryAllocator stores pages in TaskMemoryManager which is not singleton,
-      // but one instance per task. So we need to create a new instance for each task.
-      return new CometShuffleMemoryAllocator(taskMemoryManager, pageSize);
     }
+    
+    if (taskMemoryManager.getTungstenMemoryMode() != MemoryMode.OFF_HEAP) {
+      throw new IllegalArgumentException(
+          "CometShuffleMemoryAllocator should be used with off-heap "
+              + "memory mode, but got "
+              + taskMemoryManager.getTungstenMemoryMode());
+    }
+
+    // CometShuffleMemoryAllocator stores pages in TaskMemoryManager which is not singleton,
+    // but one instance per task. So we need to create a new instance for each task.
+    return new CometShuffleMemoryAllocator(taskMemoryManager, pageSize);
   }
 
   CometShuffleMemoryAllocator(TaskMemoryManager taskMemoryManager, long pageSize) {
