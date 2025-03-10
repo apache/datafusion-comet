@@ -620,13 +620,12 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
 
         // This is guaranteed to be a ShuffleWriteMetrics based on the if check in the beginning
         // of this method.
-        synchronized (writeMetrics) {
-          writeMetrics.incRecordsWritten(
-              ((ShuffleWriteMetrics) writeMetricsToUse).recordsWritten());
-          taskContext
-              .taskMetrics()
-              .incDiskBytesSpilled(((ShuffleWriteMetrics) writeMetricsToUse).bytesWritten());
-        }
+        // synchronized (writeMetrics) {
+        writeMetrics.incRecordsWritten(((ShuffleWriteMetrics) writeMetricsToUse).recordsWritten());
+        taskContext
+            .taskMetrics()
+            .incDiskBytesSpilled(((ShuffleWriteMetrics) writeMetricsToUse).bytesWritten());
+        // }
       }
     }
 

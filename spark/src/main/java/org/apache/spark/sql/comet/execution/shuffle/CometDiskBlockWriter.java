@@ -414,15 +414,14 @@ public final class CometDiskBlockWriter {
 
       // Update metrics
       // Other threads may be updating the metrics at the same time, so we need to synchronize it.
-      synchronized (writeMetrics) {
-        if (!isLast) {
-          writeMetrics.incRecordsWritten(
-              ((ShuffleWriteMetrics) writeMetricsToUse).recordsWritten());
-          taskContext
-              .taskMetrics()
-              .incDiskBytesSpilled(((ShuffleWriteMetrics) writeMetricsToUse).bytesWritten());
-        }
+      // synchronized (writeMetrics) {
+      if (!isLast) {
+        writeMetrics.incRecordsWritten(((ShuffleWriteMetrics) writeMetricsToUse).recordsWritten());
+        taskContext
+            .taskMetrics()
+            .incDiskBytesSpilled(((ShuffleWriteMetrics) writeMetricsToUse).bytesWritten());
       }
+      // }
 
       return written;
     }
