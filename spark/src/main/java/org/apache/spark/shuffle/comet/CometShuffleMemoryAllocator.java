@@ -61,7 +61,7 @@ public final class CometShuffleMemoryAllocator extends CometShuffleMemoryAllocat
       }
       return INSTANCE;
     }
-    
+
     if (taskMemoryManager.getTungstenMemoryMode() != MemoryMode.OFF_HEAP) {
       throw new IllegalArgumentException(
           "CometShuffleMemoryAllocator should be used with off-heap "
