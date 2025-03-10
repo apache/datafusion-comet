@@ -43,8 +43,9 @@ TakeOrderedAndProject [s_store_name,i_item_desc,revenue,i_current_price,i_wholes
                 WholeStageCodegen (3)
                   CometColumnarToRow
                     InputAdapter
-                      CometFilter [i_item_sk,i_item_desc,i_current_price,i_wholesale_cost,i_brand]
-                        CometScan parquet spark_catalog.default.item [i_item_sk,i_item_desc,i_current_price,i_wholesale_cost,i_brand]
+                      CometProject [i_brand] [i_item_sk,i_item_desc,i_current_price,i_wholesale_cost,i_brand]
+                        CometFilter [i_item_sk,i_item_desc,i_current_price,i_wholesale_cost,i_brand]
+                          CometScan parquet spark_catalog.default.item [i_item_sk,i_item_desc,i_current_price,i_wholesale_cost,i_brand]
         InputAdapter
           BroadcastExchange #6
             WholeStageCodegen (6)
