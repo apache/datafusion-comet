@@ -1449,7 +1449,7 @@ index 5a413c77754..a6f97dccb67 100644
            val df = spark.read.parquet(path).selectExpr(projection: _*)
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 2f8e401e743..dbcf3171946 100644
+index 2f8e401e743..a4f94417dcc 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -27,9 +27,11 @@ import org.scalatest.time.SpanSugar._
@@ -1811,7 +1811,17 @@ index 2f8e401e743..dbcf3171946 100644
      CostEvaluator.instantiate(
        classOf[SimpleShuffleSortCostEvaluator].getCanonicalName, spark.sparkContext.getConf)
      intercept[IllegalArgumentException] {
-@@ -2452,6 +2492,7 @@ class AdaptiveQueryExecSuite
+@@ -2417,7 +2457,8 @@ class AdaptiveQueryExecSuite
+   }
+ 
+   test("SPARK-48037: Fix SortShuffleWriter lacks shuffle write related metrics " +
+-    "resulting in potentially inaccurate data") {
++    "resulting in potentially inaccurate data",
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1501")) {
+     withTable("t3") {
+       withSQLConf(
+         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+@@ -2452,6 +2493,7 @@ class AdaptiveQueryExecSuite
            val (_, adaptive) = runAdaptiveAndVerifyResult(query)
            assert(adaptive.collect {
              case sort: SortExec => sort
@@ -1819,7 +1829,7 @@ index 2f8e401e743..dbcf3171946 100644
            }.size == 1)
            val read = collect(adaptive) {
              case read: AQEShuffleReadExec => read
-@@ -2469,7 +2510,8 @@ class AdaptiveQueryExecSuite
+@@ -2469,7 +2511,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1829,7 +1839,7 @@ index 2f8e401e743..dbcf3171946 100644
      withTempView("v") {
        withSQLConf(
          SQLConf.ADAPTIVE_OPTIMIZE_SKEWS_IN_REBALANCE_PARTITIONS_ENABLED.key -> "true",
-@@ -2581,7 +2623,7 @@ class AdaptiveQueryExecSuite
+@@ -2581,7 +2624,7 @@ class AdaptiveQueryExecSuite
            runAdaptiveAndVerifyResult("SELECT key1 FROM skewData1 JOIN skewData2 ON key1 = key2 " +
              "JOIN skewData3 ON value2 = value3")
          val shuffles1 = collect(adaptive1) {
@@ -1838,7 +1848,7 @@ index 2f8e401e743..dbcf3171946 100644
          }
          assert(shuffles1.size == 4)
          val smj1 = findTopLevelSortMergeJoin(adaptive1)
-@@ -2592,7 +2634,7 @@ class AdaptiveQueryExecSuite
+@@ -2592,7 +2635,7 @@ class AdaptiveQueryExecSuite
            runAdaptiveAndVerifyResult("SELECT key1 FROM skewData1 JOIN skewData2 ON key1 = key2 " +
              "JOIN skewData3 ON value1 = value3")
          val shuffles2 = collect(adaptive2) {
@@ -1847,7 +1857,7 @@ index 2f8e401e743..dbcf3171946 100644
          }
          assert(shuffles2.size == 4)
          val smj2 = findTopLevelSortMergeJoin(adaptive2)
-@@ -2850,6 +2892,7 @@ class AdaptiveQueryExecSuite
+@@ -2850,6 +2893,7 @@ class AdaptiveQueryExecSuite
          }.size == (if (firstAccess) 1 else 0))
          assert(collect(initialExecutedPlan) {
            case s: SortExec => s
@@ -1855,7 +1865,7 @@ index 2f8e401e743..dbcf3171946 100644
          }.size == (if (firstAccess) 2 else 0))
          assert(collect(initialExecutedPlan) {
            case i: InMemoryTableScanLike => i
-@@ -2980,7 +3023,9 @@ class AdaptiveQueryExecSuite
+@@ -2980,7 +3024,9 @@ class AdaptiveQueryExecSuite
  
        val plan = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
        assert(plan.inputPlan.isInstanceOf[TakeOrderedAndProjectExec])
