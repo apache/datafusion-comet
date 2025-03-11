@@ -481,7 +481,12 @@ impl ShuffleRepartitioner {
             Partitioning::UnknownPartitioning(n) if *n == 1 => {
                 let buffered_partitions = &mut self.buffered_partitions;
 
-                assert_eq!(buffered_partitions.len(), 1, "Expected 1 partition but got {}", buffered_partitions.len());
+                assert_eq!(
+                    buffered_partitions.len(),
+                    1,
+                    "Expected 1 partition but got {}",
+                    buffered_partitions.len()
+                );
 
                 // TODO the single partition case could be optimized to avoid appending all
                 // rows from the batch into builders and then recreating the batch
