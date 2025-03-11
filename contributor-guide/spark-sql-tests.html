@@ -410,9 +410,9 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 of Apache Spark to enable Comet when running tests. This is a highly manual process and the process can
 vary depending on the changes in the new version of Spark, but here is a general guide to the process.</p>
 <p>We typically start by applying a patch from a previous version of Spark. For example, when enabling the tests
-for Spark version 3.5.1 we may start by applying the existing diff for 3.4.3 first.</p>
+for Spark version 3.5.4 we may start by applying the existing diff for 3.4.3 first.</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>git/apache/spark
-git<span class="w"> </span>checkout<span class="w"> </span>v3.5.1
+git<span class="w"> </span>checkout<span class="w"> </span>v3.5.4
 git<span class="w"> </span>apply<span class="w"> </span>--reject<span class="w"> </span>--whitespace<span class="o">=</span>fix<span class="w"> </span>../datafusion-comet/dev/diffs/3.4.3.diff
 </pre></div>
 </div>
@@ -448,7 +448,7 @@ command generated the following files.</p>
 </section>
 <section id="generating-the-diff-file">
 <h2>Generating The Diff File<a class="headerlink" href="#generating-the-diff-file" title="Link to this heading">¶</a></h2>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>diff<span class="w"> </span>v3.5.1<span class="w"> </span>&gt;<span class="w"> </span>../datafusion-comet/dev/diffs/3.5.1.diff
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>diff<span class="w"> </span>v3.5.4<span class="w"> </span>&gt;<span class="w"> </span>../datafusion-comet/dev/diffs/3.5.4.diff
 </pre></div>
 </div>
 </section>
