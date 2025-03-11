@@ -750,14 +750,16 @@ mod test {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum CompressionCodec {
+    #[default]
     None,
     Lz4Frame,
     Zstd(i32),
     Snappy,
 }
 
+#[derive(Debug, Clone, Default)]
 pub struct ShuffleBlockWriter {
     fast_encoding: bool,
     codec: CompressionCodec,
