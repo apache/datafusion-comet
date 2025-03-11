@@ -235,12 +235,14 @@ pub(crate) fn prepare_object_store(
     runtime_env: Arc<RuntimeEnv>,
     url: String,
 ) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
-    let mut url = Url::parse(url.as_str()).unwrap();
+    let mut url = Url::parse(url.as_str())
+        .map_err(|e| ExecutionError::GeneralError(format!("Error parsing URL {url}: {e}")))?;
     let mut scheme = url.scheme();
     if scheme == "s3a" {
         scheme = "s3";
-        url.set_scheme("s3")
-            .expect("Could not convert scheme from s3a to s3");
+        url.set_scheme("s3").map_err(|_| {
+            ExecutionError::GeneralError("Could not convert scheme from s3a to s3".to_string())
+        })?;
     }
     let url_key = format!(
         "{}://{}",
@@ -249,16 +251,12 @@ pub(crate) fn prepare_object_store(
     );
 
     let (object_store, object_store_path): (Box<dyn ObjectStore>, Path) = if scheme == "hdfs" {
-        match parse_hdfs_url(&url) {
-            Ok(r) => r,
-            Err(e) => return Err(ExecutionError::GeneralError(e.to_string())),
-        }
+        parse_hdfs_url(&url)
     } else {
-        match parse_url(&url) {
-            Ok(r) => r,
-            Err(e) => return Err(ExecutionError::GeneralError(e.to_string())),
-        }
-    };
+        parse_url(&url)
+    }
+    .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
+
     let object_store_url = ObjectStoreUrl::parse(url_key.clone())?;
     runtime_env.register_object_store(&url, Arc::from(object_store));
     Ok((object_store_url, object_store_path))
@@ -316,6 +314,34 @@ mod tests {
                     };
                     assert_eq!(e.to_string(), res_e.to_string())
                 }
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "hdfs")]
+    fn test_prepare_object_store() {
+        let hdfs_url = "hdfs://localhost:8020/comet/spark-warehouse/part-00000.snappy.parquet";
+        let expected: Result<(ObjectStoreUrl, Path), ExecutionError> = Ok((
+            ObjectStoreUrl::parse("hdfs://localhost:8020").unwrap(),
+            Path::from("/comet/spark-warehouse/part-00000.snappy.parquet"),
+        ));
+
+        let url = &Url::parse(hdfs_url).unwrap();
+        let res = prepare_object_store(Arc::new(RuntimeEnv::default()), url.to_string());
+
+        match expected {
+            Ok((o, p)) => {
+                let (r_o, r_p) = res.unwrap();
+                assert_eq!(r_o, *o);
+                assert_eq!(r_p, *p);
+            }
+            Err(e) => {
+                assert!(res.is_err());
+                let Err(res_e) = res else {
+                    panic!("test failed")
+                };
+                assert_eq!(e.to_string(), res_e.to_string())
             }
         }
     }

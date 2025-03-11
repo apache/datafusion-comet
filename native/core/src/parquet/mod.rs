@@ -652,7 +652,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             .build()?;
         let session_ctx = SessionContext::new();
         let (object_store_url, object_store_path) =
-            prepare_object_store(session_ctx.runtime_env(), path.clone()).unwrap();
+            prepare_object_store(session_ctx.runtime_env(), path.clone())?;
 
         // EXPERIMENTAL - BEGIN
         // TODO: (ARROW NATIVE) - Remove code duplication between this and POC 1

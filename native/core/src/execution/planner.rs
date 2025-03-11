@@ -1212,12 +1212,11 @@ impl PhysicalPlanner {
                 let one_file = scan
                     .file_partitions
                     .first()
-                    .unwrap()
-                    .partitioned_file
-                    .first()
-                    .unwrap()
-                    .file_path
-                    .clone();
+                    .and_then(|f| f.partitioned_file.first())
+                    .map(|f| f.file_path.clone())
+                    .ok_or(ExecutionError::GeneralError(
+                        "Failed to locate file".to_string(),
+                    ))?;
                 let (object_store_url, _) =
                     prepare_object_store(self.session_ctx.runtime_env(), one_file)?;
 
