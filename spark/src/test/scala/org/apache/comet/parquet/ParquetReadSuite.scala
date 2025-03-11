@@ -337,6 +337,8 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("test multiple pages with different sizes and nulls") {
+    // https://github.com/apache/datafusion-comet/issues/1441
+    assume(!CometConf.isExperimentalNativeScan)
     def makeRawParquetFile(
         path: Path,
         dictionaryEnabled: Boolean,
@@ -1026,6 +1028,9 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("scan metrics") {
+    // https://github.com/apache/datafusion-comet/issues/1441
+    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
+
     val cometScanMetricNames = Seq(
       "ParquetRowGroups",
       "ParquetNativeDecodeTime",
