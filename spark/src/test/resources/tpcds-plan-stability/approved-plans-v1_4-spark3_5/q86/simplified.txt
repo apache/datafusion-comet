@@ -31,5 +31,6 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
                                         CometFilter [d_date_sk,d_month_seq]
                                           CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
                                 CometBroadcastExchange [i_item_sk,i_class,i_category] #5
-                                  CometFilter [i_item_sk,i_class,i_category]
-                                    CometScan parquet spark_catalog.default.item [i_item_sk,i_class,i_category]
+                                  CometProject [i_class,i_category] [i_item_sk,i_class,i_category]
+                                    CometFilter [i_item_sk,i_class,i_category]
+                                      CometScan parquet spark_catalog.default.item [i_item_sk,i_class,i_category]
