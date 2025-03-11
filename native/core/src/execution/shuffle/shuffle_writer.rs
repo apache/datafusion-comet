@@ -412,8 +412,6 @@ impl ShuffleRepartitioner {
                     .await?;
             }
             Partitioning::Hash(exprs, num_output_partitions) => {
-                let num_output_partitions = *num_output_partitions;
-
                 let (partition_starts, shuffled_partition_ids): (Vec<usize>, Vec<usize>) = {
                     let mut timer = self.metrics.repart_time.timer();
 
@@ -433,11 +431,11 @@ impl ShuffleRepartitioner {
                         .iter()
                         .enumerate()
                         .for_each(|(idx, hash)| {
-                            partition_ids[idx] = pmod(*hash, num_output_partitions) as u64
+                            partition_ids[idx] = pmod(*hash, *num_output_partitions) as u64
                         });
 
                     // count each partition size
-                    let mut partition_counters = vec![0usize; num_output_partitions];
+                    let mut partition_counters = vec![0usize; *num_output_partitions];
                     partition_ids
                         .iter()
                         .for_each(|partition_id| partition_counters[*partition_id as usize] += 1);
