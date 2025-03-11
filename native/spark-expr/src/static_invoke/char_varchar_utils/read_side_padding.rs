@@ -47,7 +47,8 @@ fn spark_read_side_padding2(
                 DataType::LargeUtf8 => {
                     spark_read_side_padding_internal::<i64>(array, *length, truncate)
                 }
-                DataType::Dictionary(_, value_type) => { // required for SPARK-48498
+                // Dictionary support required for SPARK-48498
+                DataType::Dictionary(_, value_type) => {
                     let dict = as_dictionary_array::<Int32Type>(array);
                     let col = if value_type.as_ref() == &DataType::Utf8 {
                         spark_read_side_padding_internal::<i32>(dict.values(), *length, truncate)?
