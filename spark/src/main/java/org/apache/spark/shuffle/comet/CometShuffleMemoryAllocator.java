@@ -48,9 +48,12 @@ public final class CometShuffleMemoryAllocator extends CometShuffleMemoryAllocat
   public static CometShuffleMemoryAllocatorTrait getInstance(
       SparkConf conf, TaskMemoryManager taskMemoryManager, long pageSize) {
     boolean isSparkTesting = Utils.isTesting();
-    boolean useUnifiedMemAllocator =
+    boolean useUnifiedMemInTests =
         (boolean)
             CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_UNIFIED_MEMORY_ALLOCATOR_IN_TEST().get();
+    boolean useUnifiedMemAllocator =
+        taskMemoryManager.getTungstenMemoryMode() == MemoryMode.OFF_HEAP
+            || (isSparkTesting && useUnifiedMemInTests);
 
     if (!useUnifiedMemAllocator) {
       synchronized (CometShuffleMemoryAllocator.class) {
