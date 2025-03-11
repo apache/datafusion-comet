@@ -161,22 +161,25 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
 
   test("array_prepend") {
     assume(isSpark35Plus) // in Spark 3.5 array_prepend is implemented via array_insert
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        spark.read.parquet(path.toString).createOrReplaceTempView("t1");
-        checkSparkAnswerAndOperator(spark.sql("Select array_prepend(array(_1),false) from t1"))
-        checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_prepend(array(_2, _3, _4), 4) FROM t1"))
-        checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_prepend(array(_2, _3, _4), null) FROM t1"));
-        checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_prepend(array(_6, _7), CAST(6.5 AS DOUBLE)) FROM t1"));
-        checkSparkAnswerAndOperator(spark.sql("SELECT array_prepend(array(_8), 'test') FROM t1"));
-        checkSparkAnswerAndOperator(spark.sql("SELECT array_prepend(array(_19), _19) FROM t1"));
-        checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_prepend((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1");
+          checkSparkAnswerAndOperator(spark.sql("Select array_prepend(array(_1),false) from t1"))
+          checkSparkAnswerAndOperator(
+            spark.sql("SELECT array_prepend(array(_2, _3, _4), 4) FROM t1"))
+          checkSparkAnswerAndOperator(
+            spark.sql("SELECT array_prepend(array(_2, _3, _4), null) FROM t1"));
+          checkSparkAnswerAndOperator(
+            spark.sql("SELECT array_prepend(array(_6, _7), CAST(6.5 AS DOUBLE)) FROM t1"));
+          checkSparkAnswerAndOperator(
+            spark.sql("SELECT array_prepend(array(_8), 'test') FROM t1"));
+          checkSparkAnswerAndOperator(spark.sql("SELECT array_prepend(array(_19), _19) FROM t1"));
+          checkSparkAnswerAndOperator(
+            spark.sql("SELECT array_prepend((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
+        }
       }
     }
   }
