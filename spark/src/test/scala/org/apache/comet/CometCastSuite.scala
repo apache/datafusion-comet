@@ -25,12 +25,12 @@ import scala.util.Random
 import scala.util.matching.Regex
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType}
+import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType, StructField, StructType}
 
 import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible}
 
@@ -981,12 +981,15 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast between decimals with different precision and scale") {
-    // cast between default Decimal(38, 18) to Decimal(6,2)
-    val values = Seq(BigDecimal("12345.6789"), BigDecimal("9876.5432"), BigDecimal("123.4567"))
-    val df = withNulls(values)
-      .toDF("b")
-      .withColumn("a", col("b").cast(DecimalType(6, 2)))
-    checkSparkAnswer(df)
+    val rowData = Seq(
+      Row(BigDecimal("12345.6789")),
+      Row(BigDecimal("9876.5432")),
+      Row(BigDecimal("123.4567")))
+    val df = spark.createDataFrame(
+      spark.sparkContext.parallelize(rowData),
+      StructType(Seq(StructField("a", DataTypes.createDecimalType(10, 4)))))
+
+    castTest(df, DecimalType(6, 2))
   }
 
   test("cast between decimals with higher precision than source") {
@@ -1210,27 +1213,33 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               val cometMessage =
                 if (cometException.getCause != null) cometException.getCause.getMessage
                 else cometException.getMessage
-              if (CometSparkSessionExtensions.isSpark40Plus) {
-                // for Spark 4 we expect to sparkException carries the message
-                assert(
-                  sparkException.getMessage
-                    .replace(".WITH_SUGGESTION] ", "]")
-                    .startsWith(cometMessage))
-              } else if (CometSparkSessionExtensions.isSpark34Plus) {
-                // for Spark 3.4 we expect to reproduce the error message exactly
-                assert(cometMessage == sparkMessage)
+              // this if branch should only check decimal to decimal cast and errors when output precision, scale causes overflow.
+              if (df.schema("a").dataType.typeName.contains("decimal") && toType.typeName
+                  .contains("decimal") && sparkMessage.contains("cannot be represented as")) {
+                assert(cometMessage.contains("too large to store"))
               } else {
-                // for Spark 3.3 we just need to strip the prefix from the Comet message
-                // before comparing
-                val cometMessageModified = cometMessage
-                  .replace("[CAST_INVALID_INPUT] ", "")
-                  .replace("[CAST_OVERFLOW] ", "")
-                  .replace("[NUMERIC_VALUE_OUT_OF_RANGE] ", "")
-
-                if (sparkMessage.contains("cannot be represented as")) {
-                  assert(cometMessage.contains("cannot be represented as"))
+                if (CometSparkSessionExtensions.isSpark40Plus) {
+                  // for Spark 4 we expect to sparkException carries the message
+                  assert(
+                    sparkException.getMessage
+                      .replace(".WITH_SUGGESTION] ", "]")
+                      .startsWith(cometMessage))
+                } else if (CometSparkSessionExtensions.isSpark34Plus) {
+                  // for Spark 3.4 we expect to reproduce the error message exactly
+                  assert(cometMessage == sparkMessage)
                 } else {
-                  assert(cometMessageModified == sparkMessage)
+                  // for Spark 3.3 we just need to strip the prefix from the Comet message
+                  // before comparing
+                  val cometMessageModified = cometMessage
+                    .replace("[CAST_INVALID_INPUT] ", "")
+                    .replace("[CAST_OVERFLOW] ", "")
+                    .replace("[NUMERIC_VALUE_OUT_OF_RANGE] ", "")
+
+                  if (sparkMessage.contains("cannot be represented as")) {
+                    assert(cometMessage.contains("cannot be represented as"))
+                  } else {
+                    assert(cometMessageModified == sparkMessage)
+                  }
                 }
               }
           }
