@@ -24,8 +24,9 @@ WholeStageCodegen (7)
                                           CometProject [cs_sold_date_sk,cs_ext_sales_price] [sold_date_sk,sales_price]
                                             CometScan parquet spark_catalog.default.catalog_sales [cs_ext_sales_price,cs_sold_date_sk]
                                         CometBroadcastExchange [d_date_sk,d_week_seq,d_day_name] #3
-                                          CometFilter [d_date_sk,d_week_seq,d_day_name]
-                                            CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_week_seq,d_day_name]
+                                          CometProject [d_day_name] [d_date_sk,d_week_seq,d_day_name]
+                                            CometFilter [d_date_sk,d_week_seq,d_day_name]
+                                              CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_week_seq,d_day_name]
                     InputAdapter
                       BroadcastExchange #4
                         WholeStageCodegen (2)

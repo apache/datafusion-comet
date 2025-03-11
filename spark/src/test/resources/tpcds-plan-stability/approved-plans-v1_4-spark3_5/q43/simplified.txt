@@ -2,20 +2,20 @@ WholeStageCodegen (1)
   CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [s_store_name,s_store_id,sun_sales,mon_sales,tue_sales,wed_sales,thu_sales,fri_sales,sat_sales]
-        CometHashAggregate [s_store_name,s_store_id,sun_sales,mon_sales,tue_sales,wed_sales,thu_sales,fri_sales,sat_sales,sum,sum,sum,sum,sum,sum,sum,sum(UnscaledValue(CASE WHEN (rpad(d_day_name, 9,  ) = Sunday   ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (rpad(d_day_name, 9,  ) = Monday   ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (rpad(d_day_name, 9,  ) = Tuesday  ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (rpad(d_day_name, 9,  ) = Wednesday) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (rpad(d_day_name, 9,  ) = Thursday ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (rpad(d_day_name, 9,  ) = Friday   ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (rpad(d_day_name, 9,  ) = Saturday ) THEN ss_sales_price END))]
+        CometHashAggregate [s_store_name,s_store_id,sun_sales,mon_sales,tue_sales,wed_sales,thu_sales,fri_sales,sat_sales,sum,sum,sum,sum,sum,sum,sum,sum(UnscaledValue(CASE WHEN (d_day_name = Sunday   ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Monday   ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Tuesday  ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Wednesday) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Thursday ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Friday   ) THEN ss_sales_price END)),sum(UnscaledValue(CASE WHEN (d_day_name = Saturday ) THEN ss_sales_price END))]
           CometExchange [s_store_name,s_store_id] #1
             CometHashAggregate [s_store_name,s_store_id,sum,sum,sum,sum,sum,sum,sum,d_day_name,ss_sales_price]
               CometProject [d_day_name,ss_sales_price,s_store_id,s_store_name]
                 CometBroadcastHashJoin [d_day_name,ss_store_sk,ss_sales_price,s_store_sk,s_store_id,s_store_name]
                   CometProject [d_day_name,ss_store_sk,ss_sales_price]
                     CometBroadcastHashJoin [d_date_sk,d_day_name,ss_store_sk,ss_sales_price,ss_sold_date_sk]
-                      CometProject [d_date_sk,d_day_name]
+                      CometProject [d_day_name] [d_date_sk,d_day_name]
                         CometFilter [d_date_sk,d_year,d_day_name]
                           CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_day_name]
                       CometBroadcastExchange [ss_store_sk,ss_sales_price,ss_sold_date_sk] #2
                         CometFilter [ss_store_sk,ss_sales_price,ss_sold_date_sk]
                           CometScan parquet spark_catalog.default.store_sales [ss_store_sk,ss_sales_price,ss_sold_date_sk]
                   CometBroadcastExchange [s_store_sk,s_store_id,s_store_name] #3
-                    CometProject [s_store_sk,s_store_id,s_store_name]
+                    CometProject [s_store_id] [s_store_sk,s_store_id,s_store_name]
                       CometFilter [s_store_sk,s_store_id,s_store_name,s_gmt_offset]
                         CometScan parquet spark_catalog.default.store [s_store_sk,s_store_id,s_store_name,s_gmt_offset]

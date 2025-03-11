@@ -29,8 +29,9 @@ TakeOrderedAndProject [s_store_name,sum(ss_net_profit)]
                                     CometFilter [d_date_sk,d_year,d_qoy]
                                       CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_qoy]
                             CometBroadcastExchange [s_store_sk,s_store_name,s_zip] #4
-                              CometFilter [s_store_sk,s_store_name,s_zip]
-                                CometScan parquet spark_catalog.default.store [s_store_sk,s_store_name,s_zip]
+                              CometProject [s_zip] [s_store_sk,s_store_name,s_zip]
+                                CometFilter [s_store_sk,s_store_name,s_zip]
+                                  CometScan parquet spark_catalog.default.store [s_store_sk,s_store_name,s_zip]
                         CometBroadcastExchange [ca_zip] #5
                           CometHashAggregate [ca_zip]
                             CometExchange [ca_zip] #6
@@ -47,8 +48,9 @@ TakeOrderedAndProject [s_store_name,sum(ss_net_profit)]
                                             CometHashAggregate [ca_zip,count]
                                               CometProject [ca_zip]
                                                 CometBroadcastHashJoin [ca_address_sk,ca_zip,c_current_addr_sk]
-                                                  CometFilter [ca_address_sk,ca_zip]
-                                                    CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_zip]
+                                                  CometProject [ca_zip] [ca_address_sk,ca_zip]
+                                                    CometFilter [ca_address_sk,ca_zip]
+                                                      CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_zip]
                                                   CometBroadcastExchange [c_current_addr_sk] #9
                                                     CometProject [c_current_addr_sk]
                                                       CometFilter [c_current_addr_sk,c_preferred_cust_flag]
