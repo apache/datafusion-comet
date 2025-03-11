@@ -69,7 +69,8 @@ object GenerateDocs {
         w.write("|-|-|-|\n".getBytes)
         for (fromType <- CometCast.supportedTypes) {
           for (toType <- CometCast.supportedTypes) {
-            if (Cast.canCast(fromType, toType) && fromType != toType) {
+            if (Cast.canCast(fromType, toType) && (fromType != toType || fromType.typeName
+                .contains("decimal"))) {
               val fromTypeName = fromType.typeName.replace("(10,2)", "")
               val toTypeName = toType.typeName.replace("(10,2)", "")
               CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY) match {
