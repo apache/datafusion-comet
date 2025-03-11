@@ -73,39 +73,39 @@ Condition : ((isnotnull(i_manager_id#10) AND (i_manager_id#10 = 28)) AND isnotnu
 
 (11) CometProject
 Input [4]: [i_item_sk#7, i_brand_id#8, i_brand#9, i_manager_id#10]
-Arguments: [i_item_sk#7, i_brand_id#8, i_brand#9], [i_item_sk#7, i_brand_id#8, i_brand#9]
+Arguments: [i_item_sk#7, i_brand_id#8, i_brand#11], [i_item_sk#7, i_brand_id#8, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_brand#9, 50, true, false, true) AS i_brand#11]
 
 (12) CometBroadcastExchange
-Input [3]: [i_item_sk#7, i_brand_id#8, i_brand#9]
-Arguments: [i_item_sk#7, i_brand_id#8, i_brand#9]
+Input [3]: [i_item_sk#7, i_brand_id#8, i_brand#11]
+Arguments: [i_item_sk#7, i_brand_id#8, i_brand#11]
 
 (13) CometBroadcastHashJoin
 Left output [2]: [ss_item_sk#4, ss_ext_sales_price#5]
-Right output [3]: [i_item_sk#7, i_brand_id#8, i_brand#9]
+Right output [3]: [i_item_sk#7, i_brand_id#8, i_brand#11]
 Arguments: [ss_item_sk#4], [i_item_sk#7], Inner, BuildRight
 
 (14) CometProject
-Input [5]: [ss_item_sk#4, ss_ext_sales_price#5, i_item_sk#7, i_brand_id#8, i_brand#9]
-Arguments: [ss_ext_sales_price#5, i_brand_id#8, i_brand#9], [ss_ext_sales_price#5, i_brand_id#8, i_brand#9]
+Input [5]: [ss_item_sk#4, ss_ext_sales_price#5, i_item_sk#7, i_brand_id#8, i_brand#11]
+Arguments: [ss_ext_sales_price#5, i_brand_id#8, i_brand#11], [ss_ext_sales_price#5, i_brand_id#8, i_brand#11]
 
 (15) CometHashAggregate
-Input [3]: [ss_ext_sales_price#5, i_brand_id#8, i_brand#9]
-Keys [2]: [i_brand#9, i_brand_id#8]
+Input [3]: [ss_ext_sales_price#5, i_brand_id#8, i_brand#11]
+Keys [2]: [i_brand#11, i_brand_id#8]
 Functions [1]: [partial_sum(UnscaledValue(ss_ext_sales_price#5))]
 
 (16) CometExchange
-Input [3]: [i_brand#9, i_brand_id#8, sum#11]
-Arguments: hashpartitioning(i_brand#9, i_brand_id#8, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Input [3]: [i_brand#11, i_brand_id#8, sum#12]
+Arguments: hashpartitioning(i_brand#11, i_brand_id#8, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (17) CometHashAggregate
-Input [3]: [i_brand#9, i_brand_id#8, sum#11]
-Keys [2]: [i_brand#9, i_brand_id#8]
+Input [3]: [i_brand#11, i_brand_id#8, sum#12]
+Keys [2]: [i_brand#11, i_brand_id#8]
 Functions [1]: [sum(UnscaledValue(ss_ext_sales_price#5))]
 
 (18) CometTakeOrderedAndProject
-Input [3]: [brand_id#12, brand#13, ext_price#14]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[ext_price#14 DESC NULLS LAST,brand_id#12 ASC NULLS FIRST], output=[brand_id#12,brand#13,ext_price#14]), [brand_id#12, brand#13, ext_price#14], 100, [ext_price#14 DESC NULLS LAST, brand_id#12 ASC NULLS FIRST], [brand_id#12, brand#13, ext_price#14]
+Input [3]: [brand_id#13, brand#14, ext_price#15]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[ext_price#15 DESC NULLS LAST,brand_id#13 ASC NULLS FIRST], output=[brand_id#13,brand#14,ext_price#15]), [brand_id#13, brand#14, ext_price#15], 100, [ext_price#15 DESC NULLS LAST, brand_id#13 ASC NULLS FIRST], [brand_id#13, brand#14, ext_price#15]
 
 (19) CometColumnarToRow [codegen id : 1]
-Input [3]: [brand_id#12, brand#13, ext_price#14]
+Input [3]: [brand_id#13, brand#14, ext_price#15]
 

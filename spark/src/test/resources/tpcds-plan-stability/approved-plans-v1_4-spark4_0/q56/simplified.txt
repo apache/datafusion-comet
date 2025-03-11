@@ -9,7 +9,7 @@ TakeOrderedAndProject [total_sales,i_item_id]
                 InputAdapter
                   Union
                     WholeStageCodegen (2)
-                      HashAggregate [i_item_id,sum] [sum(UnscaledValue(ss_ext_sales_price)),total_sales,sum]
+                      HashAggregate [i_item_id,sum] [sum(UnscaledValue(ss_ext_sales_price)),i_item_id,total_sales,sum]
                         CometColumnarToRow
                           InputAdapter
                             CometColumnarExchange [i_item_id] #2
@@ -42,13 +42,14 @@ TakeOrderedAndProject [total_sales,i_item_id]
                                                   CometFilter [ca_address_sk,ca_gmt_offset]
                                                     CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_gmt_offset]
                                           CometBroadcastExchange [i_item_sk,i_item_id] #6
-                                            CometBroadcastHashJoin [i_item_sk,i_item_id,i_item_id]
-                                              CometFilter [i_item_sk,i_item_id]
-                                                CometScan parquet spark_catalog.default.item [i_item_sk,i_item_id]
-                                              CometBroadcastExchange [i_item_id] #7
-                                                CometProject [i_item_id]
-                                                  CometFilter [i_item_id,i_color]
-                                                    CometScan parquet spark_catalog.default.item [i_item_id,i_color]
+                                            CometProject [i_item_id] [i_item_sk,i_item_id]
+                                              CometBroadcastHashJoin [i_item_sk,i_item_id,i_item_id]
+                                                CometFilter [i_item_sk,i_item_id]
+                                                  CometScan parquet spark_catalog.default.item [i_item_sk,i_item_id]
+                                                CometBroadcastExchange [i_item_id] #7
+                                                  CometProject [i_item_id] [i_item_id]
+                                                    CometFilter [i_item_id,i_color]
+                                                      CometScan parquet spark_catalog.default.item [i_item_id,i_color]
                     WholeStageCodegen (4)
                       HashAggregate [i_item_id,sum] [sum(UnscaledValue(cs_ext_sales_price)),total_sales,sum]
                         CometColumnarToRow

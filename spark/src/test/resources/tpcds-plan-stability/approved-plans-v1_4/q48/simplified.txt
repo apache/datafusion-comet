@@ -26,10 +26,11 @@ WholeStageCodegen (1)
                               CometFilter [s_store_sk]
                                 CometScan parquet spark_catalog.default.store [s_store_sk]
                         CometBroadcastExchange [cd_demo_sk,cd_marital_status,cd_education_status] #4
-                          CometFilter [cd_demo_sk,cd_marital_status,cd_education_status]
-                            CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
+                          CometProject [cd_marital_status,cd_education_status] [cd_demo_sk,cd_marital_status,cd_education_status]
+                            CometFilter [cd_demo_sk,cd_marital_status,cd_education_status]
+                              CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
                     CometBroadcastExchange [ca_address_sk,ca_state] #5
-                      CometProject [ca_address_sk,ca_state]
+                      CometProject [ca_state] [ca_address_sk,ca_state]
                         CometFilter [ca_address_sk,ca_state,ca_country]
                           CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_state,ca_country]
                 CometBroadcastExchange [d_date_sk] #6

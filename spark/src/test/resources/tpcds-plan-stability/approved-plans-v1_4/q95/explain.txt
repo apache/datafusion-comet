@@ -214,12 +214,12 @@ Arguments: [ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_
 Output [2]: [ca_address_sk#17, ca_state#18]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [IsNotNull(ca_state), EqualTo(ca_state,IL), IsNotNull(ca_address_sk)]
+PushedFilters: [IsNotNull(ca_address_sk)]
 ReadSchema: struct<ca_address_sk:int,ca_state:string>
 
 (37) CometFilter
 Input [2]: [ca_address_sk#17, ca_state#18]
-Condition : ((isnotnull(ca_state#18) AND (ca_state#18 = IL)) AND isnotnull(ca_address_sk#17))
+Condition : ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, ca_state#18, 2, true, false, true) = IL) AND isnotnull(ca_address_sk#17))
 
 (38) CometProject
 Input [2]: [ca_address_sk#17, ca_state#18]
@@ -242,12 +242,12 @@ Arguments: [ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_prof
 Output [2]: [web_site_sk#19, web_company_name#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_site]
-PushedFilters: [IsNotNull(web_company_name), EqualTo(web_company_name,pri                                               ), IsNotNull(web_site_sk)]
+PushedFilters: [IsNotNull(web_site_sk)]
 ReadSchema: struct<web_site_sk:int,web_company_name:string>
 
 (43) CometFilter
 Input [2]: [web_site_sk#19, web_company_name#20]
-Condition : ((isnotnull(web_company_name#20) AND (web_company_name#20 = pri                                               )) AND isnotnull(web_site_sk#19))
+Condition : ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, web_company_name#20, 50, true, false, true) = pri                                               ) AND isnotnull(web_site_sk#19))
 
 (44) CometProject
 Input [2]: [web_site_sk#19, web_company_name#20]

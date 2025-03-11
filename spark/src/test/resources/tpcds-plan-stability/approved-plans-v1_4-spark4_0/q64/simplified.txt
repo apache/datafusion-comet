@@ -95,8 +95,9 @@ WholeStageCodegen (39)
                                                                                     WholeStageCodegen (5)
                                                                                       CometColumnarToRow
                                                                                         InputAdapter
-                                                                                          CometFilter [s_store_sk,s_store_name,s_zip]
-                                                                                            CometScan parquet spark_catalog.default.store [s_store_sk,s_store_name,s_zip]
+                                                                                          CometProject [s_zip] [s_store_sk,s_store_name,s_zip]
+                                                                                            CometFilter [s_store_sk,s_store_name,s_zip]
+                                                                                              CometScan parquet spark_catalog.default.store [s_store_sk,s_store_name,s_zip]
                                                                             InputAdapter
                                                                               BroadcastExchange #10
                                                                                 WholeStageCodegen (6)
@@ -118,8 +119,9 @@ WholeStageCodegen (39)
                                                                     WholeStageCodegen (9)
                                                                       CometColumnarToRow
                                                                         InputAdapter
-                                                                          CometFilter [cd_demo_sk,cd_marital_status]
-                                                                            CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status]
+                                                                          CometProject [cd_marital_status] [cd_demo_sk,cd_marital_status]
+                                                                            CometFilter [cd_demo_sk,cd_marital_status]
+                                                                              CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status]
                                                             InputAdapter
                                                               ReusedExchange [cd_demo_sk,cd_marital_status] #12
                                                         InputAdapter
@@ -143,8 +145,9 @@ WholeStageCodegen (39)
                                                 WholeStageCodegen (14)
                                                   CometColumnarToRow
                                                     InputAdapter
-                                                      CometFilter [ca_address_sk,ca_street_number,ca_street_name,ca_city,ca_zip]
-                                                        CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_street_number,ca_street_name,ca_city,ca_zip]
+                                                      CometProject [ca_street_number,ca_zip] [ca_address_sk,ca_street_number,ca_street_name,ca_city,ca_zip]
+                                                        CometFilter [ca_address_sk,ca_street_number,ca_street_name,ca_city,ca_zip]
+                                                          CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_street_number,ca_street_name,ca_city,ca_zip]
                                         InputAdapter
                                           ReusedExchange [ca_address_sk,ca_street_number,ca_street_name,ca_city,ca_zip] #15
                                     InputAdapter
@@ -161,7 +164,7 @@ WholeStageCodegen (39)
                                 WholeStageCodegen (18)
                                   CometColumnarToRow
                                     InputAdapter
-                                      CometProject [i_item_sk,i_product_name]
+                                      CometProject [i_product_name] [i_item_sk,i_product_name]
                                         CometFilter [i_item_sk,i_current_price,i_color,i_product_name]
                                           CometScan parquet spark_catalog.default.item [i_item_sk,i_current_price,i_color,i_product_name]
               CometSort [item_sk,store_name,store_zip,syear,cnt,s1,s2,s3]

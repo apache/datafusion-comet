@@ -112,12 +112,12 @@ Arguments: [ss_item_sk#1, ss_customer_sk#2, ss_promo_sk#4, ss_ext_sales_price#5,
 Output [4]: [p_promo_sk#10, p_channel_dmail#11, p_channel_email#12, p_channel_tv#13]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/promotion]
-PushedFilters: [Or(Or(EqualTo(p_channel_dmail,Y),EqualTo(p_channel_email,Y)),EqualTo(p_channel_tv,Y)), IsNotNull(p_promo_sk)]
+PushedFilters: [IsNotNull(p_promo_sk)]
 ReadSchema: struct<p_promo_sk:int,p_channel_dmail:string,p_channel_email:string,p_channel_tv:string>
 
 (10) CometFilter
 Input [4]: [p_promo_sk#10, p_channel_dmail#11, p_channel_email#12, p_channel_tv#13]
-Condition : ((((p_channel_dmail#11 = Y) OR (p_channel_email#12 = Y)) OR (p_channel_tv#13 = Y)) AND isnotnull(p_promo_sk#10))
+Condition : ((((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, p_channel_dmail#11, 1, true, false, true) = Y) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, p_channel_email#12, 1, true, false, true) = Y)) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, p_channel_tv#13, 1, true, false, true) = Y)) AND isnotnull(p_promo_sk#10))
 
 (11) CometProject
 Input [4]: [p_promo_sk#10, p_channel_dmail#11, p_channel_email#12, p_channel_tv#13]
@@ -220,12 +220,12 @@ Arguments: [ss_item_sk#1, ss_ext_sales_price#5], [ss_item_sk#1, ss_ext_sales_pri
 Output [2]: [i_item_sk#21, i_category#22]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_category), EqualTo(i_category,Jewelry                                           ), IsNotNull(i_item_sk)]
+PushedFilters: [IsNotNull(i_item_sk)]
 ReadSchema: struct<i_item_sk:int,i_category:string>
 
 (33) CometFilter
 Input [2]: [i_item_sk#21, i_category#22]
-Condition : ((isnotnull(i_category#22) AND (i_category#22 = Jewelry                                           )) AND isnotnull(i_item_sk#21))
+Condition : ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#22, 50, true, false, true) = Jewelry                                           ) AND isnotnull(i_item_sk#21))
 
 (34) CometProject
 Input [2]: [i_item_sk#21, i_category#22]

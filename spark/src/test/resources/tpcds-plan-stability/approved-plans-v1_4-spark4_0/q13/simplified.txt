@@ -31,7 +31,7 @@ WholeStageCodegen (2)
                                         CometFilter [s_store_sk]
                                           CometScan parquet spark_catalog.default.store [s_store_sk]
                                   CometBroadcastExchange [ca_address_sk,ca_state] #4
-                                    CometProject [ca_address_sk,ca_state]
+                                    CometProject [ca_state] [ca_address_sk,ca_state]
                                       CometFilter [ca_address_sk,ca_state,ca_country]
                                         CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_state,ca_country]
                               CometBroadcastExchange [d_date_sk] #5
@@ -39,8 +39,9 @@ WholeStageCodegen (2)
                                   CometFilter [d_date_sk,d_year]
                                     CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                           CometBroadcastExchange [cd_demo_sk,cd_marital_status,cd_education_status] #6
-                            CometFilter [cd_demo_sk,cd_marital_status,cd_education_status]
-                              CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
+                            CometProject [cd_marital_status,cd_education_status] [cd_demo_sk,cd_marital_status,cd_education_status]
+                              CometFilter [cd_demo_sk,cd_marital_status,cd_education_status]
+                                CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
                       CometBroadcastExchange [hd_demo_sk,hd_dep_count] #7
                         CometFilter [hd_demo_sk,hd_dep_count]
                           CometScan parquet spark_catalog.default.household_demographics [hd_demo_sk,hd_dep_count]

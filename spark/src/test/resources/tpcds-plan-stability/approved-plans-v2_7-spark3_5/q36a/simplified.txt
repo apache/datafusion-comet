@@ -12,7 +12,7 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,gross_margin,i
                       CometExchange [gross_margin,i_category,i_class,t_category,t_class,lochierarchy] #2
                         CometHashAggregate [gross_margin,i_category,i_class,t_category,t_class,lochierarchy]
                           CometUnion [gross_margin,i_category,i_class,t_category,t_class,lochierarchy]
-                            CometHashAggregate [gross_margin,i_category,i_class,t_category,t_class,lochierarchy,sum,sum,sum(UnscaledValue(ss_net_profit)),sum(UnscaledValue(ss_ext_sales_price))]
+                            CometHashAggregate [gross_margin,i_category,i_class,t_category,t_class,lochierarchy,i_category,i_class,sum,sum,sum(UnscaledValue(ss_net_profit)),sum(UnscaledValue(ss_ext_sales_price))]
                               CometExchange [i_category,i_class] #3
                                 CometHashAggregate [i_category,i_class,sum,sum,ss_net_profit,ss_ext_sales_price]
                                   CometProject [ss_ext_sales_price,ss_net_profit,i_class,i_category]
@@ -36,8 +36,9 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,gross_margin,i
                                                   CometFilter [d_date_sk,d_year]
                                                     CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                                           CometBroadcastExchange [i_item_sk,i_class,i_category] #6
-                                            CometFilter [i_item_sk,i_class,i_category]
-                                              CometScan parquet spark_catalog.default.item [i_item_sk,i_class,i_category]
+                                            CometProject [i_class,i_category] [i_item_sk,i_class,i_category]
+                                              CometFilter [i_item_sk,i_class,i_category]
+                                                CometScan parquet spark_catalog.default.item [i_item_sk,i_class,i_category]
                                       CometBroadcastExchange [s_store_sk] #7
                                         CometProject [s_store_sk]
                                           CometFilter [s_store_sk,s_state]

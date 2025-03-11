@@ -43,8 +43,9 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                     CometFilter [d_date_sk,d_date]
                                                       CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date]
                                             CometBroadcastExchange [s_store_sk,s_store_id] #5
-                                              CometFilter [s_store_sk,s_store_id]
-                                                CometScan parquet spark_catalog.default.store [s_store_sk,s_store_id]
+                                              CometProject [s_store_id] [s_store_sk,s_store_id]
+                                                CometFilter [s_store_sk,s_store_id]
+                                                  CometScan parquet spark_catalog.default.store [s_store_sk,s_store_id]
                       WholeStageCodegen (4)
                         HashAggregate [cp_catalog_page_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),sales,returns,profit,channel,id,sum,sum,sum,sum]
                           CometColumnarToRow
@@ -69,8 +70,9 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                         ReusedSubquery [d_date_sk] #1
                                                 ReusedExchange [d_date_sk] #4
                                             CometBroadcastExchange [cp_catalog_page_sk,cp_catalog_page_id] #7
-                                              CometFilter [cp_catalog_page_sk,cp_catalog_page_id]
-                                                CometScan parquet spark_catalog.default.catalog_page [cp_catalog_page_sk,cp_catalog_page_id]
+                                              CometProject [cp_catalog_page_id] [cp_catalog_page_sk,cp_catalog_page_id]
+                                                CometFilter [cp_catalog_page_sk,cp_catalog_page_id]
+                                                  CometScan parquet spark_catalog.default.catalog_page [cp_catalog_page_sk,cp_catalog_page_id]
                       WholeStageCodegen (6)
                         HashAggregate [web_site_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),sales,returns,profit,channel,id,sum,sum,sum,sum]
                           CometColumnarToRow
@@ -99,5 +101,6 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                           CometScan parquet spark_catalog.default.web_sales [ws_item_sk,ws_web_site_sk,ws_order_number,ws_sold_date_sk]
                                                 ReusedExchange [d_date_sk] #4
                                             CometBroadcastExchange [web_site_sk,web_site_id] #10
-                                              CometFilter [web_site_sk,web_site_id]
-                                                CometScan parquet spark_catalog.default.web_site [web_site_sk,web_site_id]
+                                              CometProject [web_site_id] [web_site_sk,web_site_id]
+                                                CometFilter [web_site_sk,web_site_id]
+                                                  CometScan parquet spark_catalog.default.web_site [web_site_sk,web_site_id]

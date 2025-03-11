@@ -73,39 +73,39 @@ Condition : ((isnotnull(i_manager_id#10) AND (i_manager_id#10 = 1)) AND isnotnul
 
 (11) CometProject
 Input [4]: [i_item_sk#7, i_category_id#8, i_category#9, i_manager_id#10]
-Arguments: [i_item_sk#7, i_category_id#8, i_category#9], [i_item_sk#7, i_category_id#8, i_category#9]
+Arguments: [i_item_sk#7, i_category_id#8, i_category#11], [i_item_sk#7, i_category_id#8, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#9, 50, true, false, true) AS i_category#11]
 
 (12) CometBroadcastExchange
-Input [3]: [i_item_sk#7, i_category_id#8, i_category#9]
-Arguments: [i_item_sk#7, i_category_id#8, i_category#9]
+Input [3]: [i_item_sk#7, i_category_id#8, i_category#11]
+Arguments: [i_item_sk#7, i_category_id#8, i_category#11]
 
 (13) CometBroadcastHashJoin
 Left output [3]: [d_year#2, ss_item_sk#4, ss_ext_sales_price#5]
-Right output [3]: [i_item_sk#7, i_category_id#8, i_category#9]
+Right output [3]: [i_item_sk#7, i_category_id#8, i_category#11]
 Arguments: [ss_item_sk#4], [i_item_sk#7], Inner, BuildRight
 
 (14) CometProject
-Input [6]: [d_year#2, ss_item_sk#4, ss_ext_sales_price#5, i_item_sk#7, i_category_id#8, i_category#9]
-Arguments: [d_year#2, ss_ext_sales_price#5, i_category_id#8, i_category#9], [d_year#2, ss_ext_sales_price#5, i_category_id#8, i_category#9]
+Input [6]: [d_year#2, ss_item_sk#4, ss_ext_sales_price#5, i_item_sk#7, i_category_id#8, i_category#11]
+Arguments: [d_year#2, ss_ext_sales_price#5, i_category_id#8, i_category#11], [d_year#2, ss_ext_sales_price#5, i_category_id#8, i_category#11]
 
 (15) CometHashAggregate
-Input [4]: [d_year#2, ss_ext_sales_price#5, i_category_id#8, i_category#9]
-Keys [3]: [d_year#2, i_category_id#8, i_category#9]
+Input [4]: [d_year#2, ss_ext_sales_price#5, i_category_id#8, i_category#11]
+Keys [3]: [d_year#2, i_category_id#8, i_category#11]
 Functions [1]: [partial_sum(UnscaledValue(ss_ext_sales_price#5))]
 
 (16) CometExchange
-Input [4]: [d_year#2, i_category_id#8, i_category#9, sum#11]
-Arguments: hashpartitioning(d_year#2, i_category_id#8, i_category#9, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Input [4]: [d_year#2, i_category_id#8, i_category#11, sum#12]
+Arguments: hashpartitioning(d_year#2, i_category_id#8, i_category#11, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (17) CometHashAggregate
-Input [4]: [d_year#2, i_category_id#8, i_category#9, sum#11]
-Keys [3]: [d_year#2, i_category_id#8, i_category#9]
+Input [4]: [d_year#2, i_category_id#8, i_category#11, sum#12]
+Keys [3]: [d_year#2, i_category_id#8, i_category#11]
 Functions [1]: [sum(UnscaledValue(ss_ext_sales_price#5))]
 
 (18) CometTakeOrderedAndProject
-Input [4]: [d_year#2, i_category_id#8, i_category#9, sum(ss_ext_sales_price)#12]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[sum(ss_ext_sales_price)#12 DESC NULLS LAST,d_year#2 ASC NULLS FIRST,i_category_id#8 ASC NULLS FIRST,i_category#9 ASC NULLS FIRST], output=[d_year#2,i_category_id#8,i_category#9,sum(ss_ext_sales_price)#12]), [d_year#2, i_category_id#8, i_category#9, sum(ss_ext_sales_price)#12], 100, [sum(ss_ext_sales_price)#12 DESC NULLS LAST, d_year#2 ASC NULLS FIRST, i_category_id#8 ASC NULLS FIRST, i_category#9 ASC NULLS FIRST], [d_year#2, i_category_id#8, i_category#9, sum(ss_ext_sales_price)#12]
+Input [4]: [d_year#2, i_category_id#8, i_category#11, sum(ss_ext_sales_price)#13]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[sum(ss_ext_sales_price)#13 DESC NULLS LAST,d_year#2 ASC NULLS FIRST,i_category_id#8 ASC NULLS FIRST,i_category#11 ASC NULLS FIRST], output=[d_year#2,i_category_id#8,i_category#11,sum(ss_ext_sales_price)#13]), [d_year#2, i_category_id#8, i_category#11, sum(ss_ext_sales_price)#13], 100, [sum(ss_ext_sales_price)#13 DESC NULLS LAST, d_year#2 ASC NULLS FIRST, i_category_id#8 ASC NULLS FIRST, i_category#11 ASC NULLS FIRST], [d_year#2, i_category_id#8, i_category#11, sum(ss_ext_sales_price)#13]
 
 (19) CometColumnarToRow [codegen id : 1]
-Input [4]: [d_year#2, i_category_id#8, i_category#9, sum(ss_ext_sales_price)#12]
+Input [4]: [d_year#2, i_category_id#8, i_category#11, sum(ss_ext_sales_price)#13]
 

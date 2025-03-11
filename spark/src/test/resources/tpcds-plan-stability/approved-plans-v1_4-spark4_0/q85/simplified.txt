@@ -40,13 +40,15 @@ TakeOrderedAndProject [substr(r_reason_desc, 1, 20),avg(ws_quantity),avg(wr_refu
                                               CometFilter [wp_web_page_sk]
                                                 CometScan parquet spark_catalog.default.web_page [wp_web_page_sk]
                                         CometBroadcastExchange [cd_demo_sk,cd_marital_status,cd_education_status] #5
-                                          CometFilter [cd_demo_sk,cd_marital_status,cd_education_status]
-                                            CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
+                                          CometProject [cd_marital_status,cd_education_status] [cd_demo_sk,cd_marital_status,cd_education_status]
+                                            CometFilter [cd_demo_sk,cd_marital_status,cd_education_status]
+                                              CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
                                     CometBroadcastExchange [cd_demo_sk,cd_marital_status,cd_education_status] #6
-                                      CometFilter [cd_demo_sk,cd_marital_status,cd_education_status]
-                                        CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
+                                      CometProject [cd_marital_status,cd_education_status] [cd_demo_sk,cd_marital_status,cd_education_status]
+                                        CometFilter [cd_demo_sk,cd_marital_status,cd_education_status]
+                                          CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
                                 CometBroadcastExchange [ca_address_sk,ca_state] #7
-                                  CometProject [ca_address_sk,ca_state]
+                                  CometProject [ca_state] [ca_address_sk,ca_state]
                                     CometFilter [ca_address_sk,ca_state,ca_country]
                                       CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_state,ca_country]
                             CometBroadcastExchange [d_date_sk] #8
@@ -54,5 +56,6 @@ TakeOrderedAndProject [substr(r_reason_desc, 1, 20),avg(ws_quantity),avg(wr_refu
                                 CometFilter [d_date_sk,d_year]
                                   CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                         CometBroadcastExchange [r_reason_sk,r_reason_desc] #9
-                          CometFilter [r_reason_sk,r_reason_desc]
-                            CometScan parquet spark_catalog.default.reason [r_reason_sk,r_reason_desc]
+                          CometProject [r_reason_desc] [r_reason_sk,r_reason_desc]
+                            CometFilter [r_reason_sk,r_reason_desc]
+                              CometScan parquet spark_catalog.default.reason [r_reason_sk,r_reason_desc]

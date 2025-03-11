@@ -1,11 +1,11 @@
 == Physical Plan ==
-TakeOrderedAndProject (45)
-+- * HashAggregate (44)
-   +- * CometColumnarToRow (43)
-      +- CometColumnarExchange (42)
-         +- * HashAggregate (41)
-            +- * Project (40)
-               +- * BroadcastHashJoin Inner BuildRight (39)
+TakeOrderedAndProject (46)
++- * HashAggregate (45)
+   +- * CometColumnarToRow (44)
+      +- CometColumnarExchange (43)
+         +- * HashAggregate (42)
+            +- * Project (41)
+               +- * BroadcastHashJoin Inner BuildRight (40)
                   :- * Project (34)
                   :  +- * BroadcastHashJoin Inner BuildRight (33)
                   :     :- * Project (27)
@@ -40,10 +40,11 @@ TakeOrderedAndProject (45)
                   :           +- CometProject (30)
                   :              +- CometFilter (29)
                   :                 +- CometScan parquet spark_catalog.default.customer_address (28)
-                  +- BroadcastExchange (38)
-                     +- * CometColumnarToRow (37)
-                        +- CometFilter (36)
-                           +- CometScan parquet spark_catalog.default.customer_demographics (35)
+                  +- BroadcastExchange (39)
+                     +- * CometColumnarToRow (38)
+                        +- CometProject (37)
+                           +- CometFilter (36)
+                              +- CometScan parquet spark_catalog.default.customer_demographics (35)
 
 
 (1) CometScan parquet spark_catalog.default.customer
@@ -176,12 +177,12 @@ Input [3]: [c_customer_sk#1, c_current_cdemo_sk#2, c_current_addr_sk#3]
 Output [2]: [ca_address_sk#18, ca_state#19]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [In(ca_state, [GA,KY,NM]), IsNotNull(ca_address_sk)]
+PushedFilters: [IsNotNull(ca_address_sk)]
 ReadSchema: struct<ca_address_sk:int,ca_state:string>
 
 (29) CometFilter
 Input [2]: [ca_address_sk#18, ca_state#19]
-Condition : (ca_state#19 IN (KY,GA,NM) AND isnotnull(ca_address_sk#18))
+Condition : (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, ca_state#19, 2, true, false, true) IN (KY,GA,NM) AND isnotnull(ca_address_sk#18))
 
 (30) CometProject
 Input [2]: [ca_address_sk#18, ca_state#19]
@@ -215,77 +216,81 @@ ReadSchema: struct<cd_demo_sk:int,cd_gender:string,cd_marital_status:string,cd_e
 Input [6]: [cd_demo_sk#20, cd_gender#21, cd_marital_status#22, cd_education_status#23, cd_purchase_estimate#24, cd_credit_rating#25]
 Condition : isnotnull(cd_demo_sk#20)
 
-(37) CometColumnarToRow [codegen id : 4]
+(37) CometProject
 Input [6]: [cd_demo_sk#20, cd_gender#21, cd_marital_status#22, cd_education_status#23, cd_purchase_estimate#24, cd_credit_rating#25]
+Arguments: [cd_demo_sk#20, cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_purchase_estimate#24, cd_credit_rating#29], [cd_demo_sk#20, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_gender#21, 1, true, false, true) AS cd_gender#26, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_marital_status#22, 1, true, false, true) AS cd_marital_status#27, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_education_status#23, 20, true, false, true) AS cd_education_status#28, cd_purchase_estimate#24, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_credit_rating#25, 10, true, false, true) AS cd_credit_rating#29]
 
-(38) BroadcastExchange
-Input [6]: [cd_demo_sk#20, cd_gender#21, cd_marital_status#22, cd_education_status#23, cd_purchase_estimate#24, cd_credit_rating#25]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=4]
+(38) CometColumnarToRow [codegen id : 4]
+Input [6]: [cd_demo_sk#20, cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_purchase_estimate#24, cd_credit_rating#29]
 
-(39) BroadcastHashJoin [codegen id : 5]
+(39) BroadcastExchange
+Input [6]: [cd_demo_sk#20, cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_purchase_estimate#24, cd_credit_rating#29]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=4]
+
+(40) BroadcastHashJoin [codegen id : 5]
 Left keys [1]: [c_current_cdemo_sk#2]
 Right keys [1]: [cd_demo_sk#20]
 Join type: Inner
 Join condition: None
 
-(40) Project [codegen id : 5]
-Output [5]: [cd_gender#21, cd_marital_status#22, cd_education_status#23, cd_purchase_estimate#24, cd_credit_rating#25]
-Input [7]: [c_current_cdemo_sk#2, cd_demo_sk#20, cd_gender#21, cd_marital_status#22, cd_education_status#23, cd_purchase_estimate#24, cd_credit_rating#25]
+(41) Project [codegen id : 5]
+Output [5]: [cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_purchase_estimate#24, cd_credit_rating#29]
+Input [7]: [c_current_cdemo_sk#2, cd_demo_sk#20, cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_purchase_estimate#24, cd_credit_rating#29]
 
-(41) HashAggregate [codegen id : 5]
-Input [5]: [cd_gender#21, cd_marital_status#22, cd_education_status#23, cd_purchase_estimate#24, cd_credit_rating#25]
-Keys [5]: [cd_gender#21, cd_marital_status#22, cd_education_status#23, cd_purchase_estimate#24, cd_credit_rating#25]
+(42) HashAggregate [codegen id : 5]
+Input [5]: [cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_purchase_estimate#24, cd_credit_rating#29]
+Keys [5]: [cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_purchase_estimate#24, cd_credit_rating#29]
 Functions [1]: [partial_count(1)]
-Aggregate Attributes [1]: [count#26]
-Results [6]: [cd_gender#21, cd_marital_status#22, cd_education_status#23, cd_purchase_estimate#24, cd_credit_rating#25, count#27]
+Aggregate Attributes [1]: [count#30]
+Results [6]: [cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_purchase_estimate#24, cd_credit_rating#29, count#31]
 
-(42) CometColumnarExchange
-Input [6]: [cd_gender#21, cd_marital_status#22, cd_education_status#23, cd_purchase_estimate#24, cd_credit_rating#25, count#27]
-Arguments: hashpartitioning(cd_gender#21, cd_marital_status#22, cd_education_status#23, cd_purchase_estimate#24, cd_credit_rating#25, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
+(43) CometColumnarExchange
+Input [6]: [cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_purchase_estimate#24, cd_credit_rating#29, count#31]
+Arguments: hashpartitioning(cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_purchase_estimate#24, cd_credit_rating#29, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
 
-(43) CometColumnarToRow [codegen id : 6]
-Input [6]: [cd_gender#21, cd_marital_status#22, cd_education_status#23, cd_purchase_estimate#24, cd_credit_rating#25, count#27]
+(44) CometColumnarToRow [codegen id : 6]
+Input [6]: [cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_purchase_estimate#24, cd_credit_rating#29, count#31]
 
-(44) HashAggregate [codegen id : 6]
-Input [6]: [cd_gender#21, cd_marital_status#22, cd_education_status#23, cd_purchase_estimate#24, cd_credit_rating#25, count#27]
-Keys [5]: [cd_gender#21, cd_marital_status#22, cd_education_status#23, cd_purchase_estimate#24, cd_credit_rating#25]
+(45) HashAggregate [codegen id : 6]
+Input [6]: [cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_purchase_estimate#24, cd_credit_rating#29, count#31]
+Keys [5]: [cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_purchase_estimate#24, cd_credit_rating#29]
 Functions [1]: [count(1)]
-Aggregate Attributes [1]: [count(1)#28]
-Results [8]: [cd_gender#21, cd_marital_status#22, cd_education_status#23, count(1)#28 AS cnt1#29, cd_purchase_estimate#24, count(1)#28 AS cnt2#30, cd_credit_rating#25, count(1)#28 AS cnt3#31]
+Aggregate Attributes [1]: [count(1)#32]
+Results [8]: [cd_gender#26, cd_marital_status#27, cd_education_status#28, count(1)#32 AS cnt1#33, cd_purchase_estimate#24, count(1)#32 AS cnt2#34, cd_credit_rating#29, count(1)#32 AS cnt3#35]
 
-(45) TakeOrderedAndProject
-Input [8]: [cd_gender#21, cd_marital_status#22, cd_education_status#23, cnt1#29, cd_purchase_estimate#24, cnt2#30, cd_credit_rating#25, cnt3#31]
-Arguments: 100, [cd_gender#21 ASC NULLS FIRST, cd_marital_status#22 ASC NULLS FIRST, cd_education_status#23 ASC NULLS FIRST, cd_purchase_estimate#24 ASC NULLS FIRST, cd_credit_rating#25 ASC NULLS FIRST], [cd_gender#21, cd_marital_status#22, cd_education_status#23, cnt1#29, cd_purchase_estimate#24, cnt2#30, cd_credit_rating#25, cnt3#31]
+(46) TakeOrderedAndProject
+Input [8]: [cd_gender#26, cd_marital_status#27, cd_education_status#28, cnt1#33, cd_purchase_estimate#24, cnt2#34, cd_credit_rating#29, cnt3#35]
+Arguments: 100, [cd_gender#26 ASC NULLS FIRST, cd_marital_status#27 ASC NULLS FIRST, cd_education_status#28 ASC NULLS FIRST, cd_purchase_estimate#24 ASC NULLS FIRST, cd_credit_rating#29 ASC NULLS FIRST], [cd_gender#26, cd_marital_status#27, cd_education_status#28, cnt1#33, cd_purchase_estimate#24, cnt2#34, cd_credit_rating#29, cnt3#35]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 3 Hosting Expression = ss_sold_date_sk#5 IN dynamicpruning#6
-BroadcastExchange (50)
-+- * CometColumnarToRow (49)
-   +- CometProject (48)
-      +- CometFilter (47)
-         +- CometScan parquet spark_catalog.default.date_dim (46)
+BroadcastExchange (51)
++- * CometColumnarToRow (50)
+   +- CometProject (49)
+      +- CometFilter (48)
+         +- CometScan parquet spark_catalog.default.date_dim (47)
 
 
-(46) CometScan parquet spark_catalog.default.date_dim
+(47) CometScan parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#7, d_year#8, d_moy#9]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), IsNotNull(d_moy), EqualTo(d_year,2001), GreaterThanOrEqual(d_moy,4), LessThanOrEqual(d_moy,6), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
-(47) CometFilter
+(48) CometFilter
 Input [3]: [d_date_sk#7, d_year#8, d_moy#9]
 Condition : (((((isnotnull(d_year#8) AND isnotnull(d_moy#9)) AND (d_year#8 = 2001)) AND (d_moy#9 >= 4)) AND (d_moy#9 <= 6)) AND isnotnull(d_date_sk#7))
 
-(48) CometProject
+(49) CometProject
 Input [3]: [d_date_sk#7, d_year#8, d_moy#9]
 Arguments: [d_date_sk#7], [d_date_sk#7]
 
-(49) CometColumnarToRow [codegen id : 1]
+(50) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#7]
 
-(50) BroadcastExchange
+(51) BroadcastExchange
 Input [1]: [d_date_sk#7]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=6]
 

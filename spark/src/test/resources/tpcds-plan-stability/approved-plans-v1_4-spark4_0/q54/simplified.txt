@@ -92,11 +92,13 @@ TakeOrderedAndProject [segment,num_customers,segment_base]
                                                                                       CometFilter [d_month_seq,d_year,d_moy]
                                                                                         CometScan parquet spark_catalog.default.date_dim [d_month_seq,d_year,d_moy]
                                             CometBroadcastExchange [ca_address_sk,ca_county,ca_state] #12
-                                              CometFilter [ca_address_sk,ca_county,ca_state]
-                                                CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_county,ca_state]
+                                              CometProject [ca_state] [ca_address_sk,ca_county,ca_state]
+                                                CometFilter [ca_address_sk,ca_county,ca_state]
+                                                  CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_county,ca_state]
                                         CometBroadcastExchange [s_county,s_state] #13
-                                          CometFilter [s_county,s_state]
-                                            CometScan parquet spark_catalog.default.store [s_county,s_state]
+                                          CometProject [s_state] [s_county,s_state]
+                                            CometFilter [s_county,s_state]
+                                              CometScan parquet spark_catalog.default.store [s_county,s_state]
                                     CometBroadcastExchange [d_date_sk] #14
                                       CometProject [d_date_sk]
                                         CometFilter [d_date_sk,d_month_seq]

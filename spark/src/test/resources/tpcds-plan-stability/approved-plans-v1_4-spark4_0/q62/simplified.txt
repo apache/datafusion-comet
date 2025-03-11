@@ -22,8 +22,9 @@ TakeOrderedAndProject [substr(w_warehouse_name, 1, 20),sm_type,web_name,30 days 
                                       CometFilter [w_warehouse_sk,w_warehouse_name]
                                         CometScan parquet spark_catalog.default.warehouse [w_warehouse_sk,w_warehouse_name]
                                 CometBroadcastExchange [sm_ship_mode_sk,sm_type] #3
-                                  CometFilter [sm_ship_mode_sk,sm_type]
-                                    CometScan parquet spark_catalog.default.ship_mode [sm_ship_mode_sk,sm_type]
+                                  CometProject [sm_type] [sm_ship_mode_sk,sm_type]
+                                    CometFilter [sm_ship_mode_sk,sm_type]
+                                      CometScan parquet spark_catalog.default.ship_mode [sm_ship_mode_sk,sm_type]
                             CometBroadcastExchange [web_site_sk,web_name] #4
                               CometFilter [web_site_sk,web_name]
                                 CometScan parquet spark_catalog.default.web_site [web_site_sk,web_name]

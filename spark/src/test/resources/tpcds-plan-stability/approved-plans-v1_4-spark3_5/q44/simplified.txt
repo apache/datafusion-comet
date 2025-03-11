@@ -68,7 +68,8 @@ TakeOrderedAndProject [rnk,best_performing,worst_performing]
                 WholeStageCodegen (7)
                   CometColumnarToRow
                     InputAdapter
-                      CometFilter [i_item_sk,i_product_name]
-                        CometScan parquet spark_catalog.default.item [i_item_sk,i_product_name]
+                      CometProject [i_product_name] [i_item_sk,i_product_name]
+                        CometFilter [i_item_sk,i_product_name]
+                          CometScan parquet spark_catalog.default.item [i_item_sk,i_product_name]
         InputAdapter
           ReusedExchange [i_item_sk,i_product_name] #5
