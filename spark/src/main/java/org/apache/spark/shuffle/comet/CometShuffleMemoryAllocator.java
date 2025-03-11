@@ -42,21 +42,20 @@ public final class CometShuffleMemoryAllocator extends CometShuffleMemoryAllocat
   /**
    * Returns the singleton instance of `CometShuffleMemoryAllocator`. This method should be used
    * instead of the constructor to ensure that only one instance of `CometShuffleMemoryAllocator` is
-   * created. For Spark tests, this returns `CometTestShuffleMemoryAllocator` which is a test-only
-   * allocator that should not be used in production.
+   * created. For Spark tests, this returns `CometBoundedShuffleMemoryAllocator` which is a
+   * test-only allocator that should not be used in production.
    */
   public static CometShuffleMemoryAllocatorTrait getInstance(
       SparkConf conf, TaskMemoryManager taskMemoryManager, long pageSize) {
     boolean isSparkTesting = Utils.isTesting();
-    boolean useTestAllocator =
-        (boolean)
-            CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_UNIFIED_MEMORY_ALLOCATOR_IN_TEST().get();
+    boolean useBoundedAllocator =
+        (boolean) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_BOUNDED_MEMORY_ALLOCATOR().get();
 
-    if (isSparkTesting || useTestAllocator) {
+    if (isSparkTesting || useBoundedAllocator) {
       synchronized (CometShuffleMemoryAllocator.class) {
         if (INSTANCE == null) {
-          // CometTestShuffleMemoryAllocator handles pages by itself so it can be a singleton.
-          INSTANCE = new CometTestShuffleMemoryAllocator(conf, taskMemoryManager, pageSize);
+          // CometBoundedShuffleMemoryAllocator handles pages by itself so it can be a singleton.
+          INSTANCE = new CometBoundedShuffleMemoryAllocator(conf, taskMemoryManager, pageSize);
         }
       }
       return INSTANCE;

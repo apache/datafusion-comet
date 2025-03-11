@@ -399,13 +399,15 @@ object CometConf extends ShimCometConf {
         "Ensure that Comet shuffle memory overhead factor is a double greater than 0")
       .createWithDefault(1.0)
 
-  val COMET_COLUMNAR_SHUFFLE_UNIFIED_MEMORY_ALLOCATOR_IN_TEST: ConfigEntry[Boolean] =
-    conf("spark.comet.columnar.shuffle.unifiedMemoryAllocatorTest")
-      .doc("Whether to use Spark unified memory allocator for Comet columnar shuffle in tests." +
-        "In the default case (false), Comet will use the test-only memory allocator for Comet columnar " +
-        "shuffle when Spark test env detected. The test-ony allocator is proposed to run with " +
-        "Spark tests as these tests require on-heap memory configuration. If true, Comet will use" +
-        "the test-only memory allocator regardless of environment.")
+  val COMET_COLUMNAR_SHUFFLE_BOUNDED_MEMORY_ALLOCATOR: ConfigEntry[Boolean] =
+    conf("spark.comet.columnar.shuffle.boundedMemoryAllocator")
+      .doc("Whether to use a bounded memory allocator for Comet columnar shuffle." +
+        "The bounded allocator will not allocate more memory than " +
+        "spark.comet.columnar.shuffle.memorySize. " +
+        "In the default case (false), Comet will use this allocator for Comet columnar " +
+        "shuffle when Spark test env detected. The bounded allocator is proposed to run with " +
+        "Spark tests as these tests require on-heap memory configuration. If true, Comet will " +
+        "force the use of the bounded memory allocator for columnar shuffle.")
       .internal()
       .booleanConf
       .createWithDefault(false)
