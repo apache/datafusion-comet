@@ -2735,6 +2735,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("test integral divide overflow for decimal") {
+    // decimal support requires Spark 3.4 or later
+    assume(isSpark34Plus)
     withTable("t1") {
       sql("create table t1(a decimal(38,0), b decimal(2,2)) using parquet")
       sql(
