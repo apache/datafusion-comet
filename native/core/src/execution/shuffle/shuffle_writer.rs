@@ -38,13 +38,13 @@ use datafusion::{
         },
         stream::RecordBatchStreamAdapter,
         DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-        RecordBatchStream, SendableRecordBatchStream, Statistics,
+        SendableRecordBatchStream, Statistics,
     },
 };
 use datafusion_comet_spark_expr::hash_funcs::murmur3::create_murmur3_hashes;
 use datafusion_physical_expr::EquivalenceProperties;
 use futures::executor::block_on;
-use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
 use std::io::Error;
 use std::{
@@ -54,8 +54,8 @@ use std::{
     fs::{File, OpenOptions},
     io::{BufReader, BufWriter, Cursor, Seek, SeekFrom, Write},
     sync::Arc,
-    task::{Context, Poll},
 };
+use datafusion::physical_plan::EmptyRecordBatchStream;
 use tokio::time::Instant;
 
 /// The shuffle writer operator maps each input partition to M output partitions based on a
@@ -559,7 +559,7 @@ impl ShuffleRepartitioner {
         elapsed_compute.stop();
 
         // shuffle writer always has empty output
-        Ok(Box::pin(EmptyStream::try_new(Arc::clone(&self.schema))?))
+        Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&self.schema))))
     }
 
     fn to_df_err(e: Error) -> DataFusionError {
@@ -860,34 +860,6 @@ impl PartitionBuffer {
         self.reservation.free();
         timer.stop();
         Ok(output_batches.len())
-    }
-}
-
-/// A stream that yields no record batches which represent end of output.
-pub struct EmptyStream {
-    /// Schema representing the data
-    schema: SchemaRef,
-}
-
-impl EmptyStream {
-    /// Create an iterator for a vector of record batches
-    pub fn try_new(schema: SchemaRef) -> Result<Self> {
-        Ok(Self { schema })
-    }
-}
-
-impl Stream for EmptyStream {
-    type Item = Result<RecordBatch>;
-
-    fn poll_next(self: std::pin::Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Poll::Ready(None)
-    }
-}
-
-impl RecordBatchStream for EmptyStream {
-    /// Get the schema
-    fn schema(&self) -> SchemaRef {
-        Arc::clone(&self.schema)
     }
 }
 
