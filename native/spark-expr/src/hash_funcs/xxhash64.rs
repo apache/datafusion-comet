@@ -28,8 +28,8 @@ use datafusion::{
 };
 
 use crate::create_hashes_internal;
-use arrow_array::{Array, ArrayRef, Int64Array};
-use datafusion_expr::ColumnarValue;
+use arrow::array::{Array, ArrayRef, Int64Array};
+use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
 
 /// Spark compatible xxhash64 in vectorized execution fashion
@@ -143,7 +143,7 @@ mod tests {
     use crate::test_hashes_with_nulls;
     use datafusion::arrow::array::{ArrayRef, Int32Array, Int64Array, Int8Array, StringArray};
 
-    fn test_xxhash64_hash<I: Clone, T: arrow_array::Array + From<Vec<Option<I>>> + 'static>(
+    fn test_xxhash64_hash<I: Clone, T: arrow::array::Array + From<Vec<Option<I>>> + 'static>(
         values: Vec<Option<I>>,
         expected: Vec<u64>,
     ) {

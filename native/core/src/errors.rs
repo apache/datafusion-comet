@@ -18,7 +18,7 @@
 //! Common Parquet errors and macros.
 
 use arrow::error::ArrowError;
-use datafusion_common::DataFusionError;
+use datafusion::common::DataFusionError;
 use jni::errors::{Exception, ToException};
 use regex::Regex;
 

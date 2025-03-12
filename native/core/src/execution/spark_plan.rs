@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::execution::operators::CopyExec;
-use arrow_schema::SchemaRef;
+use arrow::datatypes::SchemaRef;
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 

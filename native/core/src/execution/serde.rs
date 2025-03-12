@@ -20,7 +20,7 @@
 use super::operators::ExecutionError;
 use crate::errors::ExpressionError;
 use arrow::datatypes::{DataType as ArrowDataType, TimeUnit};
-use arrow_schema::{Field, Fields};
+use arrow::datatypes::{Field, Fields};
 use datafusion_comet_proto::{
     spark_expression,
     spark_expression::data_type::{

@@ -16,14 +16,14 @@
 // under the License.
 
 use crate::utils::array_with_timezone;
+use arrow::datatypes::{DataType, Schema, TimeUnit::Microsecond};
 use arrow::{
     compute::{date_part, DatePart},
     record_batch::RecordBatch,
 };
-use arrow_schema::{DataType, Schema, TimeUnit::Microsecond};
+use datafusion::common::DataFusionError;
 use datafusion::logical_expr::ColumnarValue;
-use datafusion_common::DataFusionError;
-use datafusion_physical_expr::PhysicalExpr;
+use datafusion::physical_expr::PhysicalExpr;
 use std::hash::Hash;
 use std::{
     any::Any,
@@ -71,7 +71,7 @@ impl PhysicalExpr for SecondExpr {
         self
     }
 
-    fn data_type(&self, input_schema: &Schema) -> datafusion_common::Result<DataType> {
+    fn data_type(&self, input_schema: &Schema) -> datafusion::common::Result<DataType> {
         match self.child.data_type(input_schema).unwrap() {
             DataType::Dictionary(key_type, _) => {
                 Ok(DataType::Dictionary(key_type, Box::new(DataType::Int32)))
@@ -80,11 +80,11 @@ impl PhysicalExpr for SecondExpr {
         }
     }
 
-    fn nullable(&self, _: &Schema) -> datafusion_common::Result<bool> {
+    fn nullable(&self, _: &Schema) -> datafusion::common::Result<bool> {
         Ok(true)
     }
 
-    fn evaluate(&self, batch: &RecordBatch) -> datafusion_common::Result<ColumnarValue> {
+    fn evaluate(&self, batch: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
         let arg = self.child.evaluate(batch)?;
         match arg {
             ColumnarValue::Array(array) => {

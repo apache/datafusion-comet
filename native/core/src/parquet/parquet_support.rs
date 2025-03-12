@@ -16,23 +16,24 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
+use arrow::array::{DictionaryArray, StructArray};
+use arrow::datatypes::DataType;
 use arrow::{
     array::{cast::AsArray, types::Int32Type, Array, ArrayRef},
     compute::{cast_with_options, take, CastOptions},
     util::display::FormatOptions,
 };
-use arrow_array::{DictionaryArray, StructArray};
-use arrow_schema::DataType;
+use datafusion::common::{Result as DataFusionResult, ScalarValue};
+use datafusion::execution::object_store::ObjectStoreUrl;
+use datafusion::physical_plan::ColumnarValue;
+use datafusion::prelude::SessionContext;
 use datafusion_comet_spark_expr::utils::array_with_timezone;
 use datafusion_comet_spark_expr::EvalMode;
-use datafusion_common::{Result as DataFusionResult, ScalarValue};
-use datafusion_execution::object_store::ObjectStoreUrl;
-use datafusion_execution::runtime_env::RuntimeEnv;
-use datafusion_expr::ColumnarValue;
-use object_store::path::Path;
-use object_store::{parse_url, ObjectStore};
 use std::collections::HashMap;
 use std::{fmt::Debug, hash::Hash, sync::Arc};
+use datafusion::execution::runtime_env::RuntimeEnv;
+use object_store::{parse_url, ObjectStore};
+use object_store::path::Path;
 use url::Url;
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
@@ -264,8 +265,8 @@ pub(crate) fn prepare_object_store(
 mod tests {
     use crate::execution::operators::ExecutionError;
     use crate::parquet::parquet_support::prepare_object_store;
-    use datafusion_execution::object_store::ObjectStoreUrl;
-    use datafusion_execution::runtime_env::RuntimeEnv;
+    use datafusion::execution::object_store::ObjectStoreUrl;
+    use datafusion::execution::runtime_env::RuntimeEnv;
     use object_store::path::Path;
     use std::sync::Arc;
     use url::Url;

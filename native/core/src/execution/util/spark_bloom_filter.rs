@@ -17,8 +17,8 @@
 
 use crate::execution::util::spark_bit_array;
 use crate::execution::util::spark_bit_array::SparkBitArray;
-use arrow_array::{ArrowNativeTypeOp, BooleanArray, Int64Array};
-use arrow_buffer::ToByteSlice;
+use arrow::array::{ArrowNativeTypeOp, BooleanArray, Int64Array};
+use arrow::datatypes::ToByteSlice;
 use datafusion_comet_spark_expr::hash_funcs::murmur3::spark_compatible_murmur3_hash;
 use std::cmp;
 

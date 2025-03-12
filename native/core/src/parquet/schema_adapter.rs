@@ -18,10 +18,10 @@
 //! Custom schema adapter that uses Spark-compatible conversions
 
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
-use arrow_array::{new_null_array, Array, RecordBatch, RecordBatchOptions};
-use arrow_schema::{Schema, SchemaRef};
+use arrow::array::{new_null_array, Array, RecordBatch, RecordBatchOptions};
+use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
-use datafusion_expr::ColumnarValue;
+use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
 
 /// An implementation of DataFusion's `SchemaAdapterFactory` that uses a Spark-compatible
@@ -99,7 +99,7 @@ impl SchemaAdapter for SparkSchemaAdapter {
     fn map_schema(
         &self,
         file_schema: &Schema,
-    ) -> datafusion_common::Result<(Arc<dyn SchemaMapper>, Vec<usize>)> {
+    ) -> datafusion::common::Result<(Arc<dyn SchemaMapper>, Vec<usize>)> {
         let mut projection = Vec::with_capacity(file_schema.fields().len());
         let mut field_mappings = vec![None; self.required_schema.fields().len()];
 
@@ -177,7 +177,7 @@ impl SchemaMapper for SchemaMapping {
     /// conversions. The produced RecordBatch has a schema that contains only the projected
     /// columns, so if one needs a RecordBatch with a schema that references columns which are not
     /// in the projected, it would be better to use `map_partial_batch`
-    fn map_batch(&self, batch: RecordBatch) -> datafusion_common::Result<RecordBatch> {
+    fn map_batch(&self, batch: RecordBatch) -> datafusion::common::Result<RecordBatch> {
         let batch_rows = batch.num_rows();
         let batch_cols = batch.columns().to_vec();
 
@@ -207,7 +207,7 @@ impl SchemaMapper for SchemaMapping {
                     },
                 )
             })
-            .collect::<datafusion_common::Result<Vec<_>, _>>()?;
+            .collect::<datafusion::common::Result<Vec<_>, _>>()?;
 
         // Necessary to handle empty batches
         let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
@@ -223,7 +223,7 @@ impl SchemaMapper for SchemaMapping {
     /// Unlike `map_batch` this method also preserves the columns that
     /// may not appear in the final output (`projected_table_schema`) but may
     /// appear in push down predicates
-    fn map_partial_batch(&self, batch: RecordBatch) -> datafusion_common::Result<RecordBatch> {
+    fn map_partial_batch(&self, batch: RecordBatch) -> datafusion::common::Result<RecordBatch> {
         let batch_cols = batch.columns().to_vec();
         let schema = batch.schema();
 
@@ -273,11 +273,13 @@ impl SchemaMapper for SchemaMapping {
 mod test {
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
+    use arrow::array::UInt32Array;
     use arrow::array::{Int32Array, StringArray};
+    use arrow::datatypes::SchemaRef;
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
-    use arrow_array::UInt32Array;
-    use arrow_schema::SchemaRef;
+    use datafusion::common::config::TableParquetOptions;
+    use datafusion::common::DataFusionError;
     use datafusion::datasource::listing::PartitionedFile;
     use datafusion::datasource::physical_plan::{FileScanConfig, ParquetSource};
     use datafusion::datasource::source::DataSourceExec;
@@ -286,8 +288,6 @@ mod test {
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
     use datafusion_comet_spark_expr::EvalMode;
-    use datafusion_common::config::TableParquetOptions;
-    use datafusion_common::DataFusionError;
     use futures::StreamExt;
     use parquet::arrow::ArrowWriter;
     use std::fs::File;

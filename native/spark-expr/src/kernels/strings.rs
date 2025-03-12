@@ -25,7 +25,7 @@ use arrow::{
     compute::kernels::substring::{substring as arrow_substring, substring_by_char},
     datatypes::{DataType, Int32Type},
 };
-use datafusion_common::DataFusionError;
+use datafusion::common::DataFusionError;
 
 /// Returns an ArrayRef with a string consisting of `length` spaces.
 ///

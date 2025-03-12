@@ -17,22 +17,22 @@
 
 use crate::errors::{CometError, CometResult};
 use crate::parquet::data_type::AsBytes;
-use arrow::ipc::reader::StreamReader;
-use arrow::ipc::writer::StreamWriter;
-use arrow_array::cast::AsArray;
-use arrow_array::types::Int32Type;
-use arrow_array::{
+use arrow::array::cast::AsArray;
+use arrow::array::types::Int32Type;
+use arrow::array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Date32Array, Decimal128Array, DictionaryArray,
     Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, RecordBatch,
     RecordBatchOptions, StringArray, TimestampMicrosecondArray,
 };
-use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
-use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
+use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+use arrow::ipc::reader::StreamReader;
+use arrow::ipc::writer::StreamWriter;
 use bytes::Buf;
 use crc32fast::Hasher;
+use datafusion::common::DataFusionError;
 use datafusion::error::Result;
 use datafusion::physical_plan::metrics::Time;
-use datafusion_common::DataFusionError;
 use simd_adler32::Adler32;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
@@ -604,7 +604,7 @@ impl<'a> BatchReader<'a> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow_array::builder::*;
+    use arrow::array::builder::*;
     use std::sync::Arc;
 
     #[test]

@@ -16,14 +16,14 @@
 // under the License.
 
 use crate::math_funcs::utils::get_precision_scale;
+use arrow::array::{Array, Decimal128Array};
+use arrow::datatypes::{DataType, DECIMAL128_MAX_PRECISION};
 use arrow::{
     array::{ArrayRef, AsArray},
     datatypes::Decimal128Type,
 };
-use arrow_array::{Array, Decimal128Array};
-use arrow_schema::{DataType, DECIMAL128_MAX_PRECISION};
+use datafusion::common::DataFusionError;
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_common::DataFusionError;
 use num::{BigInt, Signed, ToPrimitive};
 use std::sync::Arc;
 

@@ -22,12 +22,12 @@ use crate::{
         row::{append_field, downcast_builder_ref, SparkUnsafeObject, SparkUnsafeRow},
     },
 };
-use arrow_array::builder::{
+use arrow::array::builder::{
     ArrayBuilder, BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float32Builder,
     Float64Builder, Int16Builder, Int32Builder, Int64Builder, Int8Builder, MapBuilder,
     MapFieldNames, StringBuilder, StructBuilder, TimestampMicrosecondBuilder,
 };
-use arrow_schema::{DataType, FieldRef, Fields, TimeUnit};
+use arrow::datatypes::{DataType, FieldRef, Fields, TimeUnit};
 
 pub struct SparkUnsafeMap {
     pub(crate) keys: SparkUnsafeArray,
