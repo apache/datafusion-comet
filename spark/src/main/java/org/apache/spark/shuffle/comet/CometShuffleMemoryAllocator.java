@@ -35,6 +35,12 @@ import org.apache.comet.CometConf$;
  * store serialized rows. This class is simply an implementation of `MemoryConsumer` that delegates
  * memory allocation to the `TaskMemoryManager`. This requires that the `TaskMemoryManager` is
  * configured with `MemoryMode.OFF_HEAP`, i.e. it is using off-heap memory.
+ *
+ * If the user does not enable off-heap memory then we want to use
+ * CometBoundedShuffleMemoryAllocator. The tests also need to default to using this because off-heap
+ * is not enabled when running the Spark SQL tests. The
+ * COMET_COLUMNAR_SHUFFLE_BOUNDED_MEMORY_ALLOCATOR flag allows us to use unified memory
+ * management in Comet tests (this does assume that off-heap is enabled).
  */
 public final class CometShuffleMemoryAllocator extends CometShuffleMemoryAllocatorTrait {
   private static CometShuffleMemoryAllocatorTrait INSTANCE;
@@ -42,8 +48,7 @@ public final class CometShuffleMemoryAllocator extends CometShuffleMemoryAllocat
   /**
    * Returns the singleton instance of `CometShuffleMemoryAllocator`. This method should be used
    * instead of the constructor to ensure that only one instance of `CometShuffleMemoryAllocator` is
-   * created. For Spark tests, this returns `CometBoundedShuffleMemoryAllocator` which more strictly
-   * controls memory allocation limits.
+   * created. For Spark tests, this returns `CometBoundedShuffleMemoryAllocator`.
    */
   public static CometShuffleMemoryAllocatorTrait getInstance(
       SparkConf conf, TaskMemoryManager taskMemoryManager, long pageSize) {
