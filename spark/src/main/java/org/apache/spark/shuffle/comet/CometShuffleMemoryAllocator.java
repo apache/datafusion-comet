@@ -42,8 +42,8 @@ public final class CometShuffleMemoryAllocator extends CometShuffleMemoryAllocat
   /**
    * Returns the singleton instance of `CometShuffleMemoryAllocator`. This method should be used
    * instead of the constructor to ensure that only one instance of `CometShuffleMemoryAllocator` is
-   * created. For Spark tests, this returns `CometBoundedShuffleMemoryAllocator` which is a
-   * test-only allocator that should not be used in production.
+   * created. For Spark tests, this returns `CometBoundedShuffleMemoryAllocator` which more strictly
+   * controls memory allocation limits.
    */
   public static CometShuffleMemoryAllocatorTrait getInstance(
       SparkConf conf, TaskMemoryManager taskMemoryManager, long pageSize) {

@@ -997,7 +997,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   }
 }
 
-class CometTestMemoryAllocatorShuffleSuite extends CometColumnarShuffleSuite {
+class CometBoundedMemoryAllocatorShuffleSuite extends CometColumnarShuffleSuite {
   override protected val asyncShuffleEnable: Boolean = false
   override protected val adaptiveExecutionEnabled: Boolean = true
   // Explicitly test with `CometBoundedShuffleMemoryAllocator`
