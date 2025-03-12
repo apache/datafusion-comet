@@ -23,6 +23,7 @@ use crate::execution::shuffle::builders::{
 use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
 use async_trait::async_trait;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::EmptyRecordBatchStream;
 use datafusion::{
     arrow::{array::*, datatypes::SchemaRef, error::ArrowError, record_batch::RecordBatch},
     error::{DataFusionError, Result},
@@ -55,7 +56,6 @@ use std::{
     io::{BufReader, BufWriter, Cursor, Seek, SeekFrom, Write},
     sync::Arc,
 };
-use datafusion::physical_plan::EmptyRecordBatchStream;
 use tokio::time::Instant;
 
 /// The shuffle writer operator maps each input partition to M output partitions based on a
@@ -559,7 +559,9 @@ impl ShuffleRepartitioner {
         elapsed_compute.stop();
 
         // shuffle writer always has empty output
-        Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&self.schema))))
+        Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(
+            &self.schema,
+        ))))
     }
 
     fn to_df_err(e: Error) -> DataFusionError {
