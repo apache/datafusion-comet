@@ -19,16 +19,10 @@
 
 package org.apache.spark.shuffle.comet;
 
-import java.io.IOException;
-
 import org.apache.spark.SparkConf;
-import org.apache.spark.memory.MemoryConsumer;
-import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.memory.TaskMemoryManager;
-import org.apache.spark.unsafe.memory.MemoryBlock;
-import org.apache.spark.util.Utils;
 
-import org.apache.comet.CometConf$;
+import org.apache.comet.CometSparkSessionExtensions;
 
 /**
  * A simple memory allocator used by `CometShuffleExternalSorter` to allocate memory blocks which
@@ -38,11 +32,9 @@ import org.apache.comet.CometConf$;
  *
  * <p>If the user does not enable off-heap memory then we want to use
  * CometBoundedShuffleMemoryAllocator. The tests also need to default to using this because off-heap
- * is not enabled when running the Spark SQL tests. The
- * COMET_COLUMNAR_SHUFFLE_BOUNDED_MEMORY_ALLOCATOR flag allows us to use unified memory management
- * in Comet tests (this does assume that off-heap is enabled).
+ * is not enabled when running the Spark SQL tests.
  */
-public final class CometShuffleMemoryAllocator extends CometShuffleMemoryAllocatorTrait {
+public final class CometShuffleMemoryAllocator {
   private static CometShuffleMemoryAllocatorTrait INSTANCE;
 
   /**
@@ -52,62 +44,19 @@ public final class CometShuffleMemoryAllocator extends CometShuffleMemoryAllocat
    */
   public static CometShuffleMemoryAllocatorTrait getInstance(
       SparkConf conf, TaskMemoryManager taskMemoryManager, long pageSize) {
-    boolean isSparkTesting = Utils.isTesting();
-    boolean useBoundedAllocator =
-        (boolean) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_BOUNDED_MEMORY_ALLOCATOR().get();
 
-    if (isSparkTesting || useBoundedAllocator) {
-      synchronized (CometShuffleMemoryAllocator.class) {
-        if (INSTANCE == null) {
-          // CometBoundedShuffleMemoryAllocator handles pages by itself so it can be a singleton.
-          INSTANCE = new CometBoundedShuffleMemoryAllocator(conf, taskMemoryManager, pageSize);
-        }
+    if (CometSparkSessionExtensions.cometUnifiedMemoryManagerEnabled(conf)) {
+      // CometShuffleMemoryAllocator stores pages in TaskMemoryManager which is not singleton,
+      // but one instance per task. So we need to create a new instance for each task.
+      return new CometUnifiedShuffleMemoryAllocator(taskMemoryManager, pageSize);
+    }
+
+    synchronized (CometShuffleMemoryAllocator.class) {
+      if (INSTANCE == null) {
+        // CometBoundedShuffleMemoryAllocator handles pages by itself so it can be a singleton.
+        INSTANCE = new CometBoundedShuffleMemoryAllocator(conf, taskMemoryManager, pageSize);
       }
-      return INSTANCE;
     }
-
-    if (taskMemoryManager.getTungstenMemoryMode() != MemoryMode.OFF_HEAP) {
-      throw new IllegalArgumentException(
-          "CometShuffleMemoryAllocator should be used with off-heap "
-              + "memory mode, but got "
-              + taskMemoryManager.getTungstenMemoryMode());
-    }
-
-    // CometShuffleMemoryAllocator stores pages in TaskMemoryManager which is not singleton,
-    // but one instance per task. So we need to create a new instance for each task.
-    return new CometShuffleMemoryAllocator(taskMemoryManager, pageSize);
-  }
-
-  CometShuffleMemoryAllocator(TaskMemoryManager taskMemoryManager, long pageSize) {
-    super(taskMemoryManager, pageSize, MemoryMode.OFF_HEAP);
-  }
-
-  public long spill(long l, MemoryConsumer memoryConsumer) throws IOException {
-    // JVM shuffle writer does not support spilling for other memory consumers
-    return 0;
-  }
-
-  public synchronized MemoryBlock allocate(long required) {
-    return this.allocatePage(required);
-  }
-
-  public synchronized void free(MemoryBlock block) {
-    this.freePage(block);
-  }
-
-  /**
-   * Returns the offset in the page for the given page plus base offset address. Note that this
-   * method assumes that the page number is valid.
-   */
-  public long getOffsetInPage(long pagePlusOffsetAddress) {
-    return taskMemoryManager.getOffsetInPage(pagePlusOffsetAddress);
-  }
-
-  public long encodePageNumberAndOffset(int pageNumber, long offsetInPage) {
-    return TaskMemoryManager.encodePageNumberAndOffset(pageNumber, offsetInPage);
-  }
-
-  public long encodePageNumberAndOffset(MemoryBlock page, long offsetInPage) {
-    return encodePageNumberAndOffset(page.pageNumber, offsetInPage - page.getBaseOffset());
+    return INSTANCE;
   }
 }

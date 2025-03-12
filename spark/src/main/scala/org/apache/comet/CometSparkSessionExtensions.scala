@@ -1418,12 +1418,6 @@ object CometSparkSessionExtensions extends Logging {
     sparkConf.getBoolean("spark.memory.offHeap.enabled", false)
   }
 
-  def cometShuffleBoundedMemoryManagerEnabled(sparkConf: SparkConf): Boolean = {
-    sparkConf.getBoolean(
-      CometConf.COMET_COLUMNAR_SHUFFLE_BOUNDED_MEMORY_ALLOCATOR.key,
-      CometConf.COMET_COLUMNAR_SHUFFLE_BOUNDED_MEMORY_ALLOCATOR.defaultValue.get)
-  }
-
   /**
    * Attaches explain information to a TreeNode, rolling up the corresponding information tags
    * from any child nodes. For now, we are using this to attach the reasons why certain Spark
