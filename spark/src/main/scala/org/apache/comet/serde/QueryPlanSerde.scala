@@ -655,8 +655,23 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           (builder, mathExpr) => builder.setIntegralDivide(mathExpr))
 
         if (divideExpr.isDefined) {
+          val childExpr = if (dataType.isInstanceOf[DecimalType]) {
+            // check overflow for decimal type
+            val builder = ExprOuterClass.CheckOverflow.newBuilder()
+            builder.setChild(divideExpr.get)
+            builder.setFailOnError(false)
+            builder.setDatatype(serializeDataType(dataType).get)
+            Some(
+              ExprOuterClass.Expr
+                .newBuilder()
+                .setCheckOverflow(builder)
+                .build())
+          } else {
+            divideExpr
+          }
+
           // cast result to long
-          castToProto(expr, None, LongType, divideExpr.get, CometEvalMode.LEGACY)
+          castToProto(expr, None, LongType, childExpr.get, CometEvalMode.LEGACY)
         } else {
           None
         }

@@ -2734,4 +2734,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("test integral divide overflow for decimal") {
+    withTable("t1") {
+      sql(s"create table t1(a decimal(38,0), b decimal(2,2)) using parquet")
+      sql(s"insert into t1 values(-62672277069777110394022909049981876593,-0.40)," +
+        s" (-68299431870253176399167726913574455270,-0.22), (-77532633078952291817347741106477071062,0.36)," +
+        s" (-79918484954351746825313746420585672848,0.44), (54400354300704342908577384819323710194,0.18)," +
+        s" (78585488402645143056239590008272527352,-0.51)")
+      checkSparkAnswerAndOperator("select a div b from t1")
+    }
+  }
+
 }
