@@ -36,11 +36,11 @@ import org.apache.comet.CometConf$;
  * memory allocation to the `TaskMemoryManager`. This requires that the `TaskMemoryManager` is
  * configured with `MemoryMode.OFF_HEAP`, i.e. it is using off-heap memory.
  *
- * If the user does not enable off-heap memory then we want to use
+ * <p>If the user does not enable off-heap memory then we want to use
  * CometBoundedShuffleMemoryAllocator. The tests also need to default to using this because off-heap
  * is not enabled when running the Spark SQL tests. The
- * COMET_COLUMNAR_SHUFFLE_BOUNDED_MEMORY_ALLOCATOR flag allows us to use unified memory
- * management in Comet tests (this does assume that off-heap is enabled).
+ * COMET_COLUMNAR_SHUFFLE_BOUNDED_MEMORY_ALLOCATOR flag allows us to use unified memory management
+ * in Comet tests (this does assume that off-heap is enabled).
  */
 public final class CometShuffleMemoryAllocator extends CometShuffleMemoryAllocatorTrait {
   private static CometShuffleMemoryAllocatorTrait INSTANCE;
