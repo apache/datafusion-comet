@@ -25,14 +25,8 @@ import org.apache.spark.memory.TaskMemoryManager;
 import org.apache.comet.CometSparkSessionExtensions;
 
 /**
- * A simple memory allocator used by `CometShuffleExternalSorter` to allocate memory blocks which
- * store serialized rows. This class is simply an implementation of `MemoryConsumer` that delegates
- * memory allocation to the `TaskMemoryManager`. This requires that the `TaskMemoryManager` is
- * configured with `MemoryMode.OFF_HEAP`, i.e. it is using off-heap memory.
- *
- * <p>If the user does not enable off-heap memory then we want to use
- * CometBoundedShuffleMemoryAllocator. The tests also need to default to using this because off-heap
- * is not enabled when running the Spark SQL tests.
+ * An interface to instantiate either CometBoundedShuffleMemoryAllocator (on-heap mode) or
+ * CometUnifiedShuffleMemoryAllocator (off-heap mode).
  */
 public final class CometShuffleMemoryAllocator {
   private static CometShuffleMemoryAllocatorTrait INSTANCE;
@@ -40,7 +34,7 @@ public final class CometShuffleMemoryAllocator {
   /**
    * Returns the singleton instance of `CometShuffleMemoryAllocator`. This method should be used
    * instead of the constructor to ensure that only one instance of `CometShuffleMemoryAllocator` is
-   * created. For Spark tests, this returns `CometBoundedShuffleMemoryAllocator`.
+   * created. For on-heap mode (Spark tests), this returns `CometBoundedShuffleMemoryAllocator`.
    */
   public static CometShuffleMemoryAllocatorTrait getInstance(
       SparkConf conf, TaskMemoryManager taskMemoryManager, long pageSize) {
