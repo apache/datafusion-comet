@@ -101,16 +101,17 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
    * unified memory manager.
    */
   private def shouldOverrideMemoryConf(conf: SparkConf): Boolean = {
-    val comet_enabled = conf.getBoolean(CometConf.COMET_ENABLED.key, true)
-    val comet_exec_shuffle = conf.getBoolean(
+    val cometEnabled =
+      conf.getBoolean(CometConf.COMET_ENABLED.key, CometConf.COMET_ENABLED.defaultValue.get)
+    val cometExecShuffle = conf.getBoolean(
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key,
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.defaultValue.get)
-    val comet_exec = conf.getBoolean(
+    val cometExec = conf.getBoolean(
       CometConf.COMET_EXEC_ENABLED.key,
       CometConf.COMET_EXEC_ENABLED.defaultValue.get)
-    val unified_memory = CometSparkSessionExtensions.cometUnifiedMemoryManagerEnabled(conf)
+    val unifiedMemory = CometSparkSessionExtensions.cometUnifiedMemoryManagerEnabled(conf)
 
-    comet_enabled && (comet_exec_shuffle || comet_exec) && !unified_memory
+    cometEnabled && (cometExecShuffle || cometExec) && !unifiedMemory
   }
 }
 
