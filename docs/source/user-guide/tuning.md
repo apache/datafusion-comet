@@ -17,7 +17,7 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Tuning Guide
+# Comet Tuning Guide
 
 Comet provides some tuning options to help you get the best performance from your queries.
 
@@ -26,7 +26,9 @@ Comet provides some tuning options to help you get the best performance from you
 It is necessary to specify how much memory Comet can use in addition to memory already allocated to Spark. In some
 cases, it may be possible to reduce the amount of memory allocated to Spark so that overall memory allocation is
 the same or lower than the original configuration. In other cases, enabling Comet may require allocating more memory
-than before. See the `Determining How Much Memory to Allocate` section for more details.
+than before. See the [Determining How Much Memory to Allocate] section for more details.
+
+[Determining How Much Memory to Allocate]: #determining-how-much-memory-to-allocate
 
 Comet supports Spark's on-heap (the default) and off-heap mode for allocating memory. However, we strongly recommend
 using off-heap mode. Comet has some limitations when running in on-heap mode, such as requiring more memory overall,
@@ -46,9 +48,13 @@ is not provided, it will be calculated by multiplying the current Spark executor
 `spark.comet.memory.overhead.factor` (default value is `1.0`). This is a conservative default that provides Comet
 with the same amount of memory that Spark was originally using.
 
-Shuffle memory must be separately allocated using `spark.comet.columnar.shuffle.memorySize`. If this setting is not
-provided, it will be calculated by multiplying `spark.comet.memoryOverhead` by
-`spark.comet.columnar.shuffle.memory.factor` (default value is `1.0`).
+Comet supports native shuffle and columnar shuffle (these terms are explained in the [shuffle] section below). 
+In on-heap mode, columnar shuffle memory must be separately allocated using `spark.comet.columnar.shuffle.memorySize`. 
+If this setting is not provided, it will be calculated by multiplying `spark.comet.memoryOverhead` by
+`spark.comet.columnar.shuffle.memory.factor` (default value is `1.0`). If a shuffle exceeds this amount of memory 
+then the query will fail.
+
+[shuffle]: #shuffle
 
 ### Determining How Much Memory to Allocate
 
@@ -83,6 +89,7 @@ TODO: WIP conclusions:
 - When Comet is enabled, Spark needs at least 5 GB of memory but provides a ~2x improvement in performance for that level of memory allocation
 - With Comet enabled, performance with 5 GB is 1.8x faster than Spark with 9-10 GB
 - TODO run Comet with half the CPUs and show same performance? i.e. demonstrate same performance for half the cost
+- TODO does reducing batch size reduce the amount of memory needed? maybe this goes under advanced memory tuning
 
 ## Advanced Memory Tuning
 
@@ -93,10 +100,6 @@ that it is possible to allocate off-heap memory.
 
 Comet will automatically set `spark.executor.memoryOverhead` based on the `spark.comet.memory*` settings so that
 resource managers respect Apache Spark memory configuration before starting the containers.
-
-Note that there is currently a known issue where this will be inaccurate when using Native Memory Management because it
-does not take executor concurrency into account. The tracking issue for this is
-https://github.com/apache/datafusion-comet/issues/949.
 
 ### Configuring Off-Heap Memory Pools
 
