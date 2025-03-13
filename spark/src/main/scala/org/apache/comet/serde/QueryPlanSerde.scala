@@ -659,7 +659,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             // check overflow for decimal type
             val builder = ExprOuterClass.CheckOverflow.newBuilder()
             builder.setChild(divideExpr.get)
-            builder.setFailOnError(false)
+            builder.setFailOnError(getFailOnError(div))
             builder.setDatatype(serializeDataType(dataType).get)
             Some(
               ExprOuterClass.Expr
