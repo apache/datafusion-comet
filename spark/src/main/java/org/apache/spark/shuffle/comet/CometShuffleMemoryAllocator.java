@@ -20,9 +20,8 @@
 package org.apache.spark.shuffle.comet;
 
 import org.apache.spark.SparkConf;
+import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.memory.TaskMemoryManager;
-
-import org.apache.comet.CometSparkSessionExtensions;
 
 /**
  * An interface to instantiate either CometBoundedShuffleMemoryAllocator (on-heap mode) or
@@ -39,7 +38,7 @@ public final class CometShuffleMemoryAllocator {
   public static CometShuffleMemoryAllocatorTrait getInstance(
       SparkConf conf, TaskMemoryManager taskMemoryManager, long pageSize) {
 
-    if (CometSparkSessionExtensions.cometUnifiedMemoryManagerEnabled(conf)) {
+    if (taskMemoryManager.getTungstenMemoryMode() == MemoryMode.OFF_HEAP) {
       // CometShuffleMemoryAllocator stores pages in TaskMemoryManager which is not singleton,
       // but one instance per task. So we need to create a new instance for each task.
       return new CometUnifiedShuffleMemoryAllocator(taskMemoryManager, pageSize);
