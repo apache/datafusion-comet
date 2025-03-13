@@ -2734,4 +2734,28 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("test integral divide overflow for decimal") {
+    // decimal support requires Spark 3.4 or later
+    assume(isSpark34Plus)
+    if (isSpark40Plus) {
+      Seq(true, false)
+    } else
+      {
+        // ansi mode only supported in Spark 4.0+
+        Seq(false)
+      }.foreach { ansiMode =>
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiMode.toString) {
+          withTable("t1") {
+            sql("create table t1(a decimal(38,0), b decimal(2,2)) using parquet")
+            sql(
+              "insert into t1 values(-62672277069777110394022909049981876593,-0.40)," +
+                " (-68299431870253176399167726913574455270,-0.22), (-77532633078952291817347741106477071062,0.36)," +
+                " (-79918484954351746825313746420585672848,0.44), (54400354300704342908577384819323710194,0.18)," +
+                " (78585488402645143056239590008272527352,-0.51)")
+            checkSparkAnswerAndOperator("select a div b from t1")
+          }
+        }
+      }
+  }
+
 }
