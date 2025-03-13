@@ -74,7 +74,7 @@ use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctio
 
 use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
-use crate::parquet::parquet_support::{register_object_store, SparkParquetOptions};
+use crate::parquet::parquet_support::{prepare_object_store, SparkParquetOptions};
 use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{FileScanConfig, ParquetSource};
@@ -1208,7 +1208,17 @@ impl PhysicalPlanner {
 
                 // By default, local FS object store registered
                 // if `hdfs` feature enabled then HDFS file object store registered
-                let object_store_url = register_object_store(Arc::clone(&self.session_ctx))?;
+                // Get one file from the list of files
+                let one_file = scan
+                    .file_partitions
+                    .first()
+                    .and_then(|f| f.partitioned_file.first())
+                    .map(|f| f.file_path.clone())
+                    .ok_or(ExecutionError::GeneralError(
+                        "Failed to locate file".to_string(),
+                    ))?;
+                let (object_store_url, _) =
+                    prepare_object_store(self.session_ctx.runtime_env(), one_file)?;
 
                 // Generate file groups
                 let mut file_groups: Vec<Vec<PartitionedFile>> =

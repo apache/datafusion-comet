@@ -46,7 +46,7 @@ use self::util::jni::TypePromotionInfo;
 use crate::execution::operators::ExecutionError;
 use crate::execution::utils::SparkArrowConvert;
 use crate::parquet::data_type::AsBytes;
-use crate::parquet::parquet_support::SparkParquetOptions;
+use crate::parquet::parquet_support::{prepare_object_store, SparkParquetOptions};
 use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
 use arrow::buffer::{Buffer, MutableBuffer};
 use arrow_array::{Array, RecordBatch};
@@ -54,6 +54,7 @@ use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{FileScanConfig, ParquetSource};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::prelude::SessionContext;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_common::config::TableParquetOptions;
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
@@ -61,7 +62,7 @@ use futures::{poll, StreamExt};
 use jni::objects::{JBooleanArray, JByteArray, JLongArray, JPrimitiveArray, JString, ReleaseMode};
 use jni::sys::jstring;
 use read::ColumnReader;
-use util::jni::{convert_column_descriptor, convert_encoding, deserialize_schema, get_file_path};
+use util::jni::{convert_column_descriptor, convert_encoding, deserialize_schema};
 /// Parquet read context maintained across multiple JNI calls.
 struct Context {
     pub column_reader: ColumnReader,
@@ -649,11 +650,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
+        let session_ctx = SessionContext::new();
+        let (object_store_url, object_store_path) =
+            prepare_object_store(session_ctx.runtime_env(), path.clone())?;
 
         // EXPERIMENTAL - BEGIN
-        //TODO: Need an execution context and a spark plan equivalent so that we can reuse
-        // code from jni_api.rs
-        let (object_store_url, object_store_path) = get_file_path(path.clone()).unwrap();
         // TODO: (ARROW NATIVE) - Remove code duplication between this and POC 1
         // copy the input on-heap buffer to native
         let required_schema_array = JByteArray::from_raw(required_schema);
