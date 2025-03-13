@@ -214,9 +214,7 @@ fn parse_hdfs_url(url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_stor
         _ => {
             return Err(object_store::Error::Generic {
                 store: "HadoopFileSystem",
-                source: Box::new(datafusion_comet_objectstore_hdfs::object_store::hdfs::HadoopFileSystem::HdfsErr::Generic(
-                    "Could not create hdfs object store".to_string(),
-                )),
+                source: "Could not create hdfs object store".into(),
             });
         }
     }
@@ -272,8 +270,8 @@ mod tests {
     use std::sync::Arc;
     use url::Url;
 
-    #[test]
     #[cfg(not(feature = "hdfs"))]
+    #[test]
     fn test_prepare_object_store() {
         let local_file_system_url = "file:///comet/spark-warehouse/part-00000.snappy.parquet";
         let s3_url = "s3a://test_bucket/comet/spark-warehouse/part-00000.snappy.parquet";
@@ -321,28 +319,19 @@ mod tests {
     #[test]
     #[cfg(feature = "hdfs")]
     fn test_prepare_object_store() {
-        let hdfs_url = "hdfs://localhost:8020/comet/spark-warehouse/part-00000.snappy.parquet";
-        let expected: Result<(ObjectStoreUrl, Path), ExecutionError> = Ok((
-            ObjectStoreUrl::parse("hdfs://localhost:8020").unwrap(),
+        // we use a local file system url instead of an hdfs url because the latter requires
+        // a running namenode
+        let hdfs_url = "file:///comet/spark-warehouse/part-00000.snappy.parquet";
+        let expected: (ObjectStoreUrl, Path) = (
+            ObjectStoreUrl::parse("file://").unwrap(),
             Path::from("/comet/spark-warehouse/part-00000.snappy.parquet"),
-        ));
+        );
 
         let url = &Url::parse(hdfs_url).unwrap();
         let res = prepare_object_store(Arc::new(RuntimeEnv::default()), url.to_string());
 
-        match expected {
-            Ok((o, p)) => {
-                let (r_o, r_p) = res.unwrap();
-                assert_eq!(r_o, *o);
-                assert_eq!(r_p, *p);
-            }
-            Err(e) => {
-                assert!(res.is_err());
-                let Err(res_e) = res else {
-                    panic!("test failed")
-                };
-                assert_eq!(e.to_string(), res_e.to_string())
-            }
-        }
+        let res = res.unwrap();
+        assert_eq!(res.0, expected.0);
+        assert_eq!(res.1, expected.1);
     }
 }
