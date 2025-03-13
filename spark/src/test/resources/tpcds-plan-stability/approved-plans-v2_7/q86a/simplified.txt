@@ -12,7 +12,7 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
                       CometExchange [total_sum,i_category,i_class,g_category,g_class,lochierarchy] #2
                         CometHashAggregate [total_sum,i_category,i_class,g_category,g_class,lochierarchy]
                           CometUnion [total_sum,i_category,i_class,g_category,g_class,lochierarchy]
-                            CometHashAggregate [total_sum,i_category,i_class,g_category,g_class,lochierarchy,sum,sum(UnscaledValue(ws_net_paid))]
+                            CometHashAggregate [total_sum,i_category,i_class,g_category,g_class,lochierarchy,i_category,i_class,sum,sum(UnscaledValue(ws_net_paid))]
                               CometExchange [i_category,i_class] #3
                                 CometHashAggregate [i_category,i_class,sum,ws_net_paid]
                                   CometProject [ws_net_paid,i_class,i_category]
@@ -34,8 +34,9 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
                                               CometFilter [d_date_sk,d_month_seq]
                                                 CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
                                       CometBroadcastExchange [i_item_sk,i_class,i_category] #6
-                                        CometFilter [i_item_sk,i_class,i_category]
-                                          CometScan parquet spark_catalog.default.item [i_item_sk,i_class,i_category]
+                                        CometProject [i_class,i_category] [i_item_sk,i_class,i_category]
+                                          CometFilter [i_item_sk,i_class,i_category]
+                                            CometScan parquet spark_catalog.default.item [i_item_sk,i_class,i_category]
                             CometHashAggregate [total_sum,i_category,i_class,g_category,g_class,lochierarchy,sum,isEmpty,sum(total_sum)]
                               CometExchange [i_category] #7
                                 CometHashAggregate [i_category,sum,isEmpty,total_sum]

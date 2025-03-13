@@ -44,11 +44,13 @@ TakeOrderedAndProject [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_
                                                                   CometFilter [d_date_sk,d_month_seq,d_year,d_moy,d_qoy]
                                                                     CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq,d_year,d_moy,d_qoy]
                                                           CometBroadcastExchange [s_store_sk,s_store_id] #5
-                                                            CometFilter [s_store_sk,s_store_id]
-                                                              CometScan parquet spark_catalog.default.store [s_store_sk,s_store_id]
+                                                            CometProject [s_store_id] [s_store_sk,s_store_id]
+                                                              CometFilter [s_store_sk,s_store_id]
+                                                                CometScan parquet spark_catalog.default.store [s_store_sk,s_store_id]
                                                       CometBroadcastExchange [i_item_sk,i_brand,i_class,i_category,i_product_name] #6
-                                                        CometFilter [i_item_sk,i_brand,i_class,i_category,i_product_name]
-                                                          CometScan parquet spark_catalog.default.item [i_item_sk,i_brand,i_class,i_category,i_product_name]
+                                                        CometProject [i_brand,i_class,i_category,i_product_name] [i_item_sk,i_brand,i_class,i_category,i_product_name]
+                                                          CometFilter [i_item_sk,i_brand,i_class,i_category,i_product_name]
+                                                            CometScan parquet spark_catalog.default.item [i_item_sk,i_brand,i_class,i_category,i_product_name]
                                 WholeStageCodegen (5)
                                   HashAggregate [i_category,i_class,i_brand,i_product_name,d_year,d_qoy,d_moy,sum,isEmpty] [sum(sumsales),s_store_id,sumsales,sum,isEmpty]
                                     CometColumnarToRow

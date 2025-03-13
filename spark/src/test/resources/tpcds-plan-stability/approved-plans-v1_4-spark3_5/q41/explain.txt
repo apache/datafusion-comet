@@ -24,12 +24,12 @@
 Output [3]: [i_manufact_id#1, i_manufact#2, i_product_name#3]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_manufact_id), GreaterThanOrEqual(i_manufact_id,738), LessThanOrEqual(i_manufact_id,778), IsNotNull(i_manufact)]
+PushedFilters: [IsNotNull(i_manufact_id), GreaterThanOrEqual(i_manufact_id,738), LessThanOrEqual(i_manufact_id,778)]
 ReadSchema: struct<i_manufact_id:int,i_manufact:string,i_product_name:string>
 
 (2) CometFilter
 Input [3]: [i_manufact_id#1, i_manufact#2, i_product_name#3]
-Condition : (((isnotnull(i_manufact_id#1) AND (i_manufact_id#1 >= 738)) AND (i_manufact_id#1 <= 778)) AND isnotnull(i_manufact#2))
+Condition : ((isnotnull(i_manufact_id#1) AND (i_manufact_id#1 >= 738)) AND (i_manufact_id#1 <= 778))
 
 (3) CometProject
 Input [3]: [i_manufact_id#1, i_manufact#2, i_product_name#3]
@@ -39,70 +39,69 @@ Arguments: [i_manufact#2, i_product_name#3], [i_manufact#2, i_product_name#3]
 Output [5]: [i_category#4, i_manufact#5, i_size#6, i_color#7, i_units#8]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_manufact)]
 ReadSchema: struct<i_category:string,i_manufact:string,i_size:string,i_color:string,i_units:string>
 
 (5) CometFilter
 Input [5]: [i_category#4, i_manufact#5, i_size#6, i_color#7, i_units#8]
-Condition : (((((rpad(i_category#4, 50,  ) = Women                                             ) AND (((((rpad(i_color#7, 20,  ) = powder              ) OR (rpad(i_color#7, 20,  ) = khaki               )) AND ((rpad(i_units#8, 10,  ) = Ounce     ) OR (rpad(i_units#8, 10,  ) = Oz        ))) AND ((rpad(i_size#6, 20,  ) = medium              ) OR (rpad(i_size#6, 20,  ) = extra large         ))) OR ((((rpad(i_color#7, 20,  ) = brown               ) OR (rpad(i_color#7, 20,  ) = honeydew            )) AND ((rpad(i_units#8, 10,  ) = Bunch     ) OR (rpad(i_units#8, 10,  ) = Ton       ))) AND ((rpad(i_size#6, 20,  ) = N/A                 ) OR (rpad(i_size#6, 20,  ) = small               ))))) OR ((rpad(i_category#4, 50,  ) = Men                                               ) AND (((((rpad(i_color#7, 20,  ) = floral              ) OR (rpad(i_color#7, 20,  ) = deep                )) AND ((rpad(i_units#8, 10,  ) = N/A       ) OR (rpad(i_units#8, 10,  ) = Dozen     ))) AND ((rpad(i_size#6, 20,  ) = petite              ) OR (rpad(i_size#6, 20,  ) = large               ))) OR ((((rpad(i_color#7, 20,  ) = light               ) OR (rpad(i_color#7, 20,  ) = cornflower          )) AND ((rpad(i_units#8, 10,  ) = Box       ) OR (rpad(i_units#8, 10,  ) = Pound     ))) AND ((rpad(i_size#6, 20,  ) = medium              ) OR (rpad(i_size#6, 20,  ) = extra large         )))))) OR (((rpad(i_category#4, 50,  ) = Women                                             ) AND (((((rpad(i_color#7, 20,  ) = midnight            ) OR (rpad(i_color#7, 20,  ) = snow                )) AND ((rpad(i_units#8, 10,  ) = Pallet    ) OR (rpad(i_units#8, 10,  ) = Gross     ))) AND ((rpad(i_size#6, 20,  ) = medium              ) OR (rpad(i_size#6, 20,  ) = extra large         ))) OR ((((rpad(i_color#7, 20,  ) = cyan                ) OR (rpad(i_color#7, 20,  ) = papaya              )) AND ((rpad(i_units#8, 10,  ) = Cup       ) OR (rpad(i_units#8, 10,  ) = Dram      ))) AND ((rpad(i_size#6, 20,  ) = N/A                 ) OR (rpad(i_size#6, 20,  ) = small               ))))) OR ((rpad(i_category#4, 50,  ) = Men                                               ) AND (((((rpad(i_color#7, 20,  ) = orange              ) OR (rpad(i_color#7, 20,  ) = frosted             )) AND ((rpad(i_units#8, 10,  ) = Each      ) OR (rpad(i_units#8, 10,  ) = Tbl       ))) AND ((rpad(i_size#6, 20,  ) = petite              ) OR (rpad(i_size#6, 20,  ) = large               ))) OR ((((rpad(i_color#7, 20,  ) = forest              ) OR (rpad(i_color#7, 20,  ) = ghost               )) AND ((rpad(i_units#8, 10,  ) = Lb        ) OR (rpad(i_units#8, 10,  ) = Bundle    ))) AND ((rpad(i_size#6, 20,  ) = medium              ) OR (rpad(i_size#6, 20,  ) = extra large         ))))))) AND isnotnull(i_manufact#5))
+Condition : (((((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#4, 50, true, false, true) = Women                                             ) AND (((((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_color#7, 20, true, false, true) = powder              ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_color#7, 20, true, false, true) = khaki               )) AND ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_units#8, 10, true, false, true) = Ounce     ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_units#8, 10, true, false, true) = Oz        ))) AND ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_size#6, 20, true, false, true) = medium              ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_size#6, 20, true, false, true) = extra large         ))) OR ((((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_color#7, 20, true, false, true) = brown               ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_color#7, 20, true, false, true) = honeydew            )) AND ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_units#8, 10, true, false, true) = Bunch     ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_units#8, 10, true, false, true) = Ton       ))) AND ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_size#6, 20, true, false, true) = N/A                 ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_size#6, 20, true, false, true) = small               ))))) OR ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#4, 50, true, false, true) = Men                                               ) AND (((((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_color#7, 20, true, false, true) = floral              ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_color#7, 20, true, false, true) = deep                )) AND ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_units#8, 10, true, false, true) = N/A       ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_units#8, 10, true, false, true) = Dozen     ))) AND ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_size#6, 20, true, false, true) = petite              ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_size#6, 20, true, false, true) = large               ))) OR ((((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_color#7, 20, true, false, true) = light               ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_color#7, 20, true, false, true) = cornflower          )) AND ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_units#8, 10, true, false, true) = Box       ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_units#8, 10, true, false, true) = Pound     ))) AND ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_size#6, 20, true, false, true) = medium              ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_size#6, 20, true, false, true) = extra large         )))))) OR (((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#4, 50, true, false, true) = Women                                             ) AND (((((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_color#7, 20, true, false, true) = midnight            ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_color#7, 20, true, false, true) = snow                )) AND ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_units#8, 10, true, false, true) = Pallet    ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_units#8, 10, true, false, true) = Gross     ))) AND ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_size#6, 20, true, false, true) = medium              ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_size#6, 20, true, false, true) = extra large         ))) OR ((((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_color#7, 20, true, false, true) = cyan                ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_color#7, 20, true, false, true) = papaya              )) AND ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_units#8, 10, true, false, true) = Cup       ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_units#8, 10, true, false, true) = Dram      ))) AND ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_size#6, 20, true, false, true) = N/A                 ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_size#6, 20, true, false, true) = small               ))))) OR ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#4, 50, true, false, true) = Men                                               ) AND (((((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_color#7, 20, true, false, true) = orange              ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_color#7, 20, true, false, true) = frosted             )) AND ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_units#8, 10, true, false, true) = Each      ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_units#8, 10, true, false, true) = Tbl       ))) AND ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_size#6, 20, true, false, true) = petite              ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_size#6, 20, true, false, true) = large               ))) OR ((((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_color#7, 20, true, false, true) = forest              ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_color#7, 20, true, false, true) = ghost               )) AND ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_units#8, 10, true, false, true) = Lb        ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_units#8, 10, true, false, true) = Bundle    ))) AND ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_size#6, 20, true, false, true) = medium              ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_size#6, 20, true, false, true) = extra large         ))))))) AND isnotnull(staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_manufact#5, 50, true, false, true)))
 
 (6) CometProject
 Input [5]: [i_category#4, i_manufact#5, i_size#6, i_color#7, i_units#8]
-Arguments: [i_manufact#5], [i_manufact#5]
+Arguments: [i_manufact#9], [staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_manufact#5, 50, true, false, true) AS i_manufact#9]
 
 (7) CometHashAggregate
-Input [1]: [i_manufact#5]
-Keys [1]: [i_manufact#5]
+Input [1]: [i_manufact#9]
+Keys [1]: [i_manufact#9]
 Functions [1]: [partial_count(1)]
 
 (8) CometExchange
-Input [2]: [i_manufact#5, count#9]
-Arguments: hashpartitioning(i_manufact#5, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+Input [2]: [i_manufact#9, count#10]
+Arguments: hashpartitioning(i_manufact#9, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
 (9) CometHashAggregate
-Input [2]: [i_manufact#5, count#9]
-Keys [1]: [i_manufact#5]
+Input [2]: [i_manufact#9, count#10]
+Keys [1]: [i_manufact#9]
 Functions [1]: [count(1)]
 
 (10) CometFilter
-Input [2]: [item_cnt#10, i_manufact#5]
-Condition : (item_cnt#10 > 0)
+Input [2]: [item_cnt#11, i_manufact#9]
+Condition : (item_cnt#11 > 0)
 
 (11) CometProject
-Input [2]: [item_cnt#10, i_manufact#5]
-Arguments: [i_manufact#5], [i_manufact#5]
+Input [2]: [item_cnt#11, i_manufact#9]
+Arguments: [i_manufact#9], [i_manufact#9]
 
 (12) CometBroadcastExchange
-Input [1]: [i_manufact#5]
-Arguments: [i_manufact#5]
+Input [1]: [i_manufact#9]
+Arguments: [i_manufact#9]
 
 (13) CometBroadcastHashJoin
 Left output [2]: [i_manufact#2, i_product_name#3]
-Right output [1]: [i_manufact#5]
-Arguments: [i_manufact#2], [i_manufact#5], Inner, BuildRight
+Right output [1]: [i_manufact#9]
+Arguments: [staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_manufact#2, 50, true, false, true)], [i_manufact#9], Inner, BuildRight
 
 (14) CometProject
-Input [3]: [i_manufact#2, i_product_name#3, i_manufact#5]
-Arguments: [i_product_name#3], [i_product_name#3]
+Input [3]: [i_manufact#2, i_product_name#3, i_manufact#9]
+Arguments: [i_product_name#12], [staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_product_name#3, 50, true, false, true) AS i_product_name#12]
 
 (15) CometHashAggregate
-Input [1]: [i_product_name#3]
-Keys [1]: [i_product_name#3]
+Input [1]: [i_product_name#12]
+Keys [1]: [i_product_name#12]
 Functions: []
 
 (16) CometExchange
-Input [1]: [i_product_name#3]
-Arguments: hashpartitioning(i_product_name#3, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Input [1]: [i_product_name#12]
+Arguments: hashpartitioning(i_product_name#12, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (17) CometHashAggregate
-Input [1]: [i_product_name#3]
-Keys [1]: [i_product_name#3]
+Input [1]: [i_product_name#12]
+Keys [1]: [i_product_name#12]
 Functions: []
 
 (18) CometTakeOrderedAndProject
-Input [1]: [i_product_name#3]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_product_name#3 ASC NULLS FIRST], output=[i_product_name#3]), [i_product_name#3], 100, [i_product_name#3 ASC NULLS FIRST], [i_product_name#3]
+Input [1]: [i_product_name#12]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_product_name#12 ASC NULLS FIRST], output=[i_product_name#12]), [i_product_name#12], 100, [i_product_name#12 ASC NULLS FIRST], [i_product_name#12]
 
 (19) CometColumnarToRow [codegen id : 1]
-Input [1]: [i_product_name#3]
+Input [1]: [i_product_name#12]
 

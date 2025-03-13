@@ -32,8 +32,9 @@ WholeStageCodegen (1)
                                       CometFilter [d_date_sk,d_month_seq]
                                         CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
                 CometBroadcastExchange [i_item_sk,i_item_desc,i_current_price,i_wholesale_cost,i_brand] #5
-                  CometFilter [i_item_sk,i_item_desc,i_current_price,i_wholesale_cost,i_brand]
-                    CometScan parquet spark_catalog.default.item [i_item_sk,i_item_desc,i_current_price,i_wholesale_cost,i_brand]
+                  CometProject [i_brand] [i_item_sk,i_item_desc,i_current_price,i_wholesale_cost,i_brand]
+                    CometFilter [i_item_sk,i_item_desc,i_current_price,i_wholesale_cost,i_brand]
+                      CometScan parquet spark_catalog.default.item [i_item_sk,i_item_desc,i_current_price,i_wholesale_cost,i_brand]
             CometBroadcastExchange [ss_store_sk,ave] #6
               CometFilter [ss_store_sk,ave]
                 CometHashAggregate [ss_store_sk,ave,sum,count,avg(revenue)]
