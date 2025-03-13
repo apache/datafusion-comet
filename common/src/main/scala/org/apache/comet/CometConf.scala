@@ -54,7 +54,7 @@ object CometConf extends ShimCometConf {
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
 
-  def register(conf: ConfigEntryWithDefault[_]): Unit = {
+  def register(conf: ConfigEntry[_]): Unit = {
     allConfs.append(conf)
   }
 
@@ -746,13 +746,15 @@ private class TypedConfigBuilder[T](
 
   /** Creates a [[ConfigEntry]] that does not have a default value. */
   def createOptional: OptionalConfigEntry[T] = {
-    new OptionalConfigEntry[T](
+    val conf = new OptionalConfigEntry[T](
       parent.key,
       converter,
       stringConverter,
       parent._doc,
       parent._public,
       parent._version)
+    CometConf.register(conf)
+    conf
   }
 
   /** Creates a [[ConfigEntry]] that has a default value. */

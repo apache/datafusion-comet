@@ -50,7 +50,11 @@ object GenerateDocs {
         w.write("| Config | Description | Default Value |\n".getBytes)
         w.write("|--------|-------------|---------------|\n".getBytes)
         for (conf <- confs) {
-          w.write(s"| ${conf.key} | ${conf.doc.trim} | ${conf.defaultValueString} |\n".getBytes)
+          if (conf.defaultValue.isEmpty) {
+            w.write(s"| ${conf.key} | ${conf.doc.trim} | |\n".getBytes)
+          } else {
+            w.write(s"| ${conf.key} | ${conf.doc.trim} | ${conf.defaultValueString} |\n".getBytes)
+          }
         }
       } else {
         w.write(s"${line.trim}\n".getBytes)
