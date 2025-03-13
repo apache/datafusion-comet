@@ -24,13 +24,45 @@ Comet provides some tuning options to help you get the best performance from you
 ## Memory Tuning
 
 It is necessary to specify how much memory Comet can use in addition to memory already allocated to Spark. In some
-cases, it will be possible to reduce the amount of memory allocated to Spark so that overall memory allocation is
+cases, it may be possible to reduce the amount of memory allocated to Spark so that overall memory allocation is
 the same or lower than the original configuration. In other cases, enabling Comet may require allocating more memory
-than before.
+than before. See the `Determining How Much Memory to Allocate` section for more details.
+
+Comet supports Spark's on-heap (the default) and off-heap mode for allocating memory. However, we strongly recommend
+using off-heap mode. Comet has some limitations when running in on-heap mode, such as requiring more memory overall,
+and requiring shuffle memory to be separately configured.
+
+### Configuring Comet Memory in Off-Heap Mode
+
+The recommended way to allocate memory for Comet is to set `spark.memory.offHeap.enabled=true`. This allows
+Comet to share an off-heap memory pool with Spark, reducing the overall memory overhead. The size of the pool is
+specified by `spark.memory.offHeap.size`. For more details about Spark off-heap memory mode, please refer to
+Spark documentation: https://spark.apache.org/docs/latest/configuration.html.
+
+### Configuring Comet Memory in On-Heap Mode
+
+When running in on-heap mode, Comet memory can be allocated by setting `spark.comet.memoryOverhead`. If this setting
+is not provided, it will be calculated by multiplying the current Spark executor memory by
+`spark.comet.memory.overhead.factor` (default value is `1.0`). This is a conservative default that provides Comet
+with the same amount of memory that Spark was originally using.
+
+Shuffle memory must be separately allocated using `spark.comet.columnar.shuffle.memorySize`. If this setting is not
+provided, it will be calculated by multiplying `spark.comet.memoryOverhead` by
+`spark.comet.columnar.shuffle.memory.factor` (default value is `1.0`).
+
+### Determining How Much Memory to Allocate
+
+Generally, increasing the amount of memory allocated to Comet will improve query performance by reducing the
+amount of time spent spilling to disk, especially for aggregate, join, and shuffle operations. Allocating insufficient
+memory can result in out-of-memory errors. This is no different from allocating memory in Spark and the amount of
+memory will vary for different workloads, so some experimentation will be required.
 
 Here is a real-world example, based on running benchmarks derived from TPC-H.
 
-TODO: this section is a work-in-progress
+**TODO: this section is a work-in-progress**
+
+The following table shows performance of Spark compared to Comet in both Off-Heap and On-Heap modes. The table shows
+total query time for TPC-H @ 100GB. Smaller is better.
 
 | Total Executor Memory (GB) | Spark | Comet Off-Heap | Comet On-Heap |
 | -------------------------- | ----- | -------------- | ------------- |
@@ -48,38 +80,11 @@ TODO: this section is a work-in-progress
 TODO: WIP conclusions:
 
 - Spark can complete the benchmark with as little as 3GB but shows best performance at 9-10 GB
-- When Comet is enabled, Spark needs at least 5 GB of memory and provides a ~2x improvement in performance for that level of memory allocation
+- When Comet is enabled, Spark needs at least 5 GB of memory but provides a ~2x improvement in performance for that level of memory allocation
 - With Comet enabled, performance with 5 GB is 1.8x faster than Spark with 9-10 GB
 - TODO run Comet with half the CPUs and show same performance? i.e. demonstrate same performance for half the cost
 
-Comet supports Spark's on-heap (the default) and off-heap mode for allocating memory. However, we strongly recommend
-using off-heap mode. Comet has some limitations when running in on-heap mode, such as requiring more memory overall,
-and requiring shuffle memory to be manually configured.
-
-### Determining How Much Memory to Allocate
-
-Generally, increasing the amount of memory allocated to Comet will improve query performance by reducing the
-amount of time spent spilling to disk, especially for aggregate, join, and shuffle operations. Allocating insufficient
-memory can result in out-of-memory errors. This is no different from allocating memory in Spark and the amount of
-memory will vary for different workloads, so some experimentation will be required.
-
-### Configuring Comet Memory in Off-Heap Mode
-
-The recommended way to allocate memory for Comet is to set `spark.memory.offHeap.enabled=true`. This allows
-Comet to share an off-heap memory pool with Spark, reducing the overall memory overhead. The size of the pool is
-specified by `spark.memory.offHeap.size`. For more details about Spark off-heap memory mode, please refer to
-Spark documentation: https://spark.apache.org/docs/latest/configuration.html.
-
-### Configuring Comet Memory in On-Heap Mode
-
-When running in on-heap mode, Comet memory can be allocated by setting `spark.comet.memoryOverhead`. If this setting
-is not specified, it will be set to a default based on multiplying the current Spark executor memory by
-`spark.comet.memory.overhead.factor` (default value is `1.0`). This is a conservative default that provides Comet
-with the same amount of memory that Spark was originally using.
-
-Shuffle memory must be separately allocated using `spark.comet.columnar.shuffle.memorySize`. If this setting is not
-provided, it will be set to a default based on multiplying `spark.comet.memoryOverhead` by
-`spark.comet.columnar.shuffle.memory.factor` (default `1.0`).
+## Advanced Memory Tuning
 
 ## Configuring spark.executor.memoryOverhead
 
@@ -93,13 +98,9 @@ Note that there is currently a known issue where this will be inaccurate when us
 does not take executor concurrency into account. The tracking issue for this is
 https://github.com/apache/datafusion-comet/issues/949.
 
-## Advanced Memory Tuning
-
-Comet implements multiple memory pool implementations.
-
 ### Configuring Off-Heap Memory Pools
 
-The type of pool can be specified with `spark.comet.exec.memoryPool`.
+Comet implements multiple memory pool implementations. The type of pool can be specified with `spark.comet.exec.memoryPool`.
 
 The valid pool types are:
 
