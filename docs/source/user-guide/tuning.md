@@ -45,8 +45,9 @@ Spark documentation: https://spark.apache.org/docs/latest/configuration.html.
 
 When running in on-heap mode, Comet memory can be allocated by setting `spark.comet.memoryOverhead`. If this setting
 is not provided, it will be calculated by multiplying the current Spark executor memory by
-`spark.comet.memory.overhead.factor` (default value is `1.0`). This is a conservative default that provides Comet
-with the same amount of memory that Spark was originally using.
+`spark.comet.memory.overhead.factor` (default value is `0.2`) which may or may not result in enough memory for 
+Comet to operate. It is not recommended to rely on this behavior. It is better to specify `spark.comet.memoryOverhead`
+explicitly.
 
 Comet supports native shuffle and columnar shuffle (these terms are explained in the [shuffle] section below). 
 In on-heap mode, columnar shuffle memory must be separately allocated using `spark.comet.columnar.shuffle.memorySize`. 

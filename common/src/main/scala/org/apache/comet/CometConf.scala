@@ -251,7 +251,7 @@ object CometConf extends ShimCometConf {
     .checkValue(
       factor => factor > 0,
       "Ensure that Comet memory overhead factor is a double greater than 0")
-    .createWithDefault(1.0)
+    .createWithDefault(0.2)
 
   val COMET_MEMORY_OVERHEAD_MIN_MIB: ConfigEntry[Long] = conf("spark.comet.memory.overhead.min")
     .doc("Minimum amount of additional memory to be allocated per executor process for Comet, " +
