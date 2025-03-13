@@ -161,21 +161,19 @@ class CometPluginsUnifiedModeOverrideSuite extends CometTestBase {
   }
 
   /*
-   * Since using unified memory, but not shuffle unified memory
-   * executor memory should be overridden by adding comet shuffle memory size
+   * Since using unified memory executor memory should not be overridden
    */
-  test("executor memory overhead is correctly overridden") {
+  test("executor memory overhead is not overridden") {
     val execMemOverhead1 = spark.conf.get("spark.executor.memoryOverhead")
     val execMemOverhead2 = spark.sessionState.conf.getConfString("spark.executor.memoryOverhead")
     val execMemOverhead3 = spark.sparkContext.getConf.get("spark.executor.memoryOverhead")
     val execMemOverhead4 = spark.sparkContext.conf.get("spark.executor.memoryOverhead")
 
-    // in unified memory mode, comet memory overhead is spark.memory.offHeap.size (2G) * spark.comet.memory.overhead.factor (0.5) = 1G
-    // so the total executor memory overhead is executor memory overhead (1G) + comet memory overhead (1G) = 2G
-    // and the overhead is overridden in MiB
-    assert(execMemOverhead1 == "2048M")
-    assert(execMemOverhead2 == "2048M")
-    assert(execMemOverhead3 == "2048M")
-    assert(execMemOverhead4 == "2048M")
+    // in unified memory mode, comet memory overhead is
+    // spark.memory.offHeap.size (2G) * spark.comet.memory.overhead.factor (0.5) = 1G  and the overhead is not overridden
+    assert(execMemOverhead1 == "1G")
+    assert(execMemOverhead2 == "1G")
+    assert(execMemOverhead3 == "1G")
+    assert(execMemOverhead4 == "1G")
   }
 }

@@ -48,7 +48,7 @@ import org.apache.comet.CometSparkSessionExtensions$;
  * Thus, this allocator is used to allocate separate off-heap memory allocation for Comet JVM
  * shuffle and execution apart from Spark's on-heap memory configuration.
  */
-public final class CometTestShuffleMemoryAllocator extends CometShuffleMemoryAllocatorTrait {
+public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemoryAllocatorTrait {
   private final UnsafeMemoryAllocator allocator = new UnsafeMemoryAllocator();
 
   private final long pageSize;
@@ -67,9 +67,7 @@ public final class CometTestShuffleMemoryAllocator extends CometShuffleMemoryAll
   private static final int OFFSET_BITS = 51;
   private static final long MASK_LONG_LOWER_51_BITS = 0x7FFFFFFFFFFFFL;
 
-  private static CometTestShuffleMemoryAllocator INSTANCE;
-
-  CometTestShuffleMemoryAllocator(
+  CometBoundedShuffleMemoryAllocator(
       SparkConf conf, TaskMemoryManager taskMemoryManager, long pageSize) {
     super(taskMemoryManager, pageSize, MemoryMode.OFF_HEAP);
     this.pageSize = pageSize;
