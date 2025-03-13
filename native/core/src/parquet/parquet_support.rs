@@ -25,15 +25,14 @@ use arrow::{
 };
 use datafusion::common::{Result as DataFusionResult, ScalarValue};
 use datafusion::execution::object_store::ObjectStoreUrl;
+use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ColumnarValue;
-use datafusion::prelude::SessionContext;
 use datafusion_comet_spark_expr::utils::array_with_timezone;
 use datafusion_comet_spark_expr::EvalMode;
+use object_store::path::Path;
+use object_store::{parse_url, ObjectStore};
 use std::collections::HashMap;
 use std::{fmt::Debug, hash::Hash, sync::Arc};
-use datafusion::execution::runtime_env::RuntimeEnv;
-use object_store::{parse_url, ObjectStore};
-use object_store::path::Path;
 use url::Url;
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
@@ -213,10 +212,10 @@ fn parse_hdfs_url(url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_stor
             Ok((Box::new(object_store), path))
         }
         _ => {
-            return Err(object_store::Error::Generic {
+            Err(object_store::Error::Generic {
                 store: "HadoopFileSystem",
                 source: "Could not create hdfs object store".into(),
-            });
+            })
         }
     }
 }
@@ -263,7 +262,6 @@ pub(crate) fn prepare_object_store(
 
 #[cfg(test)]
 mod tests {
-    use crate::execution::operators::ExecutionError;
     use crate::parquet::parquet_support::prepare_object_store;
     use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::execution::runtime_env::RuntimeEnv;
@@ -274,6 +272,8 @@ mod tests {
     #[cfg(not(feature = "hdfs"))]
     #[test]
     fn test_prepare_object_store() {
+        use crate::execution::operators::ExecutionError;
+
         let local_file_system_url = "file:///comet/spark-warehouse/part-00000.snappy.parquet";
         let s3_url = "s3a://test_bucket/comet/spark-warehouse/part-00000.snappy.parquet";
         let hdfs_url = "hdfs://localhost:8020/comet/spark-warehouse/part-00000.snappy.parquet";
