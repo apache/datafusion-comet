@@ -119,12 +119,51 @@ abstract class CometTestBase
     require(absTol > 0 && absTol <= 1e-6, s"absTol $absTol is out of range (0, 1e-6]")
 
     actualAnswer.toSeq.zip(expectedAnswer.toSeq).foreach {
-      case (actual: Double, expected: Double) =>
-        if (!actual.isNaN && !expected.isNaN) {
+      case (actual: Float, expected: Float) =>
+        def isPosInfinity(value: Float): Boolean = {
+          // account for difference between Java and Rust
+          value.isPosInfinity || value == 3.4028235e38
+        }
+
+        if ((actual.isNaN && expected.isNaN) ||
+          (isPosInfinity(actual) && isPosInfinity(expected)) ||
+          (actual.isNegInfinity && expected.isNegInfinity)) {
+          // ok
+        } else {
+
+          def almostEqual(a: Float, b: Float, tolerance: Float = 1e-6f): Boolean = {
+            Math.abs(a - b) <= tolerance * Math.max(Math.abs(a), Math.abs(b))
+          }
+
           assert(
-            math.abs(actual - expected) < absTol,
+            almostEqual(actual, expected),
             s"actual answer $actual not within $absTol of correct answer $expected")
         }
+
+      case (actual: Double, expected: Double) =>
+        def isPosInfinity(value: Double): Boolean = {
+          // account for difference between Java and Rust
+          value.isPosInfinity || value == 1.7976931348623157e308
+        }
+
+        if ((actual.isNaN && expected.isNaN) ||
+          (isPosInfinity(actual) && isPosInfinity(expected)) ||
+          (actual.isNegInfinity && expected.isNegInfinity)) {
+          // ok
+        } else {
+
+          def almostEqual(a: Double, b: Double, tolerance: Double = 1e-6f): Boolean = {
+            Math.abs(a - b) <= tolerance * Math.max(Math.abs(a), Math.abs(b))
+          }
+
+          assert(
+            almostEqual(actual, expected),
+            s"actual answer $actual not within $absTol of correct answer $expected")
+        }
+
+      case (actual: Array[_], expected: Array[_]) =>
+        assert(actual.sameElements(expected), s"$actualAnswer did not equal $expectedAnswer")
+
       case (actual, expected) =>
         assert(actual == expected, s"$actualAnswer did not equal $expectedAnswer")
     }
@@ -230,6 +269,27 @@ abstract class CometTestBase
     }
     val dfComet = Dataset.ofRows(spark, df.logicalPlan)
     checkAnswerWithTol(dfComet, expected, absTol: Double)
+  }
+
+  /**
+   * Check the answer of a Comet SQL query with Spark result using absolute tolerance.
+   */
+  protected def checkSparkAnswerAndOperatorWithTol(query: String, absTol: Double = 1e-6): Unit = {
+    checkSparkAnswerAndOperatorWithTol(sql(query), absTol)
+  }
+
+  /**
+   * Check the answer of a Comet DataFrame with Spark result using absolute tolerance.
+   */
+  protected def checkSparkAnswerAndOperatorWithTol(df: => DataFrame, absTol: Double): Unit = {
+    var expected: Array[Row] = Array.empty
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      val dfSpark = Dataset.ofRows(spark, df.logicalPlan)
+      expected = dfSpark.collect()
+    }
+    val dfComet = Dataset.ofRows(spark, df.logicalPlan)
+    checkAnswerWithTol(dfComet, expected, absTol: Double)
+    checkCometOperators(stripAQEPlan(dfComet.queryExecution.executedPlan))
   }
 
   protected def checkSparkMaybeThrows(
