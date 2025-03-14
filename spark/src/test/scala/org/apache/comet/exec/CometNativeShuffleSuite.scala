@@ -29,7 +29,6 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 
 class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
@@ -64,10 +63,6 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
           val path = new Path(dir.toURI.toString, "test.parquet")
           makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
           var allTypes: Seq[Int] = (1 to 20)
-          if (!isSpark34Plus) {
-            // TODO: Remove this once after https://github.com/apache/arrow/issues/40038 is fixed
-            allTypes = allTypes.filterNot(Set(14).contains)
-          }
           allTypes.map(i => s"_$i").foreach { c =>
             withSQLConf(
               CometConf.COMET_EXEC_ENABLED.key -> execEnabled.toString,

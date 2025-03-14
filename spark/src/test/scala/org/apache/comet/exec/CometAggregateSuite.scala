@@ -31,7 +31,6 @@ import org.apache.spark.sql.functions.{count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 /**
@@ -884,9 +883,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("final decimal avg") {
-    // TODO: enable decimal average for Spark 3.3
-    assume(isSpark34Plus)
-
     withSQLConf(
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true",
