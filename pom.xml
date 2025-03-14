@@ -95,7 +95,6 @@ under the License.
       -Djdk.reflect.useDirectMethodHandle=false
     </extraJavaTestArgs>
     <argLine>-ea -Xmx4g -Xss4m ${extraJavaTestArgs}</argLine>
-    <additional.3_3.test.source>spark-3.3-plus</additional.3_3.test.source>
     <additional.3_4.test.source>spark-3.4-plus</additional.3_4.test.source>
     <additional.3_5.test.source>not-needed</additional.3_5.test.source>
     <additional.pre35.test.source>spark-pre-3.5</additional.pre35.test.source>
@@ -545,19 +544,6 @@ under the License.
       <properties>
         <platform>linux</platform>
         <arch>aarch64</arch>
-      </properties>
-    </profile>
-
-    <profile>
-      <id>spark-3.3</id>
-      <properties>
-        <scala.version>2.12.15</scala.version>
-        <spark.version>3.3.2</spark.version>
-        <spark.version.short>3.3</spark.version.short>
-        <parquet.version>1.12.0</parquet.version>
-        <slf4j.version>1.7.32</slf4j.version>
-        <additional.3_4.test.source>not-needed-yet</additional.3_4.test.source>
-        <shims.minorVerSrc>spark-3.3</shims.minorVerSrc>
       </properties>
     </profile>
 

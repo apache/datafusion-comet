@@ -41,7 +41,6 @@ import org.apache.spark.sql.catalyst.util.RebaseDateTime.{rebaseGregorianToJulia
 import org.apache.spark.sql.sources
 import org.apache.spark.unsafe.types.UTF8String
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 import org.apache.comet.shims.ShimSQLConf
 
 /**
@@ -620,17 +619,12 @@ class ParquetFilters(
     value == null || (nameToParquetField(name).fieldType match {
       case ParquetBooleanType => value.isInstanceOf[JBoolean]
       case ParquetByteType | ParquetShortType | ParquetIntegerType =>
-        if (isSpark34Plus) {
-          value match {
-            // Byte/Short/Int are all stored as INT32 in Parquet so filters are built using type
-            // Int. We don't create a filter if the value would overflow.
-            case _: JByte | _: JShort | _: Integer => true
-            case v: JLong => v.longValue() >= Int.MinValue && v.longValue() <= Int.MaxValue
-            case _ => false
-          }
-        } else {
-          // If not Spark 3.4+, we still following the old behavior as Spark does.
-          value.isInstanceOf[Number]
+        value match {
+          // Byte/Short/Int are all stored as INT32 in Parquet so filters are built using type
+          // Int. We don't create a filter if the value would overflow.
+          case _: JByte | _: JShort | _: Integer => true
+          case v: JLong => v.longValue() >= Int.MinValue && v.longValue() <= Int.MaxValue
+          case _ => false
         }
       case ParquetLongType => value.isInstanceOf[JLong]
       case ParquetFloatType => value.isInstanceOf[JFloat]

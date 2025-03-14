@@ -16,12 +16,12 @@
 // under the License.
 
 use crate::create_hashes_internal;
+use arrow::array::types::ArrowDictionaryKeyType;
+use arrow::array::{Array, ArrayRef, ArrowNativeTypeOp, DictionaryArray, Int32Array};
 use arrow::compute::take;
-use arrow_array::types::ArrowDictionaryKeyType;
-use arrow_array::{Array, ArrayRef, ArrowNativeTypeOp, DictionaryArray, Int32Array};
-use arrow_buffer::ArrowNativeType;
-use datafusion_common::{internal_err, DataFusionError, ScalarValue};
-use datafusion_expr::ColumnarValue;
+use arrow::datatypes::ArrowNativeType;
+use datafusion::common::{internal_err, DataFusionError, ScalarValue};
+use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
 
 /// Spark compatible murmur3 hash (just `hash` in Spark) in vectorized execution fashion
@@ -140,7 +140,7 @@ fn create_hashes_dictionary<K: ArrowDictionaryKeyType>(
     array: &ArrayRef,
     hashes_buffer: &mut [u32],
     first_col: bool,
-) -> datafusion_common::Result<()> {
+) -> datafusion::common::Result<()> {
     let dict_array = array.as_any().downcast_ref::<DictionaryArray<K>>().unwrap();
     if !first_col {
         // unpack the dictionary array as each row may have a different hash input
@@ -178,7 +178,7 @@ fn create_hashes_dictionary<K: ArrowDictionaryKeyType>(
 pub fn create_murmur3_hashes<'a>(
     arrays: &[ArrayRef],
     hashes_buffer: &'a mut [u32],
-) -> datafusion_common::Result<&'a mut [u32]> {
+) -> datafusion::common::Result<&'a mut [u32]> {
     create_hashes_internal!(
         arrays,
         hashes_buffer,
@@ -197,7 +197,7 @@ mod tests {
     use crate::test_hashes_with_nulls;
     use datafusion::arrow::array::{ArrayRef, Int32Array, Int64Array, Int8Array, StringArray};
 
-    fn test_murmur3_hash<I: Clone, T: arrow_array::Array + From<Vec<Option<I>>> + 'static>(
+    fn test_murmur3_hash<I: Clone, T: arrow::array::Array + From<Vec<Option<I>>> + 'static>(
         values: Vec<Option<I>>,
         expected: Vec<u32>,
     ) {

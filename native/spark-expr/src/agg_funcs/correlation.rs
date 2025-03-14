@@ -25,13 +25,12 @@ use arrow::{
     array::ArrayRef,
     datatypes::{DataType, Field},
 };
-use datafusion::logical_expr::Accumulator;
-use datafusion_common::{Result, ScalarValue};
-use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
-use datafusion_expr::type_coercion::aggregates::NUMERICS;
-use datafusion_expr::{AggregateUDFImpl, Signature, Volatility};
-use datafusion_physical_expr::expressions::format_state_name;
-use datafusion_physical_expr::expressions::StatsType;
+use datafusion::common::{Result, ScalarValue};
+use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
+use datafusion::logical_expr::type_coercion::aggregates::NUMERICS;
+use datafusion::logical_expr::{Accumulator, AggregateUDFImpl, Signature, Volatility};
+use datafusion::physical_expr::expressions::format_state_name;
+use datafusion::physical_expr::expressions::StatsType;
 
 /// CORR aggregate expression
 /// The implementation mostly is the same as the DataFusion's implementation. The reason

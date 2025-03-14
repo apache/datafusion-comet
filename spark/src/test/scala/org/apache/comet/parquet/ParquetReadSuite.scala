@@ -46,7 +46,7 @@ import org.apache.spark.unsafe.types.UTF8String
 import com.google.common.primitives.UnsignedLong
 
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark34Plus, isSpark40Plus, usingDataFusionParquetExec}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, usingDataFusionParquetExec}
 
 abstract class ParquetReadSuite extends CometTestBase {
   import testImplicits._
@@ -345,45 +345,24 @@ abstract class ParquetReadSuite extends CometTestBase {
         n: Int,
         pageSize: Int): Seq[Option[Int]] = {
       val schemaStr = {
-        if (isSpark34Plus) {
-          """
-            |message root {
-            |  optional boolean                 _1;
-            |  optional int32                   _2(INT_8);
-            |  optional int32                   _3(INT_16);
-            |  optional int32                   _4;
-            |  optional int64                   _5;
-            |  optional float                   _6;
-            |  optional double                  _7;
-            |  optional binary                  _8(UTF8);
-            |  optional int32                   _9(UINT_8);
-            |  optional int32                   _10(UINT_16);
-            |  optional int32                   _11(UINT_32);
-            |  optional int64                   _12(UINT_64);
-            |  optional binary                  _13(ENUM);
-            |  optional FIXED_LEN_BYTE_ARRAY(3) _14;
-            |}
-        """.stripMargin
-        } else {
-          """
-            |message root {
-            |  optional boolean                 _1;
-            |  optional int32                   _2(INT_8);
-            |  optional int32                   _3(INT_16);
-            |  optional int32                   _4;
-            |  optional int64                   _5;
-            |  optional float                   _6;
-            |  optional double                  _7;
-            |  optional binary                  _8(UTF8);
-            |  optional int32                   _9(UINT_8);
-            |  optional int32                   _10(UINT_16);
-            |  optional int32                   _11(UINT_32);
-            |  optional int64                   _12(UINT_64);
-            |  optional binary                  _13(ENUM);
-            |  optional binary                  _14(UTF8);
-            |}
-        """.stripMargin
-        }
+        """
+          |message root {
+          |  optional boolean                 _1;
+          |  optional int32                   _2(INT_8);
+          |  optional int32                   _3(INT_16);
+          |  optional int32                   _4;
+          |  optional int64                   _5;
+          |  optional float                   _6;
+          |  optional double                  _7;
+          |  optional binary                  _8(UTF8);
+          |  optional int32                   _9(UINT_8);
+          |  optional int32                   _10(UINT_16);
+          |  optional int32                   _11(UINT_32);
+          |  optional int64                   _12(UINT_64);
+          |  optional binary                  _13(ENUM);
+          |  optional FIXED_LEN_BYTE_ARRAY(3) _14;
+          |}
+      """.stripMargin
       }
 
       val schema = MessageTypeParser.parseMessageType(schemaStr)
@@ -441,11 +420,7 @@ abstract class ParquetReadSuite extends CometTestBase {
                 Row(null, null, null, null, null, null, null, null, null, null, null, null, null,
                   null)
               case Some(i) =>
-                val flba_field = if (isSpark34Plus) {
-                  Array.fill(3)(i % 10 + 48) // char '0' is 48 in ascii
-                } else {
-                  (i % 10).toString * 3
-                }
+                val flba_field = Array.fill(3)(i % 10 + 48) // char '0' is 48 in ascii
                 Row(
                   i % 2 == 0,
                   i.toByte,
@@ -964,7 +939,6 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("FIXED_LEN_BYTE_ARRAY support") {
-    assume(isSpark34Plus)
     Seq(true, false).foreach { dictionaryEnabled =>
       def makeRawParquetFile(path: Path): Unit = {
         val schemaStr =
@@ -1194,7 +1168,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   test("row group skipping doesn't overflow when reading into larger type") {
     // Spark 4.0 no longer fails for widening types SPARK-40876
     // https://github.com/apache/spark/commit/3361f25dc0ff6e5233903c26ee105711b79ba967
-    assume(isSpark34Plus && !isSpark40Plus && !usingDataFusionParquetExec(conf))
+    assume(!isSpark40Plus && !usingDataFusionParquetExec(conf))
     withTempPath { path =>
       Seq(0).toDF("a").write.parquet(path.toString)
       // Reading integer 'a' as a long isn't supported. Check that an exception is raised instead

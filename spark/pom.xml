@@ -260,7 +260,6 @@ under the License.
             </goals>
             <configuration>
               <sources>
-                <source>src/test/${additional.3_3.test.source}</source>
                 <source>src/test/${additional.3_4.test.source}</source>
                 <source>src/test/${additional.3_5.test.source}</source>
                 <source>src/test/${additional.pre35.test.source}</source>

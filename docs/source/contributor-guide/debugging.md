@@ -142,8 +142,8 @@ org.apache.comet.CometNativeException: Internal error: MIN/MAX is not expected t
 
 backtrace:
   0: std::backtrace::Backtrace::create
-  1: datafusion_physical_expr::aggregate::min_max::min
-  2: <datafusion_physical_expr::aggregate::min_max::MinAccumulator as datafusion_expr::accumulator::Accumulator>::update_batch
+  1: datafusion::physical_expr::aggregate::min_max::min
+  2: <datafusion::physical_expr::aggregate::min_max::MinAccumulator as datafusion_expr::accumulator::Accumulator>::update_batch
   3: <futures_util::stream::stream::fuse::Fuse<S> as futures_core::stream::Stream>::poll_next
   4: comet::execution::jni_api::Java_org_apache_comet_Native_executePlan::{{closure}}
   5: _Java_org_apache_comet_Native_executePlan

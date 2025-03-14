@@ -21,16 +21,17 @@ use chrono::{DateTime, Datelike, Duration, NaiveDateTime, Timelike, Utc};
 
 use std::sync::Arc;
 
-use arrow::{array::*, datatypes::DataType};
-use arrow_array::{
+use arrow::array::{
     downcast_dictionary_array, downcast_temporal_array,
     temporal_conversions::*,
     timezone::Tz,
     types::{ArrowDictionaryKeyType, ArrowTemporalType, Date32Type, TimestampMicrosecondType},
     ArrowNumericType,
 };
-
-use arrow_schema::TimeUnit;
+use arrow::{
+    array::*,
+    datatypes::{DataType, TimeUnit},
+};
 
 use crate::SparkError;
 
@@ -812,7 +813,7 @@ mod tests {
     use crate::kernels::temporal::{
         date_trunc, date_trunc_array_fmt_dyn, timestamp_trunc, timestamp_trunc_array_fmt_dyn,
     };
-    use arrow_array::{
+    use arrow::array::{
         builder::{PrimitiveDictionaryBuilder, StringDictionaryBuilder},
         iterator::ArrayIter,
         types::{Date32Type, Int32Type, TimestampMicrosecondType},

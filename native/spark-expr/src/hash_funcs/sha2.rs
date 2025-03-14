@@ -16,12 +16,13 @@
 // under the License.
 
 use crate::math_funcs::hex::hex_strings;
-use arrow_array::{Array, StringArray};
-use arrow_schema::DataType;
+use arrow::array::{Array, StringArray};
+use arrow::datatypes::DataType;
+use datafusion::common::cast::as_binary_array;
+use datafusion::common::{exec_err, DataFusionError, ScalarValue};
 use datafusion::functions::crypto::{sha224, sha256, sha384, sha512};
-use datafusion_common::cast::as_binary_array;
-use datafusion_common::{exec_err, DataFusionError, ScalarValue};
-use datafusion_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDF};
+use datafusion::logical_expr::{ScalarFunctionArgs, ScalarUDF};
+use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
 
 /// `sha224` function that simulates Spark's `sha2` expression with bit width 224

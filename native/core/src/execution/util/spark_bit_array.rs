@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::common::bit;
-use arrow_buffer::ToByteSlice;
+use arrow::datatypes::ToByteSlice;
 use std::iter::zip;
 
 /// A simple bit array implementation that simulates the behavior of Spark's BitArray which is

@@ -100,14 +100,14 @@ BUILDER_IMAGE_ARM64="comet-rm-arm64:$IMGTAG"
 BUILDER_IMAGE_AMD64="comet-rm-amd64:$IMGTAG"
 
 # Build the docker image in which we will do the build
-docker build \
+docker build --no-cache \
   --platform=linux/arm64 \
   -t "$BUILDER_IMAGE_ARM64" \
   --build-arg HAS_MACOS_SDK=${HAS_MACOS_SDK} \
   --build-arg MACOS_SDK=${MACOS_SDK} \
   "$SCRIPT_DIR/comet-rm"
 
-docker build \
+docker build --no-cache \
   --platform=linux/amd64 \
   -t "$BUILDER_IMAGE_AMD64" \
   --build-arg HAS_MACOS_SDK=${HAS_MACOS_SDK} \

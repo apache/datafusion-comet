@@ -15,22 +15,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow_schema::Field;
+use arrow::datatypes::Field;
 use datafusion::{arrow::datatypes::DataType, logical_expr::Volatility};
 use std::{any::Any, sync::Arc};
 
 use crate::execution::util::spark_bloom_filter;
 use crate::execution::util::spark_bloom_filter::SparkBloomFilter;
 use arrow::array::ArrayRef;
-use arrow_array::BinaryArray;
+use arrow::array::BinaryArray;
+use datafusion::common::{downcast_value, ScalarValue};
 use datafusion::error::Result;
+use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
+use datafusion::logical_expr::{AggregateUDFImpl, Signature};
+use datafusion::physical_expr::expressions::Literal;
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion_common::{downcast_value, ScalarValue};
-use datafusion_expr::{
-    function::{AccumulatorArgs, StateFieldsArgs},
-    Accumulator, AggregateUDFImpl, Signature,
-};
-use datafusion_physical_expr::expressions::Literal;
+use datafusion::physical_plan::Accumulator;
 
 #[derive(Debug, Clone)]
 pub struct BloomFilterAgg {
