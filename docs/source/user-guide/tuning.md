@@ -83,6 +83,17 @@ Comet Performance
 
 It may be possible to reduce Comet's memory overhead by reducing batch sizes or increasing number of partitions.
 
+### SortExec
+
+Comet's SortExec implementation spills to disk when under memory pressure, but there are some known issues in the 
+underlying DataFusion SortExec implementation that could cause out-of-memory errors during spilling. See
+https://github.com/apache/datafusion/issues/14692 for more information.
+
+Workarounds for this problem include:
+
+- Allocating more off-heap memory
+- Disabling native sort by setting `spark.comet.exec.sort.enabled=false` 
+
 ## Advanced Memory Tuning
 
 ## Configuring spark.executor.memoryOverhead
@@ -180,7 +191,7 @@ It must be set before the Spark context is created. You can enable or disable Co
 at runtime by setting `spark.comet.exec.shuffle.enabled` to `true` or `false`.
 Once it is disabled, Comet will fall back to the default Spark shuffle manager.
 
-### Shuffle Mode
+### Shuffle Implementations
 
 Comet provides two shuffle implementations: Native Shuffle and Columnar Shuffle. Comet will use Native Shuffle 
 where possible, then will use Columnar Shuffle where possible, and will fall back to Spark for shuffle operations 
