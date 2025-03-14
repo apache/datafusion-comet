@@ -272,11 +272,7 @@ object CometConf extends ShimCometConf {
       .createWithDefault(true)
 
   val COMET_SHUFFLE_MODE: ConfigEntry[String] = conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.mode")
-    .doc("The mode of Comet shuffle. This config is only effective if Comet shuffle " +
-      "is enabled. Available modes are 'native', 'jvm', and 'auto'. " +
-      "'native' is for native shuffle which has best performance in general. " +
-      "'jvm' is for jvm-based columnar shuffle which has higher coverage than native shuffle. " +
-      "'auto' is for Comet to choose the best shuffle mode based on the query plan.")
+    .doc("This is test config to allow tests to force a particular shuffle implementation to be used.")
     .internal()
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))

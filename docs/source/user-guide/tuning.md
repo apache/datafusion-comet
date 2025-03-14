@@ -64,33 +64,23 @@ amount of time spent spilling to disk, especially for aggregate, join, and shuff
 memory can result in out-of-memory errors. This is no different from allocating memory in Spark and the amount of
 memory will vary for different workloads, so some experimentation will be required.
 
-Here is a real-world example, based on running benchmarks derived from TPC-H.
+Here is a real-world example, based on running benchmarks derived from TPC-H, running on a single executor against 
+local Parquet files using the 100 GB data set.
 
-**TODO: this section is a work-in-progress**
+Baseline Spark Performance 
 
-The following table shows performance of Spark compared to Comet in both Off-Heap and On-Heap modes. The table shows
-total query time for TPC-H @ 100GB. Smaller is better.
+- Spark completes the benchmark in 632 seconds with 8 cores and 8 GB RAM
+- With less than 8 GB RAM, performance degrades due to spilling
+- Spark can complete the benchmark with as little as 3 GB of RAM, but with worse performance (744 seconds)
 
-| Total Executor Memory (GB) | Spark | Comet Off-Heap | Comet On-Heap |
-| -------------------------- | ----- | -------------- | ------------- |
-| 1                          | OOM   | OOM            | OOM           |
-| 2                          | OOM   | OOM            | OOM           |
-| 3                          | 744   | OOM            | OOM           |
-| 4                          | 739   | OOM            | OOM           |
-| 5                          | 681   | 342            | OOM           |
-| 6                          | 665   |                | 344           |
-| 7                          | 657   |                | 340           |
-| 8                          | 632   | 295            | 334           |
-| 9                          | 623   |                |               |
-| 10                         | 622   |                |               |
+Comet Performance
 
-TODO: WIP conclusions:
+- Comet requires at least 5 GB of RAM in off-heap mode and 6 GB RAM in On-Heap mode, but performance at this level 
+  is around 340 seconds, which is significantly faster than Spark with any amount of RAM
+- Comet running in off-heap with 8 cores completes the benchmark in 295 seconds, more than 2x faster than Spark
+- TODO how does Comet perform with 4 cores
 
-- Spark can complete the benchmark with as little as 3GB but shows best performance at 9-10 GB
-- When Comet is enabled, Spark needs at least 5 GB of memory but provides a ~2x improvement in performance for that level of memory allocation
-- With Comet enabled, performance with 5 GB is 1.8x faster than Spark with 9-10 GB
-- TODO run Comet with half the CPUs and show same performance? i.e. demonstrate same performance for half the cost
-- TODO does reducing batch size reduce the amount of memory needed? maybe this goes under advanced memory tuning
+It may be possible to reduce Comet's memory overhead by reducing batch sizes or increasing number of partitions.
 
 ## Advanced Memory Tuning
 
@@ -191,28 +181,20 @@ Once it is disabled, Comet will fall back to the default Spark shuffle manager.
 
 ### Shuffle Mode
 
-Comet provides three shuffle modes: Columnar Shuffle, Native Shuffle and Auto Mode.
+Comet provides two shuffle implementations: Native Shuffle and Columnar Shuffle. Comet will use Native Shuffle 
+where possible, then will use Columnar Shuffle where possible, and will fall back to Spark for shuffle operations 
+that cannot be supported by either. 
 
-#### Auto Mode
+#### Native Shuffle
 
-`spark.comet.exec.shuffle.mode` to `auto` will let Comet choose the best shuffle mode based on the query plan. This
-is the default.
+Comet provides a fully native shuffle implementation, which generally provides the best performance. However,
+native shuffle currently only supports `HashPartitioning` and `SinglePartitioning` and has some restrictions on
+supported data types.
 
 #### Columnar (JVM) Shuffle
 
 Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobinPartitioning`, `RangePartitioning`, and
-`SinglePartitioning`. This mode has the highest query coverage.
-
-Columnar shuffle can be enabled by setting `spark.comet.exec.shuffle.mode` to `jvm`. If this mode is explicitly set,
-then any shuffle operations that cannot be supported in this mode will fall back to Spark.
-
-#### Native Shuffle
-
-Comet also provides a fully native shuffle implementation, which generally provides the best performance. However,
-native shuffle currently only supports `HashPartitioning` and `SinglePartitioning`.
-
-To enable native shuffle, set `spark.comet.exec.shuffle.mode` to `native`. If this mode is explicitly set,
-then any shuffle operations that cannot be supported in this mode will fall back to Spark.
+`SinglePartitioning`. This shuffle implementation supports more data types than native shuffle.
 
 ### Shuffle Compression
 
