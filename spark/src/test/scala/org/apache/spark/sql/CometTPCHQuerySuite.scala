@@ -32,7 +32,6 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.TestSparkSession
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 import org.apache.comet.shims.ShimCometTPCHQuerySuite
 
 /**
@@ -259,9 +258,6 @@ class CometTPCHQuerySuite extends QueryTest with TPCBase with ShimCometTPCHQuery
           s"tpch/$name.sql",
           classLoader = Thread.currentThread().getContextClassLoader)
         test(name) {
-          // Only run the tests in Spark 3.4+
-          assume(isSpark34Plus)
-
           val goldenFile = new File(s"$baseResourcePath", s"$name.sql.out")
           joinConfs.foreach { conf =>
             System.gc() // Workaround for GitHub Actions memory limitation, see also SPARK-37368

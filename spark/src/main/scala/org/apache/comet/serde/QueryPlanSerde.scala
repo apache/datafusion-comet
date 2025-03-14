@@ -46,7 +46,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isCometScan, isSpark34Plus, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
 import org.apache.comet.expressions._
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType._
@@ -63,10 +63,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
   def supportedDataType(dt: DataType, allowStruct: Boolean = false): Boolean = dt match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-        _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: DecimalType |
-        _: DateType | _: BooleanType | _: NullType =>
+        _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
+        _: DecimalType | _: DateType | _: BooleanType | _: NullType =>
       true
-    case dt if isTimestampNTZType(dt) => true
     case s: StructType if allowStruct =>
       s.fields.map(_.dataType).forall(supportedDataType(_, allowStruct))
     case dt =>
@@ -92,7 +91,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case _: BinaryType => 8
       case _: TimestampType => 9
       case _: DecimalType => 10
-      case dt if isTimestampNTZType(dt) => 11
+      case _: TimestampNTZType => 11
       case _: DateType => 12
       case _: NullType => 13
       case _: ArrayType => 14
@@ -585,8 +584,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         withInfo(sub, s"Unsupported datatype ${left.dataType}")
         None
 
-      case mul @ Multiply(left, right, _)
-          if supportedDataType(left.dataType) && !decimalBeforeSpark34(left.dataType) =>
+      case mul @ Multiply(left, right, _) if supportedDataType(left.dataType) =>
         createMathExpression(
           expr,
           left,
@@ -601,13 +599,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         if (!supportedDataType(left.dataType)) {
           withInfo(mul, s"Unsupported datatype ${left.dataType}")
         }
-        if (decimalBeforeSpark34(left.dataType)) {
-          withInfo(mul, "Decimal support requires Spark 3.4 or later")
-        }
         None
 
-      case div @ Divide(left, right, _)
-          if supportedDataType(left.dataType) && !decimalBeforeSpark34(left.dataType) =>
+      case div @ Divide(left, right, _) if supportedDataType(left.dataType) =>
         // Datafusion now throws an exception for dividing by zero
         // See https://github.com/apache/arrow-datafusion/pull/6792
         // For now, use NullIf to swap zeros with nulls.
@@ -627,13 +621,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         if (!supportedDataType(left.dataType)) {
           withInfo(div, s"Unsupported datatype ${left.dataType}")
         }
-        if (decimalBeforeSpark34(left.dataType)) {
-          withInfo(div, "Decimal support requires Spark 3.4 or later")
-        }
         None
 
-      case div @ IntegralDivide(left, right, _)
-          if supportedDataType(left.dataType) && !decimalBeforeSpark34(left.dataType) =>
+      case div @ IntegralDivide(left, right, _) if supportedDataType(left.dataType) =>
         val rightExpr = nullIfWhenPrimitive(right)
 
         val dataType = (left.dataType, right.dataType) match {
@@ -680,13 +670,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         if (!supportedDataType(left.dataType)) {
           withInfo(div, s"Unsupported datatype ${left.dataType}")
         }
-        if (decimalBeforeSpark34(left.dataType)) {
-          withInfo(div, "Decimal support requires Spark 3.4 or later")
-        }
         None
 
-      case rem @ Remainder(left, right, _)
-          if supportedDataType(left.dataType) && !decimalBeforeSpark34(left.dataType) =>
+      case rem @ Remainder(left, right, _) if supportedDataType(left.dataType) =>
         val rightExpr = nullIfWhenPrimitive(right)
 
         createMathExpression(
@@ -702,9 +688,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case rem @ Remainder(left, _, _) =>
         if (!supportedDataType(left.dataType)) {
           withInfo(rem, s"Unsupported datatype ${left.dataType}")
-        }
-        if (decimalBeforeSpark34(left.dataType)) {
-          withInfo(rem, "Decimal support requires Spark 3.4 or later")
         }
         None
 
@@ -798,6 +781,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             case _: StringType =>
               exprBuilder.setStringVal(value.asInstanceOf[UTF8String].toString)
             case _: TimestampType => exprBuilder.setLongVal(value.asInstanceOf[Long])
+            case _: TimestampNTZType => exprBuilder.setLongVal(value.asInstanceOf[Long])
             case _: DecimalType =>
               // Pass decimal literal as bytes.
               val unscaled = value.asInstanceOf[Decimal].toBigDecimal.underlying.unscaledValue
@@ -808,8 +792,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
                 com.google.protobuf.ByteString.copyFrom(value.asInstanceOf[Array[Byte]])
               exprBuilder.setBytesVal(byteStr)
             case _: DateType => exprBuilder.setIntVal(value.asInstanceOf[Int])
-            case dt if isTimestampNTZType(dt) =>
-              exprBuilder.setLongVal(value.asInstanceOf[Long])
             case dt =>
               logWarning(s"Unexpected date type '$dt' for literal value '$value'")
           }
@@ -2242,7 +2224,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: DateType | _: DecimalType | _: BooleanType =>
       true
-    case dt if isTimestampNTZType(dt) => true
+    case TimestampNTZType => true
     case _ => false
   }
 
@@ -2805,16 +2787,6 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
   }
 
   /**
-   * Checks whether `dt` is a decimal type AND whether Spark version is before 3.4
-   */
-  private def decimalBeforeSpark34(dt: DataType): Boolean = {
-    !isSpark34Plus && (dt match {
-      case _: DecimalType => true
-      case _ => false
-    })
-  }
-
-  /**
    * Check if the datatypes of shuffle input are supported. This is used for Columnar shuffle
    * which supports struct/array.
    */
@@ -2953,9 +2925,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       val canSort = sortOrder.head.dataType match {
         case _: BooleanType => true
         case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-            _: DoubleType | _: TimestampType | _: DecimalType | _: DateType =>
+            _: DoubleType | _: TimestampType | _: TimestampType | _: DecimalType | _: DateType =>
           true
-        case dt if isTimestampNTZType(dt) => true
         case _: BinaryType | _: StringType => true
         case ArrayType(elementType, _) => canRank(elementType)
         case _ => false

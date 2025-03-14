@@ -145,7 +145,7 @@ jobs:
         os: [ubuntu-latest]
         java_version: [8, 11, 17]
         test-target: [java]
-        spark-version: ['3.3', '3.4']
+        spark-version: ['3.4']
         scala-version: ['2.12', '2.13']
       fail-fast: false
     name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}/${{ matrix.test-target }}
@@ -283,11 +283,10 @@ jobs:
       matrix:
         java_version: [8, 17]
         test-target: [java]
-        spark-version: ['3.3', '3.4']
+        spark-version: ['3.4']
         scala-version: ['2.12', '2.13']
         exclude:
           - java_version: 8
-            spark-version: '3.3'
       fail-fast: false
     name: macos-14(Silicon)/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}/${{ matrix.test-target }}
     runs-on: macos-14
