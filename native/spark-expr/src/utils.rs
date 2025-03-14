@@ -15,20 +15,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow_array::{
+use arrow::array::{
     cast::as_primitive_array,
     types::{Int32Type, TimestampMicrosecondType},
 };
-use arrow_schema::{ArrowError, DataType, TimeUnit, DECIMAL128_MAX_PRECISION};
+use arrow::datatypes::{DataType, TimeUnit, DECIMAL128_MAX_PRECISION};
 use std::sync::Arc;
 
 use crate::timezone::Tz;
+use arrow::array::types::TimestampMillisecondType;
+use arrow::datatypes::{MAX_DECIMAL128_FOR_EACH_PRECISION, MIN_DECIMAL128_FOR_EACH_PRECISION};
+use arrow::error::ArrowError;
 use arrow::{
     array::{as_dictionary_array, Array, ArrayRef, PrimitiveArray},
     temporal_conversions::as_datetime,
 };
-use arrow_array::types::TimestampMillisecondType;
-use arrow_data::decimal::{MAX_DECIMAL128_FOR_EACH_PRECISION, MIN_DECIMAL128_FOR_EACH_PRECISION};
 use chrono::{DateTime, Offset, TimeZone};
 
 /// Preprocesses input arrays to add timezone information from Spark to Arrow array datatype or

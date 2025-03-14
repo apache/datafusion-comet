@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow_buffer::ToByteSlice;
+use arrow::datatypes::ToByteSlice;
 use comet::parquet::read::values::{copy_i32_to_i16, copy_i32_to_u16, copy_i64_to_i64};
 use criterion::{criterion_group, criterion_main, Criterion};
 

@@ -26,29 +26,30 @@ use datafusion::physical_plan::{
     PlanProperties, RecordBatchStream, SendableRecordBatchStream, Statistics,
 };
 
+use arrow::array::{
+    make_array, Array, ArrayRef, BooleanArray, MutableArrayData, RecordBatchOptions,
+};
 use arrow::compute::filter_record_batch;
 use arrow::datatypes::{DataType, SchemaRef};
+use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
-use arrow_array::{make_array, Array, ArrayRef, BooleanArray, RecordBatchOptions};
-use arrow_data::transform::MutableArrayData;
-use arrow_schema::ArrowError;
-use datafusion::physical_plan::common::can_project;
-use datafusion::physical_plan::execution_plan::CardinalityEffect;
-use datafusion_common::cast::as_boolean_array;
-use datafusion_common::stats::Precision;
-use datafusion_common::{
+use datafusion::common::cast::as_boolean_array;
+use datafusion::common::stats::Precision;
+use datafusion::common::{
     internal_err, plan_err, project_schema, DataFusionError, Result, ScalarValue,
 };
-use datafusion_execution::TaskContext;
-use datafusion_expr::Operator;
-use datafusion_physical_expr::equivalence::ProjectionMapping;
-use datafusion_physical_expr::expressions::BinaryExpr;
-use datafusion_physical_expr::intervals::utils::check_support;
-use datafusion_physical_expr::utils::collect_columns;
-use datafusion_physical_expr::{
+use datafusion::execution::TaskContext;
+use datafusion::logical_expr::Operator;
+use datafusion::physical_expr::equivalence::ProjectionMapping;
+use datafusion::physical_expr::expressions::BinaryExpr;
+use datafusion::physical_expr::intervals::utils::check_support;
+use datafusion::physical_expr::utils::collect_columns;
+use datafusion::physical_expr::{
     analyze, split_conjunction, AcrossPartitions, AnalysisContext, ConstExpr, ExprBoundaries,
     PhysicalExpr,
 };
+use datafusion::physical_plan::common::can_project;
+use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use futures::stream::{Stream, StreamExt};
 use log::trace;
 

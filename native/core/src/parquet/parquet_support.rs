@@ -16,19 +16,19 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
+use arrow::array::{DictionaryArray, StructArray};
+use arrow::datatypes::DataType;
 use arrow::{
     array::{cast::AsArray, types::Int32Type, Array, ArrayRef},
     compute::{cast_with_options, take, CastOptions},
     util::display::FormatOptions,
 };
-use arrow_array::{DictionaryArray, StructArray};
-use arrow_schema::DataType;
+use datafusion::common::{Result as DataFusionResult, ScalarValue};
+use datafusion::execution::object_store::ObjectStoreUrl;
+use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_spark_expr::utils::array_with_timezone;
 use datafusion_comet_spark_expr::EvalMode;
-use datafusion_common::{Result as DataFusionResult, ScalarValue};
-use datafusion_execution::object_store::ObjectStoreUrl;
-use datafusion_execution::runtime_env::RuntimeEnv;
-use datafusion_expr::ColumnarValue;
 use object_store::path::Path;
 use object_store::{parse_url, ObjectStore};
 use std::collections::HashMap;
@@ -211,12 +211,10 @@ fn parse_hdfs_url(url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_stor
             let path = object_store.get_path(url.as_str());
             Ok((Box::new(object_store), path))
         }
-        _ => {
-            return Err(object_store::Error::Generic {
-                store: "HadoopFileSystem",
-                source: "Could not create hdfs object store".into(),
-            });
-        }
+        _ => Err(object_store::Error::Generic {
+            store: "HadoopFileSystem",
+            source: "Could not create hdfs object store".into(),
+        }),
     }
 }
 
@@ -262,10 +260,9 @@ pub(crate) fn prepare_object_store(
 
 #[cfg(test)]
 mod tests {
-    use crate::execution::operators::ExecutionError;
     use crate::parquet::parquet_support::prepare_object_store;
-    use datafusion_execution::object_store::ObjectStoreUrl;
-    use datafusion_execution::runtime_env::RuntimeEnv;
+    use datafusion::execution::object_store::ObjectStoreUrl;
+    use datafusion::execution::runtime_env::RuntimeEnv;
     use object_store::path::Path;
     use std::sync::Arc;
     use url::Url;
@@ -273,6 +270,8 @@ mod tests {
     #[cfg(not(feature = "hdfs"))]
     #[test]
     fn test_prepare_object_store() {
+        use crate::execution::operators::ExecutionError;
+
         let local_file_system_url = "file:///comet/spark-warehouse/part-00000.snappy.parquet";
         let s3_url = "s3a://test_bucket/comet/spark-warehouse/part-00000.snappy.parquet";
         let hdfs_url = "hdfs://localhost:8020/comet/spark-warehouse/part-00000.snappy.parquet";

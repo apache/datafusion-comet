@@ -48,16 +48,16 @@ use crate::execution::utils::SparkArrowConvert;
 use crate::parquet::data_type::AsBytes;
 use crate::parquet::parquet_support::{prepare_object_store, SparkParquetOptions};
 use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
+use arrow::array::{Array, RecordBatch};
 use arrow::buffer::{Buffer, MutableBuffer};
-use arrow_array::{Array, RecordBatch};
+use datafusion::common::config::TableParquetOptions;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{FileScanConfig, ParquetSource};
 use datafusion::datasource::source::DataSourceExec;
+use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion_comet_spark_expr::EvalMode;
-use datafusion_common::config::TableParquetOptions;
-use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use futures::{poll, StreamExt};
 use jni::objects::{JBooleanArray, JByteArray, JLongArray, JPrimitiveArray, JString, ReleaseMode};
 use jni::sys::jstring;
@@ -730,7 +730,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_readNextRecordBatch(
 
         loop {
             let next_item = batch_stream.next();
-            let poll_batch: Poll<Option<datafusion_common::Result<RecordBatch>>> =
+            let poll_batch: Poll<Option<datafusion::common::Result<RecordBatch>>> =
                 runtime.block_on(async { poll!(next_item) });
 
             match poll_batch {

@@ -22,6 +22,7 @@ use crate::execution::shuffle::builders::{
 };
 use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
 use async_trait::async_trait;
+use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::EmptyRecordBatchStream;
 use datafusion::{
@@ -43,7 +44,6 @@ use datafusion::{
     },
 };
 use datafusion_comet_spark_expr::hash_funcs::murmur3::create_murmur3_hashes;
-use datafusion_physical_expr::EquivalenceProperties;
 use futures::executor::block_on;
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
@@ -877,14 +877,14 @@ fn pmod(hash: u32, n: usize) -> usize {
 mod test {
     use super::*;
     use crate::execution::shuffle::read_ipc_compressed;
-    use arrow_schema::{DataType, Field, Schema};
+    use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
+    use datafusion::execution::config::SessionConfig;
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+    use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::common::collect;
     use datafusion::prelude::SessionContext;
-    use datafusion_execution::config::SessionConfig;
-    use datafusion_execution::runtime_env::RuntimeEnvBuilder;
-    use datafusion_physical_expr::expressions::Column;
     use parquet::file::reader::Length;
     use tokio::runtime::Runtime;
 

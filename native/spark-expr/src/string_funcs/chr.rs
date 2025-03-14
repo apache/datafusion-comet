@@ -25,8 +25,8 @@ use arrow::{
     },
 };
 
+use datafusion::common::{cast::as_int64_array, exec_err, Result, ScalarValue};
 use datafusion::logical_expr::{ColumnarValue, ScalarUDFImpl, Signature, Volatility};
-use datafusion_common::{cast::as_int64_array, exec_err, Result, ScalarValue};
 
 fn chr(args: &[ArrayRef]) -> Result<ArrayRef> {
     let integer_array = as_int64_array(&args[0])?;

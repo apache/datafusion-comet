@@ -19,8 +19,8 @@ use arrow::{
     array::{AsArray, Int64Builder},
     datatypes::Decimal128Type,
 };
+use datafusion::common::{internal_err, Result as DataFusionResult, ScalarValue};
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_common::{internal_err, Result as DataFusionResult, ScalarValue};
 use std::sync::Arc;
 
 /// Spark-compatible `UnscaledValue` expression (internal to Spark optimizer)

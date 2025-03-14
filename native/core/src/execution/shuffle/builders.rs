@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow_array::builder::{make_builder, ArrayBuilder};
+use arrow::array::builder::{make_builder, ArrayBuilder};
 use std::sync::Arc;
 
 use crate::common::bit::ceil;
