@@ -20,15 +20,13 @@
 package org.apache.comet.exec
 
 import java.io.ByteArrayOutputStream
-
 import scala.util.Random
-
 import org.apache.spark.sql.{Column, CometTestBase}
 import org.apache.comet.CometConf
-import org.apache.spark.sql.catalyst.expressions.BloomFilterMightContain
+import org.apache.spark.sql.catalyst.FunctionIdentifier
+import org.apache.spark.sql.catalyst.expressions.{BloomFilterMightContain, Expression, ExpressionInfo}
 import org.apache.spark.sql.functions.{col, lit}
 import org.apache.spark.util.sketch.BloomFilter
-
 import org.scalactic.source.Position
 import org.scalatest.Tag
 /**
@@ -36,6 +34,21 @@ import org.scalatest.Tag
  */
 class CometExec3_4PlusSuite extends CometTestBase {
   import testImplicits._
+
+  val func_might_contain = new FunctionIdentifier("might_contain")
+
+  override def beforeAll(): Unit = {
+    super.beforeAll()
+    // Register 'might_contain' to builtin.
+    spark.sessionState.functionRegistry.registerFunction(func_might_contain,
+      new ExpressionInfo(classOf[BloomFilterMightContain].getName, "might_contain"),
+      (children: Seq[Expression]) => BloomFilterMightContain(children.head, children(1)))
+  }
+
+  override def afterAll(): Unit = {
+    spark.sessionState.functionRegistry.dropFunction(func_might_contain)
+    super.afterAll()
+  }
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
