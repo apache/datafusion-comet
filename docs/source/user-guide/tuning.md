@@ -78,7 +78,8 @@ Comet Performance
 - Comet requires at least 5 GB of RAM in off-heap mode and 6 GB RAM in On-Heap mode, but performance at this level 
   is around 340 seconds, which is significantly faster than Spark with any amount of RAM
 - Comet running in off-heap with 8 cores completes the benchmark in 295 seconds, more than 2x faster than Spark
-- TODO how does Comet perform with 4 cores
+- It is worth noting that running Comet with only 4 cores and 4 GB RAM completes the benchmark in 520 seconds, 
+  providing better performance than Spark for half the resource
 
 It may be possible to reduce Comet's memory overhead by reducing batch sizes or increasing number of partitions.
 
