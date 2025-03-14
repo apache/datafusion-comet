@@ -211,12 +211,10 @@ fn parse_hdfs_url(url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_stor
             let path = object_store.get_path(url.as_str());
             Ok((Box::new(object_store), path))
         }
-        _ => {
-            Err(object_store::Error::Generic {
-                store: "HadoopFileSystem",
-                source: "Could not create hdfs object store".into(),
-            })
-        }
+        _ => Err(object_store::Error::Generic {
+            store: "HadoopFileSystem",
+            source: "Could not create hdfs object store".into(),
+        }),
     }
 }
 
