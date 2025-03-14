@@ -20,7 +20,6 @@ package org.apache.comet.shims
 
 import org.apache.comet.expressions.CometEvalMode
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.types.{DataType, TimestampNTZType}
 
 /**
  * `CometExprShim` acts as a shim for for parsing expressions from different Spark versions.
