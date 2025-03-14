@@ -18,6 +18,9 @@
 use crate::timezone;
 use crate::utils::array_with_timezone;
 use crate::{EvalMode, SparkError, SparkResult};
+use arrow::array::builder::StringBuilder;
+use arrow::array::{DictionaryArray, StringArray, StructArray};
+use arrow::datatypes::{DataType, Schema};
 use arrow::{
     array::{
         cast::AsArray,
@@ -35,15 +38,12 @@ use arrow::{
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
-use arrow_array::builder::StringBuilder;
-use arrow_array::{DictionaryArray, StringArray, StructArray};
-use arrow_schema::{DataType, Schema};
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
-use datafusion_common::{
+use datafusion::common::{
     cast::as_generic_string_array, internal_err, Result as DataFusionResult, ScalarValue,
 };
-use datafusion_expr::ColumnarValue;
-use datafusion_physical_expr::PhysicalExpr;
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_plan::ColumnarValue;
 use num::{
     cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
     ToPrimitive,
@@ -1751,7 +1751,7 @@ impl PhysicalExpr for Cast {
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
-    ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
+    ) -> datafusion::common::Result<Arc<dyn PhysicalExpr>> {
         match children.len() {
             1 => Ok(Arc::new(Cast::new(
                 Arc::clone(&children[0]),
@@ -2189,9 +2189,9 @@ fn trim_end(s: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use arrow::array::StringArray;
     use arrow::datatypes::TimestampMicrosecondType;
-    use arrow_array::StringArray;
-    use arrow_schema::{Field, Fields, TimeUnit};
+    use arrow::datatypes::{Field, Fields, TimeUnit};
     use std::str::FromStr;
 
     use super::*;

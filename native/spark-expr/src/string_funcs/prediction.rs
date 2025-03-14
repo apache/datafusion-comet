@@ -17,6 +17,7 @@
 
 #![allow(deprecated)]
 
+use arrow::datatypes::{DataType, Schema};
 use arrow::{
     compute::{
         contains_dyn, contains_utf8_scalar_dyn, ends_with_dyn, ends_with_utf8_scalar_dyn, like_dyn,
@@ -24,10 +25,9 @@ use arrow::{
     },
     record_batch::RecordBatch,
 };
-use arrow_schema::{DataType, Schema};
+use datafusion::common::{DataFusionError, ScalarValue::Utf8};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion_common::{DataFusionError, ScalarValue::Utf8};
-use datafusion_physical_expr::PhysicalExpr;
+use datafusion::physical_expr::PhysicalExpr;
 use std::{
     any::Any,
     fmt::{Display, Formatter},
@@ -73,15 +73,15 @@ macro_rules! make_predicate_function {
                 self
             }
 
-            fn data_type(&self, _: &Schema) -> datafusion_common::Result<DataType> {
+            fn data_type(&self, _: &Schema) -> datafusion::common::Result<DataType> {
                 Ok(DataType::Boolean)
             }
 
-            fn nullable(&self, _: &Schema) -> datafusion_common::Result<bool> {
+            fn nullable(&self, _: &Schema) -> datafusion::common::Result<bool> {
                 Ok(true)
             }
 
-            fn evaluate(&self, batch: &RecordBatch) -> datafusion_common::Result<ColumnarValue> {
+            fn evaluate(&self, batch: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
                 let left_arg = self.left.evaluate(batch)?;
                 let right_arg = self.right.evaluate(batch)?;
 
@@ -118,7 +118,7 @@ macro_rules! make_predicate_function {
             fn with_new_children(
                 self: Arc<Self>,
                 children: Vec<Arc<dyn PhysicalExpr>>,
-            ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
+            ) -> datafusion::common::Result<Arc<dyn PhysicalExpr>> {
                 Ok(Arc::new($name::new(
                     children[0].clone(),
                     children[1].clone(),

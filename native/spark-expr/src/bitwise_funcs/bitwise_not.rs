@@ -20,9 +20,9 @@ use arrow::{
     datatypes::{DataType, Schema},
     record_batch::RecordBatch,
 };
+use datafusion::common::Result;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::{error::DataFusionError, logical_expr::ColumnarValue};
-use datafusion_common::Result;
-use datafusion_physical_expr::PhysicalExpr;
 use std::hash::Hash;
 use std::{any::Any, sync::Arc};
 
@@ -130,8 +130,8 @@ pub fn bitwise_not(arg: Arc<dyn PhysicalExpr>) -> Result<Arc<dyn PhysicalExpr>> 
 #[cfg(test)]
 mod tests {
     use arrow::datatypes::*;
-    use datafusion_common::{cast::as_int32_array, Result};
-    use datafusion_physical_expr::expressions::col;
+    use datafusion::common::{cast::as_int32_array, Result};
+    use datafusion::physical_expr::expressions::col;
 
     use super::*;
 

@@ -155,7 +155,7 @@ macro_rules! hash_array_decimal {
 macro_rules! create_hashes_internal {
     ($arrays: ident, $hashes_buffer: ident, $hash_method: ident, $create_dictionary_hash_method: ident) => {
         use arrow::datatypes::{DataType, TimeUnit};
-        use arrow_array::{types::*, *};
+        use arrow::array::{types::*, *};
 
         for (i, col) in $arrays.iter().enumerate() {
             let first_col = i == 0;

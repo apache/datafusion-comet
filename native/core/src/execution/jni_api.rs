@@ -18,15 +18,15 @@
 //! Define JNI APIs which can be called from Java/Scala.
 
 use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
+use arrow::array::RecordBatch;
 use arrow::datatypes::DataType as ArrowDataType;
-use arrow_array::RecordBatch;
+use datafusion::execution::memory_pool::{
+    FairSpillPool, GreedyMemoryPool, MemoryPool, TrackConsumersPool, UnboundedMemoryPool,
+};
 use datafusion::{
     execution::{disk_manager::DiskManagerConfig, runtime_env::RuntimeEnv},
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
-};
-use datafusion_execution::memory_pool::{
-    FairSpillPool, GreedyMemoryPool, MemoryPool, TrackConsumersPool, UnboundedMemoryPool,
 };
 use futures::poll;
 use jni::{
@@ -49,9 +49,9 @@ use crate::{
     },
     jvm_bridge::{jni_new_global_ref, JVMClasses},
 };
+use datafusion::common::ScalarValue;
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion_comet_proto::spark_operator::Operator;
-use datafusion_common::ScalarValue;
-use datafusion_execution::runtime_env::RuntimeEnvBuilder;
 use futures::stream::StreamExt;
 use jni::objects::JByteBuffer;
 use jni::sys::JNI_FALSE;
@@ -287,7 +287,7 @@ fn prepare_datafusion_session_context(
 
     let mut session_ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime));
 
-    datafusion_functions_nested::register_all(&mut session_ctx)?;
+    datafusion::functions_nested::register_all(&mut session_ctx)?;
 
     Ok(session_ctx)
 }

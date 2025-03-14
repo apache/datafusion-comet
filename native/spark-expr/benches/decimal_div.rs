@@ -15,12 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::array::builder::Decimal128Builder;
 use arrow::compute::cast;
-use arrow_array::builder::Decimal128Builder;
-use arrow_schema::DataType;
+use arrow::datatypes::DataType;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_spark_expr::{spark_decimal_div, spark_decimal_integral_div};
-use datafusion_expr::ColumnarValue;
 use std::sync::Arc;
 
 fn criterion_benchmark(c: &mut Criterion) {

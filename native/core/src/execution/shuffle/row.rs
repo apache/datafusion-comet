@@ -28,8 +28,7 @@ use crate::{
         utils::bytes_to_i128,
     },
 };
-use arrow::compute::cast;
-use arrow_array::{
+use arrow::array::{
     builder::{
         ArrayBuilder, BinaryBuilder, BinaryDictionaryBuilder, BooleanBuilder, Date32Builder,
         Decimal128Builder, Float32Builder, Float64Builder, Int16Builder, Int32Builder,
@@ -39,7 +38,9 @@ use arrow_array::{
     types::Int32Type,
     Array, ArrayRef, RecordBatch, RecordBatchOptions,
 };
-use arrow_schema::{ArrowError, DataType, Field, Schema, TimeUnit};
+use arrow::compute::cast;
+use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+use arrow::error::ArrowError;
 use datafusion::physical_plan::metrics::Time;
 use jni::sys::{jint, jlong};
 use std::{

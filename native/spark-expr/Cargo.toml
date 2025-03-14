@@ -28,16 +28,8 @@ edition = { workspace = true }
 
 [dependencies]
 arrow = { workspace = true }
-arrow-array = { workspace = true }
-arrow-buffer = { workspace = true }
-arrow-data = { workspace = true }
-arrow-schema = { workspace = true }
 chrono = { workspace = true }
-datafusion = { workspace = true, features = ["parquet"] }
-datafusion-common = { workspace = true }
-datafusion-expr = { workspace = true }
-datafusion-expr-common = { workspace = true }
-datafusion-physical-expr = { workspace = true }
+datafusion = { workspace = true }
 chrono-tz = { workspace = true }
 num = { workspace = true }
 regex = { workspace = true }
@@ -47,7 +39,7 @@ twox-hash = "2.0.0"
 rand = { workspace = true }
 
 [dev-dependencies]
-arrow-data = {workspace = true}
+arrow = {workspace = true}
 parquet = { workspace = true, features = ["arrow"] }
 criterion = "0.5.1"
 rand = { workspace = true}
