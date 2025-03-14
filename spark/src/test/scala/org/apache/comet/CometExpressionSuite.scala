@@ -36,7 +36,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType}
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -71,9 +71,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("decimals divide by zero") {
-    // TODO: enable Spark 3.3 tests after supporting decimal divide operation
-    assume(isSpark34Plus)
-
     Seq(true, false).foreach { dictionary =>
       withSQLConf(
         SQLConf.PARQUET_WRITE_LEGACY_FORMAT.key -> "false",
@@ -594,7 +591,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("date_trunc with format array") {
-    assume(isSpark33Plus, "TimestampNTZ is supported in Spark 3.3+, See SPARK-36182")
     withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
       val numRows = 1000
       Seq(true, false).foreach { dictionaryEnabled =>
@@ -998,9 +994,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("decimals arithmetic and comparison") {
-    // TODO: enable Spark 3.3 tests after supporting decimal reminder operation
-    assume(isSpark34Plus)
-
     def makeDecimalRDD(num: Int, decimal: DecimalType, useDictionary: Boolean): DataFrame = {
       val div = if (useDictionary) 5 else num // narrow the space to make it dictionary encoded
       spark
@@ -1072,7 +1065,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("scalar decimal arithmetic operations") {
-    assume(isSpark34Plus)
     withTable("tbl") {
       withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
         sql("CREATE TABLE tbl (a INT) USING PARQUET")
@@ -1737,7 +1729,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("Decimal binary ops multiply is aligned to Spark") {
-    assume(isSpark34Plus)
     Seq(true, false).foreach { allowPrecisionLoss =>
       withSQLConf(
         "spark.sql.decimalOperations.allowPrecisionLoss" -> allowPrecisionLoss.toString) {
@@ -1795,7 +1786,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("Decimal random number tests") {
-    assume(isSpark34Plus) // Only Spark 3.4+ has the fix for SPARK-45786
     val rand = scala.util.Random
     def makeNum(p: Int, s: Int): String = {
       val int1 = rand.nextLong()
@@ -1860,7 +1850,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("explain comet") {
-    assume(isSpark34Plus)
     withSQLConf(
       SQLConf.ANSI_ENABLED.key -> "false",
       SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
@@ -2716,17 +2705,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
                   | order by t1._id""".stripMargin)
 
-              if (isSpark34Plus) {
-                // decimal support requires Spark 3.4 or later
-                checkSparkAnswerAndOperator("""
-                    |select
-                    | t1._12 div t2._12, div(t1._12, t2._12),
-                    | t1._15 div t2._15, div(t1._15, t2._15),
-                    | t1._16 div t2._16, div(t1._16, t2._16),
-                    | t1._17 div t2._17, div(t1._17, t2._17)
-                    | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
-                    | order by t1._id""".stripMargin)
-              }
+              // decimal support requires Spark 3.4 or later
+              checkSparkAnswerAndOperator("""
+                  |select
+                  | t1._12 div t2._12, div(t1._12, t2._12),
+                  | t1._15 div t2._15, div(t1._15, t2._15),
+                  | t1._16 div t2._16, div(t1._16, t2._16),
+                  | t1._17 div t2._17, div(t1._17, t2._17)
+                  | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
+                  | order by t1._id""".stripMargin)
             }
           }
         }
@@ -2735,8 +2722,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("test integral divide overflow for decimal") {
-    // decimal support requires Spark 3.4 or later
-    assume(isSpark34Plus)
     if (isSpark40Plus) {
       Seq(true, false)
     } else

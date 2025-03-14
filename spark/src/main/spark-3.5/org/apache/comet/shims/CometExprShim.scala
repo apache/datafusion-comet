@@ -33,11 +33,6 @@ trait CometExprShim {
         (unhex.child, Literal(unhex.failOnError))
     }
 
-    protected def isTimestampNTZType(dt: DataType): Boolean = dt match {
-        case _: TimestampNTZType => true
-        case _ => false
-    }
-
     protected def evalMode(c: Cast): CometEvalMode.Value =
         CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 }
