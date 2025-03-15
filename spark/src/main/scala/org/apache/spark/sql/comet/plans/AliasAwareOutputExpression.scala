@@ -82,7 +82,7 @@ trait AliasAwareOutputExpression extends SQLConfHelper {
       // This prune will go up to the closest `multiTransformDown()` call and returns `Stream.empty`
       // there.
       case a: Attribute if !outputSet.contains(a) => Seq.empty
-    }
+    }.toStream
   }
 
   def generateCartesianProduct[T](elementSeqs: Seq[() => Seq[T]]): Stream[Seq[T]] = {
