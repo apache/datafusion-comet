@@ -106,9 +106,11 @@ abstract class ParquetReadSuite extends CometTestBase {
           StructField("f2", StringType))) -> usingExperimentalNativeScan,
       MapType(keyType = IntegerType, valueType = BinaryType) -> false).foreach {
       case (dt, expected) =>
-        assert(CometScanExec.isTypeSupported(dt) == expected)
-        // experimental native scan does not support CometBatchScanExec yet
-        if (!usingExperimentalNativeScan) {
+        if (usingExperimentalNativeScan) {
+          assert(CometNativeScanExec.isTypeSupported(dt) == expected)
+        } else {
+          assert(CometScanExec.isTypeSupported(dt) == expected)
+          // experimental native scan does not support CometBatchScanExec yet
           assert(CometBatchScanExec.isTypeSupported(dt) == expected)
         }
     }
