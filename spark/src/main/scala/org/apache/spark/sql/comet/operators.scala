@@ -31,11 +31,11 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, Expre
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, PartitioningCollection, UnknownPartitioning}
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, HashPartitioningLike, Partitioning, PartitioningCollection, UnknownPartitioning}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
-import org.apache.spark.sql.comet.plans.PartitioningPreservingUnaryExecNode
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{BinaryExecNode, ColumnarToRowExec, ExecSubqueryExpression, ExplainUtils, LeafExecNode, ScalarSubquery, SparkPlan, UnaryExecNode}
+import org.apache.spark.sql.execution.PartitioningPreservingUnaryExecNode
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
@@ -47,7 +47,6 @@ import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.shims.ShimCometBroadcastHashJoinExec
 
 /**
  * A Comet physical operator
@@ -793,8 +792,7 @@ case class CometBroadcastHashJoinExec(
     override val left: SparkPlan,
     override val right: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
-    extends CometBinaryExec
-    with ShimCometBroadcastHashJoinExec {
+    extends CometBinaryExec {
 
   // The following logic of `outputPartitioning` is copied from Spark `BroadcastHashJoinExec`.
   protected lazy val streamedPlan: SparkPlan = buildSide match {
@@ -883,8 +881,13 @@ case class CometBroadcastHashJoinExec(
       }
     }
 
+    val hashPartitioningLikeExpressions =
+      partitioning match {
+        case p: HashPartitioningLike => p.expressions
+        case _ => Seq()
+      }
     PartitioningCollection(
-      generateExprCombinations(getHashPartitioningLikeExpressions(partitioning), Nil)
+      generateExprCombinations(hashPartitioningLikeExpressions, Nil)
         .map(exprs => partitioning.withNewChildren(exprs).asInstanceOf[Partitioning]))
   }
 

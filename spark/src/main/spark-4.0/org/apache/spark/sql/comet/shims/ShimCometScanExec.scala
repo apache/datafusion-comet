@@ -24,7 +24,6 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression, FileSourceConstantMetadataAttribute, Literal}
-import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil, ScalarSubquery}
@@ -52,9 +51,6 @@ trait ShimCometScanExec {
       fsRelation.fileFormat.fileConstantMetadataExtractors,
       options)
   }
-
-  protected def invalidBucketFile(path: String, sparkVersion: String): Throwable =
-    QueryExecutionErrors.invalidBucketFile(path)
 
   // see SPARK-39634
   protected def isNeededForSchema(sparkSchema: StructType): Boolean = false

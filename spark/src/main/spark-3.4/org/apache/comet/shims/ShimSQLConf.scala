@@ -19,13 +19,9 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.catalyst.expressions.Expression
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioningLike, Partitioning}
+import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
 
-trait ShimCometBroadcastHashJoinExec {
-  protected def getHashPartitioningLikeExpressions(partitioning: Partitioning): Seq[Expression] =
-    partitioning match {
-      case p: HashPartitioningLike => p.expressions
-      case _ => Seq()
-    }
+trait ShimSQLConf {
+  protected val LEGACY = LegacyBehaviorPolicy.LEGACY
+  protected val CORRECTED = LegacyBehaviorPolicy.CORRECTED
 }

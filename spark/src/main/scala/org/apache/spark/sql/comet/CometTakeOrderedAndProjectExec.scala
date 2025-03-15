@@ -31,7 +31,6 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
 import org.apache.comet.serde.QueryPlanSerde.supportedSortType
-import org.apache.comet.shims.ShimCometTakeOrderedAndProjectExec
 
 /**
  * Comet physical plan node for Spark `TakeOrderedAndProjectExec`.
@@ -130,12 +129,12 @@ case class CometTakeOrderedAndProjectExec(
     this.copy(child = newChild)
 }
 
-object CometTakeOrderedAndProjectExec extends ShimCometTakeOrderedAndProjectExec {
+object CometTakeOrderedAndProjectExec {
   // TODO: support offset for Spark 3.4
   def isSupported(plan: TakeOrderedAndProjectExec): Boolean = {
     val exprs = plan.projectList.map(exprToProto(_, plan.child.output))
     val sortOrders = plan.sortOrder.map(exprToProto(_, plan.child.output))
-    exprs.forall(_.isDefined) && sortOrders.forall(_.isDefined) && getOffset(plan).getOrElse(
-      0) == 0 && supportedSortType(plan, plan.sortOrder)
+    exprs.forall(_.isDefined) && sortOrders.forall(_.isDefined) && plan.offset == 0 &&
+    supportedSortType(plan, plan.sortOrder)
   }
 }

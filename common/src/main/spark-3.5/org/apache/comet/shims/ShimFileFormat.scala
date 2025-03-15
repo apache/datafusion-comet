@@ -19,21 +19,15 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.catalyst.expressions.Expression
-import org.apache.spark.sql.catalyst.plans.physical.Partitioning
+import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+import org.apache.spark.sql.execution.datasources.parquet.ParquetRowIndexUtil
+import org.apache.spark.sql.types.StructType
 
-trait ShimCometBroadcastHashJoinExec {
+object ShimFileFormat {
+  // A name for a temporary column that holds row indexes computed by the file format reader
+  // until they can be placed in the _metadata struct.
+  val ROW_INDEX_TEMPORARY_COLUMN_NAME = ParquetFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
 
-  /**
-   * Returns the expressions that are used for hash partitioning including `HashPartitioning` and
-   * `CoalescedHashPartitioning`. They shares same trait `HashPartitioningLike` since Spark 3.4,
-   * but Spark 3.3 doesn't have `HashPartitioningLike` and `CoalescedHashPartitioning`.
-   *
-   * TODO: remove after dropping Spark 3.3 support.
-   */
-  def getHashPartitioningLikeExpressions(partitioning: Partitioning): Seq[Expression] = {
-    partitioning.getClass.getDeclaredMethods
-      .filter(_.getName == "expressions")
-      .flatMap(_.invoke(partitioning).asInstanceOf[Seq[Expression]])
-  }
+  def findRowIndexColumnIndexInSchema(sparkSchema: StructType): Int =
+    ParquetRowIndexUtil.findRowIndexColumnIndexInSchema(sparkSchema)
 }

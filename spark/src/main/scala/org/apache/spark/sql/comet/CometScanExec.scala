@@ -33,6 +33,7 @@ import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.comet.shims.ShimCometScanExec
+import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetOptions}
@@ -307,7 +308,7 @@ case class CometScanExec(
         .groupBy { f =>
           BucketingUtils
             .getBucketId(new Path(f.filePath.toString()).getName)
-            .getOrElse(throw invalidBucketFile(f.filePath.toString(), sparkContext.version))
+            .getOrElse(throw QueryExecutionErrors.invalidBucketFile(f.filePath.toString()))
         }
 
     val prunedFilesGroupedToBuckets = if (optionalBucketSet.isDefined) {

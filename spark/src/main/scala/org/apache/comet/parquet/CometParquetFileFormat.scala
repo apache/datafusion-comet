@@ -91,7 +91,7 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
     val pushDownDate = sqlConf.parquetFilterPushDownDate
     val pushDownTimestamp = sqlConf.parquetFilterPushDownTimestamp
     val pushDownDecimal = sqlConf.parquetFilterPushDownDecimal
-    val pushDownStringPredicate = getPushDownStringPredicate(sqlConf)
+    val pushDownStringPredicate = sqlConf.parquetFilterPushDownStringPredicate
     val pushDownInFilterThreshold = sqlConf.parquetFilterPushDownInFilterThreshold
     val optionsMap = CaseInsensitiveMap[String](options)
     val parquetOptions = new ParquetOptions(optionsMap, sqlConf)

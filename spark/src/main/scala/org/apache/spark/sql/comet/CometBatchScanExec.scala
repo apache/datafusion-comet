@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet
 
 import org.apache.spark.rdd._
 import org.apache.spark.sql.catalyst._
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, Literal, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.util.truncatedString
 import org.apache.spark.sql.connector.read._
@@ -33,12 +33,11 @@ import org.apache.spark.sql.vectorized._
 import com.google.common.base.Objects
 
 import org.apache.comet.{DataTypeSupport, MetricsSupport}
-import org.apache.comet.shims.ShimCometBatchScanExec
 
 case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expression])
     extends DataSourceV2ScanExecBase
-    with ShimCometBatchScanExec
     with CometPlan {
+  def ordering: Option[Seq[SortOrder]] = wrapped.ordering
 
   wrapped.logicalLink.foreach(setLogicalLink)
 

@@ -19,13 +19,9 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.LegacyBehaviorPolicy
 
 trait ShimSQLConf {
-  protected def getPushDownStringPredicate(sqlConf: SQLConf): Boolean =
-    sqlConf.parquetFilterPushDownStringPredicate
-
   protected val LEGACY = LegacyBehaviorPolicy.LEGACY
   protected val CORRECTED = LegacyBehaviorPolicy.CORRECTED
 }
