@@ -24,9 +24,6 @@ import org.apache.spark.internal.config.EXECUTOR_MEMORY_OVERHEAD_FACTOR
 import org.apache.spark.internal.config.EXECUTOR_MIN_MEMORY_OVERHEAD
 
 trait ShimCometDriverPlugin {
-  protected def getMemoryOverheadFactor(sparkConf: SparkConf): Double = sparkConf.get(
-    EXECUTOR_MEMORY_OVERHEAD_FACTOR)
-
   protected def getMemoryOverheadMinMib(sparkConf: SparkConf): Long = sparkConf.get(
     EXECUTOR_MIN_MEMORY_OVERHEAD)
 }

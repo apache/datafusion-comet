@@ -52,9 +52,6 @@ trait ShimCometScanExec {
     fsRelation.fileFormat.fileConstantMetadataExtractors,
     options)
 
-  protected def invalidBucketFile(path: String, sparkVersion: String): Throwable =
-    QueryExecutionErrors.invalidBucketFile(path)
-
   // see SPARK-39634
   protected def isNeededForSchema(sparkSchema: StructType): Boolean = false
 

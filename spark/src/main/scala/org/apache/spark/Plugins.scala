@@ -25,7 +25,7 @@ import java.util.Collections
 import org.apache.spark.api.plugin.{DriverPlugin, ExecutorPlugin, PluginContext, SparkPlugin}
 import org.apache.spark.comet.shims.ShimCometDriverPlugin
 import org.apache.spark.internal.Logging
-import org.apache.spark.internal.config.{EXECUTOR_MEMORY, EXECUTOR_MEMORY_OVERHEAD}
+import org.apache.spark.internal.config.{EXECUTOR_MEMORY, EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR}
 import org.apache.spark.sql.internal.StaticSQLConf
 
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
@@ -57,7 +57,7 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
         // By default, executorMemory * spark.executor.memoryOverheadFactor, with minimum of 384MB
         val executorMemory =
           sc.getConf.getSizeAsMb(EXECUTOR_MEMORY.key, EXECUTOR_MEMORY_DEFAULT)
-        val memoryOverheadFactor = getMemoryOverheadFactor(sc.getConf)
+        val memoryOverheadFactor = sc.getConf.get(EXECUTOR_MEMORY_OVERHEAD_FACTOR)
         val memoryOverheadMinMib = getMemoryOverheadMinMib(sc.getConf)
 
         Math.max((executorMemory * memoryOverheadFactor).toLong, memoryOverheadMinMib)

@@ -32,7 +32,6 @@ Make sure the following requirements are met and software installed on your mach
 
 Comet currently supports the following versions of Apache Spark:
 
-- 3.3.x (Java 8/11/17, Scala 2.12/2.13)
 - 3.4.x (Java 8/11/17, Scala 2.12/2.13)
 - 3.5.x (Java 8/11/17, Scala 2.12/2.13)
 
@@ -51,8 +50,6 @@ is currently necessary to build from source.
 
 Here are the direct links for downloading the Comet 0.6.0 jar file.
 
-- [Comet plugin for Spark 3.3 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.3_2.12/0.6.0/comet-spark-spark3.3_2.12-0.6.0.jar)
-- [Comet plugin for Spark 3.3 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.3_2.13/0.6.0/comet-spark-spark3.3_2.13-0.6.0.jar)
 - [Comet plugin for Spark 3.4 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.12/0.6.0/comet-spark-spark3.4_2.12-0.6.0.jar)
 - [Comet plugin for Spark 3.4 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.13/0.6.0/comet-spark-spark3.4_2.13-0.6.0.jar)
 - [Comet plugin for Spark 3.5 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.12/0.6.0/comet-spark-spark3.5_2.12-0.6.0.jar)

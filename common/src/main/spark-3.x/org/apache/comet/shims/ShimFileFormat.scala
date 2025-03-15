@@ -19,32 +19,15 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.types.{LongType, StructField, StructType}
+import org.apache.spark.sql.execution.datasources.{FileFormat, RowIndexUtil}
+import org.apache.spark.sql.types.StructType
 
 object ShimFileFormat {
 
-  // TODO: remove after dropping Spark 3.3 support and directly use FileFormat.ROW_INDEX
-  val ROW_INDEX = "row_index"
-
   // A name for a temporary column that holds row indexes computed by the file format reader
   // until they can be placed in the _metadata struct.
-  // TODO: remove after dropping Spark 3.3 support and directly use
-  //       FileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
-  val ROW_INDEX_TEMPORARY_COLUMN_NAME: String = s"_tmp_metadata_$ROW_INDEX"
+  val ROW_INDEX_TEMPORARY_COLUMN_NAME: String = FileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
 
-  // TODO: remove after dropping Spark 3.3 support and directly use
-  //       RowIndexUtil.findRowIndexColumnIndexInSchema
-  def findRowIndexColumnIndexInSchema(sparkSchema: StructType): Int = {
-    sparkSchema.fields.zipWithIndex.find { case (field: StructField, _: Int) =>
-      field.name == ShimFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
-    } match {
-      case Some((field: StructField, idx: Int)) =>
-        if (field.dataType != LongType) {
-          throw new RuntimeException(
-            s"${ShimFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME} must be of LongType")
-        }
-        idx
-      case _ => -1
-    }
-  }
+  def findRowIndexColumnIndexInSchema(sparkSchema: StructType): Int =
+    RowIndexUtil.findRowIndexColumnIndexInSchema(sparkSchema)
 }

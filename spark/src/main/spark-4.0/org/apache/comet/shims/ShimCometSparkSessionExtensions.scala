@@ -27,10 +27,6 @@ import org.apache.spark.sql.internal.SQLConf
 trait ShimCometSparkSessionExtensions {
   protected def getPushedAggregate(scan: ParquetScan): Option[Aggregation] = scan.pushedAggregate
 
-  protected def getOffset(limit: LocalLimitExec): Int = 0
-  protected def getOffset(limit: GlobalLimitExec): Int = limit.offset
-  protected def getOffset(limit: CollectLimitExec): Int = limit.offset
-
   protected def supportsExtendedExplainInfo(qe: QueryExecution): Boolean = true
 
   protected val EXTENDED_EXPLAIN_PROVIDERS_KEY = SQLConf.EXTENDED_EXPLAIN_PROVIDERS.key

@@ -29,9 +29,6 @@ trait ShimQueryPlanSerde {
   protected def getFailOnError(aggregate: Sum): Boolean = aggregate.initQueryContext().isDefined
   protected def getFailOnError(aggregate: Average): Boolean = aggregate.initQueryContext().isDefined
 
-  protected def isLegacyMode(aggregate: Sum): Boolean = aggregate.evalMode.equals(EvalMode.LEGACY)
-  protected def isLegacyMode(aggregate: Average): Boolean = aggregate.evalMode.equals(EvalMode.LEGACY)
-
   protected def isBloomFilterMightContain(binary: BinaryExpression): Boolean =
     binary.isInstanceOf[BloomFilterMightContain]
 }

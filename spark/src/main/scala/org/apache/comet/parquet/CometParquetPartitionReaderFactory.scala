@@ -37,13 +37,13 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.execution.datasources.v2.FilePartitionReaderFactory
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy.CORRECTED
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.{CometConf, CometRuntimeException}
-import org.apache.comet.shims.ShimSQLConf
 
 case class CometParquetPartitionReaderFactory(
     @transient sqlConf: SQLConf,
@@ -54,7 +54,6 @@ case class CometParquetPartitionReaderFactory(
     options: ParquetOptions,
     metrics: Map[String, SQLMetric])
     extends FilePartitionReaderFactory
-    with ShimSQLConf
     with Logging {
 
   private val isCaseSensitive = sqlConf.caseSensitiveAnalysis
@@ -63,7 +62,7 @@ case class CometParquetPartitionReaderFactory(
   private val pushDownDate = sqlConf.parquetFilterPushDownDate
   private val pushDownTimestamp = sqlConf.parquetFilterPushDownTimestamp
   private val pushDownDecimal = sqlConf.parquetFilterPushDownDecimal
-  private val pushDownStringPredicate = getPushDownStringPredicate(sqlConf)
+  private val pushDownStringPredicate = sqlConf.parquetFilterPushDownStringPredicate
   private val pushDownInFilterThreshold = sqlConf.parquetFilterPushDownInFilterThreshold
   private val datetimeRebaseModeInRead = options.datetimeRebaseModeInRead
   private val parquetFilterPushDown = sqlConf.parquetFilterPushDown
