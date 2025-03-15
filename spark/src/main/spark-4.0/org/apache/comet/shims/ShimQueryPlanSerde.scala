@@ -19,7 +19,7 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.catalyst.expressions.{BinaryArithmetic, BinaryExpression, BloomFilterMightContain, EvalMode}
+import org.apache.spark.sql.catalyst.expressions.{BinaryArithmetic, BinaryExpression, BloomFilterMightContain}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Average, Sum}
 
 trait ShimQueryPlanSerde {
