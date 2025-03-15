@@ -140,7 +140,7 @@ object CometAverage extends CometAggregateExpressionSerde with ShimQueryPlanSerd
       return None
     }
 
-    if (!avg.evalMode.equals(EvalMode.LEGACY)) {
+    if (avg.evalMode != EvalMode.LEGACY) {
       withInfo(aggExpr, "Average is only supported in legacy mode")
       return None
     }
@@ -195,7 +195,7 @@ object CometSum extends CometAggregateExpressionSerde with ShimQueryPlanSerde {
       return None
     }
 
-    if (!sum.evalMode.equals(EvalMode.LEGACY)) {
+    if (sum.evalMode != EvalMode.LEGACY) {
       withInfo(aggExpr, "Sum is only supported in legacy mode")
       return None
     }
