@@ -21,6 +21,8 @@ package org.apache.comet
 
 import java.nio.ByteOrder
 
+import scala.collection.mutable.ListBuffer
+
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
@@ -100,9 +102,6 @@ class CometSparkSessionExtensions
         plan
       } else {
 
-        def isDynamicPruningFilter(e: Expression): Boolean =
-          e.exists(_.isInstanceOf[PlanExpression[_]])
-
         def hasMetadataCol(plan: SparkPlan): Boolean = {
           plan.expressions.exists(_.exists {
             case a: Attribute =>
@@ -116,11 +115,9 @@ class CometSparkSessionExtensions
             withInfo(scan, "Metadata column is not supported")
             scan
 
-          case scanExec: FileSourceScanExec
-              if COMET_DPP_FALLBACK_ENABLED.get() &&
-                scanExec.partitionFilters.exists(isDynamicPruningFilter) =>
-            withInfo(scanExec, "DPP not supported")
-            scanExec
+          // data source V1
+          case scanExec: FileSourceScanExec =>
+            transformV1Scan(scanExec)
 
           // data source V2
           case scanExec: BatchScanExec
@@ -188,69 +185,62 @@ class CometSparkSessionExtensions
                 scanExec
             }
 
-          // data source V1
-          case scanExec @ FileSourceScanExec(
-                HadoopFsRelation(_, partitionSchema, _, _, fileFormat, _),
-                _: Seq[_],
-                requiredSchema,
-                _,
-                _,
-                _,
-                _,
-                _,
-                _)
-              if COMET_EXEC_ENABLED.get()
-                && CometConf.isExperimentalNativeScan
-                && CometScanExec.isFileFormatSupported(fileFormat)
-                && CometNativeScanExec.isSchemaSupported(requiredSchema)
-                && CometNativeScanExec.isSchemaSupported(partitionSchema) =>
-            // TODO we only enable full native scan if COMET_EXEC_ENABLED is enabled
-            // but this is not really what we want .. we currently insert `CometScanExec`
-            // here and then it gets replaced with `CometNativeScanExec` in `CometExecRule`
-            // but that only happens if `COMET_EXEC_ENABLED` is enabled
-            logInfo("Comet extension enabled for v1 full native Scan")
-            CometScanExec(scanExec, session)
-
-          // data source V1
-          case scanExec @ FileSourceScanExec(
-                HadoopFsRelation(_, partitionSchema, _, _, fileFormat, _),
-                _: Seq[_],
-                requiredSchema,
-                _,
-                _,
-                _,
-                _,
-                _,
-                _)
-              if CometScanExec.isFileFormatSupported(fileFormat)
-                && CometScanExec.isSchemaSupported(requiredSchema)
-                && CometScanExec.isSchemaSupported(partitionSchema) =>
-            logInfo("Comet extension enabled for v1 Scan")
-            CometScanExec(scanExec, session)
-
-          // data source v1 not supported case
-          case scanExec @ FileSourceScanExec(
-                HadoopFsRelation(_, partitionSchema, _, _, fileFormat, _),
-                _: Seq[_],
-                requiredSchema,
-                _,
-                _,
-                _,
-                _,
-                _,
-                _) =>
-            val info1 = createMessage(
-              !CometScanExec.isFileFormatSupported(fileFormat),
-              s"File format $fileFormat is not supported")
-            val info2 = createMessage(
-              !CometScanExec.isSchemaSupported(requiredSchema),
-              s"Schema $requiredSchema is not supported")
-            val info3 = createMessage(
-              !CometScanExec.isSchemaSupported(partitionSchema),
-              s"Partition schema $partitionSchema is not supported")
-            withInfo(scanExec, Seq(info1, info2, info3).flatten.mkString(","))
-            scanExec
         }
+      }
+    }
+
+    private def isDynamicPruningFilter(e: Expression): Boolean =
+      e.exists(_.isInstanceOf[PlanExpression[_]])
+
+    private def transformV1Scan(scanExec: FileSourceScanExec): SparkPlan = {
+
+      if (COMET_DPP_FALLBACK_ENABLED.get() &&
+        scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
+        withInfo(scanExec, "DPP not supported")
+        return scanExec
+      }
+
+      scanExec.relation match {
+        case r: HadoopFsRelation =>
+          val fallbackReasons = new ListBuffer[String]()
+          if (!CometScanExec.isFileFormatSupported(r.fileFormat)) {
+            fallbackReasons += s"Unsupported file format ${r.fileFormat}"
+          }
+
+          val scanImpl = COMET_NATIVE_SCAN_IMPL.get()
+          if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && !COMET_EXEC_ENABLED.get()) {
+            fallbackReasons +=
+              s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled"
+          }
+
+          val (schemaSupported, partitionSchemaSupported) = scanImpl match {
+            case CometConf.SCAN_NATIVE_DATAFUSION | SCAN_NATIVE_ICEBERG_COMPAT =>
+              (
+                CometNativeScanExec.isSchemaSupported(scanExec.requiredSchema),
+                CometNativeScanExec.isSchemaSupported(r.partitionSchema))
+            case CometConf.SCAN_NATIVE_COMET =>
+              (
+                CometScanExec.isSchemaSupported(scanExec.requiredSchema),
+                CometScanExec.isSchemaSupported(r.partitionSchema))
+          }
+
+          if (!schemaSupported) {
+            fallbackReasons += s"Unsupported schema ${scanExec.requiredSchema} for $scanImpl"
+          }
+          if (!partitionSchemaSupported) {
+            fallbackReasons += s"Unsupported partitioning schema ${r.partitionSchema} for $scanImpl"
+          }
+
+          if (fallbackReasons.isEmpty) {
+            CometScanExec(scanExec, session)
+          } else {
+            withInfo(scanExec, fallbackReasons.mkString(", "))
+            scanExec
+          }
+
+        case _ =>
+          withInfo(scanExec, s"Unsupported relation ${scanExec.relation}")
+          scanExec
       }
     }
   }
