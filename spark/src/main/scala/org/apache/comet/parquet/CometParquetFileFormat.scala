@@ -37,14 +37,13 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.execution.datasources.parquet.ParquetReadSupport
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy.CORRECTED
-import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy.LEGACY
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.{DateType, StructType, TimestampType}
 import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.CometConf
 import org.apache.comet.MetricsSupport
+import org.apache.comet.shims.ShimSQLConf
 import org.apache.comet.vector.CometVector
 
 /**
@@ -57,7 +56,7 @@ import org.apache.comet.vector.CometVector
  *     in [[org.apache.comet.CometSparkSessionExtensions]]
  *   - `buildReaderWithPartitionValues`, so Spark calls Comet's Parquet reader to read values.
  */
-class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport {
+class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with ShimSQLConf {
   override def shortName(): String = "parquet"
   override def toString: String = "CometParquet"
   override def hashCode(): Int = getClass.hashCode()
@@ -195,7 +194,7 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport {
   }
 }
 
-object CometParquetFileFormat extends Logging {
+object CometParquetFileFormat extends Logging with ShimSQLConf {
 
   /**
    * Populates Parquet related configurations from the input `sqlConf` to the `hadoopConf`

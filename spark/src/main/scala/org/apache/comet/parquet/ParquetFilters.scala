@@ -38,9 +38,10 @@ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName._
 import org.apache.parquet.schema.Type.Repetition
 import org.apache.spark.sql.catalyst.util.{quoteIfNeeded, CaseInsensitiveMap, DateTimeUtils, IntervalUtils}
 import org.apache.spark.sql.catalyst.util.RebaseDateTime.{rebaseGregorianToJulianDays, rebaseGregorianToJulianMicros, RebaseSpec}
-import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy.LEGACY
 import org.apache.spark.sql.sources
 import org.apache.spark.unsafe.types.UTF8String
+
+import org.apache.comet.shims.ShimSQLConf
 
 /**
  * Copied from Spark 3.4, in order to fix Parquet shading issue. TODO: find a way to remove this
@@ -56,7 +57,8 @@ class ParquetFilters(
     pushDownStringPredicate: Boolean,
     pushDownInFilterThreshold: Int,
     caseSensitive: Boolean,
-    datetimeRebaseSpec: RebaseSpec) {
+    datetimeRebaseSpec: RebaseSpec)
+    extends ShimSQLConf {
   // A map which contains parquet field name and data type, if predicate push down applies.
   //
   // Each key in `nameToParquetField` represents a column; `dots` are used as separators for

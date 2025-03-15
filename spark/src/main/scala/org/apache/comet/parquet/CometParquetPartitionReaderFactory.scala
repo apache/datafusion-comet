@@ -37,13 +37,13 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.execution.datasources.v2.FilePartitionReaderFactory
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy.CORRECTED
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.{CometConf, CometRuntimeException}
+import org.apache.comet.shims.ShimSQLConf
 
 case class CometParquetPartitionReaderFactory(
     @transient sqlConf: SQLConf,
@@ -54,6 +54,7 @@ case class CometParquetPartitionReaderFactory(
     options: ParquetOptions,
     metrics: Map[String, SQLMetric])
     extends FilePartitionReaderFactory
+    with ShimSQLConf
     with Logging {
 
   private val isCaseSensitive = sqlConf.caseSensitiveAnalysis
