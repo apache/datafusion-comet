@@ -38,11 +38,6 @@ use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf,
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
-use datafusion::functions_nested::array_has::array_has_any_udf;
-use datafusion::functions_nested::concat::ArrayAppend;
-use datafusion::functions_nested::remove::array_remove_all_udf;
-use datafusion::functions_nested::set_ops::array_intersect_udf;
-use datafusion::functions_nested::string::array_to_string_udf;
 use datafusion::physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
@@ -71,7 +66,6 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr};
-use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
 use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
@@ -86,10 +80,9 @@ use datafusion::common::{
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{FileScanConfig, ParquetSource};
 use datafusion::datasource::source::DataSourceExec;
-use datafusion::functions_nested::array_has::ArrayHas;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{
-    AggregateUDF, ReturnTypeArgs, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    AggregateUDF, ReturnTypeArgs, WindowFrame, WindowFrameBound, WindowFrameUnits,
     WindowFunctionDefinition,
 };
 use datafusion::physical_expr::expressions::{Literal, StatsType};
@@ -116,20 +109,6 @@ use datafusion_comet_spark_expr::{
     SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
     TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
-use datafusion_common::config::TableParquetOptions;
-use datafusion_common::scalar::ScalarStructBuilder;
-use datafusion_common::{
-    tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
-    JoinType as DFJoinType, ScalarValue,
-};
-use datafusion_expr::type_coercion::other::get_coerce_type_for_case_expression;
-use datafusion_expr::{
-    AggregateUDF, ReturnTypeArgs, WindowFrame, WindowFrameBound, WindowFrameUnits,
-    WindowFunctionDefinition,
-};
-use datafusion_physical_expr::expressions::{Literal, StatsType};
-use datafusion_physical_expr::window::WindowExpr;
-use datafusion_physical_expr::LexOrdering;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
