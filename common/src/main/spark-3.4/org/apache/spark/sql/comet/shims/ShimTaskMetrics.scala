@@ -19,14 +19,11 @@
 
 package org.apache.spark.sql.comet.shims
 
-import org.apache.spark.SparkArithmeticException
-import org.apache.spark.sql.errors.QueryExecutionErrors.toSQLConf
-import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.executor.TaskMetrics
+import org.apache.spark.util.AccumulatorV2
 
-// TODO: Only the Spark 3.3 version of this class is different from the others.
-//       Remove this class after dropping Spark 3.3 support.
-class ShimCastOverflowException(t: String, from: String, to: String)
-  extends SparkArithmeticException(
-    "CAST_OVERFLOW",
-    Array(t, s""""$from"""", s""""$to"""", toSQLConf(SQLConf.ANSI_ENABLED.key))
-  ) {}
+object ShimTaskMetrics {
+
+  def getTaskAccumulator(taskMetrics: TaskMetrics): Option[AccumulatorV2[_, _]] =
+    taskMetrics.externalAccums.lastOption
+}

@@ -26,7 +26,7 @@ use jni::{
 
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
-use datafusion_execution::object_store::ObjectStoreUrl;
+use datafusion::execution::object_store::ObjectStoreUrl;
 use object_store::path::Path;
 use parquet::{
     basic::{Encoding, LogicalType, TimeUnit, Type as PhysicalType},

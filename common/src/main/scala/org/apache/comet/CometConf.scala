@@ -54,7 +54,7 @@ object CometConf extends ShimCometConf {
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
 
-  def register(conf: ConfigEntryWithDefault[_]): Unit = {
+  def register(conf: ConfigEntry[_]): Unit = {
     allConfs.append(conf)
   }
 
@@ -100,6 +100,11 @@ object CometConf extends ShimCometConf {
     .createWithDefault(sys.env
       .getOrElse("COMET_PARQUET_SCAN_IMPL", SCAN_NATIVE_COMET)
       .toLowerCase(Locale.ROOT))
+
+  def isExperimentalNativeScan: Boolean = COMET_NATIVE_SCAN_IMPL.get() match {
+    case SCAN_NATIVE_DATAFUSION | SCAN_NATIVE_ICEBERG_COMPAT => true
+    case SCAN_NATIVE_COMET => false
+  }
 
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.parallel.io.enabled")
@@ -398,17 +403,6 @@ object CometConf extends ShimCometConf {
         factor => factor > 0,
         "Ensure that Comet shuffle memory overhead factor is a double greater than 0")
       .createWithDefault(1.0)
-
-  val COMET_COLUMNAR_SHUFFLE_UNIFIED_MEMORY_ALLOCATOR_IN_TEST: ConfigEntry[Boolean] =
-    conf("spark.comet.columnar.shuffle.unifiedMemoryAllocatorTest")
-      .doc("Whether to use Spark unified memory allocator for Comet columnar shuffle in tests." +
-        "If not configured, Comet will use a test-only memory allocator for Comet columnar " +
-        "shuffle when Spark test env detected. The test-ony allocator is proposed to run with " +
-        "Spark tests as these tests require on-heap memory configuration. " +
-        "By default, this config is false.")
-      .internal()
-      .booleanConf
-      .createWithDefault(false)
 
   val COMET_COLUMNAR_SHUFFLE_BATCH_SIZE: ConfigEntry[Int] =
     conf("spark.comet.columnar.shuffle.batch.size")
@@ -752,13 +746,15 @@ private class TypedConfigBuilder[T](
 
   /** Creates a [[ConfigEntry]] that does not have a default value. */
   def createOptional: OptionalConfigEntry[T] = {
-    new OptionalConfigEntry[T](
+    val conf = new OptionalConfigEntry[T](
       parent.key,
       converter,
       stringConverter,
       parent._doc,
       parent._public,
       parent._version)
+    CometConf.register(conf)
+    conf
   }
 
   /** Creates a [[ConfigEntry]] that has a default value. */

@@ -53,7 +53,7 @@ import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark34Plus, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.rules.RewriteJoin
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -747,8 +747,7 @@ class CometSparkSessionExtensions
           val newChildren = plan.children.map {
             case b: BroadcastExchangeExec
                 if isCometNative(b.child) &&
-                  CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf) &&
-                  isSpark34Plus => // Spark 3.4+ only
+                  CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf) =>
               QueryPlanSerde.operator2Proto(b) match {
                 case Some(nativeOp) =>
                   val cometOp = CometBroadcastExchangeExec(b, b.output, b.child)
@@ -1235,8 +1234,6 @@ object CometSparkSessionExtensions extends Logging {
       Some(
         s"${COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.key}.enabled is not specified and " +
           s"${COMET_EXEC_BROADCAST_FORCE_ENABLED.key} is not specified")
-    } else if (!isSpark34Plus) {
-      Some("Native broadcast requires Spark 3.4 or newer")
     } else {
       None
     }
@@ -1335,15 +1332,6 @@ object CometSparkSessionExtensions extends Logging {
     }
   }
 
-  def isSpark33Plus: Boolean = {
-    org.apache.spark.SPARK_VERSION >= "3.3"
-  }
-
-  /** Used for operations that are available in Spark 3.4+ */
-  def isSpark34Plus: Boolean = {
-    org.apache.spark.SPARK_VERSION >= "3.4"
-  }
-
   def isSpark35Plus: Boolean = {
     org.apache.spark.SPARK_VERSION >= "3.5"
   }
@@ -1416,12 +1404,6 @@ object CometSparkSessionExtensions extends Logging {
 
   def cometUnifiedMemoryManagerEnabled(sparkConf: SparkConf): Boolean = {
     sparkConf.getBoolean("spark.memory.offHeap.enabled", false)
-  }
-
-  def cometShuffleUnifiedMemoryManagerInTestEnabled(sparkConf: SparkConf): Boolean = {
-    sparkConf.getBoolean(
-      CometConf.COMET_COLUMNAR_SHUFFLE_UNIFIED_MEMORY_ALLOCATOR_IN_TEST.key,
-      CometConf.COMET_COLUMNAR_SHUFFLE_UNIFIED_MEMORY_ALLOCATOR_IN_TEST.defaultValue.get)
   }
 
   /**

@@ -15,16 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::array::builder::IntervalDayTimeBuilder;
+use arrow::array::types::{Int16Type, Int32Type, Int8Type};
+use arrow::array::{Array, Datum};
 use arrow::array::{ArrayRef, AsArray};
 use arrow::compute::kernels::numeric::{add, sub};
+use arrow::datatypes::DataType;
 use arrow::datatypes::IntervalDayTime;
-use arrow_array::builder::IntervalDayTimeBuilder;
-use arrow_array::types::{Int16Type, Int32Type, Int8Type};
-use arrow_array::{Array, Datum};
-use arrow_schema::{ArrowError, DataType};
+use arrow::error::ArrowError;
+use datafusion::common::{DataFusionError, ScalarValue};
 use datafusion::physical_expr_common::datum;
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_common::{DataFusionError, ScalarValue};
 use std::sync::Arc;
 
 macro_rules! scalar_date_arithmetic {

@@ -34,9 +34,9 @@ object CometArrayRemove extends CometExpressionSerde with CometExprShim {
     import DataTypes._
     dt match {
       case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-          _: DecimalType | DateType | TimestampType | StringType | BinaryType =>
+          _: DecimalType | DateType | TimestampType | TimestampNTZType | StringType |
+          BinaryType =>
         true
-      case t if isTimestampNTZType(t) => true
       case ArrayType(elementType, _) => isTypeSupported(elementType)
       case _: StructType =>
         // https://github.com/apache/datafusion-comet/issues/1307

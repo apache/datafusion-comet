@@ -15,24 +15,24 @@
 // specific language governing permissions and limitations
 // under the License.use arrow::array::{ArrayRef, BooleanBuilder, Int32Builder, RecordBatch, StringBuilder};
 
+use arrow::array::builder::{Decimal128Builder, StringBuilder};
+use arrow::array::{ArrayRef, RecordBatch};
+use arrow::datatypes::SchemaRef;
 use arrow::datatypes::{DataType, Field, Schema};
-use arrow_array::builder::{Decimal128Builder, StringBuilder};
-use arrow_array::{ArrayRef, RecordBatch};
-use arrow_schema::SchemaRef;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::TaskContext;
 use datafusion::functions_aggregate::average::avg_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
+use datafusion::logical_expr::AggregateUDF;
+use datafusion::physical_expr::aggregate::AggregateExprBuilder;
+use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_comet_spark_expr::AvgDecimal;
 use datafusion_comet_spark_expr::SumDecimal;
-use datafusion_expr::AggregateUDF;
-use datafusion_physical_expr::aggregate::AggregateExprBuilder;
-use datafusion_physical_expr::expressions::Column;
 use futures::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;

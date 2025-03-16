@@ -22,7 +22,9 @@ use crate::execution::shuffle::builders::{
 };
 use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
 use async_trait::async_trait;
+use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::EmptyRecordBatchStream;
 use datafusion::{
     arrow::{array::*, datatypes::SchemaRef, error::ArrowError, record_batch::RecordBatch},
     error::{DataFusionError, Result},
@@ -38,13 +40,12 @@ use datafusion::{
         },
         stream::RecordBatchStreamAdapter,
         DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-        RecordBatchStream, SendableRecordBatchStream, Statistics,
+        SendableRecordBatchStream, Statistics,
     },
 };
 use datafusion_comet_spark_expr::hash_funcs::murmur3::create_murmur3_hashes;
-use datafusion_physical_expr::EquivalenceProperties;
 use futures::executor::block_on;
-use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
 use std::io::Error;
 use std::{
@@ -54,7 +55,6 @@ use std::{
     fs::{File, OpenOptions},
     io::{BufReader, BufWriter, Cursor, Seek, SeekFrom, Write},
     sync::Arc,
-    task::{Context, Poll},
 };
 use tokio::time::Instant;
 
@@ -186,6 +186,7 @@ impl ExecutionPlan for ShuffleWriterExec {
             futures::stream::once(
                 external_shuffle(
                     input,
+                    partition,
                     self.output_data_file.clone(),
                     self.output_index_file.clone(),
                     self.partitioning.clone(),
@@ -204,6 +205,7 @@ impl ExecutionPlan for ShuffleWriterExec {
 #[allow(clippy::too_many_arguments)]
 async fn external_shuffle(
     mut input: SendableRecordBatchStream,
+    partition: usize,
     output_data_file: String,
     output_index_file: String,
     partitioning: Partitioning,
@@ -214,6 +216,7 @@ async fn external_shuffle(
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
     let mut repartitioner = ShuffleRepartitioner::try_new(
+        partition,
         output_data_file,
         output_index_file,
         Arc::clone(&schema),
@@ -287,7 +290,6 @@ struct ShuffleRepartitioner {
     buffered_partitions: Vec<PartitionBuffer>,
     /// Partitioning scheme to use
     partitioning: Partitioning,
-    num_output_partitions: usize,
     runtime: Arc<RuntimeEnv>,
     metrics: ShuffleRepartitionerMetrics,
     /// Hashes for each row in the current batch
@@ -301,6 +303,7 @@ struct ShuffleRepartitioner {
 impl ShuffleRepartitioner {
     #[allow(clippy::too_many_arguments)]
     pub fn try_new(
+        partition: usize,
         output_data_file: String,
         output_index_file: String,
         schema: SchemaRef,
@@ -311,8 +314,6 @@ impl ShuffleRepartitioner {
         codec: CompressionCodec,
         enable_fast_encoding: bool,
     ) -> Result<Self> {
-        let num_output_partitions = partitioning.partition_count();
-
         let mut hashes_buf = Vec::with_capacity(batch_size);
         let mut partition_ids = Vec::with_capacity(batch_size);
 
@@ -323,24 +324,27 @@ impl ShuffleRepartitioner {
             partition_ids.set_len(batch_size);
         }
 
+        // This will be split into each PartitionBuffer Reservations, and does not need to be kept itself
+        let reservation = MemoryConsumer::new(format!("ShuffleRepartitioner[{}]", partition))
+            .with_can_spill(true)
+            .register(&runtime.memory_pool);
+
         Ok(Self {
             output_data_file,
             output_index_file,
             schema: Arc::clone(&schema),
-            buffered_partitions: (0..num_output_partitions)
-                .map(|partition_id| {
+            buffered_partitions: (0..partitioning.partition_count())
+                .map(|_| {
                     PartitionBuffer::try_new(
                         Arc::clone(&schema),
                         batch_size,
-                        partition_id,
-                        &runtime,
+                        reservation.new_empty(),
                         codec.clone(),
                         enable_fast_encoding,
                     )
                 })
                 .collect::<Result<Vec<_>>>()?,
             partitioning,
-            num_output_partitions,
             runtime,
             metrics,
             hashes_buf,
@@ -393,9 +397,21 @@ impl ShuffleRepartitioner {
         // number of rows those are written to output data file.
         self.metrics.baseline.record_output(input.num_rows());
 
-        let num_output_partitions = self.num_output_partitions;
         match &self.partitioning {
-            Partitioning::Hash(exprs, _) => {
+            any if any.partition_count() == 1 => {
+                let buffered_partitions = &mut self.buffered_partitions;
+
+                assert_eq!(buffered_partitions.len(), 1, "Expected 1 partition");
+
+                // TODO the single partition case could be optimized to avoid appending all
+                // rows from the batch into builders and then recreating the batch
+                // https://github.com/apache/datafusion-comet/issues/1453
+                let indices = (0..input.num_rows()).collect::<Vec<usize>>();
+
+                self.append_rows_to_partition(input.columns(), &indices, 0)
+                    .await?;
+            }
+            Partitioning::Hash(exprs, num_output_partitions) => {
                 let (partition_starts, shuffled_partition_ids): (Vec<usize>, Vec<usize>) = {
                     let mut timer = self.metrics.repart_time.timer();
 
@@ -415,11 +431,11 @@ impl ShuffleRepartitioner {
                         .iter()
                         .enumerate()
                         .for_each(|(idx, hash)| {
-                            partition_ids[idx] = pmod(*hash, num_output_partitions) as u64
+                            partition_ids[idx] = pmod(*hash, *num_output_partitions) as u64
                         });
 
                     // count each partition size
-                    let mut partition_counters = vec![0usize; num_output_partitions];
+                    let mut partition_counters = vec![0usize; *num_output_partitions];
                     partition_ids
                         .iter()
                         .for_each(|partition_id| partition_counters[*partition_id as usize] += 1);
@@ -470,23 +486,6 @@ impl ShuffleRepartitioner {
                     .await?;
                 }
             }
-            Partitioning::UnknownPartitioning(n) if *n == 1 => {
-                let buffered_partitions = &mut self.buffered_partitions;
-
-                assert!(
-                    buffered_partitions.len() == 1,
-                    "Expected 1 partition but got {}",
-                    buffered_partitions.len()
-                );
-
-                // TODO the single partition case could be optimized to avoid appending all
-                // rows from the batch into builders and then recreating the batch
-                // https://github.com/apache/datafusion-comet/issues/1453
-                let indices = (0..input.num_rows()).collect::<Vec<usize>>();
-
-                self.append_rows_to_partition(input.columns(), &indices, 0)
-                    .await?;
-            }
             other => {
                 // this should be unreachable as long as the validation logic
                 // in the constructor is kept up-to-date
@@ -502,8 +501,8 @@ impl ShuffleRepartitioner {
     /// Writes buffered shuffled record batches into Arrow IPC bytes.
     async fn shuffle_write(&mut self) -> Result<SendableRecordBatchStream> {
         let mut elapsed_compute = self.metrics.baseline.elapsed_compute().timer();
-        let num_output_partitions = self.num_output_partitions;
         let buffered_partitions = &mut self.buffered_partitions;
+        let num_output_partitions = buffered_partitions.len();
         let mut output_batches: Vec<Vec<u8>> = vec![vec![]; num_output_partitions];
         let mut offsets = vec![0; num_output_partitions + 1];
         for i in 0..num_output_partitions {
@@ -560,7 +559,9 @@ impl ShuffleRepartitioner {
         elapsed_compute.stop();
 
         // shuffle writer always has empty output
-        Ok(Box::pin(EmptyStream::try_new(Arc::clone(&self.schema))?))
+        Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(
+            &self.schema,
+        ))))
     }
 
     fn to_df_err(e: Error) -> DataFusionError {
@@ -708,14 +709,10 @@ impl PartitionBuffer {
     fn try_new(
         schema: SchemaRef,
         batch_size: usize,
-        partition_id: usize,
-        runtime: &Arc<RuntimeEnv>,
+        reservation: MemoryReservation,
         codec: CompressionCodec,
         enable_fast_encoding: bool,
     ) -> Result<Self> {
-        let reservation = MemoryConsumer::new(format!("PartitionBuffer[{}]", partition_id))
-            .with_can_spill(true)
-            .register(&runtime.memory_pool);
         let shuffle_block_writer =
             ShuffleBlockWriter::try_new(schema.as_ref(), enable_fast_encoding, codec)?;
         let active_slots_mem_size = schema
@@ -868,34 +865,6 @@ impl PartitionBuffer {
     }
 }
 
-/// A stream that yields no record batches which represent end of output.
-pub struct EmptyStream {
-    /// Schema representing the data
-    schema: SchemaRef,
-}
-
-impl EmptyStream {
-    /// Create an iterator for a vector of record batches
-    pub fn try_new(schema: SchemaRef) -> Result<Self> {
-        Ok(Self { schema })
-    }
-}
-
-impl Stream for EmptyStream {
-    type Item = Result<RecordBatch>;
-
-    fn poll_next(self: std::pin::Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Poll::Ready(None)
-    }
-}
-
-impl RecordBatchStream for EmptyStream {
-    /// Get the schema
-    fn schema(&self) -> SchemaRef {
-        Arc::clone(&self.schema)
-    }
-}
-
 fn pmod(hash: u32, n: usize) -> usize {
     let hash = hash as i32;
     let n = n as i32;
@@ -908,14 +877,14 @@ fn pmod(hash: u32, n: usize) -> usize {
 mod test {
     use super::*;
     use crate::execution::shuffle::read_ipc_compressed;
-    use arrow_schema::{DataType, Field, Schema};
+    use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
+    use datafusion::execution::config::SessionConfig;
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+    use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::common::collect;
     use datafusion::prelude::SessionContext;
-    use datafusion_execution::config::SessionConfig;
-    use datafusion_execution::runtime_env::RuntimeEnvBuilder;
-    use datafusion_physical_expr::expressions::Column;
     use parquet::file::reader::Length;
     use tokio::runtime::Runtime;
 
@@ -1008,11 +977,13 @@ mod test {
     fn partition_buffer_memory() {
         let batch = create_batch(900);
         let runtime_env = create_runtime(128 * 1024);
+        let reservation = MemoryConsumer::new("ShuffleRepartitioner[0]")
+            .with_can_spill(true)
+            .register(&runtime_env.memory_pool);
         let mut buffer = PartitionBuffer::try_new(
             batch.schema(),
             1024,
-            0,
-            &runtime_env,
+            reservation,
             CompressionCodec::Lz4Frame,
             true,
         )
@@ -1081,6 +1052,7 @@ mod test {
         let runtime_env = create_runtime(memory_limit);
         let metrics_set = ExecutionPlanMetricsSet::new();
         let mut repartitioner = ShuffleRepartitioner::try_new(
+            0,
             "/tmp/data.out".to_string(),
             "/tmp/index.out".to_string(),
             batch.schema(),

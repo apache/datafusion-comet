@@ -37,7 +37,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.TestSparkSession
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark34Plus, isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 
 /**
  * Similar to [[org.apache.spark.sql.PlanStabilitySuite]], checks that TPC-DS Comet plans don't
@@ -255,9 +255,6 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
    * matches a golden file or it will create a new golden file.
    */
   protected def testQuery(tpcdsGroup: String, query: String, suffix: String = ""): Unit = {
-    // Only run the tests in Spark 3.4+
-    assume(isSpark34Plus)
-
     val queryString = resourceToString(
       s"$tpcdsGroup/$query.sql",
       classLoader = Thread.currentThread().getContextClassLoader)
@@ -278,7 +275,6 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       CometConf.COMET_SHUFFLE_FALLBACK_TO_COLUMNAR.key -> "true",
       CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key -> "true",
       CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true", // needed for v1.4/q9, v1.4/q44, v2.7.0/q6, v2.7.0/q64
-      "spark.sql.readSideCharPadding" -> "false",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
       val qe = sql(queryString).queryExecution
       val plan = qe.executedPlan

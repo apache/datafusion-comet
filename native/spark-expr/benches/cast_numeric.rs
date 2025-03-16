@@ -15,11 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow_array::{builder::Int32Builder, RecordBatch};
-use arrow_schema::{DataType, Field, Schema};
+use arrow::array::{builder::Int32Builder, RecordBatch};
+use arrow::datatypes::{DataType, Field, Schema};
 use criterion::{criterion_group, criterion_main, Criterion};
+use datafusion::physical_expr::{expressions::Column, PhysicalExpr};
 use datafusion_comet_spark_expr::{Cast, EvalMode, SparkCastOptions};
-use datafusion_physical_expr::{expressions::Column, PhysicalExpr};
 use std::sync::Arc;
 
 fn criterion_benchmark(c: &mut Criterion) {

@@ -16,13 +16,13 @@
 // under the License.
 
 use crate::math_funcs::utils::get_precision_scale;
+use arrow::datatypes::DataType;
 use arrow::{
     array::{AsArray, Decimal128Builder},
     datatypes::{validate_decimal_precision, Int64Type},
 };
-use arrow_schema::DataType;
+use datafusion::common::{internal_err, Result as DataFusionResult, ScalarValue};
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_common::{internal_err, Result as DataFusionResult, ScalarValue};
 use std::sync::Arc;
 
 /// Spark-compatible `MakeDecimal` expression (internal to Spark optimizer)

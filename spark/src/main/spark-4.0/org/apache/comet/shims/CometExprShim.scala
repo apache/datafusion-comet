@@ -20,7 +20,6 @@ package org.apache.comet.shims
 
 import org.apache.comet.expressions.CometEvalMode
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.types.{DataType, TimestampNTZType}
 
 /**
  * `CometExprShim` acts as a shim for for parsing expressions from different Spark versions.
@@ -31,11 +30,6 @@ trait CometExprShim {
      */
     protected def unhexSerde(unhex: Unhex): (Expression, Expression) = {
         (unhex.child, Literal(unhex.failOnError))
-    }
-
-    protected def isTimestampNTZType(dt: DataType): Boolean = dt match {
-        case _: TimestampNTZType => true
-        case _ => false
     }
 
     protected def evalMode(c: Cast): CometEvalMode.Value =

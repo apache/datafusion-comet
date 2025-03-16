@@ -15,11 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::error::ArrowError;
 use arrow::{
     array::{DictionaryArray, Int64Array, PrimitiveArray},
     datatypes::{ArrowPrimitiveType, Int32Type},
 };
-use arrow_schema::ArrowError;
 use rand::{
     distributions::{Distribution, Standard},
     rngs::StdRng,

@@ -16,7 +16,7 @@
 // under the License.
 
 /// Utils for timezone. This is basically from arrow-array::timezone (private).
-use arrow_schema::ArrowError;
+use arrow::error::ArrowError;
 use chrono::{
     format::{parse, Parsed, StrftimeItems},
     offset::TimeZone,

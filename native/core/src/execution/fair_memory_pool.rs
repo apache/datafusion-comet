@@ -26,12 +26,12 @@ use crate::{
     errors::CometResult,
     jvm_bridge::{jni_call, JVMClasses},
 };
+use datafusion::common::resources_err;
+use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::{
     common::DataFusionError,
     execution::memory_pool::{MemoryPool, MemoryReservation},
 };
-use datafusion_common::resources_err;
-use datafusion_execution::memory_pool::MemoryConsumer;
 use parking_lot::Mutex;
 
 /// A DataFusion fair `MemoryPool` implementation for Comet. Internally this is

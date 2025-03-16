@@ -15,12 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow_array::cast::AsArray;
-use arrow_array::types::Decimal128Type;
-use arrow_array::{ArrayRef, Decimal128Array};
-use arrow_schema::DataType;
-use datafusion_common::{DataFusionError, ScalarValue};
-use datafusion_expr_common::columnar_value::ColumnarValue;
+use arrow::array::cast::AsArray;
+use arrow::array::types::Decimal128Type;
+use arrow::array::{ArrayRef, Decimal128Array};
+use arrow::datatypes::DataType;
+use datafusion::common::{DataFusionError, ScalarValue};
+use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
 
 #[macro_export]

@@ -17,11 +17,11 @@
 
 use crate::downcast_compute_op;
 use crate::math_funcs::utils::{get_precision_scale, make_decimal_array, make_decimal_scalar};
+use arrow::array::{Array, ArrowNativeTypeOp};
 use arrow::array::{Float32Array, Float64Array, Int64Array};
-use arrow_array::{Array, ArrowNativeTypeOp};
-use arrow_schema::DataType;
+use arrow::datatypes::DataType;
+use datafusion::common::{DataFusionError, ScalarValue};
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_common::{DataFusionError, ScalarValue};
 use num::integer::div_ceil;
 use std::sync::Arc;
 

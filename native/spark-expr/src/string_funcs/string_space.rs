@@ -18,11 +18,11 @@
 #![allow(deprecated)]
 
 use crate::kernels::strings::string_space;
+use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
-use arrow_schema::{DataType, Schema};
+use datafusion::common::DataFusionError;
 use datafusion::logical_expr::ColumnarValue;
-use datafusion_common::DataFusionError;
-use datafusion_physical_expr::PhysicalExpr;
+use datafusion::physical_expr::PhysicalExpr;
 use std::{
     any::Any,
     fmt::{Display, Formatter},
@@ -64,7 +64,7 @@ impl PhysicalExpr for StringSpaceExpr {
         self
     }
 
-    fn data_type(&self, input_schema: &Schema) -> datafusion_common::Result<DataType> {
+    fn data_type(&self, input_schema: &Schema) -> datafusion::common::Result<DataType> {
         match self.child.data_type(input_schema)? {
             DataType::Dictionary(key_type, _) => {
                 Ok(DataType::Dictionary(key_type, Box::new(DataType::Utf8)))
@@ -73,11 +73,11 @@ impl PhysicalExpr for StringSpaceExpr {
         }
     }
 
-    fn nullable(&self, _: &Schema) -> datafusion_common::Result<bool> {
+    fn nullable(&self, _: &Schema) -> datafusion::common::Result<bool> {
         Ok(true)
     }
 
-    fn evaluate(&self, batch: &RecordBatch) -> datafusion_common::Result<ColumnarValue> {
+    fn evaluate(&self, batch: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
         let arg = self.child.evaluate(batch)?;
         match arg {
             ColumnarValue::Array(array) => {
@@ -98,7 +98,7 @@ impl PhysicalExpr for StringSpaceExpr {
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
-    ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
+    ) -> datafusion::common::Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(StringSpaceExpr::new(Arc::clone(&children[0]))))
     }
 }

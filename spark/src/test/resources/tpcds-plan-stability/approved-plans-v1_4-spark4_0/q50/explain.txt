@@ -1,16 +1,16 @@
 == Physical Plan ==
-TakeOrderedAndProject (29)
-+- * HashAggregate (28)
-   +- * CometColumnarToRow (27)
-      +- CometColumnarExchange (26)
-         +- * HashAggregate (25)
-            +- * CometColumnarToRow (24)
-               +- CometProject (23)
-                  +- CometBroadcastHashJoin (22)
-                     :- CometProject (17)
-                     :  +- CometBroadcastHashJoin (16)
-                     :     :- CometProject (12)
-                     :     :  +- CometBroadcastHashJoin (11)
+TakeOrderedAndProject (30)
++- * HashAggregate (29)
+   +- * CometColumnarToRow (28)
+      +- CometColumnarExchange (27)
+         +- * HashAggregate (26)
+            +- * CometColumnarToRow (25)
+               +- CometProject (24)
+                  +- CometBroadcastHashJoin (23)
+                     :- CometProject (18)
+                     :  +- CometBroadcastHashJoin (17)
+                     :     :- CometProject (13)
+                     :     :  +- CometBroadcastHashJoin (12)
                      :     :     :- CometProject (7)
                      :     :     :  +- CometBroadcastHashJoin (6)
                      :     :     :     :- CometFilter (2)
@@ -18,16 +18,17 @@ TakeOrderedAndProject (29)
                      :     :     :     +- CometBroadcastExchange (5)
                      :     :     :        +- CometFilter (4)
                      :     :     :           +- CometScan parquet spark_catalog.default.store_returns (3)
-                     :     :     +- CometBroadcastExchange (10)
-                     :     :        +- CometFilter (9)
-                     :     :           +- CometScan parquet spark_catalog.default.store (8)
-                     :     +- CometBroadcastExchange (15)
-                     :        +- CometFilter (14)
-                     :           +- CometScan parquet spark_catalog.default.date_dim (13)
-                     +- CometBroadcastExchange (21)
-                        +- CometProject (20)
-                           +- CometFilter (19)
-                              +- CometScan parquet spark_catalog.default.date_dim (18)
+                     :     :     +- CometBroadcastExchange (11)
+                     :     :        +- CometProject (10)
+                     :     :           +- CometFilter (9)
+                     :     :              +- CometScan parquet spark_catalog.default.store (8)
+                     :     +- CometBroadcastExchange (16)
+                     :        +- CometFilter (15)
+                     :           +- CometScan parquet spark_catalog.default.date_dim (14)
+                     +- CometBroadcastExchange (22)
+                        +- CometProject (21)
+                           +- CometFilter (20)
+                              +- CometScan parquet spark_catalog.default.date_dim (19)
 
 
 (1) CometScan parquet spark_catalog.default.store_sales
@@ -78,129 +79,133 @@ ReadSchema: struct<s_store_sk:int,s_store_name:string,s_company_id:int,s_street_
 Input [11]: [s_store_sk#11, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21]
 Condition : isnotnull(s_store_sk#11)
 
-(10) CometBroadcastExchange
+(10) CometProject
 Input [11]: [s_store_sk#11, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21]
-Arguments: [s_store_sk#11, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21]
+Arguments: [s_store_sk#11, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25], [s_store_sk#11, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_street_type#16, 15, true, false, true) AS s_street_type#22, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_suite_number#17, 10, true, false, true) AS s_suite_number#23, s_city#18, s_county#19, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_state#20, 2, true, false, true) AS s_state#24, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_zip#21, 10, true, false, true) AS s_zip#25]
 
-(11) CometBroadcastHashJoin
+(11) CometBroadcastExchange
+Input [11]: [s_store_sk#11, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25]
+Arguments: [s_store_sk#11, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25]
+
+(12) CometBroadcastHashJoin
 Left output [3]: [ss_store_sk#3, ss_sold_date_sk#5, sr_returned_date_sk#9]
-Right output [11]: [s_store_sk#11, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21]
+Right output [11]: [s_store_sk#11, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25]
 Arguments: [ss_store_sk#3], [s_store_sk#11], Inner, BuildRight
 
-(12) CometProject
-Input [14]: [ss_store_sk#3, ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_sk#11, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21]
-Arguments: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21], [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21]
+(13) CometProject
+Input [14]: [ss_store_sk#3, ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_sk#11, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25]
+Arguments: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25], [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25]
 
-(13) CometScan parquet spark_catalog.default.date_dim
-Output [1]: [d_date_sk#22]
+(14) CometScan parquet spark_catalog.default.date_dim
+Output [1]: [d_date_sk#26]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int>
 
-(14) CometFilter
-Input [1]: [d_date_sk#22]
-Condition : isnotnull(d_date_sk#22)
+(15) CometFilter
+Input [1]: [d_date_sk#26]
+Condition : isnotnull(d_date_sk#26)
 
-(15) CometBroadcastExchange
-Input [1]: [d_date_sk#22]
-Arguments: [d_date_sk#22]
+(16) CometBroadcastExchange
+Input [1]: [d_date_sk#26]
+Arguments: [d_date_sk#26]
 
-(16) CometBroadcastHashJoin
-Left output [12]: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21]
-Right output [1]: [d_date_sk#22]
-Arguments: [ss_sold_date_sk#5], [d_date_sk#22], Inner, BuildRight
+(17) CometBroadcastHashJoin
+Left output [12]: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25]
+Right output [1]: [d_date_sk#26]
+Arguments: [ss_sold_date_sk#5], [d_date_sk#26], Inner, BuildRight
 
-(17) CometProject
-Input [13]: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21, d_date_sk#22]
-Arguments: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21], [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21]
+(18) CometProject
+Input [13]: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25, d_date_sk#26]
+Arguments: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25], [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25]
 
-(18) CometScan parquet spark_catalog.default.date_dim
-Output [3]: [d_date_sk#23, d_year#24, d_moy#25]
+(19) CometScan parquet spark_catalog.default.date_dim
+Output [3]: [d_date_sk#27, d_year#28, d_moy#29]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), IsNotNull(d_moy), EqualTo(d_year,2001), EqualTo(d_moy,8), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
-(19) CometFilter
-Input [3]: [d_date_sk#23, d_year#24, d_moy#25]
-Condition : ((((isnotnull(d_year#24) AND isnotnull(d_moy#25)) AND (d_year#24 = 2001)) AND (d_moy#25 = 8)) AND isnotnull(d_date_sk#23))
+(20) CometFilter
+Input [3]: [d_date_sk#27, d_year#28, d_moy#29]
+Condition : ((((isnotnull(d_year#28) AND isnotnull(d_moy#29)) AND (d_year#28 = 2001)) AND (d_moy#29 = 8)) AND isnotnull(d_date_sk#27))
 
-(20) CometProject
-Input [3]: [d_date_sk#23, d_year#24, d_moy#25]
-Arguments: [d_date_sk#23], [d_date_sk#23]
+(21) CometProject
+Input [3]: [d_date_sk#27, d_year#28, d_moy#29]
+Arguments: [d_date_sk#27], [d_date_sk#27]
 
-(21) CometBroadcastExchange
-Input [1]: [d_date_sk#23]
-Arguments: [d_date_sk#23]
+(22) CometBroadcastExchange
+Input [1]: [d_date_sk#27]
+Arguments: [d_date_sk#27]
 
-(22) CometBroadcastHashJoin
-Left output [12]: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21]
-Right output [1]: [d_date_sk#23]
-Arguments: [sr_returned_date_sk#9], [d_date_sk#23], Inner, BuildRight
+(23) CometBroadcastHashJoin
+Left output [12]: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25]
+Right output [1]: [d_date_sk#27]
+Arguments: [sr_returned_date_sk#9], [d_date_sk#27], Inner, BuildRight
 
-(23) CometProject
-Input [13]: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21, d_date_sk#23]
-Arguments: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21], [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21]
+(24) CometProject
+Input [13]: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25, d_date_sk#27]
+Arguments: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25], [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25]
 
-(24) CometColumnarToRow [codegen id : 1]
-Input [12]: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21]
+(25) CometColumnarToRow [codegen id : 1]
+Input [12]: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25]
 
-(25) HashAggregate [codegen id : 1]
-Input [12]: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21]
-Keys [10]: [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21]
+(26) HashAggregate [codegen id : 1]
+Input [12]: [ss_sold_date_sk#5, sr_returned_date_sk#9, s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25]
+Keys [10]: [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25]
 Functions [5]: [partial_sum(CASE WHEN ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 30) THEN 1 ELSE 0 END), partial_sum(CASE WHEN (((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 30) AND ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 60)) THEN 1 ELSE 0 END), partial_sum(CASE WHEN (((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 60) AND ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 90)) THEN 1 ELSE 0 END), partial_sum(CASE WHEN (((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 90) AND ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 120)) THEN 1 ELSE 0 END), partial_sum(CASE WHEN ((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 120) THEN 1 ELSE 0 END)]
-Aggregate Attributes [5]: [sum#26, sum#27, sum#28, sum#29, sum#30]
-Results [15]: [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21, sum#31, sum#32, sum#33, sum#34, sum#35]
+Aggregate Attributes [5]: [sum#30, sum#31, sum#32, sum#33, sum#34]
+Results [15]: [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25, sum#35, sum#36, sum#37, sum#38, sum#39]
 
-(26) CometColumnarExchange
-Input [15]: [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21, sum#31, sum#32, sum#33, sum#34, sum#35]
-Arguments: hashpartitioning(s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+(27) CometColumnarExchange
+Input [15]: [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25, sum#35, sum#36, sum#37, sum#38, sum#39]
+Arguments: hashpartitioning(s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
-(27) CometColumnarToRow [codegen id : 2]
-Input [15]: [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21, sum#31, sum#32, sum#33, sum#34, sum#35]
+(28) CometColumnarToRow [codegen id : 2]
+Input [15]: [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25, sum#35, sum#36, sum#37, sum#38, sum#39]
 
-(28) HashAggregate [codegen id : 2]
-Input [15]: [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21, sum#31, sum#32, sum#33, sum#34, sum#35]
-Keys [10]: [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21]
+(29) HashAggregate [codegen id : 2]
+Input [15]: [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25, sum#35, sum#36, sum#37, sum#38, sum#39]
+Keys [10]: [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25]
 Functions [5]: [sum(CASE WHEN ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 30) THEN 1 ELSE 0 END), sum(CASE WHEN (((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 30) AND ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 60)) THEN 1 ELSE 0 END), sum(CASE WHEN (((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 60) AND ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 90)) THEN 1 ELSE 0 END), sum(CASE WHEN (((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 90) AND ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 120)) THEN 1 ELSE 0 END), sum(CASE WHEN ((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 120) THEN 1 ELSE 0 END)]
-Aggregate Attributes [5]: [sum(CASE WHEN ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 30) THEN 1 ELSE 0 END)#36, sum(CASE WHEN (((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 30) AND ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 60)) THEN 1 ELSE 0 END)#37, sum(CASE WHEN (((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 60) AND ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 90)) THEN 1 ELSE 0 END)#38, sum(CASE WHEN (((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 90) AND ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 120)) THEN 1 ELSE 0 END)#39, sum(CASE WHEN ((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 120) THEN 1 ELSE 0 END)#40]
-Results [15]: [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21, sum(CASE WHEN ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 30) THEN 1 ELSE 0 END)#36 AS 30 days #41, sum(CASE WHEN (((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 30) AND ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 60)) THEN 1 ELSE 0 END)#37 AS 31 - 60 days #42, sum(CASE WHEN (((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 60) AND ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 90)) THEN 1 ELSE 0 END)#38 AS 61 - 90 days #43, sum(CASE WHEN (((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 90) AND ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 120)) THEN 1 ELSE 0 END)#39 AS 91 - 120 days #44, sum(CASE WHEN ((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 120) THEN 1 ELSE 0 END)#40 AS >120 days #45]
+Aggregate Attributes [5]: [sum(CASE WHEN ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 30) THEN 1 ELSE 0 END)#40, sum(CASE WHEN (((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 30) AND ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 60)) THEN 1 ELSE 0 END)#41, sum(CASE WHEN (((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 60) AND ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 90)) THEN 1 ELSE 0 END)#42, sum(CASE WHEN (((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 90) AND ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 120)) THEN 1 ELSE 0 END)#43, sum(CASE WHEN ((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 120) THEN 1 ELSE 0 END)#44]
+Results [15]: [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25, sum(CASE WHEN ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 30) THEN 1 ELSE 0 END)#40 AS 30 days #45, sum(CASE WHEN (((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 30) AND ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 60)) THEN 1 ELSE 0 END)#41 AS 31 - 60 days #46, sum(CASE WHEN (((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 60) AND ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 90)) THEN 1 ELSE 0 END)#42 AS 61 - 90 days #47, sum(CASE WHEN (((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 90) AND ((sr_returned_date_sk#9 - ss_sold_date_sk#5) <= 120)) THEN 1 ELSE 0 END)#43 AS 91 - 120 days #48, sum(CASE WHEN ((sr_returned_date_sk#9 - ss_sold_date_sk#5) > 120) THEN 1 ELSE 0 END)#44 AS >120 days #49]
 
-(29) TakeOrderedAndProject
-Input [15]: [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21, 30 days #41, 31 - 60 days #42, 61 - 90 days #43, 91 - 120 days #44, >120 days #45]
-Arguments: 100, [s_store_name#12 ASC NULLS FIRST, s_company_id#13 ASC NULLS FIRST, s_street_number#14 ASC NULLS FIRST, s_street_name#15 ASC NULLS FIRST, s_street_type#16 ASC NULLS FIRST, s_suite_number#17 ASC NULLS FIRST, s_city#18 ASC NULLS FIRST, s_county#19 ASC NULLS FIRST, s_state#20 ASC NULLS FIRST, s_zip#21 ASC NULLS FIRST], [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#16, s_suite_number#17, s_city#18, s_county#19, s_state#20, s_zip#21, 30 days #41, 31 - 60 days #42, 61 - 90 days #43, 91 - 120 days #44, >120 days #45]
+(30) TakeOrderedAndProject
+Input [15]: [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25, 30 days #45, 31 - 60 days #46, 61 - 90 days #47, 91 - 120 days #48, >120 days #49]
+Arguments: 100, [s_store_name#12 ASC NULLS FIRST, s_company_id#13 ASC NULLS FIRST, s_street_number#14 ASC NULLS FIRST, s_street_name#15 ASC NULLS FIRST, s_street_type#22 ASC NULLS FIRST, s_suite_number#23 ASC NULLS FIRST, s_city#18 ASC NULLS FIRST, s_county#19 ASC NULLS FIRST, s_state#24 ASC NULLS FIRST, s_zip#25 ASC NULLS FIRST], [s_store_name#12, s_company_id#13, s_street_number#14, s_street_name#15, s_street_type#22, s_suite_number#23, s_city#18, s_county#19, s_state#24, s_zip#25, 30 days #45, 31 - 60 days #46, 61 - 90 days #47, 91 - 120 days #48, >120 days #49]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 3 Hosting Expression = sr_returned_date_sk#9 IN dynamicpruning#10
-BroadcastExchange (34)
-+- * CometColumnarToRow (33)
-   +- CometProject (32)
-      +- CometFilter (31)
-         +- CometScan parquet spark_catalog.default.date_dim (30)
+BroadcastExchange (35)
++- * CometColumnarToRow (34)
+   +- CometProject (33)
+      +- CometFilter (32)
+         +- CometScan parquet spark_catalog.default.date_dim (31)
 
 
-(30) CometScan parquet spark_catalog.default.date_dim
-Output [3]: [d_date_sk#23, d_year#24, d_moy#25]
+(31) CometScan parquet spark_catalog.default.date_dim
+Output [3]: [d_date_sk#27, d_year#28, d_moy#29]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), IsNotNull(d_moy), EqualTo(d_year,2001), EqualTo(d_moy,8), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
-(31) CometFilter
-Input [3]: [d_date_sk#23, d_year#24, d_moy#25]
-Condition : ((((isnotnull(d_year#24) AND isnotnull(d_moy#25)) AND (d_year#24 = 2001)) AND (d_moy#25 = 8)) AND isnotnull(d_date_sk#23))
+(32) CometFilter
+Input [3]: [d_date_sk#27, d_year#28, d_moy#29]
+Condition : ((((isnotnull(d_year#28) AND isnotnull(d_moy#29)) AND (d_year#28 = 2001)) AND (d_moy#29 = 8)) AND isnotnull(d_date_sk#27))
 
-(32) CometProject
-Input [3]: [d_date_sk#23, d_year#24, d_moy#25]
-Arguments: [d_date_sk#23], [d_date_sk#23]
+(33) CometProject
+Input [3]: [d_date_sk#27, d_year#28, d_moy#29]
+Arguments: [d_date_sk#27], [d_date_sk#27]
 
-(33) CometColumnarToRow [codegen id : 1]
-Input [1]: [d_date_sk#23]
+(34) CometColumnarToRow [codegen id : 1]
+Input [1]: [d_date_sk#27]
 
-(34) BroadcastExchange
-Input [1]: [d_date_sk#23]
+(35) BroadcastExchange
+Input [1]: [d_date_sk#27]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=2]
 
 

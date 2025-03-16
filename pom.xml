@@ -30,7 +30,7 @@ under the License.
   </parent>
   <groupId>org.apache.datafusion</groupId>
   <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-  <version>0.7.0-SNAPSHOT</version>
+  <version>0.8.0-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>Comet Project Parent POM</name>
 
@@ -50,8 +50,8 @@ under the License.
     <scala.version>2.12.17</scala.version>
     <scala.binary.version>2.12</scala.binary.version>
     <scala.plugin.version>4.7.2</scala.plugin.version>
-    <scalatest.version>3.2.9</scalatest.version>
-    <scalatest-maven-plugin.version>2.0.2</scalatest-maven-plugin.version>
+    <scalatest.version>3.2.16</scalatest.version>
+    <scalatest-maven-plugin.version>2.2.0</scalatest-maven-plugin.version>
     <spark.version>3.4.3</spark.version>
     <spark.version.short>3.4</spark.version.short>
     <spark.maven.scope>provided</spark.maven.scope>
@@ -95,7 +95,6 @@ under the License.
       -Djdk.reflect.useDirectMethodHandle=false
     </extraJavaTestArgs>
     <argLine>-ea -Xmx4g -Xss4m ${extraJavaTestArgs}</argLine>
-    <additional.3_3.test.source>spark-3.3-plus</additional.3_3.test.source>
     <additional.3_4.test.source>spark-3.4-plus</additional.3_4.test.source>
     <additional.3_5.test.source>not-needed</additional.3_5.test.source>
     <additional.pre35.test.source>spark-pre-3.5</additional.pre35.test.source>
@@ -545,19 +544,6 @@ under the License.
       <properties>
         <platform>linux</platform>
         <arch>aarch64</arch>
-      </properties>
-    </profile>
-
-    <profile>
-      <id>spark-3.3</id>
-      <properties>
-        <scala.version>2.12.15</scala.version>
-        <spark.version>3.3.2</spark.version>
-        <spark.version.short>3.3</spark.version.short>
-        <parquet.version>1.12.0</parquet.version>
-        <slf4j.version>1.7.32</slf4j.version>
-        <additional.3_4.test.source>not-needed-yet</additional.3_4.test.source>
-        <shims.minorVerSrc>spark-3.3</shims.minorVerSrc>
       </properties>
     </profile>
 

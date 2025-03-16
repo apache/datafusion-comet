@@ -16,25 +16,14 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.apache.comet.shims
 
-import org.apache.comet.expressions.CometEvalMode
-import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.types.DataType
+package org.apache.spark.sql.comet.shims
 
-/**
- * `CometExprShim` acts as a shim for for parsing expressions from different Spark versions.
- */
-trait CometExprShim {
-    /**
-     * Returns a tuple of expressions for the `unhex` function.
-     */
-    protected def unhexSerde(unhex: Unhex): (Expression, Expression) = {
-        (unhex.child, Literal(false))
-    }
+import org.apache.spark.executor.TaskMetrics
+import org.apache.spark.util.AccumulatorV2
 
-    protected def isTimestampNTZType(dt: DataType): Boolean =
-        dt.typeName == "timestamp_ntz" // `TimestampNTZType` is private
+object ShimTaskMetrics {
 
-    protected def evalMode(c: Cast): CometEvalMode.Value = CometEvalMode.fromBoolean(c.ansiEnabled)
+  def getTaskAccumulator(taskMetrics: TaskMetrics): Option[AccumulatorV2[_, _]] =
+    taskMetrics.externalAccums.lastOption
 }
