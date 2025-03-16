@@ -111,7 +111,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
   test("columnar shuffle on nested struct including nulls") {
     // https://github.com/apache/datafusion-comet/issues/1538
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     Seq(10, 201).foreach { numPartitions =>
       Seq("1.0", "10.0").foreach { ratio =>
         withSQLConf(CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
@@ -250,7 +250,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
   test("columnar shuffle on map") {
     // https://github.com/apache/datafusion-comet/issues/1538
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
 
     def genTuples[K](num: Int, keys: Seq[K]): Seq[(
         Int,
@@ -586,7 +586,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
   test("columnar shuffle on array") {
     // https://github.com/apache/datafusion-comet/issues/1538
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
 
     Seq(10, 201).foreach { numPartitions =>
       Seq("1.0", "10.0").foreach { ratio =>
@@ -687,7 +687,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
   test("fix: Dictionary field should have distinct dict_id") {
     // https://github.com/apache/datafusion-comet/issues/1538
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     Seq(10, 201).foreach { numPartitions =>
       withSQLConf(CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> "2.0") {
         withParquetTable(
@@ -706,7 +706,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
   test("dictionary shuffle") {
     // https://github.com/apache/datafusion-comet/issues/1538
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     Seq(10, 201).foreach { numPartitions =>
       withSQLConf(CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> "2.0") {
         withParquetTable((0 until 10000).map(i => (1.toString, (i + 1).toLong)), "tbl") {
@@ -723,7 +723,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
   test("dictionary shuffle: fallback to string") {
     // https://github.com/apache/datafusion-comet/issues/1538
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     Seq(10, 201).foreach { numPartitions =>
       withSQLConf(CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> "1000000000.0") {
         withParquetTable((0 until 10000).map(i => (1.toString, (i + 1).toLong)), "tbl") {
@@ -740,7 +740,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
   test("fix: inMemSorter should be reset after spilling") {
     // https://github.com/apache/datafusion-comet/issues/1538
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     withParquetTable((0 until 10000).map(i => (1, (i + 1).toLong)), "tbl") {
       assert(
         sql("SELECT * FROM tbl").repartition(201, $"_1").count() == sql("SELECT * FROM tbl")
@@ -750,7 +750,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
   test("fix: native Unsafe row accessors return incorrect results") {
     // https://github.com/apache/datafusion-comet/issues/1538
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     Seq(10, 201).foreach { numPartitions =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -873,7 +873,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
   test("Columnar shuffle for large shuffle partition number") {
     // https://github.com/apache/datafusion-comet/issues/1538
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     Seq(10, 200, 201).foreach { numPartitions =>
       withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
         val df = sql("SELECT * FROM tbl")
@@ -893,7 +893,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
   test("hash-based columnar shuffle") {
     // https://github.com/apache/datafusion-comet/issues/1538
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     Seq(10, 200, 201).foreach { numPartitions =>
       withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
         val df = sql("SELECT * FROM tbl")
@@ -923,7 +923,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
   test("columnar shuffle: different data type") {
     // https://github.com/apache/datafusion-comet/issues/1538
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
 
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
