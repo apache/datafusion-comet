@@ -99,9 +99,7 @@ pub(crate) fn init_parquet_exec(
         ),
     };
 
-    let scan = Arc::new(DataSourceExec::new(Arc::new(file_scan_config)));
-
-    Ok(scan)
+    Ok(Arc::new(DataSourceExec::new(Arc::new(file_scan_config))))
 }
 
 fn get_options(session_timezone: &str) -> (TableParquetOptions, SparkParquetOptions) {

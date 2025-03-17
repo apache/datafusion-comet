@@ -72,6 +72,7 @@ use datafusion::{
 };
 use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr};
 
+use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::parquet_exec::init_parquet_exec;
@@ -197,9 +198,10 @@ impl PhysicalPlanner {
             );
 
             // Spark sends the path over as URL-encoded, parse that first.
-            let url = Url::parse(file.file_path.as_ref()).unwrap();
+            let url =
+                Url::parse(file.file_path.as_ref()).map_err(|e| GeneralError(e.to_string()))?;
             // Convert that to a Path object to use in the PartitionedFile.
-            let path = Path::from_url_path(url.path()).unwrap();
+            let path = Path::from_url_path(url.path()).map_err(|e| GeneralError(e.to_string()))?;
             partitioned_file.object_meta.location = path;
 
             // Process partition values

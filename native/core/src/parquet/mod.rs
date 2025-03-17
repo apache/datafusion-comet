@@ -661,7 +661,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         let session_ctx = SessionContext::new();
 
         let (object_store_url, object_store_path) =
-            prepare_object_store(session_ctx.runtime_env(), path.clone()).unwrap();
+            prepare_object_store(session_ctx.runtime_env(), path.clone())?;
 
         let required_schema_array = JByteArray::from_raw(required_schema);
         let required_schema_buffer = env.convert_byte_array(&required_schema_array)?;
