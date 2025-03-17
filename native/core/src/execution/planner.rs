@@ -232,8 +232,6 @@ impl PhysicalPlanner {
             Ok::<(), ExecutionError>(())
         })?;
 
-        // file_groups.push(files);
-        // Ok::<(), ExecutionError>(())
         Ok(files)
     }
 
