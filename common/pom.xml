@@ -210,7 +210,6 @@ under the License.
               <sources>
                 <source>src/main/${shims.majorVerSrc}</source>
                 <source>src/main/${shims.minorVerSrc}</source>
-                <source>src/main/${shims.pre35Src}</source>
               </sources>
             </configuration>
           </execution>

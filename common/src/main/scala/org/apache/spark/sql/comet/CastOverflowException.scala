@@ -19,7 +19,17 @@
 
 package org.apache.spark.sql.comet
 
-import org.apache.spark.sql.comet.shims.ShimCastOverflowException
+import org.apache.spark.SparkArithmeticException
+import org.apache.spark.sql.errors.QueryExecutionErrors.toSQLConf
+import org.apache.spark.sql.internal.SQLConf
 
 class CastOverflowException(t: String, from: String, to: String)
-    extends ShimCastOverflowException(t, from, to) {}
+    extends SparkArithmeticException(
+      "CAST_OVERFLOW",
+      Map(
+        "value" -> t,
+        "sourceType" -> s""""$from"""",
+        "targetType" -> s""""$to"""",
+        "ansiConfig" -> toSQLConf(SQLConf.ANSI_ENABLED.key)),
+      Array.empty,
+      "") {}

@@ -19,26 +19,14 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.execution.{LimitExec, QueryExecution, SparkPlan}
+import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
 
 trait ShimCometSparkSessionExtensions {
-  /**
-   * TODO: delete after dropping Spark 3.3 support
-   */
-  def getOffset(limit: LimitExec): Int = getOffsetOpt(limit).getOrElse(0)
-
   /**
    * TODO: delete after dropping Spark 3.x support and directly call
    *       SQLConf.EXTENDED_EXPLAIN_PROVIDERS.key
    */
   protected val EXTENDED_EXPLAIN_PROVIDERS_KEY = "spark.sql.extendedExplainProviders"
-
-  private def getOffsetOpt(plan: SparkPlan): Option[Int] = plan.getClass.getDeclaredFields
-    .filter(_.getName == "offset")
-    .map { a => a.setAccessible(true); a.get(plan) }
-    .filter(_.isInstanceOf[Int])
-    .map(_.asInstanceOf[Int])
-    .headOption
 
   // Extended info is available only since Spark 4.0.0
   // (https://issues.apache.org/jira/browse/SPARK-47289)
