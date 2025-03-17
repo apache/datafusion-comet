@@ -2687,13 +2687,14 @@ mod tests {
     use arrow::array::{DictionaryArray, Int32Array, StringArray};
     use arrow::datatypes::DataType;
     use arrow::util::pretty::pretty_format_batches;
-    use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
     use datafusion::logical_expr::ScalarUDF;
+    use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
     use tokio::sync::mpsc;
 
     use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
 
     use crate::execution::operators::ExecutionError;
+    use datafusion_comet_proto::spark_expression::expr::ExprStruct;
     use datafusion_comet_proto::{
         spark_expression::expr::ExprStruct::*,
         spark_expression::Expr,
@@ -2701,7 +2702,6 @@ mod tests {
         spark_operator,
         spark_operator::{operator::OpStruct, Operator},
     };
-    use datafusion_comet_proto::spark_expression::expr::ExprStruct;
 
     #[test]
     fn test_unpack_dictionary_primitive() {
@@ -3011,27 +3011,33 @@ mod tests {
     #[test]
     fn test_create_array() {
         let session_ctx = SessionContext::new();
-        session_ctx.register_udf(ScalarUDF::from(datafusion_functions_nested::make_array::MakeArray::new()));
+        session_ctx.register_udf(ScalarUDF::from(
+            datafusion_functions_nested::make_array::MakeArray::new(),
+        ));
         let task_ctx = session_ctx.task_ctx();
         let planner = PhysicalPlanner::new(Arc::from(session_ctx));
 
-        // Create a plan for 
+        // Create a plan for
         // ProjectionExec: expr=[make_array(col_0@0) as col_0]
         // ScanExec: source=[CometScan parquet  (unknown)], schema=[col_0: Int32]
         let op_scan = Operator {
             plan_id: 0,
             children: vec![],
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
-                fields: vec![spark_expression::DataType {
-                    type_id: 3, // Int32
-                    type_info: None,
-                }, spark_expression::DataType {
-                    type_id: 3, // Int32
-                    type_info: None,
-                }, spark_expression::DataType {
-                    type_id: 3, // Int32
-                    type_info: None,
-                }],
+                fields: vec![
+                    spark_expression::DataType {
+                        type_id: 3, // Int32
+                        type_info: None,
+                    },
+                    spark_expression::DataType {
+                        type_id: 3, // Int32
+                        type_info: None,
+                    },
+                    spark_expression::DataType {
+                        type_id: 3, // Int32
+                        type_info: None,
+                    },
+                ],
                 source: "".to_string(),
             })),
         };
@@ -3066,8 +3072,7 @@ mod tests {
                         args: vec![array_col, array_col_1],
                         return_type: None,
                     })),
-                }
-                ],
+                }],
             })),
         };
 
@@ -3076,7 +3081,8 @@ mod tests {
         let c = Int32Array::from(vec![2, 5]);
         let input_batch = InputBatch::Batch(vec![Arc::new(a), Arc::new(b), Arc::new(c)], 2);
 
-        let (mut scans, datafusion_plan) = planner.create_plan(&projection, &mut vec![], 1).unwrap();
+        let (mut scans, datafusion_plan) =
+            planner.create_plan(&projection, &mut vec![], 1).unwrap();
         scans[0].set_input_batch(input_batch);
 
         let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
