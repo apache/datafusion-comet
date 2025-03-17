@@ -214,11 +214,11 @@ class CometSparkSessionExtensions
           }
 
           val (schemaSupported, partitionSchemaSupported) = scanImpl match {
-            case CometConf.SCAN_NATIVE_DATAFUSION | SCAN_NATIVE_ICEBERG_COMPAT =>
+            case CometConf.SCAN_NATIVE_DATAFUSION =>
               (
                 CometNativeScanExec.isSchemaSupported(scanExec.requiredSchema),
                 CometNativeScanExec.isSchemaSupported(r.partitionSchema))
-            case CometConf.SCAN_NATIVE_COMET =>
+            case CometConf.SCAN_NATIVE_COMET | SCAN_NATIVE_ICEBERG_COMPAT =>
               (
                 CometScanExec.isSchemaSupported(scanExec.requiredSchema),
                 CometScanExec.isSchemaSupported(r.partitionSchema))
