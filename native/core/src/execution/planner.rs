@@ -1307,6 +1307,7 @@ impl PhysicalPlanner {
                         parquet_source.with_predicate(Arc::clone(&data_schema), filter);
                 }
 
+                dbg!(&data_schema);
                 let mut file_scan_config = FileScanConfig::new(
                     object_store_url,
                     Arc::clone(&data_schema),
@@ -1330,6 +1331,7 @@ impl PhysicalPlanner {
             OpStruct::Scan(scan) => {
                 let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
 
+                dbg!(&data_types);
                 // If it is not test execution context for unit test, we should have at least one
                 // input source
                 if self.exec_context_id != TEST_EXEC_CONTEXT_ID && inputs.is_empty() {
@@ -2354,6 +2356,9 @@ impl PhysicalPlanner {
             .map(|x| x.data_type(input_schema.as_ref()))
             .collect::<Result<Vec<_>, _>>()?;
 
+        dbg!(fun_name);
+        dbg!(&expr.return_type);
+
         let (data_type, coerced_input_types) =
             match expr.return_type.as_ref().map(to_arrow_datatype) {
                 Some(t) => (t, input_expr_types.clone()),
@@ -2393,12 +2398,21 @@ impl PhysicalPlanner {
                         .return_type()
                         .clone();
 
+                    let data_type = match data_type  {
+                        DataType::List(f) => DataType::List(f.as_ref().clone().with_name("element").into()),
+                        other => other
+                    };
+
                     (data_type, coerced_types)
                 }
             };
 
+        dbg!(&data_type);
+
         let fun_expr =
             create_comet_physical_fun(fun_name, data_type.clone(), &self.session_ctx.state())?;
+
+        dbg!(&fun_expr);
 
         let args = args
             .into_iter()
@@ -2687,6 +2701,7 @@ mod tests {
     use arrow::array::{DictionaryArray, Int32Array, StringArray};
     use arrow::datatypes::DataType;
     use datafusion::{physical_plan::common::collect, prelude::SessionContext};
+    use datafusion_expr::ScalarUDF;
     use tokio::sync::mpsc;
 
     use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
@@ -2699,6 +2714,7 @@ mod tests {
         spark_operator,
         spark_operator::{operator::OpStruct, Operator},
     };
+    use datafusion_comet_proto::spark_expression::expr::ExprStruct;
 
     #[test]
     fn test_unpack_dictionary_primitive() {
@@ -3003,5 +3019,107 @@ mod tests {
             type_id: 3,
             type_info: None,
         }
+    }
+
+    #[test]
+    fn test_create_array() {
+
+        let session_ctx = SessionContext::new();
+        session_ctx.register_udf(ScalarUDF::from(datafusion_functions_nested::make_array::MakeArray::new()));
+        let task_ctx = session_ctx.task_ctx();
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx));
+
+        // Create a plan for 
+        // ProjectionExec: expr=[make_array(col_0@0) as col_0]
+        // ScanExec: source=[CometScan parquet  (unknown)], schema=[col_0: Int32]
+        let op_scan = Operator {
+            plan_id: 0,
+            children: vec![],
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![spark_expression::DataType {
+                    type_id: 3, // Int32
+                    type_info: None,
+                }, spark_expression::DataType {
+                    type_id: 3, // Int32
+                    type_info: None,
+                }, spark_expression::DataType {
+                    type_id: 3, // Int32
+                    type_info: None,
+                }],
+                source: "".to_string(),
+            })),
+        };
+
+        let array_col = spark_expression::Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 0,
+                datatype: Some(spark_expression::DataType {
+                    type_id: 3,
+                    type_info: None,
+                }),
+            })),
+        };
+
+        let projection = Operator {
+            children: vec![op_scan],
+            plan_id: 0,
+            op_struct: Some(OpStruct::Projection(spark_operator::Projection {
+                project_list: vec![spark_expression::Expr {
+                    expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
+                        func: "make_array".to_string(),
+                        args: vec![array_col],
+                        return_type: None,
+                    })),
+                }
+                ],
+            })),
+        };
+
+        let a = Int32Array::from(vec![0, 3]);
+        let b = Int32Array::from(vec![1, 4]);
+        let c = Int32Array::from(vec![2, 5]);
+        let input_batch = InputBatch::Batch(vec![Arc::new(a), Arc::new(b), Arc::new(c)], 2);
+
+        let (mut scans, datafusion_plan) = planner.create_plan(&projection, &mut vec![], 1).unwrap();
+        scans[0].set_input_batch(input_batch);
+
+        let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (tx, mut rx) = mpsc::channel(1);
+
+        // Separate thread to send the EOF signal once we've processed the only input batch
+        runtime.spawn(async move {
+            // Create a dictionary array with 100 values, and use it as input to the execution.
+            let a = Int32Array::from(vec![0, 3]);
+            let b = Int32Array::from(vec![1, 4]);
+            let c = Int32Array::from(vec![2, 5]);
+            let input_batch1 = InputBatch::Batch(vec![Arc::new(a), Arc::new(b), Arc::new(c)], 2);
+            let input_batch2 = InputBatch::EOF;
+
+            let batches = vec![input_batch1, input_batch2];
+
+            for batch in batches.into_iter() {
+                tx.send(batch).await.unwrap();
+            }
+        });
+
+        runtime.block_on(async move {
+            loop {
+                let batch = rx.recv().await.unwrap();
+                scans[0].set_input_batch(batch);
+                match poll!(stream.next()) {
+                    Poll::Ready(Some(batch)) => {
+                        assert!(batch.is_ok(), "got error {}", batch.unwrap_err());
+                        let batch = batch.unwrap();
+                        assert_eq!(batch.num_rows(), 2);
+                    }
+                    Poll::Ready(None) => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
     }
 }
