@@ -1307,7 +1307,6 @@ impl PhysicalPlanner {
                         parquet_source.with_predicate(Arc::clone(&data_schema), filter);
                 }
 
-                dbg!(&data_schema);
                 let mut file_scan_config = FileScanConfig::new(
                     object_store_url,
                     Arc::clone(&data_schema),
@@ -1331,7 +1330,6 @@ impl PhysicalPlanner {
             OpStruct::Scan(scan) => {
                 let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
 
-                dbg!(&data_types);
                 // If it is not test execution context for unit test, we should have at least one
                 // input source
                 if self.exec_context_id != TEST_EXEC_CONTEXT_ID && inputs.is_empty() {
@@ -2356,9 +2354,6 @@ impl PhysicalPlanner {
             .map(|x| x.data_type(input_schema.as_ref()))
             .collect::<Result<Vec<_>, _>>()?;
 
-        dbg!(fun_name);
-        dbg!(&expr.return_type);
-
         let (data_type, coerced_input_types) =
             match expr.return_type.as_ref().map(to_arrow_datatype) {
                 Some(t) => (t, input_expr_types.clone()),
@@ -2398,21 +2393,12 @@ impl PhysicalPlanner {
                         .return_type()
                         .clone();
 
-                    let data_type = match data_type  {
-                        DataType::List(f) => DataType::List(f.as_ref().clone().with_name("element").into()),
-                        other => other
-                    };
-
                     (data_type, coerced_types)
                 }
             };
 
-        dbg!(&data_type);
-
         let fun_expr =
             create_comet_physical_fun(fun_name, data_type.clone(), &self.session_ctx.state())?;
-
-        dbg!(&fun_expr);
 
         let args = args
             .into_iter()
@@ -2700,8 +2686,9 @@ mod tests {
 
     use arrow::array::{DictionaryArray, Int32Array, StringArray};
     use arrow::datatypes::DataType;
-    use datafusion::{physical_plan::common::collect, prelude::SessionContext};
-    use datafusion_expr::ScalarUDF;
+    use arrow::util::pretty::pretty_format_batches;
+    use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
+    use datafusion::logical_expr::ScalarUDF;
     use tokio::sync::mpsc;
 
     use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
@@ -3023,7 +3010,6 @@ mod tests {
 
     #[test]
     fn test_create_array() {
-
         let session_ctx = SessionContext::new();
         session_ctx.register_udf(ScalarUDF::from(datafusion_functions_nested::make_array::MakeArray::new()));
         let task_ctx = session_ctx.task_ctx();
@@ -3060,6 +3046,16 @@ mod tests {
             })),
         };
 
+        let array_col_1 = spark_expression::Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 1,
+                datatype: Some(spark_expression::DataType {
+                    type_id: 3,
+                    type_info: None,
+                }),
+            })),
+        };
+
         let projection = Operator {
             children: vec![op_scan],
             plan_id: 0,
@@ -3067,7 +3063,7 @@ mod tests {
                 project_list: vec![spark_expression::Expr {
                     expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
                         func: "make_array".to_string(),
-                        args: vec![array_col],
+                        args: vec![array_col, array_col_1],
                         return_type: None,
                     })),
                 }
@@ -3113,6 +3109,15 @@ mod tests {
                         assert!(batch.is_ok(), "got error {}", batch.unwrap_err());
                         let batch = batch.unwrap();
                         assert_eq!(batch.num_rows(), 2);
+                        let expected = vec![
+                            "+--------+",
+                            "| col_0  |",
+                            "+--------+",
+                            "| [0, 1] |",
+                            "| [3, 4] |",
+                            "+--------+",
+                        ];
+                        assert_batches_eq!(expected, &[batch]);
                     }
                     Poll::Ready(None) => {
                         break;
