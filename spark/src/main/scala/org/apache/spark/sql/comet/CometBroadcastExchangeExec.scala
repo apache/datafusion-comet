@@ -29,9 +29,7 @@ import scala.concurrent.duration.NANOSECONDS
 import scala.util.control.NonFatal
 
 import org.apache.spark.{broadcast, Partition, SparkContext, SparkEnv, TaskContext}
-import org.apache.spark.comet.shims.ShimCometBroadcastExchangeExec
 import org.apache.spark.io.CompressionCodec
-import org.apache.spark.launcher.SparkLauncher
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
@@ -61,16 +59,12 @@ import org.apache.comet.CometRuntimeException
  * Note that this class cannot extend `CometExec` as usual similar to other Comet operators. As
  * the trait `BroadcastExchangeLike` in Spark extends abstract class `Exchange`, it limits the
  * flexibility to extend `CometExec` and `Exchange` at the same time.
- *
- * Note that this only supports Spark 3.4 and later, because the serialization class
- * `ChunkedByteBuffer` is only serializable in Spark 3.4 and later.
  */
 case class CometBroadcastExchangeExec(
     originalPlan: SparkPlan,
     override val output: Seq[Attribute],
     override val child: SparkPlan)
-    extends BroadcastExchangeLike
-    with ShimCometBroadcastExchangeExec {
+    extends BroadcastExchangeLike {
   import CometBroadcastExchangeExec._
 
   override val runId: UUID = UUID.randomUUID
@@ -181,7 +175,8 @@ case class CometBroadcastExchangeExec(
         longMetric("buildTime") += NANOSECONDS.toMillis(beforeBroadcast - beforeBuild)
 
         // (3.4 only) SPARK-39983 - Broadcast the relation without caching the unserialized object.
-        val broadcasted = doBroadcast(sparkContext, batches)
+        val broadcasted = sparkContext
+          .broadcastInternal(batches, true)
           .asInstanceOf[broadcast.Broadcast[Any]]
         longMetric("broadcastTime") += NANOSECONDS.toMillis(System.nanoTime() - beforeBroadcast)
         val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
@@ -193,16 +188,7 @@ case class CometBroadcastExchangeExec(
         // SparkFatalException, which is a subclass of Exception. ThreadUtils.awaitResult
         // will catch this exception and re-throw the wrapped fatal throwable.
         case oe: OutOfMemoryError =>
-          // Spark 3.4 has two parameters for `notEnoughMemoryToBuildAndBroadcastTableError`, which
-          // is different to Spark 3.3. We simply create the error message here.
-          val error =
-            new OutOfMemoryError(
-              "Not enough memory to build and broadcast the table to all " +
-                "worker nodes. As a workaround, you can either disable broadcast by setting " +
-                s"${SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key} to -1 or increase the spark " +
-                s"driver memory by setting ${SparkLauncher.DRIVER_MEMORY} to a higher value.")
-              .initCause(oe.getCause)
-          val ex = new SparkFatalException(error)
+          val ex = new SparkFatalException(oe)
           promise.tryFailure(ex)
           throw ex
         case e if !NonFatal(e) =>

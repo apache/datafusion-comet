@@ -19,15 +19,15 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.catalyst.expressions.SortOrder
-import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
+import org.apache.spark.sql.execution.datasources.{FileFormat, RowIndexUtil}
+import org.apache.spark.sql.types.StructType
 
-trait ShimCometBatchScanExec {
-  def wrapped: BatchScanExec
+object ShimFileFormat {
 
-  // Only for Spark 3.4+
-  def ordering: Option[Seq[SortOrder]] = wrapped.getClass.getDeclaredMethods
-    .filter(_.getName == "ordering")
-    .flatMap(_.invoke(wrapped).asInstanceOf[Option[Seq[SortOrder]]])
-    .headOption
+  // A name for a temporary column that holds row indexes computed by the file format reader
+  // until they can be placed in the _metadata struct.
+  val ROW_INDEX_TEMPORARY_COLUMN_NAME: String = FileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
+
+  def findRowIndexColumnIndexInSchema(sparkSchema: StructType): Int =
+    RowIndexUtil.findRowIndexColumnIndexInSchema(sparkSchema)
 }

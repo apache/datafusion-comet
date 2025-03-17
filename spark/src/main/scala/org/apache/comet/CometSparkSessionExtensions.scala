@@ -438,7 +438,7 @@ class CometSparkSessionExtensions
               op
           }
 
-        case op: LocalLimitExec if getOffset(op) == 0 =>
+        case op: LocalLimitExec =>
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
@@ -447,7 +447,7 @@ class CometSparkSessionExtensions
               op
           }
 
-        case op: GlobalLimitExec if getOffset(op) == 0 =>
+        case op: GlobalLimitExec if op.offset == 0 =>
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
@@ -459,10 +459,10 @@ class CometSparkSessionExtensions
         case op: CollectLimitExec
             if isCometNative(op.child) && CometConf.COMET_EXEC_COLLECT_LIMIT_ENABLED.get(conf)
               && isCometShuffleEnabled(conf)
-              && getOffset(op) == 0 =>
+              && op.offset == 0 =>
           QueryPlanSerde.operator2Proto(op) match {
             case Some(nativeOp) =>
-              val offset = getOffset(op)
+              val offset = op.offset
               val cometOp =
                 CometCollectLimitExec(op, op.limit, offset, op.child)
               CometSinkPlaceHolder(nativeOp, op, cometOp)
@@ -742,7 +742,6 @@ class CometSparkSessionExtensions
         // exchange. It is only used for Comet native execution. We only transform Spark broadcast
         // exchange to Comet broadcast exchange if its downstream is a Comet native plan or if the
         // broadcast exchange is forced to be enabled by Comet config.
-        // Note that `CometBroadcastExchangeExec` is only supported for Spark 3.4+.
         case plan if plan.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
           val newChildren = plan.children.map {
             case b: BroadcastExchangeExec
