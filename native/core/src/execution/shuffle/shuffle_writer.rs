@@ -750,9 +750,10 @@ impl PartitionedBatchesProducer {
                 partition_id == 0,
                 "Single partition mode can only be used for the first partition"
             );
-            BatchIterator::SinglePartition(SinglePartitionBatchIterator::new(std::mem::take(
-                &mut self.buffered_batches,
-            )))
+            BatchIterator::SinglePartition(SinglePartitionBatchIterator::new(
+                std::mem::take(&mut self.buffered_batches),
+                self.batch_size,
+            ))
         } else {
             BatchIterator::Partitioned(PartitionedBatchIterator::new(
                 &self.partition_indices[partition_id],
@@ -770,6 +771,9 @@ enum BatchIterator<'a> {
 
 struct SinglePartitionBatchIterator {
     buffered_batches: std::vec::IntoIter<RecordBatch>,
+    batch_size: usize,
+    pending_batch: Option<RecordBatch>,
+    concatenating_batches: Vec<RecordBatch>,
 }
 
 struct PartitionedBatchIterator<'a> {
@@ -791,14 +795,62 @@ impl Iterator for BatchIterator<'_> {
 }
 
 impl SinglePartitionBatchIterator {
-    fn new(buffered_batches: Vec<RecordBatch>) -> Self {
+    fn new(buffered_batches: Vec<RecordBatch>, batch_size: usize) -> Self {
         Self {
             buffered_batches: buffered_batches.into_iter(),
+            batch_size,
+            pending_batch: None,
+            concatenating_batches: vec![],
         }
     }
 
     fn next(&mut self) -> Option<Result<RecordBatch>> {
-        self.buffered_batches.next().map(Ok)
+        if self.pending_batch.is_none() {
+            // Get the first batch if we don't have a pending batch
+            self.pending_batch = self.buffered_batches.next();
+            self.pending_batch.as_ref()?;
+        }
+
+        let pending_batch = self.pending_batch.take().unwrap();
+        let mut current_row_count = pending_batch.num_rows();
+        let schema = pending_batch.schema();
+        self.concatenating_batches.clear();
+        self.concatenating_batches.push(pending_batch);
+
+        // Keep accumulating batches until we reach/exceed batch_size or run out of batches
+        while current_row_count < self.batch_size {
+            if let Some(next_batch) = self.buffered_batches.next() {
+                let next_row_count = next_batch.num_rows();
+
+                // If adding this batch would exceed batch_size, save it for next time
+                current_row_count += next_row_count;
+                if current_row_count > self.batch_size {
+                    self.pending_batch = Some(next_batch);
+                    break;
+                }
+
+                // Otherwise, concatenate the batches
+                self.concatenating_batches.push(next_batch);
+            } else {
+                // No more batches to concatenate
+                break;
+            }
+        }
+
+        if self.concatenating_batches.len() > 1 {
+            match arrow::compute::concat_batches(&schema, self.concatenating_batches.iter()) {
+                Ok(concatenated) => Some(Ok(concatenated)),
+                Err(e) => {
+                    // If concatenation fails, still return what we have so far
+                    Some(Err(DataFusionError::ArrowError(
+                        e,
+                        Some(DataFusionError::get_back_trace()),
+                    )))
+                }
+            }
+        } else {
+            Some(Ok(self.concatenating_batches.pop().unwrap()))
+        }
     }
 }
 
