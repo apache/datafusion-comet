@@ -272,7 +272,9 @@ object CometConf extends ShimCometConf {
       .createWithDefault(true)
 
   val COMET_SHUFFLE_MODE: ConfigEntry[String] = conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.mode")
-    .doc("This is test config to allow tests to force a particular shuffle implementation to be used.")
+    .doc(
+      "This is test config to allow tests to force a particular shuffle implementation to be " +
+        "used.")
     .internal()
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
