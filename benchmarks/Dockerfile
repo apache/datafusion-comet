@@ -13,11 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM apache/datafusion-comet:latest
+FROM apache/datafusion-comet:0.7.0-spark3.5.4-scala2.12-java11
 
-RUN apt update \
-    && apt install -y git python3 python3-pip \
-    && apt clean
+USER root
 
-RUN cd /opt \
-    && git clone https://github.com/apache/datafusion-benchmarks.git
+RUN mkdir /tpcds
+RUN mkdir /tpch
+
+USER spark
+
+ADD tpcbench.py /
+
+COPY tpch/q*.sql /tpch/
+COPY tpcds/q*.sql /tpcds/
