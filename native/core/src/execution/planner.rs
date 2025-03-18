@@ -75,7 +75,7 @@ use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr}
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
-use crate::parquet::parquet_exec::init_parquet_exec;
+use crate::parquet::parquet_exec::init_datasource_exec;
 use crate::parquet::parquet_support::prepare_object_store;
 use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{
@@ -1279,7 +1279,7 @@ impl PhysicalPlanner {
                         Field::new(field.name(), field.data_type().clone(), field.is_nullable())
                     })
                     .collect_vec();
-                let scan = init_parquet_exec(
+                let scan = init_datasource_exec(
                     required_schema,
                     Some(data_schema),
                     Some(partition_schema),

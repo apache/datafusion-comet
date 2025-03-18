@@ -50,7 +50,7 @@ use std::sync::Arc;
 ///   `data_filters`: Any predicate that must be applied to the data returned by the scan. If
 /// specified, then `data_schema` must also be specified.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn init_parquet_exec(
+pub(crate) fn init_datasource_exec(
     required_schema: SchemaRef,
     data_schema: Option<SchemaRef>,
     partition_schema: Option<SchemaRef>,
