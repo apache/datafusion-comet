@@ -22,7 +22,7 @@
 ## Comet Docker Images
 
 Run the following command from the root of this repository to build the Comet Docker image, or use a [published
-Docker image](https://github.com/orgs/apache/packages?repo_name=datafusion-comet)
+Docker image](https://hub.docker.com/r/apache/datafusion-comet).
 
 ```shell
 docker build -t apache/datafusion-comet -f kube/Dockerfile .
