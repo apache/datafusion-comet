@@ -61,13 +61,16 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     logWarning(s"Comet native execution is disabled due to: $reason")
   }
 
-  def supportedDataType(dt: DataType, allowStruct: Boolean = false): Boolean = dt match {
+  def supportedDataType(dt: DataType, allowComplex: Boolean = false): Boolean = dt match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
         _: DecimalType | _: DateType | _: BooleanType | _: NullType =>
       true
-    case s: StructType if allowStruct =>
-      s.fields.map(_.dataType).forall(supportedDataType(_, allowStruct))
+    case s: StructType if allowComplex =>
+      s.fields.map(_.dataType).forall(supportedDataType(_, allowComplex))
+    // TODO: Add nested array and iceberg compat support
+    // case a: ArrayType if allowComplex =>
+    //  supportedDataType(a.elementType)
     case dt =>
       emitWarning(s"unsupported Spark data type: $dt")
       false
@@ -763,7 +766,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           binding,
           (builder, binaryExpr) => builder.setLtEq(binaryExpr))
 
-      case Literal(value, dataType) if supportedDataType(dataType, allowStruct = value == null) =>
+      case Literal(value, dataType)
+          if supportedDataType(dataType, allowComplex = value == null) =>
         val exprBuilder = ExprOuterClass.Literal.newBuilder()
 
         if (value == null) {
@@ -2716,7 +2720,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         withInfo(join, "SortMergeJoin is not enabled")
         None
 
-      case op if isCometSink(op) && op.output.forall(a => supportedDataType(a.dataType, true)) =>
+      case op
+          if isCometSink(op) && op.output.forall(a =>
+            supportedDataType(a.dataType, allowComplex = true)) =>
         // These operators are source of Comet native execution chain
         val scanBuilder = OperatorOuterClass.Scan.newBuilder()
         val source = op.simpleStringWithNodeId()
