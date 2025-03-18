@@ -70,7 +70,7 @@ spec:
   mainClass: org.apache.spark.examples.SparkPi
   mainApplicationFile: local:///opt/spark/examples/jars/spark-examples_2.12-3.5.4.jar
   sparkConf:
-    "spark.executor.extraClassPath": "/opt/spark/jars/comet-spark-spark5.4_2.12-0.7.0.jar"
+    "spark.executor.extraClassPath": "/opt/spark/jars/comet-spark-spark3.5_2.12-0.7.0.jar"
     "spark.driver.extraClassPath": "/opt/spark/jars/comet-spark-spark3.5_2.12-0.7.0.jar"
     "spark.plugins": "org.apache.spark.CometPlugin"
     "spark.comet.enabled": "true"
