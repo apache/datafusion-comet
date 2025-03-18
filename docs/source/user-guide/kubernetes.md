@@ -37,16 +37,17 @@ found [here](https://github.com/apache/datafusion-comet/tree/main/benchmarks).
 
 Install helm Spark operator for Kubernetes
 ```bash
+# Add the Helm repository
 helm repo add spark-operator https://kubeflow.github.io/spark-operator
-
 helm repo update
 
-helm install my-release spark-operator/spark-operator --namespace spark-operator --create-namespace --set webhook.enable=true
-````
+# Install the operator into the spark-operator namespace and wait for deployments to be ready
+helm install spark-operator spark-operator/spark-operator --namespace spark-operator --create-namespace --wait
+```
 
 Check the operator is deployed
 ```bash
-helm status --namespace spark-operator my-release
+helm status --namespace spark-operator spark-operator
 
 NAME: my-release
 NAMESPACE: spark-operator
@@ -91,7 +92,7 @@ spec:
     labels:
       version: 3.5.4
     instances: 1
-    cores: 2
+    cores: 1
     coreLimit: 1200m
     memory: 512m
 ```
@@ -100,10 +101,35 @@ Refer to [Comet builds](#comet-docker-images)
 Run Apache Spark application with Comet enabled
 ```bash
 kubectl apply -f spark-pi.yaml
+sparkapplication.sparkoperator.k8s.io/spark-pi created
 ```
 
 Check application status
 ```bash
-kubectl describe sparkapplication --namespace=spark-operator
+kubectl get sparkapp spark-pi
+
+NAME       STATUS    ATTEMPTS   START                  FINISH       AGE
+spark-pi   RUNNING   1          2025-03-18T21:19:48Z   <no value>   65s
+```
+To check more runtime details
+```bash
+kubectl describe sparkapplication spark-pi
+
+....
+Events:
+  Type    Reason                     Age    From                          Message
+  ----    ------                     ----   ----                          -------
+  Normal  SparkApplicationSubmitted  8m15s  spark-application-controller  SparkApplication spark-pi was submitted successfully
+  Normal  SparkDriverRunning         7m18s  spark-application-controller  Driver spark-pi-driver is running
+  Normal  SparkExecutorPending       7m11s  spark-application-controller  Executor [spark-pi-68732195ab217303-exec-1] is pending
+  Normal  SparkExecutorRunning       7m10s  spark-application-controller  Executor [spark-pi-68732195ab217303-exec-1] is running
+  Normal  SparkExecutorCompleted     7m5s   spark-application-controller  Executor [spark-pi-68732195ab217303-exec-1] completed
+  Normal  SparkDriverCompleted       7m4s   spark-application-controller  Driver spark-pi-driver completed
+
+```
+
+Get Driver Logs
+```bash
+kubectl logs spark-pi-driver
 ```
 More info on [Kube Spark operator](https://www.kubeflow.org/docs/components/spark-operator/getting-started/)
