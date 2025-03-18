@@ -2686,7 +2686,6 @@ mod tests {
 
     use arrow::array::{DictionaryArray, Int32Array, StringArray};
     use arrow::datatypes::DataType;
-    use arrow::util::pretty::pretty_format_batches;
     use datafusion::logical_expr::ScalarUDF;
     use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
     use tokio::sync::mpsc;
@@ -3115,7 +3114,7 @@ mod tests {
                         assert!(batch.is_ok(), "got error {}", batch.unwrap_err());
                         let batch = batch.unwrap();
                         assert_eq!(batch.num_rows(), 2);
-                        let expected = vec![
+                        let expected = [
                             "+--------+",
                             "| col_0  |",
                             "+--------+",
