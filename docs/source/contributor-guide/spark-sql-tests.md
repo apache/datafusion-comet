@@ -44,10 +44,10 @@ PROFILES="-Pspark-3.4" make release
 
 Clone Apache Spark locally and apply the diff file from Comet.
 
+Note: this is a shallow clone of a tagged Spark commit and is not suitable for general Spark development.
 ```shell
-git clone git@github.com:apache/spark.git apache-spark
+git clone -b 'v3.4.3' --single-branch --depth 1 git@github.com:apache/spark.git apache-spark
 cd apache-spark
-git checkout v3.4.3
 git apply ../datafusion-comet/dev/diffs/3.4.3.diff
 ```
 
