@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow_schema::ArrowError;
-use datafusion_common::DataFusionError;
+use arrow::error::ArrowError;
+use datafusion::common::DataFusionError;
 
 #[derive(thiserror::Error, Debug)]
 pub enum SparkError {

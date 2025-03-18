@@ -37,7 +37,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.TestSparkSession
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark34Plus, isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 
 /**
  * Similar to [[org.apache.spark.sql.PlanStabilitySuite]], checks that TPC-DS Comet plans don't
@@ -255,9 +255,6 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
    * matches a golden file or it will create a new golden file.
    */
   protected def testQuery(tpcdsGroup: String, query: String, suffix: String = ""): Unit = {
-    // Only run the tests in Spark 3.4+
-    assume(isSpark34Plus)
-
     val queryString = resourceToString(
       s"$tpcdsGroup/$query.sql",
       classLoader = Thread.currentThread().getContextClassLoader)
@@ -285,7 +282,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
 
       assert(ValidateRequirements.validate(plan))
 
-      if (shouldRegenerateGoldenFiles) {
+      if (regenerateGoldenFiles) {
         generateGoldenFile(plan, query + suffix, explain)
       } else {
         checkWithApproved(plan, query + suffix, explain)
@@ -309,10 +306,6 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
 
     new TestSparkSession(new SparkContext("local[1]", this.getClass.getCanonicalName, conf))
   }
-
-  // TODO: remove once Spark 3.3 is no longer supported
-  private val shouldRegenerateGoldenFiles: Boolean =
-    System.getenv("SPARK_GENERATE_GOLDEN_FILES") == "1"
 }
 
 class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {

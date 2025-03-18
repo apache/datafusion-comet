@@ -53,7 +53,7 @@ import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark34Plus, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.rules.RewriteJoin
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -438,7 +438,7 @@ class CometSparkSessionExtensions
               op
           }
 
-        case op: LocalLimitExec if getOffset(op) == 0 =>
+        case op: LocalLimitExec =>
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
@@ -447,7 +447,7 @@ class CometSparkSessionExtensions
               op
           }
 
-        case op: GlobalLimitExec if getOffset(op) == 0 =>
+        case op: GlobalLimitExec if op.offset == 0 =>
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
@@ -459,10 +459,10 @@ class CometSparkSessionExtensions
         case op: CollectLimitExec
             if isCometNative(op.child) && CometConf.COMET_EXEC_COLLECT_LIMIT_ENABLED.get(conf)
               && isCometShuffleEnabled(conf)
-              && getOffset(op) == 0 =>
+              && op.offset == 0 =>
           QueryPlanSerde.operator2Proto(op) match {
             case Some(nativeOp) =>
-              val offset = getOffset(op)
+              val offset = op.offset
               val cometOp =
                 CometCollectLimitExec(op, op.limit, offset, op.child)
               CometSinkPlaceHolder(nativeOp, op, cometOp)
@@ -742,13 +742,11 @@ class CometSparkSessionExtensions
         // exchange. It is only used for Comet native execution. We only transform Spark broadcast
         // exchange to Comet broadcast exchange if its downstream is a Comet native plan or if the
         // broadcast exchange is forced to be enabled by Comet config.
-        // Note that `CometBroadcastExchangeExec` is only supported for Spark 3.4+.
         case plan if plan.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
           val newChildren = plan.children.map {
             case b: BroadcastExchangeExec
                 if isCometNative(b.child) &&
-                  CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf) &&
-                  isSpark34Plus => // Spark 3.4+ only
+                  CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf) =>
               QueryPlanSerde.operator2Proto(b) match {
                 case Some(nativeOp) =>
                   val cometOp = CometBroadcastExchangeExec(b, b.output, b.child)
@@ -1235,8 +1233,6 @@ object CometSparkSessionExtensions extends Logging {
       Some(
         s"${COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.key}.enabled is not specified and " +
           s"${COMET_EXEC_BROADCAST_FORCE_ENABLED.key} is not specified")
-    } else if (!isSpark34Plus) {
-      Some("Native broadcast requires Spark 3.4 or newer")
     } else {
       None
     }
@@ -1333,15 +1329,6 @@ object CometSparkSessionExtensions extends Logging {
       val nodeName = simpleClassName.replaceAll("Exec$", "")
       COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
     }
-  }
-
-  def isSpark33Plus: Boolean = {
-    org.apache.spark.SPARK_VERSION >= "3.3"
-  }
-
-  /** Used for operations that are available in Spark 3.4+ */
-  def isSpark34Plus: Boolean = {
-    org.apache.spark.SPARK_VERSION >= "3.4"
   }
 
   def isSpark35Plus: Boolean = {

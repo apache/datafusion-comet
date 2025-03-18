@@ -15,14 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::array::builder::GenericStringBuilder;
+use arrow::array::cast::as_dictionary_array;
+use arrow::array::types::Int32Type;
+use arrow::array::{make_array, Array, DictionaryArray};
 use arrow::array::{ArrayRef, OffsetSizeTrait};
-use arrow_array::builder::GenericStringBuilder;
-use arrow_array::cast::as_dictionary_array;
-use arrow_array::types::Int32Type;
-use arrow_array::{make_array, Array, DictionaryArray};
-use arrow_schema::DataType;
+use arrow::datatypes::DataType;
+use datafusion::common::{cast::as_generic_string_array, DataFusionError, ScalarValue};
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_common::{cast::as_generic_string_array, DataFusionError, ScalarValue};
 use std::fmt::Write;
 use std::sync::Arc;
 

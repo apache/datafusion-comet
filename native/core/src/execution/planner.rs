@@ -33,11 +33,17 @@ use crate::{
     },
 };
 use arrow::compute::CastOptions;
-use arrow_schema::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
+use arrow::datatypes::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
+use datafusion::functions_nested::array_has::array_has_any_udf;
+use datafusion::functions_nested::concat::ArrayAppend;
+use datafusion::functions_nested::remove::array_remove_all_udf;
+use datafusion::functions_nested::set_ops::array_intersect_udf;
+use datafusion::functions_nested::string::array_to_string_udf;
+use datafusion::physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
@@ -65,20 +71,29 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr};
-use datafusion_functions_nested::array_has::array_has_any_udf;
-use datafusion_functions_nested::concat::ArrayAppend;
-use datafusion_functions_nested::remove::array_remove_all_udf;
-use datafusion_functions_nested::set_ops::array_intersect_udf;
-use datafusion_functions_nested::string::array_to_string_udf;
-use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
 use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::parquet_support::{prepare_object_store, SparkParquetOptions};
 use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
+use datafusion::common::config::TableParquetOptions;
+use datafusion::common::scalar::ScalarStructBuilder;
+use datafusion::common::{
+    tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
+    JoinType as DFJoinType, ScalarValue,
+};
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{FileScanConfig, ParquetSource};
 use datafusion::datasource::source::DataSourceExec;
+use datafusion::functions_nested::array_has::ArrayHas;
+use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
+use datafusion::logical_expr::{
+    AggregateUDF, ReturnTypeArgs, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    WindowFunctionDefinition,
+};
+use datafusion::physical_expr::expressions::{Literal, StatsType};
+use datafusion::physical_expr::window::WindowExpr;
+use datafusion::physical_expr::LexOrdering;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
 use datafusion_comet_proto::{
@@ -100,21 +115,6 @@ use datafusion_comet_spark_expr::{
     SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
     TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
-use datafusion_common::config::TableParquetOptions;
-use datafusion_common::scalar::ScalarStructBuilder;
-use datafusion_common::{
-    tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
-    JoinType as DFJoinType, ScalarValue,
-};
-use datafusion_expr::type_coercion::other::get_coerce_type_for_case_expression;
-use datafusion_expr::{
-    AggregateUDF, ReturnTypeArgs, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
-    WindowFunctionDefinition,
-};
-use datafusion_functions_nested::array_has::ArrayHas;
-use datafusion_physical_expr::expressions::{Literal, StatsType};
-use datafusion_physical_expr::window::WindowExpr;
-use datafusion_physical_expr::LexOrdering;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
@@ -2536,7 +2536,7 @@ impl JoinFilterRewriter<'_> {
 impl TreeNodeRewriter for JoinFilterRewriter<'_> {
     type Node = Arc<dyn PhysicalExpr>;
 
-    fn f_down(&mut self, node: Self::Node) -> datafusion_common::Result<Transformed<Self::Node>> {
+    fn f_down(&mut self, node: Self::Node) -> datafusion::common::Result<Transformed<Self::Node>> {
         if let Some(column) = node.as_any().downcast_ref::<Column>() {
             if column.index() < self.left_field_len {
                 // left side
@@ -2684,8 +2684,8 @@ mod tests {
 
     use futures::{poll, StreamExt};
 
-    use arrow_array::{DictionaryArray, Int32Array, StringArray};
-    use arrow_schema::DataType;
+    use arrow::array::{DictionaryArray, Int32Array, StringArray};
+    use arrow::datatypes::DataType;
     use datafusion::{physical_plan::common::collect, prelude::SessionContext};
     use tokio::sync::mpsc;
 
@@ -2885,7 +2885,7 @@ mod tests {
     #[tokio::test()]
     async fn from_datafusion_error_to_comet() {
         let err_msg = "exec error";
-        let err = datafusion_common::DataFusionError::Execution(err_msg.to_string());
+        let err = datafusion::common::DataFusionError::Execution(err_msg.to_string());
         let comet_err: ExecutionError = err.into();
         assert_eq!(comet_err.to_string(), "Error from DataFusion: exec error.");
     }

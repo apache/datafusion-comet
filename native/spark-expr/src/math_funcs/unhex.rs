@@ -17,10 +17,10 @@
 
 use std::sync::Arc;
 
-use arrow_array::OffsetSizeTrait;
-use arrow_schema::DataType;
+use arrow::array::OffsetSizeTrait;
+use arrow::datatypes::DataType;
+use datafusion::common::{cast::as_generic_string_array, exec_err, DataFusionError, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion_common::{cast::as_generic_string_array, exec_err, DataFusionError, ScalarValue};
 
 /// Helper function to convert a hex digit to a binary value.
 fn unhex_digit(c: u8) -> Result<u8, DataFusionError> {
@@ -144,18 +144,18 @@ pub fn spark_unhex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionEr
 mod test {
     use std::sync::Arc;
 
+    use arrow::array::make_array;
+    use arrow::array::ArrayData;
     use arrow::array::{BinaryBuilder, StringBuilder};
-    use arrow_array::make_array;
-    use arrow_data::ArrayData;
+    use datafusion::common::ScalarValue;
     use datafusion::logical_expr::ColumnarValue;
-    use datafusion_common::ScalarValue;
 
     use super::unhex;
 
     #[test]
     fn test_spark_unhex_null() -> Result<(), Box<dyn std::error::Error>> {
-        let input = ArrayData::new_null(&arrow_schema::DataType::Utf8, 2);
-        let output = ArrayData::new_null(&arrow_schema::DataType::Binary, 2);
+        let input = ArrayData::new_null(&arrow::datatypes::DataType::Utf8, 2);
+        let output = ArrayData::new_null(&arrow::datatypes::DataType::Binary, 2);
 
         let input = ColumnarValue::Array(Arc::new(make_array(input)));
         let expected = ColumnarValue::Array(Arc::new(make_array(output)));

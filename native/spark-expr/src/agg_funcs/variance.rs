@@ -21,13 +21,12 @@ use arrow::{
     array::{ArrayRef, Float64Array},
     datatypes::{DataType, Field},
 };
-use datafusion::logical_expr::Accumulator;
-use datafusion_common::{downcast_value, Result, ScalarValue};
-use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
-use datafusion_expr::Volatility::Immutable;
-use datafusion_expr::{AggregateUDFImpl, Signature};
-use datafusion_physical_expr::expressions::format_state_name;
-use datafusion_physical_expr::expressions::StatsType;
+use datafusion::common::{downcast_value, Result, ScalarValue};
+use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
+use datafusion::logical_expr::Volatility::Immutable;
+use datafusion::logical_expr::{Accumulator, AggregateUDFImpl, Signature};
+use datafusion::physical_expr::expressions::format_state_name;
+use datafusion::physical_expr::expressions::StatsType;
 
 /// VAR_SAMP and VAR_POP aggregate expression
 /// The implementation mostly is the same as the DataFusion's implementation. The reason

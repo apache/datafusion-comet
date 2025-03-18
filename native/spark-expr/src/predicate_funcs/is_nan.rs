@@ -15,11 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::array::{Array, BooleanArray};
 use arrow::array::{Float32Array, Float64Array};
-use arrow_array::{Array, BooleanArray};
-use arrow_schema::DataType;
+use arrow::datatypes::DataType;
+use datafusion::common::{DataFusionError, ScalarValue};
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_common::{DataFusionError, ScalarValue};
 use std::sync::Arc;
 
 /// Spark-compatible `isnan` expression

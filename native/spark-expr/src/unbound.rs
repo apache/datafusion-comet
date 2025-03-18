@@ -15,11 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow_array::RecordBatch;
-use arrow_schema::{DataType, Schema};
+use arrow::array::RecordBatch;
+use arrow::datatypes::{DataType, Schema};
+use datafusion::common::{internal_err, Result};
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_common::{internal_err, Result};
-use datafusion_physical_expr::PhysicalExpr;
 use std::{hash::Hash, sync::Arc};
 
 /// This is similar to `UnKnownColumn` in DataFusion, but it has data type.

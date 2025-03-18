@@ -28,7 +28,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{array, col, expr, lit, udf}
 import org.apache.spark.sql.types.StructType
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark34Plus, isSpark35Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -135,7 +135,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_append") {
-    assume(isSpark34Plus)
     withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
@@ -182,7 +181,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("ArrayInsert") {
-    assume(isSpark34Plus)
     Seq(true, false).foreach(dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -206,7 +204,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   test("ArrayInsertUnsupportedArgs") {
     // This test checks that the else branch in ArrayInsert
     // mapping to the comet is valid and fallback to spark is working fine.
-    assume(isSpark34Plus)
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
       makeParquetFileAllTypes(path, dictionaryEnabled = false, 10000)
@@ -296,7 +293,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_compact") {
-    assume(isSpark34Plus)
     withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>

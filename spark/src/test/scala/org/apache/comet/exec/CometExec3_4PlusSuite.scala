@@ -19,10 +19,19 @@
 
 package org.apache.comet.exec
 
+import java.io.ByteArrayOutputStream
+
+import scala.util.Random
+
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{Column, CometTestBase}
+import org.apache.spark.sql.catalyst.FunctionIdentifier
+import org.apache.spark.sql.catalyst.expressions.{BloomFilterMightContain, Expression, ExpressionInfo}
+import org.apache.spark.sql.functions.{col, lit}
+import org.apache.spark.util.sketch.BloomFilter
+
 import org.apache.comet.CometConf
 
 /**
@@ -30,6 +39,22 @@ import org.apache.comet.CometConf
  */
 class CometExec3_4PlusSuite extends CometTestBase {
   import testImplicits._
+
+  val func_might_contain = new FunctionIdentifier("might_contain")
+
+  override def beforeAll(): Unit = {
+    super.beforeAll()
+    // Register 'might_contain' to builtin.
+    spark.sessionState.functionRegistry.registerFunction(
+      func_might_contain,
+      new ExpressionInfo(classOf[BloomFilterMightContain].getName, "might_contain"),
+      (children: Seq[Expression]) => BloomFilterMightContain(children.head, children(1)))
+  }
+
+  override def afterAll(): Unit = {
+    spark.sessionState.functionRegistry.dropFunction(func_might_contain)
+    super.afterAll()
+  }
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
@@ -100,4 +125,68 @@ class CometExec3_4PlusSuite extends CometTestBase {
       checkSparkAnswer(mapData.toDF().offset(99))
     }
   }
+
+  test("test BloomFilterMightContain can take a constant value input") {
+    val table = "test"
+
+    withTable(table) {
+      sql(s"create table $table(col1 long, col2 int) using parquet")
+      sql(s"insert into $table values (201, 1)")
+      checkSparkAnswerAndOperator(s"""
+           |SELECT might_contain(
+           |X'00000001000000050000000343A2EC6EA8C117E2D3CDB767296B144FC5BFBCED9737F267', col1) FROM $table
+           |""".stripMargin)
+    }
+  }
+
+  test("test NULL inputs for BloomFilterMightContain") {
+    val table = "test"
+
+    withTable(table) {
+      sql(s"create table $table(col1 long, col2 int) using parquet")
+      sql(s"insert into $table values (201, 1), (null, 2)")
+      checkSparkAnswerAndOperator(s"""
+           |SELECT might_contain(null, null) both_null,
+           |       might_contain(null, 1L) null_bf,
+           |       might_contain(
+           |         X'00000001000000050000000343A2EC6EA8C117E2D3CDB767296B144FC5BFBCED9737F267', col1) null_value
+           |       FROM $table
+           |""".stripMargin)
+    }
+  }
+
+  test("test BloomFilterMightContain from random input") {
+    val (longs, bfBytes) = bloomFilterFromRandomInput(10000, 10000)
+    val table = "test"
+
+    withTable(table) {
+      sql(s"create table $table(col1 long, col2 binary) using parquet")
+      spark
+        .createDataset(longs)
+        .map(x => (x, bfBytes))
+        .toDF("col1", "col2")
+        .write
+        .insertInto(table)
+      val df = spark
+        .table(table)
+        .select(new Column(BloomFilterMightContain(lit(bfBytes).expr, col("col1").expr)))
+      checkSparkAnswerAndOperator(df)
+      // check with scalar subquery
+      checkSparkAnswerAndOperator(s"""
+           |SELECT might_contain((select first(col2) as col2 from $table), col1) FROM $table
+           |""".stripMargin)
+    }
+  }
+
+  private def bloomFilterFromRandomInput(
+      expectedItems: Long,
+      expectedBits: Long): (Seq[Long], Array[Byte]) = {
+    val bf = BloomFilter.create(expectedItems, expectedBits)
+    val longs = (0 until expectedItems.toInt).map(_ => Random.nextLong())
+    longs.foreach(bf.put)
+    val os = new ByteArrayOutputStream()
+    bf.writeTo(os)
+    (longs, os.toByteArray)
+  }
+
 }

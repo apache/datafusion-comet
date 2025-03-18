@@ -49,7 +49,7 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 class CometExecSuite extends CometTestBase {
@@ -260,7 +260,6 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("fix CometNativeExec.doCanonicalize for ReusedExchangeExec") {
-    assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
     withSQLConf(
       CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.key -> "true",
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
@@ -290,7 +289,6 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("ReusedExchangeExec should work on CometBroadcastExchangeExec") {
-    assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
     withSQLConf(
       CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.key -> "true",
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
@@ -370,12 +368,10 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("Repeated shuffle exchange don't fail") {
-    assume(isSpark33Plus)
     Seq("true", "false").foreach { aqeEnabled =>
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled,
-        // `REQUIRE_ALL_CLUSTER_KEYS_FOR_DISTRIBUTION` is a new config in Spark 3.3+.
-        "spark.sql.requireAllClusterKeysForDistribution" -> "true",
+        SQLConf.REQUIRE_ALL_CLUSTER_KEYS_FOR_DISTRIBUTION.key -> "true",
         CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
         val df =
           Seq(("a", 1, 1), ("a", 2, 2), ("b", 1, 3), ("b", 1, 4)).toDF("key1", "key2", "value")
@@ -392,7 +388,6 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("try_sum should return null if overflow happens before merging") {
-    assume(isSpark33Plus, "try_sum is available in Spark 3.3+")
     val longDf = Seq(Long.MaxValue, Long.MaxValue, 2).toDF("v")
     val yearMonthDf = Seq(Int.MaxValue, Int.MaxValue, 2)
       .map(Period.ofMonths)
@@ -419,7 +414,6 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("CometBroadcastExchangeExec") {
-    assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
     withSQLConf(CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.key -> "true") {
       withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl_a") {
         withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl_b") {
@@ -445,7 +439,6 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("CometBroadcastExchangeExec: empty broadcast") {
-    assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
     withSQLConf(CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.key -> "true") {
       withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl_a") {
         withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl_b") {
@@ -663,7 +656,6 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("Comet native metrics: BroadcastHashJoin") {
-    assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
     withParquetTable((0 until 5).map(i => (i, i + 1)), "t1") {
       withParquetTable((0 until 5).map(i => (i, i + 1)), "t2") {
         val df = sql("SELECT /*+ BROADCAST(t1) */ * FROM t1 INNER JOIN t2 ON t1._1 = t2._1")
@@ -1585,7 +1577,6 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("Fallback to Spark for TakeOrderedAndProjectExec with offset") {
-    assume(isSpark34Plus)
     Seq("true", "false").foreach(aqeEnabled =>
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
         withTable("t1") {
@@ -1702,13 +1693,11 @@ class CometExecSuite extends CometTestBase {
 
                 // Verify that the BatchScanExec nodes supported columnar output when requested for Spark 3.4+.
                 // Earlier versions support columnar output for fewer type.
-                if (isSpark34Plus) {
-                  val leaves = df.queryExecution.executedPlan.collectLeaves()
-                  if (parquetVectorized && isSpark34Plus) {
-                    assert(leaves.forall(_.supportsColumnar))
-                  } else {
-                    assert(!leaves.forall(_.supportsColumnar))
-                  }
+                val leaves = df.queryExecution.executedPlan.collectLeaves()
+                if (parquetVectorized) {
+                  assert(leaves.forall(_.supportsColumnar))
+                } else {
+                  assert(!leaves.forall(_.supportsColumnar))
                 }
               }
             }

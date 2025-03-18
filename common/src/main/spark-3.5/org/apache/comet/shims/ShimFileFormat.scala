@@ -19,18 +19,15 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.execution.datasources.PartitionedFile
+import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+import org.apache.spark.sql.execution.datasources.parquet.ParquetRowIndexUtil
+import org.apache.spark.sql.types.StructType
 
-object ShimBatchReader {
+object ShimFileFormat {
+  // A name for a temporary column that holds row indexes computed by the file format reader
+  // until they can be placed in the _metadata struct.
+  val ROW_INDEX_TEMPORARY_COLUMN_NAME = ParquetFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
 
-  def newPartitionedFile(partitionValues: InternalRow, file: String): PartitionedFile =
-    PartitionedFile(
-      partitionValues,
-      file,
-      -1, // -1 means we read the entire file
-      -1,
-      Array.empty[String],
-      0,
-      0)
+  def findRowIndexColumnIndexInSchema(sparkSchema: StructType): Int =
+    ParquetRowIndexUtil.findRowIndexColumnIndexInSchema(sparkSchema)
 }

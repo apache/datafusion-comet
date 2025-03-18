@@ -902,7 +902,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("cast TimestampType to LongType") {
     // https://github.com/apache/datafusion-comet/issues/1441
     assume(!CometConf.isExperimentalNativeScan)
-    assume(CometSparkSessionExtensions.isSpark33Plus)
     castTest(generateTimestampsExtended(), DataTypes.LongType)
   }
 
@@ -1164,7 +1163,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       hasIncompatibleType: Boolean = false,
       testAnsi: Boolean = true): Unit = {
 
-    // we now support the TryCast expression in Spark 3.3
     withTempPath { dir =>
       val data = roundtripParquet(input, dir).coalesce(1)
       data.createOrReplaceTempView("t")
@@ -1224,22 +1222,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     sparkException.getMessage
                       .replace(".WITH_SUGGESTION] ", "]")
                       .startsWith(cometMessage))
-                } else if (CometSparkSessionExtensions.isSpark34Plus) {
+                } else {
                   // for Spark 3.4 we expect to reproduce the error message exactly
                   assert(cometMessage == sparkMessage)
-                } else {
-                  // for Spark 3.3 we just need to strip the prefix from the Comet message
-                  // before comparing
-                  val cometMessageModified = cometMessage
-                    .replace("[CAST_INVALID_INPUT] ", "")
-                    .replace("[CAST_OVERFLOW] ", "")
-                    .replace("[NUMERIC_VALUE_OUT_OF_RANGE] ", "")
-
-                  if (sparkMessage.contains("cannot be represented as")) {
-                    assert(cometMessage.contains("cannot be represented as"))
-                  } else {
-                    assert(cometMessageModified == sparkMessage)
-                  }
                 }
               }
           }
