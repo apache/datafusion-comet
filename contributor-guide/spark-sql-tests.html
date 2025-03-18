@@ -384,9 +384,9 @@ Comet is enabled when we run the tests.</p>
 <section id="clone-spark-and-apply-diff">
 <h2>2. Clone Spark and Apply Diff<a class="headerlink" href="#clone-spark-and-apply-diff" title="Link to this heading">¶</a></h2>
 <p>Clone Apache Spark locally and apply the diff file from Comet.</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>git@github.com:apache/spark.git<span class="w"> </span>apache-spark
+<p>Note: this is a shallow clone of a tagged Spark commit and is not suitable for general Spark development.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>-b<span class="w"> </span><span class="s1">&#39;v3.4.3&#39;</span><span class="w"> </span>--single-branch<span class="w"> </span>--depth<span class="w"> </span><span class="m">1</span><span class="w"> </span>git@github.com:apache/spark.git<span class="w"> </span>apache-spark
 <span class="nb">cd</span><span class="w"> </span>apache-spark
-git<span class="w"> </span>checkout<span class="w"> </span>v3.4.3
 git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/diffs/3.4.3.diff
 </pre></div>
 </div>
