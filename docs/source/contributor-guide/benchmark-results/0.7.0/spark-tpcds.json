@@ -1,0 +1,347 @@
+{
+    "engine": "datafusion-comet",
+    "benchmark": "tpcds",
+    "data_path": "/mnt/bigdata/tpcds/sf100/",
+    "query_path": "/tpcds",
+    "spark_conf": {
+        "spark.app.submitTime": "1742328355539",
+        "spark.kubernetes.driver.pod.name": "tpcbench-py-00f9af95aadcd249-driver",
+        "spark.kubernetes.executor.container.image": "apache/spark:3.5.3",
+        "spark.kubernetes.executor.podNamePrefix": "spark-benchmark-derived-from-tpcds-cf3eb995aadcdd4e",
+        "spark.kubernetes.memoryOverheadFactor": "0.4",
+        "spark.kubernetes.authenticate.driver.serviceAccountName": "spark",
+        "spark.kubernetes.driver.volumes.hostPath.data.mount.path": "/mnt/bigdata",
+        "spark.kubernetes.driver.volumes.persistentVolumeClaim.benchmark-results-pv.options.claimName": "benchmark-results-pvc",
+        "spark.memory.offHeap.enabled": "true",
+        "spark.memory.offHeap.size": "32g",
+        "spark.driver.bindAddress": "10.42.0.31",
+        "spark.app.startTime": "1742328355796",
+        "spark.master": "k8s://https://kube1:6443",
+        "spark.driver.host": "tpcbench-py-00f9af95aadcd249-driver-svc.default.svc",
+        "spark.kubernetes.driver.container.image": "woody:5000/spark-tpcbench:spark",
+        "spark.serializer.objectStreamReset": "100",
+        "spark.executor.cores": "16",
+        "spark.submit.deployMode": "client",
+        "spark.kubernetes.driver.volumes.hostPath.data.options.path": "/mnt/bigdata",
+        "spark.eventLog.enabled": "false",
+        "spark.kubernetes.container.image.pullPolicy": "Always",
+        "spark.kubernetes.submitInDriver": "true",
+        "spark.executorEnv.SPARK_DRIVER_POD_IP": "10.42.0.31",
+        "spark.sql.warehouse.dir": "file:/opt/spark/work-dir/spark-warehouse",
+        "spark.driver.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
+        "spark.driver.blockManager.port": "7079",
+        "spark.app.id": "spark-6141725ef4a44a529bccc0cea1eb1ed4",
+        "spark.executor.id": "driver",
+        "spark.kubernetes.driver.volumes.persistentVolumeClaim.benchmark-results-pv.mount.readOnly": "false",
+        "spark.driver.memory": "8G",
+        "spark.driver.port": "7078",
+        "spark.executor.memory": "32g",
+        "spark.kubernetes.driver.volumes.hostPath.data.options.readOnly": "false",
+        "spark.kubernetes.resource.type": "python",
+        "spark.kubernetes.executor.volumes.hostPath.data.mount.path": "/mnt/bigdata",
+        "spark.kubernetes.driver.volumes.persistentVolumeClaim.benchmark-results-pv.mount.path": "/mnt/benchmark-results",
+        "spark.rdd.compress": "True",
+        "spark.kubernetes.executor.volumes.hostPath.data.options.path": "/mnt/bigdata",
+        "spark.executor.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
+        "spark.executor.instances": "1",
+        "spark.submit.pyFiles": "",
+        "spark.app.name": "spark benchmark derived from tpcds"
+    },
+    "1": [
+        4.355947971343994
+    ],
+    "2": [
+        3.489915609359741
+    ],
+    "3": [
+        1.488908290863037
+    ],
+    "4": [
+        57.785072565078735
+    ],
+    "5": [
+        13.763205528259277
+    ],
+    "6": [
+        2.2846295833587646
+    ],
+    "7": [
+        3.3782906532287598
+    ],
+    "8": [
+        2.400043487548828
+    ],
+    "9": [
+        5.938290357589722
+    ],
+    "10": [
+        2.449601888656616
+    ],
+    "11": [
+        16.143503427505493
+    ],
+    "12": [
+        1.4717519283294678
+    ],
+    "13": [
+        4.343080997467041
+    ],
+    "14": [
+        44.92432475090027
+    ],
+    "15": [
+        3.5471317768096924
+    ],
+    "16": [
+        13.545910120010376
+    ],
+    "17": [
+        4.942067861557007
+    ],
+    "18": [
+        3.94262433052063
+    ],
+    "19": [
+        3.962956666946411
+    ],
+    "20": [
+        1.3886706829071045
+    ],
+    "21": [
+        1.7535080909729004
+    ],
+    "22": [
+        20.089434146881104
+    ],
+    "23": [
+        103.30900120735168
+    ],
+    "24": [
+        16.53474521636963
+    ],
+    "25": [
+        4.266413927078247
+    ],
+    "26": [
+        2.4301295280456543
+    ],
+    "27": [
+        2.811310291290283
+    ],
+    "28": [
+        8.736858129501343
+    ],
+    "29": [
+        4.963813066482544
+    ],
+    "30": [
+        2.074880838394165
+    ],
+    "31": [
+        6.412190675735474
+    ],
+    "32": [
+        2.206458330154419
+    ],
+    "33": [
+        3.412022352218628
+    ],
+    "34": [
+        1.658189058303833
+    ],
+    "35": [
+        3.984631061553955
+    ],
+    "36": [
+        2.2529945373535156
+    ],
+    "37": [
+        4.328810930252075
+    ],
+    "38": [
+        7.559122323989868
+    ],
+    "39": [
+        8.816664934158325
+    ],
+    "40": [
+        8.136451244354248
+    ],
+    "41": [
+        0.25649333000183105
+    ],
+    "42": [
+        1.4119703769683838
+    ],
+    "43": [
+        1.3050105571746826
+    ],
+    "44": [
+        1.144343614578247
+    ],
+    "45": [
+        2.252218008041382
+    ],
+    "46": [
+        3.073315143585205
+    ],
+    "47": [
+        5.461176633834839
+    ],
+    "48": [
+        8.714987754821777
+    ],
+    "49": [
+        7.581437826156616
+    ],
+    "50": [
+        12.17387843132019
+    ],
+    "51": [
+        14.94502067565918
+    ],
+    "52": [
+        1.7854347229003906
+    ],
+    "53": [
+        1.8280425071716309
+    ],
+    "54": [
+        3.6002089977264404
+    ],
+    "55": [
+        1.6423735618591309
+    ],
+    "56": [
+        3.359402894973755
+    ],
+    "57": [
+        3.3884055614471436
+    ],
+    "58": [
+        4.283772230148315
+    ],
+    "59": [
+        3.650860548019409
+    ],
+    "60": [
+        3.8869588375091553
+    ],
+    "61": [
+        3.69657039642334
+    ],
+    "62": [
+        0.879765510559082
+    ],
+    "63": [
+        1.6274287700653076
+    ],
+    "64": [
+        25.166638374328613
+    ],
+    "65": [
+        12.127745628356934
+    ],
+    "66": [
+        3.445380687713623
+    ],
+    "67": [
+        66.29370522499084
+    ],
+    "68": [
+        2.7156710624694824
+    ],
+    "69": [
+        2.5902113914489746
+    ],
+    "70": [
+        2.810850143432617
+    ],
+    "71": [
+        3.2944750785827637
+    ],
+    "72": [
+        89.93545317649841
+    ],
+    "73": [
+        1.326775074005127
+    ],
+    "74": [
+        23.207229137420654
+    ],
+    "75": [
+        13.160036325454712
+    ],
+    "76": [
+        3.329620361328125
+    ],
+    "77": [
+        3.584099769592285
+    ],
+    "78": [
+        33.91078543663025
+    ],
+    "79": [
+        2.310992956161499
+    ],
+    "80": [
+        26.44196081161499
+    ],
+    "81": [
+        2.294264554977417
+    ],
+    "82": [
+        2.545654296875
+    ],
+    "83": [
+        1.7201306819915771
+    ],
+    "84": [
+        1.502422571182251
+    ],
+    "85": [
+        5.089749336242676
+    ],
+    "86": [
+        1.043938398361206
+    ],
+    "87": [
+        7.822947263717651
+    ],
+    "88": [
+        5.241043567657471
+    ],
+    "89": [
+        2.0387654304504395
+    ],
+    "90": [
+        0.8709492683410645
+    ],
+    "91": [
+        1.0122673511505127
+    ],
+    "92": [
+        1.4276893138885498
+    ],
+    "93": [
+        23.040839910507202
+    ],
+    "94": [
+        7.798746585845947
+    ],
+    "95": [
+        28.01142120361328
+    ],
+    "96": [
+        0.9283573627471924
+    ],
+    "97": [
+        11.431622982025146
+    ],
+    "98": [
+        2.4064207077026367
+    ],
+    "99": [
+        1.321455478668213
+    ]
+}
