@@ -81,7 +81,7 @@ root
  |    |-- lastName: string (nullable = true)
  |    |-- ageInYears: integer (nullable = true)
 
-25/01/30 16:50:43 INFO core/src/lib.rs: Comet native library version 0.6.0 initialized
+25/01/30 16:50:43 INFO core/src/lib.rs: Comet native library version 0.7.0 initialized
 == Physical Plan ==
 * CometColumnarToRow (2)
 +- CometNativeScan:  (1)

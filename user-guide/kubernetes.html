@@ -351,8 +351,8 @@ under the License.
 <h1>Comet Kubernetes Support<a class="headerlink" href="#comet-kubernetes-support" title="Link to this heading">¶</a></h1>
 <section id="comet-docker-images">
 <h2>Comet Docker Images<a class="headerlink" href="#comet-docker-images" title="Link to this heading">¶</a></h2>
-<p>Run the following command from the root of this repository to build the Comet Docker image, or use a <a class="reference external" href="https://github.com/orgs/apache/packages?repo_name=datafusion-comet">published
-Docker image</a></p>
+<p>Run the following command from the root of this repository to build the Comet Docker image, or use a <a class="reference external" href="https://hub.docker.com/r/apache/datafusion-comet">published
+Docker image</a>.</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>build<span class="w"> </span>-t<span class="w"> </span>apache/datafusion-comet<span class="w"> </span>-f<span class="w"> </span>kube/Dockerfile<span class="w"> </span>.
 </pre></div>
 </div>
@@ -391,13 +391,13 @@ metadata:
 spec:
 <span class="w">  </span>type:<span class="w"> </span>Scala
 <span class="w">  </span>mode:<span class="w"> </span>cluster
-<span class="w">  </span>image:<span class="w"> </span>ghcr.io/apache/datafusion-comet:spark-3.4-scala-2.12-0.5.0
+<span class="w">  </span>image:<span class="w"> </span>apache/datafusion-comet:0.7.0-spark3.5.4-scala2.12-java11
 <span class="w">  </span>imagePullPolicy:<span class="w"> </span>IfNotPresent
 <span class="w">  </span>mainClass:<span class="w"> </span>org.apache.spark.examples.SparkPi
-<span class="w">  </span>mainApplicationFile:<span class="w"> </span>local:///opt/spark/examples/jars/spark-examples_2.12-3.4.2.jar
+<span class="w">  </span>mainApplicationFile:<span class="w"> </span>local:///opt/spark/examples/jars/spark-examples_2.12-3.5.4.jar
 <span class="w">  </span>sparkConf:
-<span class="w">    </span><span class="s2">&quot;spark.executor.extraClassPath&quot;</span>:<span class="w"> </span><span class="s2">&quot;/opt/spark/jars/comet-spark-spark3.4_2.12-0.5.0.jar&quot;</span>
-<span class="w">    </span><span class="s2">&quot;spark.driver.extraClassPath&quot;</span>:<span class="w"> </span><span class="s2">&quot;/opt/spark/jars/comet-spark-spark3.4_2.12-0.5.0.jar&quot;</span>
+<span class="w">    </span><span class="s2">&quot;spark.executor.extraClassPath&quot;</span>:<span class="w"> </span><span class="s2">&quot;/opt/spark/jars/comet-spark-spark3.5_2.12-0.7.0.jar&quot;</span>
+<span class="w">    </span><span class="s2">&quot;spark.driver.extraClassPath&quot;</span>:<span class="w"> </span><span class="s2">&quot;/opt/spark/jars/comet-spark-spark3.5_2.12-0.7.0.jar&quot;</span>
 <span class="w">    </span><span class="s2">&quot;spark.plugins&quot;</span>:<span class="w"> </span><span class="s2">&quot;org.apache.spark.CometPlugin&quot;</span>
 <span class="w">    </span><span class="s2">&quot;spark.comet.enabled&quot;</span>:<span class="w"> </span><span class="s2">&quot;true&quot;</span>
 <span class="w">    </span><span class="s2">&quot;spark.comet.exec.enabled&quot;</span>:<span class="w"> </span><span class="s2">&quot;true&quot;</span>
@@ -405,17 +405,17 @@ spec:
 <span class="w">    </span><span class="s2">&quot;spark.comet.exec.shuffle.enabled&quot;</span>:<span class="w"> </span><span class="s2">&quot;true&quot;</span>
 <span class="w">    </span><span class="s2">&quot;spark.comet.exec.shuffle.mode&quot;</span>:<span class="w"> </span><span class="s2">&quot;auto&quot;</span>
 <span class="w">    </span><span class="s2">&quot;spark.shuffle.manager&quot;</span>:<span class="w"> </span><span class="s2">&quot;org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager&quot;</span>
-<span class="w">  </span>sparkVersion:<span class="w"> </span><span class="m">3</span>.4.3
+<span class="w">  </span>sparkVersion:<span class="w"> </span><span class="m">3</span>.5.4
 <span class="w">  </span>driver:
 <span class="w">    </span>labels:
-<span class="w">      </span>version:<span class="w"> </span><span class="m">3</span>.4.3
+<span class="w">      </span>version:<span class="w"> </span><span class="m">3</span>.5.4
 <span class="w">    </span>cores:<span class="w"> </span><span class="m">1</span>
 <span class="w">    </span>coreLimit:<span class="w"> </span>1200m
 <span class="w">    </span>memory:<span class="w"> </span>512m
 <span class="w">    </span>serviceAccount:<span class="w"> </span>spark-operator-spark
 <span class="w">  </span>executor:
 <span class="w">    </span>labels:
-<span class="w">      </span>version:<span class="w"> </span><span class="m">3</span>.4.3
+<span class="w">      </span>version:<span class="w"> </span><span class="m">3</span>.5.4
 <span class="w">    </span>instances:<span class="w"> </span><span class="m">1</span>
 <span class="w">    </span>cores:<span class="w"> </span><span class="m">2</span>
 <span class="w">    </span>coreLimit:<span class="w"> </span>1200m
