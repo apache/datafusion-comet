@@ -68,6 +68,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       true
     case s: StructType if allowComplex =>
       s.fields.map(_.dataType).forall(supportedDataType(_, allowComplex))
+    // TODO: Add nested array and iceberg compat support
     // case a: ArrayType if allowComplex =>
     //  supportedDataType(a.elementType)
     case dt =>
