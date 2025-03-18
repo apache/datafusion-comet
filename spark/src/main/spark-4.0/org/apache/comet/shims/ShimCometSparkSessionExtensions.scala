@@ -20,16 +20,12 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.connector.expressions.aggregate.Aggregation
-import org.apache.spark.sql.execution.{CollectLimitExec, GlobalLimitExec, LocalLimitExec, QueryExecution}
+import org.apache.spark.sql.execution.QueryExecution
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.internal.SQLConf
 
 trait ShimCometSparkSessionExtensions {
   protected def getPushedAggregate(scan: ParquetScan): Option[Aggregation] = scan.pushedAggregate
-
-  protected def getOffset(limit: LocalLimitExec): Int = 0
-  protected def getOffset(limit: GlobalLimitExec): Int = limit.offset
-  protected def getOffset(limit: CollectLimitExec): Int = limit.offset
 
   protected def supportsExtendedExplainInfo(qe: QueryExecution): Boolean = true
 

@@ -32,7 +32,6 @@ Make sure the following requirements are met and software installed on your mach
 
 Comet currently supports the following versions of Apache Spark:
 
-- 3.3.x (Java 8/11/17, Scala 2.12/2.13)
 - 3.4.x (Java 8/11/17, Scala 2.12/2.13)
 - 3.5.x (Java 8/11/17, Scala 2.12/2.13)
 

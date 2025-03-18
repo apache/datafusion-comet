@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.collection.JavaConverters.asJavaIterableConverter
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, EvalMode, Expression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, Corr, Covariance, CovPopulation, CovSample, First, Last, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ByteType, DecimalType, IntegerType, LongType, ShortType, StringType}
@@ -140,7 +140,7 @@ object CometAverage extends CometAggregateExpressionSerde with ShimQueryPlanSerd
       return None
     }
 
-    if (!isLegacyMode(avg)) {
+    if (avg.evalMode != EvalMode.LEGACY) {
       withInfo(aggExpr, "Average is only supported in legacy mode")
       return None
     }
@@ -195,7 +195,7 @@ object CometSum extends CometAggregateExpressionSerde with ShimQueryPlanSerde {
       return None
     }
 
-    if (!isLegacyMode(sum)) {
+    if (sum.evalMode != EvalMode.LEGACY) {
       withInfo(aggExpr, "Sum is only supported in legacy mode")
       return None
     }

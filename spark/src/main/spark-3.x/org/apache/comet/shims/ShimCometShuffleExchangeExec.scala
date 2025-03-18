@@ -26,7 +26,7 @@ import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.types.{StructField, StructType}
 
 trait ShimCometShuffleExchangeExec {
-  // TODO: remove after dropping Spark 3.3 support
+  // TODO: remove after dropping Spark 3.4 support
   def apply(s: ShuffleExchangeExec, shuffleType: ShuffleType): CometShuffleExchangeExec = {
     val advisoryPartitionSize = s.getClass.getDeclaredMethods
       .filter(_.getName == "advisoryPartitionSize")

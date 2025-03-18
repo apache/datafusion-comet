@@ -44,22 +44,4 @@ trait ShimQueryPlanSerde {
       failOnError.head
     }
   }
-
-  // TODO: delete after drop Spark 3.3 support
-  // This method is used to check if the aggregate function is in legacy mode.
-  // EvalMode is an enum object in Spark 3.4.
-  def isLegacyMode(aggregate: DeclarativeAggregate): Boolean = {
-    val evalMode = aggregate.getClass.getDeclaredMethods
-      .flatMap(m =>
-        m.getName match {
-          case "evalMode" => Some(m.invoke(aggregate))
-          case _ => None
-        })
-
-    if (evalMode.isEmpty) {
-      true
-    } else {
-      "legacy".equalsIgnoreCase(evalMode.head.toString)
-    }
-  }
 }
