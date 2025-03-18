@@ -51,30 +51,41 @@ Here are the scripts that were used to generate these results.
 ## Apache Spark 
 
 ```shell
-#!/bin/bash
 $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
     --conf spark.driver.memory=8G \
     --conf spark.executor.instances=1 \
     --conf spark.executor.cores=8 \
-    --conf spark.cores.max=8 \
-    --conf spark.executor.memory=16g \
+    --conf spark.executor.memory=16G \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=16g \
-    --conf spark.eventLog.enabled=true \
-    tpcbench.py \
+    --deploy-mode cluster \
+    --conf spark.kubernetes.container.image.pullPolicy=Always \
+    --conf spark.kubernetes.authenticate.driver.serviceAccountName=spark \
+    --conf spark.kubernetes.driver.container.image=$SPARK_BENCHMARK_IMAGE \
+    --conf spark.kubernetes.driver.volumes.persistentVolumeClaim.benchmark-results-pv.options.claimName=benchmark-results-pvc \
+    --conf spark.kubernetes.driver.volumes.persistentVolumeClaim.benchmark-results-pv.mount.path=/mnt/benchmark-results \
+    --conf spark.kubernetes.driver.volumes.persistentVolumeClaim.benchmark-results-pv.mount.readOnly=false \
+    --conf spark.kubernetes.driver.volumes.hostPath.data.mount.path=/mnt/bigdata \
+    --conf spark.kubernetes.driver.volumes.hostPath.data.options.path=/mnt/bigdata \
+    --conf spark.kubernetes.driver.volumes.hostPath.data.options.readOnly=false \
+    --conf spark.kubernetes.executor.container.image=$SPARK_BENCHMARK_IMAGE \
+    --conf spark.kubernetes.executor.volumes.hostPath.data.mount.path=/mnt/bigdata \
+    --conf spark.kubernetes.executor.volumes.hostPath.data.options.path=/mnt/bigdata \
+    --conf spark.eventLog.enabled=false \
+    local:///tpcbench.py \
     --name spark \
     --benchmark tpch \
     --data /mnt/bigdata/tpch/sf100/ \
-    --queries ../../tpch/queries \
-    --output . \
-    --iterations 5
-
+    --queries /tpch \
+    --output /mnt/benchmark-results \
+    --iterations 1
 ```
 
 ## Apache Spark + Comet
 
 ```shell
+export COMET_JAR=local:///opt/spark/jars/comet-spark-spark3.5_2.12-0.7.0.jar
 $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
     --conf spark.driver.memory=8G \
@@ -103,14 +114,14 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.kubernetes.container.image.pullPolicy=Always \
     --conf spark.kubernetes.authenticate.driver.serviceAccountName=spark \
-    --conf spark.kubernetes.driver.container.image=$COMET_IMAGE \
+    --conf spark.kubernetes.driver.container.image=$COMET_BENCHMARK_IMAGE \
     --conf spark.kubernetes.driver.volumes.persistentVolumeClaim.benchmark-results-pv.options.claimName=benchmark-results-pvc \
     --conf spark.kubernetes.driver.volumes.persistentVolumeClaim.benchmark-results-pv.mount.path=/mnt/benchmark-results \
     --conf spark.kubernetes.driver.volumes.persistentVolumeClaim.benchmark-results-pv.mount.readOnly=false \
     --conf spark.kubernetes.driver.volumes.hostPath.data.mount.path=/mnt/bigdata \
     --conf spark.kubernetes.driver.volumes.hostPath.data.options.path=/mnt/bigdata \
     --conf spark.kubernetes.driver.volumes.hostPath.data.options.readOnly=false \
-    --conf spark.kubernetes.executor.container.image=$COMET_IMAGE \
+    --conf spark.kubernetes.executor.container.image=$COMET_BENCHMARK_IMAGE \
     --conf spark.kubernetes.executor.volumes.hostPath.data.mount.path=/mnt/bigdata \
     --conf spark.kubernetes.executor.volumes.hostPath.data.options.path=/mnt/bigdata \
     --conf spark.eventLog.enabled=false \
@@ -121,5 +132,4 @@ $SPARK_HOME/bin/spark-submit \
     --queries /tpch \
     --output /mnt/benchmark-results \
     --iterations 1
-
 ```
