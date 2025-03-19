@@ -365,15 +365,16 @@ found <a class="reference external" href="https://github.com/apache/datafusion-c
 <section id="helm-chart">
 <h2>Helm chart<a class="headerlink" href="#helm-chart" title="Link to this heading">¶</a></h2>
 <p>Install helm Spark operator for Kubernetes</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>helm<span class="w"> </span>repo<span class="w"> </span>add<span class="w"> </span>spark-operator<span class="w"> </span>https://kubeflow.github.io/spark-operator
-
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Add the Helm repository</span>
+helm<span class="w"> </span>repo<span class="w"> </span>add<span class="w"> </span>spark-operator<span class="w"> </span>https://kubeflow.github.io/spark-operator
 helm<span class="w"> </span>repo<span class="w"> </span>update
 
-helm<span class="w"> </span>install<span class="w"> </span>my-release<span class="w"> </span>spark-operator/spark-operator<span class="w"> </span>--namespace<span class="w"> </span>spark-operator<span class="w"> </span>--create-namespace<span class="w"> </span>--set<span class="w"> </span>webhook.enable<span class="o">=</span><span class="nb">true</span>
+<span class="c1"># Install the operator into the spark-operator namespace and wait for deployments to be ready</span>
+helm<span class="w"> </span>install<span class="w"> </span>spark-operator<span class="w"> </span>spark-operator/spark-operator<span class="w"> </span>--namespace<span class="w"> </span>spark-operator<span class="w"> </span>--create-namespace<span class="w"> </span>--wait
 </pre></div>
 </div>
 <p>Check the operator is deployed</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>helm<span class="w"> </span>status<span class="w"> </span>--namespace<span class="w"> </span>spark-operator<span class="w"> </span>my-release
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>helm<span class="w"> </span>status<span class="w"> </span>--namespace<span class="w"> </span>spark-operator<span class="w"> </span>spark-operator
 
 NAME:<span class="w"> </span>my-release
 NAMESPACE:<span class="w"> </span>spark-operator
@@ -417,7 +418,7 @@ spec:
 <span class="w">    </span>labels:
 <span class="w">      </span>version:<span class="w"> </span><span class="m">3</span>.5.4
 <span class="w">    </span>instances:<span class="w"> </span><span class="m">1</span>
-<span class="w">    </span>cores:<span class="w"> </span><span class="m">2</span>
+<span class="w">    </span>cores:<span class="w"> </span><span class="m">1</span>
 <span class="w">    </span>coreLimit:<span class="w"> </span>1200m
 <span class="w">    </span>memory:<span class="w"> </span>512m
 </pre></div>
@@ -425,10 +426,33 @@ spec:
 <p>Refer to <a class="reference internal" href="#comet-docker-images">Comet builds</a></p>
 <p>Run Apache Spark application with Comet enabled</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>spark-pi.yaml
+sparkapplication.sparkoperator.k8s.io/spark-pi<span class="w"> </span>created
 </pre></div>
 </div>
 <p>Check application status</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>describe<span class="w"> </span>sparkapplication<span class="w"> </span>--namespace<span class="o">=</span>spark-operator
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>get<span class="w"> </span>sparkapp<span class="w"> </span>spark-pi
+
+NAME<span class="w">       </span>STATUS<span class="w">    </span>ATTEMPTS<span class="w">   </span>START<span class="w">                  </span>FINISH<span class="w">       </span>AGE
+spark-pi<span class="w">   </span>RUNNING<span class="w">   </span><span class="m">1</span><span class="w">          </span><span class="m">2025</span>-03-18T21:19:48Z<span class="w">   </span>&lt;no<span class="w"> </span>value&gt;<span class="w">   </span>65s
+</pre></div>
+</div>
+<p>To check more runtime details</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>describe<span class="w"> </span>sparkapplication<span class="w"> </span>spark-pi
+
+....
+Events:
+<span class="w">  </span>Type<span class="w">    </span>Reason<span class="w">                     </span>Age<span class="w">    </span>From<span class="w">                          </span>Message
+<span class="w">  </span>----<span class="w">    </span>------<span class="w">                     </span>----<span class="w">   </span>----<span class="w">                          </span>-------
+<span class="w">  </span>Normal<span class="w">  </span>SparkApplicationSubmitted<span class="w">  </span>8m15s<span class="w">  </span>spark-application-controller<span class="w">  </span>SparkApplication<span class="w"> </span>spark-pi<span class="w"> </span>was<span class="w"> </span>submitted<span class="w"> </span>successfully
+<span class="w">  </span>Normal<span class="w">  </span>SparkDriverRunning<span class="w">         </span>7m18s<span class="w">  </span>spark-application-controller<span class="w">  </span>Driver<span class="w"> </span>spark-pi-driver<span class="w"> </span>is<span class="w"> </span>running
+<span class="w">  </span>Normal<span class="w">  </span>SparkExecutorPending<span class="w">       </span>7m11s<span class="w">  </span>spark-application-controller<span class="w">  </span>Executor<span class="w"> </span><span class="o">[</span>spark-pi-68732195ab217303-exec-1<span class="o">]</span><span class="w"> </span>is<span class="w"> </span>pending
+<span class="w">  </span>Normal<span class="w">  </span>SparkExecutorRunning<span class="w">       </span>7m10s<span class="w">  </span>spark-application-controller<span class="w">  </span>Executor<span class="w"> </span><span class="o">[</span>spark-pi-68732195ab217303-exec-1<span class="o">]</span><span class="w"> </span>is<span class="w"> </span>running
+<span class="w">  </span>Normal<span class="w">  </span>SparkExecutorCompleted<span class="w">     </span>7m5s<span class="w">   </span>spark-application-controller<span class="w">  </span>Executor<span class="w"> </span><span class="o">[</span>spark-pi-68732195ab217303-exec-1<span class="o">]</span><span class="w"> </span>completed
+<span class="w">  </span>Normal<span class="w">  </span>SparkDriverCompleted<span class="w">       </span>7m4s<span class="w">   </span>spark-application-controller<span class="w">  </span>Driver<span class="w"> </span>spark-pi-driver<span class="w"> </span>completed
+</pre></div>
+</div>
+<p>Get Driver Logs</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>logs<span class="w"> </span>spark-pi-driver
 </pre></div>
 </div>
 <p>More info on <a class="reference external" href="https://www.kubeflow.org/docs/components/spark-operator/getting-started/">Kube Spark operator</a></p>
