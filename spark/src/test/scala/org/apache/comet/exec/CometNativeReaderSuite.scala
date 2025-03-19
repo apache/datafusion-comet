@@ -31,19 +31,17 @@ import org.apache.comet.CometConf
 class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
-    // TODO: Enable Iceberg compat tests
-    Seq(CometConf.SCAN_NATIVE_DATAFUSION /*, CometConf.SCAN_NATIVE_ICEBERG_COMPAT*/ ).foreach(
-      scan =>
-        super.test(s"$testName - $scan", testTags: _*) {
-          withSQLConf(
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan) {
-            testFun
-          }
-        })
+    Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach(scan =>
+      super.test(s"$testName - $scan", testTags: _*) {
+        withSQLConf(
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan) {
+          testFun
+        }
+      })
   }
 
   test("native reader - read simple STRUCT fields") {
@@ -62,5 +60,68 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         |select array(2, 3, 4) as arr
         |""".stripMargin,
       "select arr from tbl")
+  }
+
+  /*
+  native reader - read STRUCT of ARRAY fields - native_datafusion *** FAILED *** (191 milliseconds)
+  org.apache.spark.SparkException: Job aborted due to stage failure: Task 1 in stage 29.0 failed 1 times,
+  most recent failure: Lost task 1.0 in stage 29.0 (TID 35) (192.168.4.142 executor driver):
+  org.apache.comet.CometNativeException: called `Result::unwrap()` on an `Err` value:
+  InvalidArgumentError("Incorrect datatype for StructArray field \"col\", expected List(Field { name: \"item\",
+  data_type: Int32, nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} })
+  got List(Field { name: \"item\", data_type: Int32, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} })")
+
+
+  native reader - read STRUCT of ARRAY fields - native_iceberg_compat *** FAILED *** (82 milliseconds)
+  org.apache.spark.SparkException: Job aborted due to stage failure:
+  Task 1 in stage 31.0 failed 1 times, most recent failure: Lost task 1.0 in stage 31.0 (TID 39) (192.168.4.142 executor driver):
+  org.apache.comet.CometNativeException: called `Result::unwrap()` on an `Err` value: InvalidArgumentError("Incorrect datatype for StructArray field \"col\",
+  expected List(Field { name: \"item\", data_type: Int32, nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} })
+  got List(Field { name: \"item\", data_type: Int32, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} })")
+
+   */
+  ignore("native reader - read STRUCT of ARRAY fields") {
+    testSingleLineQuery(
+      """
+        |select named_struct('col', arr) c0 from
+        |(
+        |  select array(1, 2, 3) as arr union all
+        |  select array(2, 3, 4) as arr
+        |)
+        |""".stripMargin,
+      "select c0 from tbl")
+  }
+
+  test("native reader - read ARRAY of ARRAY fields") {
+    testSingleLineQuery(
+      """
+        |select array(arr0, arr1) c0 from
+        |(
+        |  select array(1, 2, 3) as arr0, array(2, 3, 4) as arr1
+        |)
+        |""".stripMargin,
+      "select c0 from tbl")
+  }
+
+  test("native reader - read ARRAY of STRUCT fields") {
+    testSingleLineQuery(
+      """
+        |select array(str0, str1) c0 from
+        |(
+        |  select named_struct('a', 1, 'b', 'n') str0, named_struct('a', 2, 'b', 'w') str1
+        |)
+        |""".stripMargin,
+      "select c0 from tbl")
+  }
+
+  test("native reader - read STRUCT of STRUCT fields") {
+    testSingleLineQuery(
+      """
+        |select named_struct('a', str0, 'b', str1) c0 from
+        |(
+        |  select named_struct('a', 1, 'b', 'n') str0, named_struct('c', 2, 'd', 'w') str1
+        |)
+        |""".stripMargin,
+      "select c0 from tbl")
   }
 }
