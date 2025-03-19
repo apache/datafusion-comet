@@ -1,0 +1,134 @@
+{
+    "engine": "datafusion-comet",
+    "benchmark": "tpch",
+    "data_path": "/mnt/bigdata/tpch/sf100/",
+    "query_path": "/tpch",
+    "spark_conf": {
+        "spark.comet.cast.allowIncompatible": "true",
+        "spark.driver.host": "tpcbench-py-7412f095aa6cfc38-driver-svc.default.svc",
+        "spark.kubernetes.memoryOverheadFactor": "0.4",
+        "spark.kubernetes.driver.volumes.hostPath.data.mount.path": "/mnt/bigdata",
+        "spark.kubernetes.executor.container.image": "woody:5000/spark-tpcbench:comet-0.7.0",
+        "spark.executor.extraClassPath": "local:///opt/spark/jars/comet-spark-spark3.5_2.12-0.7.0.jar",
+        "spark.master": "k8s://https://kube1:6443",
+        "spark.driver.extraClassPath": "local:///opt/spark/jars/comet-spark-spark3.5_2.12-0.7.0.jar",
+        "spark.driver.bindAddress": "10.42.0.21",
+        "spark.kubernetes.driver.volumes.hostPath.data.options.path": "/mnt/bigdata",
+        "spark.eventLog.enabled": "false",
+        "spark.comet.scan.impl": "native_comet",
+        "spark.kubernetes.container.image.pullPolicy": "Always",
+        "spark.kubernetes.submitInDriver": "true",
+        "spark.app.initial.jar.urls": "file:/opt/spark/jars/comet-spark-spark3.5_2.12-0.7.0.jar",
+        "spark.sql.warehouse.dir": "file:/opt/spark/work-dir/spark-warehouse",
+        "spark.kubernetes.driver.container.image": "woody:5000/spark-tpcbench:comet-0.7.0",
+        "spark.shuffle.manager": "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager",
+        "spark.comet.exec.enabled": "true",
+        "spark.executor.id": "driver",
+        "spark.kubernetes.driver.volumes.persistentVolumeClaim.benchmark-results-pv.mount.readOnly": "false",
+        "spark.comet.exec.shuffle.mode": "auto",
+        "spark.driver.memory": "8G",
+        "spark.driver.port": "7078",
+        "spark.sql.extensions": "org.apache.comet.CometSparkSessionExtensions",
+        "spark.kubernetes.driver.volumes.hostPath.data.options.readOnly": "false",
+        "spark.kubernetes.executor.volumes.hostPath.data.mount.path": "/mnt/bigdata",
+        "spark.executor.instances": "1",
+        "spark.memory.offHeap.size": "16g",
+        "spark.comet.explain.native.enabled": "false",
+        "spark.app.id": "spark-8f6975ae2c954b5c8179d2190283a150",
+        "spark.kubernetes.authenticate.driver.serviceAccountName": "spark",
+        "spark.kubernetes.driver.pod.name": "tpcbench-py-7412f095aa6cfc38-driver",
+        "spark.executorEnv.SPARK_DRIVER_POD_IP": "10.42.0.21",
+        "spark.kubernetes.driver.volumes.persistentVolumeClaim.benchmark-results-pv.options.claimName": "benchmark-results-pvc",
+        "spark.comet.exec.replaceSortMergeJoin": "true",
+        "spark.comet.exec.shuffle.enabled": "true",
+        "spark.memory.offHeap.enabled": "true",
+        "spark.comet.exec.shuffle.compression.level": "1",
+        "spark.repl.local.jars": "local:///opt/spark/jars/comet-spark-spark3.5_2.12-0.7.0.jar",
+        "spark.app.name": "comet benchmark derived from tpch",
+        "spark.executor.memory": "16G",
+        "spark.executor.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false -Dlog4j.configuration=file:/opt/spark/conf/log4j.properties",
+        "spark.comet.exec.shuffle.fallbackToColumnar": "true",
+        "spark.serializer.objectStreamReset": "100",
+        "spark.app.startTime": "1742321026427",
+        "spark.submit.deployMode": "client",
+        "spark.executor.cores": "8",
+        "spark.kubernetes.executor.podNamePrefix": "comet-benchmark-derived-from-tpch-bcd6cd95aa6d06fc",
+        "spark.app.submitTime": "1742321026189",
+        "spark.jars": "local:/opt/spark/jars/comet-spark-spark3.5_2.12-0.7.0.jar",
+        "spark.driver.blockManager.port": "7079",
+        "spark.driver.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false -Dlog4j.configuration=file:/opt/spark/conf/log4j.properties",
+        "spark.plugins": "org.apache.spark.CometPlugin",
+        "spark.kubernetes.resource.type": "python",
+        "spark.kubernetes.driver.volumes.persistentVolumeClaim.benchmark-results-pv.mount.path": "/mnt/benchmark-results",
+        "spark.rdd.compress": "True",
+        "spark.kubernetes.executor.volumes.hostPath.data.options.path": "/mnt/bigdata",
+        "spark.submit.pyFiles": "",
+        "spark.comet.exec.shuffle.compression.codec": "lz4"
+    },
+    "1": [
+        11.800965785980225
+    ],
+    "2": [
+        4.9119133949279785
+    ],
+    "3": [
+        9.654481410980225
+    ],
+    "4": [
+        8.955886125564575
+    ],
+    "5": [
+        23.40088939666748
+    ],
+    "6": [
+        2.544438123703003
+    ],
+    "7": [
+        13.0323166847229
+    ],
+    "8": [
+        20.596960306167603
+    ],
+    "9": [
+        30.38415265083313
+    ],
+    "10": [
+        13.58983588218689
+    ],
+    "11": [
+        3.9095022678375244
+    ],
+    "12": [
+        4.531698226928711
+    ],
+    "13": [
+        7.79347825050354
+    ],
+    "14": [
+        4.756523370742798
+    ],
+    "15": [
+        8.379600524902344
+    ],
+    "16": [
+        5.065413475036621
+    ],
+    "17": [
+        29.910176277160645
+    ],
+    "18": [
+        26.39119863510132
+    ],
+    "19": [
+        5.450929641723633
+    ],
+    "20": [
+        9.520207166671753
+    ],
+    "21": [
+        41.77514100074768
+    ],
+    "22": [
+        4.059680700302124
+    ]
+}
