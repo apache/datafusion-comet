@@ -75,7 +75,7 @@ Baseline Spark Performance
 
 Comet Performance
 
-- Comet requires at least 5 GB of RAM in off-heap mode and 6 GB RAM in On-Heap mode, but performance at this level 
+- Comet requires at least 5 GB of RAM in off-heap mode and 6 GB RAM in on-heap mode, but performance at this level 
   is around 340 seconds, which is significantly faster than Spark with any amount of RAM
 - Comet running in off-heap with 8 cores completes the benchmark in 295 seconds, more than 2x faster than Spark
 - It is worth noting that running Comet with only 4 cores and 4 GB RAM completes the benchmark in 520 seconds, 
@@ -193,9 +193,9 @@ Once it is disabled, Comet will fall back to the default Spark shuffle manager.
 
 ### Shuffle Implementations
 
-Comet provides two shuffle implementations: Native Shuffle and Columnar Shuffle. Comet will use Native Shuffle 
-where possible, then will use Columnar Shuffle where possible, and will fall back to Spark for shuffle operations 
-that cannot be supported by either. 
+Comet provides two shuffle implementations: Native Shuffle and Columnar Shuffle. Comet will first try to use Native
+Shuffle and if that is not possible it will try to use Columnar Shuffle. If neither can be applied, it will fall
+back to Spark for shuffle operations.
 
 #### Native Shuffle
 
