@@ -114,12 +114,20 @@ The valid pool types are:
 - `fair_unified`
 
 The `unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
-need to spill or have a single spillable operator.
+need to spill or have a single spillable operator. The size of the pool is specified by `spark.memory.offHeap.size` 
+and the pool interacts with Spark's memory pool, effectively sharing the off-heap memory between Spark and Comet. This 
+approach is sometimes referred to as unified memory management.
 
 The `fair_unified` pool type prevents operators from using more than an even fraction of the available memory
 (i.e. `pool_size / num_reservations`). This pool works best when you know beforehand
 the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
 when there is sufficient memory in order to leave enough memory for other operators.
+
+The pool size configuration for the `fair_unified` pool, is a little more complex. The total pool size is computed by 
+multiplying `spark.memory.offHeap.size` by `spark.comet.memory.overhead.factor` with the minimum amount being 
+`spark.comet.memory.overhead.min`. It is also possible to manually specify `spark.comet.memoryOverhead` instead to 
+override this default behavior. Note that the `fair_unified` pool does not use unified memory management to interact 
+with Spark's memory pools, which is why the allocation defaults to a fraction of off-heap memory.
 
 ### Configuring On-Heap Memory Pools
 
