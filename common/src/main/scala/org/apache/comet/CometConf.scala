@@ -235,7 +235,8 @@ object CometConf extends ShimCometConf {
 
   val COMET_MEMORY_OVERHEAD: OptionalConfigEntry[Long] = conf("spark.comet.memoryOverhead")
     .doc(
-      "The amount of additional memory to be allocated per executor process for Comet, in MiB. " +
+      "The amount of additional memory to be allocated per executor process for Comet, in MiB, " +
+        "when running in on-heap mode. " +
         "This config is optional. If this is not specified, it will be set to " +
         s"`spark.comet.memory.overhead.factor` * `spark.executor.memory`. $TUNING_GUIDE.")
     .bytesConf(ByteUnit.MiB)
@@ -243,8 +244,8 @@ object CometConf extends ShimCometConf {
 
   val COMET_MEMORY_OVERHEAD_FACTOR: ConfigEntry[Double] =
     conf("spark.comet.memory.overhead.factor")
-      .doc("Fraction of executor memory to be allocated as additional memory for Comet. " +
-        s"$TUNING_GUIDE.")
+      .doc("Fraction of executor memory to be allocated as additional memory for Comet " +
+        s"when running in on-heap mode. $TUNING_GUIDE.")
       .doubleConf
       .checkValue(
         factor => factor > 0,
@@ -253,7 +254,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_MEMORY_OVERHEAD_MIN_MIB: ConfigEntry[Long] = conf("spark.comet.memory.overhead.min")
     .doc("Minimum amount of additional memory to be allocated per executor process for Comet, " +
-      s"in MiB. $TUNING_GUIDE.")
+      s"in MiB, when running in on-heap mode. $TUNING_GUIDE.")
     .bytesConf(ByteUnit.MiB)
     .checkValue(
       _ >= 0,
@@ -383,9 +384,8 @@ object CometConf extends ShimCometConf {
   val COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR: ConfigEntry[Double] =
     conf("spark.comet.columnar.shuffle.memory.factor")
       .internal()
-      .doc(
-        "Fraction of Comet memory to be allocated per executor process for columnar shuffle. " +
-          s"$TUNING_GUIDE.")
+      .doc("Fraction of Comet memory to be allocated per executor process for columnar shuffle " +
+        s"when running in on-heap mode. $TUNING_GUIDE.")
       .doubleConf
       .checkValue(
         factor => factor > 0,

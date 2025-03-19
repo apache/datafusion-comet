@@ -1378,8 +1378,8 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   /**
-   * Calculates required shuffle memory size in bytes per executor process for Comet
-   * when running in on-heap mode.
+   * Calculates required shuffle memory size in bytes per executor process for Comet when running
+   * in on-heap mode.
    */
   def getCometShuffleMemorySize(sparkConf: SparkConf, conf: SQLConf = SQLConf.get): Long = {
     assert(!isOffHeapEnabled(sparkConf))
