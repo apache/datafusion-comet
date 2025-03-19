@@ -75,8 +75,7 @@ class CometExecIterator(
       metricsUpdateInterval = COMET_METRICS_UPDATE_INTERVAL.get(),
       new CometTaskMemoryManager(id),
       batchSize = COMET_BATCH_SIZE.get(),
-      use_unified_memory_manager =
-        CometSparkSessionExtensions.cometUnifiedMemoryManagerEnabled(conf),
+      use_unified_memory_manager = CometSparkSessionExtensions.isOffHeapEnabled(conf),
       memory_pool_type = COMET_EXEC_MEMORY_POOL_TYPE.get(),
       memory_limit = CometSparkSessionExtensions.getCometMemoryOverhead(conf),
       memory_limit_per_task = getMemoryLimitPerTask(conf),
