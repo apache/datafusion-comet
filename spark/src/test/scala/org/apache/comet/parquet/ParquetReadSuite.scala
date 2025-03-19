@@ -98,7 +98,7 @@ abstract class ParquetReadSuite extends CometTestBase {
       DoubleType -> true,
       BinaryType -> true,
       StringType -> true,
-      ArrayType(TimestampType) -> false,
+      ArrayType(TimestampType) -> true,
       StructType(
         Seq(
           StructField("f1", DecimalType.SYSTEM_DEFAULT),
