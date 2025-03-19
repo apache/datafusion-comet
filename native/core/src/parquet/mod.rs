@@ -54,7 +54,6 @@ use arrow::buffer::{Buffer, MutableBuffer};
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::SessionContext;
 use futures::{poll, StreamExt};
 use jni::objects::{JBooleanArray, JByteArray, JLongArray, JPrimitiveArray, JString, ReleaseMode};
 use jni::sys::jstring;
@@ -649,6 +648,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     session_timezone: jstring,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| unsafe {
+        let task_ctx = TaskContext::default();
+
         let path: String = env
             .get_string(&JString::from_raw(file_path))
             .unwrap()
@@ -657,10 +658,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
-        let session_ctx = SessionContext::new();
 
         let (object_store_url, object_store_path) =
-            prepare_object_store(session_ctx.runtime_env(), path.clone())?;
+            prepare_object_store(task_ctx.runtime_env(), path.clone())?;
 
         let required_schema_array = JByteArray::from_raw(required_schema);
         let required_schema_buffer = env.convert_byte_array(&required_schema_array)?;
@@ -686,9 +686,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             session_timezone.as_str(),
         )?;
 
-        let ctx = TaskContext::default();
         let partition_index: usize = 0;
-        let batch_stream = Some(scan.execute(partition_index, Arc::new(ctx))?);
+        let batch_stream = Some(scan.execute(partition_index, Arc::new(task_ctx))?);
 
         let ctx = BatchContext {
             runtime,
