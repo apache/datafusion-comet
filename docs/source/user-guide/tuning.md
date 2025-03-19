@@ -96,10 +96,10 @@ Workarounds for this problem include:
 
 ## Advanced Memory Tuning
 
-## Configuring spark.executor.memoryOverhead
+### Configuring spark.executor.memoryOverhead in On-Heap Mode
 
 In some environments, such as Kubernetes and YARN, it is important to correctly set `spark.executor.memoryOverhead` so
-that it is possible to allocate off-heap memory.
+that it is possible to allocate off-heap memory when running in on-heap mode.
 
 Comet will automatically set `spark.executor.memoryOverhead` based on the `spark.comet.memory*` settings so that
 resource managers respect Apache Spark memory configuration before starting the containers.
