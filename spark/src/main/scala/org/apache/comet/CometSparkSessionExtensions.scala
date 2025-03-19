@@ -1377,8 +1377,13 @@ object CometSparkSessionExtensions extends Logging {
     ByteUnit.MiB.toBytes(getCometMemoryOverheadInMiB(sparkConf))
   }
 
-  /** Calculates required shuffle memory size in bytes per executor process for Comet. */
+  /**
+   * Calculates required shuffle memory size in bytes per executor process for Comet
+   * when running in on-heap mode.
+   */
   def getCometShuffleMemorySize(sparkConf: SparkConf, conf: SQLConf = SQLConf.get): Long = {
+    assert(!isOffHeapEnabled(sparkConf))
+
     val cometMemoryOverhead = getCometMemoryOverheadInMiB(sparkConf)
 
     val overheadFactor = COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR.get(conf)
