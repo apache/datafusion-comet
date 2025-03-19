@@ -490,7 +490,6 @@ object CometScanExec extends DataTypeSupport {
       // TODO add map
       dt match {
         case s: StructType => s.fields.map(_.dataType).forall(isTypeSupported)
-        // TODO: Add nested array and iceberg compat support
         case a: ArrayType => isTypeSupported(a.elementType)
         case _ => false
       }
