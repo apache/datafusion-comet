@@ -69,7 +69,7 @@ object CometConf extends ShimCometConf {
         "both this config and 'spark.comet.exec.enabled' need to be enabled. By default, this " +
         "config is the value of the env var `ENABLE_COMET` if set, or true otherwise.")
     .booleanConf
-    .createWithDefault(sys.env.getOrElse("ENABLE_COMET", "false").toBoolean)
+    .createWithDefault(sys.env.getOrElse("ENABLE_COMET", "true").toBoolean)
 
   val COMET_NATIVE_SCAN_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.scan.enabled")
     .doc(

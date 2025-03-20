@@ -29,6 +29,8 @@ import org.apache.spark.sql.catalyst.util.{fileToString, resourceToString, strin
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.TestSparkSession
 
+import org.apache.comet.CometConf
+
 /**
  * Because we need to modify some methods of Spark `TPCDSQueryTestSuite` but they are private, we
  * copy Spark `TPCDSQueryTestSuite`.
@@ -164,14 +166,20 @@ class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQue
     }
   }
 
-  val sortMergeJoinConf: Map[String, String] = Map(
+  val baseConf: Map[String, String] = Map(
+    CometConf.COMET_ENABLED.key -> "true",
+    CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+    CometConf.COMET_EXEC_ENABLED.key -> "true",
+    CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true")
+
+  val sortMergeJoinConf: Map[String, String] = baseConf ++ Map(
     SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
     SQLConf.PREFER_SORTMERGEJOIN.key -> "true")
 
-  val broadcastHashJoinConf: Map[String, String] = Map(
-    SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760")
+  val broadcastHashJoinConf: Map[String, String] =
+    baseConf ++ Map(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760")
 
-  val shuffledHashJoinConf: Map[String, String] = Map(
+  val shuffledHashJoinConf: Map[String, String] = baseConf ++ Map(
     SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
     "spark.sql.join.forceApplyShuffledHashJoin" -> "true")
 
