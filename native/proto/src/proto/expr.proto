@@ -82,14 +82,8 @@ message Expr {
     ToJson to_json = 55;
     ListExtract list_extract = 56;
     GetArrayStructFields get_array_struct_fields = 57;
-    BinaryExpr array_append = 58;
-    ArrayInsert array_insert = 59;
-    BinaryExpr array_contains = 60;
-    BinaryExpr array_remove = 61;
-    BinaryExpr array_intersect = 62;
-    ArrayJoin array_join = 63;
-    BinaryExpr arrays_overlap = 64;
-    MathExpr integral_divide = 65;
+    ArrayInsert array_insert = 58;
+    MathExpr integral_divide = 59;
   }
 }
 
