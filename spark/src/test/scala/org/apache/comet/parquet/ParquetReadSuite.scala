@@ -100,7 +100,7 @@ abstract class ParquetReadSuite extends CometTestBase {
       StringType -> true,
       // Timestamp here arbitrary for picking a concrete data type to from ArrayType
       // Any other type works
-      ArrayType(TimestampType) -> true,
+      ArrayType(TimestampType) -> usingNativeIcebergCompat,
       StructType(
         Seq(
           StructField("f1", DecimalType.SYSTEM_DEFAULT),
