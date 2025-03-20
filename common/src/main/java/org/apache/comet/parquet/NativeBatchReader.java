@@ -459,8 +459,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       importer = null;
     }
     nativeUtil.close();
-    if (handle > 0) {
+    if (this.handle > 0) {
       Native.closeRecordBatchReader(this.handle);
+      this.handle = 0;
     }
   }
 
