@@ -147,6 +147,19 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     assert(getCometShuffleMemorySize(conf, sqlConf) == getBytesFromMib(512))
   }
 
+  test("Comet shuffle memory (off-heap)") {
+    val conf = new SparkConf()
+    val sqlConf = new SQLConf
+    conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "1g")
+    conf.set("spark.memory.offHeap.enabled", "true")
+    conf.set("spark.memory.offHeap.size", "10g")
+    sqlConf.setConfString(CometConf.COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE.key, "512m")
+
+    assertThrows[AssertionError] {
+      getCometShuffleMemorySize(conf, sqlConf)
+    }
+  }
+
   test("Comet shuffle memory cannot be larger than Comet memory overhead") {
     val conf = new SparkConf()
     val sqlConf = new SQLConf
