@@ -78,9 +78,6 @@ use datafusion::common::{
     JoinType as DFJoinType, ScalarValue,
 };
 use datafusion::datasource::listing::PartitionedFile;
-use datafusion::functions_nested::array_has::ArrayHas;
-use datafusion::datasource::physical_plan::{FileScanConfig, ParquetSource};
-use datafusion::datasource::source::DataSourceExec;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{
     AggregateUDF, ReturnTypeArgs, WindowFrame, WindowFrameBound, WindowFrameUnits,
