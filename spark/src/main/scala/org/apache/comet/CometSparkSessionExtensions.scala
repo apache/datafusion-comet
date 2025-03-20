@@ -1339,6 +1339,10 @@ object CometSparkSessionExtensions extends Logging {
    * on-heap mode.
    */
   def getCometMemoryOverheadInMiB(sparkConf: SparkConf): Long = {
+    if (isOffHeapEnabled(sparkConf)) {
+      return 0
+    }
+
     // `spark.executor.memory` default value is 1g
     val baseMemoryMiB = ConfigHelpers
       .byteFromString(sparkConf.get("spark.executor.memory", "1024MB"), ByteUnit.MiB)

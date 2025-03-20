@@ -63,9 +63,6 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
         Math.max((executorMemory * memoryOverheadFactor).toLong, memoryOverheadMinMib)
       }
 
-      // we should never reach this code in off-heap mode due to earlier check
-      // in `shouldOverrideMemoryConf`
-      assert(!CometSparkSessionExtensions.isOffHeapEnabled(sc.getConf))
       val cometMemOverhead = CometSparkSessionExtensions.getCometMemoryOverheadInMiB(sc.getConf)
       sc.conf.set(EXECUTOR_MEMORY_OVERHEAD.key, s"${execMemOverhead + cometMemOverhead}M")
       val newExecMemOverhead = sc.getConf.getSizeAsMb(EXECUTOR_MEMORY_OVERHEAD.key)
