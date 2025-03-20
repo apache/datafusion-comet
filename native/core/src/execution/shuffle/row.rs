@@ -3197,6 +3197,7 @@ fn make_builders(
             // Disable dictionary encoding for array element
             let value_builder =
                 make_builders(field.data_type(), NESTED_TYPE_BUILDER_CAPACITY, 1.0)?;
+
             match field.data_type() {
                 DataType::Boolean => {
                     let builder = downcast_builder!(BooleanBuilder, value_builder);

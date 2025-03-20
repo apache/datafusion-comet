@@ -33,6 +33,7 @@ import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.comet.shims.ShimCometScanExec
+import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetOptions}
@@ -307,7 +308,7 @@ case class CometScanExec(
         .groupBy { f =>
           BucketingUtils
             .getBucketId(new Path(f.filePath.toString()).getName)
-            .getOrElse(throw invalidBucketFile(f.filePath.toString(), sparkContext.version))
+            .getOrElse(throw QueryExecutionErrors.invalidBucketFile(f.filePath.toString()))
         }
 
     val prunedFilesGroupedToBuckets = if (optionalBucketSet.isDefined) {
@@ -486,9 +487,11 @@ object CometScanExec extends DataTypeSupport {
 
   override def isAdditionallySupported(dt: DataType): Boolean = {
     if (CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
-      // TODO add array and map
+      // TODO add map
       dt match {
         case s: StructType => s.fields.map(_.dataType).forall(isTypeSupported)
+        // TODO: Add nested array and iceberg compat support
+        // case a: ArrayType => isTypeSupported(a.elementType)
         case _ => false
       }
     } else {

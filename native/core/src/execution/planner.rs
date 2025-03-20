@@ -67,17 +67,18 @@ use datafusion::{
 };
 use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr};
 
+use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
-use crate::parquet::parquet_support::{prepare_object_store, SparkParquetOptions};
-use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
-use datafusion::common::config::TableParquetOptions;
+use crate::parquet::parquet_exec::init_datasource_exec;
+use crate::parquet::parquet_support::prepare_object_store;
 use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, ScalarValue,
 };
 use datafusion::datasource::listing::PartitionedFile;
+use datafusion::functions_nested::array_has::ArrayHas;
 use datafusion::datasource::physical_plan::{FileScanConfig, ParquetSource};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
@@ -88,8 +89,10 @@ use datafusion::logical_expr::{
 use datafusion::physical_expr::expressions::{Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
+
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
+use datafusion_comet_proto::spark_operator::SparkFilePartition;
 use datafusion_comet_proto::{
     spark_expression::{
         self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
@@ -173,6 +176,60 @@ impl PhysicalPlanner {
             execution_props: self.execution_props,
             session_ctx: Arc::clone(&self.session_ctx),
         }
+    }
+
+    /// get DataFusion PartitionedFiles from a Spark FilePartition
+    fn get_partitioned_files(
+        &self,
+        partition: &SparkFilePartition,
+    ) -> Result<Vec<PartitionedFile>, ExecutionError> {
+        let mut files = Vec::with_capacity(partition.partitioned_file.len());
+        partition.partitioned_file.iter().try_for_each(|file| {
+            assert!(file.start + file.length <= file.file_size);
+
+            let mut partitioned_file = PartitionedFile::new_with_range(
+                String::new(), // Dummy file path.
+                file.file_size as u64,
+                file.start,
+                file.start + file.length,
+            );
+
+            // Spark sends the path over as URL-encoded, parse that first.
+            let url =
+                Url::parse(file.file_path.as_ref()).map_err(|e| GeneralError(e.to_string()))?;
+            // Convert that to a Path object to use in the PartitionedFile.
+            let path = Path::from_url_path(url.path()).map_err(|e| GeneralError(e.to_string()))?;
+            partitioned_file.object_meta.location = path;
+
+            // Process partition values
+            // Create an empty input schema for partition values because they are all literals.
+            let empty_schema = Arc::new(Schema::empty());
+            let partition_values: Result<Vec<_>, _> = file
+                .partition_values
+                .iter()
+                .map(|partition_value| {
+                    let literal =
+                        self.create_expr(partition_value, Arc::<Schema>::clone(&empty_schema))?;
+                    literal
+                        .as_any()
+                        .downcast_ref::<DataFusionLiteral>()
+                        .ok_or_else(|| {
+                            ExecutionError::GeneralError(
+                                "Expected literal of partition value".to_string(),
+                            )
+                        })
+                        .map(|literal| literal.value().clone())
+                })
+                .collect();
+            let partition_values = partition_values?;
+
+            partitioned_file.partition_values = partition_values;
+
+            files.push(partitioned_file);
+            Ok::<(), ExecutionError>(())
+        })?;
+
+        Ok(files)
     }
 
     /// Create a DataFusion physical expression from Spark physical expression
@@ -1065,19 +1122,6 @@ impl PhysicalPlanner {
                     .map(|expr| self.create_expr(expr, Arc::clone(&required_schema)))
                     .collect();
 
-                // Create a conjunctive form of the vector because ParquetExecBuilder takes
-                // a single expression
-                let data_filters = data_filters?;
-                let cnf_data_filters = data_filters.clone().into_iter().reduce(|left, right| {
-                    Arc::new(BinaryExpr::new(
-                        left,
-                        datafusion::logical_expr::Operator::And,
-                        right,
-                    ))
-                });
-
-                // By default, local FS object store registered
-                // if `hdfs` feature enabled then HDFS file object store registered
                 // Get one file from the list of files
                 let one_file = scan
                     .file_partitions
@@ -1094,53 +1138,7 @@ impl PhysicalPlanner {
                 let mut file_groups: Vec<Vec<PartitionedFile>> =
                     Vec::with_capacity(partition_count);
                 scan.file_partitions.iter().try_for_each(|partition| {
-                    let mut files = Vec::with_capacity(partition.partitioned_file.len());
-                    partition.partitioned_file.iter().try_for_each(|file| {
-                        assert!(file.start + file.length <= file.file_size);
-
-                        let mut partitioned_file = PartitionedFile::new_with_range(
-                            String::new(), // Dummy file path.
-                            file.file_size as u64,
-                            file.start,
-                            file.start + file.length,
-                        );
-
-                        // Spark sends the path over as URL-encoded, parse that first.
-                        let url = Url::parse(file.file_path.as_ref()).unwrap();
-                        // Convert that to a Path object to use in the PartitionedFile.
-                        let path = Path::from_url_path(url.path()).unwrap();
-                        partitioned_file.object_meta.location = path;
-
-                        // Process partition values
-                        // Create an empty input schema for partition values because they are all literals.
-                        let empty_schema = Arc::new(Schema::empty());
-                        let partition_values: Result<Vec<_>, _> = file
-                            .partition_values
-                            .iter()
-                            .map(|partition_value| {
-                                let literal = self.create_expr(
-                                    partition_value,
-                                    Arc::<Schema>::clone(&empty_schema),
-                                )?;
-                                literal
-                                    .as_any()
-                                    .downcast_ref::<DataFusionLiteral>()
-                                    .ok_or_else(|| {
-                                        ExecutionError::GeneralError(
-                                            "Expected literal of partition value".to_string(),
-                                        )
-                                    })
-                                    .map(|literal| literal.value().clone())
-                            })
-                            .collect();
-                        let partition_values = partition_values?;
-
-                        partitioned_file.partition_values = partition_values;
-
-                        files.push(partitioned_file);
-                        Ok::<(), ExecutionError>(())
-                    })?;
-
+                    let files = self.get_partitioned_files(partition)?;
                     file_groups.push(files);
                     Ok::<(), ExecutionError>(())
                 })?;
@@ -1154,47 +1152,20 @@ impl PhysicalPlanner {
                         Field::new(field.name(), field.data_type().clone(), field.is_nullable())
                     })
                     .collect_vec();
-
-                let mut table_parquet_options = TableParquetOptions::new();
-                // TODO: Maybe these are configs?
-                table_parquet_options.global.pushdown_filters = true;
-                table_parquet_options.global.reorder_filters = true;
-
-                let mut spark_parquet_options = SparkParquetOptions::new(
-                    EvalMode::Legacy,
-                    scan.session_timezone.as_str(),
-                    false,
-                );
-                spark_parquet_options.allow_cast_unsigned_ints = true;
-
-                let mut parquet_source = ParquetSource::new(table_parquet_options)
-                    .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
-                        spark_parquet_options,
-                    )));
-
-                if let Some(filter) = cnf_data_filters {
-                    parquet_source =
-                        parquet_source.with_predicate(Arc::clone(&data_schema), filter);
-                }
-
-                let mut file_scan_config = FileScanConfig::new(
+                let scan = init_datasource_exec(
+                    required_schema,
+                    Some(data_schema),
+                    Some(partition_schema),
+                    Some(partition_fields),
                     object_store_url,
-                    Arc::clone(&data_schema),
-                    Arc::new(parquet_source),
-                )
-                .with_file_groups(file_groups)
-                .with_table_partition_cols(partition_fields);
-
-                assert_eq!(
-                    projection_vector.len(),
-                    required_schema.fields.len() + partition_schema.fields.len()
-                );
-                file_scan_config = file_scan_config.with_projection(Some(projection_vector));
-
-                let scan = DataSourceExec::new(Arc::new(file_scan_config));
+                    file_groups,
+                    Some(projection_vector),
+                    Some(data_filters?),
+                    scan.session_timezone.as_str(),
+                )?;
                 Ok((
                     vec![],
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, Arc::new(scan), vec![])),
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, scan, vec![])),
                 ))
             }
             OpStruct::Scan(scan) => {
@@ -2556,12 +2527,14 @@ mod tests {
 
     use arrow::array::{DictionaryArray, Int32Array, StringArray};
     use arrow::datatypes::DataType;
-    use datafusion::{physical_plan::common::collect, prelude::SessionContext};
+    use datafusion::logical_expr::ScalarUDF;
+    use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
     use tokio::sync::mpsc;
 
     use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
 
     use crate::execution::operators::ExecutionError;
+    use datafusion_comet_proto::spark_expression::expr::ExprStruct;
     use datafusion_comet_proto::{
         spark_expression::expr::ExprStruct::*,
         spark_expression::Expr,
@@ -2873,5 +2846,131 @@ mod tests {
             type_id: 3,
             type_info: None,
         }
+    }
+
+    #[test]
+    fn test_create_array() {
+        let session_ctx = SessionContext::new();
+        session_ctx.register_udf(ScalarUDF::from(
+            datafusion_functions_nested::make_array::MakeArray::new(),
+        ));
+        let task_ctx = session_ctx.task_ctx();
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx));
+
+        // Create a plan for
+        // ProjectionExec: expr=[make_array(col_0@0) as col_0]
+        // ScanExec: source=[CometScan parquet  (unknown)], schema=[col_0: Int32]
+        let op_scan = Operator {
+            plan_id: 0,
+            children: vec![],
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![
+                    spark_expression::DataType {
+                        type_id: 3, // Int32
+                        type_info: None,
+                    },
+                    spark_expression::DataType {
+                        type_id: 3, // Int32
+                        type_info: None,
+                    },
+                    spark_expression::DataType {
+                        type_id: 3, // Int32
+                        type_info: None,
+                    },
+                ],
+                source: "".to_string(),
+            })),
+        };
+
+        let array_col = spark_expression::Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 0,
+                datatype: Some(spark_expression::DataType {
+                    type_id: 3,
+                    type_info: None,
+                }),
+            })),
+        };
+
+        let array_col_1 = spark_expression::Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 1,
+                datatype: Some(spark_expression::DataType {
+                    type_id: 3,
+                    type_info: None,
+                }),
+            })),
+        };
+
+        let projection = Operator {
+            children: vec![op_scan],
+            plan_id: 0,
+            op_struct: Some(OpStruct::Projection(spark_operator::Projection {
+                project_list: vec![spark_expression::Expr {
+                    expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
+                        func: "make_array".to_string(),
+                        args: vec![array_col, array_col_1],
+                        return_type: None,
+                    })),
+                }],
+            })),
+        };
+
+        let a = Int32Array::from(vec![0, 3]);
+        let b = Int32Array::from(vec![1, 4]);
+        let c = Int32Array::from(vec![2, 5]);
+        let input_batch = InputBatch::Batch(vec![Arc::new(a), Arc::new(b), Arc::new(c)], 2);
+
+        let (mut scans, datafusion_plan) =
+            planner.create_plan(&projection, &mut vec![], 1).unwrap();
+        scans[0].set_input_batch(input_batch);
+
+        let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (tx, mut rx) = mpsc::channel(1);
+
+        // Separate thread to send the EOF signal once we've processed the only input batch
+        runtime.spawn(async move {
+            // Create a dictionary array with 100 values, and use it as input to the execution.
+            let a = Int32Array::from(vec![0, 3]);
+            let b = Int32Array::from(vec![1, 4]);
+            let c = Int32Array::from(vec![2, 5]);
+            let input_batch1 = InputBatch::Batch(vec![Arc::new(a), Arc::new(b), Arc::new(c)], 2);
+            let input_batch2 = InputBatch::EOF;
+
+            let batches = vec![input_batch1, input_batch2];
+
+            for batch in batches.into_iter() {
+                tx.send(batch).await.unwrap();
+            }
+        });
+
+        runtime.block_on(async move {
+            loop {
+                let batch = rx.recv().await.unwrap();
+                scans[0].set_input_batch(batch);
+                match poll!(stream.next()) {
+                    Poll::Ready(Some(batch)) => {
+                        assert!(batch.is_ok(), "got error {}", batch.unwrap_err());
+                        let batch = batch.unwrap();
+                        assert_eq!(batch.num_rows(), 2);
+                        let expected = [
+                            "+--------+",
+                            "| col_0  |",
+                            "+--------+",
+                            "| [0, 1] |",
+                            "| [3, 4] |",
+                            "+--------+",
+                        ];
+                        assert_batches_eq!(expected, &[batch]);
+                    }
+                    Poll::Ready(None) => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
     }
 }

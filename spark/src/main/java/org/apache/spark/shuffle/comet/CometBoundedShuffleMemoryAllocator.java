@@ -43,10 +43,12 @@ import org.apache.comet.CometSparkSessionExtensions$;
  * <p>Some methods are copied from `org.apache.spark.unsafe.memory.TaskMemoryManager` with
  * modifications. Most modifications are to remove the dependency on the configured memory mode.
  *
- * <p>This allocator is test-only and should not be used in production. It is used to test Comet JVM
- * shuffle and execution with Spark tests which basically require on-heap memory configuration.
- * Thus, this allocator is used to allocate separate off-heap memory allocation for Comet JVM
- * shuffle and execution apart from Spark's on-heap memory configuration.
+ * <p>This allocator is only used by Comet Columnar Shuffle when running in on-heap mode. It is used
+ * when users run in on-heap mode as well as in the Spark tests which require on-heap memory
+ * configuration.
+ *
+ * <p>Thus, this allocator is used to allocate separate off-heap memory allocation for Comet
+ * Columnar Shuffle and execution apart from Spark's on-heap memory configuration.
  */
 public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemoryAllocatorTrait {
   private final UnsafeMemoryAllocator allocator = new UnsafeMemoryAllocator();

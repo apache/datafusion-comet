@@ -1,0 +1,361 @@
+{
+    "engine": "datafusion-comet",
+    "benchmark": "tpcds",
+    "data_path": "/mnt/bigdata/tpcds/sf100/",
+    "query_path": "/tpcds",
+    "spark_conf": {
+        "spark.comet.cast.allowIncompatible": "true",
+        "spark.kubernetes.memoryOverheadFactor": "0.4",
+        "spark.kubernetes.authenticate.driver.serviceAccountName": "spark",
+        "spark.kubernetes.driver.volumes.hostPath.data.mount.path": "/mnt/bigdata",
+        "spark.kubernetes.driver.volumes.persistentVolumeClaim.benchmark-results-pv.options.claimName": "benchmark-results-pvc",
+        "spark.comet.exec.shuffle.enabled": "true",
+        "spark.kubernetes.executor.container.image": "woody:5000/spark-tpcbench:comet-0.7.0",
+        "spark.memory.offHeap.enabled": "true",
+        "spark.executor.extraClassPath": "local:///opt/spark/jars/comet-spark-spark3.5_2.12-0.7.0.jar",
+        "spark.memory.offHeap.size": "32g",
+        "spark.master": "k8s://https://kube1:6443",
+        "spark.repl.local.jars": "local:///opt/spark/jars/comet-spark-spark3.5_2.12-0.7.0.jar",
+        "spark.kubernetes.executor.podNamePrefix": "comet-benchmark-derived-from-tpcds-edbdd195aafaad20",
+        "spark.driver.extraClassPath": "local:///opt/spark/jars/comet-spark-spark3.5_2.12-0.7.0.jar",
+        "spark.comet.exec.shuffle.fallbackToColumnar": "true",
+        "spark.kubernetes.driver.pod.name": "tpcbench-py-ca7e3a95aafaa234-driver",
+        "spark.serializer.objectStreamReset": "100",
+        "spark.executor.cores": "16",
+        "spark.submit.deployMode": "client",
+        "spark.kubernetes.driver.volumes.hostPath.data.options.path": "/mnt/bigdata",
+        "spark.eventLog.enabled": "false",
+        "spark.kubernetes.container.image.pullPolicy": "Always",
+        "spark.kubernetes.submitInDriver": "true",
+        "spark.comet.exec.replaceSortMergeJoin": "false",
+        "spark.app.initial.jar.urls": "file:/opt/spark/jars/comet-spark-spark3.5_2.12-0.7.0.jar",
+        "spark.sql.warehouse.dir": "file:/opt/spark/work-dir/spark-warehouse",
+        "spark.driver.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
+        "spark.kubernetes.driver.container.image": "woody:5000/spark-tpcbench:comet-0.7.0",
+        "spark.jars": "local:/opt/spark/jars/comet-spark-spark3.5_2.12-0.7.0.jar",
+        "spark.shuffle.manager": "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager",
+        "spark.driver.blockManager.port": "7079",
+        "spark.driver.host": "tpcbench-py-ca7e3a95aafaa234-driver-svc.default.svc",
+        "spark.executor.id": "driver",
+        "spark.kubernetes.driver.volumes.persistentVolumeClaim.benchmark-results-pv.mount.readOnly": "false",
+        "spark.executorEnv.SPARK_DRIVER_POD_IP": "10.42.0.32",
+        "spark.driver.memory": "8G",
+        "spark.plugins": "org.apache.spark.CometPlugin",
+        "spark.driver.port": "7078",
+        "spark.sql.extensions": "org.apache.comet.CometSparkSessionExtensions",
+        "spark.driver.bindAddress": "10.42.0.32",
+        "spark.executor.memory": "32g",
+        "spark.kubernetes.driver.volumes.hostPath.data.options.readOnly": "false",
+        "spark.kubernetes.resource.type": "python",
+        "spark.kubernetes.executor.volumes.hostPath.data.mount.path": "/mnt/bigdata",
+        "spark.kubernetes.driver.volumes.persistentVolumeClaim.benchmark-results-pv.mount.path": "/mnt/benchmark-results",
+        "spark.rdd.compress": "True",
+        "spark.kubernetes.executor.volumes.hostPath.data.options.path": "/mnt/bigdata",
+        "spark.app.submitTime": "1742330309312",
+        "spark.executor.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
+        "spark.executor.instances": "1",
+        "spark.submit.pyFiles": "",
+        "spark.app.name": "comet benchmark derived from tpcds",
+        "spark.comet.exec.sortMergeJoinWithJoinFilter.enabled": "false",
+        "spark.comet.exec.shuffle.compression.codec": "lz4",
+        "spark.app.startTime": "1742330309547",
+        "spark.app.id": "spark-f19e10f23d8240b48cc4ed98ed04fba3"
+    },
+    "1": [
+        3.8007454872131348
+    ],
+    "2": [
+        2.934406042098999
+    ],
+    "3": [
+        1.8077075481414795
+    ],
+    "4": [
+        38.95960068702698
+    ],
+    "5": [
+        6.480054140090942
+    ],
+    "6": [
+        1.7508840560913086
+    ],
+    "7": [
+        3.1088171005249023
+    ],
+    "8": [
+        1.7765257358551025
+    ],
+    "9": [
+        6.612036228179932
+    ],
+    "10": [
+        2.2242751121520996
+    ],
+    "11": [
+        14.480247735977173
+    ],
+    "12": [
+        1.7369463443756104
+    ],
+    "13": [
+        4.074203729629517
+    ],
+    "14": [
+        29.123273134231567
+    ],
+    "15": [
+        4.248904705047607
+    ],
+    "16": [
+        10.133432388305664
+    ],
+    "17": [
+        3.7625250816345215
+    ],
+    "18": [
+        3.8477349281311035
+    ],
+    "19": [
+        4.500071048736572
+    ],
+    "20": [
+        2.6818368434906006
+    ],
+    "21": [
+        1.4147498607635498
+    ],
+    "22": [
+        7.523956060409546
+    ],
+    "23": [
+        46.224446296691895
+    ],
+    "24": [
+        17.637375354766846
+    ],
+    "25": [
+        4.1354968547821045
+    ],
+    "26": [
+        1.6679058074951172
+    ],
+    "27": [
+        3.050835609436035
+    ],
+    "28": [
+        6.84471321105957
+    ],
+    "29": [
+        5.636432647705078
+    ],
+    "30": [
+        1.3323733806610107
+    ],
+    "31": [
+        8.65419864654541
+    ],
+    "32": [
+        2.1772098541259766
+    ],
+    "33": [
+        4.056207180023193
+    ],
+    "34": [
+        1.6547296047210693
+    ],
+    "35": [
+        3.6222033500671387
+    ],
+    "36": [
+        3.8398098945617676
+    ],
+    "37": [
+        2.759655714035034
+    ],
+    "38": [
+        3.1616175174713135
+    ],
+    "39": [
+        23.769543647766113
+    ],
+    "40": [
+        5.029548406600952
+    ],
+    "41": [
+        0.1620326042175293
+    ],
+    "42": [
+        1.332118272781372
+    ],
+    "43": [
+        1.7391486167907715
+    ],
+    "44": [
+        2.106876850128174
+    ],
+    "45": [
+        2.75510835647583
+    ],
+    "46": [
+        3.896399974822998
+    ],
+    "47": [
+        8.290078401565552
+    ],
+    "48": [
+        2.7061638832092285
+    ],
+    "49": [
+        7.190724849700928
+    ],
+    "50": [
+        6.780158996582031
+    ],
+    "51": [
+        8.215158224105835
+    ],
+    "52": [
+        1.5169131755828857
+    ],
+    "53": [
+        1.7289965152740479
+    ],
+    "54": [
+        4.88456130027771
+    ],
+    "55": [
+        1.6041936874389648
+    ],
+    "56": [
+        3.499546527862549
+    ],
+    "57": [
+        4.1097211837768555
+    ],
+    "58": [
+        7.262974500656128
+    ],
+    "59": [
+        4.279415607452393
+    ],
+    "60": [
+        3.539266586303711
+    ],
+    "61": [
+        7.6956703662872314
+    ],
+    "62": [
+        0.9987466335296631
+    ],
+    "63": [
+        1.657144546508789
+    ],
+    "64": [
+        16.91126251220703
+    ],
+    "65": [
+        8.163438081741333
+    ],
+    "66": [
+        3.2754974365234375
+    ],
+    "67": [
+        26.075207233428955
+    ],
+    "68": [
+        4.537346124649048
+    ],
+    "69": [
+        2.11562442779541
+    ],
+    "70": [
+        3.6501145362854004
+    ],
+    "71": [
+        3.4785256385803223
+    ],
+    "72": [
+        86.01354646682739
+    ],
+    "73": [
+        1.4168097972869873
+    ],
+    "74": [
+        10.193686485290527
+    ],
+    "75": [
+        12.96819543838501
+    ],
+    "76": [
+        3.2735350131988525
+    ],
+    "77": [
+        3.9798026084899902
+    ],
+    "78": [
+        20.82780885696411
+    ],
+    "79": [
+        3.004102945327759
+    ],
+    "80": [
+        15.547224760055542
+    ],
+    "81": [
+        1.5719726085662842
+    ],
+    "82": [
+        1.9509336948394775
+    ],
+    "83": [
+        0.9915726184844971
+    ],
+    "84": [
+        0.8701736927032471
+    ],
+    "85": [
+        2.0493757724761963
+    ],
+    "86": [
+        0.8952863216400146
+    ],
+    "87": [
+        3.469674587249756
+    ],
+    "88": [
+        5.753418922424316
+    ],
+    "89": [
+        2.209171772003174
+    ],
+    "90": [
+        0.48661088943481445
+    ],
+    "91": [
+        0.5826904773712158
+    ],
+    "92": [
+        0.966893196105957
+    ],
+    "93": [
+        8.976980686187744
+    ],
+    "94": [
+        6.286005020141602
+    ],
+    "95": [
+        23.718507051467896
+    ],
+    "96": [
+        0.8083770275115967
+    ],
+    "97": [
+        6.110299348831177
+    ],
+    "98": [
+        5.283054828643799
+    ],
+    "99": [
+        1.5403597354888916
+    ]
+}
