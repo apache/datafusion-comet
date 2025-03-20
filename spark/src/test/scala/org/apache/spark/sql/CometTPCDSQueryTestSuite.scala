@@ -172,14 +172,14 @@ class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQue
     CometConf.COMET_EXEC_ENABLED.key -> "true",
     CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true")
 
-  val sortMergeJoinConf: Map[String, String] = baseConf ++ Map(
+  val sortMergeJoinConf: Map[String, String] = Map(
     SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
     SQLConf.PREFER_SORTMERGEJOIN.key -> "true")
 
   val broadcastHashJoinConf: Map[String, String] =
-    baseConf ++ Map(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760")
+    Map(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760")
 
-  val shuffledHashJoinConf: Map[String, String] = baseConf ++ Map(
+  val shuffledHashJoinConf: Map[String, String] = Map(
     SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
     "spark.sql.join.forceApplyShuffledHashJoin" -> "true")
 
@@ -221,7 +221,7 @@ class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQue
           // that can cause OOM in GitHub Actions
           if (!(sortMergeJoin && name == "q72")) {
             System.gc() // Workaround for GitHub Actions memory limitation, see also SPARK-37368
-            runQuery(queryString, goldenFile, conf)
+            runQuery(queryString, goldenFile, baseConf ++ conf)
           }
         }
       }
