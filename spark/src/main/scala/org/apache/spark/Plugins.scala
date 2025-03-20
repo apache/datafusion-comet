@@ -63,13 +63,10 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
         Math.max((executorMemory * memoryOverheadFactor).toLong, memoryOverheadMinMib)
       }
 
-      val cometMemOverhead =
-        if (!CometSparkSessionExtensions.cometUnifiedMemoryManagerEnabled(sc.getConf)) {
-          CometSparkSessionExtensions.getCometMemoryOverheadInMiB(sc.getConf)
-        } else {
-          // comet shuffle unified memory manager is disabled, so we need to add overhead memory
-          CometSparkSessionExtensions.getCometShuffleMemorySizeInMiB(sc.getConf)
-        }
+      // we should never reach this code in off-heap mode due to earlier check
+      // in `shouldOverrideMemoryConf`
+      assert(!CometSparkSessionExtensions.isOffHeapEnabled(sc.getConf))
+      val cometMemOverhead = CometSparkSessionExtensions.getCometMemoryOverheadInMiB(sc.getConf)
       sc.conf.set(EXECUTOR_MEMORY_OVERHEAD.key, s"${execMemOverhead + cometMemOverhead}M")
       val newExecMemOverhead = sc.getConf.getSizeAsMb(EXECUTOR_MEMORY_OVERHEAD.key)
 
@@ -98,7 +95,7 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
   /**
    * Whether we should override Spark memory configuration for Comet. This only returns true when
    * Comet native execution is enabled and/or Comet shuffle is enabled and Comet doesn't use
-   * unified memory manager.
+   * off-heap mode (unified memory manager).
    */
   private def shouldOverrideMemoryConf(conf: SparkConf): Boolean = {
     val cometEnabled =
@@ -109,9 +106,9 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
     val cometExec = conf.getBoolean(
       CometConf.COMET_EXEC_ENABLED.key,
       CometConf.COMET_EXEC_ENABLED.defaultValue.get)
-    val unifiedMemory = CometSparkSessionExtensions.cometUnifiedMemoryManagerEnabled(conf)
+    val offHeapMode = CometSparkSessionExtensions.isOffHeapEnabled(conf)
 
-    cometEnabled && (cometExecShuffle || cometExec) && !unifiedMemory
+    cometEnabled && (cometExecShuffle || cometExec) && !offHeapMode
   }
 }
 
