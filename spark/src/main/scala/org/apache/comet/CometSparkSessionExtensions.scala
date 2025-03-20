@@ -1334,16 +1334,14 @@ object CometSparkSessionExtensions extends Logging {
     CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_DATAFUSION
   }
 
-  /** Calculates required memory overhead in MB per executor process for Comet. */
+  /**
+   * Calculates required memory overhead in MB per executor process for Comet when running in
+   * on-heap mode.
+   */
   def getCometMemoryOverheadInMiB(sparkConf: SparkConf): Long = {
-    val baseMemoryMiB = if (isOffHeapEnabled(sparkConf)) {
-      ConfigHelpers
-        .byteFromString(sparkConf.get("spark.memory.offHeap.size"), ByteUnit.MiB)
-    } else {
-      // `spark.executor.memory` default value is 1g
-      ConfigHelpers
-        .byteFromString(sparkConf.get("spark.executor.memory", "1024MB"), ByteUnit.MiB)
-    }
+    // `spark.executor.memory` default value is 1g
+    val baseMemoryMiB = ConfigHelpers
+      .byteFromString(sparkConf.get("spark.executor.memory", "1024MB"), ByteUnit.MiB)
 
     val minimum = ConfigHelpers
       .byteFromString(
@@ -1362,7 +1360,10 @@ object CometSparkSessionExtensions extends Logging {
     overHeadMemFromConf.getOrElse(math.max((overheadFactor * baseMemoryMiB).toLong, minimum))
   }
 
-  /** Calculates required memory overhead in bytes per executor process for Comet. */
+  /**
+   * Calculates required memory overhead in bytes per executor process for Comet when running in
+   * on-heap mode.
+   */
   def getCometMemoryOverhead(sparkConf: SparkConf): Long = {
     ByteUnit.MiB.toBytes(getCometMemoryOverheadInMiB(sparkConf))
   }
@@ -1389,11 +1390,6 @@ object CometSparkSessionExtensions extends Logging {
     } else {
       ByteUnit.MiB.toBytes(shuffleMemorySize)
     }
-  }
-
-  /** Calculates Comet shuffle memory size in MB */
-  def getCometShuffleMemorySizeInMiB(sparkConf: SparkConf, conf: SQLConf = SQLConf.get): Long = {
-    ByteUnit.BYTE.toMiB(getCometShuffleMemorySize(sparkConf, conf))
   }
 
   def isOffHeapEnabled(sparkConf: SparkConf): Boolean = {
