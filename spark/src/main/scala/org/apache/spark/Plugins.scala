@@ -28,7 +28,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.{EXECUTOR_MEMORY, EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR}
 import org.apache.spark.sql.internal.StaticSQLConf
 
-import org.apache.comet.{CometConf, CometSparkSessionExtensions}
+import org.apache.comet.CometSparkSessionExtensions
 
 /**
  * Comet driver plugin. This class is loaded by Spark's plugin framework. It will be instantiated
@@ -50,7 +50,7 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
     // register CometSparkSessionExtensions if it isn't already registered
     CometDriverPlugin.registerCometSessionExtension(sc.conf)
 
-    if (shouldOverrideMemoryConf(sc.getConf)) {
+    if (CometSparkSessionExtensions.shouldOverrideMemoryConf(sc.getConf)) {
       val execMemOverhead = if (sc.getConf.contains(EXECUTOR_MEMORY_OVERHEAD.key)) {
         sc.getConf.getSizeAsMb(EXECUTOR_MEMORY_OVERHEAD.key)
       } else {
@@ -73,6 +73,8 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
            - Comet memory overhead: ${cometMemOverhead}MB
            - Updated Spark executor memory overhead: ${newExecMemOverhead}MB
          """)
+    } else {
+      logInfo("Comet is running in unified memory mode and sharing off-heap memory with Spark")
     }
 
     Collections.emptyMap[String, String]
@@ -89,24 +91,6 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
   override def registerMetrics(appId: String, pluginContext: PluginContext): Unit =
     super.registerMetrics(appId, pluginContext)
 
-  /**
-   * Whether we should override Spark memory configuration for Comet. This only returns true when
-   * Comet native execution is enabled and/or Comet shuffle is enabled and Comet doesn't use
-   * off-heap mode (unified memory manager).
-   */
-  private def shouldOverrideMemoryConf(conf: SparkConf): Boolean = {
-    val cometEnabled =
-      conf.getBoolean(CometConf.COMET_ENABLED.key, CometConf.COMET_ENABLED.defaultValue.get)
-    val cometExecShuffle = conf.getBoolean(
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key,
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.defaultValue.get)
-    val cometExec = conf.getBoolean(
-      CometConf.COMET_EXEC_ENABLED.key,
-      CometConf.COMET_EXEC_ENABLED.defaultValue.get)
-    val offHeapMode = CometSparkSessionExtensions.isOffHeapEnabled(conf)
-
-    cometEnabled && (cometExecShuffle || cometExec) && !offHeapMode
-  }
 }
 
 object CometDriverPlugin extends Logging {

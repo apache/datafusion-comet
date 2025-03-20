@@ -99,6 +99,7 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     val sparkConf = new SparkConf()
     sparkConf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "10g")
     assert(getCometMemoryOverhead(sparkConf) == getBytesFromMib(1024 * 10))
+    assert(shouldOverrideMemoryConf(sparkConf))
   }
 
   test("Comet memory overhead (min)") {
@@ -119,6 +120,7 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     sparkConf.set("spark.memory.offHeap.enabled", "true")
     sparkConf.set("spark.memory.offHeap.size", "10g")
     assert(getCometMemoryOverhead(sparkConf) == 0)
+    assert(!shouldOverrideMemoryConf(sparkConf))
   }
 
   test("Comet shuffle memory factor") {
