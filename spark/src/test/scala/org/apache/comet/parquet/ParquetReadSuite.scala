@@ -86,7 +86,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     // note that native_datafusion does not use CometScanExec so we need not include that in
     // the check
     val usingNativeIcebergCompat =
-      (CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
+      CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT
     Seq(
       NullType -> false,
       BooleanType -> true,
@@ -98,7 +98,9 @@ abstract class ParquetReadSuite extends CometTestBase {
       DoubleType -> true,
       BinaryType -> true,
       StringType -> true,
-      ArrayType(TimestampType) -> false,
+      // Timestamp here arbitrary for picking a concrete data type to from ArrayType
+      // Any other type works
+      ArrayType(TimestampType) -> usingNativeIcebergCompat,
       StructType(
         Seq(
           StructField("f1", DecimalType.SYSTEM_DEFAULT),
