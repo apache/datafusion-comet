@@ -23,6 +23,7 @@ use arrow::{
 use datafusion::common::Result;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::{error::DataFusionError, logical_expr::ColumnarValue};
+use std::fmt::Formatter;
 use std::hash::Hash;
 use std::{any::Any, sync::Arc};
 
@@ -120,6 +121,10 @@ impl PhysicalExpr for BitwiseNotExpr {
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(BitwiseNotExpr::new(Arc::clone(&children[0]))))
+    }
+
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
     }
 }
 

@@ -312,6 +312,7 @@ impl DisplayAs for FilterExec {
                     self.predicate, display_projections
                 )
             }
+            DisplayFormatType::TreeRender => unimplemented!(),
         }
     }
 }

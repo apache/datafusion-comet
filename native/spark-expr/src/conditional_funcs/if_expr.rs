@@ -22,6 +22,7 @@ use arrow::{
 use datafusion::common::Result;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::{expressions::CaseExpr, PhysicalExpr};
+use std::fmt::Formatter;
 use std::hash::Hash;
 use std::{any::Any, sync::Arc};
 
@@ -85,6 +86,10 @@ impl PhysicalExpr for IfExpr {
     /// Return a reference to Any that can be used for down-casting
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
     }
 
     fn data_type(&self, input_schema: &Schema) -> Result<DataType> {

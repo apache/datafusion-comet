@@ -120,6 +120,7 @@ impl DisplayAs for ShuffleWriterExec {
                     self.partitioning, self.enable_fast_encoding, self.codec
                 )
             }
+            DisplayFormatType::TreeRender => unimplemented!(),
         }
     }
 }
