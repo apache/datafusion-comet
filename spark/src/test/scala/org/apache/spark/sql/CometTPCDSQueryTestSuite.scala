@@ -239,7 +239,7 @@ class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQue
           // that can cause OOM in GitHub Actions
           if (!(sortMergeJoin && name == "q72")) {
             System.gc() // SPARK-37368
-            runQuery(queryString, goldenFile, conf)
+            runQuery(queryString, goldenFile, baseConf ++ conf)
           }
         }
       }
@@ -253,7 +253,7 @@ class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQue
         val goldenFile = new File(s"$baseResourcePath/extended", s"$name.sql.out")
         joinConfs.foreach { conf =>
           System.gc() // SPARK-37368
-          runQuery(queryString, goldenFile, conf)
+          runQuery(queryString, goldenFile, baseConf ++ conf)
         }
       }
     }
