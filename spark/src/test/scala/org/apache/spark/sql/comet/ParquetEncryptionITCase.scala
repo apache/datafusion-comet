@@ -81,7 +81,12 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
             val parquetDF = spark.read.parquet(parquetDir)
             assert(parquetDF.inputFiles.nonEmpty)
             val readDataset = parquetDF.select("a", "b", "c")
-            checkAnswer(readDataset, inputDF)
+
+            if (CometConf.COMET_ENABLED.get(conf)) {
+              checkSparkAnswerAndOperator(readDataset)
+            } else {
+              checkAnswer(readDataset, inputDF)
+            }
           }
         }
     }
