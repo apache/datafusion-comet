@@ -422,17 +422,13 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     long totalDecodeTime = 0, totalLoadTime = 0;
     for (int i = 0; i < columnReaders.length; i++) {
       AbstractColumnReader reader = columnReaders[i];
-      // TODO core3 tests fail when reading _metadata.row_index with a NPE
-      // so let's see what happens if we add a null check
-      if (reader != null) {
-        long startNs = System.nanoTime();
-        // TODO: read from native reader
-        reader.readBatch(batchSize);
-        //      totalDecodeTime += System.nanoTime() - startNs;
-        //      startNs = System.nanoTime();
-        vectors[i] = reader.currentBatch();
-        totalLoadTime += System.nanoTime() - startNs;
-      }
+      long startNs = System.nanoTime();
+      // TODO: read from native reader
+      reader.readBatch(batchSize);
+      //      totalDecodeTime += System.nanoTime() - startNs;
+      //      startNs = System.nanoTime();
+      vectors[i] = reader.currentBatch();
+      totalLoadTime += System.nanoTime() - startNs;
     }
 
     // TODO: (ARROW NATIVE) Add Metrics
