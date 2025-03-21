@@ -421,6 +421,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
 
     long totalDecodeTime = 0, totalLoadTime = 0;
     for (int i = 0; i < columnReaders.length; i++) {
+      if (missingColumns[i]) {
+        continue;
+      }
       AbstractColumnReader reader = columnReaders[i];
       long startNs = System.nanoTime();
       // TODO: read from native reader

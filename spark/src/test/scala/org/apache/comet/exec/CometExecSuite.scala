@@ -86,6 +86,35 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("foo") {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
+      withTable("test_data") {
+        val data = (0 to 8000)
+          .flatMap(_ => Seq((1, null, "A"), (2, "BBB", "B"), (3, "BBB", "B"), (4, "BBB", "B")))
+        val tableDF = spark.sparkContext
+          .parallelize(data, 3)
+          .toDF("c1", "c2", "c3")
+        tableDF
+          .writeTo("test_data")
+          .using("parquet")
+          .create()
+
+        val rowIndexColName = "_metadata.row_index"
+
+        val df = sql(s"SELECT c1, c2, c3 FROM test_data")
+        // .filter(col(rowIndexColName).isin(1, 2, 3))
+        checkSparkAnswer(df)
+
+        val minMaxRowIndexes = df.select(max(col(rowIndexColName)), min(col(rowIndexColName)))
+        checkSparkAnswerAndOperator(minMaxRowIndexes)
+
+      }
+    }
+  }
+
   test("DPP fallback") {
     withTempDir { path =>
       // create test data
