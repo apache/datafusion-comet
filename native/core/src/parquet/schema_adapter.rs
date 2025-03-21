@@ -50,11 +50,10 @@ impl SchemaAdapterFactory for SparkSchemaAdapterFactory {
     fn create(
         &self,
         required_schema: SchemaRef,
-        table_schema: SchemaRef,
+        _table_schema: SchemaRef,
     ) -> Box<dyn SchemaAdapter> {
         Box::new(SparkSchemaAdapter {
             required_schema,
-            table_schema,
             parquet_options: self.parquet_options.clone(),
         })
     }
@@ -67,12 +66,6 @@ pub struct SparkSchemaAdapter {
     /// The schema for the table, projected to include only the fields being output (projected) by the
     /// associated ParquetExec
     required_schema: SchemaRef,
-    /// The entire table schema for the table we're using this to adapt.
-    ///
-    /// This is used to evaluate any filters pushed down into the scan
-    /// which may refer to columns that are not referred to anywhere
-    /// else in the plan.
-    table_schema: SchemaRef,
     /// Spark cast options
     parquet_options: SparkParquetOptions,
 }
@@ -116,7 +109,6 @@ impl SchemaAdapter for SparkSchemaAdapter {
             Arc::new(SchemaMapping {
                 required_schema: Arc::<Schema>::clone(&self.required_schema),
                 field_mappings,
-                table_schema: Arc::<Schema>::clone(&self.table_schema),
                 parquet_options: self.parquet_options.clone(),
             }),
             projection,
@@ -163,11 +155,6 @@ pub struct SchemaMapping {
     /// They are Options instead of just plain `usize`s because the table could
     /// have fields that don't exist in the file.
     field_mappings: Vec<Option<usize>>,
-    /// The entire table schema, as opposed to the projected_table_schema (which
-    /// only contains the columns that we are projecting out of this query).
-    /// This contains all fields in the table, regardless of if they will be
-    /// projected out or not.
-    table_schema: SchemaRef,
     /// Spark cast options
     parquet_options: SparkParquetOptions,
 }
