@@ -302,11 +302,17 @@ fn parse_memory_pool_config(
     let memory_pool_config = if off_heap_mode {
         match memory_pool_type.as_str() {
             "fair_unified" => MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size),
-            _ => {
-                // the Unified memory pool interacts with Spark's memory pool to allocate
+            "default" | "unified" => {
+                // the `unified` memory pool interacts with Spark's memory pool to allocate
                 // memory therefore does not need a size to be explicitly set. The pool size
                 // shared with Spark is set by `spark.memory.offHeap.size`.
                 MemoryPoolConfig::new(MemoryPoolType::Unified, 0)
+            }
+            _ => {
+                return Err(CometError::Config(format!(
+                    "Unsupported memory pool type for off-heap mode: {}",
+                    memory_pool_type
+                )))
             }
         }
     } else {
@@ -316,7 +322,7 @@ fn parse_memory_pool_config(
             "fair_spill_task_shared" => {
                 MemoryPoolConfig::new(MemoryPoolType::FairSpillTaskShared, pool_size_per_task)
             }
-            "greedy_task_shared" => {
+            "default" | "greedy_task_shared" => {
                 MemoryPoolConfig::new(MemoryPoolType::GreedyTaskShared, pool_size_per_task)
             }
             "fair_spill_global" => {
@@ -328,7 +334,7 @@ fn parse_memory_pool_config(
             "unbounded" => MemoryPoolConfig::new(MemoryPoolType::Unbounded, 0),
             _ => {
                 return Err(CometError::Config(format!(
-                    "Unsupported memory pool type: {}",
+                    "Unsupported memory pool type for on-heap mode: {}",
                     memory_pool_type
                 )))
             }
