@@ -1329,10 +1329,9 @@ object CometSparkSessionExtensions extends Logging {
     org.apache.spark.SPARK_VERSION >= "4.0"
   }
 
-  def usingDataFusionParquetExec(conf: SQLConf): Boolean = {
-    CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_ICEBERG_COMPAT ||
-    CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_DATAFUSION
-  }
+  def usingDataFusionParquetExec(conf: SQLConf): Boolean =
+    Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION).contains(
+      CometConf.COMET_NATIVE_SCAN_IMPL.get(conf))
 
   /**
    * Whether we should override Spark memory configuration for Comet. This only returns true when
