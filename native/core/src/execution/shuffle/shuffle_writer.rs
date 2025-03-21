@@ -46,7 +46,7 @@ use datafusion_comet_spark_expr::hash_funcs::murmur3::create_murmur3_hashes;
 use futures::executor::block_on;
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
-use std::io::Error;
+use std::io::{Cursor, Error, SeekFrom};
 use std::{
     any::Any,
     fmt,
@@ -589,15 +589,13 @@ impl ShuffleRepartitioner {
             offsets[i] = output_data.stream_position()?;
 
             // Write in memory batches to output data file
-            let partition_iter = partitioned_batches.produce(i);
-            for batch in partition_iter {
-                let batch = batch?;
-                self.shuffle_block_writer.write_batch(
-                    &batch,
-                    &mut output_data,
-                    &self.metrics.encode_time,
-                )?;
-            }
+            let mut partition_iter = partitioned_batches.produce(i);
+            Self::shuffle_write_partition(
+                &mut partition_iter,
+                &mut self.shuffle_block_writer,
+                &mut output_data,
+                &self.metrics.encode_time,
+            )?;
 
             // if we wrote a spill file for this partition then copy the
             // contents into the shuffle file
@@ -632,6 +630,21 @@ impl ShuffleRepartitioner {
         Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(
             &self.schema,
         ))))
+    }
+
+    fn shuffle_write_partition(
+        partition_iter: &mut BatchIterator,
+        shuffle_block_writer: &mut ShuffleBlockWriter,
+        output_data: &mut BufWriter<File>,
+        encode_time: &Time,
+    ) -> Result<()> {
+        let mut buf_batch_writer = BufBatchWriter::new(shuffle_block_writer, output_data);
+        for batch in partition_iter {
+            let batch = batch?;
+            buf_batch_writer.write(&batch, encode_time)?;
+        }
+        buf_batch_writer.flush()?;
+        Ok(())
     }
 
     fn to_df_err(e: Error) -> DataFusionError {
@@ -692,11 +705,8 @@ impl ShuffleRepartitioner {
 
         for partition_id in 0..num_output_partitions {
             let partition_writer = &mut self.partition_writers[partition_id];
-            let iter = partitioned_batches.produce(partition_id);
-            for batch in iter {
-                let batch = batch?;
-                spilled_bytes += partition_writer.spill(&batch, &self.runtime, &self.metrics)?;
-            }
+            let mut iter = partitioned_batches.produce(partition_id);
+            spilled_bytes += partition_writer.spill(&mut iter, &self.runtime, &self.metrics)?;
         }
 
         let mut timer = self.metrics.mempool_time.timer();
@@ -927,11 +937,37 @@ impl PartitionWriter {
 
     fn spill(
         &mut self,
-        batch: &RecordBatch,
+        iter: &mut BatchIterator,
         runtime: &RuntimeEnv,
         metrics: &ShuffleRepartitionerMetrics,
     ) -> Result<usize> {
-        let mut write_timer = metrics.write_time.timer();
+        if let Some(batch) = iter.next() {
+            let mut write_timer = metrics.write_time.timer();
+            self.ensure_spill_file_created(runtime)?;
+
+            let total_bytes_written = {
+                let mut buf_batch_writer = BufBatchWriter::new(
+                    &mut self.shuffle_block_writer,
+                    &mut self.spill_file.as_mut().unwrap().file,
+                );
+                let mut bytes_written = buf_batch_writer.write(&batch?, &metrics.encode_time)?;
+                for batch in iter {
+                    let batch = batch?;
+                    bytes_written += buf_batch_writer.write(&batch, &metrics.encode_time)?;
+                }
+                buf_batch_writer.flush()?;
+                bytes_written
+            };
+
+            write_timer.stop();
+
+            Ok(total_bytes_written)
+        } else {
+            Ok(0)
+        }
+    }
+
+    fn ensure_spill_file_created(&mut self, runtime: &RuntimeEnv) -> Result<()> {
         if self.spill_file.is_none() {
             // Spill file is not yet created, create it
             let spill_file = runtime
@@ -950,19 +986,54 @@ impl PartitionWriter {
                 file: spill_data,
             });
         }
+        Ok(())
+    }
+}
 
-        let bytes_written = {
-            let mut writer = BufWriter::new(&self.spill_file.as_mut().unwrap().file);
-            let bytes_written =
-                self.shuffle_block_writer
-                    .write_batch(batch, &mut writer, &metrics.encode_time)?;
-            writer.flush()?;
-            bytes_written
-        };
+/// Write batches to writer while using a buffer to avoid frequent system calls.
+/// The record batches were first written by ShuffleBlockWriter into an internal buffer.
+/// Once the buffer exceeds the max size, the buffer will be flushed to the writer.
+struct BufBatchWriter<'a, W: Write> {
+    shuffle_block_writer: &'a mut ShuffleBlockWriter,
+    writer: &'a mut W,
+    buffer: Vec<u8>,
+    buffer_max_size: usize,
+}
 
-        write_timer.stop();
+impl<'a, W: Write> BufBatchWriter<'a, W> {
+    fn new(shuffle_block_writer: &'a mut ShuffleBlockWriter, writer: &'a mut W) -> Self {
+        // 1MB should be good enough to avoid frequent system calls,
+        // and also won't cause too much memory usage
+        let buffer_max_size = 1024 * 1024;
+        Self {
+            shuffle_block_writer,
+            writer,
+            buffer: vec![],
+            buffer_max_size,
+        }
+    }
 
+    fn write(&mut self, batch: &RecordBatch, encode_time: &Time) -> Result<usize> {
+        let mut cursor = Cursor::new(&mut self.buffer);
+        cursor.seek(SeekFrom::End(0))?;
+        let bytes_written =
+            self.shuffle_block_writer
+                .write_batch(batch, &mut cursor, encode_time)?;
+        let pos = cursor.position();
+        if pos > self.buffer_max_size as u64 {
+            self.writer.write_all(&self.buffer)?;
+            self.buffer.clear();
+        }
         Ok(bytes_written)
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        if !self.buffer.is_empty() {
+            self.writer.write_all(&self.buffer)?;
+            self.buffer.clear();
+        }
+        self.writer.flush()?;
+        Ok(())
     }
 }
 
