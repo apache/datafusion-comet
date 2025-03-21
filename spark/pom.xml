@@ -141,6 +141,30 @@ under the License.
       <artifactId>arrow-c-data</artifactId>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-client-minicluster</artifactId>
+      <scope>test</scope>
+      <exclusions>
+        <!-- hadoop clients are provided by spark -->
+        <exclusion>
+          <artifactId>hadoop-client-api</artifactId>
+          <groupId>org.apache.hadoop</groupId>
+        </exclusion>
+        <exclusion>
+          <artifactId>hadoop-client-runtime</artifactId>
+          <groupId>org.apache.hadoop</groupId>
+        </exclusion>
+        <exclusion>
+          <artifactId>snappy-java</artifactId>
+          <groupId>org.xerial.snappy</groupId>
+        </exclusion>
+        <exclusion>
+          <artifactId>junit</artifactId>
+          <groupId>junit</groupId>
+        </exclusion>
+      </exclusions>
+    </dependency>
   </dependencies>
 
   <build>
