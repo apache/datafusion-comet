@@ -30,7 +30,7 @@ import org.scalatest.Tag
 import org.scalatestplus.junit.JUnitRunner
 
 import org.apache.spark.{DebugFilesystem, SparkConf}
-import org.apache.spark.sql.{QueryTest, SparkSession, SQLContext}
+import org.apache.spark.sql.{CometTestBase, SparkSession, SQLContext}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SQLTestUtils
 
@@ -41,7 +41,7 @@ import org.apache.comet.{CometConf, CometSparkSessionExtensions, IntegrationTest
  */
 @RunWith(classOf[JUnitRunner])
 @IntegrationTestSuite
-class ParquetEncryptionITCase extends QueryTest with SQLTestUtils {
+class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
   private val encoder = Base64.getEncoder
   private val footerKey =
     encoder.encodeToString("0123456789012345".getBytes(StandardCharsets.UTF_8))
@@ -81,7 +81,12 @@ class ParquetEncryptionITCase extends QueryTest with SQLTestUtils {
             val parquetDF = spark.read.parquet(parquetDir)
             assert(parquetDF.inputFiles.nonEmpty)
             val readDataset = parquetDF.select("a", "b", "c")
-            checkAnswer(readDataset, inputDF)
+
+            if (CometConf.COMET_ENABLED.get(conf)) {
+              checkSparkAnswerAndOperator(readDataset)
+            } else {
+              checkAnswer(readDataset, inputDF)
+            }
           }
         }
     }
@@ -118,19 +123,24 @@ class ParquetEncryptionITCase extends QueryTest with SQLTestUtils {
             val parquetDF = spark.read.parquet(parquetDir)
             assert(parquetDF.inputFiles.nonEmpty)
             val readDataset = parquetDF.select("a", "b", "c")
-            checkAnswer(readDataset, inputDF)
+
+            if (CometConf.COMET_ENABLED.get(conf)) {
+              checkSparkAnswerAndOperator(readDataset)
+            } else {
+              checkAnswer(readDataset, inputDF)
+            }
           }
         }
     }
   }
 
-  protected def sparkConf: SparkConf = {
+  protected override def sparkConf: SparkConf = {
     val conf = new SparkConf()
     conf.set("spark.hadoop.fs.file.impl", classOf[DebugFilesystem].getName)
     conf
   }
 
-  protected def createSparkSession: SparkSession = {
+  protected override def createSparkSession: SparkSession = {
     SparkSession
       .builder()
       .config(sparkConf)
@@ -159,8 +169,8 @@ class ParquetEncryptionITCase extends QueryTest with SQLTestUtils {
   }
 
   private var _spark: SparkSession = _
-  protected implicit def spark: SparkSession = _spark
-  protected implicit def sqlContext: SQLContext = _spark.sqlContext
+  protected implicit override def spark: SparkSession = _spark
+  protected implicit override def sqlContext: SQLContext = _spark.sqlContext
 
   /**
    * Verify that the directory contains an encrypted parquet in encrypted footer mode by means of
