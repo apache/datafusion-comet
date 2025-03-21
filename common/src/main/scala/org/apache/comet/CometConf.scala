@@ -256,7 +256,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_MEMORY_OVERHEAD_MIN_MIB: ConfigEntry[Long] = conf("spark.comet.memory.overhead.min")
     .doc("Minimum amount of additional memory to be allocated per executor process for Comet, " +
-      s"in MiB, when running in on-heap mode. $TUNING_GUIDE.")
+      s"in MiB, when running Spark in on-heap mode. $TUNING_GUIDE.")
     .bytesConf(ByteUnit.MiB)
     .checkValue(
       _ >= 0,
