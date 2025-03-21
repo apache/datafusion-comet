@@ -507,30 +507,25 @@ resource managers respect Apache Spark memory configuration before starting the 
 <section id="configuring-off-heap-memory-pools">
 <h3>Configuring Off-Heap Memory Pools<a class="headerlink" href="#configuring-off-heap-memory-pools" title="Link to this heading">¶</a></h3>
 <p>Comet implements multiple memory pool implementations. The type of pool can be specified with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool</span></code>.</p>
-<p>The valid pool types are:</p>
+<p>The valid pool types for off-heap mode are:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">unified</span></code> (default when <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=true</span></code> is set)</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">fair_unified</span></code></p></li>
 </ul>
+<p>Both of these pools share off-heap memory between Spark and Comet. This approach is referred to as
+unified memory management. The size of the pool is specified by <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>.</p>
 <p>The <code class="docutils literal notranslate"><span class="pre">unified</span></code> pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
-need to spill or have a single spillable operator. The size of the pool is specified by <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>
-and the pool interacts with Spark’s memory pool, effectively sharing the off-heap memory between Spark and Comet. This
-approach is sometimes referred to as unified memory management.</p>
+need to spill or have a single spillable operator.</p>
 <p>The <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> pool type prevents operators from using more than an even fraction of the available memory
 (i.e. <code class="docutils literal notranslate"><span class="pre">pool_size</span> <span class="pre">/</span> <span class="pre">num_reservations</span></code>). This pool works best when you know beforehand
 the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
 when there is sufficient memory in order to leave enough memory for other operators.</p>
-<p>The pool size configuration for the <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> pool, is a little more complex. The total pool size is computed by
-multiplying <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> by <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.factor</span></code> with the minimum amount being
-<code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.min</span></code>. It is also possible to manually specify <code class="docutils literal notranslate"><span class="pre">spark.comet.memoryOverhead</span></code> instead to
-override this default behavior. Note that the <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> pool does not use unified memory management to interact
-with Spark’s memory pools, which is why the allocation defaults to a fraction of off-heap memory.</p>
 </section>
 <section id="configuring-on-heap-memory-pools">
 <h3>Configuring On-Heap Memory Pools<a class="headerlink" href="#configuring-on-heap-memory-pools" title="Link to this heading">¶</a></h3>
 <p>When running in on-heap mode, Comet will use its own dedicated memory pools that are not shared with Spark.</p>
 <p>The type of pool can be specified with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool</span></code>. The default setting is <code class="docutils literal notranslate"><span class="pre">greedy_task_shared</span></code>.</p>
-<p>The valid pool types are:</p>
+<p>The valid pool types for on-heap mode are:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">greedy</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">greedy_global</span></code></p></li>
