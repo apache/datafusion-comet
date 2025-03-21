@@ -57,6 +57,10 @@ impl PhysicalExpr for CreateNamedStruct {
         self
     }
 
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
+    }
+
     fn data_type(&self, input_schema: &Schema) -> DataFusionResult<DataType> {
         let fields = self.fields(input_schema)?;
         Ok(DataType::Struct(fields.into()))

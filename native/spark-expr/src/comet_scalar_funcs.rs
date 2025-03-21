@@ -25,7 +25,8 @@ use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::execution::FunctionRegistry;
 use datafusion::logical_expr::{
-    ScalarFunctionImplementation, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    ScalarFunctionArgs, ScalarFunctionImplementation, ScalarUDF, ScalarUDFImpl, Signature,
+    Volatility,
 };
 use datafusion::physical_plan::ColumnarValue;
 use std::any::Any;
@@ -197,7 +198,7 @@ impl ScalarUDFImpl for CometScalarFunction {
         Ok(self.data_type.clone())
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
-        (self.func)(args)
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DataFusionResult<ColumnarValue> {
+        (self.func)(&args.args)
     }
 }

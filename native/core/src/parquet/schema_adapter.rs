@@ -18,7 +18,7 @@
 //! Custom schema adapter that uses Spark-compatible conversions
 
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
-use arrow::array::{new_null_array, Array, RecordBatch, RecordBatchOptions};
+use arrow::array::{new_null_array, RecordBatch, RecordBatchOptions};
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
 use datafusion::physical_plan::ColumnarValue;
@@ -213,57 +213,6 @@ impl SchemaMapper for SchemaMapping {
         let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
 
         let schema = Arc::<Schema>::clone(&self.required_schema);
-        let record_batch = RecordBatch::try_new_with_options(schema, cols, &options)?;
-        Ok(record_batch)
-    }
-
-    /// Adapts a [`RecordBatch`]'s schema into one that has all the correct output types and only
-    /// contains the fields that exist in both the file schema and table schema.
-    ///
-    /// Unlike `map_batch` this method also preserves the columns that
-    /// may not appear in the final output (`projected_table_schema`) but may
-    /// appear in push down predicates
-    fn map_partial_batch(&self, batch: RecordBatch) -> datafusion::common::Result<RecordBatch> {
-        let batch_cols = batch.columns().to_vec();
-        let schema = batch.schema();
-
-        // for each field in the batch's schema (which is based on a file, not a table)...
-        let (cols, fields) = schema
-            .fields()
-            .iter()
-            .zip(batch_cols.iter())
-            .flat_map(|(field, batch_col)| {
-                self.table_schema
-                    // try to get the same field from the table schema that we have stored in self
-                    .field_with_name(field.name())
-                    // and if we don't have it, that's fine, ignore it. This may occur when we've
-                    // created an external table whose fields are a subset of the fields in this
-                    // file, then tried to read data from the file into this table. If that is the
-                    // case here, it's fine to ignore because we don't care about this field
-                    // anyways
-                    .ok()
-                    // but if we do have it,
-                    .map(|table_field| {
-                        // try to cast it into the correct output type. we don't want to ignore this
-                        // error, though, so it's propagated.
-                        spark_parquet_convert(
-                            ColumnarValue::Array(Arc::clone(batch_col)),
-                            table_field.data_type(),
-                            &self.parquet_options,
-                        )?
-                        .into_array(batch_col.len())
-                        // and if that works, return the field and column.
-                        .map(|new_col| (new_col, table_field.clone()))
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .unzip::<_, _, Vec<_>, Vec<_>>();
-
-        // Necessary to handle empty batches
-        let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
-
-        let schema = Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
         let record_batch = RecordBatch::try_new_with_options(schema, cols, &options)?;
         Ok(record_batch)
     }
