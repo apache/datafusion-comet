@@ -36,7 +36,8 @@ import org.apache.spark.internal.Logging
 /**
  * Trait for starting and stopping a MiniDFSCluster for testing.
  *
- * Most copy from https://github.com/apache/kyuubi/blob/master/kyuubi-server/src/test/scala/org/apache/kyuubi/server/MiniDFSService.scala
+ * Most copy from:
+ * https://github.com/apache/kyuubi/blob/master/kyuubi-server/src/test/scala/org/apache/kyuubi/server/MiniDFSService.scala
  */
 trait WithHdfsCluster extends Logging {
 
