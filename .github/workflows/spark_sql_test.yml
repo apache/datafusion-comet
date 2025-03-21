@@ -46,6 +46,9 @@ jobs:
         os: [ubuntu-24.04]
         java-version: [11]
         spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.4'}]
+        # note that native_datafusion is excluded for now because it does not use CometScanExec
+        # and will likely require updating Spark tests to also accept CometNativeScanExec
+        scan_impl: ['native_comet', 'native_iceberg_compat']
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
           - {name: "sql/core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}
@@ -57,6 +60,8 @@ jobs:
       fail-fast: false
     name: spark-sql-${{ matrix.module.name }}/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
     runs-on: ${{ matrix.os }}
+    env:
+      COMET_PARQUET_SCAN_IMPL: ${{ matrix.scan_impl }}
     container:
       image: amd64/rust
     steps:
