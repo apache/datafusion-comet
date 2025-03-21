@@ -25,7 +25,7 @@ import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
 
-import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_BLOCKING_THREADS, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_POOL_TYPE, COMET_EXPLAIN_NATIVE_ENABLED, COMET_MEMORY_POOL_OFF_HEAP_DEFAULT, COMET_METRICS_UPDATE_INTERVAL, COMET_WORKER_THREADS}
+import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_BLOCKING_THREADS, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_POOL_TYPE, COMET_EXPLAIN_NATIVE_ENABLED, COMET_METRICS_UPDATE_INTERVAL, COMET_WORKER_THREADS}
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -75,17 +75,6 @@ class CometExecIterator(
       CometSparkSessionExtensions.getCometMemoryOverhead(conf)
     }
 
-    val configuredPoolType = COMET_EXEC_MEMORY_POOL_TYPE.get()
-    val memoryPoolType =
-      if (offHeapMode && configuredPoolType == COMET_EXEC_MEMORY_POOL_TYPE.defaultValue.get) {
-        // this is hacky but the default value for COMET_EXEC_MEMORY_POOL_TYPE is
-        // for an on-heap memory pool so we override it here to the default for
-        // off-heap
-        COMET_MEMORY_POOL_OFF_HEAP_DEFAULT
-      } else {
-        configuredPoolType
-      }
-
     nativeLib.createPlan(
       id,
       cometBatchIterators,
@@ -96,7 +85,7 @@ class CometExecIterator(
       new CometTaskMemoryManager(id),
       batchSize = COMET_BATCH_SIZE.get(),
       offHeapMode,
-      memoryPoolType,
+      memoryPoolType = COMET_EXEC_MEMORY_POOL_TYPE.get(),
       memoryLimit,
       memoryLimitPerTask = getMemoryLimitPerTask(conf),
       taskAttemptId = TaskContext.get().taskAttemptId,
