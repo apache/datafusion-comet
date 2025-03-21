@@ -246,7 +246,7 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.memory.overhead.factor")
       .doc(
         "Fraction of executor memory to be allocated as additional memory for Comet " +
-          "when running in on-heap mode. " +
+          "when running Spark in on-heap mode. " +
           s"$TUNING_GUIDE.")
       .doubleConf
       .checkValue(
