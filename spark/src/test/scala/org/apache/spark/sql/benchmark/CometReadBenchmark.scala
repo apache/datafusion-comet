@@ -65,7 +65,6 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
         sqlBenchmark.addCase("SQL Parquet - Comet") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
             CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_COMET) {
             spark.sql(s"select $query from parquetV1Table").noop()
           }
