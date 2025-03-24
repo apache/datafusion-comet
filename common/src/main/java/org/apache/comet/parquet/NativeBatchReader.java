@@ -117,6 +117,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   private boolean[] missingColumns;
   private boolean isInitialized;
   private ParquetMetadata footer;
+  private byte[] nativeFilter;
 
   /**
    * Whether the native scan should always return decimal represented by 128 bits, regardless of its
@@ -190,6 +191,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       Configuration conf,
       PartitionedFile inputSplit,
       ParquetMetadata footer,
+      byte[] nativeFilter,
       int capacity,
       StructType sparkSchema,
       boolean isCaseSensitive,
@@ -210,6 +212,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     this.partitionValues = partitionValues;
     this.file = inputSplit;
     this.footer = footer;
+    this.nativeFilter = nativeFilter;
     this.metrics = metrics;
     this.taskContext = TaskContext$.MODULE$.get();
   }
@@ -350,7 +353,13 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
 
     this.handle =
         Native.initRecordBatchReader(
-            filePath, fileSize, start, length, serializedRequestedArrowSchema, timeZoneId);
+            filePath,
+            fileSize,
+            start,
+            length,
+            nativeFilter,
+            serializedRequestedArrowSchema,
+            timeZoneId);
     isInitialized = true;
   }
 
