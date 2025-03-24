@@ -114,34 +114,30 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
         footerFileMetaData,
         datetimeRebaseModeInRead)
 
-      val pushed = if (parquetFilterPushDown) {
-        val parquetSchema = footerFileMetaData.getSchema
-        val parquetFilters = new ParquetFilters(
-          parquetSchema,
-          pushDownDate,
-          pushDownTimestamp,
-          pushDownDecimal,
-          pushDownStringPredicate,
-          pushDownInFilterThreshold,
-          isCaseSensitive,
-          datetimeRebaseSpec)
-        filters
-          // Collects all converted Parquet filter predicates. Notice that not all predicates can
-          // be converted (`ParquetFilters.createFilter` returns an `Option`). That's why a
-          // `flatMap` is used here.
-          .flatMap(parquetFilters.createFilter)
-          .reduceOption(FilterApi.and)
-      } else {
-        None
-      }
-      pushed.foreach(p => ParquetInputFormat.setFilterPredicate(sharedConf, p))
+      val parquetSchema = footerFileMetaData.getSchema
+      val parquetFilters = new ParquetFilters(
+        parquetSchema,
+        requiredSchema,
+        pushDownDate,
+        pushDownTimestamp,
+        pushDownDecimal,
+        pushDownStringPredicate,
+        pushDownInFilterThreshold,
+        isCaseSensitive,
+        datetimeRebaseSpec)
 
       val recordBatchReader =
         if (nativeIcebergCompat) {
+          val pushed = if (parquetFilterPushDown) {
+            parquetFilters.createNativeFilters(filters)
+          } else {
+            None
+          }
           val batchReader = new NativeBatchReader(
             sharedConf,
             file,
             footer,
+            pushed.orNull,
             capacity,
             requiredSchema,
             isCaseSensitive,
@@ -160,6 +156,18 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
           }
           batchReader
         } else {
+          val pushed = if (parquetFilterPushDown) {
+            filters
+              // Collects all converted Parquet filter predicates. Notice that not all predicates can
+              // be converted (`ParquetFilters.createFilter` returns an `Option`). That's why a
+              // `flatMap` is used here.
+              .flatMap(parquetFilters.createFilter)
+              .reduceOption(FilterApi.and)
+          } else {
+            None
+          }
+          pushed.foreach(p => ParquetInputFormat.setFilterPredicate(sharedConf, p))
+
           val batchReader = new BatchReader(
             sharedConf,
             file,

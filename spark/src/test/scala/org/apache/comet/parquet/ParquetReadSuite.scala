@@ -1493,6 +1493,33 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
         })
     }
   }
+
+  test("test V1 parquet scan filter pushdown uses native_iceberg_compat") {
+    withTempPath { path =>
+      val rows = 1000
+      spark.range(rows).toDF("a").write.parquet(path.toString)
+      Seq(true, false).foreach { pushDown =>
+        withSQLConf(
+          SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> pushDown.toString,
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
+          val df = spark.read
+            .parquet(path.toString)
+            .where("a = 10")
+          df.collect()
+          val scan = collect(df.queryExecution.executedPlan) { case p: CometScanExec =>
+            assert(p.dataFilters.nonEmpty)
+            p
+          }
+          assert(scan.size == 1)
+          if (pushDown) {
+            assert(scan.head.metrics("numOutputRows").value == 1)
+          } else {
+            assert(scan.head.metrics("numOutputRows").value == rows)
+          }
+        }
+      }
+    }
+  }
 }
 
 class ParquetReadV2Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {

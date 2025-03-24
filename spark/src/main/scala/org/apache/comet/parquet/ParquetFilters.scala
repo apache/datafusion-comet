@@ -19,12 +19,14 @@
 
 package org.apache.comet.parquet
 
+import java.io.ByteArrayOutputStream
 import java.lang.{Boolean => JBoolean, Byte => JByte, Double => JDouble, Float => JFloat, Long => JLong, Short => JShort}
 import java.math.{BigDecimal => JBigDecimal}
 import java.sql.{Date, Timestamp}
 import java.time.{Duration, Instant, LocalDate, Period}
 import java.util.Locale
 
+import scala.collection.JavaConverters._
 import scala.collection.JavaConverters.asScalaBufferConverter
 
 import org.apache.parquet.column.statistics.{Statistics => ParquetStatistics}
@@ -39,8 +41,11 @@ import org.apache.parquet.schema.Type.Repetition
 import org.apache.spark.sql.catalyst.util.{quoteIfNeeded, CaseInsensitiveMap, DateTimeUtils, IntervalUtils}
 import org.apache.spark.sql.catalyst.util.RebaseDateTime.{rebaseGregorianToJulianDays, rebaseGregorianToJulianMicros, RebaseSpec}
 import org.apache.spark.sql.sources
+import org.apache.spark.sql.types.StructType
 import org.apache.spark.unsafe.types.UTF8String
 
+import org.apache.comet.parquet.SourceFilterSerde.{createBinaryExpr, createNameExpr, createUnaryExpr, createValueExpr}
+import org.apache.comet.serde.ExprOuterClass
 import org.apache.comet.shims.ShimSQLConf
 
 /**
@@ -51,6 +56,7 @@ import org.apache.comet.shims.ShimSQLConf
  */
 class ParquetFilters(
     schema: MessageType,
+    requiredSchema: StructType,
     pushDownDate: Boolean,
     pushDownTimestamp: Boolean,
     pushDownDecimal: Boolean,
@@ -871,6 +877,157 @@ class ParquetFilters(
                 value != null && UTF8String.fromBytes(value.getBytes).contains(subStr)
               }
             })
+        }
+
+      case _ => None
+    }
+  }
+
+  def createNativeFilters(predicates: Seq[sources.Filter]): Option[Array[Byte]] = {
+    predicates.reduceOption(sources.And).flatMap(createNativeFilter).map { expr =>
+      val outputStream = new ByteArrayOutputStream()
+      expr.writeTo(outputStream)
+      outputStream.close()
+      outputStream.toByteArray
+    }
+  }
+
+  private def createNativeFilter(predicate: sources.Filter): Option[ExprOuterClass.Expr] = {
+    def nameUnaryExpr(name: String)(
+        f: (ExprOuterClass.Expr.Builder, ExprOuterClass.UnaryExpr) => ExprOuterClass.Expr.Builder)
+        : Option[ExprOuterClass.Expr] = {
+      createNameExpr(name, requiredSchema).map { childExpr =>
+        createUnaryExpr(childExpr, f)
+      }
+    }
+
+    def nameValueBinaryExpr(name: String, value: Any)(
+        f: (
+            ExprOuterClass.Expr.Builder,
+            ExprOuterClass.BinaryExpr) => ExprOuterClass.Expr.Builder)
+        : Option[ExprOuterClass.Expr] = {
+      (createNameExpr(name, requiredSchema), createValueExpr(value)) match {
+        case (Some(nameExpr), Some(valueExpr)) =>
+          Some(createBinaryExpr(nameExpr, valueExpr, f))
+        case _ => None
+      }
+    }
+
+    predicate match {
+      case sources.IsNull(name) if canMakeFilterOn(name, null) =>
+        nameUnaryExpr(name) { (builder, unaryExpr) =>
+          builder.setIsNull(unaryExpr)
+        }
+      case sources.IsNotNull(name) if canMakeFilterOn(name, null) =>
+        nameUnaryExpr(name) { (builder, unaryExpr) =>
+          builder.setIsNotNull(unaryExpr)
+        }
+
+      case sources.EqualTo(name, value) if canMakeFilterOn(name, value) =>
+        nameValueBinaryExpr(name, value) { (builder, binaryExpr) =>
+          builder.setEq(binaryExpr)
+        }
+
+      case sources.Not(sources.EqualTo(name, value)) if canMakeFilterOn(name, value) =>
+        nameValueBinaryExpr(name, value) { (builder, binaryExpr) =>
+          builder.setNeq(binaryExpr)
+        }
+
+      case sources.EqualNullSafe(name, value) if canMakeFilterOn(name, value) =>
+        nameValueBinaryExpr(name, value) { (builder, binaryExpr) =>
+          builder.setEqNullSafe(binaryExpr)
+        }
+
+      case sources.Not(sources.EqualNullSafe(name, value)) if canMakeFilterOn(name, value) =>
+        nameValueBinaryExpr(name, value) { (builder, binaryExpr) =>
+          builder.setNeqNullSafe(binaryExpr)
+        }
+
+      case sources.LessThan(name, value) if (value != null) && canMakeFilterOn(name, value) =>
+        nameValueBinaryExpr(name, value) { (builder, binaryExpr) =>
+          builder.setLt(binaryExpr)
+        }
+
+      case sources.LessThanOrEqual(name, value)
+          if (value != null) && canMakeFilterOn(name, value) =>
+        nameValueBinaryExpr(name, value) { (builder, binaryExpr) =>
+          builder.setLtEq(binaryExpr)
+        }
+
+      case sources.GreaterThan(name, value) if (value != null) && canMakeFilterOn(name, value) =>
+        nameValueBinaryExpr(name, value) { (builder, binaryExpr) =>
+          builder.setGt(binaryExpr)
+        }
+
+      case sources.GreaterThanOrEqual(name, value)
+          if (value != null) && canMakeFilterOn(name, value) =>
+        nameValueBinaryExpr(name, value) { (builder, binaryExpr) =>
+          builder.setGtEq(binaryExpr)
+        }
+
+      case sources.And(lhs, rhs) =>
+        (createNativeFilter(lhs), createNativeFilter(rhs)) match {
+          case (Some(leftExpr), Some(rightExpr)) =>
+            Some(
+              createBinaryExpr(
+                leftExpr,
+                rightExpr,
+                (builder, binaryExpr) => builder.setAnd(binaryExpr)))
+          case _ => None
+        }
+
+      case sources.Or(lhs, rhs) =>
+        (createNativeFilter(lhs), createNativeFilter(rhs)) match {
+          case (Some(leftExpr), Some(rightExpr)) =>
+            Some(
+              createBinaryExpr(
+                leftExpr,
+                rightExpr,
+                (builder, binaryExpr) => builder.setOr(binaryExpr)))
+          case _ => None
+        }
+
+      case sources.Not(pred) =>
+        val childExpr = createNativeFilter(pred)
+        childExpr.map { expr =>
+          createUnaryExpr(expr, (builder, unaryExpr) => builder.setNot(unaryExpr))
+        }
+
+      case sources.In(name, values)
+          if pushDownInFilterThreshold > 0 && values.nonEmpty &&
+            canMakeFilterOn(name, values.head) =>
+        val nameExpr = createNameExpr(name, requiredSchema)
+        val valueExprs = values.flatMap(createValueExpr)
+        if (nameExpr.isEmpty || valueExprs.length != values.length) {
+          None
+        } else {
+          val builder = ExprOuterClass.In.newBuilder()
+          builder.setInValue(nameExpr.get)
+          builder.addAllLists(valueExprs.toSeq.asJava)
+          builder.setNegated(false)
+          Some(
+            ExprOuterClass.Expr
+              .newBuilder()
+              .setIn(builder)
+              .build())
+        }
+
+      case sources.StringStartsWith(name, prefix)
+          if pushDownStringPredicate && canMakeFilterOn(name, prefix) =>
+        nameValueBinaryExpr(name, prefix) { (builder, binaryExpr) =>
+          builder.setStartsWith(binaryExpr)
+        }
+
+      case sources.StringEndsWith(name, suffix)
+          if pushDownStringPredicate && canMakeFilterOn(name, suffix) =>
+        nameValueBinaryExpr(name, suffix) { (builder, binaryExpr) =>
+          builder.setEndsWith(binaryExpr)
+        }
+
+      case sources.StringContains(name, value)
+          if pushDownStringPredicate && canMakeFilterOn(name, value) =>
+        nameValueBinaryExpr(name, value) { (builder, binaryExpr) =>
+          builder.setContains(binaryExpr)
         }
 
       case _ => None

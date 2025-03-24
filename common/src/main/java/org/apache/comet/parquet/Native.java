@@ -253,6 +253,7 @@ public final class Native extends NativeBase {
       long fileSize,
       long start,
       long length,
+      byte[] filter,
       byte[] requiredSchema,
       String sessionTimezone);
 
