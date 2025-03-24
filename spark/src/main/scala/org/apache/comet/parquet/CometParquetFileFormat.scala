@@ -158,9 +158,9 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
         } else {
           val pushed = if (parquetFilterPushDown) {
             filters
-              // Collects all converted Parquet filter predicates. Notice that not all predicates can
-              // be converted (`ParquetFilters.createFilter` returns an `Option`). That's why a
-              // `flatMap` is used here.
+              // Collects all converted Parquet filter predicates. Notice that not all predicates
+              // can be converted (`ParquetFilters.createFilter` returns an `Option`). That's why
+              // a `flatMap` is used here.
               .flatMap(parquetFilters.createFilter)
               .reduceOption(FilterApi.and)
           } else {
