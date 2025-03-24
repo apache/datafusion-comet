@@ -392,10 +392,10 @@ metadata:
 spec:
 <span class="w">  </span>type:<span class="w"> </span>Scala
 <span class="w">  </span>mode:<span class="w"> </span>cluster
-<span class="w">  </span>image:<span class="w"> </span>apache/datafusion-comet:0.7.0-spark3.5.4-scala2.12-java11
+<span class="w">  </span>image:<span class="w"> </span>apache/datafusion-comet:0.7.0-spark3.5.5-scala2.12-java11
 <span class="w">  </span>imagePullPolicy:<span class="w"> </span>IfNotPresent
 <span class="w">  </span>mainClass:<span class="w"> </span>org.apache.spark.examples.SparkPi
-<span class="w">  </span>mainApplicationFile:<span class="w"> </span>local:///opt/spark/examples/jars/spark-examples_2.12-3.5.4.jar
+<span class="w">  </span>mainApplicationFile:<span class="w"> </span>local:///opt/spark/examples/jars/spark-examples_2.12-3.5.5.jar
 <span class="w">  </span>sparkConf:
 <span class="w">    </span><span class="s2">&quot;spark.executor.extraClassPath&quot;</span>:<span class="w"> </span><span class="s2">&quot;/opt/spark/jars/comet-spark-spark3.5_2.12-0.7.0.jar&quot;</span>
 <span class="w">    </span><span class="s2">&quot;spark.driver.extraClassPath&quot;</span>:<span class="w"> </span><span class="s2">&quot;/opt/spark/jars/comet-spark-spark3.5_2.12-0.7.0.jar&quot;</span>
@@ -406,17 +406,17 @@ spec:
 <span class="w">    </span><span class="s2">&quot;spark.comet.exec.shuffle.enabled&quot;</span>:<span class="w"> </span><span class="s2">&quot;true&quot;</span>
 <span class="w">    </span><span class="s2">&quot;spark.comet.exec.shuffle.mode&quot;</span>:<span class="w"> </span><span class="s2">&quot;auto&quot;</span>
 <span class="w">    </span><span class="s2">&quot;spark.shuffle.manager&quot;</span>:<span class="w"> </span><span class="s2">&quot;org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager&quot;</span>
-<span class="w">  </span>sparkVersion:<span class="w"> </span><span class="m">3</span>.5.4
+<span class="w">  </span>sparkVersion:<span class="w"> </span><span class="m">3</span>.5.5
 <span class="w">  </span>driver:
 <span class="w">    </span>labels:
-<span class="w">      </span>version:<span class="w"> </span><span class="m">3</span>.5.4
+<span class="w">      </span>version:<span class="w"> </span><span class="m">3</span>.5.5
 <span class="w">    </span>cores:<span class="w"> </span><span class="m">1</span>
 <span class="w">    </span>coreLimit:<span class="w"> </span>1200m
 <span class="w">    </span>memory:<span class="w"> </span>512m
 <span class="w">    </span>serviceAccount:<span class="w"> </span>spark-operator-spark
 <span class="w">  </span>executor:
 <span class="w">    </span>labels:
-<span class="w">      </span>version:<span class="w"> </span><span class="m">3</span>.5.4
+<span class="w">      </span>version:<span class="w"> </span><span class="m">3</span>.5.5
 <span class="w">    </span>instances:<span class="w"> </span><span class="m">1</span>
 <span class="w">    </span>cores:<span class="w"> </span><span class="m">1</span>
 <span class="w">    </span>coreLimit:<span class="w"> </span>1200m

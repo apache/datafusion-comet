@@ -72,11 +72,11 @@ of Apache Spark to enable Comet when running tests. This is a highly manual proc
 vary depending on the changes in the new version of Spark, but here is a general guide to the process.
 
 We typically start by applying a patch from a previous version of Spark. For example, when enabling the tests 
-for Spark version 3.5.4 we may start by applying the existing diff for 3.4.3 first.
+for Spark version 3.5.5 we may start by applying the existing diff for 3.4.3 first.
 
 ```shell
 cd git/apache/spark
-git checkout v3.5.4
+git checkout v3.5.5
 git apply --reject --whitespace=fix ../datafusion-comet/dev/diffs/3.4.3.diff
 ```
 
@@ -118,7 +118,7 @@ wiggle --replace ./sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.sc
 ## Generating The Diff File
 
 ```shell
-git diff v3.5.4 > ../datafusion-comet/dev/diffs/3.5.4.diff
+git diff v3.5.5 > ../datafusion-comet/dev/diffs/3.5.5.diff
 ```
 
 ## Running Tests in CI 
