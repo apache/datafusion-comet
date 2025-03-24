@@ -27,7 +27,7 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
 
   import CometSparkSessionExtensions._
 
-  test("isCometEnabled") {
+  test("isCometLoaded") {
     val conf = new SQLConf
 
     conf.setConfString(CometConf.COMET_ENABLED.key, "false")
