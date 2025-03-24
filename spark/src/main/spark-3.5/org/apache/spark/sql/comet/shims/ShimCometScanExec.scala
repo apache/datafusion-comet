@@ -55,7 +55,7 @@ trait ShimCometScanExec {
   protected def isNeededForSchema(sparkSchema: StructType): Boolean = false
 
   protected def getPartitionedFile(f: FileStatusWithMetadata, p: PartitionDirectory): PartitionedFile =
-    PartitionedFileUtil.getPartitionedFile(f, p.values)
+    PartitionedFileUtil.getPartitionedFile(f, f.getPath, p.values)
 
   protected def splitFiles(sparkSession: SparkSession,
                            file: FileStatusWithMetadata,
@@ -63,7 +63,7 @@ trait ShimCometScanExec {
                            isSplitable: Boolean,
                            maxSplitBytes: Long,
                            partitionValues: InternalRow): Seq[PartitionedFile] =
-    PartitionedFileUtil.splitFiles(sparkSession, file, isSplitable, maxSplitBytes, partitionValues)
+    PartitionedFileUtil.splitFiles(sparkSession, file, filePath, isSplitable, maxSplitBytes, partitionValues)
 
   protected def getPushedDownFilters(relation: HadoopFsRelation , dataFilters: Seq[Expression]):  Seq[Filter] = {
     val supportNestedPredicatePushdown = DataSourceUtils.supportNestedPredicatePushdown(relation)
