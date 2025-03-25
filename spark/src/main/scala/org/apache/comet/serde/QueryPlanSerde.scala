@@ -797,7 +797,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               exprBuilder.setBytesVal(byteStr)
             case _: DateType => exprBuilder.setIntVal(value.asInstanceOf[Int])
             case dt =>
-              logWarning(s"Unexpected date type '$dt' for literal value '$value'")
+              logWarning(s"Unexpected datatype '$dt' for literal value '$value'")
           }
         }
 
