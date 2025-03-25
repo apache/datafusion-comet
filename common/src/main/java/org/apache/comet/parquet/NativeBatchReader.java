@@ -108,6 +108,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   private final Map<String, SQLMetric> metrics;
 
   private StructType sparkSchema;
+  private StructType dataSchema;
   private MessageType requestedSchema;
   private CometVector[] vectors;
   private AbstractColumnReader[] columnReaders;
@@ -194,6 +195,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       byte[] nativeFilter,
       int capacity,
       StructType sparkSchema,
+      StructType dataSchema,
       boolean isCaseSensitive,
       boolean useFieldId,
       boolean ignoreMissingIds,
@@ -204,6 +206,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     this.conf = conf;
     this.capacity = capacity;
     this.sparkSchema = sparkSchema;
+    this.dataSchema = dataSchema;
     this.isCaseSensitive = isCaseSensitive;
     this.useFieldId = useFieldId;
     this.ignoreMissingIds = ignoreMissingIds;
@@ -265,10 +268,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     String timeZoneId = conf.get("spark.sql.session.timeZone");
     // Native code uses "UTC" always as the timeZoneId when converting from spark to arrow schema.
     Schema arrowSchema = Utils$.MODULE$.toArrowSchema(sparkSchema, "UTC");
-    ByteArrayOutputStream out = new ByteArrayOutputStream();
-    WriteChannel writeChannel = new WriteChannel(Channels.newChannel(out));
-    MessageSerializer.serialize(writeChannel, arrowSchema);
-    byte[] serializedRequestedArrowSchema = out.toByteArray();
+    byte[] serializedRequestedArrowSchema = serializeArrowSchema(arrowSchema);
+    Schema dataArrowSchema = Utils$.MODULE$.toArrowSchema(dataSchema, "UTC");
+    byte[] serializedDataArrowSchema = serializeArrowSchema(dataArrowSchema);
 
     //// Create Column readers
     List<ColumnDescriptor> columns = requestedSchema.getColumns();
@@ -359,6 +361,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
             length,
             nativeFilter,
             serializedRequestedArrowSchema,
+            serializedDataArrowSchema,
             timeZoneId);
     isInitialized = true;
   }
@@ -532,5 +535,12 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     } catch (NoSuchMethodException | InvocationTargetException | IllegalAccessException e) {
       return Option.apply(null); // None
     }
+  }
+
+  private byte[] serializeArrowSchema(Schema schema) throws IOException {
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    WriteChannel writeChannel = new WriteChannel(Channels.newChannel(out));
+    MessageSerializer.serialize(writeChannel, schema);
+    return out.toByteArray();
   }
 }

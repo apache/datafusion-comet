@@ -117,7 +117,7 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
       val parquetSchema = footerFileMetaData.getSchema
       val parquetFilters = new ParquetFilters(
         parquetSchema,
-        requiredSchema,
+        dataSchema,
         pushDownDate,
         pushDownTimestamp,
         pushDownDecimal,
@@ -140,6 +140,7 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
             pushed.orNull,
             capacity,
             requiredSchema,
+            dataSchema,
             isCaseSensitive,
             useFieldId,
             ignoreMissingIds,
