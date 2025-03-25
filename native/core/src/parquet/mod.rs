@@ -649,6 +649,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     length: jlong,
     filter: jbyteArray,
     required_schema: jbyteArray,
+    data_schema: jbyteArray,
     session_timezone: jstring,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| unsafe {
@@ -668,6 +669,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         let required_schema_array = JByteArray::from_raw(required_schema);
         let required_schema_buffer = env.convert_byte_array(&required_schema_array)?;
         let required_schema = Arc::new(deserialize_schema(required_schema_buffer.as_bytes())?);
+
+        let data_schema_array = JByteArray::from_raw(data_schema);
+        let data_schema_buffer = env.convert_byte_array(&data_schema_array)?;
+        let data_schema = Arc::new(deserialize_schema(data_schema_buffer.as_bytes())?);
 
         let planer = PhysicalPlanner::default();
 
@@ -692,7 +697,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
 
         let scan = init_datasource_exec(
             required_schema,
-            None,
+            Some(data_schema),
             None,
             None,
             object_store_url,

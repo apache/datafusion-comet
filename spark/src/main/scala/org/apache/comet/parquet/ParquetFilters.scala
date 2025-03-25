@@ -56,7 +56,7 @@ import org.apache.comet.shims.ShimSQLConf
  */
 class ParquetFilters(
     schema: MessageType,
-    requiredSchema: StructType,
+    dataSchema: StructType,
     pushDownDate: Boolean,
     pushDownTimestamp: Boolean,
     pushDownDecimal: Boolean,
@@ -896,7 +896,7 @@ class ParquetFilters(
     def nameUnaryExpr(name: String)(
         f: (ExprOuterClass.Expr.Builder, ExprOuterClass.UnaryExpr) => ExprOuterClass.Expr.Builder)
         : Option[ExprOuterClass.Expr] = {
-      createNameExpr(name, requiredSchema).map { childExpr =>
+      createNameExpr(name, dataSchema).map { childExpr =>
         createUnaryExpr(childExpr, f)
       }
     }
@@ -906,7 +906,7 @@ class ParquetFilters(
             ExprOuterClass.Expr.Builder,
             ExprOuterClass.BinaryExpr) => ExprOuterClass.Expr.Builder)
         : Option[ExprOuterClass.Expr] = {
-      (createNameExpr(name, requiredSchema), createValueExpr(value)) match {
+      (createNameExpr(name, dataSchema), createValueExpr(value)) match {
         case (Some(nameExpr), Some(valueExpr)) =>
           Some(createBinaryExpr(nameExpr, valueExpr, f))
         case _ => None
@@ -996,7 +996,7 @@ class ParquetFilters(
       case sources.In(name, values)
           if pushDownInFilterThreshold > 0 && values.nonEmpty &&
             canMakeFilterOn(name, values.head) =>
-        val nameExpr = createNameExpr(name, requiredSchema)
+        val nameExpr = createNameExpr(name, dataSchema)
         val valueExprs = values.flatMap(createValueExpr)
         if (nameExpr.isEmpty || valueExprs.length != values.length) {
           None
