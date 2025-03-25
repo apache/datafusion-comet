@@ -38,11 +38,6 @@ use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf,
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
-use datafusion::functions_nested::array_has::array_has_any_udf;
-use datafusion::functions_nested::concat::ArrayAppend;
-use datafusion::functions_nested::remove::array_remove_all_udf;
-use datafusion::functions_nested::set_ops::array_intersect_udf;
-use datafusion::functions_nested::string::array_to_string_udf;
 use datafusion::physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
@@ -83,10 +78,9 @@ use datafusion::common::{
     JoinType as DFJoinType, ScalarValue,
 };
 use datafusion::datasource::listing::PartitionedFile;
-use datafusion::functions_nested::array_has::ArrayHas;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{
-    AggregateUDF, ReturnTypeArgs, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    AggregateUDF, ReturnTypeArgs, WindowFrame, WindowFrameBound, WindowFrameUnits,
     WindowFunctionDefinition,
 };
 use datafusion::physical_expr::expressions::{Literal, StatsType};
@@ -759,32 +753,6 @@ impl PhysicalPlanner {
                     expr.ordinal as usize,
                 )))
             }
-            ExprStruct::ArrayAppend(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right =
-                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let return_type = left.data_type(&input_schema)?;
-                let args = vec![Arc::clone(&left), right];
-                let datafusion_array_append =
-                    Arc::new(ScalarUDF::new_from_impl(ArrayAppend::new()));
-                let array_append_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
-                    "array_append",
-                    datafusion_array_append,
-                    args,
-                    return_type,
-                ));
-
-                let is_null_expr: Arc<dyn PhysicalExpr> = Arc::new(IsNullExpr::new(left));
-                let null_literal_expr: Arc<dyn PhysicalExpr> =
-                    Arc::new(Literal::new(ScalarValue::Null));
-
-                create_case_expr(
-                    vec![(is_null_expr, null_literal_expr)],
-                    Some(array_append_expr),
-                    &input_schema,
-                )
-            }
             ExprStruct::ArrayInsert(expr) => {
                 let src_array_expr = self.create_expr(
                     expr.src_array_expr.as_ref().unwrap(),
@@ -800,104 +768,6 @@ impl PhysicalPlanner {
                     item_expr,
                     expr.legacy_negative_index,
                 )))
-            }
-            ExprStruct::ArrayContains(expr) => {
-                let src_array_expr =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let key_expr =
-                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let args = vec![Arc::clone(&src_array_expr), key_expr];
-                let array_has_expr = Arc::new(ScalarFunctionExpr::new(
-                    "array_has",
-                    Arc::new(ScalarUDF::new_from_impl(ArrayHas::new())),
-                    args,
-                    DataType::Boolean,
-                ));
-                Ok(array_has_expr)
-            }
-            ExprStruct::ArrayRemove(expr) => {
-                let src_array_expr =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let key_expr =
-                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let args = vec![Arc::clone(&src_array_expr), Arc::clone(&key_expr)];
-                let return_type = src_array_expr.data_type(&input_schema)?;
-
-                let datafusion_array_remove = array_remove_all_udf();
-
-                let array_remove_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
-                    "array_remove",
-                    datafusion_array_remove,
-                    args,
-                    return_type,
-                ));
-                let is_null_expr: Arc<dyn PhysicalExpr> = Arc::new(IsNullExpr::new(key_expr));
-
-                let null_literal_expr: Arc<dyn PhysicalExpr> =
-                    Arc::new(Literal::new(ScalarValue::Null));
-
-                create_case_expr(
-                    vec![(is_null_expr, null_literal_expr)],
-                    Some(array_remove_expr),
-                    &input_schema,
-                )
-            }
-            ExprStruct::ArrayIntersect(expr) => {
-                let left_expr =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right_expr =
-                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let args = vec![Arc::clone(&left_expr), right_expr];
-                let datafusion_array_intersect = array_intersect_udf();
-                let return_type = left_expr.data_type(&input_schema)?;
-                let array_intersect_expr = Arc::new(ScalarFunctionExpr::new(
-                    "array_intersect",
-                    datafusion_array_intersect,
-                    args,
-                    return_type,
-                ));
-                Ok(array_intersect_expr)
-            }
-            ExprStruct::ArrayJoin(expr) => {
-                let array_expr =
-                    self.create_expr(expr.array_expr.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let delimiter_expr = self.create_expr(
-                    expr.delimiter_expr.as_ref().unwrap(),
-                    Arc::clone(&input_schema),
-                )?;
-
-                let mut args = vec![Arc::clone(&array_expr), delimiter_expr];
-                if expr.null_replacement_expr.is_some() {
-                    let null_replacement_expr = self.create_expr(
-                        expr.null_replacement_expr.as_ref().unwrap(),
-                        Arc::clone(&input_schema),
-                    )?;
-                    args.push(null_replacement_expr)
-                }
-
-                let datafusion_array_to_string = array_to_string_udf();
-                let array_join_expr = Arc::new(ScalarFunctionExpr::new(
-                    "array_join",
-                    datafusion_array_to_string,
-                    args,
-                    DataType::Utf8,
-                ));
-                Ok(array_join_expr)
-            }
-            ExprStruct::ArraysOverlap(expr) => {
-                let left_array_expr =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right_array_expr =
-                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let args = vec![Arc::clone(&left_array_expr), right_array_expr];
-                let datafusion_array_has_any = array_has_any_udf();
-                let array_has_any_expr = Arc::new(ScalarFunctionExpr::new(
-                    "array_has_any",
-                    datafusion_array_has_any,
-                    args,
-                    DataType::Boolean,
-                ));
-                Ok(array_has_any_expr)
             }
             expr => Err(ExecutionError::GeneralError(format!(
                 "Not implemented: {:?}",

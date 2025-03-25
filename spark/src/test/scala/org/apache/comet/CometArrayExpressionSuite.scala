@@ -160,59 +160,66 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
 
   test("array_prepend") {
     assume(isSpark35Plus) // in Spark 3.5 array_prepend is implemented via array_insert
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        spark.read.parquet(path.toString).createOrReplaceTempView("t1");
-        checkSparkAnswerAndOperator(spark.sql("Select array_prepend(array(_1),false) from t1"))
-        checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_prepend(array(_2, _3, _4), 4) FROM t1"))
-        checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_prepend(array(_2, _3, _4), null) FROM t1"));
-        checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_prepend(array(_6, _7), CAST(6.5 AS DOUBLE)) FROM t1"));
-        checkSparkAnswerAndOperator(spark.sql("SELECT array_prepend(array(_8), 'test') FROM t1"));
-        checkSparkAnswerAndOperator(spark.sql("SELECT array_prepend(array(_19), _19) FROM t1"));
-        checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_prepend((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1");
+          checkSparkAnswerAndOperator(spark.sql("Select array_prepend(array(_1),false) from t1"))
+          checkSparkAnswerAndOperator(
+            spark.sql("SELECT array_prepend(array(_2, _3, _4), 4) FROM t1"))
+          checkSparkAnswerAndOperator(
+            spark.sql("SELECT array_prepend(array(_2, _3, _4), null) FROM t1"));
+          checkSparkAnswerAndOperator(
+            spark.sql("SELECT array_prepend(array(_6, _7), CAST(6.5 AS DOUBLE)) FROM t1"));
+          checkSparkAnswerAndOperator(
+            spark.sql("SELECT array_prepend(array(_8), 'test') FROM t1"));
+          checkSparkAnswerAndOperator(spark.sql("SELECT array_prepend(array(_19), _19) FROM t1"));
+          checkSparkAnswerAndOperator(
+            spark.sql("SELECT array_prepend((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
+        }
       }
     }
   }
 
   test("ArrayInsert") {
-    Seq(true, false).foreach(dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
-        val df = spark.read
-          .parquet(path.toString)
-          .withColumn("arr", array(col("_4"), lit(null), col("_4")))
-          .withColumn("arrInsertResult", expr("array_insert(arr, 1, 1)"))
-          .withColumn("arrInsertNegativeIndexResult", expr("array_insert(arr, -1, 1)"))
-          .withColumn("arrPosGreaterThanSize", expr("array_insert(arr, 8, 1)"))
-          .withColumn("arrNegPosGreaterThanSize", expr("array_insert(arr, -8, 1)"))
-          .withColumn("arrInsertNone", expr("array_insert(arr, 1, null)"))
-        checkSparkAnswerAndOperator(df.select("arrInsertResult"))
-        checkSparkAnswerAndOperator(df.select("arrInsertNegativeIndexResult"))
-        checkSparkAnswerAndOperator(df.select("arrPosGreaterThanSize"))
-        checkSparkAnswerAndOperator(df.select("arrNegPosGreaterThanSize"))
-        checkSparkAnswerAndOperator(df.select("arrInsertNone"))
-      })
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+      Seq(true, false).foreach(dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
+          val df = spark.read
+            .parquet(path.toString)
+            .withColumn("arr", array(col("_4"), lit(null), col("_4")))
+            .withColumn("arrInsertResult", expr("array_insert(arr, 1, 1)"))
+            .withColumn("arrInsertNegativeIndexResult", expr("array_insert(arr, -1, 1)"))
+            .withColumn("arrPosGreaterThanSize", expr("array_insert(arr, 8, 1)"))
+            .withColumn("arrNegPosGreaterThanSize", expr("array_insert(arr, -8, 1)"))
+            .withColumn("arrInsertNone", expr("array_insert(arr, 1, null)"))
+          checkSparkAnswerAndOperator(df.select("arrInsertResult"))
+          checkSparkAnswerAndOperator(df.select("arrInsertNegativeIndexResult"))
+          checkSparkAnswerAndOperator(df.select("arrPosGreaterThanSize"))
+          checkSparkAnswerAndOperator(df.select("arrNegPosGreaterThanSize"))
+          checkSparkAnswerAndOperator(df.select("arrInsertNone"))
+        })
+    }
   }
 
   test("ArrayInsertUnsupportedArgs") {
     // This test checks that the else branch in ArrayInsert
     // mapping to the comet is valid and fallback to spark is working fine.
-    withTempDir { dir =>
-      val path = new Path(dir.toURI.toString, "test.parquet")
-      makeParquetFileAllTypes(path, dictionaryEnabled = false, 10000)
-      val df = spark.read
-        .parquet(path.toString)
-        .withColumn("arr", array(col("_4"), lit(null), col("_4")))
-        .withColumn("idx", udf((_: Int) => 1).apply(col("_4")))
-        .withColumn("arrUnsupportedArgs", expr("array_insert(arr, idx, 1)"))
-      checkSparkAnswer(df.select("arrUnsupportedArgs"))
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = false, 10000)
+        val df = spark.read
+          .parquet(path.toString)
+          .withColumn("arr", array(col("_4"), lit(null), col("_4")))
+          .withColumn("idx", udf((_: Int) => 1).apply(col("_4")))
+          .withColumn("arrUnsupportedArgs", expr("array_insert(arr, idx, 1)"))
+        checkSparkAnswer(df.select("arrUnsupportedArgs"))
+      }
     }
   }
 
