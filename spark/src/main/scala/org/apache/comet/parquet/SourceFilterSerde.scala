@@ -19,9 +19,13 @@
 
 package org.apache.comet.parquet
 
+import java.math.{BigDecimal => JavaBigDecimal}
+import java.sql.{Date, Timestamp}
+import java.time.{Instant, LocalDate, LocalDateTime}
+
 import org.apache.spark.internal.Logging
+import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.types._
-import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.serde.ExprOuterClass
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -29,7 +33,9 @@ import org.apache.comet.serde.QueryPlanSerde.serializeDataType
 
 object SourceFilterSerde extends Logging {
 
-  def createNameExpr(name: String, schema: StructType): Option[ExprOuterClass.Expr] = {
+  def createNameExpr(
+      name: String,
+      schema: StructType): Option[(DataType, ExprOuterClass.Expr)] = {
     val filedWithIndex = schema.fields.zipWithIndex.find { case (field, _) =>
       field.name == name
     }
@@ -43,6 +49,7 @@ object SourceFilterSerde extends Logging {
           .setDatatype(dataType.get)
           .build()
         Some(
+          field.dataType,
           ExprOuterClass.Expr
             .newBuilder()
             .setBound(boundExpr)
@@ -56,71 +63,80 @@ object SourceFilterSerde extends Logging {
 
   }
 
-  def createValueExpr(value: Any): Option[ExprOuterClass.Expr] = {
+  /**
+   * create a literal value native expression for source filter value, the value is a scala value
+   */
+  def createValueExpr(value: Any, dataType: DataType): Option[ExprOuterClass.Expr] = {
     val exprBuilder = ExprOuterClass.Literal.newBuilder()
+    var valueIsSet = true
     if (value == null) {
       exprBuilder.setIsNull(true)
-      Some(ExprOuterClass.Expr.newBuilder().setLiteral(exprBuilder).build())
     } else {
       exprBuilder.setIsNull(false)
-      val dataType: Option[DataType] = value match {
-        case v: Boolean =>
-          exprBuilder.setBoolVal(v)
-          Some(BooleanType)
-        case v: Byte =>
-          exprBuilder.setByteVal(v)
-          Some(ByteType)
-        case v: Short =>
-          exprBuilder.setShortVal(v)
-          Some(ShortType)
-        case v: Int =>
-          exprBuilder.setIntVal(v)
-          Some(IntegerType)
-        case v: Long =>
-          exprBuilder.setLongVal(v)
-          Some(LongType)
-        case v: Float =>
-          exprBuilder.setFloatVal(v)
-          Some(FloatType)
-        case v: Double =>
-          exprBuilder.setDoubleVal(v)
-          Some(DoubleType)
-        case v: UTF8String =>
-          exprBuilder.setStringVal(v.toString)
-          Some(StringType)
-        case v: Decimal =>
-          val unscaled = v.toBigDecimal.underlying.unscaledValue
+      // value is a scala value, not a catalyst value
+      // refer to org.apache.spark.sql.catalyst.CatalystTypeConverters.CatalystTypeConverter#toScala
+      dataType match {
+        case _: BooleanType => exprBuilder.setBoolVal(value.asInstanceOf[Boolean])
+        case _: ByteType => exprBuilder.setByteVal(value.asInstanceOf[Byte])
+        case _: ShortType => exprBuilder.setShortVal(value.asInstanceOf[Short])
+        case _: IntegerType => exprBuilder.setIntVal(value.asInstanceOf[Int])
+        case _: LongType => exprBuilder.setLongVal(value.asInstanceOf[Long])
+        case _: FloatType => exprBuilder.setFloatVal(value.asInstanceOf[Float])
+        case _: DoubleType => exprBuilder.setDoubleVal(value.asInstanceOf[Double])
+        case _: StringType => exprBuilder.setStringVal(value.asInstanceOf[String])
+        case _: TimestampType =>
+          value match {
+            case v: Timestamp => exprBuilder.setLongVal(DateTimeUtils.fromJavaTimestamp(v))
+            case v: Instant => exprBuilder.setLongVal(DateTimeUtils.instantToMicros(v))
+            case v: Long => exprBuilder.setLongVal(v)
+            case _ =>
+              valueIsSet = false
+              logWarning(s"Unexpected timestamp type '${value.getClass}' for value '$value'")
+          }
+        case _: TimestampNTZType =>
+          value match {
+            case v: LocalDateTime =>
+              exprBuilder.setLongVal(DateTimeUtils.localDateTimeToMicros(v))
+            case v: Long => exprBuilder.setLongVal(v)
+            case _ =>
+              valueIsSet = false
+              logWarning(s"Unexpected timestamp type '${value.getClass}' for value' $value'")
+          }
+        case _: DecimalType =>
+          // Pass decimal literal as bytes.
+          val unscaled = value.asInstanceOf[JavaBigDecimal].unscaledValue
           exprBuilder.setDecimalVal(com.google.protobuf.ByteString.copyFrom(unscaled.toByteArray))
-          Some(DecimalType(v.precision, v.scale))
-        case v: Array[Byte] =>
+        case _: BinaryType =>
           val byteStr =
-            com.google.protobuf.ByteString.copyFrom(v)
+            com.google.protobuf.ByteString.copyFrom(value.asInstanceOf[Array[Byte]])
           exprBuilder.setBytesVal(byteStr)
-          Some(BinaryType)
-        case v: java.sql.Date =>
-          exprBuilder.setIntVal(v.getTime.toInt)
-          Some(DateType)
-        case v: java.sql.Timestamp =>
-          exprBuilder.setLongVal(v.getTime)
-          Some(TimestampType)
-        case v: java.time.Instant =>
-          exprBuilder.setLongVal(v.toEpochMilli)
-          Some(TimestampType)
-        case _ =>
-          logWarning(s"Unsupported literal type: ${value.getClass}")
-          None
+        case _: DateType =>
+          value match {
+            case v: LocalDate => exprBuilder.setIntVal(DateTimeUtils.localDateToDays(v))
+            case v: Date => exprBuilder.setIntVal(DateTimeUtils.fromJavaDate(v))
+            case v: Int => exprBuilder.setIntVal(v)
+            case _ =>
+              valueIsSet = false
+              logWarning(s"Unexpected date type '${value.getClass}' for value '$value'")
+          }
+        case dt =>
+          valueIsSet = false
+          logWarning(s"Unexpected data type '$dt' for literal value '$value'")
       }
-      if (dataType.isDefined) {
-        val dt = serializeDataType(dataType.get)
-        exprBuilder.setDatatype(dt.get)
-        Some(
-          ExprOuterClass.Expr
-            .newBuilder()
-            .setLiteral(exprBuilder)
-            .build())
-      } else {
-        None
-      }
+    }
+
+    val dt = serializeDataType(dataType)
+
+    if (valueIsSet && dt.isDefined) {
+      exprBuilder.setDatatype(dt.get)
+
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setLiteral(exprBuilder)
+          .build())
+    } else {
+      None
     }
   }
 
