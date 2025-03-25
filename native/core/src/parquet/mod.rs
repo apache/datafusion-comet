@@ -681,7 +681,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             let filter_buffer = env.convert_byte_array(&filter_array)?;
             let filter_expr = serde::deserialize_expr(filter_buffer.as_slice())?;
             Some(vec![
-                planer.create_expr(&filter_expr, Arc::clone(&required_schema))?
+                planer.create_expr(&filter_expr, Arc::clone(&data_schema))?
             ])
         } else {
             None
