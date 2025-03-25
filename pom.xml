@@ -58,6 +58,7 @@ under the License.
     <protobuf.version>3.25.5</protobuf.version>
     <parquet.version>1.13.1.1-apple</parquet.version>
     <parquet.maven.scope>provided</parquet.maven.scope>
+    <hadoop.version>3.3.4</hadoop.version>
     <arrow.version>16.0.0</arrow.version>
     <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
     <spotless.version>2.43.0</spotless.version>
@@ -522,6 +523,13 @@ under the License.
         <groupId>org.rogach</groupId>
         <artifactId>scallop_${scala.binary.version}</artifactId>
         <version>5.1.0</version>
+      </dependency>
+
+      <dependency>
+        <groupId>org.apache.hadoop</groupId>
+        <artifactId>hadoop-client-minicluster</artifactId>
+        <version>${hadoop.version}</version>
+        <scope>test</scope>
       </dependency>
 
     </dependencies>
