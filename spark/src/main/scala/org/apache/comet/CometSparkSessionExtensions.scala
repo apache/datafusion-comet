@@ -975,7 +975,7 @@ class CometSparkSessionExtensions
         }
       }
 
-      // We shouldn't transform Spark query plan if Comet is disabled.
+      // We shouldn't transform Spark query plan if Comet is not loaded.
       if (!isCometLoaded(conf)) return plan
 
       if (!isCometExecEnabled(conf)) {
@@ -1172,7 +1172,7 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   /**
-   * Checks whether Comet extension should be enabled for Spark.
+   * Checks whether Comet extension should be loaded for Spark.
    */
   private[comet] def isCometLoaded(conf: SQLConf): Boolean = {
     if (isBigEndian) {
