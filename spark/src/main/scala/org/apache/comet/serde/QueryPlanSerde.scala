@@ -2723,8 +2723,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           if isCometSink(op) && op.output.forall(a =>
             supportedDataType(
               a.dataType,
-              allowComplex =
-                usingDataFusionParquetExec(conf) || op.isInstanceOf[CometSparkToColumnarExec])) =>
+              allowComplex = usingDataFusionParquetExec(
+                conf) || CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf))) =>
         // These operators are source of Comet native execution chain
         val scanBuilder = OperatorOuterClass.Scan.newBuilder()
         val source = op.simpleStringWithNodeId()
