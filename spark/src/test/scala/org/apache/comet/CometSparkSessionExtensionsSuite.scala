@@ -27,11 +27,11 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
 
   import CometSparkSessionExtensions._
 
-  test("isCometEnabled") {
+  test("isCometLoaded") {
     val conf = new SQLConf
 
     conf.setConfString(CometConf.COMET_ENABLED.key, "false")
-    assert(!isCometEnabled(conf))
+    assert(!isCometLoaded(conf))
 
     // Since the native lib is probably already loaded due to previous tests, we reset it here
     NativeBase.setLoaded(false)
@@ -39,12 +39,12 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     conf.setConfString(CometConf.COMET_ENABLED.key, "true")
     val oldProperty = System.getProperty("os.name")
     System.setProperty("os.name", "foo")
-    assert(!isCometEnabled(conf))
+    assert(!isCometLoaded(conf))
 
     System.setProperty("os.name", oldProperty)
 
     conf.setConf(SQLConf.PARQUET_INT96_TIMESTAMP_CONVERSION, true)
-    assert(!isCometEnabled(conf))
+    assert(!isCometLoaded(conf))
 
     // Restore the original state
     NativeBase.setLoaded(true)
