@@ -18,13 +18,10 @@
 //! Custom schema adapter that uses Spark-compatible conversions
 
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
-use arrow_array::{new_null_array, Array, RecordBatch, RecordBatchOptions};
-use arrow_schema::{DataType, Schema, SchemaRef};
+use arrow::array::{new_null_array, Array, RecordBatch, RecordBatchOptions};
+use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
-use datafusion_comet_spark_expr::EvalMode;
-use datafusion_common::plan_err;
-use datafusion_expr::ColumnarValue;
-use std::collections::HashMap;
+use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
 
 /// An implementation of DataFusion's `SchemaAdapterFactory` that uses a Spark-compatible
@@ -102,29 +99,16 @@ impl SchemaAdapter for SparkSchemaAdapter {
     fn map_schema(
         &self,
         file_schema: &Schema,
-    ) -> datafusion_common::Result<(Arc<dyn SchemaMapper>, Vec<usize>)> {
+    ) -> datafusion::common::Result<(Arc<dyn SchemaMapper>, Vec<usize>)> {
         let mut projection = Vec::with_capacity(file_schema.fields().len());
         let mut field_mappings = vec![None; self.required_schema.fields().len()];
 
         for (file_idx, file_field) in file_schema.fields.iter().enumerate() {
-            if let Some((table_idx, table_field)) =
+            if let Some((table_idx, _table_field)) =
                 self.required_schema.fields().find(file_field.name())
             {
-                if cast_supported(
-                    file_field.data_type(),
-                    table_field.data_type(),
-                    &self.parquet_options,
-                ) {
-                    field_mappings[table_idx] = Some(projection.len());
-                    projection.push(file_idx);
-                } else {
-                    return plan_err!(
-                        "Cannot cast file schema field {} of type {:?} to required schema field of type {:?}",
-                        file_field.name(),
-                        file_field.data_type(),
-                        table_field.data_type()
-                    );
-                }
+                field_mappings[table_idx] = Some(projection.len());
+                projection.push(file_idx);
             }
         }
 
@@ -193,7 +177,7 @@ impl SchemaMapper for SchemaMapping {
     /// conversions. The produced RecordBatch has a schema that contains only the projected
     /// columns, so if one needs a RecordBatch with a schema that references columns which are not
     /// in the projected, it would be better to use `map_partial_batch`
-    fn map_batch(&self, batch: RecordBatch) -> datafusion_common::Result<RecordBatch> {
+    fn map_batch(&self, batch: RecordBatch) -> datafusion::common::Result<RecordBatch> {
         let batch_rows = batch.num_rows();
         let batch_cols = batch.columns().to_vec();
 
@@ -223,7 +207,7 @@ impl SchemaMapper for SchemaMapping {
                     },
                 )
             })
-            .collect::<datafusion_common::Result<Vec<_>, _>>()?;
+            .collect::<datafusion::common::Result<Vec<_>, _>>()?;
 
         // Necessary to handle empty batches
         let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
@@ -239,7 +223,7 @@ impl SchemaMapper for SchemaMapping {
     /// Unlike `map_batch` this method also preserves the columns that
     /// may not appear in the final output (`projected_table_schema`) but may
     /// appear in push down predicates
-    fn map_partial_batch(&self, batch: RecordBatch) -> datafusion_common::Result<RecordBatch> {
+    fn map_partial_batch(&self, batch: RecordBatch) -> datafusion::common::Result<RecordBatch> {
         let batch_cols = batch.columns().to_vec();
         let schema = batch.schema();
 
@@ -285,270 +269,25 @@ impl SchemaMapper for SchemaMapping {
     }
 }
 
-/// Determine if Comet supports a cast, taking options such as EvalMode and Timezone into account.
-fn cast_supported(from_type: &DataType, to_type: &DataType, options: &SparkParquetOptions) -> bool {
-    use DataType::*;
-
-    let from_type = if let Dictionary(_, dt) = from_type {
-        dt
-    } else {
-        from_type
-    };
-
-    let to_type = if let Dictionary(_, dt) = to_type {
-        dt
-    } else {
-        to_type
-    };
-
-    if from_type == to_type {
-        return true;
-    }
-
-    match (from_type, to_type) {
-        (Boolean, _) => can_convert_from_boolean(to_type, options),
-        (UInt8 | UInt16 | UInt32 | UInt64, Int8 | Int16 | Int32 | Int64)
-            if options.allow_cast_unsigned_ints =>
-        {
-            true
-        }
-        (Int8, _) => can_convert_from_byte(to_type, options),
-        (Int16, _) => can_convert_from_short(to_type, options),
-        (Int32, _) => can_convert_from_int(to_type, options),
-        (Int64, _) => can_convert_from_long(to_type, options),
-        (Float32, _) => can_convert_from_float(to_type, options),
-        (Float64, _) => can_convert_from_double(to_type, options),
-        (Decimal128(p, s), _) => can_convert_from_decimal(p, s, to_type, options),
-        (Timestamp(_, None), _) => can_convert_from_timestamp_ntz(to_type, options),
-        (Timestamp(_, Some(_)), _) => can_convert_from_timestamp(to_type, options),
-        (Utf8 | LargeUtf8, _) => can_convert_from_string(to_type, options),
-        (_, Utf8 | LargeUtf8) => can_cast_to_string(from_type, options),
-        (Struct(from_fields), Struct(to_fields)) => {
-            // TODO some of this logic may be specific to converting Parquet to Spark
-            let mut field_types = HashMap::new();
-            for field in from_fields {
-                field_types.insert(field.name(), field.data_type());
-            }
-            if field_types.iter().len() != from_fields.len() {
-                return false;
-            }
-            for field in to_fields {
-                if let Some(from_type) = field_types.get(&field.name()) {
-                    if !cast_supported(from_type, field.data_type(), options) {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-            }
-            true
-        }
-        _ => false,
-    }
-}
-
-fn can_convert_from_string(to_type: &DataType, options: &SparkParquetOptions) -> bool {
-    use DataType::*;
-    match to_type {
-        Boolean | Int8 | Int16 | Int32 | Int64 | Binary => true,
-        Float32 | Float64 => {
-            // https://github.com/apache/datafusion-comet/issues/326
-            // Does not support inputs ending with 'd' or 'f'. Does not support 'inf'.
-            // Does not support ANSI mode.
-            options.allow_incompat
-        }
-        Decimal128(_, _) => {
-            // https://github.com/apache/datafusion-comet/issues/325
-            // Does not support inputs ending with 'd' or 'f'. Does not support 'inf'.
-            // Does not support ANSI mode. Returns 0.0 instead of null if input contains no digits
-
-            options.allow_incompat
-        }
-        Date32 | Date64 => {
-            // https://github.com/apache/datafusion-comet/issues/327
-            // Only supports years between 262143 BC and 262142 AD
-            options.allow_incompat
-        }
-        Timestamp(_, _) if options.eval_mode == EvalMode::Ansi => {
-            // ANSI mode not supported
-            false
-        }
-        Timestamp(_, Some(tz)) if tz.as_ref() != "UTC" => {
-            // Cast will use UTC instead of $timeZoneId
-            options.allow_incompat
-        }
-        Timestamp(_, _) => {
-            // https://github.com/apache/datafusion-comet/issues/328
-            // Not all valid formats are supported
-            options.allow_incompat
-        }
-        _ => false,
-    }
-}
-
-fn can_cast_to_string(from_type: &DataType, options: &SparkParquetOptions) -> bool {
-    use DataType::*;
-    match from_type {
-        Boolean | Int8 | Int16 | Int32 | Int64 | Date32 | Date64 | Timestamp(_, _) => true,
-        Float32 | Float64 => {
-            // There can be differences in precision.
-            // For example, the input \"1.4E-45\" will produce 1.0E-45 " +
-            // instead of 1.4E-45"))
-            true
-        }
-        Decimal128(_, _) => {
-            // https://github.com/apache/datafusion-comet/issues/1068
-            // There can be formatting differences in some case due to Spark using
-            // scientific notation where Comet does not
-            true
-        }
-        Binary => {
-            // https://github.com/apache/datafusion-comet/issues/377
-            // Only works for binary data representing valid UTF-8 strings
-            options.allow_incompat
-        }
-        Struct(fields) => fields
-            .iter()
-            .all(|f| can_cast_to_string(f.data_type(), options)),
-        _ => false,
-    }
-}
-
-fn can_convert_from_timestamp_ntz(to_type: &DataType, options: &SparkParquetOptions) -> bool {
-    use DataType::*;
-    match to_type {
-        Timestamp(_, _) | Date32 | Date64 | Utf8 => {
-            // incompatible
-            options.allow_incompat
-        }
-        _ => {
-            // unsupported
-            false
-        }
-    }
-}
-
-fn can_convert_from_timestamp(to_type: &DataType, _options: &SparkParquetOptions) -> bool {
-    use DataType::*;
-    match to_type {
-        Timestamp(_, _) => true,
-        Boolean | Int8 | Int16 => {
-            // https://github.com/apache/datafusion-comet/issues/352
-            // this seems like an edge case that isn't important for us to support
-            false
-        }
-        Int64 => {
-            // https://github.com/apache/datafusion-comet/issues/352
-            true
-        }
-        Date32 | Date64 | Utf8 | Decimal128(_, _) => true,
-        _ => {
-            // unsupported
-            false
-        }
-    }
-}
-
-fn can_convert_from_boolean(to_type: &DataType, _: &SparkParquetOptions) -> bool {
-    use DataType::*;
-    matches!(to_type, Int8 | Int16 | Int32 | Int64 | Float32 | Float64)
-}
-
-fn can_convert_from_byte(to_type: &DataType, _: &SparkParquetOptions) -> bool {
-    use DataType::*;
-    matches!(
-        to_type,
-        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Decimal128(_, _)
-    )
-}
-
-fn can_convert_from_short(to_type: &DataType, _: &SparkParquetOptions) -> bool {
-    use DataType::*;
-    matches!(
-        to_type,
-        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Decimal128(_, _)
-    )
-}
-
-fn can_convert_from_int(to_type: &DataType, options: &SparkParquetOptions) -> bool {
-    use DataType::*;
-    match to_type {
-        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Utf8 => true,
-        Decimal128(_, _) => {
-            // incompatible: no overflow check
-            options.allow_incompat
-        }
-        _ => false,
-    }
-}
-
-fn can_convert_from_long(to_type: &DataType, options: &SparkParquetOptions) -> bool {
-    use DataType::*;
-    match to_type {
-        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 => true,
-        Decimal128(_, _) => {
-            // incompatible: no overflow check
-            options.allow_incompat
-        }
-        _ => false,
-    }
-}
-
-fn can_convert_from_float(to_type: &DataType, _: &SparkParquetOptions) -> bool {
-    use DataType::*;
-    matches!(
-        to_type,
-        Boolean | Int8 | Int16 | Int32 | Int64 | Float64 | Decimal128(_, _)
-    )
-}
-
-fn can_convert_from_double(to_type: &DataType, _: &SparkParquetOptions) -> bool {
-    use DataType::*;
-    matches!(
-        to_type,
-        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Decimal128(_, _)
-    )
-}
-
-fn can_convert_from_decimal(
-    p1: &u8,
-    _s1: &i8,
-    to_type: &DataType,
-    options: &SparkParquetOptions,
-) -> bool {
-    use DataType::*;
-    match to_type {
-        Int8 | Int16 | Int32 | Int64 | Float32 | Float64 => true,
-        Decimal128(p2, _) => {
-            if p2 < p1 {
-                // https://github.com/apache/datafusion/issues/13492
-                // Incompatible(Some("Casting to smaller precision is not supported"))
-                options.allow_incompat
-            } else {
-                true
-            }
-        }
-        _ => false,
-    }
-}
-
 #[cfg(test)]
 mod test {
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
+    use arrow::array::UInt32Array;
     use arrow::array::{Int32Array, StringArray};
+    use arrow::datatypes::SchemaRef;
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
-    use arrow_array::UInt32Array;
-    use arrow_schema::SchemaRef;
+    use datafusion::common::config::TableParquetOptions;
+    use datafusion::common::DataFusionError;
     use datafusion::datasource::listing::PartitionedFile;
-    use datafusion::datasource::physical_plan::{FileScanConfig, ParquetExec};
+    use datafusion::datasource::physical_plan::{FileScanConfig, ParquetSource};
+    use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::execution::TaskContext;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
     use datafusion_comet_spark_expr::EvalMode;
-    use datafusion_common::DataFusionError;
     use futures::StreamExt;
     use parquet::arrow::ArrowWriter;
     use std::fs::File;
@@ -604,19 +343,23 @@ mod test {
         writer.close()?;
 
         let object_store_url = ObjectStoreUrl::local_filesystem();
-        let file_scan_config = FileScanConfig::new(object_store_url, required_schema)
-            .with_file_groups(vec![vec![PartitionedFile::from_path(
-                filename.to_string(),
-            )?]]);
 
         let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
         spark_parquet_options.allow_cast_unsigned_ints = true;
 
-        let parquet_exec = ParquetExec::builder(file_scan_config)
-            .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
-                spark_parquet_options,
-            )))
-            .build();
+        let parquet_source = Arc::new(
+            ParquetSource::new(TableParquetOptions::new()).with_schema_adapter_factory(Arc::new(
+                SparkSchemaAdapterFactory::new(spark_parquet_options),
+            )),
+        );
+
+        let file_scan_config =
+            FileScanConfig::new(object_store_url, required_schema, parquet_source)
+                .with_file_groups(vec![vec![PartitionedFile::from_path(
+                    filename.to_string(),
+                )?]]);
+
+        let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
 
         let mut stream = parquet_exec
             .execute(0, Arc::new(TaskContext::default()))

@@ -1,9 +1,9 @@
 == Physical Plan ==
-TakeOrderedAndProject (44)
-+- * Project (43)
-   +- * BroadcastHashJoin Inner BuildRight (42)
-      :- * Project (40)
-      :  +- * BroadcastHashJoin Inner BuildRight (39)
+TakeOrderedAndProject (45)
++- * Project (44)
+   +- * BroadcastHashJoin Inner BuildRight (43)
+      :- * Project (41)
+      :  +- * BroadcastHashJoin Inner BuildRight (40)
       :     :- * Project (34)
       :     :  +- * SortMergeJoin Inner (33)
       :     :     :- * Sort (18)
@@ -38,11 +38,12 @@ TakeOrderedAndProject (44)
       :     :                                      +- CometFilter (21)
       :     :                                         +- CometHashAggregate (20)
       :     :                                            +- ReusedExchange (19)
-      :     +- BroadcastExchange (38)
-      :        +- * CometColumnarToRow (37)
-      :           +- CometFilter (36)
-      :              +- CometScan parquet spark_catalog.default.item (35)
-      +- ReusedExchange (41)
+      :     +- BroadcastExchange (39)
+      :        +- * CometColumnarToRow (38)
+      :           +- CometProject (37)
+      :              +- CometFilter (36)
+      :                 +- CometScan parquet spark_catalog.default.item (35)
+      +- ReusedExchange (42)
 
 
 (1) CometScan parquet spark_catalog.default.store_sales
@@ -195,83 +196,87 @@ ReadSchema: struct<i_item_sk:int,i_product_name:string>
 Input [2]: [i_item_sk#19, i_product_name#20]
 Condition : isnotnull(i_item_sk#19)
 
-(37) CometColumnarToRow [codegen id : 7]
+(37) CometProject
 Input [2]: [i_item_sk#19, i_product_name#20]
+Arguments: [i_item_sk#19, i_product_name#21], [i_item_sk#19, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_product_name#20, 50, true, false, true) AS i_product_name#21]
 
-(38) BroadcastExchange
-Input [2]: [i_item_sk#19, i_product_name#20]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=4]
+(38) CometColumnarToRow [codegen id : 7]
+Input [2]: [i_item_sk#19, i_product_name#21]
 
-(39) BroadcastHashJoin [codegen id : 9]
+(39) BroadcastExchange
+Input [2]: [i_item_sk#19, i_product_name#21]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=4]
+
+(40) BroadcastHashJoin [codegen id : 9]
 Left keys [1]: [item_sk#7]
 Right keys [1]: [i_item_sk#19]
 Join type: Inner
 Join condition: None
 
-(40) Project [codegen id : 9]
-Output [3]: [rnk#11, item_sk#16, i_product_name#20]
-Input [5]: [item_sk#7, rnk#11, item_sk#16, i_item_sk#19, i_product_name#20]
+(41) Project [codegen id : 9]
+Output [3]: [rnk#11, item_sk#16, i_product_name#21]
+Input [5]: [item_sk#7, rnk#11, item_sk#16, i_item_sk#19, i_product_name#21]
 
-(41) ReusedExchange [Reuses operator id: 38]
-Output [2]: [i_item_sk#21, i_product_name#22]
+(42) ReusedExchange [Reuses operator id: 39]
+Output [2]: [i_item_sk#22, i_product_name#23]
 
-(42) BroadcastHashJoin [codegen id : 9]
+(43) BroadcastHashJoin [codegen id : 9]
 Left keys [1]: [item_sk#16]
-Right keys [1]: [i_item_sk#21]
+Right keys [1]: [i_item_sk#22]
 Join type: Inner
 Join condition: None
 
-(43) Project [codegen id : 9]
-Output [3]: [rnk#11, i_product_name#20 AS best_performing#23, i_product_name#22 AS worst_performing#24]
-Input [5]: [rnk#11, item_sk#16, i_product_name#20, i_item_sk#21, i_product_name#22]
+(44) Project [codegen id : 9]
+Output [3]: [rnk#11, i_product_name#21 AS best_performing#24, i_product_name#23 AS worst_performing#25]
+Input [5]: [rnk#11, item_sk#16, i_product_name#21, i_item_sk#22, i_product_name#23]
 
-(44) TakeOrderedAndProject
-Input [3]: [rnk#11, best_performing#23, worst_performing#24]
-Arguments: 100, [rnk#11 ASC NULLS FIRST], [rnk#11, best_performing#23, worst_performing#24]
+(45) TakeOrderedAndProject
+Input [3]: [rnk#11, best_performing#24, worst_performing#25]
+Arguments: 100, [rnk#11 ASC NULLS FIRST], [rnk#11, best_performing#24, worst_performing#25]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 7 Hosting Expression = Subquery scalar-subquery#9, [id=#10]
-* CometColumnarToRow (51)
-+- CometHashAggregate (50)
-   +- CometExchange (49)
-      +- CometHashAggregate (48)
-         +- CometProject (47)
-            +- CometFilter (46)
-               +- CometScan parquet spark_catalog.default.store_sales (45)
+* CometColumnarToRow (52)
++- CometHashAggregate (51)
+   +- CometExchange (50)
+      +- CometHashAggregate (49)
+         +- CometProject (48)
+            +- CometFilter (47)
+               +- CometScan parquet spark_catalog.default.store_sales (46)
 
 
-(45) CometScan parquet spark_catalog.default.store_sales
-Output [4]: [ss_addr_sk#25, ss_store_sk#26, ss_net_profit#27, ss_sold_date_sk#28]
+(46) CometScan parquet spark_catalog.default.store_sales
+Output [4]: [ss_addr_sk#26, ss_store_sk#27, ss_net_profit#28, ss_sold_date_sk#29]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
 PushedFilters: [IsNotNull(ss_store_sk), EqualTo(ss_store_sk,4), IsNull(ss_addr_sk)]
 ReadSchema: struct<ss_addr_sk:int,ss_store_sk:int,ss_net_profit:decimal(7,2)>
 
-(46) CometFilter
-Input [4]: [ss_addr_sk#25, ss_store_sk#26, ss_net_profit#27, ss_sold_date_sk#28]
-Condition : ((isnotnull(ss_store_sk#26) AND (ss_store_sk#26 = 4)) AND isnull(ss_addr_sk#25))
+(47) CometFilter
+Input [4]: [ss_addr_sk#26, ss_store_sk#27, ss_net_profit#28, ss_sold_date_sk#29]
+Condition : ((isnotnull(ss_store_sk#27) AND (ss_store_sk#27 = 4)) AND isnull(ss_addr_sk#26))
 
-(47) CometProject
-Input [4]: [ss_addr_sk#25, ss_store_sk#26, ss_net_profit#27, ss_sold_date_sk#28]
-Arguments: [ss_store_sk#26, ss_net_profit#27], [ss_store_sk#26, ss_net_profit#27]
+(48) CometProject
+Input [4]: [ss_addr_sk#26, ss_store_sk#27, ss_net_profit#28, ss_sold_date_sk#29]
+Arguments: [ss_store_sk#27, ss_net_profit#28], [ss_store_sk#27, ss_net_profit#28]
 
-(48) CometHashAggregate
-Input [2]: [ss_store_sk#26, ss_net_profit#27]
-Keys [1]: [ss_store_sk#26]
-Functions [1]: [partial_avg(UnscaledValue(ss_net_profit#27))]
+(49) CometHashAggregate
+Input [2]: [ss_store_sk#27, ss_net_profit#28]
+Keys [1]: [ss_store_sk#27]
+Functions [1]: [partial_avg(UnscaledValue(ss_net_profit#28))]
 
-(49) CometExchange
-Input [3]: [ss_store_sk#26, sum#29, count#30]
-Arguments: hashpartitioning(ss_store_sk#26, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=5]
+(50) CometExchange
+Input [3]: [ss_store_sk#27, sum#30, count#31]
+Arguments: hashpartitioning(ss_store_sk#27, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=5]
 
-(50) CometHashAggregate
-Input [3]: [ss_store_sk#26, sum#29, count#30]
-Keys [1]: [ss_store_sk#26]
-Functions [1]: [avg(UnscaledValue(ss_net_profit#27))]
+(51) CometHashAggregate
+Input [3]: [ss_store_sk#27, sum#30, count#31]
+Keys [1]: [ss_store_sk#27]
+Functions [1]: [avg(UnscaledValue(ss_net_profit#28))]
 
-(51) CometColumnarToRow [codegen id : 1]
-Input [1]: [rank_col#31]
+(52) CometColumnarToRow [codegen id : 1]
+Input [1]: [rank_col#32]
 
 Subquery:2 Hosting operator id = 21 Hosting Expression = ReusedSubquery Subquery scalar-subquery#9, [id=#10]
 

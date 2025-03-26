@@ -26,27 +26,30 @@ use datafusion::physical_plan::{
     PlanProperties, RecordBatchStream, SendableRecordBatchStream, Statistics,
 };
 
+use arrow::array::{
+    make_array, Array, ArrayRef, BooleanArray, MutableArrayData, RecordBatchOptions,
+};
 use arrow::compute::filter_record_batch;
 use arrow::datatypes::{DataType, SchemaRef};
+use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
-use arrow_array::{make_array, Array, ArrayRef, BooleanArray, RecordBatchOptions};
-use arrow_data::transform::MutableArrayData;
-use arrow_schema::ArrowError;
-use datafusion::physical_plan::common::can_project;
-use datafusion::physical_plan::execution_plan::CardinalityEffect;
-use datafusion_common::cast::as_boolean_array;
-use datafusion_common::stats::Precision;
-use datafusion_common::{internal_err, plan_err, project_schema, DataFusionError, Result};
-use datafusion_execution::TaskContext;
-use datafusion_expr::Operator;
-use datafusion_physical_expr::equivalence::ProjectionMapping;
-use datafusion_physical_expr::expressions::BinaryExpr;
-use datafusion_physical_expr::intervals::utils::check_support;
-use datafusion_physical_expr::utils::collect_columns;
-use datafusion_physical_expr::{
+use datafusion::common::cast::as_boolean_array;
+use datafusion::common::stats::Precision;
+use datafusion::common::{
+    internal_err, plan_err, project_schema, DataFusionError, Result, ScalarValue,
+};
+use datafusion::execution::TaskContext;
+use datafusion::logical_expr::Operator;
+use datafusion::physical_expr::equivalence::ProjectionMapping;
+use datafusion::physical_expr::expressions::BinaryExpr;
+use datafusion::physical_expr::intervals::utils::check_support;
+use datafusion::physical_expr::utils::collect_columns;
+use datafusion::physical_expr::{
     analyze, split_conjunction, AcrossPartitions, AnalysisContext, ConstExpr, ExprBoundaries,
     PhysicalExpr,
 };
+use datafusion::physical_plan::common::can_project;
+use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use futures::stream::{Stream, StreamExt};
 use log::trace;
 
@@ -407,6 +410,16 @@ fn collect_new_statistics(
                     ..
                 },
             )| {
+                let Some(interval) = interval else {
+                    // If the interval is `None`, we can say that there are no rows:
+                    return ColumnStatistics {
+                        null_count: Precision::Exact(0),
+                        max_value: Precision::Exact(ScalarValue::Null),
+                        min_value: Precision::Exact(ScalarValue::Null),
+                        sum_value: Precision::Exact(ScalarValue::Null),
+                        distinct_count: Precision::Exact(0),
+                    };
+                };
                 let (lower, upper) = interval.into_bounds();
                 let (min_value, max_value) = if lower.eq(&upper) {
                     (Precision::Exact(lower), Precision::Exact(upper))
@@ -417,6 +430,7 @@ fn collect_new_statistics(
                     null_count: input_column_stats[idx].null_count.to_inexact(),
                     max_value,
                     min_value,
+                    sum_value: Precision::Absent,
                     distinct_count: distinct_count.to_inexact(),
                 }
             },

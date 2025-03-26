@@ -74,46 +74,46 @@ Condition : ((isnotnull(i_manufact_id#10) AND (i_manufact_id#10 = 128)) AND isno
 
 (11) CometProject
 Input [4]: [i_item_sk#7, i_brand_id#8, i_brand#9, i_manufact_id#10]
-Arguments: [i_item_sk#7, i_brand_id#8, i_brand#9], [i_item_sk#7, i_brand_id#8, i_brand#9]
+Arguments: [i_item_sk#7, i_brand_id#8, i_brand#11], [i_item_sk#7, i_brand_id#8, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_brand#9, 50, true, false, true) AS i_brand#11]
 
 (12) CometBroadcastExchange
-Input [3]: [i_item_sk#7, i_brand_id#8, i_brand#9]
-Arguments: [i_item_sk#7, i_brand_id#8, i_brand#9]
+Input [3]: [i_item_sk#7, i_brand_id#8, i_brand#11]
+Arguments: [i_item_sk#7, i_brand_id#8, i_brand#11]
 
 (13) CometBroadcastHashJoin
 Left output [3]: [d_year#2, ss_item_sk#4, ss_ext_sales_price#5]
-Right output [3]: [i_item_sk#7, i_brand_id#8, i_brand#9]
+Right output [3]: [i_item_sk#7, i_brand_id#8, i_brand#11]
 Arguments: [ss_item_sk#4], [i_item_sk#7], Inner, BuildRight
 
 (14) CometProject
-Input [6]: [d_year#2, ss_item_sk#4, ss_ext_sales_price#5, i_item_sk#7, i_brand_id#8, i_brand#9]
-Arguments: [d_year#2, ss_ext_sales_price#5, i_brand_id#8, i_brand#9], [d_year#2, ss_ext_sales_price#5, i_brand_id#8, i_brand#9]
+Input [6]: [d_year#2, ss_item_sk#4, ss_ext_sales_price#5, i_item_sk#7, i_brand_id#8, i_brand#11]
+Arguments: [d_year#2, ss_ext_sales_price#5, i_brand_id#8, i_brand#11], [d_year#2, ss_ext_sales_price#5, i_brand_id#8, i_brand#11]
 
 (15) CometColumnarToRow [codegen id : 1]
-Input [4]: [d_year#2, ss_ext_sales_price#5, i_brand_id#8, i_brand#9]
+Input [4]: [d_year#2, ss_ext_sales_price#5, i_brand_id#8, i_brand#11]
 
 (16) HashAggregate [codegen id : 1]
-Input [4]: [d_year#2, ss_ext_sales_price#5, i_brand_id#8, i_brand#9]
-Keys [3]: [d_year#2, i_brand#9, i_brand_id#8]
+Input [4]: [d_year#2, ss_ext_sales_price#5, i_brand_id#8, i_brand#11]
+Keys [3]: [d_year#2, i_brand#11, i_brand_id#8]
 Functions [1]: [partial_sum(UnscaledValue(ss_ext_sales_price#5))]
-Aggregate Attributes [1]: [sum#11]
-Results [4]: [d_year#2, i_brand#9, i_brand_id#8, sum#12]
+Aggregate Attributes [1]: [sum#12]
+Results [4]: [d_year#2, i_brand#11, i_brand_id#8, sum#13]
 
 (17) CometColumnarExchange
-Input [4]: [d_year#2, i_brand#9, i_brand_id#8, sum#12]
-Arguments: hashpartitioning(d_year#2, i_brand#9, i_brand_id#8, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+Input [4]: [d_year#2, i_brand#11, i_brand_id#8, sum#13]
+Arguments: hashpartitioning(d_year#2, i_brand#11, i_brand_id#8, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
 
 (18) CometColumnarToRow [codegen id : 2]
-Input [4]: [d_year#2, i_brand#9, i_brand_id#8, sum#12]
+Input [4]: [d_year#2, i_brand#11, i_brand_id#8, sum#13]
 
 (19) HashAggregate [codegen id : 2]
-Input [4]: [d_year#2, i_brand#9, i_brand_id#8, sum#12]
-Keys [3]: [d_year#2, i_brand#9, i_brand_id#8]
+Input [4]: [d_year#2, i_brand#11, i_brand_id#8, sum#13]
+Keys [3]: [d_year#2, i_brand#11, i_brand_id#8]
 Functions [1]: [sum(UnscaledValue(ss_ext_sales_price#5))]
-Aggregate Attributes [1]: [sum(UnscaledValue(ss_ext_sales_price#5))#13]
-Results [4]: [d_year#2, i_brand_id#8 AS brand_id#14, i_brand#9 AS brand#15, MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#5))#13,17,2) AS sum_agg#16]
+Aggregate Attributes [1]: [sum(UnscaledValue(ss_ext_sales_price#5))#14]
+Results [4]: [d_year#2, i_brand_id#8 AS brand_id#15, i_brand#11 AS brand#16, MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#5))#14,17,2) AS sum_agg#17]
 
 (20) TakeOrderedAndProject
-Input [4]: [d_year#2, brand_id#14, brand#15, sum_agg#16]
-Arguments: 100, [d_year#2 ASC NULLS FIRST, sum_agg#16 DESC NULLS LAST, brand_id#14 ASC NULLS FIRST], [d_year#2, brand_id#14, brand#15, sum_agg#16]
+Input [4]: [d_year#2, brand_id#15, brand#16, sum_agg#17]
+Arguments: 100, [d_year#2 ASC NULLS FIRST, sum_agg#17 DESC NULLS LAST, brand_id#15 ASC NULLS FIRST], [d_year#2, brand_id#15, brand#16, sum_agg#17]
 

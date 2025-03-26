@@ -17,17 +17,17 @@
 
 use std::sync::Arc;
 
+use arrow::array::StringArray;
+use arrow::datatypes::DataType;
 use arrow::{
     array::{as_dictionary_array, as_largestring_array, as_string_array},
     datatypes::Int32Type,
 };
-use arrow_array::StringArray;
-use arrow_schema::DataType;
-use datafusion::logical_expr::ColumnarValue;
-use datafusion_common::{
+use datafusion::common::{
     cast::{as_binary_array, as_fixed_size_binary_array, as_int64_array},
     exec_err, DataFusionError,
 };
+use datafusion::logical_expr::ColumnarValue;
 use std::fmt::Write;
 
 fn hex_int64(num: i64) -> String {
@@ -164,6 +164,7 @@ pub fn spark_hex(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionErro
 mod test {
     use std::sync::Arc;
 
+    use arrow::array::{Int64Array, StringArray};
     use arrow::{
         array::{
             as_string_array, BinaryDictionaryBuilder, PrimitiveDictionaryBuilder, StringBuilder,
@@ -171,7 +172,6 @@ mod test {
         },
         datatypes::{Int32Type, Int64Type},
     };
-    use arrow_array::{Int64Array, StringArray};
     use datafusion::logical_expr::ColumnarValue;
 
     #[test]

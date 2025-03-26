@@ -25,7 +25,7 @@ import java.util.Collections
 import org.apache.spark.api.plugin.{DriverPlugin, ExecutorPlugin, PluginContext, SparkPlugin}
 import org.apache.spark.comet.shims.ShimCometDriverPlugin
 import org.apache.spark.internal.Logging
-import org.apache.spark.internal.config.{EXECUTOR_MEMORY, EXECUTOR_MEMORY_OVERHEAD}
+import org.apache.spark.internal.config.{EXECUTOR_MEMORY, EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR}
 import org.apache.spark.sql.internal.StaticSQLConf
 
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
@@ -55,13 +55,17 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
         sc.getConf.getSizeAsMb(EXECUTOR_MEMORY_OVERHEAD.key)
       } else {
         // By default, executorMemory * spark.executor.memoryOverheadFactor, with minimum of 384MB
-        val executorMemory = sc.getConf.getSizeAsMb(EXECUTOR_MEMORY.key, EXECUTOR_MEMORY_DEFAULT)
-        val memoryOverheadFactor = getMemoryOverheadFactor(sc.getConf)
+        val executorMemory =
+          sc.getConf.getSizeAsMb(EXECUTOR_MEMORY.key, EXECUTOR_MEMORY_DEFAULT)
+        val memoryOverheadFactor = sc.getConf.get(EXECUTOR_MEMORY_OVERHEAD_FACTOR)
         val memoryOverheadMinMib = getMemoryOverheadMinMib(sc.getConf)
 
         Math.max((executorMemory * memoryOverheadFactor).toLong, memoryOverheadMinMib)
       }
 
+      // we should never reach this code in off-heap mode due to earlier check
+      // in `shouldOverrideMemoryConf`
+      assert(!CometSparkSessionExtensions.isOffHeapEnabled(sc.getConf))
       val cometMemOverhead = CometSparkSessionExtensions.getCometMemoryOverheadInMiB(sc.getConf)
       sc.conf.set(EXECUTOR_MEMORY_OVERHEAD.key, s"${execMemOverhead + cometMemOverhead}M")
       val newExecMemOverhead = sc.getConf.getSizeAsMb(EXECUTOR_MEMORY_OVERHEAD.key)
@@ -90,13 +94,21 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
 
   /**
    * Whether we should override Spark memory configuration for Comet. This only returns true when
-   * Comet native execution is enabled and/or Comet shuffle is enabled
+   * Comet native execution is enabled and/or Comet shuffle is enabled and Comet doesn't use
+   * off-heap mode (unified memory manager).
    */
   private def shouldOverrideMemoryConf(conf: SparkConf): Boolean = {
-    conf.getBoolean(CometConf.COMET_ENABLED.key, true) && (
-      conf.getBoolean(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, false) ||
-        conf.getBoolean(CometConf.COMET_EXEC_ENABLED.key, false)
-    )
+    val cometEnabled =
+      conf.getBoolean(CometConf.COMET_ENABLED.key, CometConf.COMET_ENABLED.defaultValue.get)
+    val cometExecShuffle = conf.getBoolean(
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key,
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.defaultValue.get)
+    val cometExec = conf.getBoolean(
+      CometConf.COMET_EXEC_ENABLED.key,
+      CometConf.COMET_EXEC_ENABLED.defaultValue.get)
+    val offHeapMode = CometSparkSessionExtensions.isOffHeapEnabled(conf)
+
+    cometEnabled && (cometExecShuffle || cometExec) && !offHeapMode
   }
 }
 

@@ -35,13 +35,14 @@ The following Spark expressions are currently available. Any known compatibility
 
 ## Binary Arithmetic
 
-| Expression      | Notes |
-| --------------- | ----- |
-| Add (`+`)       |       |
-| Subtract (`-`)  |       |
-| Multiply (`*`)  |       |
-| Divide (`/`)    |       |
-| Remainder (`%`) |       |
+| Expression             | Notes |
+|------------------------| ----- |
+| Add (`+`)              |       |
+| Subtract (`-`)         |       |
+| Multiply (`*`)         |       |
+| Divide (`/`)           |       |
+| IntegralDivide (`div`) |       |
+| Remainder (`%`)        |       |
 
 ## Conditional Expressions
 
@@ -67,7 +68,7 @@ The following Spark expressions are currently available. Any known compatibility
 ## String Functions
 
 | Expression      | Notes                                                                                                       |
-| --------------- | ----------------------------------------------------------------------------------------------------------- |
+|-----------------| ----------------------------------------------------------------------------------------------------------- |
 | Ascii           |                                                                                                             |
 | BitLength       |                                                                                                             |
 | Chr             |                                                                                                             |
@@ -84,6 +85,7 @@ The following Spark expressions are currently available. Any known compatibility
 | Replace         |                                                                                                             |
 | Reverse         |                                                                                                             |
 | StartsWith      |                                                                                                             |
+| StringRPad      |                                                                                                             |
 | StringSpace     |                                                                                                             |
 | StringTrim      |                                                                                                             |
 | StringTrimBoth  |                                                                                                             |

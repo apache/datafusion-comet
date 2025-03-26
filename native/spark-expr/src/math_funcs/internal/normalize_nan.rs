@@ -15,14 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::datatypes::{DataType, Schema};
 use arrow::{
     array::{as_primitive_array, ArrayAccessor, ArrayIter, Float32Array, Float64Array},
     datatypes::{ArrowNativeType, Float32Type, Float64Type},
     record_batch::RecordBatch,
 };
-use arrow_schema::{DataType, Schema};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion_physical_expr::PhysicalExpr;
+use datafusion::physical_expr::PhysicalExpr;
 use std::hash::Hash;
 use std::{
     any::Any,
@@ -60,15 +60,15 @@ impl PhysicalExpr for NormalizeNaNAndZero {
         self
     }
 
-    fn data_type(&self, input_schema: &Schema) -> datafusion_common::Result<DataType> {
+    fn data_type(&self, input_schema: &Schema) -> datafusion::common::Result<DataType> {
         self.child.data_type(input_schema)
     }
 
-    fn nullable(&self, input_schema: &Schema) -> datafusion_common::Result<bool> {
+    fn nullable(&self, input_schema: &Schema) -> datafusion::common::Result<bool> {
         self.child.nullable(input_schema)
     }
 
-    fn evaluate(&self, batch: &RecordBatch) -> datafusion_common::Result<ColumnarValue> {
+    fn evaluate(&self, batch: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
         let cv = self.child.evaluate(batch)?;
         let array = cv.into_array(batch.num_rows())?;
 
@@ -94,7 +94,7 @@ impl PhysicalExpr for NormalizeNaNAndZero {
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
-    ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
+    ) -> datafusion::common::Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(NormalizeNaNAndZero::new(
             self.data_type.clone(),
             Arc::clone(&children[0]),

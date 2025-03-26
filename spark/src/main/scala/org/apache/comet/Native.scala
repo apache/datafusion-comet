@@ -40,6 +40,9 @@ class Native extends NativeBase {
    *   the bytes of serialized SparkPlan.
    * @param metrics
    *   the native metrics of SparkPlan.
+   * @param metricsUpdateInterval
+   *   the interval in milliseconds to update metrics, if interval is negative, metrics will be
+   *   updated upon task completion.
    * @param taskMemoryManager
    *   the task-level memory manager that is responsible for tracking memory usage across JVM and
    *   native side.
@@ -53,13 +56,14 @@ class Native extends NativeBase {
       plan: Array[Byte],
       partitionCount: Int,
       metrics: CometMetricNode,
+      metricsUpdateInterval: Long,
       taskMemoryManager: CometTaskMemoryManager,
       batchSize: Int,
-      use_unified_memory_manager: Boolean,
-      memory_pool_type: String,
-      memory_limit: Long,
-      memory_limit_per_task: Long,
-      task_attempt_id: Long,
+      offHeapMode: Boolean,
+      memoryPoolType: String,
+      memoryLimit: Long,
+      memoryLimitPerTask: Long,
+      taskAttemptId: Long,
       debug: Boolean,
       explain: Boolean,
       workerThreads: Int,

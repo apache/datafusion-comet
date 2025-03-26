@@ -22,13 +22,13 @@ use arrow::{
     array::ArrayRef,
     datatypes::{DataType, Field},
 };
-use datafusion::logical_expr::Accumulator;
-use datafusion_common::types::NativeType;
-use datafusion_common::{internal_err, Result, ScalarValue};
-use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
-use datafusion_expr::{AggregateUDFImpl, Signature, Volatility};
-use datafusion_physical_expr::expressions::format_state_name;
-use datafusion_physical_expr::expressions::StatsType;
+use datafusion::common::types::NativeType;
+use datafusion::common::{internal_err, Result, ScalarValue};
+use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
+use datafusion::logical_expr::{Accumulator, AggregateUDFImpl, Coercion, Signature, Volatility};
+use datafusion::logical_expr_common::signature;
+use datafusion::physical_expr::expressions::format_state_name;
+use datafusion::physical_expr::expressions::StatsType;
 
 /// STDDEV and STDDEV_SAMP (standard deviation) aggregate expression
 /// The implementation mostly is the same as the DataFusion's implementation. The reason
@@ -56,11 +56,9 @@ impl Stddev {
         Self {
             name: name.into(),
             signature: Signature::coercible(
-                vec![
-                    datafusion_expr_common::signature::TypeSignatureClass::Native(Arc::new(
-                        NativeType::Float64,
-                    )),
-                ],
+                vec![Coercion::new_exact(signature::TypeSignatureClass::Native(
+                    Arc::new(NativeType::Float64),
+                ))],
                 Volatility::Immutable,
             ),
             stats_type,

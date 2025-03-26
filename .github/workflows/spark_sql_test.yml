@@ -45,7 +45,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04]
         java-version: [11]
-        spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.1'}]
+        spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.4'}]
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
           - {name: "sql/core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}
@@ -71,7 +71,6 @@ jobs:
         with:
           spark-version: ${{ matrix.spark-version.full }}
           spark-short-version: ${{ matrix.spark-version.short }}
-          comet-version: '0.6.0-SNAPSHOT' # TODO: get this from pom.xml
       - name: Run Spark tests
         run: |
           cd apache-spark

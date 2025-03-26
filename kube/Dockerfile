@@ -37,7 +37,6 @@ WORKDIR /comet
 
 # build native code first so that this layer can be re-used
 # if only Scala code gets modified
-COPY rust-toolchain.toml /comet/rust-toolchain.toml
 COPY native /comet/native
 RUN cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo build --release
 
@@ -54,6 +53,9 @@ COPY scalafmt.conf /comet/scalafmt.conf
 COPY .scalafix.conf /comet/.scalafix.conf
 COPY Makefile /comet/Makefile
 COPY pom.xml /comet/pom.xml
+
+RUN mkdir -p /root/.m2 && \
+    echo '<settings><mirrors><mirror><id>central</id><mirrorOf>central</mirrorOf><url>https://repo1.maven.org/maven2</url></mirror></mirrors></settings>' > /root/.m2/settings.xml
 
 # Pick the JDK instead of JRE to compile Comet
 RUN cd /comet \

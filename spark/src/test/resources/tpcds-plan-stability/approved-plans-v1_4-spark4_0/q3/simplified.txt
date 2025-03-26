@@ -19,6 +19,6 @@ TakeOrderedAndProject [d_year,sum_agg,brand_id,brand]
                               CometFilter [ss_item_sk,ss_ext_sales_price,ss_sold_date_sk]
                                 CometScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_ext_sales_price,ss_sold_date_sk]
                         CometBroadcastExchange [i_item_sk,i_brand_id,i_brand] #3
-                          CometProject [i_item_sk,i_brand_id,i_brand]
+                          CometProject [i_brand] [i_item_sk,i_brand_id,i_brand]
                             CometFilter [i_item_sk,i_brand_id,i_brand,i_manufact_id]
                               CometScan parquet spark_catalog.default.item [i_item_sk,i_brand_id,i_brand,i_manufact_id]

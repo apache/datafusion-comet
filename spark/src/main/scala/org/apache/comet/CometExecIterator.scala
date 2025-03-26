@@ -24,7 +24,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
 
-import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_BLOCKING_THREADS, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_POOL_TYPE, COMET_EXPLAIN_NATIVE_ENABLED, COMET_WORKER_THREADS}
+import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_BLOCKING_THREADS, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_POOL_TYPE, COMET_EXPLAIN_NATIVE_ENABLED, COMET_METRICS_UPDATE_INTERVAL, COMET_WORKER_THREADS}
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -72,13 +72,14 @@ class CometExecIterator(
       protobufQueryPlan,
       numParts,
       nativeMetrics,
+      metricsUpdateInterval = COMET_METRICS_UPDATE_INTERVAL.get(),
       new CometTaskMemoryManager(id),
       batchSize = COMET_BATCH_SIZE.get(),
-      use_unified_memory_manager = conf.getBoolean("spark.memory.offHeap.enabled", false),
-      memory_pool_type = COMET_EXEC_MEMORY_POOL_TYPE.get(),
-      memory_limit = CometSparkSessionExtensions.getCometMemoryOverhead(conf),
-      memory_limit_per_task = getMemoryLimitPerTask(conf),
-      task_attempt_id = TaskContext.get().taskAttemptId,
+      offHeapMode = CometSparkSessionExtensions.isOffHeapEnabled(conf),
+      memoryPoolType = COMET_EXEC_MEMORY_POOL_TYPE.get(),
+      memoryLimit = CometSparkSessionExtensions.getCometMemoryOverhead(conf),
+      memoryLimitPerTask = getMemoryLimitPerTask(conf),
+      taskAttemptId = TaskContext.get().taskAttemptId,
       debug = COMET_DEBUG_ENABLED.get(),
       explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
       workerThreads = COMET_WORKER_THREADS.get(),

@@ -17,16 +17,17 @@
 
 use crate::hash_funcs::*;
 use crate::{
-    spark_ceil, spark_date_add, spark_date_sub, spark_decimal_div, spark_floor, spark_hex,
-    spark_isnan, spark_make_decimal, spark_read_side_padding, spark_round, spark_unhex,
-    spark_unscaled_value, SparkChrFunc,
+    spark_ceil, spark_date_add, spark_date_sub, spark_decimal_div, spark_decimal_integral_div,
+    spark_floor, spark_hex, spark_isnan, spark_make_decimal, spark_read_side_padding, spark_round,
+    spark_rpad, spark_unhex, spark_unscaled_value, SparkChrFunc,
 };
-use arrow_schema::DataType;
-use datafusion_common::{DataFusionError, Result as DataFusionResult};
-use datafusion_expr::registry::FunctionRegistry;
-use datafusion_expr::{
-    ColumnarValue, ScalarFunctionImplementation, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+use arrow::datatypes::DataType;
+use datafusion::common::{DataFusionError, Result as DataFusionResult};
+use datafusion::execution::FunctionRegistry;
+use datafusion::logical_expr::{
+    ScalarFunctionImplementation, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
 };
+use datafusion::physical_plan::ColumnarValue;
 use std::any::Any;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -69,6 +70,10 @@ pub fn create_comet_physical_fun(
             let func = Arc::new(spark_read_side_padding);
             make_comet_scalar_udf!("read_side_padding", func, without data_type)
         }
+        "rpad" => {
+            let func = Arc::new(spark_rpad);
+            make_comet_scalar_udf!("rpad", func, without data_type)
+        }
         "round" => {
             make_comet_scalar_udf!("round", spark_round, data_type)
         }
@@ -89,6 +94,13 @@ pub fn create_comet_physical_fun(
         }
         "decimal_div" => {
             make_comet_scalar_udf!("decimal_div", spark_decimal_div, data_type)
+        }
+        "decimal_integral_div" => {
+            make_comet_scalar_udf!(
+                "decimal_integral_div",
+                spark_decimal_integral_div,
+                data_type
+            )
         }
         "murmur3_hash" => {
             let func = Arc::new(spark_murmur3_hash);

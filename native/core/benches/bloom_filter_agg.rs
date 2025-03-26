@@ -15,21 +15,22 @@
 // specific language governing permissions and limitations
 // under the License.use arrow::array::{ArrayRef, BooleanBuilder, Int32Builder, RecordBatch, StringBuilder};
 
+use arrow::array::builder::Int64Builder;
+use arrow::array::{ArrayRef, RecordBatch};
+use arrow::datatypes::SchemaRef;
 use arrow::datatypes::{DataType, Field, Schema};
-use arrow_array::builder::Int64Builder;
-use arrow_array::{ArrayRef, RecordBatch};
-use arrow_schema::SchemaRef;
 use comet::execution::expressions::bloom_filter_agg::BloomFilterAgg;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use datafusion::common::ScalarValue;
+use datafusion::datasource::memory::MemorySourceConfig;
+use datafusion::datasource::source::DataSourceExec;
+use datafusion::execution::TaskContext;
+use datafusion::logical_expr::AggregateUDF;
+use datafusion::physical_expr::aggregate::AggregateExprBuilder;
+use datafusion::physical_expr::expressions::{Column, Literal};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
-use datafusion::physical_plan::memory::MemoryExec;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_common::ScalarValue;
-use datafusion_execution::TaskContext;
-use datafusion_expr::AggregateUDF;
-use datafusion_physical_expr::aggregate::AggregateExprBuilder;
-use datafusion_physical_expr::expressions::{Column, Literal};
 use futures::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -88,8 +89,9 @@ async fn agg_test(
     mode: AggregateMode,
 ) {
     let schema = &partitions[0][0].schema();
-    let scan: Arc<dyn ExecutionPlan> =
-        Arc::new(MemoryExec::try_new(partitions, Arc::clone(schema), None).unwrap());
+    let scan: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(Arc::new(
+        MemorySourceConfig::try_new(partitions, Arc::clone(schema), None).unwrap(),
+    )));
     let aggregate = create_aggregate(scan, c0.clone(), schema, aggregate_udf, alias, mode);
     let mut stream = aggregate
         .execute(0, Arc::new(TaskContext::default()))

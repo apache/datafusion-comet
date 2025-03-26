@@ -21,15 +21,14 @@ use crate::{
     errors::CometError,
     execution::{
         shuffle::{
+            codec::{Checksum, ShuffleBlockWriter},
             list::{append_list_element, SparkUnsafeArray},
             map::{append_map_elements, get_map_key_value_dt, SparkUnsafeMap},
-            shuffle_writer::{Checksum, ShuffleBlockWriter},
         },
         utils::bytes_to_i128,
     },
 };
-use arrow::compute::cast;
-use arrow_array::{
+use arrow::array::{
     builder::{
         ArrayBuilder, BinaryBuilder, BinaryDictionaryBuilder, BooleanBuilder, Date32Builder,
         Decimal128Builder, Float32Builder, Float64Builder, Int16Builder, Int32Builder,
@@ -39,7 +38,9 @@ use arrow_array::{
     types::Int32Type,
     Array, ArrayRef, RecordBatch, RecordBatchOptions,
 };
-use arrow_schema::{ArrowError, DataType, Field, Schema, TimeUnit};
+use arrow::compute::cast;
+use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+use arrow::error::ArrowError;
 use datafusion::physical_plan::metrics::Time;
 use jni::sys::{jint, jlong};
 use std::{
@@ -292,7 +293,7 @@ macro_rules! downcast_builder_ref {
 }
 
 // Expose the macro for other modules.
-use crate::execution::shuffle::shuffle_writer::CompressionCodec;
+use crate::execution::shuffle::CompressionCodec;
 pub(crate) use downcast_builder_ref;
 
 /// Appends field of row to the given struct builder. `dt` is the data type of the field.
@@ -3196,6 +3197,7 @@ fn make_builders(
             // Disable dictionary encoding for array element
             let value_builder =
                 make_builders(field.data_type(), NESTED_TYPE_BUILDER_CAPACITY, 1.0)?;
+
             match field.data_type() {
                 DataType::Boolean => {
                     let builder = downcast_builder!(BooleanBuilder, value_builder);

@@ -15,26 +15,27 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::{array::BooleanBufferBuilder, buffer::NullBuffer, compute::sum};
-use arrow_array::{
+use arrow::array::{
     builder::PrimitiveBuilder,
     cast::AsArray,
     types::{Decimal128Type, Int64Type},
     Array, ArrayRef, Decimal128Array, Int64Array, PrimitiveArray,
 };
-use arrow_schema::{DataType, Field};
-use datafusion::logical_expr::{Accumulator, EmitTo, GroupsAccumulator, Signature};
-use datafusion_common::{not_impl_err, Result, ScalarValue};
-use datafusion_physical_expr::expressions::format_state_name;
+use arrow::datatypes::{DataType, Field};
+use arrow::{array::BooleanBufferBuilder, buffer::NullBuffer, compute::sum};
+use datafusion::common::{not_impl_err, Result, ScalarValue};
+use datafusion::logical_expr::{
+    Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, ReversedUDAF, Signature,
+};
+use datafusion::physical_expr::expressions::format_state_name;
 use std::{any::Any, sync::Arc};
 
 use crate::utils::is_valid_decimal_precision;
-use arrow_array::ArrowNativeTypeOp;
-use arrow_data::decimal::{MAX_DECIMAL_FOR_EACH_PRECISION, MIN_DECIMAL_FOR_EACH_PRECISION};
+use arrow::array::ArrowNativeTypeOp;
+use arrow::datatypes::{MAX_DECIMAL128_FOR_EACH_PRECISION, MIN_DECIMAL128_FOR_EACH_PRECISION};
+use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
+use datafusion::logical_expr::type_coercion::aggregates::avg_return_type;
 use datafusion::logical_expr::Volatility::Immutable;
-use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
-use datafusion_expr::type_coercion::aggregates::avg_return_type;
-use datafusion_expr::{AggregateUDFImpl, ReversedUDAF};
 use num::{integer::div_ceil, Integer};
 use DataType::*;
 
@@ -265,8 +266,8 @@ impl Accumulator for AvgDecimalAccumulator {
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
         let scaler = 10_i128.pow(self.target_scale.saturating_sub(self.sum_scale) as u32);
-        let target_min = MIN_DECIMAL_FOR_EACH_PRECISION[self.target_precision as usize - 1];
-        let target_max = MAX_DECIMAL_FOR_EACH_PRECISION[self.target_precision as usize - 1];
+        let target_min = MIN_DECIMAL128_FOR_EACH_PRECISION[self.target_precision as usize];
+        let target_max = MAX_DECIMAL128_FOR_EACH_PRECISION[self.target_precision as usize];
 
         let result = self
             .sum
@@ -378,7 +379,7 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        _opt_filter: Option<&arrow_array::BooleanArray>,
+        _opt_filter: Option<&arrow::array::BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         assert_eq!(values.len(), 1, "single argument to update_batch");
@@ -411,7 +412,7 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        _opt_filter: Option<&arrow_array::BooleanArray>,
+        _opt_filter: Option<&arrow::array::BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         assert_eq!(values.len(), 2, "two arguments to merge_batch");
@@ -445,8 +446,8 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
         let iter = sums.into_iter().zip(counts);
 
         let scaler = 10_i128.pow(self.target_scale.saturating_sub(self.sum_scale) as u32);
-        let target_min = MIN_DECIMAL_FOR_EACH_PRECISION[self.target_precision as usize - 1];
-        let target_max = MAX_DECIMAL_FOR_EACH_PRECISION[self.target_precision as usize - 1];
+        let target_min = MIN_DECIMAL128_FOR_EACH_PRECISION[self.target_precision as usize];
+        let target_max = MAX_DECIMAL128_FOR_EACH_PRECISION[self.target_precision as usize];
 
         for (sum, count) in iter {
             if count != 0 {

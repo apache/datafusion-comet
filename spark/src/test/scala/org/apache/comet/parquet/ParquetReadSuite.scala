@@ -45,8 +45,8 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import com.google.common.primitives.UnsignedLong
 
-import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark34Plus, isSpark40Plus}
+import org.apache.comet.{CometConf, CometSparkSessionExtensions}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, usingDataFusionParquetExec}
 
 abstract class ParquetReadSuite extends CometTestBase {
   import testImplicits._
@@ -82,6 +82,11 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("unsupported Spark types") {
+    // for native iceberg compat, CometScanExec supports some types that native_comet does not.
+    // note that native_datafusion does not use CometScanExec so we need not include that in
+    // the check
+    val usingNativeIcebergCompat =
+      (CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
     Seq(
       NullType -> false,
       BooleanType -> true,
@@ -97,13 +102,19 @@ abstract class ParquetReadSuite extends CometTestBase {
       StructType(
         Seq(
           StructField("f1", DecimalType.SYSTEM_DEFAULT),
-          StructField("f2", StringType))) -> false,
+          StructField("f2", StringType))) -> usingNativeIcebergCompat,
       MapType(keyType = LongType, valueType = DateType) -> false,
-      StructType(Seq(StructField("f1", ByteType), StructField("f2", StringType))) -> false,
+      StructType(
+        Seq(
+          StructField("f1", ByteType),
+          StructField("f2", StringType))) -> usingNativeIcebergCompat,
       MapType(keyType = IntegerType, valueType = BinaryType) -> false).foreach {
       case (dt, expected) =>
         assert(CometScanExec.isTypeSupported(dt) == expected)
-        assert(CometBatchScanExec.isTypeSupported(dt) == expected)
+        // usingDataFusionParquetExec does not support CometBatchScanExec yet
+        if (!usingDataFusionParquetExec(conf)) {
+          assert(CometBatchScanExec.isTypeSupported(dt) == expected)
+        }
     }
   }
 
@@ -139,7 +150,10 @@ abstract class ParquetReadSuite extends CometTestBase {
             i.toDouble,
             DateTimeUtils.toJavaDate(i))
         }
-        checkParquetScan(data)
+        if (!CometSparkSessionExtensions.usingDataFusionParquetExec(
+            conf) || CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()) {
+          checkParquetScan(data)
+        }
         checkParquetFile(data)
       }
     }
@@ -159,7 +173,10 @@ abstract class ParquetReadSuite extends CometTestBase {
             i.toDouble,
             DateTimeUtils.toJavaDate(i))
         }
-        checkParquetScan(data)
+        if (!CometSparkSessionExtensions.usingDataFusionParquetExec(
+            conf) || CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()) {
+          checkParquetScan(data)
+        }
         checkParquetFile(data)
       }
     }
@@ -178,7 +195,10 @@ abstract class ParquetReadSuite extends CometTestBase {
         DateTimeUtils.toJavaDate(i))
     }
     val filter = (row: Row) => row.getBoolean(0)
-    checkParquetScan(data, filter)
+    if (!CometSparkSessionExtensions.usingDataFusionParquetExec(
+        conf) || CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()) {
+      checkParquetScan(data, filter)
+    }
     checkParquetFile(data, filter)
   }
 
@@ -317,51 +337,32 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("test multiple pages with different sizes and nulls") {
+    // https://github.com/apache/datafusion-comet/issues/1441
+    assume(!CometConf.isExperimentalNativeScan)
     def makeRawParquetFile(
         path: Path,
         dictionaryEnabled: Boolean,
         n: Int,
         pageSize: Int): Seq[Option[Int]] = {
       val schemaStr = {
-        if (isSpark34Plus) {
-          """
-            |message root {
-            |  optional boolean                 _1;
-            |  optional int32                   _2(INT_8);
-            |  optional int32                   _3(INT_16);
-            |  optional int32                   _4;
-            |  optional int64                   _5;
-            |  optional float                   _6;
-            |  optional double                  _7;
-            |  optional binary                  _8(UTF8);
-            |  optional int32                   _9(UINT_8);
-            |  optional int32                   _10(UINT_16);
-            |  optional int32                   _11(UINT_32);
-            |  optional int64                   _12(UINT_64);
-            |  optional binary                  _13(ENUM);
-            |  optional FIXED_LEN_BYTE_ARRAY(3) _14;
-            |}
-        """.stripMargin
-        } else {
-          """
-            |message root {
-            |  optional boolean                 _1;
-            |  optional int32                   _2(INT_8);
-            |  optional int32                   _3(INT_16);
-            |  optional int32                   _4;
-            |  optional int64                   _5;
-            |  optional float                   _6;
-            |  optional double                  _7;
-            |  optional binary                  _8(UTF8);
-            |  optional int32                   _9(UINT_8);
-            |  optional int32                   _10(UINT_16);
-            |  optional int32                   _11(UINT_32);
-            |  optional int64                   _12(UINT_64);
-            |  optional binary                  _13(ENUM);
-            |  optional binary                  _14(UTF8);
-            |}
-        """.stripMargin
-        }
+        """
+          |message root {
+          |  optional boolean                 _1;
+          |  optional int32                   _2(INT_8);
+          |  optional int32                   _3(INT_16);
+          |  optional int32                   _4;
+          |  optional int64                   _5;
+          |  optional float                   _6;
+          |  optional double                  _7;
+          |  optional binary                  _8(UTF8);
+          |  optional int32                   _9(UINT_8);
+          |  optional int32                   _10(UINT_16);
+          |  optional int32                   _11(UINT_32);
+          |  optional int64                   _12(UINT_64);
+          |  optional binary                  _13(ENUM);
+          |  optional FIXED_LEN_BYTE_ARRAY(3) _14;
+          |}
+      """.stripMargin
       }
 
       val schema = MessageTypeParser.parseMessageType(schemaStr)
@@ -419,11 +420,7 @@ abstract class ParquetReadSuite extends CometTestBase {
                 Row(null, null, null, null, null, null, null, null, null, null, null, null, null,
                   null)
               case Some(i) =>
-                val flba_field = if (isSpark34Plus) {
-                  Array.fill(3)(i % 10 + 48) // char '0' is 48 in ascii
-                } else {
-                  (i % 10).toString * 3
-                }
+                val flba_field = Array.fill(3)(i % 10 + 48) // char '0' is 48 in ascii
                 Row(
                   i % 2 == 0,
                   i.toByte,
@@ -942,7 +939,6 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("FIXED_LEN_BYTE_ARRAY support") {
-    assume(isSpark34Plus)
     Seq(true, false).foreach { dictionaryEnabled =>
       def makeRawParquetFile(path: Path): Unit = {
         val schemaStr =
@@ -992,7 +988,8 @@ abstract class ParquetReadSuite extends CometTestBase {
                 Seq(StructField("_1", LongType, false), StructField("_2", DoubleType, false)))
 
             withParquetDataFrame(data, schema = Some(readSchema)) { df =>
-              if (enableSchemaEvolution) {
+              // TODO: validate with Spark 3.x and 'usingDataFusionParquetExec=true'
+              if (enableSchemaEvolution || usingDataFusionParquetExec(conf)) {
                 checkAnswer(df, data.map(Row.fromTuple))
               } else {
                 assertThrows[SparkException](df.collect())
@@ -1005,7 +1002,10 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("scan metrics") {
-    val metricNames = Seq(
+    // https://github.com/apache/datafusion-comet/issues/1441
+    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
+
+    val cometScanMetricNames = Seq(
       "ParquetRowGroups",
       "ParquetNativeDecodeTime",
       "ParquetNativeLoadTime",
@@ -1014,14 +1014,29 @@ abstract class ParquetReadSuite extends CometTestBase {
       "ParquetInputFileReadSize",
       "ParquetInputFileReadThroughput")
 
+    val cometNativeScanMetricNames = Seq(
+      "time_elapsed_scanning_total",
+      "bytes_scanned",
+      "output_rows",
+      "time_elapsed_opening",
+      "time_elapsed_processing",
+      "time_elapsed_scanning_until_data")
+
     withParquetTable((0 until 10000).map(i => (i, i.toDouble)), "tbl") {
       val df = sql("SELECT * FROM tbl WHERE _1 > 0")
       val scans = df.queryExecution.executedPlan collect {
         case s: CometScanExec => s
         case s: CometBatchScanExec => s
+        case s: CometNativeScanExec => s
       }
       assert(scans.size == 1, s"Expect one scan node but found ${scans.size}")
       val metrics = scans.head.metrics
+
+      val metricNames = scans.head match {
+        case _: CometNativeScanExec => cometNativeScanMetricNames
+        case _ => cometScanMetricNames
+      }
+
       metricNames.foreach { metricName =>
         assert(metrics.contains(metricName), s"metric $metricName was not found")
       }
@@ -1153,8 +1168,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   test("row group skipping doesn't overflow when reading into larger type") {
     // Spark 4.0 no longer fails for widening types SPARK-40876
     // https://github.com/apache/spark/commit/3361f25dc0ff6e5233903c26ee105711b79ba967
-    assume(isSpark34Plus && !isSpark40Plus)
-
+    assume(!isSpark40Plus && !usingDataFusionParquetExec(conf))
     withTempPath { path =>
       Seq(0).toDF("a").write.parquet(path.toString)
       // Reading integer 'a' as a long isn't supported. Check that an exception is raised instead
@@ -1451,9 +1465,12 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
 class ParquetReadV2Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
-    super.test(testName, testTags: _*)(withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") {
-      testFun
-    })(pos)
+    super.test(testName, testTags: _*)(
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
+        testFun
+      })(pos)
   }
 
   override def checkParquetScan[T <: Product: ClassTag: TypeTag](

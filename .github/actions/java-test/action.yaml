@@ -60,7 +60,7 @@ runs:
       if: ${{ inputs.upload-test-reports == 'true' }}
       uses: actions/upload-artifact@v4
       with:
-         name: java-test-reports-${{ github.run_id }}
+         name: java-test-reports-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
          path: "**/target/surefire-reports/*.txt"
          retention-days: 7 # 1 week for test reports
          overwrite: true

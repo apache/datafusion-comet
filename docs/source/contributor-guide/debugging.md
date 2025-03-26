@@ -130,7 +130,7 @@ Then build the Comet as [described](https://github.com/apache/arrow-datafusion-c
 Start Comet with `RUST_BACKTRACE=1`
 
 ```console
-RUST_BACKTRACE=1 $SPARK_HOME/spark-shell --jars spark/target/comet-spark-spark3.4_2.12-0.6.0-SNAPSHOT.jar --conf spark.plugins=org.apache.spark.CometPlugin --conf spark.comet.enabled=true --conf spark.comet.exec.enabled=true
+RUST_BACKTRACE=1 $SPARK_HOME/spark-shell --jars spark/target/comet-spark-spark3.4_2.12-0.8.0-SNAPSHOT.jar --conf spark.plugins=org.apache.spark.CometPlugin --conf spark.comet.enabled=true --conf spark.comet.exec.enabled=true
 ```
 
 Get the expanded exception details
@@ -142,8 +142,8 @@ org.apache.comet.CometNativeException: Internal error: MIN/MAX is not expected t
 
 backtrace:
   0: std::backtrace::Backtrace::create
-  1: datafusion_physical_expr::aggregate::min_max::min
-  2: <datafusion_physical_expr::aggregate::min_max::MinAccumulator as datafusion_expr::accumulator::Accumulator>::update_batch
+  1: datafusion::physical_expr::aggregate::min_max::min
+  2: <datafusion::physical_expr::aggregate::min_max::MinAccumulator as datafusion_expr::accumulator::Accumulator>::update_batch
   3: <futures_util::stream::stream::fuse::Fuse<S> as futures_core::stream::Stream>::poll_next
   4: comet::execution::jni_api::Java_org_apache_comet_Native_executePlan::{{closure}}
   5: _Java_org_apache_comet_Native_executePlan

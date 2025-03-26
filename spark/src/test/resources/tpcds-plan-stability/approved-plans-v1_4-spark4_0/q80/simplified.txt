@@ -50,8 +50,9 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                             CometFilter [d_date_sk,d_date]
                                                               CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_date]
                                                     CometBroadcastExchange [s_store_sk,s_store_id] #7
-                                                      CometFilter [s_store_sk,s_store_id]
-                                                        CometScan parquet spark_catalog.default.store [s_store_sk,s_store_id]
+                                                      CometProject [s_store_id] [s_store_sk,s_store_id]
+                                                        CometFilter [s_store_sk,s_store_id]
+                                                          CometScan parquet spark_catalog.default.store [s_store_sk,s_store_id]
                                                 CometBroadcastExchange [i_item_sk] #8
                                                   CometProject [i_item_sk]
                                                     CometFilter [i_item_sk,i_current_price]
@@ -91,8 +92,9 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                                     CometScan parquet spark_catalog.default.catalog_returns [cr_item_sk,cr_order_number,cr_return_amount,cr_net_loss,cr_returned_date_sk]
                                                         ReusedExchange [d_date_sk] #6
                                                     CometBroadcastExchange [cp_catalog_page_sk,cp_catalog_page_id] #13
-                                                      CometFilter [cp_catalog_page_sk,cp_catalog_page_id]
-                                                        CometScan parquet spark_catalog.default.catalog_page [cp_catalog_page_sk,cp_catalog_page_id]
+                                                      CometProject [cp_catalog_page_id] [cp_catalog_page_sk,cp_catalog_page_id]
+                                                        CometFilter [cp_catalog_page_sk,cp_catalog_page_id]
+                                                          CometScan parquet spark_catalog.default.catalog_page [cp_catalog_page_sk,cp_catalog_page_id]
                                                 ReusedExchange [i_item_sk] #8
                                             ReusedExchange [p_promo_sk] #9
                       WholeStageCodegen (6)
@@ -126,7 +128,8 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                                     CometScan parquet spark_catalog.default.web_returns [wr_item_sk,wr_order_number,wr_return_amt,wr_net_loss,wr_returned_date_sk]
                                                         ReusedExchange [d_date_sk] #6
                                                     CometBroadcastExchange [web_site_sk,web_site_id] #17
-                                                      CometFilter [web_site_sk,web_site_id]
-                                                        CometScan parquet spark_catalog.default.web_site [web_site_sk,web_site_id]
+                                                      CometProject [web_site_id] [web_site_sk,web_site_id]
+                                                        CometFilter [web_site_sk,web_site_id]
+                                                          CometScan parquet spark_catalog.default.web_site [web_site_sk,web_site_id]
                                                 ReusedExchange [i_item_sk] #8
                                             ReusedExchange [p_promo_sk] #9

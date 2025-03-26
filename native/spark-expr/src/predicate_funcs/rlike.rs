@@ -16,15 +16,15 @@
 // under the License.
 
 use crate::SparkError;
+use arrow::array::builder::BooleanBuilder;
+use arrow::array::types::Int32Type;
+use arrow::array::{Array, BooleanArray, DictionaryArray, RecordBatch, StringArray};
 use arrow::compute::take;
-use arrow_array::builder::BooleanBuilder;
-use arrow_array::types::Int32Type;
-use arrow_array::{Array, BooleanArray, DictionaryArray, RecordBatch, StringArray};
-use arrow_schema::{DataType, Schema};
+use arrow::datatypes::{DataType, Schema};
+use datafusion::common::{internal_err, Result};
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::physical_expr::DynEq;
-use datafusion_common::{internal_err, Result};
-use datafusion_expr::ColumnarValue;
-use datafusion_physical_expr::PhysicalExpr;
+use datafusion::physical_plan::ColumnarValue;
 use regex::Regex;
 use std::any::Any;
 use std::fmt::{Display, Formatter};

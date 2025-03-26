@@ -28,7 +28,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{array, col, expr, lit, udf}
 import org.apache.spark.sql.types.StructType
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark34Plus, isSpark35Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -135,7 +135,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_append") {
-    assume(isSpark34Plus)
     withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
@@ -182,7 +181,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("ArrayInsert") {
-    assume(isSpark34Plus)
     Seq(true, false).foreach(dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -206,7 +204,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   test("ArrayInsertUnsupportedArgs") {
     // This test checks that the else branch in ArrayInsert
     // mapping to the comet is valid and fallback to spark is working fine.
-    assume(isSpark34Plus)
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
       makeParquetFileAllTypes(path, dictionaryEnabled = false, 10000)
@@ -234,7 +231,10 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_intersect") {
+    // https://github.com/apache/datafusion-comet/issues/1441
+    assume(!CometConf.isExperimentalNativeScan)
     withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
@@ -287,6 +287,25 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             "SELECT arrays_overlap(array('a', null), array('b', null)) from t1 where _1 is not null"))
           checkSparkAnswerAndOperator(spark.sql(
             "SELECT arrays_overlap((CASE WHEN _2 =_3 THEN array(_6, _7) END), array(_6, _7)) FROM t1"));
+        }
+      }
+    }
+  }
+
+  test("array_compact") {
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, n = 10000)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_compact(array(_2)) FROM t1 WHERE _2 IS NULL"))
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_compact(array(_2)) FROM t1 WHERE _2 IS NOT NULL"))
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_compact(array(_2, _3, null)) FROM t1 WHERE _2 IS NOT NULL"))
         }
       }
     }

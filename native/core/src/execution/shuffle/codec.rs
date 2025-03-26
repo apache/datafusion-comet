@@ -15,18 +15,26 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::errors::{CometError, CometResult};
 use crate::parquet::data_type::AsBytes;
-use arrow_array::cast::AsArray;
-use arrow_array::types::Int32Type;
-use arrow_array::{
+use arrow::array::cast::AsArray;
+use arrow::array::types::Int32Type;
+use arrow::array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Date32Array, Decimal128Array, DictionaryArray,
     Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, RecordBatch,
     RecordBatchOptions, StringArray, TimestampMicrosecondArray,
 };
-use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
-use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use datafusion_common::DataFusionError;
-use std::io::Write;
+use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
+use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+use arrow::ipc::reader::StreamReader;
+use arrow::ipc::writer::StreamWriter;
+use bytes::Buf;
+use crc32fast::Hasher;
+use datafusion::common::DataFusionError;
+use datafusion::error::Result;
+use datafusion::physical_plan::metrics::Time;
+use simd_adler32::Adler32;
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
 pub fn fast_codec_supports_type(data_type: &DataType) -> bool {
@@ -596,7 +604,7 @@ impl<'a> BatchReader<'a> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow_array::builder::*;
+    use arrow::array::builder::*;
     use std::sync::Arc;
 
     #[test]
@@ -704,5 +712,313 @@ mod test {
             ],
         )
         .unwrap()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum CompressionCodec {
+    None,
+    Lz4Frame,
+    Zstd(i32),
+    Snappy,
+}
+
+pub struct ShuffleBlockWriter {
+    fast_encoding: bool,
+    codec: CompressionCodec,
+    encoded_schema: Vec<u8>,
+    header_bytes: Vec<u8>,
+}
+
+impl ShuffleBlockWriter {
+    pub fn try_new(
+        schema: &Schema,
+        enable_fast_encoding: bool,
+        codec: CompressionCodec,
+    ) -> Result<Self> {
+        let mut encoded_schema = vec![];
+
+        let enable_fast_encoding = enable_fast_encoding
+            && schema
+                .fields()
+                .iter()
+                .all(|f| fast_codec_supports_type(f.data_type()));
+
+        // encode the schema once and then reuse the encoded bytes for each batch
+        if enable_fast_encoding {
+            let mut w = BatchWriter::new(&mut encoded_schema);
+            w.write_partial_schema(schema)?;
+        }
+
+        let header_bytes = Vec::with_capacity(24);
+        let mut cursor = Cursor::new(header_bytes);
+
+        // leave space for compressed message length
+        cursor.seek_relative(8)?;
+
+        // write number of columns because JVM side needs to know how many addresses to allocate
+        let field_count = schema.fields().len();
+        cursor.write_all(&field_count.to_le_bytes())?;
+
+        // write compression codec to header
+        let codec_header = match &codec {
+            CompressionCodec::Snappy => b"SNAP",
+            CompressionCodec::Lz4Frame => b"LZ4_",
+            CompressionCodec::Zstd(_) => b"ZSTD",
+            CompressionCodec::None => b"NONE",
+        };
+        cursor.write_all(codec_header)?;
+
+        // write encoding scheme
+        if enable_fast_encoding {
+            cursor.write_all(b"FAST")?;
+        } else {
+            cursor.write_all(b"AIPC")?;
+        }
+
+        let header_bytes = cursor.into_inner();
+
+        Ok(Self {
+            fast_encoding: enable_fast_encoding,
+            codec,
+            encoded_schema,
+            header_bytes,
+        })
+    }
+
+    /// Writes given record batch as Arrow IPC bytes into given writer.
+    /// Returns number of bytes written.
+    pub fn write_batch<W: Write + Seek>(
+        &self,
+        batch: &RecordBatch,
+        output: &mut W,
+        ipc_time: &Time,
+    ) -> Result<usize> {
+        if batch.num_rows() == 0 {
+            return Ok(0);
+        }
+
+        let mut timer = ipc_time.timer();
+        let start_pos = output.stream_position()?;
+
+        // write header
+        output.write_all(&self.header_bytes)?;
+
+        let output = if self.fast_encoding {
+            match &self.codec {
+                CompressionCodec::None => {
+                    let mut fast_writer = BatchWriter::new(&mut *output);
+                    fast_writer.write_all(&self.encoded_schema)?;
+                    fast_writer.write_batch(batch)?;
+                    output
+                }
+                CompressionCodec::Lz4Frame => {
+                    let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
+                    let mut fast_writer = BatchWriter::new(&mut wtr);
+                    fast_writer.write_all(&self.encoded_schema)?;
+                    fast_writer.write_batch(batch)?;
+                    wtr.finish().map_err(|e| {
+                        DataFusionError::Execution(format!("lz4 compression error: {}", e))
+                    })?
+                }
+                CompressionCodec::Zstd(level) => {
+                    let mut encoder = zstd::Encoder::new(output, *level)?;
+                    let mut fast_writer = BatchWriter::new(&mut encoder);
+                    fast_writer.write_all(&self.encoded_schema)?;
+                    fast_writer.write_batch(batch)?;
+                    encoder.finish()?
+                }
+                CompressionCodec::Snappy => {
+                    let mut encoder = snap::write::FrameEncoder::new(output);
+                    let mut fast_writer = BatchWriter::new(&mut encoder);
+                    fast_writer.write_all(&self.encoded_schema)?;
+                    fast_writer.write_batch(batch)?;
+                    encoder.into_inner().map_err(|e| {
+                        DataFusionError::Execution(format!("snappy compression error: {}", e))
+                    })?
+                }
+            }
+        } else {
+            match &self.codec {
+                CompressionCodec::None => {
+                    let mut arrow_writer = StreamWriter::try_new(output, &batch.schema())?;
+                    arrow_writer.write(batch)?;
+                    arrow_writer.finish()?;
+                    arrow_writer.into_inner()?
+                }
+                CompressionCodec::Lz4Frame => {
+                    let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
+                    let mut arrow_writer = StreamWriter::try_new(&mut wtr, &batch.schema())?;
+                    arrow_writer.write(batch)?;
+                    arrow_writer.finish()?;
+                    wtr.finish().map_err(|e| {
+                        DataFusionError::Execution(format!("lz4 compression error: {}", e))
+                    })?
+                }
+
+                CompressionCodec::Zstd(level) => {
+                    let encoder = zstd::Encoder::new(output, *level)?;
+                    let mut arrow_writer = StreamWriter::try_new(encoder, &batch.schema())?;
+                    arrow_writer.write(batch)?;
+                    arrow_writer.finish()?;
+                    let zstd_encoder = arrow_writer.into_inner()?;
+                    zstd_encoder.finish()?
+                }
+
+                CompressionCodec::Snappy => {
+                    let mut wtr = snap::write::FrameEncoder::new(output);
+                    let mut arrow_writer = StreamWriter::try_new(&mut wtr, &batch.schema())?;
+                    arrow_writer.write(batch)?;
+                    arrow_writer.finish()?;
+                    wtr.into_inner().map_err(|e| {
+                        DataFusionError::Execution(format!("snappy compression error: {}", e))
+                    })?
+                }
+            }
+        };
+
+        // fill ipc length
+        let end_pos = output.stream_position()?;
+        let ipc_length = end_pos - start_pos - 8;
+        let max_size = i32::MAX as u64;
+        if ipc_length > max_size {
+            return Err(DataFusionError::Execution(format!(
+                "Shuffle block size {ipc_length} exceeds maximum size of {max_size}. \
+                Try reducing batch size or increasing compression level"
+            )));
+        }
+
+        // fill ipc length
+        output.seek(SeekFrom::Start(start_pos))?;
+        output.write_all(&ipc_length.to_le_bytes())?;
+        output.seek(SeekFrom::Start(end_pos))?;
+
+        timer.stop();
+
+        Ok((end_pos - start_pos) as usize)
+    }
+}
+
+pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
+    let fast_encoding = match &bytes[4..8] {
+        b"AIPC" => false,
+        b"FAST" => true,
+        other => {
+            return Err(DataFusionError::Internal(format!(
+                "invalid encoding schema: {other:?}"
+            )))
+        }
+    };
+    match &bytes[0..4] {
+        b"SNAP" => {
+            let mut decoder = snap::read::FrameDecoder::new(&bytes[8..]);
+            if fast_encoding {
+                // TODO avoid reading bytes into interim buffer
+                let mut buffer = vec![];
+                decoder.read_to_end(&mut buffer)?;
+                let mut reader = BatchReader::new(&buffer);
+                reader.read_batch()
+            } else {
+                let mut reader = StreamReader::try_new(decoder, None)?;
+                reader.next().unwrap().map_err(|e| e.into())
+            }
+        }
+        b"LZ4_" => {
+            let mut decoder = lz4_flex::frame::FrameDecoder::new(&bytes[8..]);
+            if fast_encoding {
+                // TODO avoid reading bytes into interim buffer
+                let mut buffer = vec![];
+                decoder.read_to_end(&mut buffer)?;
+                let mut reader = BatchReader::new(&buffer);
+                reader.read_batch()
+            } else {
+                let mut reader = StreamReader::try_new(decoder, None)?;
+                reader.next().unwrap().map_err(|e| e.into())
+            }
+        }
+        b"ZSTD" => {
+            let mut decoder = zstd::Decoder::new(&bytes[8..])?;
+            if fast_encoding {
+                // TODO avoid reading bytes into interim buffer
+                let mut buffer = vec![];
+                decoder.read_to_end(&mut buffer)?;
+                let mut reader = BatchReader::new(&buffer);
+                reader.read_batch()
+            } else {
+                let mut reader = StreamReader::try_new(decoder, None)?;
+                reader.next().unwrap().map_err(|e| e.into())
+            }
+        }
+        b"NONE" => {
+            if fast_encoding {
+                let mut reader = BatchReader::new(&bytes[8..]);
+                reader.read_batch()
+            } else {
+                let mut reader = StreamReader::try_new(&bytes[8..], None)?;
+                reader.next().unwrap().map_err(|e| e.into())
+            }
+        }
+        other => Err(DataFusionError::Execution(format!(
+            "Failed to decode batch: invalid compression codec: {other:?}"
+        ))),
+    }
+}
+
+/// Checksum algorithms for writing IPC bytes.
+#[derive(Clone)]
+pub(crate) enum Checksum {
+    /// CRC32 checksum algorithm.
+    CRC32(Hasher),
+    /// Adler32 checksum algorithm.
+    Adler32(Adler32),
+}
+
+impl Checksum {
+    pub(crate) fn try_new(algo: i32, initial_opt: Option<u32>) -> CometResult<Self> {
+        match algo {
+            0 => {
+                let hasher = if let Some(initial) = initial_opt {
+                    Hasher::new_with_initial(initial)
+                } else {
+                    Hasher::new()
+                };
+                Ok(Checksum::CRC32(hasher))
+            }
+            1 => {
+                let hasher = if let Some(initial) = initial_opt {
+                    // Note that Adler32 initial state is not zero.
+                    // i.e., `Adler32::from_checksum(0)` is not the same as `Adler32::new()`.
+                    Adler32::from_checksum(initial)
+                } else {
+                    Adler32::new()
+                };
+                Ok(Checksum::Adler32(hasher))
+            }
+            _ => Err(CometError::Internal(
+                "Unsupported checksum algorithm".to_string(),
+            )),
+        }
+    }
+
+    pub(crate) fn update(&mut self, cursor: &mut Cursor<&mut Vec<u8>>) -> CometResult<()> {
+        match self {
+            Checksum::CRC32(hasher) => {
+                std::io::Seek::seek(cursor, SeekFrom::Start(0))?;
+                hasher.update(cursor.chunk());
+                Ok(())
+            }
+            Checksum::Adler32(hasher) => {
+                std::io::Seek::seek(cursor, SeekFrom::Start(0))?;
+                hasher.write(cursor.chunk());
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) fn finalize(self) -> u32 {
+        match self {
+            Checksum::CRC32(hasher) => hasher.finalize(),
+            Checksum::Adler32(hasher) => hasher.finish(),
+        }
     }
 }

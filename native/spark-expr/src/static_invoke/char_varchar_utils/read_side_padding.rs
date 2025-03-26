@@ -15,30 +15,58 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::array::builder::GenericStringBuilder;
+use arrow::array::cast::as_dictionary_array;
+use arrow::array::types::Int32Type;
+use arrow::array::{make_array, Array, DictionaryArray};
 use arrow::array::{ArrayRef, OffsetSizeTrait};
-use arrow_array::builder::GenericStringBuilder;
-use arrow_array::Array;
-use arrow_schema::DataType;
+use arrow::datatypes::DataType;
+use datafusion::common::{cast::as_generic_string_array, DataFusionError, ScalarValue};
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_common::{cast::as_generic_string_array, DataFusionError, ScalarValue};
 use std::fmt::Write;
 use std::sync::Arc;
 
 /// Similar to DataFusion `rpad`, but not to truncate when the string is already longer than length
 pub fn spark_read_side_padding(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+    spark_read_side_padding2(args, false)
+}
+
+/// Custom `rpad` because DataFusion's `rpad` has differences in unicode handling
+pub fn spark_rpad(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+    spark_read_side_padding2(args, true)
+}
+
+fn spark_read_side_padding2(
+    args: &[ColumnarValue],
+    truncate: bool,
+) -> Result<ColumnarValue, DataFusionError> {
     match args {
         [ColumnarValue::Array(array), ColumnarValue::Scalar(ScalarValue::Int32(Some(length)))] => {
             match array.data_type() {
-                DataType::Utf8 => spark_read_side_padding_internal::<i32>(array, *length),
-                DataType::LargeUtf8 => spark_read_side_padding_internal::<i64>(array, *length),
-                // TODO: handle Dictionary types
+                DataType::Utf8 => spark_read_side_padding_internal::<i32>(array, *length, truncate),
+                DataType::LargeUtf8 => {
+                    spark_read_side_padding_internal::<i64>(array, *length, truncate)
+                }
+                // Dictionary support required for SPARK-48498
+                DataType::Dictionary(_, value_type) => {
+                    let dict = as_dictionary_array::<Int32Type>(array);
+                    let col = if value_type.as_ref() == &DataType::Utf8 {
+                        spark_read_side_padding_internal::<i32>(dict.values(), *length, truncate)?
+                    } else {
+                        spark_read_side_padding_internal::<i64>(dict.values(), *length, truncate)?
+                    };
+                    // col consists of an array, so arg of to_array() is not used. Can be anything
+                    let values = col.to_array(0)?;
+                    let result = DictionaryArray::try_new(dict.keys().clone(), values)?;
+                    Ok(ColumnarValue::Array(make_array(result.into())))
+                }
                 other => Err(DataFusionError::Internal(format!(
-                    "Unsupported data type {other:?} for function read_side_padding",
+                    "Unsupported data type {other:?} for function rpad/read_side_padding",
                 ))),
             }
         }
         other => Err(DataFusionError::Internal(format!(
-            "Unsupported arguments {other:?} for function read_side_padding",
+            "Unsupported arguments {other:?} for function rpad/read_side_padding",
         ))),
     }
 }
@@ -46,6 +74,7 @@ pub fn spark_read_side_padding(args: &[ColumnarValue]) -> Result<ColumnarValue, 
 fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
     array: &ArrayRef,
     length: i32,
+    truncate: bool,
 ) -> Result<ColumnarValue, DataFusionError> {
     let string_array = as_generic_string_array::<T>(array)?;
     let length = 0.max(length) as usize;
@@ -61,7 +90,16 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
                 // https://stackoverflow.com/a/46290728
                 let char_len = string.chars().count();
                 if length <= char_len {
-                    builder.append_value(string);
+                    if truncate {
+                        let idx = string
+                            .char_indices()
+                            .nth(length)
+                            .map(|(i, _)| i)
+                            .unwrap_or(string.len());
+                        builder.append_value(&string[..idx]);
+                    } else {
+                        builder.append_value(string);
+                    }
                 } else {
                     // write_str updates only the value buffer, not null nor offset buffer
                     // This is convenient for concatenating str(s)

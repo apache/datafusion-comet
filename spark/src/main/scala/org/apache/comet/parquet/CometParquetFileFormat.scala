@@ -91,7 +91,7 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
     val pushDownDate = sqlConf.parquetFilterPushDownDate
     val pushDownTimestamp = sqlConf.parquetFilterPushDownTimestamp
     val pushDownDecimal = sqlConf.parquetFilterPushDownDecimal
-    val pushDownStringPredicate = getPushDownStringPredicate(sqlConf)
+    val pushDownStringPredicate = sqlConf.parquetFilterPushDownStringPredicate
     val pushDownInFilterThreshold = sqlConf.parquetFilterPushDownInFilterThreshold
     val optionsMap = CaseInsensitiveMap[String](options)
     val parquetOptions = new ParquetOptions(optionsMap, sqlConf)
@@ -100,7 +100,7 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
 
     // Comet specific configurations
     val capacity = CometConf.COMET_BATCH_SIZE.get(sqlConf)
-    val nativeRecordBatchReaderEnabled =
+    val nativeIcebergCompat =
       CometConf.COMET_NATIVE_SCAN_IMPL.get(sqlConf).equals(CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
 
     (file: PartitionedFile) => {
@@ -137,7 +137,7 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
       pushed.foreach(p => ParquetInputFormat.setFilterPredicate(sharedConf, p))
 
       val recordBatchReader =
-        if (nativeRecordBatchReaderEnabled) {
+        if (nativeIcebergCompat) {
           val batchReader = new NativeBatchReader(
             sharedConf,
             file,

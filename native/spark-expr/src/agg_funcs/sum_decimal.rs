@@ -16,19 +16,20 @@
 // under the License.
 
 use crate::utils::{is_valid_decimal_precision, unlikely};
+use arrow::array::{
+    cast::AsArray, types::Decimal128Type, Array, ArrayRef, BooleanArray, Decimal128Array,
+};
+use arrow::datatypes::{DataType, Field};
 use arrow::{
     array::BooleanBufferBuilder,
     buffer::{BooleanBuffer, NullBuffer},
 };
-use arrow_array::{
-    cast::AsArray, types::Decimal128Type, Array, ArrayRef, BooleanArray, Decimal128Array,
+use datafusion::common::{DataFusionError, Result as DFResult, ScalarValue};
+use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
+use datafusion::logical_expr::Volatility::Immutable;
+use datafusion::logical_expr::{
+    Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, ReversedUDAF, Signature,
 };
-use arrow_schema::{DataType, Field};
-use datafusion::logical_expr::{Accumulator, EmitTo, GroupsAccumulator};
-use datafusion_common::{DataFusionError, Result as DFResult, ScalarValue};
-use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
-use datafusion_expr::Volatility::Immutable;
-use datafusion_expr::{AggregateUDFImpl, ReversedUDAF, Signature};
 use std::{any::Any, ops::BitAnd, sync::Arc};
 
 #[derive(Debug)]
@@ -462,18 +463,19 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::builder::{Decimal128Builder, StringBuilder};
+    use arrow::array::RecordBatch;
     use arrow::datatypes::*;
-    use arrow_array::builder::{Decimal128Builder, StringBuilder};
-    use arrow_array::RecordBatch;
+    use datafusion::common::Result;
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::TaskContext;
+    use datafusion::logical_expr::AggregateUDF;
+    use datafusion::physical_expr::aggregate::AggregateExprBuilder;
+    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
-    use datafusion::physical_plan::memory::MemoryExec;
     use datafusion::physical_plan::ExecutionPlan;
-    use datafusion_common::Result;
-    use datafusion_expr::AggregateUDF;
-    use datafusion_physical_expr::aggregate::AggregateExprBuilder;
-    use datafusion_physical_expr::expressions::Column;
-    use datafusion_physical_expr::PhysicalExpr;
     use futures::StreamExt;
 
     #[test]
@@ -495,8 +497,9 @@ mod tests {
 
         let data_type = DataType::Decimal128(8, 2);
         let schema = Arc::clone(&partitions[0][0].schema());
-        let scan: Arc<dyn ExecutionPlan> =
-            Arc::new(MemoryExec::try_new(partitions, Arc::clone(&schema), None).unwrap());
+        let scan: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(Arc::new(
+            MemorySourceConfig::try_new(partitions, Arc::clone(&schema), None).unwrap(),
+        )));
 
         let aggregate_udf = Arc::new(AggregateUDF::new_from_impl(SumDecimal::try_new(
             data_type.clone(),

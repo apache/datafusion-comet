@@ -50,7 +50,11 @@ object GenerateDocs {
         w.write("| Config | Description | Default Value |\n".getBytes)
         w.write("|--------|-------------|---------------|\n".getBytes)
         for (conf <- confs) {
-          w.write(s"| ${conf.key} | ${conf.doc.trim} | ${conf.defaultValueString} |\n".getBytes)
+          if (conf.defaultValue.isEmpty) {
+            w.write(s"| ${conf.key} | ${conf.doc.trim} | |\n".getBytes)
+          } else {
+            w.write(s"| ${conf.key} | ${conf.doc.trim} | ${conf.defaultValueString} |\n".getBytes)
+          }
         }
       } else {
         w.write(s"${line.trim}\n".getBytes)
@@ -69,7 +73,8 @@ object GenerateDocs {
         w.write("|-|-|-|\n".getBytes)
         for (fromType <- CometCast.supportedTypes) {
           for (toType <- CometCast.supportedTypes) {
-            if (Cast.canCast(fromType, toType) && fromType != toType) {
+            if (Cast.canCast(fromType, toType) && (fromType != toType || fromType.typeName
+                .contains("decimal"))) {
               val fromTypeName = fromType.typeName.replace("(10,2)", "")
               val toTypeName = toType.typeName.replace("(10,2)", "")
               CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY) match {

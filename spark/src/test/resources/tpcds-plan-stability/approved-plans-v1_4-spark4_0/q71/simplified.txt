@@ -17,7 +17,7 @@ WholeStageCodegen (3)
                                 CometProject [i_brand_id,i_brand,ext_price,time_sk]
                                   CometBroadcastHashJoin [i_item_sk,i_brand_id,i_brand,ext_price,sold_item_sk,time_sk]
                                     CometBroadcastExchange [i_item_sk,i_brand_id,i_brand] #3
-                                      CometProject [i_item_sk,i_brand_id,i_brand]
+                                      CometProject [i_brand] [i_item_sk,i_brand_id,i_brand]
                                         CometFilter [i_item_sk,i_brand_id,i_brand,i_manager_id]
                                           CometScan parquet spark_catalog.default.item [i_item_sk,i_brand_id,i_brand,i_manager_id]
                                     CometUnion [ext_price,sold_item_sk,time_sk]

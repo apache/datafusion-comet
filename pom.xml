@@ -30,7 +30,7 @@ under the License.
   </parent>
   <groupId>org.apache.datafusion</groupId>
   <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-  <version>0.6.0-SNAPSHOT</version>
+  <version>0.8.0-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>Comet Project Parent POM</name>
 
@@ -50,12 +50,12 @@ under the License.
     <scala.version>2.12.17</scala.version>
     <scala.binary.version>2.12</scala.binary.version>
     <scala.plugin.version>4.7.2</scala.plugin.version>
-    <scalatest.version>3.2.9</scalatest.version>
-    <scalatest-maven-plugin.version>2.0.2</scalatest-maven-plugin.version>
+    <scalatest.version>3.2.16</scalatest.version>
+    <scalatest-maven-plugin.version>2.2.0</scalatest-maven-plugin.version>
     <spark.version>3.4.3</spark.version>
     <spark.version.short>3.4</spark.version.short>
     <spark.maven.scope>provided</spark.maven.scope>
-    <protobuf.version>3.21.12</protobuf.version>
+    <protobuf.version>3.25.5</protobuf.version>
     <parquet.version>1.13.1</parquet.version>
     <parquet.maven.scope>provided</parquet.maven.scope>
     <arrow.version>16.0.0</arrow.version>
@@ -64,6 +64,7 @@ under the License.
     <jacoco.version>0.8.11</jacoco.version>
     <semanticdb.version>4.8.8</semanticdb.version>
     <slf4j.version>2.0.6</slf4j.version>
+    <guava.version>33.2.1-jre</guava.version>
     <jni.dir>${project.basedir}/../native/target/debug</jni.dir>
     <platform>darwin</platform>
     <arch>x86_64</arch>
@@ -94,13 +95,8 @@ under the License.
       -Djdk.reflect.useDirectMethodHandle=false
     </extraJavaTestArgs>
     <argLine>-ea -Xmx4g -Xss4m ${extraJavaTestArgs}</argLine>
-    <additional.3_3.test.source>spark-3.3-plus</additional.3_3.test.source>
-    <additional.3_4.test.source>spark-3.4-plus</additional.3_4.test.source>
-    <additional.3_5.test.source>not-needed</additional.3_5.test.source>
-    <additional.pre35.test.source>spark-pre-3.5</additional.pre35.test.source>
     <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
     <shims.minorVerSrc>spark-3.4</shims.minorVerSrc>
-    <shims.pre35Src>spark-pre-3.5</shims.pre35Src>
   </properties>
 
   <dependencyManagement>
@@ -259,7 +255,7 @@ under the License.
       <dependency>
         <groupId>com.google.guava</groupId>
         <artifactId>guava</artifactId>
-        <version>14.0.1</version>
+        <version>${guava.version}</version>
       </dependency>
       <!-- End of shaded deps -->
 
@@ -478,6 +474,20 @@ under the License.
     </profile>
 
     <profile>
+      <id>Win-amd64</id>
+      <activation>
+        <os>
+          <family>Windows</family>
+          <arch>amd64</arch>
+        </os>
+      </activation>
+      <properties>
+        <platform>win32</platform>
+        <arch>amd64</arch>
+      </properties>
+    </profile>
+
+    <profile>
       <id>Darwin-x86</id>
       <activation>
         <os>
@@ -534,19 +544,6 @@ under the License.
     </profile>
 
     <profile>
-      <id>spark-3.3</id>
-      <properties>
-        <scala.version>2.12.15</scala.version>
-        <spark.version>3.3.2</spark.version>
-        <spark.version.short>3.3</spark.version.short>
-        <parquet.version>1.12.0</parquet.version>
-        <slf4j.version>1.7.32</slf4j.version>
-        <additional.3_4.test.source>not-needed-yet</additional.3_4.test.source>
-        <shims.minorVerSrc>spark-3.3</shims.minorVerSrc>
-      </properties>
-    </profile>
-
-    <profile>
       <id>spark-3.4</id>
       <properties>
         <scala.version>2.12.17</scala.version>
@@ -559,14 +556,11 @@ under the License.
       <id>spark-3.5</id>
       <properties>
         <scala.version>2.12.18</scala.version>
-        <spark.version>3.5.1</spark.version>
+        <spark.version>3.5.4</spark.version>
         <spark.version.short>3.5</spark.version.short>
         <parquet.version>1.13.1</parquet.version>
         <slf4j.version>2.0.7</slf4j.version>
         <shims.minorVerSrc>spark-3.5</shims.minorVerSrc>
-        <shims.pre35Src>not-needed</shims.pre35Src>
-        <additional.pre35.test.source>not-needed</additional.pre35.test.source>
-        <additional.3_5.test.source>spark-3.5</additional.3_5.test.source>
       </properties>
     </profile>
 
@@ -584,8 +578,6 @@ under the License.
         <slf4j.version>2.0.13</slf4j.version>
         <shims.majorVerSrc>spark-4.0</shims.majorVerSrc>
         <shims.minorVerSrc>not-needed-yet</shims.minorVerSrc>
-        <shims.pre35Src>not-needed</shims.pre35Src>
-        <additional.pre35.test.source>not-needed</additional.pre35.test.source>
         <!-- Use jdk17 by default -->
         <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>

@@ -15,18 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::array::builder::{Int32Builder, StringBuilder};
+use arrow::datatypes::DataType;
 use arrow::datatypes::{Field, Schema};
 use arrow::record_batch::RecordBatch;
-use arrow_array::builder::{Int32Builder, StringBuilder};
-use arrow_schema::DataType;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use datafusion::common::ScalarValue;
+use datafusion::logical_expr::Operator;
+use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::expressions::Literal;
+use datafusion::physical_expr::expressions::{BinaryExpr, CaseExpr};
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion_comet_spark_expr::IfExpr;
-use datafusion_common::ScalarValue;
-use datafusion_expr::Operator;
-use datafusion_physical_expr::expressions::Column;
-use datafusion_physical_expr::expressions::Literal;
-use datafusion_physical_expr::expressions::{BinaryExpr, CaseExpr};
-use datafusion_physical_expr::PhysicalExpr;
 use std::sync::Arc;
 
 fn make_col(name: &str, index: usize) -> Arc<dyn PhysicalExpr> {

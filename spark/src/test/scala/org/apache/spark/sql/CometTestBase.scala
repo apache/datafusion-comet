@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql
 
+import java.util.concurrent.atomic.AtomicInteger
+
 import scala.concurrent.duration._
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
@@ -45,7 +47,6 @@ import org.apache.spark.sql.test._
 import org.apache.spark.sql.types.{DecimalType, StructType}
 
 import org.apache.comet._
-import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
@@ -80,6 +81,7 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_SHUFFLE_FALLBACK_TO_COLUMNAR.key, "true")
     conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
+    conf.set(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key, "true")
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "2g")
     conf.set(CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key, "true")
     conf
@@ -429,6 +431,68 @@ abstract class CometTestBase
     makeParquetFileAllTypes(path, dictionaryEnabled, 0, n)
   }
 
+  def getPrimitiveTypesParquetSchema: String = {
+    if (CometSparkSessionExtensions.usingDataFusionParquetExec(conf) &&
+      !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get(conf)) {
+      // Comet complex type reader has different behavior for uint_8, uint_16 types.
+      // The issue stems from undefined behavior in the parquet spec and is tracked
+      // here: https://github.com/apache/parquet-java/issues/3142
+      // here: https://github.com/apache/arrow-rs/issues/7040
+      // and here: https://github.com/apache/datafusion-comet/issues/1348
+      """
+       |message root {
+       |  optional boolean                  _1;
+       |  optional int32                    _2(INT_8);
+       |  optional int32                    _3(INT_16);
+       |  optional int32                    _4;
+       |  optional int64                    _5;
+       |  optional float                    _6;
+       |  optional double                   _7;
+       |  optional binary                   _8(UTF8);
+       |  optional int32                    _9(UINT_32);
+       |  optional int32                    _10(UINT_32);
+       |  optional int32                    _11(UINT_32);
+       |  optional int64                    _12(UINT_64);
+       |  optional binary                   _13(ENUM);
+       |  optional FIXED_LEN_BYTE_ARRAY(3)  _14;
+       |  optional int32                    _15(DECIMAL(5, 2));
+       |  optional int64                    _16(DECIMAL(18, 10));
+       |  optional FIXED_LEN_BYTE_ARRAY(16) _17(DECIMAL(38, 37));
+       |  optional INT64                    _18(TIMESTAMP(MILLIS,true));
+       |  optional INT64                    _19(TIMESTAMP(MICROS,true));
+       |  optional INT32                    _20(DATE);
+       |  optional INT32                    _id;
+       |}
+      """.stripMargin
+    } else {
+      """
+       |message root {
+       |  optional boolean                  _1;
+       |  optional int32                    _2(INT_8);
+       |  optional int32                    _3(INT_16);
+       |  optional int32                    _4;
+       |  optional int64                    _5;
+       |  optional float                    _6;
+       |  optional double                   _7;
+       |  optional binary                   _8(UTF8);
+       |  optional int32                    _9(UINT_8);
+       |  optional int32                    _10(UINT_16);
+       |  optional int32                    _11(UINT_32);
+       |  optional int64                    _12(UINT_64);
+       |  optional binary                   _13(ENUM);
+       |  optional FIXED_LEN_BYTE_ARRAY(3)  _14;
+       |  optional int32                    _15(DECIMAL(5, 2));
+       |  optional int64                    _16(DECIMAL(18, 10));
+       |  optional FIXED_LEN_BYTE_ARRAY(16) _17(DECIMAL(38, 37));
+       |  optional INT64                    _18(TIMESTAMP(MILLIS,true));
+       |  optional INT64                    _19(TIMESTAMP(MICROS,true));
+       |  optional INT32                    _20(DATE);
+       |  optional INT32                    _id;
+       |}
+      """.stripMargin
+    }
+  }
+
   def makeParquetFileAllTypes(
       path: Path,
       dictionaryEnabled: Boolean,
@@ -436,58 +500,9 @@ abstract class CometTestBase
       end: Int,
       pageSize: Int = 128,
       randomSize: Int = 0): Unit = {
-    val schemaStr =
-      if (isSpark34Plus) {
-        """
-          |message root {
-          |  optional boolean                  _1;
-          |  optional int32                    _2(INT_8);
-          |  optional int32                    _3(INT_16);
-          |  optional int32                    _4;
-          |  optional int64                    _5;
-          |  optional float                    _6;
-          |  optional double                   _7;
-          |  optional binary                   _8(UTF8);
-          |  optional int32                    _9(UINT_8);
-          |  optional int32                    _10(UINT_16);
-          |  optional int32                    _11(UINT_32);
-          |  optional int64                    _12(UINT_64);
-          |  optional binary                   _13(ENUM);
-          |  optional FIXED_LEN_BYTE_ARRAY(3)  _14;
-          |  optional int32                    _15(DECIMAL(5, 2));
-          |  optional int64                    _16(DECIMAL(18, 10));
-          |  optional FIXED_LEN_BYTE_ARRAY(16) _17(DECIMAL(38, 37));
-          |  optional INT64                    _18(TIMESTAMP(MILLIS,true));
-          |  optional INT64                    _19(TIMESTAMP(MICROS,true));
-          |  optional INT32                    _20(DATE);
-          |}
-        """.stripMargin
-      } else {
-        """
-          |message root {
-          |  optional boolean                  _1;
-          |  optional int32                    _2(INT_8);
-          |  optional int32                    _3(INT_16);
-          |  optional int32                    _4;
-          |  optional int64                    _5;
-          |  optional float                    _6;
-          |  optional double                   _7;
-          |  optional binary                   _8(UTF8);
-          |  optional int32                    _9(UINT_8);
-          |  optional int32                    _10(UINT_16);
-          |  optional int32                    _11(UINT_32);
-          |  optional int64                    _12(UINT_64);
-          |  optional binary                   _13(ENUM);
-          |  optional binary                   _14(UTF8);
-          |  optional int32                    _15(DECIMAL(5, 2));
-          |  optional int64                    _16(DECIMAL(18, 10));
-          |  optional FIXED_LEN_BYTE_ARRAY(16) _17(DECIMAL(38, 37));
-          |  optional INT64                    _18(TIMESTAMP(MILLIS,true));
-          |  optional INT64                    _19(TIMESTAMP(MICROS,true));
-          |  optional INT32                    _20(DATE);
-          |}
-        """.stripMargin
-      }
+    // alwaysIncludeUnsignedIntTypes means we include unsignedIntTypes in the test even if the
+    // reader does not support them
+    val schemaStr = getPrimitiveTypesParquetSchema
 
     val schema = MessageTypeParser.parseMessageType(schemaStr)
     val writer = createParquetWriter(
@@ -496,6 +511,8 @@ abstract class CometTestBase
       dictionaryEnabled = dictionaryEnabled,
       pageSize = pageSize,
       dictionaryPageSize = pageSize)
+
+    val idGenerator = new AtomicInteger(0)
 
     val rand = scala.util.Random
     val data = (begin until end).map { i =>
@@ -529,6 +546,7 @@ abstract class CometTestBase
           record.add(17, i.toLong)
           record.add(18, i.toLong)
           record.add(19, i)
+          record.add(20, idGenerator.getAndIncrement())
         case _ =>
       }
       writer.write(record)
@@ -556,6 +574,7 @@ abstract class CometTestBase
       record.add(17, i)
       record.add(18, i)
       record.add(19, i.toInt)
+      record.add(20, idGenerator.getAndIncrement())
       writer.write(record)
     }
 

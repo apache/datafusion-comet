@@ -16,11 +16,11 @@
 // under the License.
 
 use crate::math_funcs::utils::{get_precision_scale, make_decimal_array, make_decimal_scalar};
+use arrow::array::{Array, ArrowNativeTypeOp};
 use arrow::array::{Int16Array, Int32Array, Int64Array, Int8Array};
-use arrow_array::{Array, ArrowNativeTypeOp};
-use arrow_schema::DataType;
+use arrow::datatypes::DataType;
+use datafusion::common::{exec_err, internal_err, DataFusionError, ScalarValue};
 use datafusion::{functions::math::round::round, physical_plan::ColumnarValue};
-use datafusion_common::{exec_err, internal_err, DataFusionError, ScalarValue};
 use std::{cmp::min, sync::Arc};
 
 macro_rules! integer_round {
@@ -144,10 +144,10 @@ mod test {
     use crate::spark_round;
 
     use arrow::array::{Float32Array, Float64Array};
-    use arrow_schema::DataType;
-    use datafusion_common::cast::{as_float32_array, as_float64_array};
-    use datafusion_common::{Result, ScalarValue};
-    use datafusion_expr::ColumnarValue;
+    use arrow::datatypes::DataType;
+    use datafusion::common::cast::{as_float32_array, as_float64_array};
+    use datafusion::common::{Result, ScalarValue};
+    use datafusion::physical_plan::ColumnarValue;
 
     #[test]
     fn test_round_f32_array() -> Result<()> {

@@ -15,25 +15,25 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::compute::sum;
-use arrow_array::{
+use arrow::array::{
     builder::PrimitiveBuilder,
     cast::AsArray,
     types::{Float64Type, Int64Type},
     Array, ArrayRef, ArrowNumericType, Int64Array, PrimitiveArray,
 };
-use arrow_schema::{DataType, Field};
+use arrow::compute::sum;
+use arrow::datatypes::{DataType, Field};
+use datafusion::common::{not_impl_err, Result, ScalarValue};
 use datafusion::logical_expr::{
-    type_coercion::aggregates::avg_return_type, Accumulator, EmitTo, GroupsAccumulator, Signature,
+    type_coercion::aggregates::avg_return_type, Accumulator, AggregateUDFImpl, EmitTo,
+    GroupsAccumulator, ReversedUDAF, Signature,
 };
-use datafusion_common::{not_impl_err, Result, ScalarValue};
-use datafusion_physical_expr::expressions::format_state_name;
+use datafusion::physical_expr::expressions::format_state_name;
 use std::{any::Any, sync::Arc};
 
-use arrow_array::ArrowNativeTypeOp;
-use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
-use datafusion_expr::Volatility::Immutable;
-use datafusion_expr::{AggregateUDFImpl, ReversedUDAF};
+use arrow::array::ArrowNativeTypeOp;
+use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
+use datafusion::logical_expr::Volatility::Immutable;
 use DataType::*;
 
 /// AVG aggregate expression
@@ -239,7 +239,7 @@ where
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        _opt_filter: Option<&arrow_array::BooleanArray>,
+        _opt_filter: Option<&arrow::array::BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         assert_eq!(values.len(), 1, "single argument to update_batch");
@@ -276,7 +276,7 @@ where
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        _opt_filter: Option<&arrow_array::BooleanArray>,
+        _opt_filter: Option<&arrow::array::BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         assert_eq!(values.len(), 2, "two arguments to merge_batch");

@@ -19,11 +19,11 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayJoin, ArrayRemove, Attribute, Expression}
-import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, StructType}
+import org.apache.spark.sql.catalyst.expressions.{ArrayJoin, ArrayRemove, Attribute, Expression, Literal}
+import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProto, scalarExprToProtoWithReturnType}
 import org.apache.comet.shims.CometExprShim
 
 object CometArrayRemove extends CometExpressionSerde with CometExprShim {
@@ -33,9 +33,9 @@ object CometArrayRemove extends CometExpressionSerde with CometExprShim {
     import DataTypes._
     dt match {
       case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-          _: DecimalType | DateType | TimestampType | StringType | BinaryType =>
+          _: DecimalType | DateType | TimestampType | TimestampNTZType | StringType |
+          BinaryType =>
         true
-      case t if isTimestampNTZType(t) => true
       case ArrayType(elementType, _) => isTypeSupported(elementType)
       case _: StructType =>
         // https://github.com/apache/datafusion-comet/issues/1307
@@ -123,6 +123,31 @@ object CometArraysOverlap extends CometExpressionSerde with IncompatExpr {
       inputs,
       binding,
       (builder, binaryExpr) => builder.setArraysOverlap(binaryExpr))
+  }
+}
+
+object CometArrayCompact extends CometExpressionSerde with IncompatExpr {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val child = expr.children.head
+    val elementType = child.dataType.asInstanceOf[ArrayType].elementType
+
+    val arrayExprProto = exprToProto(child, inputs, binding)
+    val nullLiteralProto = exprToProto(Literal(null, elementType), Seq.empty)
+
+    val arrayCompactScalarExpr = scalarExprToProtoWithReturnType(
+      "array_remove_all",
+      ArrayType(elementType = elementType),
+      arrayExprProto,
+      nullLiteralProto)
+    arrayCompactScalarExpr match {
+      case None =>
+        withInfo(expr, "unsupported arguments for ArrayCompact", expr.children: _*)
+        None
+      case expr => expr
+    }
   }
 }
 

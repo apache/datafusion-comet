@@ -70,13 +70,8 @@ object CometCast {
           case _ =>
             Unsupported
         }
-      case (from: DecimalType, to: DecimalType) =>
-        if (to.precision < from.precision) {
-          // https://github.com/apache/datafusion/issues/13492
-          Incompatible(Some("Casting to smaller precision is not supported"))
-        } else {
-          Compatible()
-        }
+      case (_: DecimalType, _: DecimalType) =>
+        Compatible()
       case (DataTypes.StringType, _) =>
         canCastFromString(toType, timeZoneId, evalMode)
       case (_, DataTypes.StringType) =>
@@ -267,7 +262,9 @@ object CometCast {
     case DataTypes.BooleanType | DataTypes.DoubleType | DataTypes.ByteType | DataTypes.ShortType |
         DataTypes.IntegerType | DataTypes.LongType =>
       Compatible()
-    case _: DecimalType => Compatible()
+    case _: DecimalType =>
+      // https://github.com/apache/datafusion-comet/issues/1371
+      Incompatible(Some("There can be rounding differences"))
     case _ => Unsupported
   }
 
@@ -275,7 +272,9 @@ object CometCast {
     case DataTypes.BooleanType | DataTypes.FloatType | DataTypes.ByteType | DataTypes.ShortType |
         DataTypes.IntegerType | DataTypes.LongType =>
       Compatible()
-    case _: DecimalType => Compatible()
+    case _: DecimalType =>
+      // https://github.com/apache/datafusion-comet/issues/1371
+      Incompatible(Some("There can be rounding differences"))
     case _ => Unsupported
   }
 

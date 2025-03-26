@@ -1,42 +1,44 @@
 == Physical Plan ==
-* CometColumnarToRow (38)
-+- CometTakeOrderedAndProject (37)
-   +- CometFilter (36)
-      +- CometHashAggregate (35)
-         +- CometExchange (34)
-            +- CometHashAggregate (33)
-               +- CometProject (32)
-                  +- CometBroadcastHashJoin (31)
-                     :- CometProject (18)
-                     :  +- CometBroadcastHashJoin (17)
-                     :     :- CometProject (12)
-                     :     :  +- CometBroadcastHashJoin (11)
-                     :     :     :- CometProject (7)
-                     :     :     :  +- CometBroadcastHashJoin (6)
-                     :     :     :     :- CometFilter (2)
-                     :     :     :     :  +- CometScan parquet spark_catalog.default.customer_address (1)
-                     :     :     :     +- CometBroadcastExchange (5)
-                     :     :     :        +- CometFilter (4)
-                     :     :     :           +- CometScan parquet spark_catalog.default.customer (3)
-                     :     :     +- CometBroadcastExchange (10)
-                     :     :        +- CometFilter (9)
-                     :     :           +- CometScan parquet spark_catalog.default.store_sales (8)
-                     :     +- CometBroadcastExchange (16)
-                     :        +- CometProject (15)
-                     :           +- CometFilter (14)
-                     :              +- CometScan parquet spark_catalog.default.date_dim (13)
-                     +- CometBroadcastExchange (30)
-                        +- CometProject (29)
-                           +- CometBroadcastHashJoin (28)
-                              :- CometFilter (20)
-                              :  +- CometScan parquet spark_catalog.default.item (19)
-                              +- CometBroadcastExchange (27)
-                                 +- CometFilter (26)
-                                    +- CometHashAggregate (25)
-                                       +- CometExchange (24)
-                                          +- CometHashAggregate (23)
-                                             +- CometFilter (22)
-                                                +- CometScan parquet spark_catalog.default.item (21)
+* CometColumnarToRow (40)
++- CometTakeOrderedAndProject (39)
+   +- CometFilter (38)
+      +- CometHashAggregate (37)
+         +- CometExchange (36)
+            +- CometHashAggregate (35)
+               +- CometProject (34)
+                  +- CometBroadcastHashJoin (33)
+                     :- CometProject (19)
+                     :  +- CometBroadcastHashJoin (18)
+                     :     :- CometProject (13)
+                     :     :  +- CometBroadcastHashJoin (12)
+                     :     :     :- CometProject (8)
+                     :     :     :  +- CometBroadcastHashJoin (7)
+                     :     :     :     :- CometProject (3)
+                     :     :     :     :  +- CometFilter (2)
+                     :     :     :     :     +- CometScan parquet spark_catalog.default.customer_address (1)
+                     :     :     :     +- CometBroadcastExchange (6)
+                     :     :     :        +- CometFilter (5)
+                     :     :     :           +- CometScan parquet spark_catalog.default.customer (4)
+                     :     :     +- CometBroadcastExchange (11)
+                     :     :        +- CometFilter (10)
+                     :     :           +- CometScan parquet spark_catalog.default.store_sales (9)
+                     :     +- CometBroadcastExchange (17)
+                     :        +- CometProject (16)
+                     :           +- CometFilter (15)
+                     :              +- CometScan parquet spark_catalog.default.date_dim (14)
+                     +- CometBroadcastExchange (32)
+                        +- CometProject (31)
+                           +- CometBroadcastHashJoin (30)
+                              :- CometFilter (21)
+                              :  +- CometScan parquet spark_catalog.default.item (20)
+                              +- CometBroadcastExchange (29)
+                                 +- CometFilter (28)
+                                    +- CometHashAggregate (27)
+                                       +- CometExchange (26)
+                                          +- CometHashAggregate (25)
+                                             +- CometProject (24)
+                                                +- CometFilter (23)
+                                                   +- CometScan parquet spark_catalog.default.item (22)
 
 
 (1) CometScan parquet spark_catalog.default.customer_address
@@ -50,248 +52,255 @@ ReadSchema: struct<ca_address_sk:int,ca_state:string>
 Input [2]: [ca_address_sk#1, ca_state#2]
 Condition : isnotnull(ca_address_sk#1)
 
-(3) CometScan parquet spark_catalog.default.customer
-Output [2]: [c_customer_sk#3, c_current_addr_sk#4]
+(3) CometProject
+Input [2]: [ca_address_sk#1, ca_state#2]
+Arguments: [ca_address_sk#1, ca_state#3], [ca_address_sk#1, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, ca_state#2, 2, true, false, true) AS ca_state#3]
+
+(4) CometScan parquet spark_catalog.default.customer
+Output [2]: [c_customer_sk#4, c_current_addr_sk#5]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer]
 PushedFilters: [IsNotNull(c_current_addr_sk), IsNotNull(c_customer_sk)]
 ReadSchema: struct<c_customer_sk:int,c_current_addr_sk:int>
 
-(4) CometFilter
-Input [2]: [c_customer_sk#3, c_current_addr_sk#4]
-Condition : (isnotnull(c_current_addr_sk#4) AND isnotnull(c_customer_sk#3))
+(5) CometFilter
+Input [2]: [c_customer_sk#4, c_current_addr_sk#5]
+Condition : (isnotnull(c_current_addr_sk#5) AND isnotnull(c_customer_sk#4))
 
-(5) CometBroadcastExchange
-Input [2]: [c_customer_sk#3, c_current_addr_sk#4]
-Arguments: [c_customer_sk#3, c_current_addr_sk#4]
+(6) CometBroadcastExchange
+Input [2]: [c_customer_sk#4, c_current_addr_sk#5]
+Arguments: [c_customer_sk#4, c_current_addr_sk#5]
 
-(6) CometBroadcastHashJoin
-Left output [2]: [ca_address_sk#1, ca_state#2]
-Right output [2]: [c_customer_sk#3, c_current_addr_sk#4]
-Arguments: [ca_address_sk#1], [c_current_addr_sk#4], Inner, BuildRight
+(7) CometBroadcastHashJoin
+Left output [2]: [ca_address_sk#1, ca_state#3]
+Right output [2]: [c_customer_sk#4, c_current_addr_sk#5]
+Arguments: [ca_address_sk#1], [c_current_addr_sk#5], Inner, BuildRight
 
-(7) CometProject
-Input [4]: [ca_address_sk#1, ca_state#2, c_customer_sk#3, c_current_addr_sk#4]
-Arguments: [ca_state#2, c_customer_sk#3], [ca_state#2, c_customer_sk#3]
+(8) CometProject
+Input [4]: [ca_address_sk#1, ca_state#3, c_customer_sk#4, c_current_addr_sk#5]
+Arguments: [ca_state#3, c_customer_sk#4], [ca_state#3, c_customer_sk#4]
 
-(8) CometScan parquet spark_catalog.default.store_sales
-Output [3]: [ss_item_sk#5, ss_customer_sk#6, ss_sold_date_sk#7]
+(9) CometScan parquet spark_catalog.default.store_sales
+Output [3]: [ss_item_sk#6, ss_customer_sk#7, ss_sold_date_sk#8]
 Batched: true
 Location: InMemoryFileIndex []
-PartitionFilters: [isnotnull(ss_sold_date_sk#7), dynamicpruningexpression(ss_sold_date_sk#7 IN dynamicpruning#8)]
+PartitionFilters: [isnotnull(ss_sold_date_sk#8), dynamicpruningexpression(ss_sold_date_sk#8 IN dynamicpruning#9)]
 PushedFilters: [IsNotNull(ss_customer_sk), IsNotNull(ss_item_sk)]
 ReadSchema: struct<ss_item_sk:int,ss_customer_sk:int>
 
-(9) CometFilter
-Input [3]: [ss_item_sk#5, ss_customer_sk#6, ss_sold_date_sk#7]
-Condition : (isnotnull(ss_customer_sk#6) AND isnotnull(ss_item_sk#5))
+(10) CometFilter
+Input [3]: [ss_item_sk#6, ss_customer_sk#7, ss_sold_date_sk#8]
+Condition : (isnotnull(ss_customer_sk#7) AND isnotnull(ss_item_sk#6))
 
-(10) CometBroadcastExchange
-Input [3]: [ss_item_sk#5, ss_customer_sk#6, ss_sold_date_sk#7]
-Arguments: [ss_item_sk#5, ss_customer_sk#6, ss_sold_date_sk#7]
+(11) CometBroadcastExchange
+Input [3]: [ss_item_sk#6, ss_customer_sk#7, ss_sold_date_sk#8]
+Arguments: [ss_item_sk#6, ss_customer_sk#7, ss_sold_date_sk#8]
 
-(11) CometBroadcastHashJoin
-Left output [2]: [ca_state#2, c_customer_sk#3]
-Right output [3]: [ss_item_sk#5, ss_customer_sk#6, ss_sold_date_sk#7]
-Arguments: [c_customer_sk#3], [ss_customer_sk#6], Inner, BuildRight
+(12) CometBroadcastHashJoin
+Left output [2]: [ca_state#3, c_customer_sk#4]
+Right output [3]: [ss_item_sk#6, ss_customer_sk#7, ss_sold_date_sk#8]
+Arguments: [c_customer_sk#4], [ss_customer_sk#7], Inner, BuildRight
 
-(12) CometProject
-Input [5]: [ca_state#2, c_customer_sk#3, ss_item_sk#5, ss_customer_sk#6, ss_sold_date_sk#7]
-Arguments: [ca_state#2, ss_item_sk#5, ss_sold_date_sk#7], [ca_state#2, ss_item_sk#5, ss_sold_date_sk#7]
+(13) CometProject
+Input [5]: [ca_state#3, c_customer_sk#4, ss_item_sk#6, ss_customer_sk#7, ss_sold_date_sk#8]
+Arguments: [ca_state#3, ss_item_sk#6, ss_sold_date_sk#8], [ca_state#3, ss_item_sk#6, ss_sold_date_sk#8]
 
-(13) CometScan parquet spark_catalog.default.date_dim
-Output [2]: [d_date_sk#9, d_month_seq#10]
+(14) CometScan parquet spark_catalog.default.date_dim
+Output [2]: [d_date_sk#10, d_month_seq#11]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_month_seq), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_month_seq:int>
 
-(14) CometFilter
-Input [2]: [d_date_sk#9, d_month_seq#10]
-Condition : ((isnotnull(d_month_seq#10) AND (d_month_seq#10 = ReusedSubquery Subquery scalar-subquery#11, [id=#12])) AND isnotnull(d_date_sk#9))
+(15) CometFilter
+Input [2]: [d_date_sk#10, d_month_seq#11]
+Condition : ((isnotnull(d_month_seq#11) AND (d_month_seq#11 = ReusedSubquery Subquery scalar-subquery#12, [id=#13])) AND isnotnull(d_date_sk#10))
 
-(15) CometProject
-Input [2]: [d_date_sk#9, d_month_seq#10]
-Arguments: [d_date_sk#9], [d_date_sk#9]
+(16) CometProject
+Input [2]: [d_date_sk#10, d_month_seq#11]
+Arguments: [d_date_sk#10], [d_date_sk#10]
 
-(16) CometBroadcastExchange
-Input [1]: [d_date_sk#9]
-Arguments: [d_date_sk#9]
+(17) CometBroadcastExchange
+Input [1]: [d_date_sk#10]
+Arguments: [d_date_sk#10]
 
-(17) CometBroadcastHashJoin
-Left output [3]: [ca_state#2, ss_item_sk#5, ss_sold_date_sk#7]
-Right output [1]: [d_date_sk#9]
-Arguments: [ss_sold_date_sk#7], [d_date_sk#9], Inner, BuildRight
+(18) CometBroadcastHashJoin
+Left output [3]: [ca_state#3, ss_item_sk#6, ss_sold_date_sk#8]
+Right output [1]: [d_date_sk#10]
+Arguments: [ss_sold_date_sk#8], [d_date_sk#10], Inner, BuildRight
 
-(18) CometProject
-Input [4]: [ca_state#2, ss_item_sk#5, ss_sold_date_sk#7, d_date_sk#9]
-Arguments: [ca_state#2, ss_item_sk#5], [ca_state#2, ss_item_sk#5]
+(19) CometProject
+Input [4]: [ca_state#3, ss_item_sk#6, ss_sold_date_sk#8, d_date_sk#10]
+Arguments: [ca_state#3, ss_item_sk#6], [ca_state#3, ss_item_sk#6]
 
-(19) CometScan parquet spark_catalog.default.item
-Output [3]: [i_item_sk#13, i_current_price#14, i_category#15]
+(20) CometScan parquet spark_catalog.default.item
+Output [3]: [i_item_sk#14, i_current_price#15, i_category#16]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_current_price), IsNotNull(i_category), IsNotNull(i_item_sk)]
+PushedFilters: [IsNotNull(i_current_price), IsNotNull(i_item_sk)]
 ReadSchema: struct<i_item_sk:int,i_current_price:decimal(7,2),i_category:string>
 
-(20) CometFilter
-Input [3]: [i_item_sk#13, i_current_price#14, i_category#15]
-Condition : ((isnotnull(i_current_price#14) AND isnotnull(i_category#15)) AND isnotnull(i_item_sk#13))
+(21) CometFilter
+Input [3]: [i_item_sk#14, i_current_price#15, i_category#16]
+Condition : (isnotnull(i_current_price#15) AND isnotnull(i_item_sk#14))
 
-(21) CometScan parquet spark_catalog.default.item
-Output [2]: [i_current_price#16, i_category#17]
+(22) CometScan parquet spark_catalog.default.item
+Output [2]: [i_current_price#17, i_category#18]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_category)]
 ReadSchema: struct<i_current_price:decimal(7,2),i_category:string>
 
-(22) CometFilter
-Input [2]: [i_current_price#16, i_category#17]
-Condition : isnotnull(i_category#17)
+(23) CometFilter
+Input [2]: [i_current_price#17, i_category#18]
+Condition : isnotnull(staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#18, 50, true, false, true))
 
-(23) CometHashAggregate
-Input [2]: [i_current_price#16, i_category#17]
-Keys [1]: [i_category#17]
-Functions [1]: [partial_avg(UnscaledValue(i_current_price#16))]
-
-(24) CometExchange
-Input [3]: [i_category#17, sum#18, count#19]
-Arguments: hashpartitioning(i_category#17, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+(24) CometProject
+Input [2]: [i_current_price#17, i_category#18]
+Arguments: [i_current_price#17, i_category#19], [i_current_price#17, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#18, 50, true, false, true) AS i_category#19]
 
 (25) CometHashAggregate
-Input [3]: [i_category#17, sum#18, count#19]
-Keys [1]: [i_category#17]
-Functions [1]: [avg(UnscaledValue(i_current_price#16))]
+Input [2]: [i_current_price#17, i_category#19]
+Keys [1]: [i_category#19]
+Functions [1]: [partial_avg(UnscaledValue(i_current_price#17))]
 
-(26) CometFilter
-Input [2]: [avg(i_current_price)#20, i_category#17]
-Condition : isnotnull(avg(i_current_price)#20)
+(26) CometExchange
+Input [3]: [i_category#19, sum#20, count#21]
+Arguments: hashpartitioning(i_category#19, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(27) CometBroadcastExchange
-Input [2]: [avg(i_current_price)#20, i_category#17]
-Arguments: [avg(i_current_price)#20, i_category#17]
+(27) CometHashAggregate
+Input [3]: [i_category#19, sum#20, count#21]
+Keys [1]: [i_category#19]
+Functions [1]: [avg(UnscaledValue(i_current_price#17))]
 
-(28) CometBroadcastHashJoin
-Left output [3]: [i_item_sk#13, i_current_price#14, i_category#15]
-Right output [2]: [avg(i_current_price)#20, i_category#17]
-Arguments: [i_category#15], [i_category#17], Inner, (cast(i_current_price#14 as decimal(14,7)) > (1.2 * avg(i_current_price)#20)), BuildRight
+(28) CometFilter
+Input [2]: [avg(i_current_price)#22, i_category#19]
+Condition : isnotnull(avg(i_current_price)#22)
 
-(29) CometProject
-Input [5]: [i_item_sk#13, i_current_price#14, i_category#15, avg(i_current_price)#20, i_category#17]
-Arguments: [i_item_sk#13], [i_item_sk#13]
+(29) CometBroadcastExchange
+Input [2]: [avg(i_current_price)#22, i_category#19]
+Arguments: [avg(i_current_price)#22, i_category#19]
 
-(30) CometBroadcastExchange
-Input [1]: [i_item_sk#13]
-Arguments: [i_item_sk#13]
+(30) CometBroadcastHashJoin
+Left output [3]: [i_item_sk#14, i_current_price#15, i_category#16]
+Right output [2]: [avg(i_current_price)#22, i_category#19]
+Arguments: [staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#16, 50, true, false, true)], [i_category#19], Inner, (cast(i_current_price#15 as decimal(14,7)) > (1.2 * avg(i_current_price)#22)), BuildRight
 
-(31) CometBroadcastHashJoin
-Left output [2]: [ca_state#2, ss_item_sk#5]
-Right output [1]: [i_item_sk#13]
-Arguments: [ss_item_sk#5], [i_item_sk#13], Inner, BuildRight
+(31) CometProject
+Input [5]: [i_item_sk#14, i_current_price#15, i_category#16, avg(i_current_price)#22, i_category#19]
+Arguments: [i_item_sk#14], [i_item_sk#14]
 
-(32) CometProject
-Input [3]: [ca_state#2, ss_item_sk#5, i_item_sk#13]
-Arguments: [ca_state#2], [ca_state#2]
+(32) CometBroadcastExchange
+Input [1]: [i_item_sk#14]
+Arguments: [i_item_sk#14]
 
-(33) CometHashAggregate
-Input [1]: [ca_state#2]
-Keys [1]: [ca_state#2]
-Functions [1]: [partial_count(1)]
+(33) CometBroadcastHashJoin
+Left output [2]: [ca_state#3, ss_item_sk#6]
+Right output [1]: [i_item_sk#14]
+Arguments: [ss_item_sk#6], [i_item_sk#14], Inner, BuildRight
 
-(34) CometExchange
-Input [2]: [ca_state#2, count#21]
-Arguments: hashpartitioning(ca_state#2, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+(34) CometProject
+Input [3]: [ca_state#3, ss_item_sk#6, i_item_sk#14]
+Arguments: [ca_state#3], [ca_state#3]
 
 (35) CometHashAggregate
-Input [2]: [ca_state#2, count#21]
-Keys [1]: [ca_state#2]
+Input [1]: [ca_state#3]
+Keys [1]: [ca_state#3]
+Functions [1]: [partial_count(1)]
+
+(36) CometExchange
+Input [2]: [ca_state#3, count#23]
+Arguments: hashpartitioning(ca_state#3, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+
+(37) CometHashAggregate
+Input [2]: [ca_state#3, count#23]
+Keys [1]: [ca_state#3]
 Functions [1]: [count(1)]
 
-(36) CometFilter
-Input [2]: [state#22, cnt#23]
-Condition : (cnt#23 >= 10)
+(38) CometFilter
+Input [2]: [state#24, cnt#25]
+Condition : (cnt#25 >= 10)
 
-(37) CometTakeOrderedAndProject
-Input [2]: [state#22, cnt#23]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[cnt#23 ASC NULLS FIRST], output=[state#22,cnt#23]), [state#22, cnt#23], 100, [cnt#23 ASC NULLS FIRST], [state#22, cnt#23]
+(39) CometTakeOrderedAndProject
+Input [2]: [state#24, cnt#25]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[cnt#25 ASC NULLS FIRST], output=[state#24,cnt#25]), [state#24, cnt#25], 100, [cnt#25 ASC NULLS FIRST], [state#24, cnt#25]
 
-(38) CometColumnarToRow [codegen id : 1]
-Input [2]: [state#22, cnt#23]
+(40) CometColumnarToRow [codegen id : 1]
+Input [2]: [state#24, cnt#25]
 
 ===== Subqueries =====
 
-Subquery:1 Hosting operator id = 8 Hosting Expression = ss_sold_date_sk#7 IN dynamicpruning#8
-BroadcastExchange (43)
-+- * CometColumnarToRow (42)
-   +- CometProject (41)
-      +- CometFilter (40)
-         +- CometScan parquet spark_catalog.default.date_dim (39)
+Subquery:1 Hosting operator id = 9 Hosting Expression = ss_sold_date_sk#8 IN dynamicpruning#9
+BroadcastExchange (45)
++- * CometColumnarToRow (44)
+   +- CometProject (43)
+      +- CometFilter (42)
+         +- CometScan parquet spark_catalog.default.date_dim (41)
 
 
-(39) CometScan parquet spark_catalog.default.date_dim
-Output [2]: [d_date_sk#9, d_month_seq#10]
+(41) CometScan parquet spark_catalog.default.date_dim
+Output [2]: [d_date_sk#10, d_month_seq#11]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_month_seq), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_month_seq:int>
 
-(40) CometFilter
-Input [2]: [d_date_sk#9, d_month_seq#10]
-Condition : ((isnotnull(d_month_seq#10) AND (d_month_seq#10 = Subquery scalar-subquery#11, [id=#12])) AND isnotnull(d_date_sk#9))
+(42) CometFilter
+Input [2]: [d_date_sk#10, d_month_seq#11]
+Condition : ((isnotnull(d_month_seq#11) AND (d_month_seq#11 = Subquery scalar-subquery#12, [id=#13])) AND isnotnull(d_date_sk#10))
 
-(41) CometProject
-Input [2]: [d_date_sk#9, d_month_seq#10]
-Arguments: [d_date_sk#9], [d_date_sk#9]
+(43) CometProject
+Input [2]: [d_date_sk#10, d_month_seq#11]
+Arguments: [d_date_sk#10], [d_date_sk#10]
 
-(42) CometColumnarToRow [codegen id : 1]
-Input [1]: [d_date_sk#9]
+(44) CometColumnarToRow [codegen id : 1]
+Input [1]: [d_date_sk#10]
 
-(43) BroadcastExchange
-Input [1]: [d_date_sk#9]
+(45) BroadcastExchange
+Input [1]: [d_date_sk#10]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=3]
 
-Subquery:2 Hosting operator id = 40 Hosting Expression = Subquery scalar-subquery#11, [id=#12]
-* CometColumnarToRow (50)
-+- CometHashAggregate (49)
-   +- CometExchange (48)
-      +- CometHashAggregate (47)
-         +- CometProject (46)
-            +- CometFilter (45)
-               +- CometScan parquet spark_catalog.default.date_dim (44)
+Subquery:2 Hosting operator id = 42 Hosting Expression = Subquery scalar-subquery#12, [id=#13]
+* CometColumnarToRow (52)
++- CometHashAggregate (51)
+   +- CometExchange (50)
+      +- CometHashAggregate (49)
+         +- CometProject (48)
+            +- CometFilter (47)
+               +- CometScan parquet spark_catalog.default.date_dim (46)
 
 
-(44) CometScan parquet spark_catalog.default.date_dim
-Output [3]: [d_month_seq#24, d_year#25, d_moy#26]
+(46) CometScan parquet spark_catalog.default.date_dim
+Output [3]: [d_month_seq#26, d_year#27, d_moy#28]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), IsNotNull(d_moy), EqualTo(d_year,2000), EqualTo(d_moy,1)]
 ReadSchema: struct<d_month_seq:int,d_year:int,d_moy:int>
 
-(45) CometFilter
-Input [3]: [d_month_seq#24, d_year#25, d_moy#26]
-Condition : (((isnotnull(d_year#25) AND isnotnull(d_moy#26)) AND (d_year#25 = 2000)) AND (d_moy#26 = 1))
+(47) CometFilter
+Input [3]: [d_month_seq#26, d_year#27, d_moy#28]
+Condition : (((isnotnull(d_year#27) AND isnotnull(d_moy#28)) AND (d_year#27 = 2000)) AND (d_moy#28 = 1))
 
-(46) CometProject
-Input [3]: [d_month_seq#24, d_year#25, d_moy#26]
-Arguments: [d_month_seq#24], [d_month_seq#24]
-
-(47) CometHashAggregate
-Input [1]: [d_month_seq#24]
-Keys [1]: [d_month_seq#24]
-Functions: []
-
-(48) CometExchange
-Input [1]: [d_month_seq#24]
-Arguments: hashpartitioning(d_month_seq#24, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
+(48) CometProject
+Input [3]: [d_month_seq#26, d_year#27, d_moy#28]
+Arguments: [d_month_seq#26], [d_month_seq#26]
 
 (49) CometHashAggregate
-Input [1]: [d_month_seq#24]
-Keys [1]: [d_month_seq#24]
+Input [1]: [d_month_seq#26]
+Keys [1]: [d_month_seq#26]
 Functions: []
 
-(50) CometColumnarToRow [codegen id : 1]
-Input [1]: [d_month_seq#24]
+(50) CometExchange
+Input [1]: [d_month_seq#26]
+Arguments: hashpartitioning(d_month_seq#26, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
 
-Subquery:3 Hosting operator id = 14 Hosting Expression = ReusedSubquery Subquery scalar-subquery#11, [id=#12]
+(51) CometHashAggregate
+Input [1]: [d_month_seq#26]
+Keys [1]: [d_month_seq#26]
+Functions: []
+
+(52) CometColumnarToRow [codegen id : 1]
+Input [1]: [d_month_seq#26]
+
+Subquery:3 Hosting operator id = 15 Hosting Expression = ReusedSubquery Subquery scalar-subquery#12, [id=#13]
 
 

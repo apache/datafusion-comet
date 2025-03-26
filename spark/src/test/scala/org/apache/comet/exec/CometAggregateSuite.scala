@@ -31,13 +31,34 @@ import org.apache.spark.sql.functions.{count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
+import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 /**
  * Test suite dedicated to Comet native aggregate operator
  */
 class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
+
+  test("avg decimal") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        ParquetGenerator.makeParquetFile(random, spark, filename, 10000, DataGenOptions())
+      }
+      val tableName = "avg_decimal"
+      withTable(tableName) {
+        val table = spark.read.parquet(filename).coalesce(1)
+        table.createOrReplaceTempView(tableName)
+        // we fall back to Spark for avg on decimal due to the following issue
+        // https://github.com/apache/datafusion-comet/issues/1371
+        // once this is fixed, we should change this test to
+        // checkSparkAnswerAndNumOfAggregates
+        checkSparkAnswer(s"SELECT c1, avg(c7) FROM $tableName GROUP BY c1 ORDER BY c1")
+      }
+    }
+  }
 
   test("stddev_pop should return NaN for some cases") {
     withSQLConf(
@@ -862,15 +883,13 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("final decimal avg") {
-    // TODO: enable decimal average for Spark 3.3
-    assume(isSpark34Plus)
-
     withSQLConf(
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withSQLConf("parquet.enable.dictionary" -> dictionaryEnabled.toString) {
-          val table = "t1"
+          val table = s"final_decimal_avg_$dictionaryEnabled"
           withTable(table) {
             sql(s"create table $table(a decimal(38, 37), b INT) using parquet")
             sql(s"insert into $table values(-0.0000000000000000000000000000000000002, 1)")
@@ -884,13 +903,13 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             sql(s"insert into $table values(0.13344406545919155429936259114971302408, 5)")
             sql(s"insert into $table values(0.13344406545919155429936259114971302408, 5)")
 
-            checkSparkAnswerAndNumOfAggregates("SELECT b , AVG(a) FROM t1 GROUP BY b", 2)
-            checkSparkAnswerAndNumOfAggregates("SELECT AVG(a) FROM t1", 2)
+            checkSparkAnswerAndNumOfAggregates(s"SELECT b , AVG(a) FROM $table GROUP BY b", 2)
+            checkSparkAnswerAndNumOfAggregates(s"SELECT AVG(a) FROM $table", 2)
             checkSparkAnswerAndNumOfAggregates(
-              "SELECT b, MIN(a), MAX(a), COUNT(a), SUM(a), AVG(a) FROM t1 GROUP BY b",
+              s"SELECT b, MIN(a), MAX(a), COUNT(a), SUM(a), AVG(a) FROM $table GROUP BY b",
               2)
             checkSparkAnswerAndNumOfAggregates(
-              "SELECT MIN(a), MAX(a), COUNT(a), SUM(a), AVG(a) FROM t1",
+              s"SELECT MIN(a), MAX(a), COUNT(a), SUM(a), AVG(a) FROM $table",
               2)
           }
         }
@@ -915,7 +934,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withSQLConf(
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
-      val table = "t1"
+      val table = "avg_null_handling"
       withTable(table) {
         sql(s"create table $table(a double, b double) using parquet")
         sql(s"insert into $table values(1, 1.0)")

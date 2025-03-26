@@ -18,7 +18,7 @@
 //! Common Parquet errors and macros.
 
 use arrow::error::ArrowError;
-use datafusion_common::DataFusionError;
+use datafusion::common::DataFusionError;
 use jni::errors::{Exception, ToException};
 use regex::Regex;
 
@@ -551,12 +551,16 @@ mod tests {
 
             let jvm = JavaVM::new(jvm_args).unwrap_or_else(|e| panic!("{:#?}", e));
 
+            #[allow(static_mut_refs)]
             unsafe {
                 JVM = Some(Arc::new(jvm));
             }
         });
 
-        unsafe { JVM.as_ref().unwrap() }
+        #[allow(static_mut_refs)]
+        unsafe {
+            JVM.as_ref().unwrap()
+        }
     }
 
     fn attach_current_thread() -> AttachGuard<'static> {
