@@ -202,13 +202,12 @@ object CometArrayExcept extends CometExpressionSerde with CometExprShim with Inc
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    createBinaryExpr(
-      expr,
-      expr.children(0),
-      expr.children(1),
-      inputs,
-      binding,
-      (builder, binaryExpr) => builder.setArrayExcept(binaryExpr))
+    val leftArrayExprProto = exprToProto(expr.children(0), inputs, binding)
+    val rightArrayExprProto = exprToProto(expr.children(1), inputs, binding)
+
+    val arrayExceptScalarExpr =
+      scalarExprToProto("array_except", leftArrayExprProto, rightArrayExprProto)
+    optExprWithInfo(arrayExceptScalarExpr, expr, expr.children: _*)
   }
 }
 
