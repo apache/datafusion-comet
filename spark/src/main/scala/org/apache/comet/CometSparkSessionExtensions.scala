@@ -55,7 +55,7 @@ import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometLoaded, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.rules.RewriteJoin
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -93,8 +93,8 @@ class CometSparkSessionExtensions
 
   case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
     override def apply(plan: SparkPlan): SparkPlan = {
-      if (!isCometEnabled(conf) || !isCometScanEnabled(conf)) {
-        if (!isCometEnabled(conf)) {
+      if (!isCometLoaded(conf) || !isCometScanEnabled(conf)) {
+        if (!isCometLoaded(conf)) {
           withInfo(plan, "Comet is not enabled")
         } else if (!isCometScanEnabled(conf)) {
           withInfo(plan, "Comet Scan is not enabled")
@@ -975,8 +975,8 @@ class CometSparkSessionExtensions
         }
       }
 
-      // We shouldn't transform Spark query plan if Comet is disabled.
-      if (!isCometEnabled(conf)) return plan
+      // We shouldn't transform Spark query plan if Comet is not loaded.
+      if (!isCometLoaded(conf)) return plan
 
       if (!isCometExecEnabled(conf)) {
         // Comet exec is disabled, but for Spark shuffle, we still can use Comet columnar shuffle
@@ -1172,9 +1172,9 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   /**
-   * Checks whether Comet extension should be enabled for Spark.
+   * Checks whether Comet extension should be loaded for Spark.
    */
-  private[comet] def isCometEnabled(conf: SQLConf): Boolean = {
+  private[comet] def isCometLoaded(conf: SQLConf): Boolean = {
     if (isBigEndian) {
       logInfo("Comet extension is disabled because platform is big-endian")
       return false
@@ -1334,26 +1334,46 @@ object CometSparkSessionExtensions extends Logging {
     CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_DATAFUSION
   }
 
-  /** Calculates required memory overhead in MB per executor process for Comet. */
+  /**
+   * Whether we should override Spark memory configuration for Comet. This only returns true when
+   * Comet native execution is enabled and/or Comet shuffle is enabled and Comet doesn't use
+   * off-heap mode (unified memory manager).
+   */
+  def shouldOverrideMemoryConf(conf: SparkConf): Boolean = {
+    val cometEnabled = getBooleanConf(conf, CometConf.COMET_ENABLED)
+    val cometShuffleEnabled = getBooleanConf(conf, CometConf.COMET_EXEC_SHUFFLE_ENABLED)
+    val cometExecEnabled = getBooleanConf(conf, CometConf.COMET_EXEC_ENABLED)
+    val offHeapMode = CometSparkSessionExtensions.isOffHeapEnabled(conf)
+    cometEnabled && (cometShuffleEnabled || cometExecEnabled) && !offHeapMode
+  }
+
+  /**
+   * Calculates required memory overhead in MB per executor process for Comet when running in
+   * on-heap mode.
+   *
+   * If `COMET_MEMORY_OVERHEAD` is defined then that value will be used, otherwise the overhead
+   * will be calculated by multiplying executor memory (`spark.executor.memory`) by
+   * `COMET_MEMORY_OVERHEAD_FACTOR`.
+   *
+   * In either case, a minimum value of `COMET_MEMORY_OVERHEAD_MIN_MIB` will be returned.
+   */
   def getCometMemoryOverheadInMiB(sparkConf: SparkConf): Long = {
-    val baseMemoryMiB = if (isOffHeapEnabled(sparkConf)) {
-      ConfigHelpers
-        .byteFromString(sparkConf.get("spark.memory.offHeap.size"), ByteUnit.MiB)
-    } else {
-      // `spark.executor.memory` default value is 1g
-      ConfigHelpers
-        .byteFromString(sparkConf.get("spark.executor.memory", "1024MB"), ByteUnit.MiB)
+    if (isOffHeapEnabled(sparkConf)) {
+      // when running in off-heap mode we use unified memory management to share
+      // off-heap memory with Spark so do not add overhead
+      return 0
     }
 
-    val minimum = ConfigHelpers
-      .byteFromString(
-        sparkConf.get(
-          COMET_MEMORY_OVERHEAD_MIN_MIB.key,
-          COMET_MEMORY_OVERHEAD_MIN_MIB.defaultValueString),
-        ByteUnit.MiB)
-    val overheadFactor = sparkConf.getDouble(
-      COMET_MEMORY_OVERHEAD_FACTOR.key,
-      COMET_MEMORY_OVERHEAD_FACTOR.defaultValue.get)
+    // `spark.executor.memory` default value is 1g
+    val baseMemoryMiB = ConfigHelpers
+      .byteFromString(sparkConf.get("spark.executor.memory", "1024MB"), ByteUnit.MiB)
+
+    val cometMemoryOverheadMinAsString = sparkConf.get(
+      COMET_MEMORY_OVERHEAD_MIN_MIB.key,
+      COMET_MEMORY_OVERHEAD_MIN_MIB.defaultValueString)
+
+    val minimum = ConfigHelpers.byteFromString(cometMemoryOverheadMinAsString, ByteUnit.MiB)
+    val overheadFactor = getDoubleConf(sparkConf, COMET_MEMORY_OVERHEAD_FACTOR)
 
     val overHeadMemFromConf = sparkConf
       .getOption(COMET_MEMORY_OVERHEAD.key)
@@ -1362,7 +1382,16 @@ object CometSparkSessionExtensions extends Logging {
     overHeadMemFromConf.getOrElse(math.max((overheadFactor * baseMemoryMiB).toLong, minimum))
   }
 
-  /** Calculates required memory overhead in bytes per executor process for Comet. */
+  private def getBooleanConf(conf: SparkConf, entry: ConfigEntry[Boolean]) =
+    conf.getBoolean(entry.key, entry.defaultValue.get)
+
+  private def getDoubleConf(conf: SparkConf, entry: ConfigEntry[Double]) =
+    conf.getDouble(entry.key, entry.defaultValue.get)
+
+  /**
+   * Calculates required memory overhead in bytes per executor process for Comet when running in
+   * on-heap mode.
+   */
   def getCometMemoryOverhead(sparkConf: SparkConf): Long = {
     ByteUnit.MiB.toBytes(getCometMemoryOverheadInMiB(sparkConf))
   }
@@ -1389,11 +1418,6 @@ object CometSparkSessionExtensions extends Logging {
     } else {
       ByteUnit.MiB.toBytes(shuffleMemorySize)
     }
-  }
-
-  /** Calculates Comet shuffle memory size in MB */
-  def getCometShuffleMemorySizeInMiB(sparkConf: SparkConf, conf: SQLConf = SQLConf.get): Long = {
-    ByteUnit.BYTE.toMiB(getCometShuffleMemorySize(sparkConf, conf))
   }
 
   def isOffHeapEnabled(sparkConf: SparkConf): Boolean = {
