@@ -2723,6 +2723,9 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           if isCometSink(op) && op.output.forall(a =>
             supportedDataType(
               a.dataType,
+              // Complex type supported if
+              // - Native datafusion reader enabled (experimental) OR
+              // - conversion from Parquet/JSON enabled
               allowComplex =
                 usingDataFusionParquetExec(conf) || CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED
                   .get(conf) || CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf))) =>
