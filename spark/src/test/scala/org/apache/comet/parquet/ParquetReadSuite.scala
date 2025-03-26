@@ -123,7 +123,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   test("unsupported Spark schema") {
     Seq(
       Seq(StructField("f1", IntegerType), StructField("f2", BooleanType)) -> true,
-      Seq(StructField("f1", IntegerType), StructField("f2", ArrayType(IntegerType))) -> true,
+      Seq(StructField("f1", IntegerType), StructField("f2", ArrayType(IntegerType))) -> false,
       Seq(
         StructField("f1", MapType(keyType = LongType, valueType = StringType)),
         StructField("f2", ArrayType(DoubleType))) -> false).foreach { case (schema, expected) =>
