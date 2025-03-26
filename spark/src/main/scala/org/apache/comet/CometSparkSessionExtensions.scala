@@ -55,7 +55,7 @@ import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometLoaded, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.rules.RewriteJoin
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -93,8 +93,8 @@ class CometSparkSessionExtensions
 
   case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
     override def apply(plan: SparkPlan): SparkPlan = {
-      if (!isCometEnabled(conf) || !isCometScanEnabled(conf)) {
-        if (!isCometEnabled(conf)) {
+      if (!isCometLoaded(conf) || !isCometScanEnabled(conf)) {
+        if (!isCometLoaded(conf)) {
           withInfo(plan, "Comet is not enabled")
         } else if (!isCometScanEnabled(conf)) {
           withInfo(plan, "Comet Scan is not enabled")
@@ -975,8 +975,8 @@ class CometSparkSessionExtensions
         }
       }
 
-      // We shouldn't transform Spark query plan if Comet is disabled.
-      if (!isCometEnabled(conf)) return plan
+      // We shouldn't transform Spark query plan if Comet is not loaded.
+      if (!isCometLoaded(conf)) return plan
 
       if (!isCometExecEnabled(conf)) {
         // Comet exec is disabled, but for Spark shuffle, we still can use Comet columnar shuffle
@@ -1172,9 +1172,9 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   /**
-   * Checks whether Comet extension should be enabled for Spark.
+   * Checks whether Comet extension should be loaded for Spark.
    */
-  private[comet] def isCometEnabled(conf: SQLConf): Boolean = {
+  private[comet] def isCometLoaded(conf: SQLConf): Boolean = {
     if (isBigEndian) {
       logInfo("Comet extension is disabled because platform is big-endian")
       return false
