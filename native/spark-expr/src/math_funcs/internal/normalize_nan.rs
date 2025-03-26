@@ -60,6 +60,10 @@ impl PhysicalExpr for NormalizeNaNAndZero {
         self
     }
 
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
+    }
+
     fn data_type(&self, input_schema: &Schema) -> datafusion::common::Result<DataType> {
         self.child.data_type(input_schema)
     }
