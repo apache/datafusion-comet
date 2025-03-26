@@ -46,6 +46,7 @@ use datafusion_comet_spark_expr::hash_funcs::murmur3::create_murmur3_hashes;
 use futures::executor::block_on;
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
+use std::borrow::Borrow;
 use std::io::{Cursor, Error, SeekFrom};
 use std::{
     any::Any,
@@ -214,18 +215,30 @@ async fn external_shuffle(
     enable_fast_encoding: bool,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
-    let mut repartitioner = ShuffleRepartitioner::try_new(
-        partition,
-        output_data_file,
-        output_index_file,
-        Arc::clone(&schema),
-        partitioning,
-        metrics,
-        context.runtime_env(),
-        context.session_config().batch_size(),
-        codec,
-        enable_fast_encoding,
-    )?;
+
+    let mut repartitioner: Box<dyn ShufflePartitioner> = match &partitioning {
+        any if any.partition_count() == 1 => Box::new(SinglePartitionShufflePartitioner::try_new(
+            output_data_file,
+            output_index_file,
+            Arc::clone(&schema),
+            metrics,
+            context.session_config().batch_size(),
+            codec,
+            enable_fast_encoding,
+        )?),
+        _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
+            partition,
+            output_data_file,
+            output_index_file,
+            Arc::clone(&schema),
+            partitioning,
+            metrics,
+            context.runtime_env(),
+            context.session_config().batch_size(),
+            codec,
+            enable_fast_encoding,
+        )?),
+    };
 
     while let Some(batch) = input.next().await {
         // Block on the repartitioner to insert the batch and shuffle the rows
@@ -234,7 +247,11 @@ async fn external_shuffle(
         // current batch in the repartitioner.
         block_on(repartitioner.insert_batch(batch?))?;
     }
-    repartitioner.shuffle_write().await
+
+    repartitioner.shuffle_write().await?;
+
+    // shuffle writer always has empty output
+    Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))))
 }
 
 struct ShuffleRepartitionerMetrics {
@@ -282,10 +299,18 @@ impl ShuffleRepartitionerMetrics {
     }
 }
 
-struct ShuffleRepartitioner {
+#[async_trait::async_trait]
+trait ShufflePartitioner: Send + Sync {
+    /// Insert a batch into the partitioner
+    async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()>;
+    /// Write shuffle data and shuffle index file to disk
+    async fn shuffle_write(&mut self) -> Result<()>;
+}
+
+/// A partitioner that uses a hash function to partition data into multiple partitions
+struct MultiPartitionShuffleRepartitioner {
     output_data_file: String,
     output_index_file: String,
-    schema: SchemaRef,
     buffered_batches: Vec<RecordBatch>,
     partition_indices: Vec<Vec<(u32, u32)>>,
     partition_writers: Vec<PartitionWriter>,
@@ -317,7 +342,7 @@ struct ScratchSpace {
     partition_starts: Vec<u32>,
 }
 
-impl ShuffleRepartitioner {
+impl MultiPartitionShuffleRepartitioner {
     #[allow(clippy::too_many_arguments)]
     pub fn try_new(
         partition: usize,
@@ -357,7 +382,6 @@ impl ShuffleRepartitioner {
         Ok(Self {
             output_data_file,
             output_index_file,
-            schema: Arc::clone(&schema),
             buffered_batches: vec![],
             partition_indices: vec![vec![]; num_output_partitions],
             partition_writers,
@@ -369,26 +393,6 @@ impl ShuffleRepartitioner {
             batch_size,
             reservation,
         })
-    }
-
-    /// Shuffles rows in input batch into corresponding partition buffer.
-    /// This function will slice input batch according to configured batch size and then
-    /// shuffle rows into corresponding partition buffer.
-    async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()> {
-        let start_time = Instant::now();
-        let mut start = 0;
-        while start < batch.num_rows() {
-            let end = (start + self.batch_size).min(batch.num_rows());
-            let batch = batch.slice(start, end - start);
-            self.partitioning_batch(batch).await?;
-            start = end;
-        }
-        self.metrics.input_batches.add(1);
-        self.metrics
-            .baseline
-            .elapsed_compute()
-            .add_duration(start_time.elapsed());
-        Ok(())
     }
 
     /// Shuffles rows in input batch into corresponding partition buffer.
@@ -416,15 +420,6 @@ impl ShuffleRepartitioner {
         self.metrics.baseline.record_output(input.num_rows());
 
         match &self.partitioning {
-            any if any.partition_count() == 1 => {
-                assert_eq!(self.partition_writers.len(), 1, "Expected 1 partition");
-
-                // TODO the single partition case could be optimized to avoid appending all
-                // rows from the batch into builders and then recreating the batch
-                // https://github.com/apache/datafusion-comet/issues/1453
-
-                self.buffer_batch_may_spill(input).await?;
-            }
             Partitioning::Hash(exprs, num_output_partitions) => {
                 let mut scratch = std::mem::take(&mut self.scratch);
                 let (partition_starts, shuffled_partition_ids): (&Vec<u32>, &Vec<u32>) = {
@@ -547,93 +542,8 @@ impl ShuffleRepartitioner {
         Ok(())
     }
 
-    async fn buffer_batch_may_spill(&mut self, input: RecordBatch) -> Result<()> {
-        let size = input.get_array_memory_size();
-        self.buffered_batches.push(input);
-
-        let grow_result = {
-            let mut timer = self.metrics.mempool_time.timer();
-            let result = self.reservation.try_grow(size);
-            timer.stop();
-            result
-        };
-        if grow_result.is_err() {
-            self.spill().await?;
-        }
-        Ok(())
-    }
-
-    /// Writes buffered shuffled record batches into Arrow IPC bytes.
-    async fn shuffle_write(&mut self) -> Result<SendableRecordBatchStream> {
-        let mut partitioned_batches = self.partitioned_batches();
-        let mut elapsed_compute = self.metrics.baseline.elapsed_compute().timer();
-        let num_output_partitions = self.partition_indices.len();
-        let mut offsets = vec![0; num_output_partitions + 1];
-
-        let data_file = self.output_data_file.clone();
-        let index_file = self.output_index_file.clone();
-
-        let mut write_time = self.metrics.write_time.timer();
-
-        let output_data = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(data_file)
-            .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
-
-        let mut output_data = BufWriter::new(output_data);
-
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..num_output_partitions {
-            offsets[i] = output_data.stream_position()?;
-
-            // Write in memory batches to output data file
-            let mut partition_iter = partitioned_batches.produce(i);
-            Self::shuffle_write_partition(
-                &mut partition_iter,
-                &mut self.shuffle_block_writer,
-                &mut output_data,
-                &self.metrics.encode_time,
-            )?;
-
-            // if we wrote a spill file for this partition then copy the
-            // contents into the shuffle file
-            if let Some(spill_data) = self.partition_writers[i].spill_file.as_ref() {
-                let mut spill_file = BufReader::new(
-                    File::open(spill_data.temp_file.path()).map_err(Self::to_df_err)?,
-                );
-                std::io::copy(&mut spill_file, &mut output_data).map_err(Self::to_df_err)?;
-            }
-        }
-        output_data.flush()?;
-
-        // add one extra offset at last to ease partition length computation
-        offsets[num_output_partitions] = output_data.stream_position().map_err(Self::to_df_err)?;
-
-        let mut output_index =
-            BufWriter::new(File::create(index_file).map_err(|e| {
-                DataFusionError::Execution(format!("shuffle write error: {:?}", e))
-            })?);
-        for offset in offsets {
-            output_index
-                .write_all(&(offset as i64).to_le_bytes()[..])
-                .map_err(Self::to_df_err)?;
-        }
-        output_index.flush()?;
-
-        write_time.stop();
-
-        elapsed_compute.stop();
-
-        // shuffle writer always has empty output
-        Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(
-            &self.schema,
-        ))))
-    }
-
     fn shuffle_write_partition(
-        partition_iter: &mut BatchIterator,
+        partition_iter: &mut PartitionedBatchIterator,
         shuffle_block_writer: &mut ShuffleBlockWriter,
         output_data: &mut BufWriter<File>,
         encode_time: &Time,
@@ -645,10 +555,6 @@ impl ShuffleRepartitioner {
         }
         buf_batch_writer.flush()?;
         Ok(())
-    }
-
-    fn to_df_err(e: Error) -> DataFusionError {
-        DataFusionError::Execution(format!("shuffle write error: {:?}", e))
     }
 
     fn used(&self) -> usize {
@@ -678,13 +584,7 @@ impl ShuffleRepartitioner {
             &mut self.partition_indices,
             vec![vec![]; num_output_partitions],
         );
-        let single_partition_mode = num_output_partitions == 1;
-        PartitionedBatchesProducer::new(
-            buffered_batches,
-            indices,
-            self.batch_size,
-            single_partition_mode,
-        )
+        PartitionedBatchesProducer::new(buffered_batches, indices, self.batch_size)
     }
 
     async fn spill(&mut self) -> Result<()> {
@@ -718,7 +618,98 @@ impl ShuffleRepartitioner {
     }
 }
 
-impl Debug for ShuffleRepartitioner {
+#[async_trait::async_trait]
+impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
+    /// Shuffles rows in input batch into corresponding partition buffer.
+    /// This function will slice input batch according to configured batch size and then
+    /// shuffle rows into corresponding partition buffer.
+    async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()> {
+        let start_time = Instant::now();
+        let mut start = 0;
+        while start < batch.num_rows() {
+            let end = (start + self.batch_size).min(batch.num_rows());
+            let batch = batch.slice(start, end - start);
+            self.partitioning_batch(batch).await?;
+            start = end;
+        }
+        self.metrics.input_batches.add(1);
+        self.metrics
+            .baseline
+            .elapsed_compute()
+            .add_duration(start_time.elapsed());
+        Ok(())
+    }
+
+    /// Writes buffered shuffled record batches into Arrow IPC bytes.
+    async fn shuffle_write(&mut self) -> Result<()> {
+        let start_time = Instant::now();
+
+        let mut partitioned_batches = self.partitioned_batches();
+        let num_output_partitions = self.partition_indices.len();
+        let mut offsets = vec![0; num_output_partitions + 1];
+
+        let data_file = self.output_data_file.clone();
+        let index_file = self.output_index_file.clone();
+
+        let mut write_time = self.metrics.write_time.timer();
+
+        let output_data = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(data_file)
+            .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
+
+        let mut output_data = BufWriter::new(output_data);
+
+        #[allow(clippy::needless_range_loop)]
+        for i in 0..num_output_partitions {
+            offsets[i] = output_data.stream_position()?;
+
+            // Write in memory batches to output data file
+            let mut partition_iter = partitioned_batches.produce(i);
+            Self::shuffle_write_partition(
+                &mut partition_iter,
+                &mut self.shuffle_block_writer,
+                &mut output_data,
+                &self.metrics.encode_time,
+            )?;
+
+            // if we wrote a spill file for this partition then copy the
+            // contents into the shuffle file
+            if let Some(spill_data) = self.partition_writers[i].spill_file.as_ref() {
+                let mut spill_file =
+                    BufReader::new(File::open(spill_data.temp_file.path()).map_err(to_df_err)?);
+                std::io::copy(&mut spill_file, &mut output_data).map_err(to_df_err)?;
+            }
+        }
+        output_data.flush()?;
+
+        // add one extra offset at last to ease partition length computation
+        offsets[num_output_partitions] = output_data.stream_position().map_err(to_df_err)?;
+
+        let mut output_index =
+            BufWriter::new(File::create(index_file).map_err(|e| {
+                DataFusionError::Execution(format!("shuffle write error: {:?}", e))
+            })?);
+        for offset in offsets {
+            output_index
+                .write_all(&(offset as i64).to_le_bytes()[..])
+                .map_err(to_df_err)?;
+        }
+        output_index.flush()?;
+
+        write_time.stop();
+
+        self.metrics
+            .baseline
+            .elapsed_compute()
+            .add_duration(start_time.elapsed());
+        Ok(())
+    }
+}
+
+impl Debug for MultiPartitionShuffleRepartitioner {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("ShuffleRepartitioner")
             .field("memory_used", &self.used())
@@ -729,6 +720,175 @@ impl Debug for ShuffleRepartitioner {
     }
 }
 
+/// A partitioner that writes all shuffle data to a single file and a single index file
+struct SinglePartitionShufflePartitioner {
+    // output_data_file: File,
+    output_data_writer: BufBatchWriter<ShuffleBlockWriter, File>,
+    output_index_path: String,
+    /// Batches that are smaller than the batch size and to be concatenated
+    buffered_batches: Vec<RecordBatch>,
+    /// Number of rows in the concatenating batches
+    num_buffered_rows: usize,
+    /// Metrics for the repartitioner
+    metrics: ShuffleRepartitionerMetrics,
+    /// The configured batch size
+    batch_size: usize,
+}
+
+impl SinglePartitionShufflePartitioner {
+    fn try_new(
+        output_data_path: String,
+        output_index_path: String,
+        schema: SchemaRef,
+        metrics: ShuffleRepartitionerMetrics,
+        batch_size: usize,
+        codec: CompressionCodec,
+        enable_fast_encoding: bool,
+    ) -> Result<Self> {
+        let shuffle_block_writer =
+            ShuffleBlockWriter::try_new(schema.as_ref(), enable_fast_encoding, codec.clone())?;
+
+        let output_data_file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(output_data_path)
+            .map_err(to_df_err)?;
+
+        let output_data_writer = BufBatchWriter::new(shuffle_block_writer, output_data_file);
+
+        Ok(Self {
+            output_data_writer,
+            output_index_path,
+            buffered_batches: vec![],
+            num_buffered_rows: 0,
+            metrics,
+            batch_size,
+        })
+    }
+
+    /// Add a batch to the buffer of the partitioner, these buffered batches will be concatenated
+    /// and written to the output data file when the number of rows in the buffer reaches the batch size.
+    fn add_buffered_batch(&mut self, batch: RecordBatch) {
+        self.num_buffered_rows += batch.num_rows();
+        self.buffered_batches.push(batch);
+    }
+
+    /// Consumes buffered batches and return a concatenated batch if successful
+    fn concat_buffered_batches(&mut self) -> Result<Option<RecordBatch>> {
+        if self.buffered_batches.is_empty() {
+            Ok(None)
+        } else if self.buffered_batches.len() == 1 {
+            let batch = self.buffered_batches.remove(0);
+            self.num_buffered_rows = 0;
+            Ok(Some(batch))
+        } else {
+            let schema = &self.buffered_batches[0].schema();
+            match arrow::compute::concat_batches(schema, self.buffered_batches.iter()) {
+                Ok(concatenated) => {
+                    self.buffered_batches.clear();
+                    self.num_buffered_rows = 0;
+                    Ok(Some(concatenated))
+                }
+                Err(e) => Err(DataFusionError::ArrowError(
+                    e,
+                    Some(DataFusionError::get_back_trace()),
+                )),
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ShufflePartitioner for SinglePartitionShufflePartitioner {
+    async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()> {
+        let start_time = Instant::now();
+        let num_rows = batch.num_rows();
+
+        if num_rows > 0 {
+            self.metrics.data_size.add(batch.get_array_memory_size());
+            self.metrics.baseline.record_output(num_rows);
+
+            if num_rows >= self.batch_size || num_rows + self.num_buffered_rows > self.batch_size {
+                let concatenated_batch = self.concat_buffered_batches()?;
+
+                let write_start_time = Instant::now();
+
+                // Write the concatenated buffered batch
+                if let Some(batch) = concatenated_batch {
+                    self.output_data_writer
+                        .write(&batch, &self.metrics.encode_time)?;
+                }
+
+                if num_rows >= self.batch_size {
+                    // Write the new batch
+                    self.output_data_writer
+                        .write(&batch, &self.metrics.encode_time)?;
+                } else {
+                    // Add the new batch to the buffer
+                    self.add_buffered_batch(batch);
+                }
+
+                self.metrics
+                    .write_time
+                    .add_duration(write_start_time.elapsed());
+            } else {
+                self.add_buffered_batch(batch);
+            }
+        }
+
+        self.metrics.input_batches.add(1);
+        self.metrics
+            .baseline
+            .elapsed_compute()
+            .add_duration(start_time.elapsed());
+        Ok(())
+    }
+
+    async fn shuffle_write(&mut self) -> Result<()> {
+        let start_time = Instant::now();
+        let concatenated_batch = self.concat_buffered_batches()?;
+
+        // Write the concatenated buffered batch
+        let mut write_time = self.metrics.write_time.timer();
+        if let Some(batch) = concatenated_batch {
+            self.output_data_writer
+                .write(&batch, &self.metrics.encode_time)?;
+        }
+        self.output_data_writer.flush()?;
+        write_time.stop();
+
+        // Write index file. It should only contain 2 entires: 0 and the total number of bytes written
+        let mut index_file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(self.output_index_path.clone())
+            .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
+        let data_file_length = self
+            .output_data_writer
+            .writer
+            .stream_position()
+            .map_err(to_df_err)?;
+        for offset in [0, data_file_length] {
+            index_file
+                .write_all(&(offset as i64).to_le_bytes()[..])
+                .map_err(to_df_err)?;
+        }
+        index_file.flush()?;
+
+        self.metrics
+            .baseline
+            .elapsed_compute()
+            .add_duration(start_time.elapsed());
+        Ok(())
+    }
+}
+
+fn to_df_err(e: Error) -> DataFusionError {
+    DataFusionError::Execution(format!("shuffle write error: {:?}", e))
+}
+
 /// A helper struct to produce shuffled batches.
 /// This struct takes ownership of the buffered batches and partition indices from the
 /// ShuffleRepartitioner, and provides an iterator over the batches in the specified partitions.
@@ -736,7 +896,6 @@ struct PartitionedBatchesProducer {
     buffered_batches: Vec<RecordBatch>,
     partition_indices: Vec<Vec<(u32, u32)>>,
     batch_size: usize,
-    single_partition_mode: bool,
 }
 
 impl PartitionedBatchesProducer {
@@ -744,46 +903,21 @@ impl PartitionedBatchesProducer {
         buffered_batches: Vec<RecordBatch>,
         indices: Vec<Vec<(u32, u32)>>,
         batch_size: usize,
-        single_partition_mode: bool,
     ) -> Self {
         Self {
             partition_indices: indices,
             buffered_batches,
             batch_size,
-            single_partition_mode,
         }
     }
 
-    fn produce(&mut self, partition_id: usize) -> BatchIterator {
-        if self.single_partition_mode {
-            assert!(
-                partition_id == 0,
-                "Single partition mode can only be used for the first partition"
-            );
-            BatchIterator::SinglePartition(SinglePartitionBatchIterator::new(
-                std::mem::take(&mut self.buffered_batches),
-                self.batch_size,
-            ))
-        } else {
-            BatchIterator::Partitioned(PartitionedBatchIterator::new(
-                &self.partition_indices[partition_id],
-                &self.buffered_batches,
-                self.batch_size,
-            ))
-        }
+    fn produce(&mut self, partition_id: usize) -> PartitionedBatchIterator {
+        PartitionedBatchIterator::new(
+            &self.partition_indices[partition_id],
+            &self.buffered_batches,
+            self.batch_size,
+        )
     }
-}
-
-enum BatchIterator<'a> {
-    Partitioned(PartitionedBatchIterator<'a>),
-    SinglePartition(SinglePartitionBatchIterator),
-}
-
-struct SinglePartitionBatchIterator {
-    buffered_batches: std::vec::IntoIter<RecordBatch>,
-    batch_size: usize,
-    pending_batch: Option<RecordBatch>,
-    concatenating_batches: Vec<RecordBatch>,
 }
 
 struct PartitionedBatchIterator<'a> {
@@ -791,77 +925,6 @@ struct PartitionedBatchIterator<'a> {
     batch_size: usize,
     indices: Vec<(usize, usize)>,
     pos: usize,
-}
-
-impl Iterator for BatchIterator<'_> {
-    type Item = Result<RecordBatch>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            BatchIterator::Partitioned(iter) => iter.next(),
-            BatchIterator::SinglePartition(iter) => iter.next(),
-        }
-    }
-}
-
-impl SinglePartitionBatchIterator {
-    fn new(buffered_batches: Vec<RecordBatch>, batch_size: usize) -> Self {
-        Self {
-            buffered_batches: buffered_batches.into_iter(),
-            batch_size,
-            pending_batch: None,
-            concatenating_batches: vec![],
-        }
-    }
-
-    fn next(&mut self) -> Option<Result<RecordBatch>> {
-        if self.pending_batch.is_none() {
-            // Get the first batch if we don't have a pending batch
-            self.pending_batch = self.buffered_batches.next();
-            self.pending_batch.as_ref()?;
-        }
-
-        let pending_batch = self.pending_batch.take().unwrap();
-        let mut current_row_count = pending_batch.num_rows();
-        let schema = pending_batch.schema();
-        self.concatenating_batches.clear();
-        self.concatenating_batches.push(pending_batch);
-
-        // Keep accumulating batches until we reach/exceed batch_size or run out of batches
-        while current_row_count < self.batch_size {
-            if let Some(next_batch) = self.buffered_batches.next() {
-                let next_row_count = next_batch.num_rows();
-
-                // If adding this batch would exceed batch_size, save it for next time
-                current_row_count += next_row_count;
-                if current_row_count > self.batch_size {
-                    self.pending_batch = Some(next_batch);
-                    break;
-                }
-
-                // Otherwise, concatenate the batches
-                self.concatenating_batches.push(next_batch);
-            } else {
-                // No more batches to concatenate
-                break;
-            }
-        }
-
-        if self.concatenating_batches.len() > 1 {
-            match arrow::compute::concat_batches(&schema, self.concatenating_batches.iter()) {
-                Ok(concatenated) => Some(Ok(concatenated)),
-                Err(e) => {
-                    // If concatenation fails, still return what we have so far
-                    Some(Err(DataFusionError::ArrowError(
-                        e,
-                        Some(DataFusionError::get_back_trace()),
-                    )))
-                }
-            }
-        } else {
-            Some(Ok(self.concatenating_batches.pop().unwrap()))
-        }
-    }
 }
 
 impl<'a> PartitionedBatchIterator<'a> {
@@ -891,8 +954,12 @@ impl<'a> PartitionedBatchIterator<'a> {
             pos: 0,
         }
     }
+}
 
-    fn next(&mut self) -> Option<Result<RecordBatch>> {
+impl Iterator for PartitionedBatchIterator<'_> {
+    type Item = Result<RecordBatch>;
+
+    fn next(&mut self) -> Option<Self::Item> {
         if self.pos >= self.indices.len() {
             return None;
         }
@@ -937,7 +1004,7 @@ impl PartitionWriter {
 
     fn spill(
         &mut self,
-        iter: &mut BatchIterator,
+        iter: &mut PartitionedBatchIterator,
         runtime: &RuntimeEnv,
         metrics: &ShuffleRepartitionerMetrics,
     ) -> Result<usize> {
@@ -993,15 +1060,15 @@ impl PartitionWriter {
 /// Write batches to writer while using a buffer to avoid frequent system calls.
 /// The record batches were first written by ShuffleBlockWriter into an internal buffer.
 /// Once the buffer exceeds the max size, the buffer will be flushed to the writer.
-struct BufBatchWriter<'a, W: Write> {
-    shuffle_block_writer: &'a mut ShuffleBlockWriter,
-    writer: &'a mut W,
+struct BufBatchWriter<S: Borrow<ShuffleBlockWriter>, W: Write> {
+    shuffle_block_writer: S,
+    writer: W,
     buffer: Vec<u8>,
     buffer_max_size: usize,
 }
 
-impl<'a, W: Write> BufBatchWriter<'a, W> {
-    fn new(shuffle_block_writer: &'a mut ShuffleBlockWriter, writer: &'a mut W) -> Self {
+impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
+    fn new(shuffle_block_writer: S, writer: W) -> Self {
         // 1MB should be good enough to avoid frequent system calls,
         // and also won't cause too much memory usage
         let buffer_max_size = 1024 * 1024;
@@ -1018,9 +1085,10 @@ impl<'a, W: Write> BufBatchWriter<'a, W> {
         cursor.seek(SeekFrom::End(0))?;
         let bytes_written =
             self.shuffle_block_writer
+                .borrow()
                 .write_batch(batch, &mut cursor, encode_time)?;
         let pos = cursor.position();
-        if pos > self.buffer_max_size as u64 {
+        if pos >= self.buffer_max_size as u64 {
             self.writer.write_all(&self.buffer)?;
             self.buffer.clear();
         }
@@ -1093,6 +1161,13 @@ mod test {
 
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn test_single_partition_shuffle_writer() {
+        shuffle_write_test(1000, 100, 1, None);
+        // shuffle_write_test(10000, 10, 1, None);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     fn test_insert_larger_batch() {
         shuffle_write_test(10000, 1, 16, None);
     }
@@ -1126,7 +1201,7 @@ mod test {
         let num_partitions = 2;
         let runtime_env = create_runtime(memory_limit);
         let metrics_set = ExecutionPlanMetricsSet::new();
-        let mut repartitioner = ShuffleRepartitioner::try_new(
+        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
             0,
             "/tmp/data.out".to_string(),
             "/tmp/index.out".to_string(),
