@@ -979,7 +979,6 @@ impl Iterator for PartitionedBatchIterator<'_> {
     }
 }
 
-#[derive(Default)]
 struct PartitionWriter {
     /// Spill file for intermediate shuffle output for this partition. Each spill event
     /// will append to this file and the contents will be copied to the shuffle file at
@@ -1163,7 +1162,7 @@ mod test {
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     fn test_single_partition_shuffle_writer() {
         shuffle_write_test(1000, 100, 1, None);
-        // shuffle_write_test(10000, 10, 1, None);
+        shuffle_write_test(10000, 10, 1, None);
     }
 
     #[test]
