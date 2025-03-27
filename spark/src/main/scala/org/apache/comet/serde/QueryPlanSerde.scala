@@ -76,6 +76,29 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       false
   }
 
+  def isMatch(dt: DataType, at: ArgType): Boolean = {
+    at match {
+      case AnyType => true
+      case IntegralType =>
+        dt match {
+          case _: ByteType | _: ShortType | _: IntegerType | _: LongType => true
+          case _ => false
+        }
+      case NumericType =>
+        dt match {
+          case _: ByteType | _: ShortType | _: IntegerType | _: LongType => true
+          case _: FloatType | _: DoubleType => true
+          case _: DecimalType => true
+          case _ => false
+        }
+      case OrderedType =>
+        // TODO exclude map or other complex types that contain maps
+        true
+      case _ =>
+        false
+    }
+  }
+
   /**
    * Serializes Spark datatype to protobuf. Note that, a datatype can be serialized by this method
    * doesn't mean it is supported by Comet native execution, i.e., `supportedDataType` may return
@@ -380,6 +403,25 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         return None
 
     }
+
+    // check that Comet supports the input data types, using the same logic that is leveraged
+    // in fuzz testing
+    cometExpr.getSignature() match {
+      case Fixed(dataTypes) =>
+        if (aggExpr.children.length != dataTypes.length) {
+          withInfo(aggExpr, "Unsupported input argument count")
+          return None
+        }
+        val supportedTypes = dataTypes.zip(aggExpr.children.map(_.dataType)).forall {
+          case (expected, provided) => isMatch(provided, expected)
+        }
+        if (!supportedTypes) {
+          withInfo(aggExpr, "Unsupported input types")
+          return None
+        }
+      case _ =>
+    }
+
     cometExpr.convert(aggExpr, aggExpr.aggregateFunction, inputs, binding, conf)
   }
 
@@ -3029,6 +3071,10 @@ trait CometExpressionSerde {
  */
 trait CometAggregateExpressionSerde {
 
+  def sql(): String
+
+  def getSignature(): Signature
+
   /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into
    * native code.
@@ -3058,3 +3104,40 @@ trait CometAggregateExpressionSerde {
 
 /** Marker trait for an expression that is not guaranteed to be 100% compatible with Spark */
 trait IncompatExpr {}
+
+/** Represents the data type(s) that an argument accepts */
+sealed trait ArgType
+
+/** Supports any input type */
+case object AnyType extends ArgType
+
+/** Integral, floating-point, and decimal */
+case object NumericType extends ArgType
+
+/** Integral types (byte, short, int, long) */
+case object IntegralType extends ArgType
+
+/** Types that can ordered. Includes struct and array but excludes maps */
+case object OrderedType extends ArgType
+
+/*
+case class ConcreteTypes(dataTypes: Seq[DataType]) extends ArgType
+ */
+
+// Base trait for expression signatures
+trait Signature
+
+// A fixed number of arguments with specific types
+case class Fixed(types: Seq[ArgType]) extends Signature
+
+/*
+// A mix of fixed and optional arguments
+case class FixedWithOptional(fixed: Seq[ArgType], optional: Seq[ArgType]) extends Signature
+
+// A variadic signature, allowing for a range of arguments
+case class Variadic(minArgs: Option[Int], maxArgs: Option[Int], argType: ArgType)
+    extends Signature
+
+// A generic function signature that supports multiple forms
+case class Overloaded(variants: Seq[Signature]) extends Signature
+ */

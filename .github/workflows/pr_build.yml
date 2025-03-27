@@ -75,6 +75,8 @@ jobs:
           maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
           # upload test reports only for java 17
           upload-test-reports: ${{ matrix.java_version == '17' }}
+        env:
+          COMET_FUZZ_TEST: "true"
 
   linux-test-native-datafusion-scan:
     strategy:
@@ -138,6 +140,8 @@ jobs:
         with:
           maven_opts: -Pspark-${{ matrix.spark-version }}
           upload-test-reports: true
+        env:
+          COMET_FUZZ_TEST: "true"
 
   linux-test-with-old-spark:
     strategy:
@@ -163,6 +167,8 @@ jobs:
         uses: ./.github/actions/java-test
         with:
           maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
+        env:
+          COMET_FUZZ_TEST: "true"
 
   macos-test:
     strategy:
@@ -191,6 +197,8 @@ jobs:
         uses: ./.github/actions/java-test
         with:
           maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
+        env:
+          COMET_FUZZ_TEST: "true"
 
   macos-aarch64-test:
     strategy:
@@ -224,6 +232,8 @@ jobs:
         uses: ./.github/actions/java-test
         with:
           maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
+        env:
+          COMET_FUZZ_TEST: "true"
 
   macos-test-with-spark4_0:
     strategy:
@@ -248,6 +258,8 @@ jobs:
         with:
           maven_opts: -Pspark-${{ matrix.spark-version }}
           upload-test-reports: true
+        env:
+          COMET_FUZZ_TEST: "true"
 
   macos-aarch64-test-with-spark4_0:
     strategy:
@@ -277,6 +289,8 @@ jobs:
         with:
           maven_opts: -Pspark-${{ matrix.spark-version }}
           upload-test-reports: true
+        env:
+          COMET_FUZZ_TEST: "true"
 
   macos-aarch64-test-with-old-spark:
     strategy:
@@ -304,4 +318,5 @@ jobs:
         uses: ./.github/actions/java-test
         with:
           maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
-
+        env:
+          COMET_FUZZ_TEST: "true"
