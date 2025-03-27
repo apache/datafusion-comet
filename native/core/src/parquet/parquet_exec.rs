@@ -110,6 +110,7 @@ fn get_options(session_timezone: &str) -> (TableParquetOptions, SparkParquetOpti
     let mut spark_parquet_options =
         SparkParquetOptions::new(EvalMode::Legacy, session_timezone, false);
     spark_parquet_options.allow_cast_unsigned_ints = true;
+    spark_parquet_options.case_sensitive = false;
     (table_parquet_options, spark_parquet_options)
 }
 
