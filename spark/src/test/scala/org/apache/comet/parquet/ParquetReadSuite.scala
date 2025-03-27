@@ -20,7 +20,7 @@
 package org.apache.comet.parquet
 
 import java.io.{File, FileFilter}
-import java.math.BigDecimal
+import java.math.{BigDecimal, BigInteger}
 import java.time.{ZoneId, ZoneOffset}
 
 import scala.reflect.ClassTag
@@ -1494,27 +1494,53 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("test V1 parquet scan filter pushdown uses native_iceberg_compat") {
-    withTempPath { path =>
+  test("test V1 parquet scan filter pushdown of primitive types uses native_iceberg_compat") {
+    withTempPath { dir =>
+      val path = new Path(dir.toURI.toString, "test1.parquet")
       val rows = 1000
-      spark.range(rows).toDF("a").write.parquet(path.toString)
+      withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
+        CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false") {
+        makeParquetFileAllTypes(path, dictionaryEnabled = false, 0, rows, nullEnabled = false)
+      }
+
       Seq(true, false).foreach { pushDown =>
         withSQLConf(
-          SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> pushDown.toString,
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
-          val df = spark.read
-            .parquet(path.toString)
-            .where("a = 10")
-          df.collect()
-          val scan = collect(df.queryExecution.executedPlan) { case p: CometScanExec =>
-            assert(p.dataFilters.nonEmpty)
-            p
-          }
-          assert(scan.size == 1)
-          if (pushDown) {
-            assert(scan.head.metrics("numOutputRows").value == 1)
-          } else {
-            assert(scan.head.metrics("numOutputRows").value == rows)
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
+          SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> pushDown.toString) {
+          Seq(
+            ("_1 = true", Math.ceil(rows.toDouble / 2)), // Boolean
+            ("_2 = 1", Math.ceil(rows.toDouble / 256)), // Byte
+            ("_3 = 1", 1), // Short
+            ("_4 = 1", 1), // Integer
+            ("_5 = 1", 1), // Long
+            ("_6 = 1.0", 1), // Float
+            ("_7 = 1.0", 1), // Double
+            (s"_8 = '${1.toString * 48}'", 1), // String
+            ("_21 = to_binary('1', 'utf-8')", 1), // binary
+            ("_15 = 0.0", 1), // DECIMAL(5, 2)
+            ("_16 = 0.0", 1), // DECIMAL(18, 10)
+            (
+              s"_17 = ${new BigDecimal(new BigInteger(("1" * 16).getBytes), 37).toString}",
+              Math.ceil(rows.toDouble / 10)
+            ), // DECIMAL(38, 37)
+            (s"_19 = TIMESTAMP '${DateTimeUtils.toJavaTimestamp(1)}'", 1), // Timestamp
+            ("_20 = DATE '1970-01-02'", 1) // Date
+          ).foreach { case (whereCause, expectedRows) =>
+            val df = spark.read
+              .parquet(path.toString)
+              .where(whereCause)
+            val (_, cometPlan) = checkSparkAnswer(df)
+            val scan = collect(cometPlan) { case p: CometScanExec =>
+              assert(p.dataFilters.nonEmpty)
+              p
+            }
+            assert(scan.size == 1)
+            if (pushDown) {
+              assert(scan.head.metrics("numOutputRows").value == expectedRows)
+            } else {
+              assert(scan.head.metrics("numOutputRows").value == rows)
+            }
           }
         }
       }
