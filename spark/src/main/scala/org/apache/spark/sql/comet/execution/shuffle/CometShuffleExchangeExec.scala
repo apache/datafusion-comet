@@ -238,7 +238,7 @@ object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
 
   /**
    * This is copied from Spark `ShuffleExchangeExec.needToCopyObjectsBeforeShuffle`. The only
-   * difference is that we use `BosonShuffleManager` instead of `SortShuffleManager`.
+   * difference is that we use `CometShuffleManager` instead of `SortShuffleManager`.
    */
   private def needToCopyObjectsBeforeShuffle(partitioner: Partitioner): Boolean = {
     // Note: even though we only use the partitioner's `numPartitions` field, we require it to be

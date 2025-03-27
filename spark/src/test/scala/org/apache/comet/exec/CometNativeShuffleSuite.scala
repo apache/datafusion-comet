@@ -206,8 +206,11 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
 
   test("fix: Comet native shuffle deletes shuffle files after query") {
     withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
-      sql("SELECT count(_2), sum(_2) FROM tbl GROUP BY _1").collect()
+      var df = sql("SELECT count(_2), sum(_2) FROM tbl GROUP BY _1")
+      df.collect()
       val diskBlockManager = SparkEnv.get.blockManager.diskBlockManager
+      assert(diskBlockManager.getAllFiles().nonEmpty)
+      df = null
       eventually(timeout(30.seconds), interval(1.seconds)) {
         System.gc()
         assert(diskBlockManager.getAllFiles().isEmpty)
