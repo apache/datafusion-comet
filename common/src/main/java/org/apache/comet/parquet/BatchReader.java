@@ -23,10 +23,7 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -286,7 +283,6 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     missingColumns = new boolean[columns.size()];
     List<String[]> paths = requestedSchema.getPaths();
     StructField[] nonPartitionFields = sparkSchema.fields();
-    ShimFileFormat.findRowIndexColumnIndexInSchema(sparkSchema);
     for (int i = 0; i < requestedSchema.getFieldCount(); i++) {
       Type t = requestedSchema.getFields().get(i);
       Preconditions.checkState(
