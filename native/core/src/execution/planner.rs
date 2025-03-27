@@ -230,7 +230,7 @@ impl PhysicalPlanner {
     }
 
     /// Create a DataFusion physical expression from Spark physical expression
-    fn create_expr(
+    pub(crate) fn create_expr(
         &self,
         spark_expr: &Expr,
         input_schema: SchemaRef,

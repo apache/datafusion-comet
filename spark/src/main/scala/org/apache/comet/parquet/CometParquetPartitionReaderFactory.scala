@@ -199,6 +199,7 @@ case class CometParquetPartitionReaderFactory(
       val parquetSchema = footerFileMetaData.getSchema
       val parquetFilters = new ParquetFilters(
         parquetSchema,
+        readDataSchema,
         pushDownDate,
         pushDownTimestamp,
         pushDownDecimal,
