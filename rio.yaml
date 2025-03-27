@@ -9,10 +9,10 @@ notify:
     postOnFailure: false
 
 machine:
-  baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
+  baseImage: docker.apple.com/pie/comet-builder-ubi8-jdk11:latest
   env: &base_env
     LOCAL_REPO: ".dist/local-repo"
-    COMET: true
+    ENABLE_COMET: true
     COMET_VERSION: 0.8.0.0-apple-SNAPSHOT
     RUST_BACKTRACE: full
     LANG: "en_US.UTF-8"
@@ -24,7 +24,7 @@ builds:
     branchName: main-apple
     version: platform
     machine: &rio3-machine
-      baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
+      baseImage: docker.apple.com/pie/comet-builder-ubi8-jdk11:latest
       targetPlatforms:
         - linux/amd64
         - linux/arm64
@@ -81,9 +81,8 @@ builds:
     branchName: main-apple
     version: 3.2_2.12
     disabled: true
-    machine: &rio3-jdk11-machine
+    machine:
       <<: *rio3-machine
-      baseImage: docker.apple.com/pie/comet-builder-ubi8-jdk11:latest
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.2"
@@ -100,7 +99,7 @@ builds:
     version: 3.3_2.12
     disabled: true
     machine:
-      <<: *rio3-jdk11-machine
+      <<: *rio3-machine
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.3"
@@ -109,7 +108,7 @@ builds:
     version: 3.3_2.13
     disabled: true
     machine:
-      <<: *rio3-jdk11-machine
+      <<: *rio3-machine
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.3,scala-2.13"
@@ -118,7 +117,7 @@ builds:
     version: 3.4_2.12
     disabled: false
     machine:
-      <<: *rio3-jdk11-machine
+      <<: *rio3-machine
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.4,scala-2.12"
@@ -130,7 +129,7 @@ builds:
     version: 3.4_2.13
     disabled: false
     machine:
-      <<: *rio3-jdk11-machine
+      <<: *rio3-machine
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.4,scala-2.13"
@@ -189,7 +188,7 @@ builds:
     disabled: true
     timeout: 180
     machine: &rio2-machine
-      baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
+      baseImage: docker.apple.com/pie/comet-builder-ubi8-jdk11:latest
       targetPlatforms:
         - linux/amd64
         # FIXME Disabld due to leveldbjni
@@ -324,7 +323,6 @@ builds:
     machine:
       <<: *rio3-machine
       # NOTE: Requires ubi8 due to leveldbjni and graviton
-      baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.3"
@@ -338,7 +336,6 @@ builds:
     machine:
       <<: *rio3-machine
       # NOTE: Requires ubi8 due to leveldbjni and graviton
-      baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.3,scala-2.13"
@@ -352,7 +349,6 @@ builds:
     machine:
       <<: *rio3-machine
       # NOTE: Requires ubi8 due to leveldbjni and graviton
-      baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.4"
@@ -371,7 +367,6 @@ builds:
     machine:
       <<: *rio3-machine
       # NOTE: Requires ubi8 due to leveldbjni and graviton
-      baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.4,scala-2.13"
@@ -627,7 +622,7 @@ builds:
     version: 3.2_2.12
     disabled: true
     machine:
-      <<: *rio3-jdk11-machine
+      <<: *rio3-machine
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.2"
@@ -658,7 +653,7 @@ builds:
     version: 3.3_2.12
     disabled: true
     machine:
-      <<: *rio3-jdk11-machine
+      <<: *rio3-machine
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.3"
@@ -671,7 +666,7 @@ builds:
     version: 3.3_2.13
     disabled: true
     machine:
-      <<: *rio3-jdk11-machine
+      <<: *rio3-machine
       env:
         <<: *proxy_env
         PROFILES: "-Pspark-3.3,scala-2.13"
@@ -824,7 +819,7 @@ builds:
     trigger:
       gitPush: false
     machine:
-      <<: *rio3-jdk11-machine
+      <<: *rio3-machine
       targetPlatforms:
         - linux/amd64
       env:
@@ -872,7 +867,7 @@ builds:
     trigger:
       gitPush: false
     machine:
-      <<: *rio3-jdk11-machine
+      <<: *rio3-machine
       targetPlatforms:
         - linux/amd64
       env:
@@ -889,7 +884,7 @@ builds:
         - pipeline: build-artifacts-main-apple-build-3.3_2.12
 
   - group: build
-    branchName: main-jdk11-apple
+    branchName: main-apple
     version: 3.3_2.13
     disabled: true
     trigger:
@@ -918,7 +913,7 @@ builds:
     trigger:
       gitPush: false
     machine:
-      <<: *rio3-jdk11-machine
+      <<: *rio3-machine
       targetPlatforms:
         - linux/amd64
       env:
@@ -941,7 +936,7 @@ builds:
     trigger:
       gitPush: false
     machine:
-      <<: *rio3-jdk11-machine
+      <<: *rio3-machine
       targetPlatforms:
         - linux/amd64
       env:
@@ -1332,7 +1327,7 @@ builds:
     trigger:
       gitPush: false
     machine:
-      <<: *rio3-jdk11-machine
+      <<: *rio3-machine
       targetPlatforms:
         - linux/amd64
       env:
@@ -1377,7 +1372,7 @@ builds:
     trigger:
       gitPush: false
     machine:
-      <<: *rio3-jdk11-machine
+      <<: *rio3-machine
       targetPlatforms:
         - linux/amd64
       env:
@@ -1398,7 +1393,7 @@ builds:
     trigger:
       gitPush: false
     machine:
-      <<: *rio3-jdk11-machine
+      <<: *rio3-machine
       targetPlatforms:
         - linux/amd64
       env:
@@ -1419,7 +1414,7 @@ builds:
     trigger:
       gitPush: false
     machine:
-      <<: *rio3-jdk11-machine
+      <<: *rio3-machine
       targetPlatforms:
         - linux/amd64
       env:
@@ -1440,7 +1435,7 @@ builds:
     trigger:
       gitPush: false
     machine:
-      <<: *rio3-jdk11-machine
+      <<: *rio3-machine
       targetPlatforms:
         - linux/amd64
       env:
@@ -1745,7 +1740,7 @@ builds:
     trigger:
       gitPush: false
     machine:
-      <<: *rio3-jdk11-machine
+      <<: *rio3-machine
       targetPlatforms:
         - linux/amd64
       env:
@@ -1805,7 +1800,7 @@ builds:
     trigger:
       gitPush: false
     machine:
-      <<: *rio3-jdk11-machine
+      <<: *rio3-machine
       targetPlatforms:
         - linux/amd64
       env:
@@ -1829,7 +1824,7 @@ builds:
     trigger:
       gitPush: false
     machine:
-      <<: *rio3-jdk11-machine
+      <<: *rio3-machine
       targetPlatforms:
         - linux/amd64
       env:
@@ -1853,7 +1848,7 @@ builds:
     trigger:
       gitPush: false
     machine:
-      <<: *rio3-jdk11-machine
+      <<: *rio3-machine
       env:
         <<: *proxy_env
         SPARK_VERSION: 3.4
@@ -1881,7 +1876,7 @@ builds:
     trigger:
       gitPush: false
     machine:
-      <<: *rio3-jdk11-machine
+      <<: *rio3-machine
       env:
         <<: *proxy_env
         SPARK_VERSION: 3.4
