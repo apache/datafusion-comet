@@ -20,13 +20,12 @@
 package org.apache.comet.parquet;
 
 import java.util.Arrays;
+import java.util.List;
+import java.util.Optional;
 
 import org.apache.parquet.column.ColumnDescriptor;
-import org.apache.parquet.schema.LogicalTypeAnnotation;
+import org.apache.parquet.schema.*;
 import org.apache.parquet.schema.LogicalTypeAnnotation.*;
-import org.apache.parquet.schema.PrimitiveType;
-import org.apache.parquet.schema.Type;
-import org.apache.parquet.schema.Types;
 import org.apache.spark.package$;
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException;
 import org.apache.spark.sql.internal.SQLConf;
@@ -319,5 +318,61 @@ public class TypeUtil {
 
   private static boolean isSpark40Plus() {
     return package$.MODULE$.SPARK_VERSION().compareTo("4.0") >= 0;
+  }
+
+  public static boolean isComplexType(Type t) {
+    return !t.isPrimitive() || t.isRepetition(Type.Repetition.REPEATED);
+  }
+
+  // From Parquet Type.java
+  public static boolean eqOrBothNull(Object o1, Object o2) {
+    return (o1 == null && o2 == null) || (o1 != null && o1.equals(o2));
+  }
+
+  // From Parquet Type.java
+  public static boolean equals(Type one, Type other) {
+    return one.getName().equals(other.getName())
+        && one.getRepetition() == other.getRepetition()
+        && eqOrBothNull(one.getRepetition(), other.getRepetition())
+        && eqOrBothNull(one.getId(), other.getId())
+        && eqOrBothNull(one.getLogicalTypeAnnotation(), other.getLogicalTypeAnnotation());
+  }
+
+  //
+  // Compare a field with another field and return true if they are the same. Unlike
+  // the equals method for Type (and derived classes), allows requested to have fields
+  // that are not in actual.
+  //
+  public static boolean isEqual(Type requested, Type actual) {
+    if (requested == null && actual == null) {
+      return true;
+    }
+    if (requested == null || actual == null) {
+      return false;
+    }
+    if (requested.isPrimitive() && actual.isPrimitive()) {
+      return requested.asPrimitiveType().equals(actual.asPrimitiveType());
+    } else if (!requested.isPrimitive() && !actual.isPrimitive()) {
+      if (equals(requested, actual)) {
+        // GroupType.equals also checks if LogicalTypeAnnotation is the same.
+        // But it really is not necessary here.
+        List<Type> requestedFields = requested.asGroupType().getFields();
+        List<Type> actualFields = requested.asGroupType().getFields();
+        for (Type field : requestedFields) {
+          Optional<Type> optActualField =
+              actualFields.stream().filter(f -> f.getName().equals(field.getName())).findFirst();
+          if (optActualField.isPresent()) {
+            if (!isEqual(field, optActualField.get())) {
+              return false;
+            }
+          }
+        }
+      } else {
+        return false;
+      }
+    } else {
+      return false; // one is a primitive type and the other is not.
+    }
+    return true;
   }
 }
