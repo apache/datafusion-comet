@@ -55,15 +55,48 @@ trait ShimCometScanExec {
   protected def isNeededForSchema(sparkSchema: StructType): Boolean = false
 
   protected def getPartitionedFile(f: FileStatusWithMetadata, p: PartitionDirectory): PartitionedFile =
-    PartitionedFileUtil.getPartitionedFile(f, f.getPath, p.values)
+    try {
+      PartitionedFileUtil.getPartitionedFile(f, f.getPath, p.values)
+    } catch {
+      case _: NoSuchMethodError =>
+        // Fallback using reflection without the Path parameter for backward-compatability
+        // See https://github.com/apache/datafusion-comet/issues/1572
+        PartitionedFileUtil.getClass.getMethod("getPartitionedFile",
+          classOf[FileStatusWithMetadata],
+          classOf[InternalRow]
+        ).invoke(PartitionedFileUtil,
+          f,
+          p.values
+        ).asInstanceOf[PartitionedFile]
+    }
 
   protected def splitFiles(sparkSession: SparkSession,
                            file: FileStatusWithMetadata,
                            filePath: Path,
                            isSplitable: Boolean,
                            maxSplitBytes: Long,
-                           partitionValues: InternalRow): Seq[PartitionedFile] =
-    PartitionedFileUtil.splitFiles(sparkSession, file, filePath, isSplitable, maxSplitBytes, partitionValues)
+                           partitionValues: InternalRow): Seq[PartitionedFile] = {
+    try {
+      PartitionedFileUtil.splitFiles(sparkSession, file, filePath, isSplitable, maxSplitBytes, partitionValues)
+    } catch {
+      case _: NoSuchMethodError =>
+        // Fallback using reflection without the Path parameter for backward-compatability
+        // See https://github.com/apache/datafusion-comet/issues/1572
+        PartitionedFileUtil.getClass.getMethod("splitFiles",
+          classOf[SparkSession],
+          classOf[FileStatusWithMetadata],
+          java.lang.Boolean.TYPE,
+          java.lang.Long.TYPE,
+          classOf[InternalRow]
+        ).invoke(PartitionedFileUtil,
+          sparkSession,
+          file,
+          java.lang.Boolean.valueOf(isSplitable),
+          java.lang.Long.valueOf(maxSplitBytes),
+          partitionValues
+        ).asInstanceOf[Seq[PartitionedFile]]
+    }
+  }
 
   protected def getPushedDownFilters(relation: HadoopFsRelation , dataFilters: Seq[Expression]):  Seq[Filter] = {
     val supportNestedPredicatePushdown = DataSourceUtils.supportNestedPredicatePushdown(relation)
