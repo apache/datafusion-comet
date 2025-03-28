@@ -26,10 +26,16 @@ class AppleDefaultConfigSuite extends CometTestBase {
   test("Comet configuration defaults are as expected") {
     // check that we haven't accidentally changed any defaults when we merge changes from OSS Comet
 
-    // scans should be enabled by default
-    assert(CometConf.COMET_NATIVE_SCAN_ENABLED.defaultValue.get)
+    // Comet should be disabled by default, but enabled when this test is running in CI.
+    // Note that the Call Home listener has a set of hard-coded config settings for Comet,
+    // including `spark.comet.enabled=true`. See `SparkCallHomeListenerV2#defaultNativeEngineConf`
+    // for details.
+    val COMET_ENABLED_DEFAULT = sys.env.getOrElse("ENABLE_COMET", "false")
+    assert(CometConf.COMET_ENABLED.defaultValue.get == COMET_ENABLED_DEFAULT.toBoolean)
+    assert(CometConf.COMET_ENABLED.get())
 
-    // execs should be enabled by default
+    // scans and execs should be enabled by default
+    assert(CometConf.COMET_NATIVE_SCAN_ENABLED.defaultValue.get)
     assert(CometConf.COMET_EXEC_ENABLED.defaultValue.get)
 
     // individual execs all default to enabled
