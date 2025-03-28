@@ -52,6 +52,12 @@ case class CometSparkToColumnarExec(child: SparkPlan)
 
   override def supportsColumnar: Boolean = true
 
+  override def nodeName: String = if (child.supportsColumnar) {
+    "CometSparkColumnarToColumnar"
+  } else {
+    "CometSparkRowToColumnar"
+  }
+
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "numInputRows" -> SQLMetrics.createMetric(sparkContext, "number of input rows"),
     "numOutputBatches" -> SQLMetrics.createMetric(sparkContext, "number of output batches"),
