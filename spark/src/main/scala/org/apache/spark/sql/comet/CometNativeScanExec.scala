@@ -185,7 +185,7 @@ case class CometNativeScanExec(
           "Time spent reading and parsing metadata from the footer"))
   }
 
-  override def inputRDDs(): Seq[RDD[InternalRow]] = null
+  override def inputRDDs(): Seq[RDD[InternalRow]] = originalPlan.inputRDDs()
 }
 
 object CometNativeScanExec extends DataTypeSupport {
