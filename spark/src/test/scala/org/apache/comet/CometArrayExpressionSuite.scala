@@ -359,8 +359,11 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         val table = spark.read.parquet(filename)
         table.createOrReplaceTempView("t1")
         // test with array of each column
-        for (fieldName <- table.schema.fieldNames) {
-          sql(s"SELECT array($fieldName, $fieldName) as a, array($fieldName) as b FROM t1")
+        for (field <- table.schema.fields) {
+          val fieldName = field.name
+          val typeName = field.dataType.typeName
+          sql(
+            s"SELECT cast(array($fieldName, $fieldName) as array<$typeName>) as a, cast(array($fieldName) as array<$typeName>) as b FROM t1")
             .createOrReplaceTempView("t2")
           val df = sql("SELECT array_except(a, b) FROM t2")
           checkSparkAnswerAndOperator(df)
