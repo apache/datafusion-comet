@@ -333,12 +333,13 @@ struct ScratchSpace {
     hashes_buf: Vec<u32>,
     /// Partition ids for each row in the current batch.
     partition_ids: Vec<u32>,
-    /// The row indices of the rows in each partition. This array is conceptually dividied into
+    /// The row indices of the rows in each partition. This array is conceptually divided into
     /// partitions, where each partition contains the row indices of the rows in that partition.
     /// The length of this array is the same as the number of rows in the batch.
-    shuffle_partition_ids: Vec<u32>,
-    /// The start indices of partitions in shuffle_partition_ids. The length of this array is the
-    /// same as the number of partitions.
+    partition_row_indices: Vec<u32>,
+    /// The start indices of partitions in partition_row_indices. partition_starts[K] and
+    /// partition_starts[K + 1] are the start and end indices of partition K in partition_row_indices.
+    /// The length of this array is 1 + the number of partitions.
     partition_starts: Vec<u32>,
 }
 
@@ -357,6 +358,10 @@ impl MultiPartitionShuffleRepartitioner {
         enable_fast_encoding: bool,
     ) -> Result<Self> {
         let num_output_partitions = partitioning.partition_count();
+        assert_ne!(
+            num_output_partitions, 1,
+            "Use SinglePartitionShufflePartitioner for 1 output partition."
+        );
 
         // Vectors in the scratch space will be filled with valid values before being used, this
         // initialization code is simply initializing the vectors to the desired size.
@@ -364,7 +369,7 @@ impl MultiPartitionShuffleRepartitioner {
         let scratch = ScratchSpace {
             hashes_buf: vec![0; batch_size],
             partition_ids: vec![0; batch_size],
-            shuffle_partition_ids: vec![0; batch_size],
+            partition_row_indices: vec![0; batch_size],
             partition_starts: vec![0; num_output_partitions + 1],
         };
 
@@ -422,7 +427,7 @@ impl MultiPartitionShuffleRepartitioner {
         match &self.partitioning {
             Partitioning::Hash(exprs, num_output_partitions) => {
                 let mut scratch = std::mem::take(&mut self.scratch);
-                let (partition_starts, shuffled_partition_ids): (&Vec<u32>, &Vec<u32>) = {
+                let (partition_starts, partition_row_indices): (&Vec<u32>, &Vec<u32>) = {
                     let mut timer = self.metrics.repart_time.timer();
 
                     // evaluate partition expressions
@@ -444,7 +449,7 @@ impl MultiPartitionShuffleRepartitioner {
                             partition_ids[idx] = pmod(*hash, *num_output_partitions) as u32;
                         });
 
-                    // count each partition size
+                    // count each partition size, while leaving the last extra element as 0
                     let partition_counters = &mut scratch.partition_starts;
                     partition_counters.resize(num_output_partitions + 1, 0);
                     partition_counters.fill(0);
@@ -453,7 +458,7 @@ impl MultiPartitionShuffleRepartitioner {
                         .for_each(|partition_id| partition_counters[*partition_id as usize] += 1);
 
                     // accumulate partition counters into partition ends
-                    // e.g. partition counter: [1, 3, 2, 1] => [1, 4, 6, 7]
+                    // e.g. partition counter: [1, 3, 2, 1, 0] => [1, 4, 6, 7, 7]
                     let partition_ends = partition_counters;
                     let mut accum = 0;
                     partition_ends.iter_mut().for_each(|v| {
@@ -461,16 +466,23 @@ impl MultiPartitionShuffleRepartitioner {
                         accum = *v;
                     });
 
-                    // calculate shuffled partition ids
-                    // e.g. partition ids: [3, 1, 1, 1, 2, 2, 0] => [6, 1, 2, 3, 4, 5, 0] which is the
-                    // row indices for rows ordered by their partition id. For example, first partition
-                    // 0 has one row index [6], partition 1 has row indices [1, 2, 3], etc.
-                    let shuffled_partition_ids = &mut scratch.shuffle_partition_ids;
-                    shuffled_partition_ids.resize(input.num_rows(), 0);
+                    // calculate partition row indices and partition starts
+                    // e.g. partition ids: [3, 1, 1, 1, 2, 2, 0] will produce the following partition_row_indices
+                    // and partition_starts arrays:
+                    //
+                    //  partition_row_indices: [6, 1, 2, 3, 4, 5, 0]
+                    //  partition_starts: [0, 1, 4, 6, 7]
+                    //
+                    // partition_starts conceptually splits partition_row_indices into smaller slices.
+                    // Each slice partition_row_indices[partition_starts[K]..partition_starts[K + 1]] contains the
+                    // row indices of the input batch that are partitioned into partition K. For example,
+                    // first partition 0 has one row index [6], partition 1 has row indices [1, 2, 3], etc.
+                    let partition_row_indices = &mut scratch.partition_row_indices;
+                    partition_row_indices.resize(input.num_rows(), 0);
                     for (index, partition_id) in partition_ids.iter().enumerate().rev() {
                         partition_ends[*partition_id as usize] -= 1;
                         let end = partition_ends[*partition_id as usize];
-                        shuffled_partition_ids[end as usize] = index as u32;
+                        partition_row_indices[end as usize] = index as u32;
                     }
 
                     // after calculating, partition ends become partition starts
@@ -478,13 +490,13 @@ impl MultiPartitionShuffleRepartitioner {
                     timer.stop();
                     Ok::<(&Vec<u32>, &Vec<u32>), DataFusionError>((
                         partition_starts,
-                        shuffled_partition_ids,
+                        partition_row_indices,
                     ))
                 }?;
 
                 self.buffer_partitioned_batch_may_spill(
                     input,
-                    shuffled_partition_ids,
+                    partition_row_indices,
                     partition_starts,
                 )
                 .await?;
@@ -505,20 +517,28 @@ impl MultiPartitionShuffleRepartitioner {
     async fn buffer_partitioned_batch_may_spill(
         &mut self,
         input: RecordBatch,
-        shuffled_partition_ids: &[u32],
+        partition_row_indices: &[u32],
         partition_starts: &[u32],
     ) -> Result<()> {
         let mut mem_growth: usize = input.get_array_memory_size();
         let buffered_partition_idx = self.buffered_batches.len() as u32;
         self.buffered_batches.push(input);
 
+        // partition_starts conceptually slices partition_row_indices into smaller slices,
+        // each slice contains the indices of rows in input that will go into the corresponding
+        // partition. The following loop iterates over the slices and put the row indices into
+        // the indices array of the corresponding partition.
         for (partition_id, (&start, &end)) in partition_starts
             .iter()
             .tuple_windows()
             .enumerate()
             .filter(|(_, (start, end))| start < end)
         {
-            let row_indices = &shuffled_partition_ids[start as usize..end as usize];
+            let row_indices = &partition_row_indices[start as usize..end as usize];
+
+            // Put row indices for the current partition into the indices array of that partition.
+            // This indices array will be used for calling interleave_record_batch to produce
+            // shuffled batches.
             let indices = &mut self.partition_indices[partition_id];
             let before_size = indices.allocated_size();
             indices.reserve(row_indices.len());
