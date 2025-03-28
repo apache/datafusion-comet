@@ -19,10 +19,13 @@
 
 package org.apache.comet.exec
 
+import scala.concurrent.duration.DurationInt
+
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
+import org.apache.spark.SparkEnv
 import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -198,6 +201,20 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
 
       val shuffled = df.repartition(1, $"binary")
       checkShuffleAnswer(shuffled, 1)
+    }
+  }
+
+  test("fix: Comet native shuffle deletes shuffle files after query") {
+    withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
+      var df = sql("SELECT count(_2), sum(_2) FROM tbl GROUP BY _1")
+      df.collect()
+      val diskBlockManager = SparkEnv.get.blockManager.diskBlockManager
+      assert(diskBlockManager.getAllFiles().nonEmpty)
+      df = null
+      eventually(timeout(30.seconds), interval(1.seconds)) {
+        System.gc()
+        assert(diskBlockManager.getAllFiles().isEmpty)
+      }
     }
   }
 

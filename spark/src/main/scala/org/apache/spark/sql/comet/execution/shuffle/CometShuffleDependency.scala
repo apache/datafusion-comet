@@ -25,6 +25,8 @@ import org.apache.spark.{Aggregator, Partitioner, ShuffleDependency, SparkEnv}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.serializer.Serializer
 import org.apache.spark.shuffle.ShuffleWriteProcessor
+import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.StructType
 
@@ -41,7 +43,11 @@ class CometShuffleDependency[K: ClassTag, V: ClassTag, C: ClassTag](
     override val shuffleWriterProcessor: ShuffleWriteProcessor = new ShuffleWriteProcessor,
     val shuffleType: ShuffleType = CometNativeShuffle,
     val schema: Option[StructType] = None,
-    val decodeTime: SQLMetric)
+    val decodeTime: SQLMetric,
+    val outputPartitioning: Option[Partitioning] = None,
+    val outputAttributes: Seq[Attribute] = Seq.empty,
+    val shuffleWriteMetrics: Map[String, SQLMetric] = Map.empty,
+    val numParts: Int = 0)
     extends ShuffleDependency[K, V, C](
       _rdd,
       partitioner,
