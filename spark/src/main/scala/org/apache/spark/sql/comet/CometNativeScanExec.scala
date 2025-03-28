@@ -98,7 +98,6 @@ case class CometNativeScanExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometNativeScanExec =>
-        this.nativeOp == other.nativeOp &&
         this.originalPlan == other.originalPlan &&
         this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
@@ -106,7 +105,7 @@ case class CometNativeScanExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(nativeOp, originalPlan, serializedPlanOpt)
+  override def hashCode(): Int = Objects.hashCode(originalPlan, serializedPlanOpt)
 
   override lazy val metrics: Map[String, SQLMetric] = {
     // We don't append CometMetricNode.baselineMetrics because
