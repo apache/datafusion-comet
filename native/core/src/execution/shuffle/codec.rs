@@ -758,6 +758,7 @@ pub enum CompressionCodec {
     Snappy,
 }
 
+#[derive(Clone)]
 pub struct ShuffleBlockWriter {
     fast_encoding: bool,
     codec: CompressionCodec,

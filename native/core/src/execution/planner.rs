@@ -1214,7 +1214,7 @@ impl PhysicalPlanner {
                 }?;
 
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
-                    Arc::clone(&child.native_plan),
+                    Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
                     partitioning,
                     codec,
                     writer.output_data_file.clone(),
