@@ -1460,6 +1460,25 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
           v1 = Some("parquet"))
     }
   }
+
+  test("test V1 parquet native scan -- case insensitive") {
+    withTempPath { path =>
+      spark.range(10).toDF("a").write.parquet(path.toString)
+      Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach(
+        scanMode => {
+          withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode) {
+            withTable("test") {
+              sql("create table test (A long) using parquet options (path '" + path + "')")
+              val df = sql("select A from test")
+              checkSparkAnswer(df)
+              // TODO: pushed down filters do not used schema adapter in datafusion, will cause empty result
+              // val df = sql("select * from test where A > 5")
+              // checkSparkAnswer(df)
+            }
+          }
+        })
+    }
+  }
 }
 
 class ParquetReadV2Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
