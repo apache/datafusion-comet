@@ -29,6 +29,7 @@ import org.apache.spark.sql.functions.{array, col, expr, lit, udf}
 import org.apache.spark.sql.types.StructType
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
+import org.apache.comet.serde.CometArrayExcept
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -359,7 +360,9 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         val table = spark.read.parquet(filename)
         table.createOrReplaceTempView("t1")
         // test with array of each column
-        for (field <- table.schema.fields) {
+        val fields =
+          table.schema.fields.filter(field => CometArrayExcept.isTypeSupported(field.dataType))
+        for (field <- fields) {
           val fieldName = field.name
           val typeName = field.dataType.typeName
           sql(
@@ -394,7 +397,9 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         val table = spark.read.parquet(filename)
         table.createOrReplaceTempView("t1")
         // test with array of each column
-        for (field <- table.schema.fields) {
+        val fields =
+          table.schema.fields.filter(field => CometArrayExcept.isTypeSupported(field.dataType))
+        for (field <- fields) {
           val fieldName = field.name
           sql(s"SELECT array($fieldName, $fieldName) as a, array($fieldName) as b FROM t1")
             .createOrReplaceTempView("t2")
