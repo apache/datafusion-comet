@@ -46,7 +46,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{isCometScan, usingDataFusionParquetExec, withInfo}
 import org.apache.comet.expressions._
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType._
@@ -68,9 +68,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       true
     case s: StructType if allowComplex =>
       s.fields.map(_.dataType).forall(supportedDataType(_, allowComplex))
-    // TODO: Add nested array and iceberg compat support
-    // case a: ArrayType if allowComplex =>
-    //  supportedDataType(a.elementType)
+    case a: ArrayType if allowComplex =>
+      supportedDataType(a.elementType, allowComplex)
     case dt =>
       emitWarning(s"unsupported Spark data type: $dt")
       false
@@ -2695,7 +2694,14 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
 
       case op
           if isCometSink(op) && op.output.forall(a =>
-            supportedDataType(a.dataType, allowComplex = true)) =>
+            supportedDataType(
+              a.dataType,
+              // Complex type supported if
+              // - Native datafusion reader enabled (experimental) OR
+              // - conversion from Parquet/JSON enabled
+              allowComplex =
+                usingDataFusionParquetExec(conf) || CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED
+                  .get(conf) || CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf))) =>
         // These operators are source of Comet native execution chain
         val scanBuilder = OperatorOuterClass.Scan.newBuilder()
         val source = op.simpleStringWithNodeId()
