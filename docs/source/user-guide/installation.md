@@ -33,8 +33,8 @@ Make sure the following requirements are met and software installed on your mach
 Comet currently supports the following versions of Apache Spark. Note that this documentation is for the main
 branch. Please refer to GitHub history for released Comet versions.
 
-We recommend only using Comet with Spark versions where we currently have tests enabled in CI. Other versions may work
-well enough for development and evaluation purposes.
+We recommend only using Comet with Spark versions where we currently have both Comet and Spark tests enabled in CI. 
+Other versions may work well enough for development and evaluation purposes.
 
 | Spark Version | Java Version | Scala Version   | Comet Tests in CI | Spark Tests in CI |
 | ------------- | ------------ | --------------- | ----------------- | ----------------- |
