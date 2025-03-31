@@ -45,7 +45,7 @@ Other versions may work well enough for development and evaluation purposes.
 | 3.5.4         | 8/11/17      | 2.12/2.13     | Partial\*         | Yes               |
 | 3.5.5         | 8/11/17      | 2.12/2.13     | Yes               | Yes               |
 
-- For older Spark 3.5.x releases, we do not test the full matrix of supported Java and Scala versions in CI.
+\* For older Spark 3.5.x releases, we do not test the full matrix of supported Java and Scala versions in CI.
 
 Experimental support is provided for the following versions of Apache Spark and is intended for development/testing
 use only and should not be used in production yet.
