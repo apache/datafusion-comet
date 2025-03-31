@@ -402,16 +402,61 @@ under the License.
 </section>
 <section id="supported-spark-versions">
 <h3>Supported Spark Versions<a class="headerlink" href="#supported-spark-versions" title="Link to this heading">¶</a></h3>
-<p>Comet currently supports the following versions of Apache Spark:</p>
-<ul class="simple">
-<li><p>3.4.x (Java 8/11/17, Scala 2.12/2.13)</p></li>
-<li><p>3.5.x (Java 8/11/17, Scala 2.12/2.13)</p></li>
-</ul>
+<p>Comet currently supports the following versions of Apache Spark. Note that this documentation is for the main
+branch. Please refer to the version of this documentation in the appropriate GitHub release branch for released
+Comet versions.</p>
+<p>We recommend only using Comet with Spark versions where we currently have both Comet and Spark tests enabled in CI.
+Other versions may work well enough for development and evaluation purposes.</p>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Spark Version</p></th>
+<th class="head"><p>Java Version</p></th>
+<th class="head"><p>Scala Version</p></th>
+<th class="head"><p>Comet Tests in CI</p></th>
+<th class="head"><p>Spark Tests in CI</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>3.4.3</p></td>
+<td><p>8/11/17</p></td>
+<td><p>2.12/2.13</p></td>
+<td><p>Yes</p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>3.5.4</p></td>
+<td><p>8/11/17</p></td>
+<td><p>2.12/2.13</p></td>
+<td><p>No</p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-even"><td><p>3.5.5</p></td>
+<td><p>8/11/17</p></td>
+<td><p>2.12/2.13</p></td>
+<td><p>Yes</p></td>
+<td><p>Yes</p></td>
+</tr>
+</tbody>
+</table>
 <p>Experimental support is provided for the following versions of Apache Spark and is intended for development/testing
 use only and should not be used in production yet.</p>
-<ul class="simple">
-<li><p>4.0.0-preview1 (Java 17/21, Scala 2.13)</p></li>
-</ul>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Spark Version</p></th>
+<th class="head"><p>Java Version</p></th>
+<th class="head"><p>Scala Version</p></th>
+<th class="head"><p>Comet Tests in CI</p></th>
+<th class="head"><p>Spark Tests in CI</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>4.0.0-preview1</p></td>
+<td><p>17</p></td>
+<td><p>2.13</p></td>
+<td><p>Yes</p></td>
+<td><p>Yes</p></td>
+</tr>
+</tbody>
+</table>
 <p>Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by
 Cloud Service Providers.</p>
 </section>

@@ -30,22 +30,32 @@ Make sure the following requirements are met and software installed on your mach
 
 ### Supported Spark Versions
 
-Comet currently supports the following versions of Apache Spark:
+Comet currently supports the following versions of Apache Spark. Note that this documentation is for the main
+branch. Please refer to the version of this documentation in the appropriate GitHub release branch for released
+Comet versions.
 
-- 3.4.x (Java 8/11/17, Scala 2.12/2.13)
-- 3.5.x (Java 8/11/17, Scala 2.12/2.13)
+We recommend only using Comet with Spark versions where we currently have both Comet and Spark tests enabled in CI.
+Other versions may work well enough for development and evaluation purposes.
+
+| Spark Version | Java Version | Scala Version | Comet Tests in CI | Spark Tests in CI |
+| ------------- | ------------ | ------------- | ----------------- | ----------------- |
+| 3.4.3         | 8/11/17      | 2.12/2.13     | Yes               | Yes               |
+| 3.5.4         | 8/11/17      | 2.12/2.13     | No                | Yes               |
+| 3.5.5         | 8/11/17      | 2.12/2.13     | Yes               | Yes               |
 
 Experimental support is provided for the following versions of Apache Spark and is intended for development/testing
 use only and should not be used in production yet.
 
-- 4.0.0-preview1 (Java 17/21, Scala 2.13)
+| Spark Version  | Java Version | Scala Version | Comet Tests in CI | Spark Tests in CI |
+| -------------- | ------------ | ------------- | ----------------- | ----------------- |
+| 4.0.0-preview1 | 17           | 2.13          | Yes               | Yes               |
 
 Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by
 Cloud Service Providers.
 
 ## Using a Published JAR File
 
-Comet jar files are available in [Maven Central](https://central.sonatype.com/namespace/org.apache.datafusion) for amd64 and arm64 architectures for Linux. For Apple OSX, it 
+Comet jar files are available in [Maven Central](https://central.sonatype.com/namespace/org.apache.datafusion) for amd64 and arm64 architectures for Linux. For Apple OSX, it
 is currently necessary to build from source.
 
 Here are the direct links for downloading the Comet 0.7.0 jar file.
