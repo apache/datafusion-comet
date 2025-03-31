@@ -16,5 +16,7 @@
 // under the License.
 
 mod bitwise_not;
+mod bitwise_count;
 
 pub use bitwise_not::{bitwise_not, BitwiseNotExpr};
+pub use bitwise_count::{bitwise_count, BitwiseCountExpr};

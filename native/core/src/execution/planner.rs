@@ -65,7 +65,7 @@ use datafusion::{
     },
     prelude::SessionContext,
 };
-use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr};
+use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr, BitwiseCountExpr};
 
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::CompressionCodec;
@@ -615,6 +615,10 @@ impl PhysicalPlanner {
                 let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
                 let op = DataFusionOperator::BitwiseShiftLeft;
                 Ok(Arc::new(BinaryExpr::new(left, op, right)))
+            }
+            ExprStruct::BitwiseCount(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
+                Ok(Arc::new(BitwiseCountExpr::new(child)))
             }
             // https://github.com/apache/datafusion-comet/issues/666
             // ExprStruct::Abs(expr) => {

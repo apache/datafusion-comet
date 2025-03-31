@@ -90,6 +90,21 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("bitwise_count") {
+    Seq(false, true).foreach { dictionary =>
+      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+        val table = "bitwise_count_test"
+        withTable(table) {
+          sql(s"create table $table(col1 long) using parquet")
+          sql(s"insert into $table values(1111)")
+          sql(s"insert into $table values(1111)")
+
+          checkSparkAnswer(sql(s"SELECT bit_count(col1) FROM $table"))
+        }
+      }
+    }
+  }
+
   test("bitwise shift with different left/right types") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
