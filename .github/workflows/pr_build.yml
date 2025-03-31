@@ -47,6 +47,7 @@ jobs:
         java_version: [8, 11, 17]
         test-target: [rust, java]
         spark-version: ['3.5']
+        spark-patch-version: ['3.5.2', '3.5.3', '3.5.4', '3.5.5']
         scala-version: ['2.12', '2.13']
         is_push_event:
           - ${{ github.event_name == 'push' }}
@@ -54,7 +55,7 @@ jobs:
           - java_version: 11
             is_push_event: false
       fail-fast: false
-    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}/${{ matrix.test-target }}
+    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-patch-version}}-scala-${{matrix.scala-version}}/${{ matrix.test-target }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -73,6 +74,41 @@ jobs:
         uses: ./.github/actions/java-test
         with:
           maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
+          # upload test reports only for java 17
+          upload-test-reports: ${{ matrix.java_version == '17' }}
+
+  # run Comet tests for older 3.5.x releases with one java and scala versions
+  linux-test-35-minor-versions:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        java_version: [17]
+        test-target: [java]
+        spark-version: ['3.5']
+        spark-patch-version: ['3.5.2', '3.5.3', '3.5.4']
+        scala-version: ['2.12']
+        is_push_event:
+          - ${{ github.event_name == 'push' }}
+      fail-fast: false
+    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-patch-version}}-scala-${{matrix.scala-version}}/${{ matrix.test-target }}
+    runs-on: ${{ matrix.os }}
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{env.RUST_VERSION}}
+          jdk-version: ${{ matrix.java_version }}
+      - if: matrix.test-target == 'rust'
+        name: Rust test steps
+        uses: ./.github/actions/rust-test
+      - if: matrix.test-target == 'java'
+        name: Java test steps
+        uses: ./.github/actions/java-test
+        with:
+          maven_opts: "-Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }} -Dspark.version=${{ matrix.spark-patch-version }}"
           # upload test reports only for java 17
           upload-test-reports: ${{ matrix.java_version == '17' }}
 
