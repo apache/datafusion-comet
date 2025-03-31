@@ -45,6 +45,8 @@ use jni::{
 
 use self::util::jni::TypePromotionInfo;
 use crate::execution::operators::ExecutionError;
+use crate::execution::planner::PhysicalPlanner;
+use crate::execution::serde;
 use crate::execution::utils::SparkArrowConvert;
 use crate::parquet::data_type::AsBytes;
 use crate::parquet::parquet_exec::init_datasource_exec;
@@ -644,7 +646,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     file_size: jlong,
     start: jlong,
     length: jlong,
+    filter: jbyteArray,
     required_schema: jbyteArray,
+    data_schema: jbyteArray,
     session_timezone: jstring,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| unsafe {
@@ -666,6 +670,23 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         let required_schema_buffer = env.convert_byte_array(&required_schema_array)?;
         let required_schema = Arc::new(deserialize_schema(required_schema_buffer.as_bytes())?);
 
+        let data_schema_array = JByteArray::from_raw(data_schema);
+        let data_schema_buffer = env.convert_byte_array(&data_schema_array)?;
+        let data_schema = Arc::new(deserialize_schema(data_schema_buffer.as_bytes())?);
+
+        let planer = PhysicalPlanner::default();
+
+        let data_filters = if !filter.is_null() {
+            let filter_array = JByteArray::from_raw(filter);
+            let filter_buffer = env.convert_byte_array(&filter_array)?;
+            let filter_expr = serde::deserialize_expr(filter_buffer.as_slice())?;
+            Some(vec![
+                planer.create_expr(&filter_expr, Arc::clone(&data_schema))?
+            ])
+        } else {
+            None
+        };
+
         let file_groups =
             get_file_groups_single_file(&object_store_path, file_size as u64, start, length);
 
@@ -676,13 +697,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
 
         let scan = init_datasource_exec(
             required_schema,
-            None,
+            Some(data_schema),
             None,
             None,
             object_store_url,
             file_groups,
             None,
-            None,
+            data_filters,
             session_timezone.as_str(),
         )?;
 
