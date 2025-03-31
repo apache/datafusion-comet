@@ -41,7 +41,7 @@ env:
 
 jobs:
 
-  # run Comet test with full matrix of Jva and Scala versions for the latest supported 3.5.x release
+  # run Comet test with full matrix of Java and Scala versions for the latest supported 3.5.x release
   linux-test:
     strategy:
       matrix:
