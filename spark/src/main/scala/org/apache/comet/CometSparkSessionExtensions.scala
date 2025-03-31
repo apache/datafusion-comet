@@ -374,13 +374,13 @@ class CometSparkSessionExtensions
 
         // Comet JVM + native scan for V1 and V2
         case op if isCometScan(op) =>
-          val nativeOp = QueryPlanSerde.operator2Proto(op).get
-          CometScanWrapper(nativeOp, op)
+          val nativeOp = QueryPlanSerde.operator2Proto(op)
+          CometScanWrapper(nativeOp.get, op)
 
         case op if shouldApplySparkToColumnar(conf, op) =>
           val cometOp = CometSparkToColumnarExec(op)
-          val nativeOp = QueryPlanSerde.operator2Proto(cometOp).get
-          CometScanWrapper(nativeOp, cometOp)
+          val nativeOp = QueryPlanSerde.operator2Proto(cometOp)
+          CometScanWrapper(nativeOp.get, cometOp)
 
         case op: ProjectExec =>
           val newOp = transform1(op)
@@ -488,7 +488,7 @@ class CometSparkSessionExtensions
           val child = op.child
           val modes = aggExprs.map(_.mode).distinct
 
-          if (!modes.isEmpty && modes.size != 1) {
+          if (modes.nonEmpty && modes.size != 1) {
             // This shouldn't happen as all aggregation expressions should share the same mode.
             // Fallback to Spark nevertheless here.
             op
@@ -496,7 +496,7 @@ class CometSparkSessionExtensions
             // For a final mode HashAggregate, we only need to transform the HashAggregate
             // if there is Comet partial aggregation.
             val sparkFinalMode = {
-              !modes.isEmpty && modes.head == Final && findCometPartialAgg(child).isEmpty
+              modes.nonEmpty && modes.head == Final && findCometPartialAgg(child).isEmpty
             }
 
             if (sparkFinalMode) {
@@ -510,7 +510,7 @@ class CometSparkSessionExtensions
                   // distinct aggregate functions or only have group by, the aggExprs is empty and
                   // modes is empty too. If aggExprs is not empty, we need to verify all the
                   // aggregates have the same mode.
-                  assert(modes.length == 1 || modes.length == 0)
+                  assert(modes.length == 1 || modes.isEmpty)
                   CometHashAggregateExec(
                     nativeOp,
                     op,
@@ -519,7 +519,7 @@ class CometSparkSessionExtensions
                     aggExprs,
                     resultExpressions,
                     child.output,
-                    if (modes.nonEmpty) Some(modes.head) else None,
+                    modes.headOption,
                     child,
                     SerializedPlan(None))
                 case None =>
@@ -530,7 +530,7 @@ class CometSparkSessionExtensions
 
         case op: ShuffledHashJoinExec
             if CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(conf) &&
-              op.children.forall(isCometNative(_)) =>
+              op.children.forall(isCometNative) =>
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
@@ -564,7 +564,7 @@ class CometSparkSessionExtensions
 
         case op: BroadcastHashJoinExec
             if CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) &&
-              op.children.forall(isCometNative(_)) =>
+              op.children.forall(isCometNative) =>
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
@@ -1278,7 +1278,7 @@ object CometSparkSessionExtensions extends Logging {
     op.isInstanceOf[CometBatchScanExec] || op.isInstanceOf[CometScanExec]
   }
 
-  private def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
+  def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
     // Only consider converting leaf nodes to columnar currently, so that all the following
     // operators can have a chance to be converted to columnar. Leaf operators that output
     // columnar batches, such as Spark's vectorized readers, will also be converted to native
@@ -1329,10 +1329,9 @@ object CometSparkSessionExtensions extends Logging {
     org.apache.spark.SPARK_VERSION >= "4.0"
   }
 
-  def usingDataFusionParquetExec(conf: SQLConf): Boolean = {
-    CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_ICEBERG_COMPAT ||
-    CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_DATAFUSION
-  }
+  def usingDataFusionParquetExec(conf: SQLConf): Boolean =
+    Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION).contains(
+      CometConf.COMET_NATIVE_SCAN_IMPL.get(conf))
 
   /**
    * Whether we should override Spark memory configuration for Comet. This only returns true when
