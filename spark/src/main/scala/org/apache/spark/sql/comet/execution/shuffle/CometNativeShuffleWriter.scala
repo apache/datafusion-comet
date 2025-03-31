@@ -80,10 +80,12 @@ class CometNativeShuffleWriter[K, V](
       "spilled_bytes")
 
     // Maps native metrics to SQL metrics
+    val metricsOutputRows = metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_RECORDS_WRITTEN)
+    val metricsWriteTime = metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_WRITE_TIME)
     val nativeSQLMetrics = Map(
-      "output_rows" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_RECORDS_WRITTEN),
+      "output_rows" -> metricsOutputRows,
       "data_size" -> metrics("dataSize"),
-      "write_time" -> metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_WRITE_TIME)) ++
+      "write_time" -> metricsWriteTime) ++
       metrics.filterKeys(detailedMetrics.contains)
     val nativeMetrics = CometMetricNode(nativeSQLMetrics)
 
@@ -121,6 +123,8 @@ class CometNativeShuffleWriter[K, V](
 
     // Total written bytes at native
     metricsReporter.incBytesWritten(Files.size(tempDataFilePath))
+    metricsReporter.incRecordsWritten(metricsOutputRows.value)
+    metricsReporter.incWriteTime(metricsWriteTime.value)
 
     // commit
     shuffleBlockResolver.writeMetadataFileAndCommit(
