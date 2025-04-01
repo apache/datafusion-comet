@@ -16,5 +16,6 @@
 // under the License.
 
 mod bitwise_not;
+mod bitwise_get;
 
 pub use bitwise_not::{bitwise_not, BitwiseNotExpr};

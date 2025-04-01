@@ -616,6 +616,12 @@ impl PhysicalPlanner {
                 let op = DataFusionOperator::BitwiseShiftLeft;
                 Ok(Arc::new(BinaryExpr::new(left, op, right)))
             }
+            ExprStruct::BitwiseGet(expr) => {
+                let left =
+                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
+                
+            }
             // https://github.com/apache/datafusion-comet/issues/666
             // ExprStruct::Abs(expr) => {
             //     let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
