@@ -26,7 +26,7 @@ Make sure the following requirements are met and software installed on your mach
 ### Supported Operating Systems
 
 - Linux
-- Apple OSX (Intel and Apple Silicon)
+- Apple macOS (Intel and Apple Silicon)
 
 ### Supported Spark Versions
 
@@ -55,7 +55,7 @@ Cloud Service Providers.
 
 ## Using a Published JAR File
 
-Comet jar files are available in [Maven Central](https://central.sonatype.com/namespace/org.apache.datafusion) for amd64 and arm64 architectures for Linux. For Apple OSX, it
+Comet jar files are available in [Maven Central](https://central.sonatype.com/namespace/org.apache.datafusion) for amd64 and arm64 architectures for Linux. For Apple macOS, it
 is currently necessary to build from source.
 
 Here are the direct links for downloading the Comet 0.7.0 jar file.
