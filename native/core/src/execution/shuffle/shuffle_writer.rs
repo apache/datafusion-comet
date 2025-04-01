@@ -1114,17 +1114,17 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
     ) -> Result<usize> {
         let mut cursor = Cursor::new(&mut self.buffer);
         cursor.seek(SeekFrom::End(0))?;
-        let mut write_timer = write_time.timer();
         let bytes_written =
             self.shuffle_block_writer
                 .borrow()
                 .write_batch(batch, &mut cursor, encode_time)?;
         let pos = cursor.position();
         if pos >= self.buffer_max_size as u64 {
+            let mut write_timer = write_time.timer();
             self.writer.write_all(&self.buffer)?;
+            write_timer.stop();
             self.buffer.clear();
         }
-        write_timer.stop();
         Ok(bytes_written)
     }
 
@@ -1132,10 +1132,10 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
         let mut write_timer = write_time.timer();
         if !self.buffer.is_empty() {
             self.writer.write_all(&self.buffer)?;
-            self.buffer.clear();
         }
         self.writer.flush()?;
         write_timer.stop();
+        self.buffer.clear();
         Ok(())
     }
 }
