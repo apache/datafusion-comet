@@ -700,14 +700,20 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
             if let Some(spill_data) = self.partition_writers[i].spill_file.as_ref() {
                 let mut spill_file =
                     BufReader::new(File::open(spill_data.temp_file.path()).map_err(to_df_err)?);
+                let mut write_timer = self.metrics.write_time.timer();
                 std::io::copy(&mut spill_file, &mut output_data).map_err(to_df_err)?;
+                write_timer.stop();
             }
         }
+
+        let mut write_timer = self.metrics.write_time.timer();
         output_data.flush()?;
+        write_timer.stop();
 
         // add one extra offset at last to ease partition length computation
         offsets[num_output_partitions] = output_data.stream_position().map_err(to_df_err)?;
 
+        let mut write_timer = self.metrics.write_time.timer();
         let mut output_index =
             BufWriter::new(File::create(index_file).map_err(|e| {
                 DataFusionError::Execution(format!("shuffle write error: {:?}", e))
@@ -718,6 +724,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                 .map_err(to_df_err)?;
         }
         output_index.flush()?;
+        write_timer.stop();
 
         self.metrics
             .baseline
