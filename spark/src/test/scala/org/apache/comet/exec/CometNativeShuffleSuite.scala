@@ -57,6 +57,8 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   test("native shuffle: different data type") {
+    // https://github.com/apache/datafusion-comet/issues/1538
+    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     Seq(true, false).foreach { execEnabled =>
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>

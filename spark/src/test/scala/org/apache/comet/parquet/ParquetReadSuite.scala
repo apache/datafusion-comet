@@ -20,11 +20,12 @@
 package org.apache.comet.parquet
 
 import java.io.{File, FileFilter}
-import java.math.BigDecimal
+import java.math.{BigDecimal, BigInteger}
 import java.time.{ZoneId, ZoneOffset}
 
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
+import scala.util.control.Breaks.{break, breakable}
 
 import org.scalactic.source.Position
 import org.scalatest.Tag
@@ -46,6 +47,7 @@ import org.apache.spark.unsafe.types.UTF8String
 import com.google.common.primitives.UnsignedLong
 
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
+import org.apache.comet.CometConf.SCAN_NATIVE_ICEBERG_COMPAT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, usingDataFusionParquetExec}
 
 abstract class ParquetReadSuite extends CometTestBase {
@@ -86,7 +88,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     // note that native_datafusion does not use CometScanExec so we need not include that in
     // the check
     val usingNativeIcebergCompat =
-      (CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
+      CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT
     Seq(
       NullType -> false,
       BooleanType -> true,
@@ -98,7 +100,9 @@ abstract class ParquetReadSuite extends CometTestBase {
       DoubleType -> true,
       BinaryType -> true,
       StringType -> true,
-      ArrayType(TimestampType) -> false,
+      // Timestamp here arbitrary for picking a concrete data type to from ArrayType
+      // Any other type works
+      ArrayType(TimestampType) -> usingNativeIcebergCompat,
       StructType(
         Seq(
           StructField("f1", DecimalType.SYSTEM_DEFAULT),
@@ -119,13 +123,24 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("unsupported Spark schema") {
-    Seq(
-      Seq(StructField("f1", IntegerType), StructField("f2", BooleanType)) -> true,
-      Seq(StructField("f1", IntegerType), StructField("f2", ArrayType(IntegerType))) -> false,
-      Seq(
-        StructField("f1", MapType(keyType = LongType, valueType = StringType)),
-        StructField("f2", ArrayType(DoubleType))) -> false).foreach { case (schema, expected) =>
+    val schemaDDLs =
+      Seq("f1 int, f2 boolean", "f1 int, f2 array<int>", "f1 map<long, string>, f2 array<double>")
+        .map(s => StructType.fromDDL(s))
+
+    // Arrays support for iceberg compat native and for Parquet V1
+    val cometScanExecSupported =
+      if (sys.env.get("COMET_PARQUET_SCAN_IMPL").contains(SCAN_NATIVE_ICEBERG_COMPAT) && this
+          .isInstanceOf[ParquetReadV1Suite])
+        Seq(true, true, false)
+      else Seq(true, false, false)
+
+    val cometBatchScanExecSupported = Seq(true, false, false)
+
+    schemaDDLs.zip(cometScanExecSupported).foreach { case (schema, expected) =>
       assert(CometScanExec.isSchemaSupported(StructType(schema)) == expected)
+    }
+
+    schemaDDLs.zip(cometBatchScanExecSupported).foreach { case (schema, expected) =>
       assert(CometBatchScanExec.isSchemaSupported(StructType(schema)) == expected)
     }
   }
@@ -1458,6 +1473,93 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
           cometNativeScanImpl,
           scanner = expectedScanner,
           v1 = Some("parquet"))
+    }
+  }
+
+  test("test V1 parquet native scan -- case insensitive") {
+    withTempPath { path =>
+      spark.range(10).toDF("a").write.parquet(path.toString)
+      Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach(
+        scanMode => {
+          withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode) {
+            withTable("test") {
+              sql("create table test (A long) using parquet options (path '" + path + "')")
+              val df = sql("select A from test")
+              checkSparkAnswer(df)
+              // TODO: pushed down filters do not used schema adapter in datafusion, will cause empty result
+              // val df = sql("select * from test where A > 5")
+              // checkSparkAnswer(df)
+            }
+          }
+        })
+    }
+  }
+
+  test("test V1 parquet scan filter pushdown of primitive types uses native_iceberg_compat") {
+    withTempPath { dir =>
+      val path = new Path(dir.toURI.toString, "test1.parquet")
+      val rows = 1000
+      withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
+        CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false") {
+        makeParquetFileAllTypes(path, dictionaryEnabled = false, 0, rows, nullEnabled = false)
+      }
+      Seq(
+        (CometConf.SCAN_NATIVE_DATAFUSION, "output_rows"),
+        (CometConf.SCAN_NATIVE_ICEBERG_COMPAT, "numOutputRows")).foreach {
+        case (scanMode, metricKey) =>
+          Seq(true, false).foreach { pushDown =>
+            breakable {
+              withSQLConf(
+                CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode,
+                SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> pushDown.toString) {
+                if (scanMode == CometConf.SCAN_NATIVE_DATAFUSION && !pushDown) {
+                  // FIXME: native_datafusion always pushdown data filters
+                  break()
+                }
+                Seq(
+                  ("_1 = true", Math.ceil(rows.toDouble / 2)), // Boolean
+                  ("_2 = 1", Math.ceil(rows.toDouble / 256)), // Byte
+                  ("_3 = 1", 1), // Short
+                  ("_4 = 1", 1), // Integer
+                  ("_5 = 1", 1), // Long
+                  ("_6 = 1.0", 1), // Float
+                  ("_7 = 1.0", 1), // Double
+                  (s"_8 = '${1.toString * 48}'", 1), // String
+                  ("_21 = to_binary('1', 'utf-8')", 1), // binary
+                  ("_15 = 0.0", 1), // DECIMAL(5, 2)
+                  ("_16 = 0.0", 1), // DECIMAL(18, 10)
+                  (
+                    s"_17 = ${new BigDecimal(new BigInteger(("1" * 16).getBytes), 37).toString}",
+                    Math.ceil(rows.toDouble / 10)
+                  ), // DECIMAL(38, 37)
+                  (s"_19 = TIMESTAMP '${DateTimeUtils.toJavaTimestamp(1)}'", 1), // Timestamp
+                  ("_20 = DATE '1970-01-02'", 1) // Date
+                ).foreach { case (whereCause, expectedRows) =>
+                  val df = spark.read
+                    .parquet(path.toString)
+                    .where(whereCause)
+                  val (_, cometPlan) = checkSparkAnswer(df)
+                  val scan = collect(cometPlan) {
+                    case p: CometScanExec =>
+                      assert(p.dataFilters.nonEmpty)
+                      p
+                    case p: CometNativeScanExec =>
+                      assert(p.dataFilters.nonEmpty)
+                      p
+                  }
+                  assert(scan.size == 1)
+
+                  if (pushDown) {
+                    assert(scan.head.metrics(metricKey).value == expectedRows)
+                  } else {
+                    assert(scan.head.metrics(metricKey).value == rows)
+                  }
+                }
+              }
+            }
+          }
+      }
     }
   }
 }

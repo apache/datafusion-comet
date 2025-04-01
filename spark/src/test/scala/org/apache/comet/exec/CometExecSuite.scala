@@ -371,8 +371,7 @@ class CometExecSuite extends CometTestBase {
     Seq("true", "false").foreach { aqeEnabled =>
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled,
-        // `REQUIRE_ALL_CLUSTER_KEYS_FOR_DISTRIBUTION` is a new config in Spark 3.3+.
-        "spark.sql.requireAllClusterKeysForDistribution" -> "true",
+        SQLConf.REQUIRE_ALL_CLUSTER_KEYS_FOR_DISTRIBUTION.key -> "true",
         CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
         val df =
           Seq(("a", 1, 1), ("a", 2, 2), ("b", 1, 3), ("b", 1, 4)).toDF("key1", "key2", "value")
@@ -814,11 +813,6 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("explain native plan") {
-    // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!CometConf.isExperimentalNativeScan)
-    // there are no assertions in this test to prove that the explain feature
-    // wrote the expected output to stdout, but we at least test that enabling
-    // the config does not cause any exceptions.
     withSQLConf(
       CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "true",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
@@ -1906,6 +1900,57 @@ class CometExecSuite extends CometTestBase {
 
     assert(!CometScanExec.isFileFormatSupported(new CustomParquetFileFormat()))
   }
+
+  test("SparkToColumnar override node name for row input") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+      val df = spark
+        .range(1000)
+        .selectExpr("id as key", "id % 8 as value")
+        .toDF("key", "value")
+        .groupBy("key")
+        .count()
+      df.collect()
+
+      val planAfter = df.queryExecution.executedPlan
+      assert(planAfter.toString.startsWith("AdaptiveSparkPlan isFinalPlan=true"))
+      val adaptivePlan = planAfter.asInstanceOf[AdaptiveSparkPlanExec].executedPlan
+      val nodeNames = adaptivePlan.collect { case c: CometSparkToColumnarExec =>
+        c.nodeName
+      }
+      assert(nodeNames.length == 1)
+      assert(nodeNames.head == "CometSparkRowToColumnar")
+    }
+  }
+
+  test("SparkToColumnar override node name for columnar input") {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
+      withTempDir { dir =>
+        var df = spark
+          .range(10000)
+          .selectExpr("id as key", "id % 8 as value")
+          .toDF("key", "value")
+
+        df.write.mode("overwrite").parquet(dir.toString)
+        df = spark.read.parquet(dir.toString)
+        df = df.groupBy("key", "value").count()
+        df.collect()
+
+        val planAfter = df.queryExecution.executedPlan
+        val nodeNames = planAfter.collect { case c: CometSparkToColumnarExec =>
+          c.nodeName
+        }
+        assert(nodeNames.length == 1)
+        assert(nodeNames.head == "CometSparkColumnarToColumnar")
+      }
+    }
+  }
+
 }
 
 case class BucketedTableTestSpec(

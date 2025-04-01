@@ -108,6 +108,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   private final Map<String, SQLMetric> metrics;
 
   private StructType sparkSchema;
+  private StructType dataSchema;
   private MessageType requestedSchema;
   private CometVector[] vectors;
   private AbstractColumnReader[] columnReaders;
@@ -117,6 +118,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   private boolean[] missingColumns;
   private boolean isInitialized;
   private ParquetMetadata footer;
+  private byte[] nativeFilter;
 
   /**
    * Whether the native scan should always return decimal represented by 128 bits, regardless of its
@@ -190,8 +192,10 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       Configuration conf,
       PartitionedFile inputSplit,
       ParquetMetadata footer,
+      byte[] nativeFilter,
       int capacity,
       StructType sparkSchema,
+      StructType dataSchema,
       boolean isCaseSensitive,
       boolean useFieldId,
       boolean ignoreMissingIds,
@@ -202,6 +206,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     this.conf = conf;
     this.capacity = capacity;
     this.sparkSchema = sparkSchema;
+    this.dataSchema = dataSchema;
     this.isCaseSensitive = isCaseSensitive;
     this.useFieldId = useFieldId;
     this.ignoreMissingIds = ignoreMissingIds;
@@ -210,6 +215,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     this.partitionValues = partitionValues;
     this.file = inputSplit;
     this.footer = footer;
+    this.nativeFilter = nativeFilter;
     this.metrics = metrics;
     this.taskContext = TaskContext$.MODULE$.get();
   }
@@ -262,10 +268,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     String timeZoneId = conf.get("spark.sql.session.timeZone");
     // Native code uses "UTC" always as the timeZoneId when converting from spark to arrow schema.
     Schema arrowSchema = Utils$.MODULE$.toArrowSchema(sparkSchema, "UTC");
-    ByteArrayOutputStream out = new ByteArrayOutputStream();
-    WriteChannel writeChannel = new WriteChannel(Channels.newChannel(out));
-    MessageSerializer.serialize(writeChannel, arrowSchema);
-    byte[] serializedRequestedArrowSchema = out.toByteArray();
+    byte[] serializedRequestedArrowSchema = serializeArrowSchema(arrowSchema);
+    Schema dataArrowSchema = Utils$.MODULE$.toArrowSchema(dataSchema, "UTC");
+    byte[] serializedDataArrowSchema = serializeArrowSchema(dataArrowSchema);
 
     //// Create Column readers
     List<ColumnDescriptor> columns = requestedSchema.getColumns();
@@ -350,7 +355,14 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
 
     this.handle =
         Native.initRecordBatchReader(
-            filePath, fileSize, start, length, serializedRequestedArrowSchema, timeZoneId);
+            filePath,
+            fileSize,
+            start,
+            length,
+            nativeFilter,
+            serializedRequestedArrowSchema,
+            serializedDataArrowSchema,
+            timeZoneId);
     isInitialized = true;
   }
 
@@ -459,7 +471,10 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       importer = null;
     }
     nativeUtil.close();
-    Native.closeRecordBatchReader(this.handle);
+    if (this.handle > 0) {
+      Native.closeRecordBatchReader(this.handle);
+      this.handle = 0;
+    }
   }
 
   @SuppressWarnings("deprecation")
@@ -520,5 +535,12 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     } catch (NoSuchMethodException | InvocationTargetException | IllegalAccessException e) {
       return Option.apply(null); // None
     }
+  }
+
+  private byte[] serializeArrowSchema(Schema schema) throws IOException {
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    WriteChannel writeChannel = new WriteChannel(Channels.newChannel(out));
+    MessageSerializer.serialize(writeChannel, schema);
+    return out.toByteArray();
   }
 }

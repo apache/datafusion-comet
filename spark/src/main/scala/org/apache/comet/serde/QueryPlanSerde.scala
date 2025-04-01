@@ -46,7 +46,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{isCometScan, usingDataFusionParquetExec, withInfo}
 import org.apache.comet.expressions._
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType._
@@ -61,13 +61,15 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
     logWarning(s"Comet native execution is disabled due to: $reason")
   }
 
-  def supportedDataType(dt: DataType, allowStruct: Boolean = false): Boolean = dt match {
+  def supportedDataType(dt: DataType, allowComplex: Boolean = false): Boolean = dt match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
         _: DecimalType | _: DateType | _: BooleanType | _: NullType =>
       true
-    case s: StructType if allowStruct =>
-      s.fields.map(_.dataType).forall(supportedDataType(_, allowStruct))
+    case s: StructType if allowComplex =>
+      s.fields.map(_.dataType).forall(supportedDataType(_, allowComplex))
+    case a: ArrayType if allowComplex =>
+      supportedDataType(a.elementType, allowComplex)
     case dt =>
       emitWarning(s"unsupported Spark data type: $dt")
       false
@@ -763,7 +765,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           binding,
           (builder, binaryExpr) => builder.setLtEq(binaryExpr))
 
-      case Literal(value, dataType) if supportedDataType(dataType, allowStruct = value == null) =>
+      case Literal(value, dataType)
+          if supportedDataType(dataType, allowComplex = value == null) =>
         val exprBuilder = ExprOuterClass.Literal.newBuilder()
 
         if (value == null) {
@@ -793,7 +796,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
               exprBuilder.setBytesVal(byteStr)
             case _: DateType => exprBuilder.setIntVal(value.asInstanceOf[Int])
             case dt =>
-              logWarning(s"Unexpected date type '$dt' for literal value '$value'")
+              logWarning(s"Unexpected datatype '$dt' for literal value '$value'")
           }
         }
 
@@ -1921,34 +1924,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           None
         }
 
-      case expr if expr.prettyName == "array_insert" =>
-        val srcExprProto = exprToProtoInternal(expr.children(0), inputs, binding)
-        val posExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
-        val itemExprProto = exprToProtoInternal(expr.children(2), inputs, binding)
-        val legacyNegativeIndex =
-          SQLConf.get.getConfString("spark.sql.legacy.negativeIndexInArrayInsert").toBoolean
-        if (srcExprProto.isDefined && posExprProto.isDefined && itemExprProto.isDefined) {
-          val arrayInsertBuilder = ExprOuterClass.ArrayInsert
-            .newBuilder()
-            .setSrcArrayExpr(srcExprProto.get)
-            .setPosExpr(posExprProto.get)
-            .setItemExpr(itemExprProto.get)
-            .setLegacyNegativeIndex(legacyNegativeIndex)
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setArrayInsert(arrayInsertBuilder)
-              .build())
-        } else {
-          withInfo(
-            expr,
-            "unsupported arguments for ArrayInsert",
-            expr.children(0),
-            expr.children(1),
-            expr.children(2))
-          None
-        }
+      case expr if expr.prettyName == "array_insert" => convert(CometArrayInsert)
 
       case ElementAt(child, ordinal, defaultValue, failOnError)
           if child.dataType.isInstanceOf[ArrayType] =>
@@ -1997,9 +1973,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         }
       case _: ArrayRemove => convert(CometArrayRemove)
       case _: ArrayContains => convert(CometArrayContains)
-      // Function introduced in 3.4.0. Refer by name to provide compatibility
-      // with older Spark builds
-      case _ if expr.prettyName == "array_append" => convert(CometArrayAppend)
+      case _: ArrayAppend => convert(CometArrayAppend)
       case _: ArrayIntersect => convert(CometArrayIntersect)
       case _: ArrayJoin => convert(CometArrayJoin)
       case _: ArraysOverlap => convert(CometArraysOverlap)
@@ -2718,7 +2692,16 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         withInfo(join, "SortMergeJoin is not enabled")
         None
 
-      case op if isCometSink(op) && op.output.forall(a => supportedDataType(a.dataType, true)) =>
+      case op
+          if isCometSink(op) && op.output.forall(a =>
+            supportedDataType(
+              a.dataType,
+              // Complex type supported if
+              // - Native datafusion reader enabled (experimental) OR
+              // - conversion from Parquet/JSON enabled
+              allowComplex =
+                usingDataFusionParquetExec(conf) || CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED
+                  .get(conf) || CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf))) =>
         // These operators are source of Comet native execution chain
         val scanBuilder = OperatorOuterClass.Scan.newBuilder()
         val source = op.simpleStringWithNodeId()
@@ -2895,7 +2878,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
   }
 
   // Utility method. Adds explain info if the result of calling exprToProto is None
-  private def optExprWithInfo(
+  def optExprWithInfo(
       optExpr: Option[Expr],
       expr: Expression,
       childExpr: Expression*): Option[Expr] = {

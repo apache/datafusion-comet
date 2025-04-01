@@ -141,6 +141,30 @@ under the License.
       <artifactId>arrow-c-data</artifactId>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-client-minicluster</artifactId>
+      <scope>test</scope>
+      <exclusions>
+        <!-- hadoop clients are provided by spark -->
+        <exclusion>
+          <artifactId>hadoop-client-api</artifactId>
+          <groupId>org.apache.hadoop</groupId>
+        </exclusion>
+        <exclusion>
+          <artifactId>hadoop-client-runtime</artifactId>
+          <groupId>org.apache.hadoop</groupId>
+        </exclusion>
+        <exclusion>
+          <artifactId>snappy-java</artifactId>
+          <groupId>org.xerial.snappy</groupId>
+        </exclusion>
+        <exclusion>
+          <artifactId>junit</artifactId>
+          <groupId>junit</groupId>
+        </exclusion>
+      </exclusions>
+    </dependency>
   </dependencies>
 
   <build>
@@ -260,9 +284,6 @@ under the License.
             </goals>
             <configuration>
               <sources>
-                <source>src/test/${additional.3_4.test.source}</source>
-                <source>src/test/${additional.3_5.test.source}</source>
-                <source>src/test/${additional.pre35.test.source}</source>
                 <source>src/test/${shims.majorVerSrc}</source>
                 <source>src/test/${shims.minorVerSrc}</source>
               </sources>
@@ -278,7 +299,6 @@ under the License.
               <sources>
                 <source>src/main/${shims.majorVerSrc}</source>
                 <source>src/main/${shims.minorVerSrc}</source>
-                <source>src/main/${shims.pre35Src}</source>
               </sources>
             </configuration>
           </execution>
