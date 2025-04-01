@@ -459,20 +459,13 @@ case class CometScanExec(
     }
   }
 
-  // Filters unused DynamicPruningExpression expressions - one which has been replaced
-  // with DynamicPruningExpression(Literal.TrueLiteral) during Physical Planning
-  private def filterUnusedDynamicPruningExpressions(
-      predicates: Seq[Expression]): Seq[Expression] = {
-    predicates.filterNot(_ == DynamicPruningExpression(Literal.TrueLiteral))
-  }
-
   override def doCanonicalize(): CometScanExec = {
     CometScanExec(
       relation,
       output.map(QueryPlan.normalizeExpressions(_, output)),
       requiredSchema,
       QueryPlan.normalizePredicates(
-        filterUnusedDynamicPruningExpressions(partitionFilters),
+        CometScanUtils.filterUnusedDynamicPruningExpressions(partitionFilters),
         output),
       optionalBucketSet,
       optionalNumCoalescedBuckets,
