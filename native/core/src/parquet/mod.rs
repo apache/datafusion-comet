@@ -54,8 +54,9 @@ use crate::parquet::parquet_support::prepare_object_store;
 use arrow::array::{Array, RecordBatch};
 use arrow::buffer::{Buffer, MutableBuffer};
 use datafusion::datasource::listing::PartitionedFile;
-use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::{poll, StreamExt};
 use jni::objects::{JBooleanArray, JByteArray, JLongArray, JPrimitiveArray, JString, ReleaseMode};
 use jni::sys::jstring;
@@ -650,9 +651,15 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     required_schema: jbyteArray,
     data_schema: jbyteArray,
     session_timezone: jstring,
+    batch_size: jint,
+    worker_threads: jint,
+    blocking_threads: jint,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| unsafe {
-        let task_ctx = TaskContext::default();
+        let session_config = SessionConfig::new().with_batch_size(batch_size as usize);
+        let planer =
+            PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(session_config)));
+        let session_ctx = planer.session_ctx();
 
         let path: String = env
             .get_string(&JString::from_raw(file_path))
@@ -660,11 +667,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             .into();
 
         let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(worker_threads as usize)
+            .max_blocking_threads(blocking_threads as usize)
             .enable_all()
             .build()?;
 
         let (object_store_url, object_store_path) =
-            prepare_object_store(task_ctx.runtime_env(), path.clone())?;
+            prepare_object_store(session_ctx.runtime_env(), path.clone())?;
 
         let required_schema_array = JByteArray::from_raw(required_schema);
         let required_schema_buffer = env.convert_byte_array(&required_schema_array)?;
@@ -673,8 +682,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         let data_schema_array = JByteArray::from_raw(data_schema);
         let data_schema_buffer = env.convert_byte_array(&data_schema_array)?;
         let data_schema = Arc::new(deserialize_schema(data_schema_buffer.as_bytes())?);
-
-        let planer = PhysicalPlanner::default();
 
         let data_filters = if !filter.is_null() {
             let filter_array = JByteArray::from_raw(filter);
@@ -708,7 +715,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         )?;
 
         let partition_index: usize = 0;
-        let batch_stream = Some(scan.execute(partition_index, Arc::new(task_ctx))?);
+        let batch_stream = Some(scan.execute(partition_index, session_ctx.task_ctx())?);
 
         let ctx = BatchContext {
             runtime,

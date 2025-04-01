@@ -175,6 +175,11 @@ impl PhysicalPlanner {
         }
     }
 
+    /// Return session context of this planner.
+    pub fn session_ctx(&self) -> &Arc<SessionContext> {
+        &self.session_ctx
+    }
+
     /// get DataFusion PartitionedFiles from a Spark FilePartition
     fn get_partitioned_files(
         &self,
