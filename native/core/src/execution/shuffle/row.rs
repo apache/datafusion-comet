@@ -3199,7 +3199,7 @@ fn make_builders(
                 make_builders(field.data_type(), NESTED_TYPE_BUILDER_CAPACITY, 1.0)?;
 
             // Needed to overwrite default ListBuilder creation having the incoming field schema to be driving
-            let value_field = Arc::clone(&field);
+            let value_field = Arc::clone(field);
 
             match field.data_type() {
                 DataType::Boolean => {
