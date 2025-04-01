@@ -3198,58 +3198,61 @@ fn make_builders(
             let value_builder =
                 make_builders(field.data_type(), NESTED_TYPE_BUILDER_CAPACITY, 1.0)?;
 
+            // Needed to overwrite default ListBuilder creation having the incoming field schema to be driving
+            let value_field = Arc::clone(&field);
+
             match field.data_type() {
                 DataType::Boolean => {
                     let builder = downcast_builder!(BooleanBuilder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(value_field))
                 }
                 DataType::Int8 => {
                     let builder = downcast_builder!(Int8Builder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(value_field))
                 }
                 DataType::Int16 => {
                     let builder = downcast_builder!(Int16Builder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(value_field))
                 }
                 DataType::Int32 => {
                     let builder = downcast_builder!(Int32Builder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(value_field))
                 }
                 DataType::Int64 => {
                     let builder = downcast_builder!(Int64Builder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(value_field))
                 }
                 DataType::Float32 => {
                     let builder = downcast_builder!(Float32Builder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(value_field))
                 }
                 DataType::Float64 => {
                     let builder = downcast_builder!(Float64Builder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(value_field))
                 }
                 DataType::Decimal128(_, _) => {
                     let builder = downcast_builder!(Decimal128Builder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(value_field))
                 }
                 DataType::Timestamp(TimeUnit::Microsecond, _) => {
                     let builder = downcast_builder!(TimestampMicrosecondBuilder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(value_field))
                 }
                 DataType::Date32 => {
                     let builder = downcast_builder!(Date32Builder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(value_field))
                 }
                 DataType::Binary => {
                     let builder = downcast_builder!(BinaryBuilder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(value_field))
                 }
                 DataType::Utf8 => {
                     let builder = downcast_builder!(StringBuilder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(value_field))
                 }
                 DataType::Struct(_) => {
                     let builder = downcast_builder!(StructBuilder, value_builder);
-                    Box::new(ListBuilder::new(*builder))
+                    Box::new(ListBuilder::new(*builder).with_field(value_field))
                 }
                 // TODO: nested list is not supported. Due to the design of `ListBuilder`, it has
                 // a `T: ArrayBuilder` as type parameter. It makes hard to construct an arbitrarily
@@ -3274,6 +3277,7 @@ fn make_builders(
                 .map(|field| make_builders(field.data_type(), row_num, 1.0))
                 .collect::<Result<Vec<_>, _>>()?;
 
+            dbg!(fields);
             Box::new(StructBuilder::new(fields.clone(), field_builders))
         }
         _ => return Err(CometError::Internal(format!("Unsupported type: {:?}", dt))),

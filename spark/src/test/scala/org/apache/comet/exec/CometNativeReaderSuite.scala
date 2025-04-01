@@ -62,25 +62,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       "select arr from tbl")
   }
 
-  /*
-  native reader - read STRUCT of ARRAY fields - native_datafusion *** FAILED *** (191 milliseconds)
-  org.apache.spark.SparkException: Job aborted due to stage failure: Task 1 in stage 29.0 failed 1 times,
-  most recent failure: Lost task 1.0 in stage 29.0 (TID 35) (192.168.4.142 executor driver):
-  org.apache.comet.CometNativeException: called `Result::unwrap()` on an `Err` value:
-  InvalidArgumentError("Incorrect datatype for StructArray field \"col\", expected List(Field { name: \"item\",
-  data_type: Int32, nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} })
-  got List(Field { name: \"item\", data_type: Int32, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} })")
-
-
-  native reader - read STRUCT of ARRAY fields - native_iceberg_compat *** FAILED *** (82 milliseconds)
-  org.apache.spark.SparkException: Job aborted due to stage failure:
-  Task 1 in stage 31.0 failed 1 times, most recent failure: Lost task 1.0 in stage 31.0 (TID 39) (192.168.4.142 executor driver):
-  org.apache.comet.CometNativeException: called `Result::unwrap()` on an `Err` value: InvalidArgumentError("Incorrect datatype for StructArray field \"col\",
-  expected List(Field { name: \"item\", data_type: Int32, nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} })
-  got List(Field { name: \"item\", data_type: Int32, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} })")
-
-   */
-  ignore("native reader - read STRUCT of ARRAY fields") {
+  test("native reader - read STRUCT of ARRAY fields") {
     testSingleLineQuery(
       """
         |select named_struct('col', arr) c0 from
