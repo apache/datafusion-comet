@@ -3277,7 +3277,6 @@ fn make_builders(
                 .map(|field| make_builders(field.data_type(), row_num, 1.0))
                 .collect::<Result<Vec<_>, _>>()?;
 
-            dbg!(fields);
             Box::new(StructBuilder::new(fields.clone(), field_builders))
         }
         _ => return Err(CometError::Internal(format!("Unsupported type: {:?}", dt))),
