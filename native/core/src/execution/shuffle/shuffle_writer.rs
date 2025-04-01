@@ -567,13 +567,14 @@ impl MultiPartitionShuffleRepartitioner {
         shuffle_block_writer: &mut ShuffleBlockWriter,
         output_data: &mut BufWriter<File>,
         encode_time: &Time,
+        write_time: &Time,
     ) -> Result<()> {
         let mut buf_batch_writer = BufBatchWriter::new(shuffle_block_writer, output_data);
         for batch in partition_iter {
             let batch = batch?;
-            buf_batch_writer.write(&batch, encode_time)?;
+            buf_batch_writer.write(&batch, encode_time, write_time)?;
         }
-        buf_batch_writer.flush()?;
+        buf_batch_writer.flush(write_time)?;
         Ok(())
     }
 
@@ -671,8 +672,6 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
         let data_file = self.output_data_file.clone();
         let index_file = self.output_index_file.clone();
 
-        let mut write_time = self.metrics.write_time.timer();
-
         let output_data = OpenOptions::new()
             .write(true)
             .create(true)
@@ -693,6 +692,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                 &mut self.shuffle_block_writer,
                 &mut output_data,
                 &self.metrics.encode_time,
+                &self.metrics.write_time,
             )?;
 
             // if we wrote a spill file for this partition then copy the
@@ -718,8 +718,6 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                 .map_err(to_df_err)?;
         }
         output_index.flush()?;
-
-        write_time.stop();
 
         self.metrics
             .baseline
@@ -836,14 +834,20 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
 
                 // Write the concatenated buffered batch
                 if let Some(batch) = concatenated_batch {
-                    self.output_data_writer
-                        .write(&batch, &self.metrics.encode_time)?;
+                    self.output_data_writer.write(
+                        &batch,
+                        &self.metrics.encode_time,
+                        &self.metrics.write_time,
+                    )?;
                 }
 
                 if num_rows >= self.batch_size {
                     // Write the new batch
-                    self.output_data_writer
-                        .write(&batch, &self.metrics.encode_time)?;
+                    self.output_data_writer.write(
+                        &batch,
+                        &self.metrics.encode_time,
+                        &self.metrics.write_time,
+                    )?;
                 } else {
                     // Add the new batch to the buffer
                     self.add_buffered_batch(batch);
@@ -870,15 +874,16 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
         let concatenated_batch = self.concat_buffered_batches()?;
 
         // Write the concatenated buffered batch
-        let mut write_time = self.metrics.write_time.timer();
         if let Some(batch) = concatenated_batch {
-            self.output_data_writer
-                .write(&batch, &self.metrics.encode_time)?;
+            self.output_data_writer.write(
+                &batch,
+                &self.metrics.encode_time,
+                &self.metrics.write_time,
+            )?;
         }
-        self.output_data_writer.flush()?;
-        write_time.stop();
+        self.output_data_writer.flush(&self.metrics.write_time)?;
 
-        // Write index file. It should only contain 2 entires: 0 and the total number of bytes written
+        // Write index file. It should only contain 2 entries: 0 and the total number of bytes written
         let mut index_file = OpenOptions::new()
             .write(true)
             .create(true)
@@ -1028,7 +1033,6 @@ impl PartitionWriter {
         metrics: &ShuffleRepartitionerMetrics,
     ) -> Result<usize> {
         if let Some(batch) = iter.next() {
-            let mut write_timer = metrics.write_time.timer();
             self.ensure_spill_file_created(runtime)?;
 
             let total_bytes_written = {
@@ -1036,16 +1040,19 @@ impl PartitionWriter {
                     &mut self.shuffle_block_writer,
                     &mut self.spill_file.as_mut().unwrap().file,
                 );
-                let mut bytes_written = buf_batch_writer.write(&batch?, &metrics.encode_time)?;
+                let mut bytes_written =
+                    buf_batch_writer.write(&batch?, &metrics.encode_time, &metrics.write_time)?;
                 for batch in iter {
                     let batch = batch?;
-                    bytes_written += buf_batch_writer.write(&batch, &metrics.encode_time)?;
+                    bytes_written += buf_batch_writer.write(
+                        &batch,
+                        &metrics.encode_time,
+                        &metrics.write_time,
+                    )?;
                 }
-                buf_batch_writer.flush()?;
+                buf_batch_writer.flush(&metrics.write_time)?;
                 bytes_written
             };
-
-            write_timer.stop();
 
             Ok(total_bytes_written)
         } else {
@@ -1099,9 +1106,15 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
         }
     }
 
-    fn write(&mut self, batch: &RecordBatch, encode_time: &Time) -> Result<usize> {
+    fn write(
+        &mut self,
+        batch: &RecordBatch,
+        encode_time: &Time,
+        write_time: &Time,
+    ) -> Result<usize> {
         let mut cursor = Cursor::new(&mut self.buffer);
         cursor.seek(SeekFrom::End(0))?;
+        let mut write_timer = write_time.timer();
         let bytes_written =
             self.shuffle_block_writer
                 .borrow()
@@ -1111,15 +1124,18 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
             self.writer.write_all(&self.buffer)?;
             self.buffer.clear();
         }
+        write_timer.stop();
         Ok(bytes_written)
     }
 
-    fn flush(&mut self) -> Result<()> {
+    fn flush(&mut self, write_time: &Time) -> Result<()> {
+        let mut write_timer = write_time.timer();
         if !self.buffer.is_empty() {
             self.writer.write_all(&self.buffer)?;
             self.buffer.clear();
         }
         self.writer.flush()?;
+        write_timer.stop();
         Ok(())
     }
 }
