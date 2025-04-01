@@ -63,7 +63,7 @@ case class CometParquetPartitionReaderFactory(
   private val pushDownDate = sqlConf.parquetFilterPushDownDate
   private val pushDownTimestamp = sqlConf.parquetFilterPushDownTimestamp
   private val pushDownDecimal = sqlConf.parquetFilterPushDownDecimal
-  private val pushDownStringPredicate = getPushDownStringPredicate(sqlConf)
+  private val pushDownStringPredicate = sqlConf.parquetFilterPushDownStringPredicate
   private val pushDownInFilterThreshold = sqlConf.parquetFilterPushDownInFilterThreshold
   private val datetimeRebaseModeInRead = options.datetimeRebaseModeInRead
   private val parquetFilterPushDown = sqlConf.parquetFilterPushDown
@@ -199,6 +199,7 @@ case class CometParquetPartitionReaderFactory(
       val parquetSchema = footerFileMetaData.getSchema
       val parquetFilters = new ParquetFilters(
         parquetSchema,
+        readDataSchema,
         pushDownDate,
         pushDownTimestamp,
         pushDownDecimal,

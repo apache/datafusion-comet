@@ -84,7 +84,20 @@ impl SchemaAdapter for SparkSchemaAdapter {
     /// Panics if index is not in range for the table schema
     fn map_column_index(&self, index: usize, file_schema: &Schema) -> Option<usize> {
         let field = self.required_schema.field(index);
-        Some(file_schema.fields.find(field.name())?.0)
+        Some(
+            file_schema
+                .fields
+                .iter()
+                .enumerate()
+                .find(|(_, b)| {
+                    if self.parquet_options.case_sensitive {
+                        b.name() == field.name()
+                    } else {
+                        b.name().to_lowercase() == field.name().to_lowercase()
+                    }
+                })?
+                .0,
+        )
     }
 
     /// Creates a `SchemaMapping` for casting or mapping the columns from the
@@ -104,8 +117,18 @@ impl SchemaAdapter for SparkSchemaAdapter {
         let mut field_mappings = vec![None; self.required_schema.fields().len()];
 
         for (file_idx, file_field) in file_schema.fields.iter().enumerate() {
-            if let Some((table_idx, _table_field)) =
-                self.required_schema.fields().find(file_field.name())
+            if let Some((table_idx, _table_field)) = self
+                .required_schema
+                .fields()
+                .iter()
+                .enumerate()
+                .find(|(_, b)| {
+                    if self.parquet_options.case_sensitive {
+                        b.name() == file_field.name()
+                    } else {
+                        b.name().to_lowercase() == file_field.name().to_lowercase()
+                    }
+                })
             {
                 field_mappings[table_idx] = Some(projection.len());
                 projection.push(file_idx);
@@ -234,16 +257,18 @@ impl SchemaMapper for SchemaMapping {
             .zip(batch_cols.iter())
             .flat_map(|(field, batch_col)| {
                 self.table_schema
-                    // try to get the same field from the table schema that we have stored in self
-                    .field_with_name(field.name())
-                    // and if we don't have it, that's fine, ignore it. This may occur when we've
-                    // created an external table whose fields are a subset of the fields in this
-                    // file, then tried to read data from the file into this table. If that is the
-                    // case here, it's fine to ignore because we don't care about this field
-                    // anyways
-                    .ok()
+                    .fields()
+                    .iter()
+                    .enumerate()
+                    .find(|(_, b)| {
+                        if self.parquet_options.case_sensitive {
+                            b.name() == field.name()
+                        } else {
+                            b.name().to_lowercase() == field.name().to_lowercase()
+                        }
+                    })
                     // but if we do have it,
-                    .map(|table_field| {
+                    .map(|(_, table_field)| {
                         // try to cast it into the correct output type. we don't want to ignore this
                         // error, though, so it's propagated.
                         spark_parquet_convert(
@@ -253,7 +278,7 @@ impl SchemaMapper for SchemaMapping {
                         )?
                         .into_array(batch_col.len())
                         // and if that works, return the field and column.
-                        .map(|new_col| (new_col, table_field.clone()))
+                        .map(|new_col| (new_col, table_field.as_ref().clone()))
                     })
             })
             .collect::<Result<Vec<_>, _>>()?

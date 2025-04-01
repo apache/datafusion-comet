@@ -58,6 +58,7 @@ under the License.
     <protobuf.version>3.25.5</protobuf.version>
     <parquet.version>1.13.1</parquet.version>
     <parquet.maven.scope>provided</parquet.maven.scope>
+    <hadoop.version>3.3.4</hadoop.version>
     <arrow.version>16.0.0</arrow.version>
     <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
     <spotless.version>2.43.0</spotless.version>
@@ -95,12 +96,8 @@ under the License.
       -Djdk.reflect.useDirectMethodHandle=false
     </extraJavaTestArgs>
     <argLine>-ea -Xmx4g -Xss4m ${extraJavaTestArgs}</argLine>
-    <additional.3_4.test.source>spark-3.4-plus</additional.3_4.test.source>
-    <additional.3_5.test.source>not-needed</additional.3_5.test.source>
-    <additional.pre35.test.source>spark-pre-3.5</additional.pre35.test.source>
     <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
     <shims.minorVerSrc>spark-3.4</shims.minorVerSrc>
-    <shims.pre35Src>spark-pre-3.5</shims.pre35Src>
   </properties>
 
   <dependencyManagement>
@@ -451,6 +448,13 @@ under the License.
         <version>5.1.0</version>
       </dependency>
 
+      <dependency>
+        <groupId>org.apache.hadoop</groupId>
+        <artifactId>hadoop-client-minicluster</artifactId>
+        <version>${hadoop.version}</version>
+        <scope>test</scope>
+      </dependency>
+
     </dependencies>
 
   </dependencyManagement>
@@ -560,14 +564,11 @@ under the License.
       <id>spark-3.5</id>
       <properties>
         <scala.version>2.12.18</scala.version>
-        <spark.version>3.5.4</spark.version>
+        <spark.version>3.5.5</spark.version>
         <spark.version.short>3.5</spark.version.short>
         <parquet.version>1.13.1</parquet.version>
         <slf4j.version>2.0.7</slf4j.version>
         <shims.minorVerSrc>spark-3.5</shims.minorVerSrc>
-        <shims.pre35Src>not-needed</shims.pre35Src>
-        <additional.pre35.test.source>not-needed</additional.pre35.test.source>
-        <additional.3_5.test.source>spark-3.5</additional.3_5.test.source>
       </properties>
     </profile>
 
@@ -585,8 +586,6 @@ under the License.
         <slf4j.version>2.0.13</slf4j.version>
         <shims.majorVerSrc>spark-4.0</shims.majorVerSrc>
         <shims.minorVerSrc>not-needed-yet</shims.minorVerSrc>
-        <shims.pre35Src>not-needed</shims.pre35Src>
-        <additional.pre35.test.source>not-needed</additional.pre35.test.source>
         <!-- Use jdk17 by default -->
         <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>

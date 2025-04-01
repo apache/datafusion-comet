@@ -168,7 +168,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     metrics_update_interval: jlong,
     comet_task_memory_manager_obj: JObject,
     batch_size: jint,
-    use_unified_memory_manager: jboolean,
+    off_heap_mode: jboolean,
     memory_pool_type: jstring,
     memory_limit: jlong,
     memory_limit_per_task: jlong,
@@ -213,7 +213,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
         let memory_pool_type = env.get_string(&JString::from_raw(memory_pool_type))?.into();
         let memory_pool_config = parse_memory_pool_config(
-            use_unified_memory_manager != JNI_FALSE,
+            off_heap_mode != JNI_FALSE,
             memory_pool_type,
             memory_limit,
             memory_limit_per_task,
@@ -293,16 +293,27 @@ fn prepare_datafusion_session_context(
 }
 
 fn parse_memory_pool_config(
-    use_unified_memory_manager: bool,
+    off_heap_mode: bool,
     memory_pool_type: String,
     memory_limit: i64,
     memory_limit_per_task: i64,
 ) -> CometResult<MemoryPoolConfig> {
     let pool_size = memory_limit as usize;
-    let memory_pool_config = if use_unified_memory_manager {
+    let memory_pool_config = if off_heap_mode {
         match memory_pool_type.as_str() {
             "fair_unified" => MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size),
-            _ => MemoryPoolConfig::new(MemoryPoolType::Unified, 0),
+            "default" | "unified" => {
+                // the `unified` memory pool interacts with Spark's memory pool to allocate
+                // memory therefore does not need a size to be explicitly set. The pool size
+                // shared with Spark is set by `spark.memory.offHeap.size`.
+                MemoryPoolConfig::new(MemoryPoolType::Unified, 0)
+            }
+            _ => {
+                return Err(CometError::Config(format!(
+                    "Unsupported memory pool type for off-heap mode: {}",
+                    memory_pool_type
+                )))
+            }
         }
     } else {
         // Use the memory pool from DF
@@ -311,7 +322,7 @@ fn parse_memory_pool_config(
             "fair_spill_task_shared" => {
                 MemoryPoolConfig::new(MemoryPoolType::FairSpillTaskShared, pool_size_per_task)
             }
-            "greedy_task_shared" => {
+            "default" | "greedy_task_shared" => {
                 MemoryPoolConfig::new(MemoryPoolType::GreedyTaskShared, pool_size_per_task)
             }
             "fair_spill_global" => {
@@ -323,7 +334,7 @@ fn parse_memory_pool_config(
             "unbounded" => MemoryPoolConfig::new(MemoryPoolType::Unbounded, 0),
             _ => {
                 return Err(CometError::Config(format!(
-                    "Unsupported memory pool type: {}",
+                    "Unsupported memory pool type for on-heap mode: {}",
                     memory_pool_type
                 )))
             }

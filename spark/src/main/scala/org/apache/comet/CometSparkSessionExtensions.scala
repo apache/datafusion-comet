@@ -21,6 +21,8 @@ package org.apache.comet
 
 import java.nio.ByteOrder
 
+import scala.collection.mutable.ListBuffer
+
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
@@ -53,7 +55,7 @@ import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometLoaded, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.rules.RewriteJoin
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -91,17 +93,14 @@ class CometSparkSessionExtensions
 
   case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
     override def apply(plan: SparkPlan): SparkPlan = {
-      if (!isCometEnabled(conf) || !isCometScanEnabled(conf)) {
-        if (!isCometEnabled(conf)) {
+      if (!isCometLoaded(conf) || !isCometScanEnabled(conf)) {
+        if (!isCometLoaded(conf)) {
           withInfo(plan, "Comet is not enabled")
         } else if (!isCometScanEnabled(conf)) {
           withInfo(plan, "Comet Scan is not enabled")
         }
         plan
       } else {
-
-        def isDynamicPruningFilter(e: Expression): Boolean =
-          e.exists(_.isInstanceOf[PlanExpression[_]])
 
         def hasMetadataCol(plan: SparkPlan): Boolean = {
           plan.expressions.exists(_.exists {
@@ -116,11 +115,9 @@ class CometSparkSessionExtensions
             withInfo(scan, "Metadata column is not supported")
             scan
 
-          case scanExec: FileSourceScanExec
-              if COMET_DPP_FALLBACK_ENABLED.get() &&
-                scanExec.partitionFilters.exists(isDynamicPruningFilter) =>
-            withInfo(scanExec, "DPP not supported")
-            scanExec
+          // data source V1
+          case scanExec: FileSourceScanExec =>
+            transformV1Scan(scanExec)
 
           // data source V2
           case scanExec: BatchScanExec
@@ -188,69 +185,62 @@ class CometSparkSessionExtensions
                 scanExec
             }
 
-          // data source V1
-          case scanExec @ FileSourceScanExec(
-                HadoopFsRelation(_, partitionSchema, _, _, fileFormat, _),
-                _: Seq[_],
-                requiredSchema,
-                _,
-                _,
-                _,
-                _,
-                _,
-                _)
-              if CometScanExec.isFileFormatSupported(fileFormat)
-                && CometNativeScanExec.isSchemaSupported(requiredSchema)
-                && CometNativeScanExec.isSchemaSupported(partitionSchema)
-                // TODO we only enable full native scan if COMET_EXEC_ENABLED is enabled
-                // but this is not really what we want .. we currently insert `CometScanExec`
-                // here and then it gets replaced with `CometNativeScanExec` in `CometExecRule`
-                // but that only happens if `COMET_EXEC_ENABLED` is enabled
-                && COMET_EXEC_ENABLED.get()
-                && COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_DATAFUSION =>
-            logInfo("Comet extension enabled for v1 full native Scan")
-            CometScanExec(scanExec, session)
-
-          // data source V1
-          case scanExec @ FileSourceScanExec(
-                HadoopFsRelation(_, partitionSchema, _, _, fileFormat, _),
-                _: Seq[_],
-                requiredSchema,
-                _,
-                _,
-                _,
-                _,
-                _,
-                _)
-              if CometScanExec.isFileFormatSupported(fileFormat)
-                && CometScanExec.isSchemaSupported(requiredSchema)
-                && CometScanExec.isSchemaSupported(partitionSchema) =>
-            logInfo("Comet extension enabled for v1 Scan")
-            CometScanExec(scanExec, session)
-
-          // data source v1 not supported case
-          case scanExec @ FileSourceScanExec(
-                HadoopFsRelation(_, partitionSchema, _, _, fileFormat, _),
-                _: Seq[_],
-                requiredSchema,
-                _,
-                _,
-                _,
-                _,
-                _,
-                _) =>
-            val info1 = createMessage(
-              !CometScanExec.isFileFormatSupported(fileFormat),
-              s"File format $fileFormat is not supported")
-            val info2 = createMessage(
-              !CometScanExec.isSchemaSupported(requiredSchema),
-              s"Schema $requiredSchema is not supported")
-            val info3 = createMessage(
-              !CometScanExec.isSchemaSupported(partitionSchema),
-              s"Partition schema $partitionSchema is not supported")
-            withInfo(scanExec, Seq(info1, info2, info3).flatten.mkString(","))
-            scanExec
         }
+      }
+    }
+
+    private def isDynamicPruningFilter(e: Expression): Boolean =
+      e.exists(_.isInstanceOf[PlanExpression[_]])
+
+    private def transformV1Scan(scanExec: FileSourceScanExec): SparkPlan = {
+
+      if (COMET_DPP_FALLBACK_ENABLED.get() &&
+        scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
+        withInfo(scanExec, "DPP not supported")
+        return scanExec
+      }
+
+      scanExec.relation match {
+        case r: HadoopFsRelation =>
+          val fallbackReasons = new ListBuffer[String]()
+          if (!CometScanExec.isFileFormatSupported(r.fileFormat)) {
+            fallbackReasons += s"Unsupported file format ${r.fileFormat}"
+          }
+
+          val scanImpl = COMET_NATIVE_SCAN_IMPL.get()
+          if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && !COMET_EXEC_ENABLED.get()) {
+            fallbackReasons +=
+              s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled"
+          }
+
+          val (schemaSupported, partitionSchemaSupported) = scanImpl match {
+            case CometConf.SCAN_NATIVE_DATAFUSION =>
+              (
+                CometNativeScanExec.isSchemaSupported(scanExec.requiredSchema),
+                CometNativeScanExec.isSchemaSupported(r.partitionSchema))
+            case CometConf.SCAN_NATIVE_COMET | SCAN_NATIVE_ICEBERG_COMPAT =>
+              (
+                CometScanExec.isSchemaSupported(scanExec.requiredSchema),
+                CometScanExec.isSchemaSupported(r.partitionSchema))
+          }
+
+          if (!schemaSupported) {
+            fallbackReasons += s"Unsupported schema ${scanExec.requiredSchema} for $scanImpl"
+          }
+          if (!partitionSchemaSupported) {
+            fallbackReasons += s"Unsupported partitioning schema ${r.partitionSchema} for $scanImpl"
+          }
+
+          if (fallbackReasons.isEmpty) {
+            CometScanExec(scanExec, session)
+          } else {
+            withInfo(scanExec, fallbackReasons.mkString(", "))
+            scanExec
+          }
+
+        case _ =>
+          withInfo(scanExec, s"Unsupported relation ${scanExec.relation}")
+          scanExec
       }
     }
   }
@@ -384,13 +374,13 @@ class CometSparkSessionExtensions
 
         // Comet JVM + native scan for V1 and V2
         case op if isCometScan(op) =>
-          val nativeOp = QueryPlanSerde.operator2Proto(op).get
-          CometScanWrapper(nativeOp, op)
+          val nativeOp = QueryPlanSerde.operator2Proto(op)
+          CometScanWrapper(nativeOp.get, op)
 
         case op if shouldApplySparkToColumnar(conf, op) =>
           val cometOp = CometSparkToColumnarExec(op)
-          val nativeOp = QueryPlanSerde.operator2Proto(cometOp).get
-          CometScanWrapper(nativeOp, cometOp)
+          val nativeOp = QueryPlanSerde.operator2Proto(cometOp)
+          CometScanWrapper(nativeOp.get, cometOp)
 
         case op: ProjectExec =>
           val newOp = transform1(op)
@@ -438,7 +428,7 @@ class CometSparkSessionExtensions
               op
           }
 
-        case op: LocalLimitExec if getOffset(op) == 0 =>
+        case op: LocalLimitExec =>
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
@@ -447,7 +437,7 @@ class CometSparkSessionExtensions
               op
           }
 
-        case op: GlobalLimitExec if getOffset(op) == 0 =>
+        case op: GlobalLimitExec if op.offset == 0 =>
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
@@ -459,10 +449,10 @@ class CometSparkSessionExtensions
         case op: CollectLimitExec
             if isCometNative(op.child) && CometConf.COMET_EXEC_COLLECT_LIMIT_ENABLED.get(conf)
               && isCometShuffleEnabled(conf)
-              && getOffset(op) == 0 =>
+              && op.offset == 0 =>
           QueryPlanSerde.operator2Proto(op) match {
             case Some(nativeOp) =>
-              val offset = getOffset(op)
+              val offset = op.offset
               val cometOp =
                 CometCollectLimitExec(op, op.limit, offset, op.child)
               CometSinkPlaceHolder(nativeOp, op, cometOp)
@@ -498,7 +488,7 @@ class CometSparkSessionExtensions
           val child = op.child
           val modes = aggExprs.map(_.mode).distinct
 
-          if (!modes.isEmpty && modes.size != 1) {
+          if (modes.nonEmpty && modes.size != 1) {
             // This shouldn't happen as all aggregation expressions should share the same mode.
             // Fallback to Spark nevertheless here.
             op
@@ -506,7 +496,7 @@ class CometSparkSessionExtensions
             // For a final mode HashAggregate, we only need to transform the HashAggregate
             // if there is Comet partial aggregation.
             val sparkFinalMode = {
-              !modes.isEmpty && modes.head == Final && findCometPartialAgg(child).isEmpty
+              modes.nonEmpty && modes.head == Final && findCometPartialAgg(child).isEmpty
             }
 
             if (sparkFinalMode) {
@@ -520,7 +510,7 @@ class CometSparkSessionExtensions
                   // distinct aggregate functions or only have group by, the aggExprs is empty and
                   // modes is empty too. If aggExprs is not empty, we need to verify all the
                   // aggregates have the same mode.
-                  assert(modes.length == 1 || modes.length == 0)
+                  assert(modes.length == 1 || modes.isEmpty)
                   CometHashAggregateExec(
                     nativeOp,
                     op,
@@ -529,7 +519,7 @@ class CometSparkSessionExtensions
                     aggExprs,
                     resultExpressions,
                     child.output,
-                    if (modes.nonEmpty) Some(modes.head) else None,
+                    modes.headOption,
                     child,
                     SerializedPlan(None))
                 case None =>
@@ -540,7 +530,7 @@ class CometSparkSessionExtensions
 
         case op: ShuffledHashJoinExec
             if CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(conf) &&
-              op.children.forall(isCometNative(_)) =>
+              op.children.forall(isCometNative) =>
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
@@ -574,7 +564,7 @@ class CometSparkSessionExtensions
 
         case op: BroadcastHashJoinExec
             if CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) &&
-              op.children.forall(isCometNative(_)) =>
+              op.children.forall(isCometNative) =>
           val newOp = transform1(op)
           newOp match {
             case Some(nativeOp) =>
@@ -742,7 +732,6 @@ class CometSparkSessionExtensions
         // exchange. It is only used for Comet native execution. We only transform Spark broadcast
         // exchange to Comet broadcast exchange if its downstream is a Comet native plan or if the
         // broadcast exchange is forced to be enabled by Comet config.
-        // Note that `CometBroadcastExchangeExec` is only supported for Spark 3.4+.
         case plan if plan.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
           val newChildren = plan.children.map {
             case b: BroadcastExchangeExec
@@ -986,8 +975,8 @@ class CometSparkSessionExtensions
         }
       }
 
-      // We shouldn't transform Spark query plan if Comet is disabled.
-      if (!isCometEnabled(conf)) return plan
+      // We shouldn't transform Spark query plan if Comet is not loaded.
+      if (!isCometLoaded(conf)) return plan
 
       if (!isCometExecEnabled(conf)) {
         // Comet exec is disabled, but for Spark shuffle, we still can use Comet columnar shuffle
@@ -1183,9 +1172,9 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   /**
-   * Checks whether Comet extension should be enabled for Spark.
+   * Checks whether Comet extension should be loaded for Spark.
    */
-  private[comet] def isCometEnabled(conf: SQLConf): Boolean = {
+  private[comet] def isCometLoaded(conf: SQLConf): Boolean = {
     if (isBigEndian) {
       logInfo("Comet extension is disabled because platform is big-endian")
       return false
@@ -1289,7 +1278,7 @@ object CometSparkSessionExtensions extends Logging {
     op.isInstanceOf[CometBatchScanExec] || op.isInstanceOf[CometScanExec]
   }
 
-  private def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
+  def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
     // Only consider converting leaf nodes to columnar currently, so that all the following
     // operators can have a chance to be converted to columnar. Leaf operators that output
     // columnar batches, such as Spark's vectorized readers, will also be converted to native
@@ -1340,31 +1329,50 @@ object CometSparkSessionExtensions extends Logging {
     org.apache.spark.SPARK_VERSION >= "4.0"
   }
 
-  def usingDataFusionParquetExec(conf: SQLConf): Boolean = {
-    CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_ICEBERG_COMPAT ||
-    CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_DATAFUSION
+  def usingDataFusionParquetExec(conf: SQLConf): Boolean =
+    Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION).contains(
+      CometConf.COMET_NATIVE_SCAN_IMPL.get(conf))
+
+  /**
+   * Whether we should override Spark memory configuration for Comet. This only returns true when
+   * Comet native execution is enabled and/or Comet shuffle is enabled and Comet doesn't use
+   * off-heap mode (unified memory manager).
+   */
+  def shouldOverrideMemoryConf(conf: SparkConf): Boolean = {
+    val cometEnabled = getBooleanConf(conf, CometConf.COMET_ENABLED)
+    val cometShuffleEnabled = getBooleanConf(conf, CometConf.COMET_EXEC_SHUFFLE_ENABLED)
+    val cometExecEnabled = getBooleanConf(conf, CometConf.COMET_EXEC_ENABLED)
+    val offHeapMode = CometSparkSessionExtensions.isOffHeapEnabled(conf)
+    cometEnabled && (cometShuffleEnabled || cometExecEnabled) && !offHeapMode
   }
 
-  /** Calculates required memory overhead in MB per executor process for Comet. */
+  /**
+   * Calculates required memory overhead in MB per executor process for Comet when running in
+   * on-heap mode.
+   *
+   * If `COMET_MEMORY_OVERHEAD` is defined then that value will be used, otherwise the overhead
+   * will be calculated by multiplying executor memory (`spark.executor.memory`) by
+   * `COMET_MEMORY_OVERHEAD_FACTOR`.
+   *
+   * In either case, a minimum value of `COMET_MEMORY_OVERHEAD_MIN_MIB` will be returned.
+   */
   def getCometMemoryOverheadInMiB(sparkConf: SparkConf): Long = {
-    val baseMemoryMiB = if (cometUnifiedMemoryManagerEnabled(sparkConf)) {
-      ConfigHelpers
-        .byteFromString(sparkConf.get("spark.memory.offHeap.size"), ByteUnit.MiB)
-    } else {
-      // `spark.executor.memory` default value is 1g
-      ConfigHelpers
-        .byteFromString(sparkConf.get("spark.executor.memory", "1024MB"), ByteUnit.MiB)
+    if (isOffHeapEnabled(sparkConf)) {
+      // when running in off-heap mode we use unified memory management to share
+      // off-heap memory with Spark so do not add overhead
+      return 0
     }
 
-    val minimum = ConfigHelpers
-      .byteFromString(
-        sparkConf.get(
-          COMET_MEMORY_OVERHEAD_MIN_MIB.key,
-          COMET_MEMORY_OVERHEAD_MIN_MIB.defaultValueString),
-        ByteUnit.MiB)
-    val overheadFactor = sparkConf.getDouble(
-      COMET_MEMORY_OVERHEAD_FACTOR.key,
-      COMET_MEMORY_OVERHEAD_FACTOR.defaultValue.get)
+    // `spark.executor.memory` default value is 1g
+    val baseMemoryMiB = ConfigHelpers
+      .byteFromString(sparkConf.get("spark.executor.memory", "1024MB"), ByteUnit.MiB)
+
+    val cometMemoryOverheadMinAsString = sparkConf.get(
+      COMET_MEMORY_OVERHEAD_MIN_MIB.key,
+      COMET_MEMORY_OVERHEAD_MIN_MIB.defaultValueString)
+
+    val minimum = ConfigHelpers.byteFromString(cometMemoryOverheadMinAsString, ByteUnit.MiB)
+    val overheadFactor = getDoubleConf(sparkConf, COMET_MEMORY_OVERHEAD_FACTOR)
 
     val overHeadMemFromConf = sparkConf
       .getOption(COMET_MEMORY_OVERHEAD.key)
@@ -1373,13 +1381,27 @@ object CometSparkSessionExtensions extends Logging {
     overHeadMemFromConf.getOrElse(math.max((overheadFactor * baseMemoryMiB).toLong, minimum))
   }
 
-  /** Calculates required memory overhead in bytes per executor process for Comet. */
+  private def getBooleanConf(conf: SparkConf, entry: ConfigEntry[Boolean]) =
+    conf.getBoolean(entry.key, entry.defaultValue.get)
+
+  private def getDoubleConf(conf: SparkConf, entry: ConfigEntry[Double]) =
+    conf.getDouble(entry.key, entry.defaultValue.get)
+
+  /**
+   * Calculates required memory overhead in bytes per executor process for Comet when running in
+   * on-heap mode.
+   */
   def getCometMemoryOverhead(sparkConf: SparkConf): Long = {
     ByteUnit.MiB.toBytes(getCometMemoryOverheadInMiB(sparkConf))
   }
 
-  /** Calculates required shuffle memory size in bytes per executor process for Comet. */
+  /**
+   * Calculates required shuffle memory size in bytes per executor process for Comet when running
+   * in on-heap mode.
+   */
   def getCometShuffleMemorySize(sparkConf: SparkConf, conf: SQLConf = SQLConf.get): Long = {
+    assert(!isOffHeapEnabled(sparkConf))
+
     val cometMemoryOverhead = getCometMemoryOverheadInMiB(sparkConf)
 
     val overheadFactor = COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR.get(conf)
@@ -1397,12 +1419,7 @@ object CometSparkSessionExtensions extends Logging {
     }
   }
 
-  /** Calculates Comet shuffle memory size in MB */
-  def getCometShuffleMemorySizeInMiB(sparkConf: SparkConf, conf: SQLConf = SQLConf.get): Long = {
-    ByteUnit.BYTE.toMiB(getCometShuffleMemorySize(sparkConf, conf))
-  }
-
-  def cometUnifiedMemoryManagerEnabled(sparkConf: SparkConf): Boolean = {
+  def isOffHeapEnabled(sparkConf: SparkConf): Boolean = {
     sparkConf.getBoolean("spark.memory.offHeap.enabled", false)
   }
 

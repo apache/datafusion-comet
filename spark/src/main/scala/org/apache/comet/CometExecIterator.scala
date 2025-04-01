@@ -21,6 +21,7 @@ package org.apache.comet
 
 import org.apache.spark._
 import org.apache.spark.internal.Logging
+import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
 
@@ -63,9 +64,17 @@ class CometExecIterator(
   }.toArray
   private val plan = {
     val conf = SparkEnv.get.conf
-    // Only enable unified memory manager when off-heap mode is enabled. Otherwise,
-    // we'll use the built-in memory pool from DF, and initializes with `memory_limit`
-    // and `memory_fraction` below.
+
+    val offHeapMode = CometSparkSessionExtensions.isOffHeapEnabled(conf)
+    val memoryLimit = if (offHeapMode) {
+      // in unified mode we share off-heap memory with Spark
+      ByteUnit.MiB.toBytes(conf.getSizeAsMb("spark.memory.offHeap.size"))
+    } else {
+      // we'll use the built-in memory pool from DF, and initializes with `memory_limit`
+      // and `memory_fraction` below.
+      CometSparkSessionExtensions.getCometMemoryOverhead(conf)
+    }
+
     nativeLib.createPlan(
       id,
       cometBatchIterators,
@@ -75,12 +84,11 @@ class CometExecIterator(
       metricsUpdateInterval = COMET_METRICS_UPDATE_INTERVAL.get(),
       new CometTaskMemoryManager(id),
       batchSize = COMET_BATCH_SIZE.get(),
-      use_unified_memory_manager =
-        CometSparkSessionExtensions.cometUnifiedMemoryManagerEnabled(conf),
-      memory_pool_type = COMET_EXEC_MEMORY_POOL_TYPE.get(),
-      memory_limit = CometSparkSessionExtensions.getCometMemoryOverhead(conf),
-      memory_limit_per_task = getMemoryLimitPerTask(conf),
-      task_attempt_id = TaskContext.get().taskAttemptId,
+      offHeapMode,
+      memoryPoolType = COMET_EXEC_MEMORY_POOL_TYPE.get(),
+      memoryLimit,
+      memoryLimitPerTask = getMemoryLimitPerTask(conf),
+      taskAttemptId = TaskContext.get().taskAttemptId,
       debug = COMET_DEBUG_ENABLED.get(),
       explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
       workerThreads = COMET_WORKER_THREADS.get(),

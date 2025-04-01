@@ -64,6 +64,8 @@ pub struct SparkParquetOptions {
     pub use_decimal_128: bool,
     /// Whether to read dates/timestamps that were written in the legacy hybrid Julian + Gregorian calendar as it is. If false, throw exceptions instead. If the spark type is TimestampNTZ, this should be true.
     pub use_legacy_date_timestamp_or_ntz: bool,
+    // Whether schema field names are case sensitive
+    pub case_sensitive: bool,
 }
 
 impl SparkParquetOptions {
@@ -76,6 +78,7 @@ impl SparkParquetOptions {
             is_adapting_schema: false,
             use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
+            case_sensitive: false,
         }
     }
 
@@ -88,6 +91,7 @@ impl SparkParquetOptions {
             is_adapting_schema: false,
             use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
+            case_sensitive: false,
         }
     }
 }

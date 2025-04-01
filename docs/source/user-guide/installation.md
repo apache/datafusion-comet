@@ -26,37 +26,48 @@ Make sure the following requirements are met and software installed on your mach
 ### Supported Operating Systems
 
 - Linux
-- Apple OSX (Intel and Apple Silicon)
+- Apple macOS (Intel and Apple Silicon)
 
 ### Supported Spark Versions
 
-Comet currently supports the following versions of Apache Spark:
+Comet currently supports the following versions of Apache Spark. Note that this documentation is for the main
+branch. Please refer to the version of this documentation in the appropriate GitHub release branch for released
+Comet versions.
 
-- 3.3.x (Java 8/11/17, Scala 2.12/2.13)
-- 3.4.x (Java 8/11/17, Scala 2.12/2.13)
-- 3.5.x (Java 8/11/17, Scala 2.12/2.13)
+We recommend only using Comet with Spark versions where we currently have both Comet and Spark tests enabled in CI.
+Other versions may work well enough for development and evaluation purposes.
+
+| Spark Version | Java Version | Scala Version | Comet Tests in CI | Spark Tests in CI |
+| ------------- | ------------ | ------------- |-------------------| ----------------- |
+| 3.4.3         | 8/11/17      | 2.12/2.13     | Yes               | Yes               |
+| 3.5.2         | 8/11/17      | 2.12/2.13     | Partial\*         | No                |
+| 3.5.3         | 8/11/17      | 2.12/2.13     | Partial\*         | No                |
+| 3.5.4         | 8/11/17      | 2.12/2.13     | Partial\*         | Yes               |
+| 3.5.5         | 8/11/17      | 2.12/2.13     | Yes               | Yes               |
+
+\* For older Spark 3.5.x releases, we do not test the full matrix of supported Java and Scala versions in CI.
 
 Experimental support is provided for the following versions of Apache Spark and is intended for development/testing
 use only and should not be used in production yet.
 
-- 4.0.0-preview1 (Java 17/21, Scala 2.13)
+| Spark Version  | Java Version | Scala Version | Comet Tests in CI | Spark Tests in CI |
+| -------------- | ------------ | ------------- | ----------------- | ----------------- |
+| 4.0.0-preview1 | 17           | 2.13          | Yes               | Yes               |
 
 Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by
 Cloud Service Providers.
 
 ## Using a Published JAR File
 
-Comet jar files are available in [Maven Central](https://central.sonatype.com/namespace/org.apache.datafusion) for amd64 and arm64 architectures for Linux. For Apple OSX, it 
+Comet jar files are available in [Maven Central](https://central.sonatype.com/namespace/org.apache.datafusion) for amd64 and arm64 architectures for Linux. For Apple macOS, it
 is currently necessary to build from source.
 
-Here are the direct links for downloading the Comet 0.6.0 jar file.
+Here are the direct links for downloading the Comet 0.7.0 jar file.
 
-- [Comet plugin for Spark 3.3 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.3_2.12/0.6.0/comet-spark-spark3.3_2.12-0.6.0.jar)
-- [Comet plugin for Spark 3.3 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.3_2.13/0.6.0/comet-spark-spark3.3_2.13-0.6.0.jar)
-- [Comet plugin for Spark 3.4 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.12/0.6.0/comet-spark-spark3.4_2.12-0.6.0.jar)
-- [Comet plugin for Spark 3.4 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.13/0.6.0/comet-spark-spark3.4_2.13-0.6.0.jar)
-- [Comet plugin for Spark 3.5 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.12/0.6.0/comet-spark-spark3.5_2.12-0.6.0.jar)
-- [Comet plugin for Spark 3.5 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.13/0.6.0/comet-spark-spark3.5_2.13-0.6.0.jar)
+- [Comet plugin for Spark 3.4 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.12/0.7.0/comet-spark-spark3.4_2.12-0.7.0.jar)
+- [Comet plugin for Spark 3.4 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.13/0.7.0/comet-spark-spark3.4_2.13-0.7.0.jar)
+- [Comet plugin for Spark 3.5 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.12/0.7.0/comet-spark-spark3.5_2.12-0.7.0.jar)
+- [Comet plugin for Spark 3.5 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.13/0.7.0/comet-spark-spark3.5_2.13-0.7.0.jar)
 
 ## Building from source
 

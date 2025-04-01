@@ -174,7 +174,7 @@ The artifacts will be signed using the gpg key of the release manager and upload
 
 Note that installed GPG keys can be listed with `gpg --list-keys`. The gpg key is a 40 character hex string.
 
-Note: This script needs `xmllint` to be installed. On MacOS xmllint is available by default.
+Note: This script needs `xmllint` to be installed. On macOS xmllint is available by default.
 
 On Ubuntu `apt-get install -y libxml2-utils`
 
