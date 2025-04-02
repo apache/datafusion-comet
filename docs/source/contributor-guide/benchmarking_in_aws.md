@@ -170,7 +170,7 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.executor.instances=1 \
   --conf spark.executor.cores=8 \
   --conf spark.cores.max=8 \
-  --conf spark.executor.memory=8g \
+  --conf spark.executor.memory=16g \
   --conf spark.eventLog.enabled=false \
   --conf spark.local.dir=/mnt/tmp \
   --conf spark.driver.extraJavaOptions="-Djava.io.tmpdir=/mnt/tmp" \
@@ -187,4 +187,43 @@ $SPARK_HOME/bin/spark-submit \
 
 ## Comet
 
-TBD
+```shell
+wget https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.12/0.7.0/comet-spark-spark3.5_2.12-0.7.0.jar -P $SPARK_HOME/jars
+export COMET_JAR=$SPARK_HOME/jars/comet-spark-spark3.5_2.12-0.7.0.jar
+```
+
+```shell
+$SPARK_HOME/bin/spark-submit \
+  --master $SPARK_MASTER \
+  --conf spark.driver.memory=4G \
+  --conf spark.executor.instances=1 \
+  --conf spark.executor.cores=8 \
+  --conf spark.cores.max=8 \
+  --conf spark.executor.memory=16g \
+  --conf spark.memory.offHeap.enabled=true \
+  --conf spark.memory.offHeap.size=16g \
+  --conf spark.eventLog.enabled=false \
+  --conf spark.local.dir=/mnt/tmp \
+  --conf spark.driver.extraJavaOptions="-Djava.io.tmpdir=/mnt/tmp" \
+  --conf spark.executor.extraJavaOptions="-Djava.io.tmpdir=/mnt/tmp" \
+  --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
+  --conf spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.DefaultAWSCredentialsProviderChain \
+  --jars $COMET_JAR \
+  --driver-class-path $COMET_JAR \
+  --conf spark.driver.extraClassPath=$COMET_JAR \
+  --conf spark.executor.extraClassPath=$COMET_JAR \
+  --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
+  --conf spark.comet.enabled=true \
+  --conf spark.comet.cast.allowIncompatible=true \
+  --conf spark.comet.exec.replaceSortMergeJoin=true \
+  --conf spark.comet.exec.shuffle.enabled=true \
+  --conf spark.comet.exec.shuffle.fallbackToColumnar=true \
+  --conf spark.comet.exec.shuffle.compression.codec=lz4 \
+  --conf spark.comet.exec.shuffle.compression.level=1 \
+  tpcbench.py \
+  --benchmark tpch \
+  --data s3a://your-bucket-name/top-level-folder \
+  --queries /home/ec2-user/datafusion-benchmarks/tpch/queries \
+  --output . \
+  --iterations 1
+```
