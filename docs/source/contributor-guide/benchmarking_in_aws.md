@@ -95,10 +95,29 @@ export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto.x86_64
 
 export SPARK_MASTER=spark://172.31.34.87:7077
 mkdir /tmp/spark-events
+```
 
+Set `SPARK_LOCAL_DIRS` to point to EBS volume
+
+
+
+```shell
+sudo mkdir /mnt/tmp
+sudo chown 777 /mnt/tmp
+mv $SPARK_HOME/conf/spark-env.sh.template $SPARK_HOME/conf/spark-env.sh
+```
+
+Add the following entry to `spark-env.sh`:
+
+```shell
+SPARK_LOCAL_DIRS=/mnt/tmp
+```
+
+Start Spark in standalone mode:
+
+```shell
 $SPARK_HOME/sbin/start-master.sh
 $SPARK_HOME/sbin/start-worker.sh $SPARK_MASTER
-
 ```
 
 Run benchmarks against local data:
@@ -113,7 +132,10 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.executor.cores=8 \
   --conf spark.cores.max=8 \
   --conf spark.executor.memory=8g \
-  --conf spark.eventLog.enabled=true \
+  --conf spark.eventLog.enabled=false \
+  --conf spark.local.dir=/mnt/tmp \
+  --conf spark.driver.extraJavaOptions="-Djava.io.tmpdir=/mnt/tmp" \
+  --conf spark.executor.extraJavaOptions="-Djava.io.tmpdir=/mnt/tmp" \
   tpcbench.py \
   --benchmark tpch \
   --data /home/ec2-user/datafusion-benchmarks/tpch/data \
@@ -124,7 +146,44 @@ $SPARK_HOME/bin/spark-submit \
 
 Run benchmarks against S3:
 
-TBD
+Install Hadoop jar files:
+
+```shell
+wget https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar -P $SPARK_HOME/jars
+wget https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.11.1026/aws-java-sdk-bundle-1.11.1026.jar -P $SPARK_HOME/jars
+```
+
+Add credentials to `~/.aws/credentials`:
+
+```shell
+`[default]
+aws_access_key_id=your-access-key
+aws_secret_access_key=your-secret-key`
+```
+
+Run the following command (the `--data` parameter will need to be updated to point to your S3 bucket):
+
+```shell
+$SPARK_HOME/bin/spark-submit \
+  --master $SPARK_MASTER \
+  --conf spark.driver.memory=4G \
+  --conf spark.executor.instances=1 \
+  --conf spark.executor.cores=8 \
+  --conf spark.cores.max=8 \
+  --conf spark.executor.memory=8g \
+  --conf spark.eventLog.enabled=false \
+  --conf spark.local.dir=/mnt/tmp \
+  --conf spark.driver.extraJavaOptions="-Djava.io.tmpdir=/mnt/tmp" \
+  --conf spark.executor.extraJavaOptions="-Djava.io.tmpdir=/mnt/tmp" \
+  --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
+  --conf spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.DefaultAWSCredentialsProviderChain \
+  tpcbench.py \
+  --benchmark tpch \
+  --data s3a://your-bucket-name/top-level-folder \
+  --queries /home/ec2-user/datafusion-benchmarks/tpch/queries \
+  --output . \
+  --iterations 1
+```
 
 ## Comet
 
