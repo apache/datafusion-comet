@@ -35,7 +35,7 @@ macro_rules! compute_op {
 
         let result: $DT = operand
             .iter()
-            .map(|x| { x.map(|y| { bit_count(y.into()) as $TY })})
+            .map(|x| x.map(|y| bit_count(y.into()) as $TY))
             .collect();
 
         Ok(Arc::new(result))
@@ -158,21 +158,8 @@ mod tests {
 
         let expr = bitwise_count(col("field", &schema)?)?;
 
-        let input = Int32Array::from(vec![
-            Some(1),
-            None,
-            Some(12345),
-            Some(89),
-            Some(-3456),
-        ]);
-
-        let expected = &Int32Array::from(vec![
-            Some(1),
-            None,
-            Some(6),
-            Some(4),
-            Some(54),
-        ]);
+        let input = Int32Array::from(vec![Some(1), None, Some(12345), Some(89), Some(-3456)]);
+        let expected = &Int32Array::from(vec![Some(1), None, Some(6), Some(4), Some(54)]);
 
         let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(input)])?;
 
