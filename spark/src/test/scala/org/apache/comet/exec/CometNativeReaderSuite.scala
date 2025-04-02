@@ -106,4 +106,32 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         |""".stripMargin,
       "select c0 from tbl")
   }
+
+  test("native reader - read STRUCT of ARRAY of STRUCT fields") {
+    testSingleLineQuery(
+      """
+        |select named_struct('a', array(str0, str1), 'b', array(str2, str3)) c0 from
+        |(
+        |  select named_struct('a', 1, 'b', 'n') str0,
+        |         named_struct('a', 2, 'b', 'w') str1,
+        |         named_struct('x', 3, 'y', 'a') str2,
+        |         named_struct('x', 4, 'y', 'c') str3
+        |)
+        |""".stripMargin,
+      "select c0 from tbl")
+  }
+
+  test("native reader - read ARRAY of STRUCT of ARRAY fields") {
+    testSingleLineQuery(
+      """
+        |select array(named_struct('a', a0, 'b', a1), named_struct('a', a2, 'b', a3)) c0 from
+        |(
+        |  select array(1, 2, 3) a0,
+        |         array(2, 3, 4) a1,
+        |         array(3, 4, 5) a2,
+        |         array(4, 5, 6) a3
+        |)
+        |""".stripMargin,
+      "select c0 from tbl")
+  }
 }
