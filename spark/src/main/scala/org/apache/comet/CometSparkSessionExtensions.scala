@@ -1127,7 +1127,15 @@ class CometSparkSessionExtensions
   case class EliminateRedundantTransitions(session: SparkSession) extends Rule[SparkPlan] {
     override def apply(plan: SparkPlan): SparkPlan = {
       val eliminatedPlan = plan transformUp {
-        case ColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) => sparkToColumnar.child
+        case ColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
+          if (sparkToColumnar.child.supportsColumnar) {
+            // For Spark Columnar to Comet Columnar, we should keep the ColumnarToRowExec
+            ColumnarToRowExec(sparkToColumnar.child)
+          } else {
+            // For Spark Row to Comet Columnar, we should remove ColumnarToRowExec
+            // and CometSparkToColumnarExec
+            sparkToColumnar.child
+          }
         case c @ ColumnarToRowExec(child) if child.exists(_.isInstanceOf[CometPlan]) =>
           val op = CometColumnarToRowExec(child)
           if (c.logicalLink.isEmpty) {
