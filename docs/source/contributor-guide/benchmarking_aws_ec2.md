@@ -19,11 +19,11 @@ under the License.
 
 # Comet Benchmarking in AWS
 
-This guide is for setting up benchmarks on AWS EC2 single node with Parquet files located in S3.
+This guide is for setting up benchmarks on AWS EC2 with a single node with Parquet files located in S3.
 
 ## Data Generation
 
-- Create an EC2 instance with an EBS volume sized for approximately 2x the size of 
+- Create an EC2 instance with an EBS volume sized for approximately 2x the size of
   the dataset to be generated (200 GB for scale factor 100, 2 TB for scale factor 1000, and so on)
 - Create an S3 bucket to store the Parquet files
 
@@ -57,7 +57,7 @@ docker ps
 du -h -d 1 data
 ```
 
-Fix ownership n the generated files:
+Fix ownership in the generated files:
 
 ```shell
 sudo chown -R ec2-user:docker data
@@ -84,22 +84,25 @@ aws s3 cp . s3://your-bucket-name/top-level-folder/ --recursive
 
 ## Install Spark
 
+Install Java
+
+```shell
+sudo yum install -y java-17-amazon-corretto-headless java-17-amazon-corretto-devel
+export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto.x86_64
+```
+
+Install Spark
+
 ```shell
 wget https://archive.apache.org/dist/spark/spark-3.5.4/spark-3.5.4-bin-hadoop3.tgz
 tar xzf spark-3.5.4-bin-hadoop3.tgz
 sudo mv spark-3.5.4-bin-hadoop3 /opt
 export SPARK_HOME=/opt/spark-3.5.4-bin-hadoop3/
-
-sudo yum install -y java-17-amazon-corretto-headless
-export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto.x86_64
-
 export SPARK_MASTER=spark://172.31.34.87:7077
 mkdir /tmp/spark-events
 ```
 
 Set `SPARK_LOCAL_DIRS` to point to EBS volume
-
-
 
 ```shell
 sudo mkdir /mnt/tmp
@@ -120,32 +123,6 @@ $SPARK_HOME/sbin/start-master.sh
 $SPARK_HOME/sbin/start-worker.sh $SPARK_MASTER
 ```
 
-Run benchmarks against local data:
-
-```shell
-cd ~/datafusion-benchmarks/runners/datafusion-comet
-
-$SPARK_HOME/bin/spark-submit \
-  --master $SPARK_MASTER \
-  --conf spark.driver.memory=4G \
-  --conf spark.executor.instances=1 \
-  --conf spark.executor.cores=8 \
-  --conf spark.cores.max=8 \
-  --conf spark.executor.memory=8g \
-  --conf spark.eventLog.enabled=false \
-  --conf spark.local.dir=/mnt/tmp \
-  --conf spark.driver.extraJavaOptions="-Djava.io.tmpdir=/mnt/tmp" \
-  --conf spark.executor.extraJavaOptions="-Djava.io.tmpdir=/mnt/tmp" \
-  tpcbench.py \
-  --benchmark tpch \
-  --data /home/ec2-user/datafusion-benchmarks/tpch/data \
-  --queries /home/ec2-user/datafusion-benchmarks/tpch/queries \
-  --output . \
-  --iterations 1
-```
-
-Run benchmarks against S3:
-
 Install Hadoop jar files:
 
 ```shell
@@ -160,6 +137,8 @@ Add credentials to `~/.aws/credentials`:
 aws_access_key_id=your-access-key
 aws_secret_access_key=your-secret-key`
 ```
+
+## Run Spark Benchmarks
 
 Run the following command (the `--data` parameter will need to be updated to point to your S3 bucket):
 
@@ -185,12 +164,16 @@ $SPARK_HOME/bin/spark-submit \
   --iterations 1
 ```
 
-## Comet
+## Run Comet Benchmarks
+
+Install Comet JAR from Maven:
 
 ```shell
 wget https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.12/0.7.0/comet-spark-spark3.5_2.12-0.7.0.jar -P $SPARK_HOME/jars
 export COMET_JAR=$SPARK_HOME/jars/comet-spark-spark3.5_2.12-0.7.0.jar
 ```
+
+Run the following command (the `--data` parameter will need to be updated to point to your S3 bucket):
 
 ```shell
 $SPARK_HOME/bin/spark-submit \
