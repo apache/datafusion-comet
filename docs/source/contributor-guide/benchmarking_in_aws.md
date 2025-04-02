@@ -212,6 +212,7 @@ $SPARK_HOME/bin/spark-submit \
   --driver-class-path $COMET_JAR \
   --conf spark.driver.extraClassPath=$COMET_JAR \
   --conf spark.executor.extraClassPath=$COMET_JAR \
+  --conf spark.plugins=org.apache.spark.CometPlugin \
   --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
   --conf spark.comet.enabled=true \
   --conf spark.comet.cast.allowIncompatible=true \
