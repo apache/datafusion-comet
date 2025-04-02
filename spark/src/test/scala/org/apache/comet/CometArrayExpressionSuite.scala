@@ -29,6 +29,7 @@ import org.apache.spark.sql.functions.{array, col, expr, lit, udf}
 import org.apache.spark.sql.types.StructType
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
+import org.apache.comet.serde.CometArrayExcept
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -313,6 +314,102 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             sql("SELECT array_compact(array(_2)) FROM t1 WHERE _2 IS NOT NULL"))
           checkSparkAnswerAndOperator(
             sql("SELECT array_compact(array(_2, _3, null)) FROM t1 WHERE _2 IS NOT NULL"))
+        }
+      }
+    }
+  }
+
+  test("array_except - basic test (only integer values)") {
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_except(array(_2, _3, _4), array(_3, _4)) from t1"))
+          checkSparkAnswerAndOperator(sql("SELECT array_except(array(_18), array(_19)) from t1"))
+          checkSparkAnswerAndOperator(
+            spark.sql(
+              "SELECT array_except(array(_2, _2, _4), array(_4)) FROM t1 WHERE _2 IS NOT NULL"))
+        }
+      }
+    }
+  }
+
+  test("array_except - test all types (native Parquet reader)") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          100,
+          DataGenOptions(
+            allowNull = true,
+            generateNegativeZero = true,
+            generateArray = false,
+            generateStruct = false,
+            generateMap = false))
+      }
+      withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+        val table = spark.read.parquet(filename)
+        table.createOrReplaceTempView("t1")
+        // test with array of each column
+        val fields =
+          table.schema.fields.filter(field => CometArrayExcept.isTypeSupported(field.dataType))
+        for (field <- fields) {
+          val fieldName = field.name
+          val typeName = field.dataType.typeName
+          sql(
+            s"SELECT cast(array($fieldName, $fieldName) as array<$typeName>) as a, cast(array($fieldName) as array<$typeName>) as b FROM t1")
+            .createOrReplaceTempView("t2")
+          val df = sql("SELECT array_except(a, b) FROM t2")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+    }
+  }
+
+  test("array_except - test all types (convert from Parquet)") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val options = DataGenOptions(
+          allowNull = true,
+          generateNegativeZero = true,
+          generateArray = true,
+          generateStruct = true,
+          generateMap = false)
+        ParquetGenerator.makeParquetFile(random, spark, filename, 100, options)
+      }
+      withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+        CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+        val table = spark.read.parquet(filename)
+        table.createOrReplaceTempView("t1")
+        // test with array of each column
+        val fields =
+          table.schema.fields.filter(field => CometArrayExcept.isTypeSupported(field.dataType))
+        for (field <- fields) {
+          val fieldName = field.name
+          sql(s"SELECT array($fieldName, $fieldName) as a, array($fieldName) as b FROM t1")
+            .createOrReplaceTempView("t2")
+          val df = sql("SELECT array_except(a, b) FROM t2")
+          field.dataType match {
+            case _: StructType =>
+            // skip due to https://github.com/apache/datafusion-comet/issues/1314
+            case _ =>
+              checkSparkAnswer(df)
+          }
         }
       }
     }
