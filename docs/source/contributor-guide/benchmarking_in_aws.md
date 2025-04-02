@@ -23,8 +23,8 @@ This guide is for setting up benchmarks on AWS EC2 single node with Parquet file
 
 ## Data Generation
 
-- Create an EC2 instance with machine type `m7i.4xlarge` and a 2 TB EBS volume (1 TB needed for CSV data set, plus
-  another 300 GB for the Parquet files after conversion)
+- Create an EC2 instance with an EBS volume sized for approximately 2x the size of 
+  the dataset to be generated (200 GB for scale factor 100, 2 TB for scale factor 1000, and so on)
 - Create an S3 bucket to store the Parquet files
 
 Install prerequisites:
@@ -66,7 +66,7 @@ sudo chown -R ec2-user:docker data
 Convert to Parquet:
 
 ```shell
-nohup python3 convert.py convert --scale-factor 100 --partitions 16 &
+nohup python3 tpchgen.py convert --scale-factor 100 --partitions 16 &
 ```
 
 Delete the CSV files:
@@ -108,7 +108,7 @@ cd ~/datafusion-benchmarks/runners/datafusion-comet
 
 $SPARK_HOME/bin/spark-submit \
   --master $SPARK_MASTER \
-  --conf spark.driver.memory=8G \
+  --conf spark.driver.memory=4G \
   --conf spark.executor.instances=1 \
   --conf spark.executor.cores=8 \
   --conf spark.cores.max=8 \
