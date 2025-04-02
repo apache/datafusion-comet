@@ -65,7 +65,7 @@ use datafusion::{
     },
     prelude::SessionContext,
 };
-use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr, BitwiseCountExpr};
+use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr};
 
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::CompressionCodec;
@@ -103,7 +103,7 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, BitwiseNotExpr, Cast, CheckOverflow, Contains, Correlation,
+    ArrayInsert, Avg, AvgDecimal, BitwiseCountExpr, BitwiseNotExpr, Cast, CheckOverflow, Contains, Correlation,
     Covariance, CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields, GetStructField,
     HourExpr, IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike, SecondExpr,
     SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
