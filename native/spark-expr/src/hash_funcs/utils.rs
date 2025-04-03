@@ -23,7 +23,13 @@ macro_rules! hash_array {
         let array = $column
             .as_any()
             .downcast_ref::<$array_type>()
-            .expect("downcast failed");
+            .unwrap_or_else(|| {
+                panic!(
+                    "Failed to downcast column to {}. Actual data type: {:?}.",
+                    stringify!($array_type),
+                    $column.data_type()
+                )
+            });
         if array.null_count() == 0 {
             for (i, hash) in $hashes.iter_mut().enumerate() {
                 *hash = $hash_method(&array.value(i), *hash);
@@ -44,7 +50,13 @@ macro_rules! hash_array_boolean {
         let array = $column
             .as_any()
             .downcast_ref::<$array_type>()
-            .expect("downcast failed");
+            .unwrap_or_else(|| {
+                panic!(
+                    "Failed to downcast column to {}. Actual data type: {:?}.",
+                    stringify!($array_type),
+                    $column.data_type()
+                )
+            });
         if array.null_count() == 0 {
             for (i, hash) in $hashes.iter_mut().enumerate() {
                 *hash = $hash_method($hash_input_type::from(array.value(i)).to_le_bytes(), *hash);
@@ -66,7 +78,13 @@ macro_rules! hash_array_primitive {
         let array = $column
             .as_any()
             .downcast_ref::<$array_type>()
-            .expect("downcast failed");
+            .unwrap_or_else(|| {
+                panic!(
+                    "Failed to downcast column to {}. Actual data type: {:?}.",
+                    stringify!($array_type),
+                    $column.data_type()
+                )
+            });
         let values = array.values();
 
         if array.null_count() == 0 {
@@ -89,7 +107,13 @@ macro_rules! hash_array_primitive_float {
         let array = $column
             .as_any()
             .downcast_ref::<$array_type>()
-            .expect("downcast failed");
+            .unwrap_or_else(|| {
+                panic!(
+                    "Failed to downcast column to {}. Actual data type: {:?}.",
+                    stringify!($array_type),
+                    $column.data_type()
+                )
+            });
         let values = array.values();
 
         if array.null_count() == 0 {
@@ -122,7 +146,13 @@ macro_rules! hash_array_small_decimal {
         let array = $column
             .as_any()
             .downcast_ref::<$array_type>()
-            .expect("downcast failed");
+            .unwrap_or_else(|| {
+                panic!(
+                    "Failed to downcast column to {}. Actual data type: {:?}.",
+                    stringify!($array_type),
+                    $column.data_type()
+                )
+            });
 
         if array.null_count() == 0 {
             for (i, hash) in $hashes.iter_mut().enumerate() {
@@ -154,7 +184,13 @@ macro_rules! hash_array_decimal {
         let array = $column
             .as_any()
             .downcast_ref::<$array_type>()
-            .expect("downcast failed");
+            .unwrap_or_else(|| {
+                panic!(
+                    "Failed to downcast column to {}. Actual data type: {:?}.",
+                    stringify!($array_type),
+                    $column.data_type()
+                )
+            });
 
         if array.null_count() == 0 {
             for (i, hash) in $hashes.iter_mut().enumerate() {
