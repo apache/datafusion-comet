@@ -252,7 +252,7 @@ case class CometBroadcastExchangeExec(
 
   override def hashCode(): Int = Objects.hashCode(child)
 
-  override def stringArgs: Iterator[Any] = Iterator(output, mode, child)
+  override def stringArgs: Iterator[Any] = Iterator(output, child)
 
   override protected def withNewChildInternal(newChild: SparkPlan): CometBroadcastExchangeExec =
     copy(child = newChild)

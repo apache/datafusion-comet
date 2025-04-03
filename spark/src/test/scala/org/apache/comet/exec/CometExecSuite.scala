@@ -36,7 +36,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Bloom
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
-import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
@@ -746,6 +746,91 @@ class CometExecSuite extends CometTestBase {
             s
         }
         assert(exchanges.length == 4)
+      }
+    }
+  }
+
+  test("Comet Shuffled Join should be optimized to CometBroadcastHashJoin by AQE") {
+    withSQLConf(
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      withParquetTable((0 until 100).map(i => (i, i + 1)), "tbl_a") {
+        withParquetTable((0 until 100).map(i => (i, i + 2)), "tbl_b") {
+          withParquetTable((0 until 100).map(i => (i, i + 3)), "tbl_c") {
+            val df = sql("""SELECT /*+ BROADCAST(c) */ a1, sum_b2, c._2 FROM (
+                |  SELECT a._1 a1, SUM(b._2) sum_b2 FROM tbl_a a
+                |  JOIN tbl_b b ON a._1 = b._1
+                |  GROUP BY a._1) t
+                |JOIN tbl_c c ON t.a1 = c._1
+                |""".stripMargin)
+            checkSparkAnswerAndOperator(df)
+
+            // Before AQE: 1 broadcast join
+            var broadcastHashJoinExec = stripAQEPlan(df.queryExecution.executedPlan).collect {
+              case s: CometBroadcastHashJoinExec => s
+            }
+            assert(broadcastHashJoinExec.length == 1)
+
+            // After AQE: shuffled join optimized to broadcast join
+            df.collect()
+            broadcastHashJoinExec = stripAQEPlan(df.queryExecution.executedPlan).collect {
+              case s: CometBroadcastHashJoinExec => s
+            }
+            assert(broadcastHashJoinExec.length == 2)
+          }
+        }
+      }
+    }
+  }
+
+  test("CometBroadcastExchange could be converted to rows using CometColumnarToRow") {
+    withSQLConf(
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "auto") {
+      withParquetTable((0 until 100).map(i => (i, i + 1)), "tbl_a") {
+        withParquetTable((0 until 100).map(i => (i, i + 2)), "tbl_b") {
+          withParquetTable((0 until 100).map(i => (i, i + 3)), "tbl_c") {
+            val df = sql("""SELECT /*+ BROADCAST(c) */ a1, sum_b2, c._2 FROM (
+                |  SELECT a._1 a1, SUM(b._2) sum_b2 FROM tbl_a a
+                |  JOIN tbl_b b ON a._1 = b._1
+                |  GROUP BY a._1) t
+                |JOIN tbl_c c ON t.a1 = c._1
+                |""".stripMargin)
+            checkSparkAnswer(df)
+
+            // Before AQE: one CometBroadcastExchange, no CometColumnarToRow
+            var columnarToRowExec = stripAQEPlan(df.queryExecution.executedPlan).collect {
+              case s: CometColumnarToRowExec => s
+            }
+            assert(columnarToRowExec.isEmpty)
+
+            // Disable CometExecRule after the initial plan is generated. The CometSortMergeJoin and
+            // CometBroadcastHashJoin nodes in the initial plan will be converted to Spark BroadcastHashJoin
+            // during AQE. This will make CometBroadcastExchangeExec being converted to rows to be used by
+            // Spark BroadcastHashJoin.
+            spark.conf.set(CometConf.COMET_EXEC_ENABLED.key, "false")
+            df.collect()
+
+            // After AQE: CometBroadcastExchange has to be converted to rows to conform to Spark
+            // BroadcastHashJoin.
+            columnarToRowExec = stripAQEPlan(df.queryExecution.executedPlan).collect {
+              case s: CometColumnarToRowExec => s
+            }
+            assert(columnarToRowExec.length == 1)
+            val broadcastQueryStage =
+              columnarToRowExec.head.find(_.isInstanceOf[BroadcastQueryStageExec])
+            assert(broadcastQueryStage.isDefined)
+            assert(
+              broadcastQueryStage.get
+                .asInstanceOf[BroadcastQueryStageExec]
+                .broadcast
+                .isInstanceOf[CometBroadcastExchangeExec])
+          }
+        }
       }
     }
   }
