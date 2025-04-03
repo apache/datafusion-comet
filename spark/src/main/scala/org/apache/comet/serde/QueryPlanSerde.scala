@@ -70,6 +70,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
       s.fields.map(_.dataType).forall(supportedDataType(_, allowComplex))
     case a: ArrayType if allowComplex =>
       supportedDataType(a.elementType, allowComplex)
+    case m: MapType if allowComplex =>
+      supportedDataType(m.keyType, allowComplex) && supportedDataType(m.valueType, allowComplex)
     case dt =>
       emitWarning(s"unsupported Spark data type: $dt")
       false

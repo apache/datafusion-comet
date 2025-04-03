@@ -134,4 +134,13 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         |""".stripMargin,
       "select c0 from tbl")
   }
+
+  test("native reader - read simple MAP fields") {
+    testSingleLineQuery(
+      """
+        |select map('a', 1) as c0 union all
+        |select map('b', 2)
+        |""".stripMargin,
+      "select c0 from tbl")
+  }
 }
