@@ -39,7 +39,7 @@ import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecuti
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
-import org.apache.spark.sql.execution.joins.{BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, CartesianProductExec, HashJoin, SortMergeJoinExec}
 import org.apache.spark.sql.execution.reuse.ReuseExchangeAndSubquery
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.expressions.Window
@@ -817,10 +817,17 @@ class CometExecSuite extends CometTestBase {
 
             // After AQE: CometBroadcastExchange has to be converted to rows to conform to Spark
             // BroadcastHashJoin.
-            columnarToRowExec = stripAQEPlan(df.queryExecution.executedPlan).collect {
-              case s: CometColumnarToRowExec => s
+            val plan = stripAQEPlan(df.queryExecution.executedPlan)
+            columnarToRowExec = plan.collect { case s: CometColumnarToRowExec =>
+              s
             }
             assert(columnarToRowExec.length == 1)
+
+            // This ColumnarToRowExec should be the immediate child of BroadcastHashJoinExec
+            val parent = plan.find(_.children.contains(columnarToRowExec.head))
+            assert(parent.get.isInstanceOf[BroadcastHashJoinExec])
+
+            // There should be a CometBroadcastExchangeExec under CometColumnarToRowExec
             val broadcastQueryStage =
               columnarToRowExec.head.find(_.isInstanceOf[BroadcastQueryStageExec])
             assert(broadcastQueryStage.isDefined)
