@@ -225,7 +225,7 @@ impl SparkUnsafeRow {
     /// The logic is from Spark `UnsafeRow.calculateBitSetWidthInBytes`.
     #[inline]
     pub const fn get_row_bitset_width(num_fields: usize) -> usize {
-        ((num_fields + 63) / 64) * 8
+        num_fields.div_ceil(64) * 8
     }
 
     pub fn new_with_num_fields(num_fields: usize) -> Self {
