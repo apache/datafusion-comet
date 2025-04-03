@@ -812,8 +812,9 @@ class CometExecSuite extends CometTestBase {
             // CometBroadcastHashJoin nodes in the initial plan will be converted to Spark BroadcastHashJoin
             // during AQE. This will make CometBroadcastExchangeExec being converted to rows to be used by
             // Spark BroadcastHashJoin.
-            spark.conf.set(CometConf.COMET_EXEC_ENABLED.key, "false")
-            df.collect()
+            withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+              df.collect()
+            }
 
             // After AQE: CometBroadcastExchange has to be converted to rows to conform to Spark
             // BroadcastHashJoin.
