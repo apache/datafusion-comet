@@ -88,7 +88,14 @@ Install Java
 
 ```shell
 sudo yum install -y java-17-amazon-corretto-headless java-17-amazon-corretto-devel
+```
+
+Set JAVA_HOME
+
+```shell
 export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto.x86_64
+# different path for ARM
+# export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto.aarch64
 ```
 
 Install Spark
@@ -98,15 +105,20 @@ wget https://archive.apache.org/dist/spark/spark-3.5.4/spark-3.5.4-bin-hadoop3.t
 tar xzf spark-3.5.4-bin-hadoop3.tgz
 sudo mv spark-3.5.4-bin-hadoop3 /opt
 export SPARK_HOME=/opt/spark-3.5.4-bin-hadoop3/
-export SPARK_MASTER=spark://172.31.34.87:7077
 mkdir /tmp/spark-events
+```
+
+Set `SPARK_MASTER` env var (IP address will need to be edited):
+
+```shell
+export SPARK_MASTER=spark://172.31.34.87:7077
 ```
 
 Set `SPARK_LOCAL_DIRS` to point to EBS volume
 
 ```shell
 sudo mkdir /mnt/tmp
-sudo chown 777 /mnt/tmp
+sudo chmod 777 /mnt/tmp
 mv $SPARK_HOME/conf/spark-env.sh.template $SPARK_HOME/conf/spark-env.sh
 ```
 
@@ -133,9 +145,9 @@ wget https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.11.1026/
 Add credentials to `~/.aws/credentials`:
 
 ```shell
-`[default]
+[default]
 aws_access_key_id=your-access-key
-aws_secret_access_key=your-secret-key`
+aws_secret_access_key=your-secret-key
 ```
 
 ## Run Spark Benchmarks
@@ -158,7 +170,7 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.DefaultAWSCredentialsProviderChain \
   tpcbench.py \
   --benchmark tpch \
-  --data s3a://your-bucket-name/top-level-folder \
+  --data s3a://sqlbench-h/sf100 \
   --queries /home/ec2-user/datafusion-benchmarks/tpch/queries \
   --output . \
   --iterations 1
