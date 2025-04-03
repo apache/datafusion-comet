@@ -36,6 +36,7 @@ import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{CodegenSupport, ColumnarToRowTransition, SparkPlan, SQLExecution}
+import org.apache.spark.sql.execution.adaptive.BroadcastQueryStageExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.vectorized.{ConstantColumnVector, WritableColumnVector}
 import org.apache.spark.sql.types._
@@ -93,6 +94,8 @@ case class CometColumnarToRowExec(child: SparkPlan)
 
   private val runId: UUID = UUID.randomUUID
 
+  private lazy val cometBroadcastExchange = findCometBroadcastExchange(child)
+
   @transient
   lazy val relationFuture: Future[broadcast.Broadcast[Any]] = {
     SQLExecution.withThreadLocalCaptured[broadcast.Broadcast[Any]](
@@ -102,7 +105,7 @@ case class CometColumnarToRowExec(child: SparkPlan)
         // Setup a job group here so later it may get cancelled by groupId if necessary.
         sparkContext.setJobGroup(
           runId.toString,
-          s"ColumnarToRow broadcast exchange (runId $runId)",
+          s"CometColumnarToRow broadcast exchange (runId $runId)",
           interruptOnCancel = true)
 
         val numOutputRows = longMetric("numOutputRows")
@@ -119,7 +122,7 @@ case class CometColumnarToRowExec(child: SparkPlan)
             batch.rowIterator().asScala.map(toUnsafe)
           }
 
-        val mode = child.asInstanceOf[CometBroadcastExchangeExec].mode
+        val mode = cometBroadcastExchange.get.mode
         val relation = mode.transform(rows, Some(numOutputRows.value))
         val broadcasted = sparkContext.broadcastInternal(relation, serializedOnly = true)
         val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
@@ -146,10 +149,10 @@ case class CometColumnarToRowExec(child: SparkPlan)
   }
 
   override def doExecuteBroadcast[T](): broadcast.Broadcast[T] = {
-    if (!child.isInstanceOf[CometBroadcastExchangeExec]) {
+    if (cometBroadcastExchange.isEmpty) {
       throw new SparkException(
-        "ColumnarToRowExec only supports doExecuteBroadcast when child is " +
-          "CometBroadcastExchange, but got " + child.nodeName)
+        "ColumnarToRowExec only supports doExecuteBroadcast when child contains a " +
+          "CometBroadcastExchange, but got " + child)
     }
 
     try {
@@ -162,6 +165,14 @@ case class CometColumnarToRowExec(child: SparkPlan)
           relationFuture.cancel(true)
         }
         throw QueryExecutionErrors.executeBroadcastTimeoutError(timeout, Some(ex))
+    }
+  }
+
+  private def findCometBroadcastExchange(op: SparkPlan): Option[CometBroadcastExchangeExec] = {
+    op match {
+      case b: CometBroadcastExchangeExec => Some(b)
+      case b: BroadcastQueryStageExec => findCometBroadcastExchange(b.plan)
+      case _ => op.children.collectFirst(Function.unlift(findCometBroadcastExchange))
     }
   }
 

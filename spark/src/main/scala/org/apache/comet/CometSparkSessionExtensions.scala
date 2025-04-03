@@ -21,6 +21,7 @@ package org.apache.comet
 
 import java.nio.ByteOrder
 
+import scala.annotation.tailrec
 import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.SparkConf
@@ -37,7 +38,7 @@ import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
@@ -1148,7 +1149,7 @@ class CometSparkSessionExtensions
             // and CometSparkToColumnarExec
             sparkToColumnar.child
           }
-        case c @ ColumnarToRowExec(child) if child.exists(_.isInstanceOf[CometPlan]) =>
+        case c @ ColumnarToRowExec(child) if hasCometNativeChild(child) =>
           val op = CometColumnarToRowExec(child)
           if (c.logicalLink.isEmpty) {
             op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
@@ -1180,6 +1181,14 @@ class CometSparkSessionExtensions
         case other =>
           other
       }
+    }
+  }
+
+  @tailrec
+  private def hasCometNativeChild(op: SparkPlan): Boolean = {
+    op match {
+      case c: QueryStageExec => hasCometNativeChild(c.plan)
+      case _ => op.exists(_.isInstanceOf[CometPlan])
     }
   }
 }

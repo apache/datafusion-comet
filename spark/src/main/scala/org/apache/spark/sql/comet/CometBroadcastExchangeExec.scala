@@ -63,7 +63,8 @@ case class CometBroadcastExchangeExec(
     override val output: Seq[Attribute],
     mode: BroadcastMode,
     override val child: SparkPlan)
-    extends BroadcastExchangeLike {
+    extends BroadcastExchangeLike
+    with CometPlan {
   import CometBroadcastExchangeExec._
 
   override val runId: UUID = UUID.randomUUID
