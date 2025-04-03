@@ -586,7 +586,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_closeColumnReader(
 ) {
     try_unwrap_or_throw(&env, |_| {
         unsafe {
-            let ctx = handle as *mut Context;
+            let ctx = get_context(handle)?;
             let _ = Box::from_raw(ctx);
         };
         Ok(())
@@ -805,7 +805,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_closeRecordBatchRead
 ) {
     try_unwrap_or_throw(&env, |_| {
         unsafe {
-            let ctx = handle as *mut BatchContext;
+            let ctx = get_batch_context(handle)?;
             let _ = Box::from_raw(ctx);
         };
         Ok(())

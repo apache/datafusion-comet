@@ -50,4 +50,17 @@ class CometNativeSuite extends CometTestBase {
     }
     assert(exception.getMessage contains "java.lang.NullPointerException")
   }
+
+  test("handling NPE when closing null handle of parquet reader") {
+    assert(NativeBase.isLoaded)
+    val exception1 = intercept[NullPointerException] {
+      parquet.Native.closeRecordBatchReader(0)
+    }
+    assert(exception1.getMessage contains "null batch context handle")
+
+    val exception2 = intercept[NullPointerException] {
+      parquet.Native.closeColumnReader(0)
+    }
+    assert(exception2.getMessage contains "null context handle")
+  }
 }
