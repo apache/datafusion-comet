@@ -728,6 +728,18 @@ class CometSparkSessionExtensions
               s
           }
 
+        case s @ BroadcastQueryStageExec(
+              _,
+              ReusedExchangeExec(_, _: CometBroadcastExchangeExec),
+              _) =>
+          val newOp = transform1(s)
+          newOp match {
+            case Some(nativeOp) =>
+              CometSinkPlaceHolder(nativeOp, s, s)
+            case None =>
+              s
+          }
+
         // `CometBroadcastExchangeExec`'s broadcast output is not compatible with Spark's broadcast
         // exchange. It is only used for Comet native execution. We only transform Spark broadcast
         // exchange to Comet broadcast exchange if its downstream is a Comet native plan or if the
@@ -739,7 +751,7 @@ class CometSparkSessionExtensions
                   CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf) =>
               QueryPlanSerde.operator2Proto(b) match {
                 case Some(nativeOp) =>
-                  val cometOp = CometBroadcastExchangeExec(b, b.output, b.child)
+                  val cometOp = CometBroadcastExchangeExec(b, b.output, b.mode, b.child)
                   CometSinkPlaceHolder(nativeOp, b, cometOp)
                 case None => b
               }

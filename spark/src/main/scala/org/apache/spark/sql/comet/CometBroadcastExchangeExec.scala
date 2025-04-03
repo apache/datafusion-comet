@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.comet
 
-import java.io.DataInputStream
-import java.nio.channels.Channels
 import java.util.UUID
 import java.util.concurrent.{Future, TimeoutException, TimeUnit}
 
@@ -28,13 +26,13 @@ import scala.concurrent.{ExecutionContext, Promise}
 import scala.concurrent.duration.NANOSECONDS
 import scala.util.control.NonFatal
 
-import org.apache.spark.{broadcast, Partition, SparkContext, SparkEnv, TaskContext}
-import org.apache.spark.io.CompressionCodec
+import org.apache.spark.{broadcast, Partition, SparkContext, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
-import org.apache.spark.sql.comet.execution.shuffle.ArrowReaderIterator
+import org.apache.spark.sql.catalyst.plans.physical.{BroadcastMode, BroadcastPartitioning, Partitioning}
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, ShuffleQueryStageExec}
@@ -63,6 +61,7 @@ import org.apache.comet.CometRuntimeException
 case class CometBroadcastExchangeExec(
     originalPlan: SparkPlan,
     override val output: Seq[Attribute],
+    mode: BroadcastMode,
     override val child: SparkPlan)
     extends BroadcastExchangeLike {
   import CometBroadcastExchangeExec._
@@ -77,7 +76,7 @@ case class CometBroadcastExchangeExec(
     "broadcastTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to broadcast"))
 
   override def doCanonicalize(): SparkPlan = {
-    CometBroadcastExchangeExec(null, null, child.canonicalized)
+    CometBroadcastExchangeExec(null, null, mode, child.canonicalized)
   }
 
   override def runtimeStatistics: Statistics = {
@@ -85,6 +84,8 @@ case class CometBroadcastExchangeExec(
     val rowCount = metrics("numOutputRows").value
     Statistics(dataSize, Some(rowCount))
   }
+
+  override def outputPartitioning: Partitioning = BroadcastPartitioning(mode)
 
   @transient
   private lazy val promise = Promise[broadcast.Broadcast[Any]]()
@@ -250,7 +251,7 @@ case class CometBroadcastExchangeExec(
 
   override def hashCode(): Int = Objects.hashCode(child)
 
-  override def stringArgs: Iterator[Any] = Iterator(output, child)
+  override def stringArgs: Iterator[Any] = Iterator(output, mode, child)
 
   override protected def withNewChildInternal(newChild: SparkPlan): CometBroadcastExchangeExec =
     copy(child = newChild)
@@ -289,23 +290,7 @@ class CometBatchRDD(
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     val partition = split.asInstanceOf[CometBatchPartition]
     partition.value.value.toIterator
-      .flatMap(decodeBatches(_, this.getClass.getSimpleName))
-  }
-
-  /**
-   * Decodes the byte arrays back to ColumnarBatchs and put them into buffer.
-   */
-  private def decodeBatches(bytes: ChunkedByteBuffer, source: String): Iterator[ColumnarBatch] = {
-    if (bytes.size == 0) {
-      return Iterator.empty
-    }
-
-    // use Spark's compression codec (LZ4 by default) and not Comet's compression
-    val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
-    val cbbis = bytes.toInputStream()
-    val ins = new DataInputStream(codec.compressedInputStream(cbbis))
-    // batches are in Arrow IPC format
-    new ArrowReaderIterator(Channels.newChannel(ins), source)
+      .flatMap(Utils.decodeBatches(_, this.getClass.getSimpleName))
   }
 }
 
