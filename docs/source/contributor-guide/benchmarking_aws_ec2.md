@@ -170,7 +170,7 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.DefaultAWSCredentialsProviderChain \
   tpcbench.py \
   --benchmark tpch \
-  --data s3a://sqlbench-h/sf100 \
+  --data s3a://your-bucket-name/top-level-folder \
   --queries /home/ec2-user/datafusion-benchmarks/tpch/queries \
   --output . \
   --iterations 1
