@@ -93,9 +93,7 @@ sudo yum install -y java-17-amazon-corretto-headless java-17-amazon-corretto-dev
 Set JAVA_HOME
 
 ```shell
-export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto.x86_64
-# different path for ARM
-# export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto.aarch64
+export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto
 ```
 
 Install Spark
