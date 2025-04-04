@@ -80,15 +80,11 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     checkSparkAnswer(s"SELECT $allCols FROM t1 ORDER BY $allCols")
   }
 
-  // TODO fails with Unsupported data type org.apache.spark.sql.Row
-  // https://github.com/apache/datafusion-comet/issues/1611
   test("aggregate group by single column") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
-    for (field <- df.schema.fields) {
-      val col = field.name
-      val sql = s"SELECT $col, count(*) FROM t1 GROUP BY $col ORDER BY $col"
-      checkSparkAnswer(sql)
+    for (col <- df.columns) {
+      checkSparkAnswer(s"SELECT $col, count(*) FROM t1 GROUP BY $col ORDER BY $col")
     }
   }
 
