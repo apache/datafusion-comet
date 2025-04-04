@@ -19,7 +19,7 @@
 
 package org.apache.comet
 
-import org.apache.spark.SparkException
+import org.apache.spark.{SparkEnv, SparkException}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.PrettyAttribute
 import org.apache.spark.sql.comet.{CometExec, CometExecUtils}
@@ -40,8 +40,11 @@ class CometNativeSuite extends CometTestBase {
         limitOp,
         1,
         0)
-      cometIter.next()
-      cometIter.close()
+      try {
+        cometIter.next()
+      } finally {
+        cometIter.close()
+      }
       value
     }
 
@@ -62,5 +65,36 @@ class CometNativeSuite extends CometTestBase {
       parquet.Native.closeColumnReader(0)
     }
     assert(exception2.getMessage contains "null context handle")
+  }
+
+  test("Comet native should use spark local dir as temp dir") {
+    withParquetTable((0 until 100000).map(i => (i, i + 1)), "table") {
+      val dirs = SparkEnv.get.blockManager.getLocalDiskDirs
+      dirs.foreach { dir =>
+        val files = new java.io.File(dir).listFiles()
+        assert(!files.exists(f => f.isDirectory && f.getName.startsWith("datafusion-")))
+      }
+
+      // Check if the DataFusion temporary dir exists in the Spark local dirs when a spark job involving
+      // Comet native operator is running.
+      val observedDataFusionDir = spark
+        .table("table")
+        .selectExpr("_1 + _2 as value")
+        .rdd
+        .mapPartitions { _ =>
+          dirs.map { dir =>
+            val files = new java.io.File(dir).listFiles()
+            files.count(f => f.isDirectory && f.getName.startsWith("datafusion-"))
+          }.iterator
+        }
+        .sum()
+      assert(observedDataFusionDir > 0)
+
+      // DataFusion temporary dir should be cleaned up after the job is done.
+      dirs.foreach { dir =>
+        val files = new java.io.File(dir).listFiles()
+        assert(!files.exists(f => f.isDirectory && f.getName.startsWith("datafusion-")))
+      }
+    }
   }
 }

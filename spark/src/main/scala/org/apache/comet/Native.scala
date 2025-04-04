@@ -58,6 +58,7 @@ class Native extends NativeBase {
       metrics: CometMetricNode,
       metricsUpdateInterval: Long,
       taskMemoryManager: CometTaskMemoryManager,
+      localDirs: Array[String],
       batchSize: Int,
       offHeapMode: Boolean,
       memoryPoolType: String,

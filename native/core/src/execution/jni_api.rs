@@ -38,6 +38,7 @@ use jni::{
     sys::{jbyteArray, jint, jlong, jlongArray},
     JNIEnv,
 };
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc, task::Poll};
 
@@ -167,6 +168,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     metrics_node: JObject,
     metrics_update_interval: jlong,
     comet_task_memory_manager_obj: JObject,
+    local_dirs: jobjectArray,
     batch_size: jint,
     off_heap_mode: jboolean,
     memory_pool_type: jstring,
@@ -208,6 +210,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let input_source = Arc::new(jni_new_global_ref!(env, input_source)?);
             input_sources.push(input_source);
         }
+
+        // Create DataFusion memory pool
         let task_memory_manager =
             Arc::new(jni_new_global_ref!(env, comet_task_memory_manager_obj)?);
 
@@ -221,10 +225,21 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         let memory_pool =
             create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
 
+        // Get local directories for storing spill files
+        let local_dirs_array = JObjectArray::from_raw(local_dirs);
+        let num_local_dirs = env.get_array_length(&local_dirs_array)?;
+        let mut local_dirs = vec![];
+        for i in 0..num_local_dirs {
+            let local_dir: JString = env.get_object_array_element(&local_dirs_array, i)?.into();
+            let local_dir = env.get_string(&local_dir)?;
+            local_dirs.push(local_dir.into());
+        }
+
         // We need to keep the session context alive. Some session state like temporary
         // dictionaries are stored in session context. If it is dropped, the temporary
         // dictionaries will be dropped as well.
-        let session = prepare_datafusion_session_context(batch_size as usize, memory_pool)?;
+        let session =
+            prepare_datafusion_session_context(batch_size as usize, memory_pool, local_dirs)?;
 
         let plan_creation_time = start.elapsed();
 
@@ -262,8 +277,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 fn prepare_datafusion_session_context(
     batch_size: usize,
     memory_pool: Arc<dyn MemoryPool>,
+    local_dirs: Vec<String>,
 ) -> CometResult<SessionContext> {
-    let mut rt_config = RuntimeEnvBuilder::new().with_disk_manager(DiskManagerConfig::NewOs);
+    let disk_manager_config =
+        DiskManagerConfig::NewSpecified(local_dirs.into_iter().map(PathBuf::from).collect());
+    let mut rt_config = RuntimeEnvBuilder::new().with_disk_manager(disk_manager_config);
     rt_config = rt_config.with_memory_pool(memory_pool);
 
     // Get Datafusion configuration from Spark Execution context
