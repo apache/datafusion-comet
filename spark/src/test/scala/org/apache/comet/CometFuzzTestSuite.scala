@@ -29,6 +29,7 @@ import org.scalatest.Tag
 import org.apache.commons.io.FileUtils
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
@@ -41,7 +42,9 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val tempDir = System.getProperty("java.io.tmpdir")
     filename = s"$tempDir/CometFuzzTestSuite_${System.currentTimeMillis()}.parquet"
     val random = new Random(42)
-    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "false",
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu" /* UTC+5:45 */ ) {
       val options =
         DataGenOptions(generateArray = true, generateStruct = true, generateNegativeZero = false)
       ParquetGenerator.makeParquetFile(random, spark, filename, 1000, options)
