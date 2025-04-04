@@ -351,7 +351,7 @@ class CometSparkSessionExtensions
      */
     // spotless:on
     private def transform(plan: SparkPlan): SparkPlan = {
-      def transform1(op: SparkPlan): Option[Operator] = {
+      def operatorToProto(op: SparkPlan): Option[Operator] = {
         if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
           QueryPlanSerde.operator2Proto(
             op,
@@ -363,6 +363,14 @@ class CometSparkSessionExtensions
               s"${explainChildNotNative(op)}")
           None
         }
+      }
+
+      /**
+       * Convert operator to proto and then apply a transformation to wrap the proto in a new
+       * plan.
+       */
+      def wrapProto(op: SparkPlan, fun: Operator => SparkPlan): SparkPlan = {
+        operatorToProto(op).map(fun).getOrElse(op)
       }
 
       plan.transformUp {
@@ -383,7 +391,7 @@ class CometSparkSessionExtensions
           CometScanWrapper(nativeOp.get, cometOp)
 
         case op: ProjectExec =>
-          val newOp = transform1(op)
+          val newOp = operatorToProto(op)
           newOp match {
             case Some(nativeOp) =>
               CometProjectExec(
@@ -398,47 +406,27 @@ class CometSparkSessionExtensions
           }
 
         case op: FilterExec =>
-          val newOp = transform1(op)
-          newOp match {
-            case Some(nativeOp) =>
-              CometFilterExec(
-                nativeOp,
-                op,
-                op.output,
-                op.condition,
-                op.child,
-                SerializedPlan(None))
-            case None =>
-              op
-          }
+          wrapProto(
+            op,
+            CometFilterExec(_, op, op.output, op.condition, op.child, SerializedPlan(None)))
 
         case op: SortExec =>
-          val newOp = transform1(op)
-          newOp match {
-            case Some(nativeOp) =>
+          wrapProto(op,
               CometSortExec(
-                nativeOp,
+                _,
                 op,
                 op.output,
                 op.outputOrdering,
                 op.sortOrder,
                 op.child,
-                SerializedPlan(None))
-            case None =>
-              op
-          }
+                SerializedPlan(None)))
 
         case op: LocalLimitExec =>
-          val newOp = transform1(op)
-          newOp match {
-            case Some(nativeOp) =>
-              CometLocalLimitExec(nativeOp, op, op.limit, op.child, SerializedPlan(None))
-            case None =>
-              op
-          }
+          wrapProto(op,
+              CometLocalLimitExec(_, op, op.limit, op.child, SerializedPlan(None)))
 
         case op: GlobalLimitExec if op.offset == 0 =>
-          val newOp = transform1(op)
+          val newOp = operatorToProto(op)
           newOp match {
             case Some(nativeOp) =>
               CometGlobalLimitExec(nativeOp, op, op.limit, op.child, SerializedPlan(None))
@@ -461,7 +449,7 @@ class CometSparkSessionExtensions
           }
 
         case op: ExpandExec =>
-          val newOp = transform1(op)
+          val newOp = operatorToProto(op)
           newOp match {
             case Some(nativeOp) =>
               CometExpandExec(
@@ -502,7 +490,7 @@ class CometSparkSessionExtensions
             if (sparkFinalMode) {
               op
             } else {
-              val newOp = transform1(op)
+              val newOp = operatorToProto(op)
               newOp match {
                 case Some(nativeOp) =>
                   val modes = aggExprs.map(_.mode).distinct
@@ -531,7 +519,7 @@ class CometSparkSessionExtensions
         case op: ShuffledHashJoinExec
             if CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(conf) &&
               op.children.forall(isCometNative) =>
-          val newOp = transform1(op)
+          val newOp = operatorToProto(op)
           newOp match {
             case Some(nativeOp) =>
               CometHashJoinExec(
@@ -565,7 +553,7 @@ class CometSparkSessionExtensions
         case op: BroadcastHashJoinExec
             if CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) &&
               op.children.forall(isCometNative) =>
-          val newOp = transform1(op)
+          val newOp = operatorToProto(op)
           newOp match {
             case Some(nativeOp) =>
               CometBroadcastHashJoinExec(
@@ -588,7 +576,7 @@ class CometSparkSessionExtensions
         case op: SortMergeJoinExec
             if CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) &&
               op.children.forall(isCometNative) =>
-          val newOp = transform1(op)
+          val newOp = operatorToProto(op)
           newOp match {
             case Some(nativeOp) =>
               CometSortMergeJoinExec(
@@ -680,7 +668,7 @@ class CometSparkSessionExtensions
           s
 
         case w: WindowExec =>
-          val newOp = transform1(w)
+          val newOp = operatorToProto(w)
           newOp match {
             case Some(nativeOp) =>
               CometWindowExec(
@@ -720,7 +708,7 @@ class CometSparkSessionExtensions
 
         // For AQE broadcast stage on a Comet broadcast exchange
         case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
-          val newOp = transform1(s)
+          val newOp = operatorToProto(s)
           newOp match {
             case Some(nativeOp) =>
               CometSinkPlaceHolder(nativeOp, s, s)
@@ -782,7 +770,7 @@ class CometSparkSessionExtensions
 
         // For AQE shuffle stage on a Comet shuffle exchange
         case s @ ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) =>
-          val newOp = transform1(s)
+          val newOp = operatorToProto(s)
           newOp match {
             case Some(nativeOp) =>
               CometSinkPlaceHolder(nativeOp, s, s)
@@ -797,7 +785,7 @@ class CometSparkSessionExtensions
               _,
               ReusedExchangeExec(_, _: CometShuffleExchangeExec),
               _) =>
-          val newOp = transform1(s)
+          val newOp = operatorToProto(s)
           newOp match {
             case Some(nativeOp) =>
               CometSinkPlaceHolder(nativeOp, s, s)
@@ -813,7 +801,7 @@ class CometSparkSessionExtensions
 
           val nativeShuffle: Option[SparkPlan] =
             if (nativePrecondition) {
-              val newOp = transform1(s)
+              val newOp = operatorToProto(s)
               newOp match {
                 case Some(nativeOp) =>
                   // Switch to use Decimal128 regardless of precision, since Arrow native execution
