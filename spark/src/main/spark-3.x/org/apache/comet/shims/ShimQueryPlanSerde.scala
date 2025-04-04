@@ -20,28 +20,8 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions.BinaryArithmetic
-import org.apache.spark.sql.catalyst.expressions.aggregate.DeclarativeAggregate
 
 trait ShimQueryPlanSerde {
   def getFailOnError(b: BinaryArithmetic): Boolean =
     b.getClass.getMethod("failOnError").invoke(b).asInstanceOf[Boolean]
-
-  def getFailOnError(aggregate: DeclarativeAggregate): Boolean = {
-    val failOnError = aggregate.getClass.getDeclaredMethods.flatMap(m =>
-      m.getName match {
-        case "failOnError" | "useAnsiAdd" => Some(m.invoke(aggregate).asInstanceOf[Boolean])
-        case _ => None
-      })
-    if (failOnError.isEmpty) {
-      aggregate.getClass.getDeclaredMethods
-        .flatMap(m =>
-          m.getName match {
-            case "initQueryContext" => Some(m.invoke(aggregate).asInstanceOf[Option[_]].isDefined)
-            case _ => None
-          })
-        .head
-    } else {
-      failOnError.head
-    }
-  }
 }

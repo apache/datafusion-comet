@@ -26,9 +26,6 @@ trait ShimQueryPlanSerde {
   protected def getFailOnError(b: BinaryArithmetic): Boolean =
     b.getClass.getMethod("failOnError").invoke(b).asInstanceOf[Boolean]
 
-  protected def getFailOnError(aggregate: Sum): Boolean = aggregate.initQueryContext().isDefined
-  protected def getFailOnError(aggregate: Average): Boolean = aggregate.initQueryContext().isDefined
-
   protected def isBloomFilterMightContain(binary: BinaryExpression): Boolean =
     binary.isInstanceOf[BloomFilterMightContain]
 }

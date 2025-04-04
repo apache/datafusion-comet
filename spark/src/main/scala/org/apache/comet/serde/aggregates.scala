@@ -164,7 +164,7 @@ object CometAverage extends CometAggregateExpressionSerde with ShimQueryPlanSerd
       val builder = ExprOuterClass.Avg.newBuilder()
       builder.setChild(childExpr.get)
       builder.setDatatype(dataType.get)
-      builder.setFailOnError(getFailOnError(avg))
+      builder.setFailOnError(avg.evalMode == EvalMode.ANSI)
       builder.setSumDatatype(sumDataType.get)
 
       Some(
@@ -207,7 +207,7 @@ object CometSum extends CometAggregateExpressionSerde with ShimQueryPlanSerde {
       val builder = ExprOuterClass.Sum.newBuilder()
       builder.setChild(childExpr.get)
       builder.setDatatype(dataType.get)
-      builder.setFailOnError(getFailOnError(sum))
+      builder.setFailOnError(sum.evalMode == EvalMode.ANSI)
 
       Some(
         ExprOuterClass.AggExpr
