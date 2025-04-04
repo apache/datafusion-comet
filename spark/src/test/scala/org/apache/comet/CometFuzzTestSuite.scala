@@ -44,7 +44,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
       val options =
         DataGenOptions(generateArray = true, generateStruct = true, generateNegativeZero = false)
-      ParquetGenerator.makeParquetFile(random, spark, filename, 10000, options)
+      ParquetGenerator.makeParquetFile(random, spark, filename, 1000, options)
     }
   }
 
@@ -85,6 +85,23 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
       checkSparkAnswer(s"SELECT $col, count(*) FROM t1 GROUP BY $col ORDER BY $col")
+    }
+  }
+
+  test("min/max aggregate") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    for (col <- df.columns) {
+      checkSparkAnswer(s"SELECT min($col), max($col) FROM t1")
+    }
+  }
+
+  test("join") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    df.createOrReplaceTempView("t2")
+    for (col <- df.columns) {
+      checkSparkAnswer(s"SELECT count(*) FROM t1 JOIN t2 ON t1.$col = t2.$col")
     }
   }
 
