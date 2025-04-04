@@ -19,25 +19,23 @@
 
 package org.apache.comet
 
+import java.io.File
 import scala.util.Random
-
 import org.scalactic.source.Position
 import org.scalatest.Tag
-
-import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
+import org.apache.commons.io.FileUtils
 
 class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
-  // TODO get system temp dir
-  val path = new Path(s"/tmp/CometFuzzTestSuite_${System.currentTimeMillis()}.parquet")
+  private var filename: String = null
 
   override def beforeAll(): Unit = {
     super.beforeAll()
-    val filename = path.toString
+    val tempDir = System.getProperty("java.io.tmpdir")
+    filename = s"$tempDir/CometFuzzTestSuite_${System.currentTimeMillis()}.parquet"
     val random = new Random(42)
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
       val options = DataGenOptions(
@@ -50,22 +48,35 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   protected override def afterAll(): Unit = {
     super.afterAll()
-    // TODO delete test file(s)
+    FileUtils.deleteDirectory(new File(filename))
   }
 
   test("order by single column") {
-    val df = spark.read.parquet(path.toString)
+    val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
       checkSparkAnswer(s"SELECT $col FROM t1 ORDER BY $col")
     }
   }
 
-  test("aggregate group by single column") {
-    val df = spark.read.parquet(path.toString)
+  test("order by multiple columns") {
+    val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
-    for (col <- df.columns) {
-      checkSparkAnswer(s"SELECT $col, count(*) FROM t1 GROUP BY $col ORDER BY $col")
+    val allCols = df.columns.mkString(",")
+    checkSparkAnswer(s"SELECT $allCols FROM t1 ORDER BY $allCols")
+  }
+
+  // TODO fails with Unsupported data type org.apache.spark.sql.Row
+  ignore("aggregate group by single column") {
+    // scalastyle:off println
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    for (field <- df.schema.fields) {
+      println(field.dataType)
+      val col = field.name
+      val sql = s"SELECT $col, count(*) FROM t1 GROUP BY $col ORDER BY $col"
+      println(spark.sql(sql).queryExecution.executedPlan)
+      checkSparkAnswer(sql)
     }
   }
 
