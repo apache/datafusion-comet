@@ -32,17 +32,6 @@ import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
-  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
-      pos: Position): Unit = {
-    Seq("native_comet", "native_datafusion", "native_iceberg_compat").foreach { scanImpl =>
-      super.test(testName + s" ($scanImpl)", testTags: _*) {
-        withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl) {
-          testFun
-        }
-      }
-    }
-  }
-
   // TODO get system temp dir
   val path = new Path(s"/tmp/CometFuzzTestSuite_${System.currentTimeMillis()}.parquet")
 
@@ -51,7 +40,10 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val filename = path.toString
     val random = new Random(42)
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      val options = DataGenOptions(generateArray = true, generateStruct = true)
+      val options = DataGenOptions(
+        generateArray = true,
+        generateStruct = true,
+        generateNegativeZero = false)
       ParquetGenerator.makeParquetFile(random, spark, filename, 10000, options)
     }
   }
@@ -61,11 +53,33 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // TODO delete test file(s)
   }
 
+  test("order by single column") {
+    val df = spark.read.parquet(path.toString)
+    df.createOrReplaceTempView("t1")
+    for (col <- df.columns) {
+      checkSparkAnswer(s"SELECT $col FROM t1 ORDER BY $col")
+    }
+  }
+
   test("aggregate group by single column") {
     val df = spark.read.parquet(path.toString)
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
       checkSparkAnswer(s"SELECT $col, count(*) FROM t1 GROUP BY $col ORDER BY $col")
+    }
+  }
+
+  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
+      pos: Position): Unit = {
+    Seq("native", "jvm").foreach { shuffleMode =>
+      Seq("native_comet", "native_datafusion", "native_iceberg_compat").foreach { scanImpl =>
+        super.test(testName + s" ($scanImpl, $shuffleMode shuffle)", testTags: _*) {
+          withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl,
+            CometConf.COMET_SHUFFLE_MODE.key -> shuffleMode) {
+            testFun
+          }
+        }
+      }
     }
   }
 
