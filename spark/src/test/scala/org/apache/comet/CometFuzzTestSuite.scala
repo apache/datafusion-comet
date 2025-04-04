@@ -20,13 +20,17 @@
 package org.apache.comet
 
 import java.io.File
+
 import scala.util.Random
+
 import org.scalactic.source.Position
 import org.scalatest.Tag
+
+import org.apache.commons.io.FileUtils
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
-import org.apache.commons.io.FileUtils
 
 class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -38,10 +42,8 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     filename = s"$tempDir/CometFuzzTestSuite_${System.currentTimeMillis()}.parquet"
     val random = new Random(42)
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      val options = DataGenOptions(
-        generateArray = true,
-        generateStruct = true,
-        generateNegativeZero = false)
+      val options =
+        DataGenOptions(generateArray = true, generateStruct = true, generateNegativeZero = false)
       ParquetGenerator.makeParquetFile(random, spark, filename, 10000, options)
     }
   }
@@ -54,13 +56,13 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("select *") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
-    checkSparkAnswer(s"SELECT * FROM t1")
+    checkSparkAnswer("SELECT * FROM t1")
   }
 
   test("select * with limit") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
-    checkSparkAnswer(s"SELECT * FROM t1 LIMIT 500")
+    checkSparkAnswer("SELECT * FROM t1 LIMIT 500")
   }
 
   test("order by single column") {
@@ -95,7 +97,8 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq("native", "jvm").foreach { shuffleMode =>
       Seq("native_comet", "native_datafusion", "native_iceberg_compat").foreach { scanImpl =>
         super.test(testName + s" ($scanImpl, $shuffleMode shuffle)", testTags: _*) {
-          withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl,
+          withSQLConf(
+            CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl,
             CometConf.COMET_SHUFFLE_MODE.key -> shuffleMode) {
             testFun
           }

@@ -22,7 +22,9 @@ package org.apache.spark.sql.comet.util
 import java.io.{DataInputStream, DataOutputStream, File}
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
+
 import scala.collection.JavaConverters._
+
 import org.apache.arrow.c.CDataDictionaryProvider
 import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalVector, FieldVector, FixedSizeBinaryVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, ValueVector, VarBinaryVector, VarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
@@ -36,6 +38,7 @@ import org.apache.spark.sql.comet.execution.arrow.ArrowReaderIterator
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
+
 import org.apache.comet.vector.CometVector
 
 object Utils {
