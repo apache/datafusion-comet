@@ -64,6 +64,7 @@ class CometExecIterator(
   }.toArray
   private val plan = {
     val conf = SparkEnv.get.conf
+    val localDiskDirs = SparkEnv.get.blockManager.getLocalDiskDirs
 
     val offHeapMode = CometSparkSessionExtensions.isOffHeapEnabled(conf)
     val memoryLimit = if (offHeapMode) {
@@ -83,6 +84,7 @@ class CometExecIterator(
       nativeMetrics,
       metricsUpdateInterval = COMET_METRICS_UPDATE_INTERVAL.get(),
       new CometTaskMemoryManager(id),
+      localDiskDirs,
       batchSize = COMET_BATCH_SIZE.get(),
       offHeapMode,
       memoryPoolType = COMET_EXEC_MEMORY_POOL_TYPE.get(),
