@@ -51,12 +51,12 @@ import org.apache.comet.expressions._
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType._
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
-import org.apache.comet.shims.{CometExprShim, ShimQueryPlanSerde}
+import org.apache.comet.shims.CometExprShim
 
 /**
  * An utility object for query plan and expression serialization.
  */
-object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim {
+object QueryPlanSerde extends Logging with CometExprShim {
   def emitWarning(reason: String): Unit = {
     logWarning(s"Comet native execution is disabled due to: $reason")
   }
@@ -564,7 +564,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           inputs,
           binding,
           add.dataType,
-          getFailOnError(add),
+          add.evalMode == EvalMode.ANSI,
           (builder, mathExpr) => builder.setAdd(mathExpr))
 
       case add @ Add(left, _, _) if !supportedDataType(left.dataType) =>
@@ -579,7 +579,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           inputs,
           binding,
           sub.dataType,
-          getFailOnError(sub),
+          sub.evalMode == EvalMode.ANSI,
           (builder, mathExpr) => builder.setSubtract(mathExpr))
 
       case sub @ Subtract(left, _, _) if !supportedDataType(left.dataType) =>
@@ -594,7 +594,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           inputs,
           binding,
           mul.dataType,
-          getFailOnError(mul),
+          mul.evalMode == EvalMode.ANSI,
           (builder, mathExpr) => builder.setMultiply(mathExpr))
 
       case mul @ Multiply(left, _, _) =>
@@ -616,7 +616,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           inputs,
           binding,
           div.dataType,
-          getFailOnError(div),
+          div.evalMode == EvalMode.ANSI,
           (builder, mathExpr) => builder.setDivide(mathExpr))
 
       case div @ Divide(left, _, _) =>
@@ -643,7 +643,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           inputs,
           binding,
           dataType,
-          getFailOnError(div),
+          div.evalMode == EvalMode.ANSI,
           (builder, mathExpr) => builder.setIntegralDivide(mathExpr))
 
         if (divideExpr.isDefined) {
@@ -651,7 +651,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             // check overflow for decimal type
             val builder = ExprOuterClass.CheckOverflow.newBuilder()
             builder.setChild(divideExpr.get)
-            builder.setFailOnError(getFailOnError(div))
+            builder.setFailOnError(div.evalMode == EvalMode.ANSI)
             builder.setDatatype(serializeDataType(dataType).get)
             Some(
               ExprOuterClass.Expr
@@ -684,7 +684,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           inputs,
           binding,
           rem.dataType,
-          getFailOnError(rem),
+          rem.evalMode == EvalMode.ANSI,
           (builder, mathExpr) => builder.setRemainder(mathExpr))
 
       case rem @ Remainder(left, _, _) =>

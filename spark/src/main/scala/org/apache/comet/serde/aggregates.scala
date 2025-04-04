@@ -29,7 +29,6 @@ import org.apache.spark.sql.types.{ByteType, DecimalType, IntegerType, LongType,
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
-import org.apache.comet.shims.ShimQueryPlanSerde
 
 object CometMin extends CometAggregateExpressionSerde {
 
@@ -126,7 +125,7 @@ object CometCount extends CometAggregateExpressionSerde {
   }
 }
 
-object CometAverage extends CometAggregateExpressionSerde with ShimQueryPlanSerde {
+object CometAverage extends CometAggregateExpressionSerde {
   override def convert(
       aggExpr: AggregateExpression,
       expr: Expression,
@@ -181,7 +180,7 @@ object CometAverage extends CometAggregateExpressionSerde with ShimQueryPlanSerd
     }
   }
 }
-object CometSum extends CometAggregateExpressionSerde with ShimQueryPlanSerde {
+object CometSum extends CometAggregateExpressionSerde {
   override def convert(
       aggExpr: AggregateExpression,
       expr: Expression,
