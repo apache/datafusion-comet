@@ -19,7 +19,7 @@
 
 package org.apache.spark.sql.comet.util
 
-import java.io.{DataOutputStream, File}
+import java.io.{DataInputStream, DataOutputStream, File}
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
 
@@ -35,6 +35,7 @@ import org.apache.arrow.vector.types._
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
 import org.apache.spark.{SparkEnv, SparkException}
 import org.apache.spark.io.CompressionCodec
+import org.apache.spark.sql.comet.execution.arrow.ArrowReaderIterator
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
@@ -224,6 +225,28 @@ object Utils {
         (batch.numRows(), new ChunkedByteBuffer(Array.empty[ByteBuffer]))
       }
     }
+  }
+
+  /**
+   * Decodes the byte arrays back to ColumnarBatchs and put them into buffer.
+   * @param bytes
+   *   the serialized batches
+   * @param source
+   *   the class that calls this method
+   * @return
+   *   an iterator of ColumnarBatch
+   */
+  def decodeBatches(bytes: ChunkedByteBuffer, source: String): Iterator[ColumnarBatch] = {
+    if (bytes.size == 0) {
+      return Iterator.empty
+    }
+
+    // use Spark's compression codec (LZ4 by default) and not Comet's compression
+    val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
+    val cbbis = bytes.toInputStream()
+    val ins = new DataInputStream(codec.compressedInputStream(cbbis))
+    // batches are in Arrow IPC format
+    new ArrowReaderIterator(Channels.newChannel(ins), source)
   }
 
   def getBatchFieldVectors(

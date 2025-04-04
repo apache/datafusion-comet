@@ -19,20 +19,30 @@
 
 package org.apache.spark.sql.comet
 
-import scala.collection.JavaConverters._
+import java.util.UUID
+import java.util.concurrent.{Future, TimeoutException, TimeUnit}
 
+import scala.collection.JavaConverters._
+import scala.concurrent.Promise
+import scala.util.control.NonFatal
+
+import org.apache.spark.{broadcast, SparkException}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder, UnsafeProjection}
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.catalyst.expressions.codegen.Block._
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
-import org.apache.spark.sql.execution.{CodegenSupport, ColumnarToRowTransition, SparkPlan}
+import org.apache.spark.sql.comet.util.{Utils => CometUtils}
+import org.apache.spark.sql.errors.QueryExecutionErrors
+import org.apache.spark.sql.execution.{CodegenSupport, ColumnarToRowTransition, SparkPlan, SQLExecution}
+import org.apache.spark.sql.execution.adaptive.BroadcastQueryStageExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.vectorized.{ConstantColumnVector, WritableColumnVector}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
-import org.apache.spark.util.Utils
+import org.apache.spark.util.{SparkFatalException, Utils}
+import org.apache.spark.util.io.ChunkedByteBuffer
 
 import org.apache.comet.vector.CometPlainVector
 
@@ -73,6 +83,96 @@ case class CometColumnarToRowExec(child: SparkPlan)
         numOutputRows += batch.numRows()
         batch.rowIterator().asScala.map(toUnsafe)
       }
+    }
+  }
+
+  @transient
+  private lazy val promise = Promise[broadcast.Broadcast[Any]]()
+
+  @transient
+  private val timeout: Long = conf.broadcastTimeout
+
+  private val runId: UUID = UUID.randomUUID
+
+  private lazy val cometBroadcastExchange = findCometBroadcastExchange(child)
+
+  @transient
+  lazy val relationFuture: Future[broadcast.Broadcast[Any]] = {
+    SQLExecution.withThreadLocalCaptured[broadcast.Broadcast[Any]](
+      session,
+      CometBroadcastExchangeExec.executionContext) {
+      try {
+        // Setup a job group here so later it may get cancelled by groupId if necessary.
+        sparkContext.setJobGroup(
+          runId.toString,
+          s"CometColumnarToRow broadcast exchange (runId $runId)",
+          interruptOnCancel = true)
+
+        val numOutputRows = longMetric("numOutputRows")
+        val numInputBatches = longMetric("numInputBatches")
+        val localOutput = this.output
+        val broadcastColumnar = child.executeBroadcast()
+        val serializedBatches = broadcastColumnar.value.asInstanceOf[Array[ChunkedByteBuffer]]
+        val toUnsafe = UnsafeProjection.create(localOutput, localOutput)
+        val rows = serializedBatches.iterator
+          .flatMap(CometUtils.decodeBatches(_, this.getClass.getSimpleName))
+          .flatMap { batch =>
+            numInputBatches += 1
+            numOutputRows += batch.numRows()
+            batch.rowIterator().asScala.map(toUnsafe)
+          }
+
+        val mode = cometBroadcastExchange.get.mode
+        val relation = mode.transform(rows, Some(numOutputRows.value))
+        val broadcasted = sparkContext.broadcastInternal(relation, serializedOnly = true)
+        val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
+        SQLMetrics.postDriverMetricUpdates(sparkContext, executionId, metrics.values.toSeq)
+        promise.trySuccess(broadcasted)
+        broadcasted
+      } catch {
+        // SPARK-24294: To bypass scala bug: https://github.com/scala/bug/issues/9554, we throw
+        // SparkFatalException, which is a subclass of Exception. ThreadUtils.awaitResult
+        // will catch this exception and re-throw the wrapped fatal throwable.
+        case oe: OutOfMemoryError =>
+          val ex = new SparkFatalException(oe)
+          promise.tryFailure(ex)
+          throw ex
+        case e if !NonFatal(e) =>
+          val ex = new SparkFatalException(e)
+          promise.tryFailure(ex)
+          throw ex
+        case e: Throwable =>
+          promise.tryFailure(e)
+          throw e
+      }
+    }
+  }
+
+  override def doExecuteBroadcast[T](): broadcast.Broadcast[T] = {
+    if (cometBroadcastExchange.isEmpty) {
+      throw new SparkException(
+        "ColumnarToRowExec only supports doExecuteBroadcast when child contains a " +
+          "CometBroadcastExchange, but got " + child)
+    }
+
+    try {
+      relationFuture.get(timeout, TimeUnit.SECONDS).asInstanceOf[broadcast.Broadcast[T]]
+    } catch {
+      case ex: TimeoutException =>
+        logError(s"Could not execute broadcast in $timeout secs.", ex)
+        if (!relationFuture.isDone) {
+          sparkContext.cancelJobGroup(runId.toString)
+          relationFuture.cancel(true)
+        }
+        throw QueryExecutionErrors.executeBroadcastTimeoutError(timeout, Some(ex))
+    }
+  }
+
+  private def findCometBroadcastExchange(op: SparkPlan): Option[CometBroadcastExchangeExec] = {
+    op match {
+      case b: CometBroadcastExchangeExec => Some(b)
+      case b: BroadcastQueryStageExec => findCometBroadcastExchange(b.plan)
+      case _ => op.children.collectFirst(Function.unlift(findCometBroadcastExchange))
     }
   }
 
