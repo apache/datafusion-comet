@@ -2765,6 +2765,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) => true
       case _: TakeOrderedAndProjectExec => true
       case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
+      case BroadcastQueryStageExec(_, ReusedExchangeExec(_, _: CometBroadcastExchangeExec), _) =>
+        true
       case _: BroadcastExchangeExec => true
       case _: WindowExec => true
       case _ => false
