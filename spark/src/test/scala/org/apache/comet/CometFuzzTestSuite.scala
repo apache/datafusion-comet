@@ -51,6 +51,18 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     FileUtils.deleteDirectory(new File(filename))
   }
 
+  test("select *") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    checkSparkAnswer(s"SELECT * FROM t1")
+  }
+
+  test("select * with limit") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    checkSparkAnswer(s"SELECT * FROM t1 LIMIT 500")
+  }
+
   test("order by single column") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
