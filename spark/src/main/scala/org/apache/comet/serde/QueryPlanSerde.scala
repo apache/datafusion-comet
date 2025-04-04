@@ -2452,11 +2452,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           return None
         }
 
-        if (groupingExpressions.exists(expr => isComplexType(expr.dataType))) {
-          withInfo(op, "Complex types are not supported for grouping expressions")
-          return None
-        }
-
         // Aggregate expressions with filter are not supported yet.
         if (aggregateExpressions.exists(_.filter.isDefined)) {
           withInfo(op, "Aggregate expression with filter is not supported")
@@ -2776,11 +2771,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case _: WindowExec => true
       case _ => false
     }
-  }
-
-  def isComplexType(dataType: DataType): Boolean = dataType match {
-    case _: ArrayType | _: StructType | _: MapType => true
-    case _ => false
   }
 
   /**

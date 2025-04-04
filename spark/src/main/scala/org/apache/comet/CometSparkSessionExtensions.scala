@@ -824,13 +824,6 @@ class CometSparkSessionExtensions
             isCometNativeShuffleMode(conf) &&
             QueryPlanSerde.supportPartitioning(s.child.output, s.outputPartitioning)._1
 
-          // TODO this check is probably too broad - we may support some complex types
-          // either in jvm or native shuffle mode?
-          if (s.output.exists(attr => QueryPlanSerde.isComplexType(attr.dataType))) {
-            withInfo(s, "complex types not supported in shuffle")
-            return s
-          }
-
           val nativeShuffle: Option[SparkPlan] =
             if (nativePrecondition) {
               val newOp = transform1(s)

@@ -82,7 +82,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   // TODO fails with Unsupported data type org.apache.spark.sql.Row
   // https://github.com/apache/datafusion-comet/issues/1611
-  ignore("aggregate group by single column") {
+  test("aggregate group by single column") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     for (field <- df.schema.fields) {
