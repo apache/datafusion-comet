@@ -352,7 +352,7 @@ class CometSparkSessionExtensions
      */
     // spotless:on
     private def transform(plan: SparkPlan): SparkPlan = {
-      def operatorToProto(op: SparkPlan): Option[Operator] = {
+      def operator2Proto(op: SparkPlan): Option[Operator] = {
         if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
           QueryPlanSerde.operator2Proto(
             op,
@@ -370,8 +370,8 @@ class CometSparkSessionExtensions
        * Convert operator to proto and then apply a transformation to wrap the proto in a new
        * plan.
        */
-      def wrapProto(op: SparkPlan, fun: Operator => SparkPlan): SparkPlan = {
-        operatorToProto(op).map(fun).getOrElse(op)
+      def newPlanWithProto(op: SparkPlan, fun: Operator => SparkPlan): SparkPlan = {
+        operator2Proto(op).map(fun).getOrElse(op)
       }
 
       plan.transformUp {
@@ -392,17 +392,17 @@ class CometSparkSessionExtensions
           CometScanWrapper(nativeOp.get, cometOp)
 
         case op: ProjectExec =>
-          wrapProto(
+          newPlanWithProto(
             op,
             CometProjectExec(_, op, op.output, op.projectList, op.child, SerializedPlan(None)))
 
         case op: FilterExec =>
-          wrapProto(
+          newPlanWithProto(
             op,
             CometFilterExec(_, op, op.output, op.condition, op.child, SerializedPlan(None)))
 
         case op: SortExec =>
-          wrapProto(
+          newPlanWithProto(
             op,
             CometSortExec(
               _,
@@ -414,10 +414,14 @@ class CometSparkSessionExtensions
               SerializedPlan(None)))
 
         case op: LocalLimitExec =>
-          wrapProto(op, CometLocalLimitExec(_, op, op.limit, op.child, SerializedPlan(None)))
+          newPlanWithProto(
+            op,
+            CometLocalLimitExec(_, op, op.limit, op.child, SerializedPlan(None)))
 
         case op: GlobalLimitExec if op.offset == 0 =>
-          wrapProto(op, CometGlobalLimitExec(_, op, op.limit, op.child, SerializedPlan(None)))
+          newPlanWithProto(
+            op,
+            CometGlobalLimitExec(_, op, op.limit, op.child, SerializedPlan(None)))
 
         case op: CollectLimitExec
             if isCometNative(op.child) && CometConf.COMET_EXEC_COLLECT_LIMIT_ENABLED.get(conf)
@@ -433,7 +437,7 @@ class CometSparkSessionExtensions
             .getOrElse(op)
 
         case op: ExpandExec =>
-          wrapProto(
+          newPlanWithProto(
             op,
             CometExpandExec(_, op, op.output, op.projections, op.child, SerializedPlan(None)))
 
@@ -464,7 +468,7 @@ class CometSparkSessionExtensions
             if (sparkFinalMode) {
               op
             } else {
-              wrapProto(
+              newPlanWithProto(
                 op,
                 nativeOp => {
                   val modes = aggExprs.map(_.mode).distinct
@@ -491,7 +495,7 @@ class CometSparkSessionExtensions
         case op: ShuffledHashJoinExec
             if CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(conf) &&
               op.children.forall(isCometNative) =>
-          wrapProto(
+          newPlanWithProto(
             op,
             CometHashJoinExec(
               _,
@@ -521,7 +525,7 @@ class CometSparkSessionExtensions
         case op: BroadcastHashJoinExec
             if CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) &&
               op.children.forall(isCometNative) =>
-          wrapProto(
+          newPlanWithProto(
             op,
             CometBroadcastHashJoinExec(
               _,
@@ -540,7 +544,7 @@ class CometSparkSessionExtensions
         case op: SortMergeJoinExec
             if CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) &&
               op.children.forall(isCometNative) =>
-          wrapProto(
+          newPlanWithProto(
             op,
             CometSortMergeJoinExec(
               _,
@@ -628,7 +632,7 @@ class CometSparkSessionExtensions
           s
 
         case w: WindowExec =>
-          wrapProto(
+          newPlanWithProto(
             w,
             CometWindowExec(
               _,
@@ -643,7 +647,7 @@ class CometSparkSessionExtensions
         case u: UnionExec
             if CometConf.COMET_EXEC_UNION_ENABLED.get(conf) &&
               u.children.forall(isCometNative) =>
-          wrapProto(
+          newPlanWithProto(
             u, {
               val cometOp = CometUnionExec(u, u.output, u.children)
               CometSinkPlaceHolder(_, u, cometOp)
@@ -662,13 +666,13 @@ class CometSparkSessionExtensions
 
         // For AQE broadcast stage on a Comet broadcast exchange
         case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
-          wrapProto(s, CometSinkPlaceHolder(_, s, s))
+          newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
 
         case s @ BroadcastQueryStageExec(
               _,
               ReusedExchangeExec(_, _: CometBroadcastExchangeExec),
               _) =>
-          wrapProto(s, CometSinkPlaceHolder(_, s, s))
+          newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
 
         // `CometBroadcastExchangeExec`'s broadcast output is not compatible with Spark's broadcast
         // exchange. It is only used for Comet native execution. We only transform Spark broadcast
@@ -724,7 +728,7 @@ class CometSparkSessionExtensions
 
         // For AQE shuffle stage on a Comet shuffle exchange
         case s @ ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) =>
-          wrapProto(s, CometSinkPlaceHolder(_, s, s))
+          newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
 
         // For AQE shuffle stage on a reused Comet shuffle exchange
         // Note that we don't need to handle `ReusedExchangeExec` for non-AQE case, because
@@ -733,7 +737,7 @@ class CometSparkSessionExtensions
               _,
               ReusedExchangeExec(_, _: CometShuffleExchangeExec),
               _) =>
-          wrapProto(s, CometSinkPlaceHolder(_, s, s))
+          newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
 
         // Native shuffle for Comet operators
         case s: ShuffleExchangeExec =>
@@ -743,7 +747,7 @@ class CometSparkSessionExtensions
 
           val nativeShuffle: Option[SparkPlan] =
             if (nativePrecondition) {
-              val newOp = operatorToProto(s)
+              val newOp = operator2Proto(s)
               newOp match {
                 case Some(nativeOp) =>
                   // Switch to use Decimal128 regardless of precision, since Arrow native execution
