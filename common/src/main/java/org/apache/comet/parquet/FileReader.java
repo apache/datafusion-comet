@@ -578,6 +578,10 @@ public class FileReader implements Closeable {
   }
 
   public long[] getRowIndices() {
+    return getRowIndices(blocks);
+  }
+
+  public static long[] getRowIndices(List<BlockMetaData> blocks) {
     long[] rowIndices = new long[blocks.size() * 2];
     for (int i = 0, n = blocks.size(); i < n; i++) {
       BlockMetaData block = blocks.get(i);
@@ -591,7 +595,7 @@ public class FileReader implements Closeable {
   //
   // The reason reflection is used here is that some Spark versions still depend on a
   // Parquet version where the method `getRowIndexOffset` is not public.
-  private long getRowIndexOffset(BlockMetaData metaData) {
+  public static long getRowIndexOffset(BlockMetaData metaData) {
     try {
       Method method = BlockMetaData.class.getMethod("getRowIndexOffset");
       method.setAccessible(true);
