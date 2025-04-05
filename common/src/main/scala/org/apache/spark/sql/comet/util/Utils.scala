@@ -27,8 +27,7 @@ import scala.collection.JavaConverters._
 
 import org.apache.arrow.c.CDataDictionaryProvider
 import org.apache.arrow.vector.{BigIntVector, BitVector, DateDayVector, DecimalVector, FieldVector, FixedSizeBinaryVector, Float4Vector, Float8Vector, IntVector, SmallIntVector, TimeStampMicroTZVector, TimeStampMicroVector, TinyIntVector, ValueVector, VarBinaryVector, VarCharVector, VectorSchemaRoot}
-import org.apache.arrow.vector.complex.MapVector
-import org.apache.arrow.vector.complex.StructVector
+import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.arrow.vector.ipc.ArrowStreamWriter
 import org.apache.arrow.vector.types._
@@ -278,7 +277,7 @@ object Utils {
       case v @ (_: BitVector | _: TinyIntVector | _: SmallIntVector | _: IntVector |
           _: BigIntVector | _: Float4Vector | _: Float8Vector | _: VarCharVector |
           _: DecimalVector | _: DateDayVector | _: TimeStampMicroTZVector | _: VarBinaryVector |
-          _: FixedSizeBinaryVector | _: TimeStampMicroVector | _: StructVector) =>
+          _: FixedSizeBinaryVector | _: TimeStampMicroVector | _: StructVector | _: ListVector) =>
         v.asInstanceOf[FieldVector]
       case _ =>
         throw new SparkException(s"Unsupported Arrow Vector for $reason: ${valueVector.getClass}")
