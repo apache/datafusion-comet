@@ -93,6 +93,18 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("count distinct") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    for (col <- df.columns) {
+      val sql = s"SELECT count(distinct $col) FROM t1"
+      val (_, cometPlan) = checkSparkAnswer(sql)
+      if (CometConf.isExperimentalNativeScan) {
+        assert(1 == collectNativeScans(cometPlan).length)
+      }
+    }
+  }
+
   test("order by multiple columns") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
