@@ -59,20 +59,32 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("select *") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
-    checkSparkAnswer("SELECT * FROM t1")
+    val sql = "SELECT * FROM t1"
+    if (CometConf.isExperimentalNativeScan) {
+      checkSparkAnswerAndOperator(sql)
+    } else {
+      checkSparkAnswer(sql)
+    }
   }
 
   test("select * with limit") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
-    checkSparkAnswer("SELECT * FROM t1 LIMIT 500")
+    val sql = "SELECT * FROM t1 LIMIT 500"
+    if (CometConf.isExperimentalNativeScan) {
+      checkSparkAnswerAndOperator(sql)
+    } else {
+      checkSparkAnswer(sql)
+    }
   }
 
   test("order by single column") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
-      checkSparkAnswer(s"SELECT $col FROM t1 ORDER BY $col")
+      val sql = s"SELECT $col FROM t1 ORDER BY $col"
+      // cannot run fully natively due to range partitioning and sort
+      checkSparkAnswer(sql)
     }
   }
 
@@ -80,6 +92,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     val allCols = df.columns.mkString(",")
+    // cannot run fully natively due to range partitioning and sort
     checkSparkAnswer(s"SELECT $allCols FROM t1 ORDER BY $allCols")
   }
 
@@ -87,6 +100,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
+      // cannot run fully natively due to range partitioning and sort
       checkSparkAnswer(s"SELECT $col, count(*) FROM t1 GROUP BY $col ORDER BY $col")
     }
   }
@@ -95,6 +109,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
+      // cannot run fully native due to HashAggregate
       checkSparkAnswer(s"SELECT min($col), max($col) FROM t1")
     }
   }
@@ -104,6 +119,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     df.createOrReplaceTempView("t1")
     df.createOrReplaceTempView("t2")
     for (col <- df.columns) {
+      // cannot run fully native due to HashAggregate
       checkSparkAnswer(s"SELECT count(*) FROM t1 JOIN t2 ON t1.$col = t2.$col")
     }
   }
@@ -115,6 +131,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         super.test(testName + s" ($scanImpl, $shuffleMode shuffle)", testTags: _*) {
           withSQLConf(
             CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl,
+            CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true",
             CometConf.COMET_SHUFFLE_MODE.key -> shuffleMode) {
             testFun
           }
