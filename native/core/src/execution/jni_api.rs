@@ -73,17 +73,21 @@ use once_cell::sync::{Lazy, OnceCell};
 
 static TOKIO_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
-    if let Some(n) = std::env::var_os("COMET_WORKER_THREADS") {
-        builder.worker_threads(n.to_str().unwrap().parse().unwrap());
+    if let Some(n) = parse_usize_env_var("COMET_WORKER_THREADS") {
+        builder.worker_threads(n);
     }
-    if let Some(n) = std::env::var_os("COMET_MAX_BLOCKING_THREADS") {
-        builder.max_blocking_threads(n.to_str().unwrap().parse().unwrap());
+    if let Some(n) = parse_usize_env_var("COMET_MAX_BLOCKING_THREADS") {
+        builder.max_blocking_threads(n);
     }
     builder
         .enable_all()
         .build()
         .expect("Failed to create Tokio runtime")
 });
+
+fn parse_usize_env_var(name: &str) -> Option<usize> {
+    std::env::var_os(name).and_then(|n| n.to_str().and_then(|s| s.parse::<usize>().ok()))
+}
 
 /// Function to get a handle to the global Tokio runtime
 pub fn get_runtime() -> &'static Runtime {
