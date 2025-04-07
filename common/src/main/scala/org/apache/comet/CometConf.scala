@@ -484,6 +484,12 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_PARQUET_FILTER_PUSHDOWN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.sql.parquet.filterPushdown")
+      .doc("Enables Parquet filter push-down optimization when set to true.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_MEMORY_POOL_TYPE: ConfigEntry[String] = conf("spark.comet.exec.memoryPool")
     .doc("The type of memory pool to be used for Comet native execution. " +
       "When running Spark in on-heap mode, available pool types are 'greedy', 'fair_spill', " +

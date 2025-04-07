@@ -31,7 +31,7 @@ Comet currently has three distinct implementations of the Parquet scan operator.
 
 When using `native_datafusion` or `native_iceberg_compat`, there are known performance issues when pushing filters
 down to Parquet scans. Until this issue is resolved, performance can be improved by setting
-`spark.sql.parquet.filterPushdown=false`.
+`spark.comet.sql.parquet.filterPushdown=false`.
 
 ## Memory Tuning
 

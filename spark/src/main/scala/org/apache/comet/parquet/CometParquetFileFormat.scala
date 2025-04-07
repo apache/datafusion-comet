@@ -96,7 +96,7 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
     val optionsMap = CaseInsensitiveMap[String](options)
     val parquetOptions = new ParquetOptions(optionsMap, sqlConf)
     val datetimeRebaseModeInRead = parquetOptions.datetimeRebaseModeInRead
-    val parquetFilterPushDown = sqlConf.parquetFilterPushDown
+    val parquetFilterPushDown = CometConf.COMET_PARQUET_FILTER_PUSHDOWN_ENABLED.get(sqlConf)
 
     // Comet specific configurations
     val capacity = CometConf.COMET_BATCH_SIZE.get(sqlConf)
