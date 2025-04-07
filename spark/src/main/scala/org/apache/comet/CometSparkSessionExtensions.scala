@@ -56,7 +56,7 @@ import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometLoaded, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometLoaded, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.rules.RewriteJoin
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -187,50 +187,54 @@ class CometSparkSessionExtensions
 
     scanExec.scan match {
       case scan: ParquetScan =>
+        val fallbackReasons = new ListBuffer[String]()
         if (!CometBatchScanExec.isSchemaSupported(scan.readDataSchema)) {
-          withInfo(scanExec, s"Schema ${scan.readDataSchema} is not supported")
-          return scanExec
+          fallbackReasons += s"Schema ${scan.readDataSchema} is not supported"
         }
 
         if (!CometBatchScanExec.isSchemaSupported(scan.readPartitionSchema)) {
-          withInfo(scanExec, s"Partition schema ${scan.readPartitionSchema} is not supported")
-          return scanExec
+          fallbackReasons += s"Partition schema ${scan.readPartitionSchema} is not supported"
         }
 
         if (scan.pushedAggregate.nonEmpty) {
-          withInfo(scanExec, "Comet does not support pushed aggregate")
-          return scanExec
+          fallbackReasons += "Comet does not support pushed aggregate"
         }
 
-        val cometScan = CometParquetScan(scanExec.scan.asInstanceOf[ParquetScan])
-        logInfo("Comet extension enabled for Scan")
-        CometBatchScanExec(
-          scanExec.copy(scan = cometScan),
-          runtimeFilters = scanExec.runtimeFilters)
+        if (fallbackReasons.isEmpty) {
+          val cometScan = CometParquetScan(scanExec.scan.asInstanceOf[ParquetScan])
+          logInfo("Comet extension enabled for Scan")
+          CometBatchScanExec(
+            scanExec.copy(scan = cometScan),
+            runtimeFilters = scanExec.runtimeFilters)
+        } else {
+          withInfo(scanExec, withInfo(scanExec, fallbackReasons.mkString(", ")))
+          scanExec
+        }
 
       // Iceberg scan
       case s: SupportsComet =>
+        val fallbackReasons = new ListBuffer[String]()
+
         if (!s.isCometEnabled) {
-          withInfo(
-            scanExec,
-            "Comet extension is not enabled for " +
-              s"${scanExec.scan.getClass.getSimpleName}: not enabled on data source side")
-          return scanExec
+          fallbackReasons += "Comet extension is not enabled for " +
+            s"${scanExec.scan.getClass.getSimpleName}: not enabled on data source side"
         }
 
         if (!CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema())) {
-          withInfo(
-            scanExec,
-            "Comet extension is not enabled for " +
-              s"${scanExec.scan.getClass.getSimpleName}: Schema not supported")
-          return scanExec
+          fallbackReasons += "Comet extension is not enabled for " +
+            s"${scanExec.scan.getClass.getSimpleName}: Schema not supported"
         }
 
-        // When reading from Iceberg, we automatically enable type promotion
-        SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
-        CometBatchScanExec(
-          scanExec.clone().asInstanceOf[BatchScanExec],
-          runtimeFilters = scanExec.runtimeFilters)
+        if (fallbackReasons.isEmpty) {
+          // When reading from Iceberg, we automatically enable type promotion
+          SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
+          CometBatchScanExec(
+            scanExec.clone().asInstanceOf[BatchScanExec],
+            runtimeFilters = scanExec.runtimeFilters)
+        } else {
+          withInfo(scanExec, withInfo(scanExec, fallbackReasons.mkString(", ")))
+          scanExec
+        }
 
       case _ =>
         withInfo(scanExec, "Comet Scan only supports Parquet and Iceberg")
