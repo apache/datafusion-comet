@@ -110,6 +110,8 @@ fn get_options(
 ) -> (TableParquetOptions, SparkParquetOptions) {
     let mut table_parquet_options = TableParquetOptions::new();
     table_parquet_options.global.pushdown_filters = pushdown_filters;
+    // TODO: Maybe these are configs?
+    table_parquet_options.global.reorder_filters = true;
     let mut spark_parquet_options =
         SparkParquetOptions::new(EvalMode::Legacy, session_timezone, false);
     spark_parquet_options.allow_cast_unsigned_ints = true;
