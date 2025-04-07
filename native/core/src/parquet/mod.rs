@@ -45,6 +45,8 @@ use jni::{
 
 use self::util::jni::TypePromotionInfo;
 use crate::execution::operators::ExecutionError;
+use crate::execution::planner::PhysicalPlanner;
+use crate::execution::serde;
 use crate::execution::utils::SparkArrowConvert;
 use crate::parquet::data_type::AsBytes;
 use crate::parquet::parquet_exec::init_datasource_exec;
@@ -52,9 +54,9 @@ use crate::parquet::parquet_support::prepare_object_store;
 use arrow::array::{Array, RecordBatch};
 use arrow::buffer::{Buffer, MutableBuffer};
 use datafusion::datasource::listing::PartitionedFile;
-use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::{poll, StreamExt};
 use jni::objects::{JBooleanArray, JByteArray, JLongArray, JPrimitiveArray, JString, ReleaseMode};
 use jni::sys::jstring;
@@ -584,7 +586,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_closeColumnReader(
 ) {
     try_unwrap_or_throw(&env, |_| {
         unsafe {
-            let ctx = handle as *mut Context;
+            let ctx = get_context(handle)?;
             let _ = Box::from_raw(ctx);
         };
         Ok(())
@@ -645,19 +647,30 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     file_size: jlong,
     start: jlong,
     length: jlong,
+    filter: jbyteArray,
     required_schema: jbyteArray,
+    data_schema: jbyteArray,
     session_timezone: jstring,
+    batch_size: jint,
+    worker_threads: jint,
+    blocking_threads: jint,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| unsafe {
+        let session_config = SessionConfig::new().with_batch_size(batch_size as usize);
+        let planer =
+            PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(session_config)));
+        let session_ctx = planer.session_ctx();
+
         let path: String = env
             .get_string(&JString::from_raw(file_path))
             .unwrap()
             .into();
 
         let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(worker_threads as usize)
+            .max_blocking_threads(blocking_threads as usize)
             .enable_all()
             .build()?;
-        let session_ctx = SessionContext::new();
 
         let (object_store_url, object_store_path) =
             prepare_object_store(session_ctx.runtime_env(), path.clone())?;
@@ -665,6 +678,21 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         let required_schema_array = JByteArray::from_raw(required_schema);
         let required_schema_buffer = env.convert_byte_array(&required_schema_array)?;
         let required_schema = Arc::new(deserialize_schema(required_schema_buffer.as_bytes())?);
+
+        let data_schema_array = JByteArray::from_raw(data_schema);
+        let data_schema_buffer = env.convert_byte_array(&data_schema_array)?;
+        let data_schema = Arc::new(deserialize_schema(data_schema_buffer.as_bytes())?);
+
+        let data_filters = if !filter.is_null() {
+            let filter_array = JByteArray::from_raw(filter);
+            let filter_buffer = env.convert_byte_array(&filter_array)?;
+            let filter_expr = serde::deserialize_expr(filter_buffer.as_slice())?;
+            Some(vec![
+                planer.create_expr(&filter_expr, Arc::clone(&data_schema))?
+            ])
+        } else {
+            None
+        };
 
         let file_groups =
             get_file_groups_single_file(&object_store_path, file_size as u64, start, length);
@@ -676,19 +704,18 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
 
         let scan = init_datasource_exec(
             required_schema,
-            None,
+            Some(data_schema),
             None,
             None,
             object_store_url,
             file_groups,
             None,
-            None,
+            data_filters,
             session_timezone.as_str(),
         )?;
 
-        let ctx = TaskContext::default();
         let partition_index: usize = 0;
-        let batch_stream = Some(scan.execute(partition_index, Arc::new(ctx))?);
+        let batch_stream = Some(scan.execute(partition_index, session_ctx.task_ctx())?);
 
         let ctx = BatchContext {
             runtime,
@@ -778,7 +805,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_closeRecordBatchRead
 ) {
     try_unwrap_or_throw(&env, |_| {
         unsafe {
-            let ctx = handle as *mut BatchContext;
+            let ctx = get_batch_context(handle)?;
             let _ = Box::from_raw(ctx);
         };
         Ok(())

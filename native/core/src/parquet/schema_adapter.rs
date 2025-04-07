@@ -77,7 +77,20 @@ impl SchemaAdapter for SparkSchemaAdapter {
     /// Panics if index is not in range for the table schema
     fn map_column_index(&self, index: usize, file_schema: &Schema) -> Option<usize> {
         let field = self.required_schema.field(index);
-        Some(file_schema.fields.find(field.name())?.0)
+        Some(
+            file_schema
+                .fields
+                .iter()
+                .enumerate()
+                .find(|(_, b)| {
+                    if self.parquet_options.case_sensitive {
+                        b.name() == field.name()
+                    } else {
+                        b.name().to_lowercase() == field.name().to_lowercase()
+                    }
+                })?
+                .0,
+        )
     }
 
     /// Creates a `SchemaMapping` for casting or mapping the columns from the
@@ -97,8 +110,18 @@ impl SchemaAdapter for SparkSchemaAdapter {
         let mut field_mappings = vec![None; self.required_schema.fields().len()];
 
         for (file_idx, file_field) in file_schema.fields.iter().enumerate() {
-            if let Some((table_idx, _table_field)) =
-                self.required_schema.fields().find(file_field.name())
+            if let Some((table_idx, _table_field)) = self
+                .required_schema
+                .fields()
+                .iter()
+                .enumerate()
+                .find(|(_, b)| {
+                    if self.parquet_options.case_sensitive {
+                        b.name() == file_field.name()
+                    } else {
+                        b.name().to_lowercase() == file_field.name().to_lowercase()
+                    }
+                })
             {
                 field_mappings[table_idx] = Some(projection.len());
                 projection.push(file_idx);

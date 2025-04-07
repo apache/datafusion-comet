@@ -66,10 +66,10 @@ metadata:
 spec:
   type: Scala
   mode: cluster
-  image: apache/datafusion-comet:0.7.0-spark3.5.4-scala2.12-java11
+  image: apache/datafusion-comet:0.7.0-spark3.5.5-scala2.12-java11
   imagePullPolicy: IfNotPresent
   mainClass: org.apache.spark.examples.SparkPi
-  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples_2.12-3.5.4.jar
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples_2.12-3.5.5.jar
   sparkConf:
     "spark.executor.extraClassPath": "/opt/spark/jars/comet-spark-spark3.5_2.12-0.7.0.jar"
     "spark.driver.extraClassPath": "/opt/spark/jars/comet-spark-spark3.5_2.12-0.7.0.jar"
@@ -80,17 +80,17 @@ spec:
     "spark.comet.exec.shuffle.enabled": "true"
     "spark.comet.exec.shuffle.mode": "auto"
     "spark.shuffle.manager": "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
-  sparkVersion: 3.5.4
+  sparkVersion: 3.5.5
   driver:
     labels:
-      version: 3.5.4
+      version: 3.5.5
     cores: 1
     coreLimit: 1200m
     memory: 512m
     serviceAccount: spark-operator-spark
   executor:
     labels:
-      version: 3.5.4
+      version: 3.5.5
     instances: 1
     cores: 1
     coreLimit: 1200m

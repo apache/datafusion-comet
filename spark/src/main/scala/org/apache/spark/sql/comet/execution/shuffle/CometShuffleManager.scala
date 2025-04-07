@@ -86,38 +86,52 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
   def registerShuffle[K, V, C](
       shuffleId: Int,
       dependency: ShuffleDependency[K, V, C]): ShuffleHandle = {
-    if (dependency.isInstanceOf[CometShuffleDependency[_, _, _]]) {
-      // Comet shuffle dependency, which comes from `CometShuffleExchangeExec`.
-      if (shouldBypassMergeSort(conf, dependency) ||
-        !SortShuffleManager.canUseSerializedShuffle(dependency)) {
-        new CometBypassMergeSortShuffleHandle(
-          shuffleId,
-          dependency.asInstanceOf[ShuffleDependency[K, V, V]])
-      } else {
-        new CometSerializedShuffleHandle(
-          shuffleId,
-          dependency.asInstanceOf[ShuffleDependency[K, V, V]])
-      }
-    } else {
-      // It is a Spark shuffle dependency, so we use Spark Sort Shuffle Manager.
-      if (SortShuffleWriter.shouldBypassMergeSort(conf, dependency)) {
-        // If there are fewer than spark.shuffle.sort.bypassMergeThreshold partitions and we don't
-        // need map-side aggregation, then write numPartitions files directly and just concatenate
-        // them at the end. This avoids doing serialization and deserialization twice to merge
-        // together the spilled files, which would happen with the normal code path. The downside is
-        // having multiple files open at a time and thus more memory allocated to buffers.
-        new BypassMergeSortShuffleHandle[K, V](
-          shuffleId,
-          dependency.asInstanceOf[ShuffleDependency[K, V, V]])
-      } else if (SortShuffleManager.canUseSerializedShuffle(dependency)) {
-        // Otherwise, try to buffer map outputs in a serialized form, since this is more efficient:
-        new SerializedShuffleHandle[K, V](
-          shuffleId,
-          dependency.asInstanceOf[ShuffleDependency[K, V, V]])
-      } else {
-        // Otherwise, buffer map outputs in a deserialized form:
-        new BaseShuffleHandle(shuffleId, dependency)
-      }
+    dependency match {
+      case cometShuffleDependency: CometShuffleDependency[_, _, _] =>
+        // Comet shuffle dependency, which comes from `CometShuffleExchangeExec`.
+        cometShuffleDependency.shuffleType match {
+          case CometColumnarShuffle =>
+            // Comet columnar shuffle, which uses Arrow format to shuffle data.
+            if (shouldBypassMergeSort(conf, dependency) ||
+              !SortShuffleManager.canUseSerializedShuffle(dependency)) {
+              new CometBypassMergeSortShuffleHandle(
+                shuffleId,
+                dependency.asInstanceOf[ShuffleDependency[K, V, V]])
+            } else {
+              new CometSerializedShuffleHandle(
+                shuffleId,
+                dependency.asInstanceOf[ShuffleDependency[K, V, V]])
+            }
+          case CometNativeShuffle =>
+            new CometNativeShuffleHandle(
+              shuffleId,
+              dependency.asInstanceOf[ShuffleDependency[K, V, V]])
+          case _ =>
+            // Unsupported shuffle type.
+            throw new UnsupportedOperationException(
+              s"Unsupported shuffle type: ${cometShuffleDependency.shuffleType}")
+        }
+      case _ =>
+        // It is a Spark shuffle dependency, so we use Spark Sort Shuffle Manager.
+        if (SortShuffleWriter.shouldBypassMergeSort(conf, dependency)) {
+          // If there are fewer than spark.shuffle.sort.bypassMergeThreshold partitions and we don't
+          // need map-side aggregation, then write numPartitions files directly and just concatenate
+          // them at the end. This avoids doing serialization and deserialization twice to merge
+          // together the spilled files, which would happen with the normal code path. The downside
+          // is having multiple files open at a time and thus more memory allocated to buffers.
+          new BypassMergeSortShuffleHandle[K, V](
+            shuffleId,
+            dependency.asInstanceOf[ShuffleDependency[K, V, V]])
+        } else if (SortShuffleManager.canUseSerializedShuffle(dependency)) {
+          // Otherwise, try to buffer map outputs in a serialized form, since this is more
+          // efficient:
+          new SerializedShuffleHandle[K, V](
+            shuffleId,
+            dependency.asInstanceOf[ShuffleDependency[K, V, V]])
+        } else {
+          // Otherwise, buffer map outputs in a deserialized form:
+          new BaseShuffleHandle(shuffleId, dependency)
+        }
     }
   }
 
@@ -150,7 +164,8 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
       }
 
     if (handle.isInstanceOf[CometBypassMergeSortShuffleHandle[_, _]] ||
-      handle.isInstanceOf[CometSerializedShuffleHandle[_, _]]) {
+      handle.isInstanceOf[CometSerializedShuffleHandle[_, _]] ||
+      handle.isInstanceOf[CometNativeShuffleHandle[_, _]]) {
       new CometBlockStoreShuffleReader(
         handle.asInstanceOf[BaseShuffleHandle[K, _, C]],
         blocksByAddress,
@@ -184,6 +199,17 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
     }
     val env = SparkEnv.get
     handle match {
+      case cometShuffleHandle: CometNativeShuffleHandle[K @unchecked, V @unchecked] =>
+        val dep = cometShuffleHandle.dependency.asInstanceOf[CometShuffleDependency[_, _, _]]
+        new CometNativeShuffleWriter(
+          dep.outputPartitioning.get,
+          dep.outputAttributes,
+          dep.shuffleWriteMetrics,
+          dep.numParts,
+          dep.shuffleId,
+          mapId,
+          context,
+          metrics)
       case bypassMergeSortHandle: CometBypassMergeSortShuffleHandle[K @unchecked, V @unchecked] =>
         new CometBypassMergeSortShuffleWriter(
           env.blockManager,
@@ -292,6 +318,15 @@ private[spark] class CometBypassMergeSortShuffleHandle[K, V](
  * shuffle.
  */
 private[spark] class CometSerializedShuffleHandle[K, V](
+    shuffleId: Int,
+    dependency: ShuffleDependency[K, V, V])
+    extends BaseShuffleHandle(shuffleId, dependency) {}
+
+/**
+ * Subclass of [[BaseShuffleHandle]], used to identify when we've chosen to use the native shuffle
+ * writer.
+ */
+private[spark] class CometNativeShuffleHandle[K, V](
     shuffleId: Int,
     dependency: ShuffleDependency[K, V, V])
     extends BaseShuffleHandle(shuffleId, dependency) {}

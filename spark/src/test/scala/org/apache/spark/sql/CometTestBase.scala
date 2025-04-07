@@ -461,6 +461,7 @@ abstract class CometTestBase
        |  optional INT64                    _18(TIMESTAMP(MILLIS,true));
        |  optional INT64                    _19(TIMESTAMP(MICROS,true));
        |  optional INT32                    _20(DATE);
+       |  optional binary                   _21;
        |  optional INT32                    _id;
        |}
       """.stripMargin
@@ -487,6 +488,7 @@ abstract class CometTestBase
        |  optional INT64                    _18(TIMESTAMP(MILLIS,true));
        |  optional INT64                    _19(TIMESTAMP(MICROS,true));
        |  optional INT32                    _20(DATE);
+       |  optional binary                   _21;
        |  optional INT32                    _id;
        |}
       """.stripMargin
@@ -498,6 +500,7 @@ abstract class CometTestBase
       dictionaryEnabled: Boolean,
       begin: Int,
       end: Int,
+      nullEnabled: Boolean = true,
       pageSize: Int = 128,
       randomSize: Int = 0): Unit = {
     // alwaysIncludeUnsignedIntTypes means we include unsignedIntTypes in the test even if the
@@ -516,7 +519,7 @@ abstract class CometTestBase
 
     val rand = scala.util.Random
     val data = (begin until end).map { i =>
-      if (rand.nextBoolean()) {
+      if (nullEnabled && rand.nextBoolean()) {
         None
       } else {
         if (dictionaryEnabled) Some(i % 4) else Some(i)
@@ -546,7 +549,8 @@ abstract class CometTestBase
           record.add(17, i.toLong)
           record.add(18, i.toLong)
           record.add(19, i)
-          record.add(20, idGenerator.getAndIncrement())
+          record.add(20, i.toString)
+          record.add(21, idGenerator.getAndIncrement())
         case _ =>
       }
       writer.write(record)
@@ -574,7 +578,8 @@ abstract class CometTestBase
       record.add(17, i)
       record.add(18, i)
       record.add(19, i.toInt)
-      record.add(20, idGenerator.getAndIncrement())
+      record.add(20, i.toString)
+      record.add(21, idGenerator.getAndIncrement())
       writer.write(record)
     }
 
