@@ -258,6 +258,7 @@ public final class Native extends NativeBase {
       byte[] dataSchema,
       String sessionTimezone,
       int batchSize,
+      boolean pushdownFilters,
       int workerThreads,
       int blockingThreads);
 

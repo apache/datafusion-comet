@@ -102,6 +102,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   private boolean isCaseSensitive;
   private boolean useFieldId;
   private boolean ignoreMissingIds;
+  private boolean pushdownFilters;
   private StructType partitionSchema;
   private InternalRow partitionValues;
   private PartitionedFile file;
@@ -200,6 +201,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       boolean useFieldId,
       boolean ignoreMissingIds,
       boolean useLegacyDateTimestamp,
+      boolean pushdownFilters,
       StructType partitionSchema,
       InternalRow partitionValues,
       Map<String, SQLMetric> metrics) {
@@ -211,6 +213,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     this.useFieldId = useFieldId;
     this.ignoreMissingIds = ignoreMissingIds;
     this.useLegacyDateTimestamp = useLegacyDateTimestamp;
+    this.pushdownFilters = pushdownFilters;
     this.partitionSchema = partitionSchema;
     this.partitionValues = partitionValues;
     this.file = inputSplit;
@@ -378,6 +381,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
             serializedDataArrowSchema,
             timeZoneId,
             batchSize,
+            pushdownFilters,
             workerThreads,
             blockingThreads);
     isInitialized = true;

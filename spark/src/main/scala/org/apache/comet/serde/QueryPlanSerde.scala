@@ -2228,6 +2228,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
           if CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_DATAFUSION =>
         val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
         nativeScanBuilder.setSource(op.simpleStringWithNodeId())
+        nativeScanBuilder.setPushdownFilters(
+          conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED))
 
         val scanTypes = op.output.flatten { attr =>
           serializeDataType(attr.dataType)

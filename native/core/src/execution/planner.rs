@@ -1163,6 +1163,7 @@ impl PhysicalPlanner {
                     file_groups,
                     Some(projection_vector),
                     Some(data_filters?),
+                    scan.pushdown_filters,
                     scan.session_timezone.as_str(),
                 )?;
                 Ok((

@@ -59,9 +59,11 @@ pub(crate) fn init_datasource_exec(
     file_groups: Vec<Vec<PartitionedFile>>,
     projection_vector: Option<Vec<usize>>,
     data_filters: Option<Vec<Arc<dyn PhysicalExpr>>>,
+    pushdown_filters: bool,
     session_timezone: &str,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
-    let (table_parquet_options, spark_parquet_options) = get_options(session_timezone);
+    let (table_parquet_options, spark_parquet_options) =
+        get_options(session_timezone, pushdown_filters);
     let mut parquet_source = ParquetSource::new(table_parquet_options).with_schema_adapter_factory(
         Arc::new(SparkSchemaAdapterFactory::new(spark_parquet_options)),
     );
@@ -102,10 +104,13 @@ pub(crate) fn init_datasource_exec(
     Ok(Arc::new(DataSourceExec::new(Arc::new(file_scan_config))))
 }
 
-fn get_options(session_timezone: &str) -> (TableParquetOptions, SparkParquetOptions) {
+fn get_options(
+    session_timezone: &str,
+    pushdown_filters: bool,
+) -> (TableParquetOptions, SparkParquetOptions) {
     let mut table_parquet_options = TableParquetOptions::new();
+    table_parquet_options.global.pushdown_filters = pushdown_filters;
     // TODO: Maybe these are configs?
-    table_parquet_options.global.pushdown_filters = true;
     table_parquet_options.global.reorder_filters = true;
     let mut spark_parquet_options =
         SparkParquetOptions::new(EvalMode::Legacy, session_timezone, false);

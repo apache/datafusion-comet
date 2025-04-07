@@ -652,6 +652,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     data_schema: jbyteArray,
     session_timezone: jstring,
     batch_size: jint,
+    pushdown_filters: jboolean,
     worker_threads: jint,
     blocking_threads: jint,
 ) -> jlong {
@@ -711,6 +712,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             file_groups,
             None,
             data_filters,
+            pushdown_filters != 0,
             session_timezone.as_str(),
         )?;
 
