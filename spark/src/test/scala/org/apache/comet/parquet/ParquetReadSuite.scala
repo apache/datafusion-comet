@@ -1512,7 +1512,7 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
             breakable {
               withSQLConf(
                 CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode,
-                CometConf.COMET_PARQUET_FILTER_PUSHDOWN_ENABLED.key -> pushDown.toString) {
+                SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> pushDown.toString) {
                 if (scanMode == CometConf.SCAN_NATIVE_DATAFUSION && !pushDown) {
                   // FIXME: native_datafusion always pushdown data filters
                   break()
