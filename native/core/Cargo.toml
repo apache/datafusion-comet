@@ -77,7 +77,7 @@ jni = { version = "0.21", features = ["invocation"] }
 lazy_static = "1.4"
 assertables = "7"
 hex = "0.4.3"
-datafusion-functions-nested = { git = "https://github.com/apache/datafusion", rev = "7c902def35601a003f91744ba2829eb451e792d7" }
+datafusion-functions-nested = { git = "https://github.com/apache/datafusion", rev = "4ae0edea8eb7d5ad5df07e22a8fb39aa9fd1e2df" }
 
 [features]
 default = []

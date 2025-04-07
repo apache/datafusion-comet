@@ -316,7 +316,8 @@ mod test {
             FileScanConfig::new(object_store_url, required_schema, parquet_source)
                 .with_file_groups(vec![vec![PartitionedFile::from_path(
                     filename.to_string(),
-                )?]]);
+                )?]
+                .into()]);
 
         let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
 
