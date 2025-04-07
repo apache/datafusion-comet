@@ -30,7 +30,7 @@ import org.apache.spark.shuffle.{IndexShuffleBlockResolver, ShuffleWriteMetricsR
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, SinglePartition}
 import org.apache.spark.sql.comet.{CometExec, CometMetricNode}
-import org.apache.spark.sql.execution.metric.{SQLMetric, SQLShuffleWriteMetricsReporter}
+import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometConf
@@ -80,8 +80,8 @@ class CometNativeShuffleWriter[K, V](
       "spilled_bytes")
 
     // Maps native metrics to SQL metrics
-    val metricsOutputRows = metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_RECORDS_WRITTEN)
-    val metricsWriteTime = metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_WRITE_TIME)
+    val metricsOutputRows = new SQLMetric("outputRows")
+    val metricsWriteTime = new SQLMetric("writeTime")
     val nativeSQLMetrics = Map(
       "output_rows" -> metricsOutputRows,
       "data_size" -> metrics("dataSize"),
