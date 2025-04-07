@@ -32,6 +32,14 @@ import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, 
 
 object ParquetGenerator {
 
+  /**
+   * Arbitrary date to use as base for generating temporal columns. Random integers will be added
+   * to or subtracted from this value.
+   *
+   * Represents Saturday, May 25, 2024 2:00:00.011 PM GMT
+   */
+  private val baseDate = 1716645600011L
+
   private val primitiveTypes = Seq(
     DataTypes.BooleanType,
     DataTypes.ByteType,
@@ -209,13 +217,13 @@ object ParquetGenerator {
               null
           }
       case DataTypes.DateType =>
-        Range(0, numRows).map(_ => new java.sql.Date(1716645600011L + r.nextInt()))
+        Range(0, numRows).map(_ => new java.sql.Date(baseDate + r.nextInt()))
       case DataTypes.TimestampType =>
-        Range(0, numRows).map(_ => new Timestamp(1716645600011L + r.nextInt()))
+        Range(0, numRows).map(_ => new Timestamp(baseDate + r.nextInt()))
       case DataTypes.TimestampNTZType =>
         Range(0, numRows).map(_ =>
           LocalDateTime.ofInstant(
-            Instant.ofEpochMilli(1716645600011L + r.nextInt()),
+            Instant.ofEpochMilli(baseDate + r.nextInt()),
             ZoneId.systemDefault()))
       case _ => throw new IllegalStateException(s"Cannot generate data for $dataType yet")
     }

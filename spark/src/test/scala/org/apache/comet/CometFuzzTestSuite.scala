@@ -39,6 +39,15 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private var filename: String = null
 
+  /**
+   * We use Asia/Kathmandu because it has a non-zero number of minutes as the offset, so is an
+   * interesting edge case. Also, this timezone tends to be different from the default system
+   * timezone.
+   *
+   * Represents UTC+5:45
+   */
+  private val defaultTimezone = "Asia/Kathmandu"
+
   override def beforeAll(): Unit = {
     super.beforeAll()
     val tempDir = System.getProperty("java.io.tmpdir")
@@ -46,7 +55,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val random = new Random(42)
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "false",
-      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu" /* UTC+5:45 */ ) {
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
       val options =
         DataGenOptions(generateArray = true, generateStruct = true, generateNegativeZero = false)
       ParquetGenerator.makeParquetFile(random, spark, filename, 1000, options)
