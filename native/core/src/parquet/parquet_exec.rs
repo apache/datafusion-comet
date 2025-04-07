@@ -85,7 +85,7 @@ pub(crate) fn init_datasource_exec(
 
     let file_groups = file_groups
         .iter()
-        .map(|x| FileGroup::new(x.clone()))
+        .map(|files| FileGroup::new(files.clone()))
         .collect();
 
     let file_scan_config = match (data_schema, projection_vector, partition_fields) {
