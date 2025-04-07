@@ -240,7 +240,7 @@ mod test {
     use datafusion::common::config::TableParquetOptions;
     use datafusion::common::DataFusionError;
     use datafusion::datasource::listing::PartitionedFile;
-    use datafusion::datasource::physical_plan::{FileScanConfig, ParquetSource};
+    use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::execution::TaskContext;
@@ -312,12 +312,11 @@ mod test {
             )),
         );
 
+        let files = FileGroup::new(vec![PartitionedFile::from_path(filename.to_string())?]);
         let file_scan_config =
-            FileScanConfig::new(object_store_url, required_schema, parquet_source)
-                .with_file_groups(vec![vec![PartitionedFile::from_path(
-                    filename.to_string(),
-                )?]
-                .into()]);
+            FileScanConfigBuilder::new(object_store_url, required_schema, parquet_source)
+                .with_file_groups(vec![files])
+                .build();
 
         let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
 
