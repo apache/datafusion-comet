@@ -498,9 +498,9 @@ source releases, or from the latest code in the GitHub repository.</p>
 <section id="run-spark-shell-with-comet-enabled">
 <h2>Run Spark Shell with Comet enabled<a class="headerlink" href="#run-spark-shell-with-comet-enabled" title="Link to this heading">¶</a></h2>
 <p>Make sure <code class="docutils literal notranslate"><span class="pre">SPARK_HOME</span></code> points to the same Spark version as Comet was built for.</p>
-<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">export COMET_JAR=spark/target/comet-spark-spark3.4_2.12-0.8.0-SNAPSHOT.jar</span>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">COMET_JAR</span><span class="o">=</span>spark/target/comet-spark-spark3.4_2.12-0.8.0-SNAPSHOT.jar
 
-<span class="gp">$</span>SPARK_HOME/bin/spark-shell<span class="w"> </span><span class="se">\</span>
+<span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--jars<span class="w"> </span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.driver.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.executor.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
@@ -508,7 +508,7 @@ source releases, or from the latest code in the GitHub repository.</p>
 <span class="w">    </span>--conf<span class="w"> </span>spark.shuffle.manager<span class="o">=</span>org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.explainFallback.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>16g<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>16g
 </pre></div>
 </div>
 <section id="verify-comet-enabled-for-spark-sql-query">

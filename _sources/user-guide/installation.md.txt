@@ -84,7 +84,7 @@ See the [Comet Kubernetes Guide](kubernetes.md) guide.
 
 Make sure `SPARK_HOME` points to the same Spark version as Comet was built for.
 
-```console
+```shell
 export COMET_JAR=spark/target/comet-spark-spark3.4_2.12-0.8.0-SNAPSHOT.jar
 
 $SPARK_HOME/bin/spark-shell \
@@ -95,7 +95,7 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.comet.explainFallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
-    --conf spark.memory.offHeap.size=16g \
+    --conf spark.memory.offHeap.size=16g
 ```
 
 ### Verify Comet enabled for Spark SQL query
