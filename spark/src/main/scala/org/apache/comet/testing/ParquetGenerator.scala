@@ -34,8 +34,8 @@ import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, 
 object ParquetGenerator {
 
   /**
-   * Date to use as base for generating temporal columns. Random integers will be added
-   * to or subtracted from this value.
+   * Date to use as base for generating temporal columns. Random integers will be added to or
+   * subtracted from this value.
    *
    * Date was chosen to trigger generating a timestamp that's larger than a 64-bit nanosecond
    * timestamp can represent so that we test support for INT96 timestamps.
