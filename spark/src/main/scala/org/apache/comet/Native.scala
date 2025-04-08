@@ -66,9 +66,7 @@ class Native extends NativeBase {
       memoryLimitPerTask: Long,
       taskAttemptId: Long,
       debug: Boolean,
-      explain: Boolean,
-      workerThreads: Int,
-      blockingThreads: Int): Long
+      explain: Boolean): Long
   // scalastyle:on
 
   /**

@@ -459,22 +459,6 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_WORKER_THREADS: ConfigEntry[Int] =
-    conf("spark.comet.workerThreads")
-      .internal()
-      .doc("The number of worker threads used for Comet native execution. " +
-        "By default, this config is 4.")
-      .intConf
-      .createWithDefault(4)
-
-  val COMET_BLOCKING_THREADS: ConfigEntry[Int] =
-    conf("spark.comet.blockingThreads")
-      .internal()
-      .doc("The number of blocking threads used for Comet native execution. " +
-        "By default, this config is 10.")
-      .intConf
-      .createWithDefault(10)
-
   val COMET_BATCH_SIZE: ConfigEntry[Int] = conf("spark.comet.batchSize")
     .doc("The columnar batch size, i.e., the maximum number of rows that a batch can contain.")
     .intConf
