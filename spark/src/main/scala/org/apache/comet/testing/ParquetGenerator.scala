@@ -22,6 +22,7 @@ package org.apache.comet.testing
 import java.math.{BigDecimal, RoundingMode}
 import java.nio.charset.Charset
 import java.sql.Timestamp
+import java.text.SimpleDateFormat
 import java.time.{Instant, LocalDateTime, ZoneId}
 
 import scala.collection.mutable.ListBuffer
@@ -35,10 +36,9 @@ object ParquetGenerator {
   /**
    * Arbitrary date to use as base for generating temporal columns. Random integers will be added
    * to or subtracted from this value.
-   *
-   * Represents Saturday, May 25, 2024 2:00:00.011 PM GMT
    */
-  private val baseDate = 1716645600011L
+  private val baseDate =
+    new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("2024-05-25 12:34:56").getTime
 
   private val primitiveTypes = Seq(
     DataTypes.BooleanType,
