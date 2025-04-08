@@ -131,7 +131,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     val cometScanExecSupported =
       if (sys.env.get("COMET_PARQUET_SCAN_IMPL").contains(SCAN_NATIVE_ICEBERG_COMPAT) && this
           .isInstanceOf[ParquetReadV1Suite])
-        Seq(true, true, false)
+        Seq(true, true, true)
       else Seq(true, false, false)
 
     val cometBatchScanExecSupported = Seq(true, false, false)
