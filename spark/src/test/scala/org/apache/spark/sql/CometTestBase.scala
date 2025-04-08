@@ -812,13 +812,56 @@ abstract class CometTestBase
     }
   }
 
-  // tests one liner query without necessity to create external table
+  /**
+   * The test encapsulates integration Comet test and does following:
+   *   - prepares data using SELECT query and saves it to the Parquet file in temp folder
+   *   - creates a temporary table with name `tableName` on top of temporary parquet file
+   *   - runs the query `testQuery` reading data from `tableName`
+   *
+   * Asserts the `testQuery` data with Comet is the same is with Apache Spark and also asserts
+   * only Comet operator are in the physical plan
+   *
+   * Example:
+   *
+   * {{{
+   *  test("native reader - read simple ARRAY fields with SHORT field") {
+   *     testSingleLineQuery(
+   *       """
+   *         |select array(cast(1 as short)) arr
+   *         |""".stripMargin,
+   *       "select arr from tbl",
+   *       sqlConf = Seq(
+   *         CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false",
+   *         "spark.comet.explainFallback.enabled" -> "false"
+   *       ),
+   *       debugCometDF = df => {
+   *         df.printSchema()
+   *         df.explain("extended")
+   *         df.show()
+   *       })
+   *   }
+   * }}}
+   *
+   * @param prepareQuery
+   *   \- prepare sample data with Comet disabled
+   * @param testQuery
+   *   \- the query to test. Typically with Comet enabled + other SQL config applied
+   * @param testName
+   *   \- test name
+   * @param tableName
+   *   \- table name where sample data stored
+   * @param sqlConf
+   *   \- additional spark sql configuration
+   * @param debugCometDF
+   *   \- optional debug access to DataFrame for `testQuery`
+   */
   def testSingleLineQuery(
       prepareQuery: String,
       testQuery: String,
       testName: String = "test",
       tableName: String = "tbl",
-      sqlConf: Seq[(String, String)] = Seq.empty): Unit = {
+      sqlConf: Seq[(String, String)] = Seq.empty,
+      debugCometDF: DataFrame => Unit = _ => ()): Unit = {
 
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, testName).toUri.toString
@@ -835,7 +878,9 @@ abstract class CometTestBase
       readParquetFile(path, Some(schema)) { df => df.createOrReplaceTempView(tableName) }
 
       withSQLConf(sqlConf: _*) {
-        checkSparkAnswerAndOperator(sql(testQuery))
+        val cometDF = sql(testQuery)
+        debugCometDF(cometDF)
+        checkSparkAnswerAndOperator(cometDF)
       }
     }
   }
