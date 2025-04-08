@@ -234,10 +234,6 @@ object CometParquetFileFormat extends Logging with ShimSQLConf {
       CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.key,
       CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.get())
     hadoopConf.setInt(CometConf.COMET_BATCH_SIZE.key, CometConf.COMET_BATCH_SIZE.get())
-    hadoopConf.setInt(CometConf.COMET_WORKER_THREADS.key, CometConf.COMET_WORKER_THREADS.get())
-    hadoopConf.setInt(
-      CometConf.COMET_BLOCKING_THREADS.key,
-      CometConf.COMET_BLOCKING_THREADS.get())
   }
 
   def getDatetimeRebaseSpec(

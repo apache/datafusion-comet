@@ -71,6 +71,29 @@ use crate::execution::spark_plan::SparkPlan;
 use log::info;
 use once_cell::sync::{Lazy, OnceCell};
 
+static TOKIO_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    if let Some(n) = parse_usize_env_var("COMET_WORKER_THREADS") {
+        builder.worker_threads(n);
+    }
+    if let Some(n) = parse_usize_env_var("COMET_MAX_BLOCKING_THREADS") {
+        builder.max_blocking_threads(n);
+    }
+    builder
+        .enable_all()
+        .build()
+        .expect("Failed to create Tokio runtime")
+});
+
+fn parse_usize_env_var(name: &str) -> Option<usize> {
+    std::env::var_os(name).and_then(|n| n.to_str().and_then(|s| s.parse::<usize>().ok()))
+}
+
+/// Function to get a handle to the global Tokio runtime
+pub fn get_runtime() -> &'static Runtime {
+    &TOKIO_RUNTIME
+}
+
 /// Comet native execution context. Kept alive across JNI calls.
 struct ExecutionContext {
     /// The id of the execution context.
@@ -89,8 +112,6 @@ struct ExecutionContext {
     pub input_sources: Vec<Arc<GlobalRef>>,
     /// The record batch stream to pull results from
     pub stream: Option<SendableRecordBatchStream>,
-    /// The Tokio runtime used for async.
-    pub runtime: Runtime,
     /// Native metrics
     pub metrics: Arc<GlobalRef>,
     // The interval in milliseconds to update metrics
@@ -177,8 +198,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     task_attempt_id: jlong,
     debug_native: jboolean,
     explain_native: jboolean,
-    worker_threads: jint,
-    blocking_threads: jint,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         // Init JVM classes
@@ -191,13 +210,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
         // Deserialize query plan
         let spark_plan = serde::deserialize_op(bytes.as_slice())?;
-
-        // Use multi-threaded tokio runtime to prevent blocking spawned tasks if any
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(worker_threads as usize)
-            .max_blocking_threads(blocking_threads as usize)
-            .enable_all()
-            .build()?;
 
         let metrics = Arc::new(jni_new_global_ref!(env, metrics_node)?);
 
@@ -258,7 +270,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             scans: vec![],
             input_sources,
             stream: None,
-            runtime,
             metrics,
             metrics_update_interval,
             metrics_last_update_time: Instant::now(),
@@ -559,7 +570,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         loop {
             // Polling the stream.
             let next_item = exec_context.stream.as_mut().unwrap().next();
-            let poll_output = exec_context.runtime.block_on(async { poll!(next_item) });
+            let poll_output = get_runtime().block_on(async { poll!(next_item) });
 
             // update metrics at interval
             if let Some(interval) = exec_context.metrics_update_interval {

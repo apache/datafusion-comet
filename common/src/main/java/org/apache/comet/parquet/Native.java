@@ -258,9 +258,7 @@ public final class Native extends NativeBase {
       byte[] dataSchema,
       String sessionTimezone,
       int batchSize,
-      boolean pushdownFilters,
-      int workerThreads,
-      int blockingThreads);
+      boolean pushdownFilters);
 
   // arrow native version of read batch
   /**

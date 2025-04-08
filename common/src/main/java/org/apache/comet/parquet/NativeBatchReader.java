@@ -360,16 +360,6 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
         conf.getInt(
             CometConf.COMET_BATCH_SIZE().key(),
             (Integer) CometConf.COMET_BATCH_SIZE().defaultValue().get());
-    int workerThreads =
-        conf.getInt(
-            CometConf.COMET_WORKER_THREADS().key(),
-            (Integer) CometConf.COMET_WORKER_THREADS().defaultValue().get());
-    ;
-    int blockingThreads =
-        conf.getInt(
-            CometConf.COMET_BLOCKING_THREADS().key(),
-            (Integer) CometConf.COMET_BLOCKING_THREADS().defaultValue().get());
-    ;
     this.handle =
         Native.initRecordBatchReader(
             filePath,
@@ -381,9 +371,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
             serializedDataArrowSchema,
             timeZoneId,
             batchSize,
-            pushdownFilters,
-            workerThreads,
-            blockingThreads);
+            pushdownFilters);
     isInitialized = true;
   }
 
