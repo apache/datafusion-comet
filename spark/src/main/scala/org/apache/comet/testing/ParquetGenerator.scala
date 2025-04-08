@@ -34,11 +34,14 @@ import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, 
 object ParquetGenerator {
 
   /**
-   * Arbitrary date to use as base for generating temporal columns. Random integers will be added
+   * Date to use as base for generating temporal columns. Random integers will be added
    * to or subtracted from this value.
+   *
+   * Date was chosen to trigger generating a timestamp that's larger than a 64-bit nanosecond
+   * timestamp can represent so that we test support for INT96 timestamps.
    */
   private val baseDate =
-    new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("2024-05-25 12:34:56").getTime
+    new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("3333-05-25 12:34:56").getTime
 
   private val primitiveTypes = Seq(
     DataTypes.BooleanType,
