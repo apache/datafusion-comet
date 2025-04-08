@@ -843,17 +843,17 @@ abstract class CometTestBase
    * }}}
    *
    * @param prepareQuery
-   *   \- prepare sample data with Comet disabled
+   *   prepare sample data with Comet disabled
    * @param testQuery
-   *   \- the query to test. Typically with Comet enabled + other SQL config applied
+   *   the query to test. Typically with Comet enabled + other SQL config applied
    * @param testName
-   *   \- test name
+   *   test name
    * @param tableName
-   *   \- table name where sample data stored
+   *   table name where sample data stored
    * @param sqlConf
-   *   \- additional spark sql configuration
+   *   additional spark sql configuration
    * @param debugCometDF
-   *   \- optional debug access to DataFrame for `testQuery`
+   *   optional debug access to DataFrame for `testQuery`
    */
   def testSingleLineQuery(
       prepareQuery: String,
