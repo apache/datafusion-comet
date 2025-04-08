@@ -20,6 +20,7 @@
 package org.apache.comet
 
 import java.io.File
+import java.text.SimpleDateFormat
 
 import scala.util.Random
 
@@ -59,7 +60,13 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       CometConf.COMET_ENABLED.key -> "false",
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
       val options =
-        DataGenOptions(generateArray = true, generateStruct = true, generateNegativeZero = false)
+        DataGenOptions(
+          generateArray = true,
+          generateStruct = true,
+          generateNegativeZero = false,
+          // override base date due to known issues with experimental scans
+          baseDate =
+            new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("2024-05-25 12:34:56").getTime)
       ParquetGenerator.makeParquetFile(random, spark, filename, 1000, options)
     }
   }

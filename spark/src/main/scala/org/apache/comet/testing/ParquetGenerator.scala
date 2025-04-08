@@ -40,7 +40,7 @@ object ParquetGenerator {
    * Date was chosen to trigger generating a timestamp that's larger than a 64-bit nanosecond
    * timestamp can represent so that we test support for INT96 timestamps.
    */
-  private val baseDate =
+  val defaultBaseDate: Long =
     new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("3333-05-25 12:34:56").getTime
 
   private val primitiveTypes = Seq(
@@ -220,13 +220,13 @@ object ParquetGenerator {
               null
           }
       case DataTypes.DateType =>
-        Range(0, numRows).map(_ => new java.sql.Date(baseDate + r.nextInt()))
+        Range(0, numRows).map(_ => new java.sql.Date(options.baseDate + r.nextInt()))
       case DataTypes.TimestampType =>
-        Range(0, numRows).map(_ => new Timestamp(baseDate + r.nextInt()))
+        Range(0, numRows).map(_ => new Timestamp(options.baseDate + r.nextInt()))
       case DataTypes.TimestampNTZType =>
         Range(0, numRows).map(_ =>
           LocalDateTime.ofInstant(
-            Instant.ofEpochMilli(baseDate + r.nextInt()),
+            Instant.ofEpochMilli(options.baseDate + r.nextInt()),
             ZoneId.systemDefault()))
       case _ => throw new IllegalStateException(s"Cannot generate data for $dataType yet")
     }
@@ -237,6 +237,7 @@ object ParquetGenerator {
 case class DataGenOptions(
     allowNull: Boolean = true,
     generateNegativeZero: Boolean = true,
+    baseDate: Long = ParquetGenerator.defaultBaseDate,
     generateArray: Boolean = false,
     generateStruct: Boolean = false,
     generateMap: Boolean = false)
