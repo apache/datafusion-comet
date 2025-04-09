@@ -19,7 +19,9 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayJoin, ArrayRemove, Attribute, Expression, Literal}
+import scala.annotation.tailrec
+
+import org.apache.spark.sql.catalyst.expressions.{ArrayExcept, ArrayJoin, ArrayRemove, Attribute, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -194,6 +196,44 @@ object CometArrayCompact extends CometExpressionSerde with IncompatExpr {
       arrayExprProto,
       nullLiteralProto)
     optExprWithInfo(arrayCompactScalarExpr, expr, expr.children: _*)
+  }
+}
+
+object CometArrayExcept extends CometExpressionSerde with CometExprShim with IncompatExpr {
+
+  @tailrec
+  def isTypeSupported(dt: DataType): Boolean = {
+    import DataTypes._
+    dt match {
+      case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
+          _: DecimalType | DateType | TimestampType | TimestampNTZType | StringType =>
+        true
+      case BinaryType => false
+      case ArrayType(elementType, _) => isTypeSupported(elementType)
+      case _: StructType =>
+        false
+      case _ => false
+    }
+  }
+
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val arrayExceptExpr = expr.asInstanceOf[ArrayExcept]
+    val inputTypes = arrayExceptExpr.children.map(_.dataType).toSet
+    for (dt <- inputTypes) {
+      if (!isTypeSupported(dt)) {
+        withInfo(expr, s"data type not supported: $dt")
+        return None
+      }
+    }
+    val leftArrayExprProto = exprToProto(arrayExceptExpr.left, inputs, binding)
+    val rightArrayExprProto = exprToProto(arrayExceptExpr.right, inputs, binding)
+
+    val arrayExceptScalarExpr =
+      scalarExprToProto("array_except", leftArrayExprProto, rightArrayExprProto)
+    optExprWithInfo(arrayExceptScalarExpr, expr, expr.children: _*)
   }
 }
 

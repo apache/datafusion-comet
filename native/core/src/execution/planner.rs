@@ -175,6 +175,11 @@ impl PhysicalPlanner {
         }
     }
 
+    /// Return session context of this planner.
+    pub fn session_ctx(&self) -> &Arc<SessionContext> {
+        &self.session_ctx
+    }
+
     /// get DataFusion PartitionedFiles from a Spark FilePartition
     fn get_partitioned_files(
         &self,
@@ -230,7 +235,7 @@ impl PhysicalPlanner {
     }
 
     /// Create a DataFusion physical expression from Spark physical expression
-    fn create_expr(
+    pub(crate) fn create_expr(
         &self,
         spark_expr: &Expr,
         input_schema: SchemaRef,
@@ -1218,7 +1223,7 @@ impl PhysicalPlanner {
                 }?;
 
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
-                    Arc::clone(&child.native_plan),
+                    Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
                     partitioning,
                     codec,
                     writer.output_data_file.clone(),

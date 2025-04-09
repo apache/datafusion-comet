@@ -25,7 +25,7 @@ import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
 
-import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_BLOCKING_THREADS, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_POOL_TYPE, COMET_EXPLAIN_NATIVE_ENABLED, COMET_METRICS_UPDATE_INTERVAL, COMET_WORKER_THREADS}
+import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_POOL_TYPE, COMET_EXPLAIN_NATIVE_ENABLED, COMET_METRICS_UPDATE_INTERVAL}
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -64,6 +64,7 @@ class CometExecIterator(
   }.toArray
   private val plan = {
     val conf = SparkEnv.get.conf
+    val localDiskDirs = SparkEnv.get.blockManager.getLocalDiskDirs
 
     val offHeapMode = CometSparkSessionExtensions.isOffHeapEnabled(conf)
     val memoryLimit = if (offHeapMode) {
@@ -83,6 +84,7 @@ class CometExecIterator(
       nativeMetrics,
       metricsUpdateInterval = COMET_METRICS_UPDATE_INTERVAL.get(),
       new CometTaskMemoryManager(id),
+      localDiskDirs,
       batchSize = COMET_BATCH_SIZE.get(),
       offHeapMode,
       memoryPoolType = COMET_EXEC_MEMORY_POOL_TYPE.get(),
@@ -90,9 +92,7 @@ class CometExecIterator(
       memoryLimitPerTask = getMemoryLimitPerTask(conf),
       taskAttemptId = TaskContext.get().taskAttemptId,
       debug = COMET_DEBUG_ENABLED.get(),
-      explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
-      workerThreads = COMET_WORKER_THREADS.get(),
-      blockingThreads = COMET_BLOCKING_THREADS.get())
+      explain = COMET_EXPLAIN_NATIVE_ENABLED.get())
   }
 
   private var nextBatch: Option[ColumnarBatch] = None

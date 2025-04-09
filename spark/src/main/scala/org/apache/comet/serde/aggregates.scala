@@ -29,7 +29,6 @@ import org.apache.spark.sql.types.{ByteType, DecimalType, IntegerType, LongType,
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
-import org.apache.comet.shims.ShimQueryPlanSerde
 
 object CometMin extends CometAggregateExpressionSerde {
 
@@ -126,7 +125,7 @@ object CometCount extends CometAggregateExpressionSerde {
   }
 }
 
-object CometAverage extends CometAggregateExpressionSerde with ShimQueryPlanSerde {
+object CometAverage extends CometAggregateExpressionSerde {
   override def convert(
       aggExpr: AggregateExpression,
       expr: Expression,
@@ -164,7 +163,7 @@ object CometAverage extends CometAggregateExpressionSerde with ShimQueryPlanSerd
       val builder = ExprOuterClass.Avg.newBuilder()
       builder.setChild(childExpr.get)
       builder.setDatatype(dataType.get)
-      builder.setFailOnError(getFailOnError(avg))
+      builder.setFailOnError(avg.evalMode == EvalMode.ANSI)
       builder.setSumDatatype(sumDataType.get)
 
       Some(
@@ -181,7 +180,7 @@ object CometAverage extends CometAggregateExpressionSerde with ShimQueryPlanSerd
     }
   }
 }
-object CometSum extends CometAggregateExpressionSerde with ShimQueryPlanSerde {
+object CometSum extends CometAggregateExpressionSerde {
   override def convert(
       aggExpr: AggregateExpression,
       expr: Expression,
@@ -207,7 +206,7 @@ object CometSum extends CometAggregateExpressionSerde with ShimQueryPlanSerde {
       val builder = ExprOuterClass.Sum.newBuilder()
       builder.setChild(childExpr.get)
       builder.setDatatype(dataType.get)
-      builder.setFailOnError(getFailOnError(sum))
+      builder.setFailOnError(sum.evalMode == EvalMode.ANSI)
 
       Some(
         ExprOuterClass.AggExpr

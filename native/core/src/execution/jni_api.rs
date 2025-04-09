@@ -38,6 +38,7 @@ use jni::{
     sys::{jbyteArray, jint, jlong, jlongArray},
     JNIEnv,
 };
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc, task::Poll};
 
@@ -70,6 +71,29 @@ use crate::execution::spark_plan::SparkPlan;
 use log::info;
 use once_cell::sync::{Lazy, OnceCell};
 
+static TOKIO_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    if let Some(n) = parse_usize_env_var("COMET_WORKER_THREADS") {
+        builder.worker_threads(n);
+    }
+    if let Some(n) = parse_usize_env_var("COMET_MAX_BLOCKING_THREADS") {
+        builder.max_blocking_threads(n);
+    }
+    builder
+        .enable_all()
+        .build()
+        .expect("Failed to create Tokio runtime")
+});
+
+fn parse_usize_env_var(name: &str) -> Option<usize> {
+    std::env::var_os(name).and_then(|n| n.to_str().and_then(|s| s.parse::<usize>().ok()))
+}
+
+/// Function to get a handle to the global Tokio runtime
+pub fn get_runtime() -> &'static Runtime {
+    &TOKIO_RUNTIME
+}
+
 /// Comet native execution context. Kept alive across JNI calls.
 struct ExecutionContext {
     /// The id of the execution context.
@@ -88,8 +112,6 @@ struct ExecutionContext {
     pub input_sources: Vec<Arc<GlobalRef>>,
     /// The record batch stream to pull results from
     pub stream: Option<SendableRecordBatchStream>,
-    /// The Tokio runtime used for async.
-    pub runtime: Runtime,
     /// Native metrics
     pub metrics: Arc<GlobalRef>,
     // The interval in milliseconds to update metrics
@@ -167,6 +189,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     metrics_node: JObject,
     metrics_update_interval: jlong,
     comet_task_memory_manager_obj: JObject,
+    local_dirs: jobjectArray,
     batch_size: jint,
     off_heap_mode: jboolean,
     memory_pool_type: jstring,
@@ -175,8 +198,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     task_attempt_id: jlong,
     debug_native: jboolean,
     explain_native: jboolean,
-    worker_threads: jint,
-    blocking_threads: jint,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         // Init JVM classes
@@ -190,13 +211,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         // Deserialize query plan
         let spark_plan = serde::deserialize_op(bytes.as_slice())?;
 
-        // Use multi-threaded tokio runtime to prevent blocking spawned tasks if any
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(worker_threads as usize)
-            .max_blocking_threads(blocking_threads as usize)
-            .enable_all()
-            .build()?;
-
         let metrics = Arc::new(jni_new_global_ref!(env, metrics_node)?);
 
         // Get the global references of input sources
@@ -208,6 +222,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let input_source = Arc::new(jni_new_global_ref!(env, input_source)?);
             input_sources.push(input_source);
         }
+
+        // Create DataFusion memory pool
         let task_memory_manager =
             Arc::new(jni_new_global_ref!(env, comet_task_memory_manager_obj)?);
 
@@ -221,10 +237,21 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         let memory_pool =
             create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
 
+        // Get local directories for storing spill files
+        let local_dirs_array = JObjectArray::from_raw(local_dirs);
+        let num_local_dirs = env.get_array_length(&local_dirs_array)?;
+        let mut local_dirs = vec![];
+        for i in 0..num_local_dirs {
+            let local_dir: JString = env.get_object_array_element(&local_dirs_array, i)?.into();
+            let local_dir = env.get_string(&local_dir)?;
+            local_dirs.push(local_dir.into());
+        }
+
         // We need to keep the session context alive. Some session state like temporary
         // dictionaries are stored in session context. If it is dropped, the temporary
         // dictionaries will be dropped as well.
-        let session = prepare_datafusion_session_context(batch_size as usize, memory_pool)?;
+        let session =
+            prepare_datafusion_session_context(batch_size as usize, memory_pool, local_dirs)?;
 
         let plan_creation_time = start.elapsed();
 
@@ -243,7 +270,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             scans: vec![],
             input_sources,
             stream: None,
-            runtime,
             metrics,
             metrics_update_interval,
             metrics_last_update_time: Instant::now(),
@@ -262,8 +288,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 fn prepare_datafusion_session_context(
     batch_size: usize,
     memory_pool: Arc<dyn MemoryPool>,
+    local_dirs: Vec<String>,
 ) -> CometResult<SessionContext> {
-    let mut rt_config = RuntimeEnvBuilder::new().with_disk_manager(DiskManagerConfig::NewOs);
+    let disk_manager_config =
+        DiskManagerConfig::NewSpecified(local_dirs.into_iter().map(PathBuf::from).collect());
+    let mut rt_config = RuntimeEnvBuilder::new().with_disk_manager(disk_manager_config);
     rt_config = rt_config.with_memory_pool(memory_pool);
 
     // Get Datafusion configuration from Spark Execution context
@@ -541,7 +570,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         loop {
             // Polling the stream.
             let next_item = exec_context.stream.as_mut().unwrap().next();
-            let poll_output = exec_context.runtime.block_on(async { poll!(next_item) });
+            let poll_output = get_runtime().block_on(async { poll!(next_item) });
 
             // update metrics at interval
             if let Some(interval) = exec_context.metrics_update_interval {

@@ -17,18 +17,17 @@
  * under the License.
  */
 
-package org.apache.comet.shims
+package org.apache.spark.sql.comet
 
-import org.apache.spark.sql.catalyst.expressions.{BinaryArithmetic, BinaryExpression, BloomFilterMightContain}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{Average, Sum}
+import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, Literal}
 
-trait ShimQueryPlanSerde {
-  protected def getFailOnError(b: BinaryArithmetic): Boolean =
-    b.getClass.getMethod("failOnError").invoke(b).asInstanceOf[Boolean]
+object CometScanUtils {
 
-  protected def getFailOnError(aggregate: Sum): Boolean = aggregate.initQueryContext().isDefined
-  protected def getFailOnError(aggregate: Average): Boolean = aggregate.initQueryContext().isDefined
-
-  protected def isBloomFilterMightContain(binary: BinaryExpression): Boolean =
-    binary.isInstanceOf[BloomFilterMightContain]
+  /**
+   * Filters unused DynamicPruningExpression expressions - one which has been replaced with
+   * DynamicPruningExpression(Literal.TrueLiteral) during Physical Planning
+   */
+  def filterUnusedDynamicPruningExpressions(predicates: Seq[Expression]): Seq[Expression] = {
+    predicates.filterNot(_ == DynamicPruningExpression(Literal.TrueLiteral))
+  }
 }

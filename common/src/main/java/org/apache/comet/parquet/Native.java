@@ -253,8 +253,11 @@ public final class Native extends NativeBase {
       long fileSize,
       long start,
       long length,
+      byte[] filter,
       byte[] requiredSchema,
-      String sessionTimezone);
+      byte[] dataSchema,
+      String sessionTimezone,
+      int batchSize);
 
   // arrow native version of read batch
   /**
