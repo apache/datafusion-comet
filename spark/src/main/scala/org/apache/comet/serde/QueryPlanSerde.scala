@@ -1651,6 +1651,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
           binding,
           (builder, binaryExpr) => builder.setBitwiseXor(binaryExpr))
 
+      case BitwiseCount(child) =>
+        createUnaryExpr(
+          expr,
+          child,
+          inputs,
+          binding,
+          (builder, unaryExpr) => builder.setBitwiseCount(unaryExpr))
+
       case ShiftRight(left, right) =>
         // DataFusion bitwise shift right expression requires
         // same data type between left and right side
