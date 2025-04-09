@@ -19,13 +19,13 @@ name: Setup Spark Builder
 description: 'Setup Apache Spark to run SQL tests'
 inputs:
   spark-short-version:
-    description: 'The Apache Spark short version (e.g., 3.4) to build'
+    description: 'The Apache Spark short version (e.g., 3.5) to build'
     required: true
-    default: '3.4'
+    default: '3.5'
   spark-version:
-    description: 'The Apache Spark version (e.g., 3.4.3) to build'
+    description: 'The Apache Spark version (e.g., 3.5.5) to build'
     required: true
-    default: '3.4.3'
+    default: '3.5.5'
 runs:
   using: "composite"
   steps:
