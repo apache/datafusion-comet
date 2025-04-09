@@ -107,19 +107,19 @@ abstract class ParquetReadSuite extends CometTestBase {
         Seq(
           StructField("f1", DecimalType.SYSTEM_DEFAULT),
           StructField("f2", StringType))) -> usingNativeIcebergCompat,
-      MapType(keyType = LongType, valueType = DateType) -> false,
+      MapType(keyType = LongType, valueType = DateType) -> usingNativeIcebergCompat,
       StructType(
         Seq(
           StructField("f1", ByteType),
           StructField("f2", StringType))) -> usingNativeIcebergCompat,
-      MapType(keyType = IntegerType, valueType = BinaryType) -> false).foreach {
-      case (dt, expected) =>
+      MapType(keyType = IntegerType, valueType = BinaryType) -> usingNativeIcebergCompat)
+      .foreach { case (dt, expected) =>
         assert(CometScanExec.isTypeSupported(dt) == expected)
         // usingDataFusionParquetExec does not support CometBatchScanExec yet
         if (!usingDataFusionParquetExec(conf)) {
           assert(CometBatchScanExec.isTypeSupported(dt) == expected)
         }
-    }
+      }
   }
 
   test("unsupported Spark schema") {
@@ -131,7 +131,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     val cometScanExecSupported =
       if (sys.env.get("COMET_PARQUET_SCAN_IMPL").contains(SCAN_NATIVE_ICEBERG_COMPAT) && this
           .isInstanceOf[ParquetReadV1Suite])
-        Seq(true, true, false)
+        Seq(true, true, true)
       else Seq(true, false, false)
 
     val cometBatchScanExecSupported = Seq(true, false, false)
