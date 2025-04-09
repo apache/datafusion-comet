@@ -20,6 +20,7 @@
 package org.apache.comet
 
 import java.io.File
+import java.text.SimpleDateFormat
 
 import scala.util.Random
 
@@ -32,6 +33,8 @@ import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
+import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, StructType}
 
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
@@ -57,7 +60,13 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       CometConf.COMET_ENABLED.key -> "false",
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
       val options =
-        DataGenOptions(generateArray = true, generateStruct = true, generateNegativeZero = false)
+        DataGenOptions(
+          generateArray = true,
+          generateStruct = true,
+          generateNegativeZero = false,
+          // override base date due to known issues with experimental scans
+          baseDate =
+            new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("2024-05-25 12:34:56").getTime)
       ParquetGenerator.makeParquetFile(random, spark, filename, 1000, options)
     }
   }
@@ -162,6 +171,75 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val (_, cometPlan) = checkSparkAnswer(sql)
       if (CometConf.isExperimentalNativeScan) {
         assert(2 == collectNativeScans(cometPlan).length)
+      }
+    }
+  }
+
+  test("Parquet temporal types written as INT96") {
+
+    // there are known issues with INT96 support in the new experimental scans
+    // https://github.com/apache/datafusion-comet/issues/1441
+    assume(!CometConf.isExperimentalNativeScan)
+
+    testParquetTemporalTypes(ParquetOutputTimestampType.INT96)
+  }
+
+  test("Parquet temporal types written as TIMESTAMP_MICROS") {
+    testParquetTemporalTypes(ParquetOutputTimestampType.TIMESTAMP_MICROS)
+  }
+
+  test("Parquet temporal types written as TIMESTAMP_MILLIS") {
+    testParquetTemporalTypes(ParquetOutputTimestampType.TIMESTAMP_MILLIS)
+  }
+
+  private def testParquetTemporalTypes(
+      outputTimestampType: ParquetOutputTimestampType.Value): Unit = {
+
+    val options =
+      DataGenOptions(generateArray = true, generateStruct = true, generateNegativeZero = false)
+
+    withTempPath { filename =>
+      val random = new Random(42)
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "false",
+        SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> outputTimestampType.toString,
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
+        ParquetGenerator.makeParquetFile(random, spark, filename.toString, 100, options)
+      }
+
+      Seq(defaultTimezone, "UTC", "America/Denver").foreach { tz =>
+        Seq(true, false).foreach { inferTimestampNtzEnabled =>
+          Seq(true, false).foreach { int96TimestampConversion =>
+            Seq(true, false).foreach { int96AsTimestamp =>
+              withSQLConf(
+                CometConf.COMET_ENABLED.key -> "true",
+                SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
+                SQLConf.PARQUET_INT96_AS_TIMESTAMP.key -> int96AsTimestamp.toString,
+                SQLConf.PARQUET_INT96_TIMESTAMP_CONVERSION.key -> int96TimestampConversion.toString,
+                SQLConf.PARQUET_INFER_TIMESTAMP_NTZ_ENABLED.key -> inferTimestampNtzEnabled.toString) {
+
+                val df = spark.read.parquet(filename.toString)
+                df.createOrReplaceTempView("t1")
+
+                def hasTemporalType(t: DataType): Boolean = t match {
+                  case DataTypes.DateType | DataTypes.TimestampType |
+                      DataTypes.TimestampNTZType =>
+                    true
+                  case t: StructType => t.exists(f => hasTemporalType(f.dataType))
+                  case t: ArrayType => hasTemporalType(t.elementType)
+                  case _ => false
+                }
+
+                val columns =
+                  df.schema.fields.filter(f => hasTemporalType(f.dataType)).map(_.name)
+
+                for (col <- columns) {
+                  checkSparkAnswer(s"SELECT $col FROM t1 ORDER BY $col")
+                }
+              }
+            }
+          }
+        }
       }
     }
   }
