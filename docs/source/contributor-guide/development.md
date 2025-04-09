@@ -97,7 +97,7 @@ The plan stability testing framework is located in the `spark` module and can be
 First, Comet needs to be installed for each Spark version to be tested:
 
 ```sh
-./mvnw install -DskipTests -Pspark-3.4
+./mvnw install -DskipTests -Pspark-3.5
 ./mvnw install -DskipTests -Pspark-3.5 
 # note that Spark 4.0 requires JDK 17 or later
 ./mvnw install -DskipTests -Pspark-4.0
