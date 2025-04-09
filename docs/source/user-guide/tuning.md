@@ -21,6 +21,15 @@ under the License.
 
 Comet provides some tuning options to help you get the best performance from your queries.
 
+## Configuring Tokio Runtime
+
+Comet uses a global tokio runtime per executor process using tokio's defaults of one worker thread per core and a 
+maximum of 512 blocking threads. These values can be overridden using the environment variables `COMET_WORKER_THREADS`
+and `COMET_MAX_BLOCKING_THREADS`.
+
+DataFusion currently has a known issue when merging spill files in sort operators where the process can deadlock if 
+there are more spill files than `COMET_MAX_BLOCKING_THREADS` ([tracking issue](https://github.com/apache/datafusion/issues/15323)).
+
 ## Memory Tuning
 
 It is necessary to specify how much memory Comet can use in addition to memory already allocated to Spark. In some

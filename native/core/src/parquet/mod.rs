@@ -44,6 +44,7 @@ use jni::{
 };
 
 use self::util::jni::TypePromotionInfo;
+use crate::execution::jni_api::get_runtime;
 use crate::execution::operators::ExecutionError;
 use crate::execution::planner::PhysicalPlanner;
 use crate::execution::serde;
@@ -606,7 +607,6 @@ enum ParquetReaderState {
 }
 /// Parquet read context maintained across multiple JNI calls.
 struct BatchContext {
-    runtime: tokio::runtime::Runtime,
     batch_stream: Option<SendableRecordBatchStream>,
     current_batch: Option<RecordBatch>,
     reader_state: ParquetReaderState,
@@ -652,8 +652,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     data_schema: jbyteArray,
     session_timezone: jstring,
     batch_size: jint,
-    worker_threads: jint,
-    blocking_threads: jint,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| unsafe {
         let session_config = SessionConfig::new().with_batch_size(batch_size as usize);
@@ -665,12 +663,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             .get_string(&JString::from_raw(file_path))
             .unwrap()
             .into();
-
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(worker_threads as usize)
-            .max_blocking_threads(blocking_threads as usize)
-            .enable_all()
-            .build()?;
 
         let (object_store_url, object_store_path) =
             prepare_object_store(session_ctx.runtime_env(), path.clone())?;
@@ -718,7 +710,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         let batch_stream = Some(scan.execute(partition_index, session_ctx.task_ctx())?);
 
         let ctx = BatchContext {
-            runtime,
             batch_stream,
             current_batch: None,
             reader_state: ParquetReaderState::Init,
@@ -738,7 +729,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_readNextRecordBatch(
         let context = get_batch_context(handle)?;
         let mut rows_read: i32 = 0;
         let batch_stream = context.batch_stream.as_mut().unwrap();
-        let runtime = &context.runtime;
+        let runtime = get_runtime();
 
         loop {
             let next_item = batch_stream.next();
