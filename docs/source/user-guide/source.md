@@ -38,7 +38,7 @@ cd apache-datafusion-comet-$COMET_VERSION
 Build
 
 ```console
-make release-nogit PROFILES="-Pspark-3.4"
+make release-nogit PROFILES="-Pspark-3.5"
 ```
 
 ## Building from the GitHub repository
@@ -53,17 +53,17 @@ Build Comet for a specific Spark version:
 
 ```console
 cd datafusion-comet
-make release PROFILES="-Pspark-3.4"
+make release PROFILES="-Pspark-3.5"
 ```
 
 Note that the project builds for Scala 2.12 by default but can be built for Scala 2.13 using an additional profile:
 
 ```console
-make release PROFILES="-Pspark-3.4 -Pscala-2.13"
+make release PROFILES="-Pspark-3.5 -Pscala-2.13"
 ```
 
 To build Comet from the source distribution on an isolated environment without an access to `github.com` it is necessary to disable `git-commit-id-maven-plugin`, otherwise you will face errors that there is no access to the git during the build process. In that case you may use:
 
 ```console
-make release-nogit PROFILES="-Pspark-3.4"
+make release-nogit PROFILES="-Pspark-3.5"
 ```
