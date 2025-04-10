@@ -133,7 +133,7 @@ class CometSparkSessionExtensions
 
       if (COMET_DPP_FALLBACK_ENABLED.get() &&
         scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
-        return withInfo(scanExec, "DPP not supported")
+        return withInfo(scanExec, "Dynamic Partition Pruning is not supported")
       }
 
       scanExec.relation match {
