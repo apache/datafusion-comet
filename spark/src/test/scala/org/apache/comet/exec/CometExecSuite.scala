@@ -115,7 +115,7 @@ class CometExecSuite extends CometTestBase {
               "select * from dpp_fact join dpp_dim on fact_date = dim_date where dim_id > 7")
           val (_, cometPlan) = checkSparkAnswer(df)
           val infos = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
-          assert(infos.contains("DPP not supported"))
+          assert(infos.contains("Dynamic Partition Pruning is not supported"))
         }
       }
     }
