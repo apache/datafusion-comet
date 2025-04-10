@@ -464,8 +464,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setIndices(
         let mut skipped = 0;
         let mut filled = 0;
         for i in (0..len).step_by(2) {
-            let index = pairs[i] as i64;
-            let count = pairs[i + 1] as i64;
+            let index = pairs[i];
+            let count = pairs[i + 1];
             let skip = std::cmp::min(count, offset - skipped);
             skipped += skip;
             if count == skip {
