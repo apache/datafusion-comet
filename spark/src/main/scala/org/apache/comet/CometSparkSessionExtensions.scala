@@ -231,7 +231,7 @@ class CometSparkSessionExtensions
         }
 
       case _ =>
-        withInfo(scanExec, "Comet Scan only supports Parquet and Iceberg")
+        withInfo(scanExec, "Comet Scan only supports Parquet and Iceberg Parquet file formats")
     }
   }
 
