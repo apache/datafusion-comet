@@ -134,4 +134,105 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         |""".stripMargin,
       "select c0 from tbl")
   }
+
+  test("native reader - read simple MAP fields") {
+    testSingleLineQuery(
+      """
+        |select map('a', 1) as c0 union all
+        |select map('b', 2)
+        |""".stripMargin,
+      "select c0 from tbl")
+  }
+
+  test("native reader - read MAP of value ARRAY fields") {
+    testSingleLineQuery(
+      """
+        |select map('a', array(1), 'c', array(3)) as c0 union all
+        |select map('b', array(2))
+        |""".stripMargin,
+      "select c0 from tbl")
+  }
+
+  test("native reader - read MAP of value STRUCT fields") {
+    testSingleLineQuery(
+      """
+        |select map('a', named_struct('f0', 0, 'f1', 'foo'), 'b', named_struct('f0', 1, 'f1', 'bar')) as c0 union all
+        |select map('c', named_struct('f2', 0, 'f1', 'baz')) as c0
+        |""".stripMargin,
+      "select c0 from tbl")
+  }
+
+  test("native reader - read MAP of value MAP fields") {
+    testSingleLineQuery(
+      """
+        |select map('a', map('a1', 1, 'b1', 2), 'b', map('a2', 2, 'b2', 3)) as c0 union all
+        |select map('c', map('a3', 3, 'b3', 4))
+        |""".stripMargin,
+      "select c0 from tbl")
+  }
+
+  /*
+    org.apache.spark.SparkException: Job aborted due to stage failure: Task 1 in stage 171.0 failed 1 times, most recent failure:
+    Lost task 1.0 in stage 171.0 (TID 179) (knode0099.cngya03.pie.silu.net executor driver): org.apache.comet.CometNativeException: called `Result::unwrap()`
+    on an `Err` value: InvalidArgumentError("Incorrect datatype for StructArray field \"m0\", expected Map(Field { name: \"entries\",
+    data_type: Struct([Field { name: \"key\", data_type: Utf8, nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} },
+    Field { name: \"value\", data_type: Int32, nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} }]),
+    nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} }, false) got Map(Field { name: \"entries\", d
+    ata_type: Struct([Field { name: \"key\", data_type: Utf8, nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} },
+    Field { name: \"value\", data_type: Int32, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }]), nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} }, false)")
+
+   */
+  ignore("native reader - read STRUCT of MAP fields") {
+    testSingleLineQuery(
+      """
+        |select named_struct('m0', map('a', 1)) as c0 union all
+        |select named_struct('m1', map('b', 2))
+        |""".stripMargin,
+      "select c0 from tbl")
+  }
+
+  test("native reader - read ARRAY of MAP fields") {
+    testSingleLineQuery(
+      """
+        |select array(map('a', 1), map('b', 2)) as c0 union all
+        |select array(map('c', 3))
+        |""".stripMargin,
+      "select c0 from tbl")
+  }
+
+  test("native reader - read ARRAY of MAP of ARRAY value fields") {
+    testSingleLineQuery(
+      """
+        |select array(map('a', array(1, 2, 3), 'b', array(2, 3, 4)), map('c', array(4, 5, 6), 'd', array(7, 8, 9))) as c0 union all
+        |select array(map('x', array(1, 2, 3), 'y', array(2, 3, 4)), map('c', array(4, 5, 6), 'z', array(7, 8, 9)))
+        |""".stripMargin,
+      "select c0 from tbl")
+  }
+
+  test("native reader - read STRUCT of MAP of STRUCT value fields") {
+    testSingleLineQuery(
+      """
+        |select named_struct('m0', map('a', named_struct('f0', 1)), 'm1', map('b', named_struct('f1', 1))) as c0 union all
+        |select named_struct('m0', map('c', named_struct('f2', 1)), 'm1', map('d', named_struct('f3', 1))) as c0
+        |""".stripMargin,
+      "select c0 from tbl")
+  }
+
+  test("native reader - read MAP of ARRAY of MAP fields") {
+    testSingleLineQuery(
+      """
+        |select map('a', array(map(1, 'a', 2, 'b'), map(1, 'a', 2, 'b'))) as c0 union all
+        |select map('b', array(map(1, 'a', 2, 'b'), map(1, 'a', 2, 'b'))) as c0
+        |""".stripMargin,
+      "select c0 from tbl")
+  }
+
+  test("native reader - read MAP of STRUCT of MAP fields") {
+    testSingleLineQuery(
+      """
+        |select map('a', named_struct('f0', map(1, 'b')), 'b', named_struct('f0', map(1, 'b'))) as c0 union all
+        |select map('c', named_struct('f0', map(1, 'b'))) as c0
+        |""".stripMargin,
+      "select c0 from tbl")
+  }
 }

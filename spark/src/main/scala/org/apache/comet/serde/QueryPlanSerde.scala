@@ -70,6 +70,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
       s.fields.map(_.dataType).forall(supportedDataType(_, allowComplex))
     case a: ArrayType if allowComplex =>
       supportedDataType(a.elementType, allowComplex)
+    case m: MapType if allowComplex =>
+      supportedDataType(m.keyType, allowComplex) && supportedDataType(m.valueType, allowComplex)
     case dt =>
       emitWarning(s"unsupported Spark data type: $dt")
       false
@@ -2459,6 +2461,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
 
         val groupingExprs = groupingExpressions.map(exprToProto(_, child.output))
+        if (groupingExprs.exists(_.isEmpty)) {
+          withInfo(op, "Not all grouping expressions are supported")
+          return None
+        }
 
         // In some of the cases, the aggregateExpressions could be empty.
         // For example, if the aggregate functions only have group by or if the aggregate

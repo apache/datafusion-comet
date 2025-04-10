@@ -84,8 +84,8 @@ See the [Comet Kubernetes Guide](kubernetes.md) guide.
 
 Make sure `SPARK_HOME` points to the same Spark version as Comet was built for.
 
-```console
-export COMET_JAR=spark/target/comet-spark-spark3.4_2.12-0.8.0-SNAPSHOT.jar
+```shell
+export COMET_JAR=spark/target/comet-spark-spark3.5_2.12-0.8.0-SNAPSHOT.jar
 
 $SPARK_HOME/bin/spark-shell \
     --jars $COMET_JAR \
@@ -95,7 +95,7 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.comet.explainFallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
-    --conf spark.memory.offHeap.size=16g \
+    --conf spark.memory.offHeap.size=16g
 ```
 
 ### Verify Comet enabled for Spark SQL query
@@ -141,7 +141,7 @@ explicitly contain Comet otherwise Spark may use a different class-loader for th
 components which will then fail at runtime. For example:
 
 ```
---driver-class-path spark/target/comet-spark-spark3.4_2.12-0.8.0-SNAPSHOT.jar
+--driver-class-path spark/target/comet-spark-spark3.5_2.12-0.8.0-SNAPSHOT.jar
 ```
 
 Some cluster managers may require additional configuration, see <https://spark.apache.org/docs/latest/cluster-overview.html>
