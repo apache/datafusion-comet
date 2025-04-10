@@ -15,7 +15,7 @@
 # limitations under the License.
 #
 
-FROM apache/spark:3.4.3 AS builder
+FROM apache/spark:3.5.5 AS builder
 
 USER root
 
@@ -28,7 +28,7 @@ RUN apt update \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 ENV RUSTFLAGS="-C debuginfo=line-tables-only -C incremental=false"
-ENV SPARK_VERSION=3.4
+ENV SPARK_VERSION=3.5
 ENV SCALA_VERSION=2.12
 
 # copy source files to Docker image
@@ -61,8 +61,8 @@ RUN mkdir -p /root/.m2 && \
 RUN cd /comet \
     && JAVA_HOME=$(readlink -f $(which javac) | sed "s/\/bin\/javac//") make release-nogit PROFILES="-Pspark-$SPARK_VERSION -Pscala-$SCALA_VERSION"
 
-FROM apache/spark:3.4.3
-ENV SPARK_VERSION=3.4
+FROM apache/spark:3.5.5
+ENV SPARK_VERSION=3.5
 ENV SCALA_VERSION=2.12
 USER root
 
