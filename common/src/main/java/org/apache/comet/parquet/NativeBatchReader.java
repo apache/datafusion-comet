@@ -368,7 +368,6 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
             serializedDataArrowSchema,
             timeZoneId,
             batchSize);
-
     isInitialized = true;
   }
 
