@@ -296,7 +296,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
           FileReader.filterRowGroups(readOptions, footer.getBlocks(), fileReader);
       totalRowCount = fileReader.getFilteredRecordCount();
       if (totalRowCount == 0) {
-        // all the data us filtered out.
+        // all the data is filtered out.
         isInitialized = true;
         return;
       }
