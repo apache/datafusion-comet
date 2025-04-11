@@ -850,6 +850,234 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("nested struct with new child field") {
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+
+      val df1 = sql("SELECT 1 c1, named_struct('c3', 2, 'c4', named_struct('c5', 3, 'c6', 4)) c2")
+      val df2 = sql(
+        "SELECT 1 c1, named_struct('c3', 2, 'c4', named_struct('c5', 3, 'c6', 4, 'c7', 5)) c2")
+      val dir1 = s"$path${File.separator}part=one"
+      val dir2 = s"$path${File.separator}part=two"
+
+      df1.write.parquet(dir1)
+      df2.write.parquet(dir2)
+
+      var df = spark.read
+        .schema(df2.schema)
+        .load(path)
+        .select($"c1", $"c2.c3")
+
+      // read a leaf field
+      val expected1 =
+        Seq(Row(1, 2), Row(1, 2))
+      checkAnswer(df, expected1)
+
+      // read a struct field
+      df = spark.read
+        .schema(df2.schema)
+        .load(path)
+        .select($"c1", $"c2")
+      val expected2 =
+        Seq(Row(1, Row(2, Row(3, 4, null))), Row(1, Row(2, Row(3, 4, 5))))
+      checkAnswer(df, expected2)
+
+      // read a missing field
+      df = spark.read
+        .schema(df2.schema)
+        .load(path)
+        .select($"c1", $"c2.c4.c7")
+      val expected3 =
+        Seq(Row(1, null), Row(1, 5))
+      checkAnswer(df, expected3)
+    }
+  }
+
+  test("reading required fields in structs") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      def makeRawParquetFile(path: Path): Unit = {
+        val schemaStr =
+          """message schema {
+            |  optional int32 a;
+            |  required group b {
+            |    optional int32 b1;
+            |    required int32 b2;
+            |  }
+            |  optional group c {
+            |    required int32 c1;
+            |    optional int32 c2;
+            |  }
+            |}
+        """.stripMargin
+        val schema = MessageTypeParser.parseMessageType(schemaStr)
+
+        val writer = createParquetWriter(schema, path, dictionaryEnabled)
+
+        // All optional fields are specified
+        var record = new SimpleGroup(schema)
+        record.add("a", 1)
+        var b = record.addGroup("b")
+        b.add("b1", 1)
+        b.add("b2", 1)
+        var c = record.addGroup("c")
+        c.add("c1", 1)
+        c.add("c2", 1)
+        writer.write(record)
+
+        // No optional values
+        record = new SimpleGroup(schema)
+        record.add("a", 2)
+        b = record.addGroup("b")
+        b.add("b1", 2)
+        b.add("b2", 2)
+        writer.write(record)
+
+        writer.close()
+      }
+
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+        makeRawParquetFile(path)
+
+        withParquetTable(spark.read.format("parquet").load(path.toString), "complex_types") {
+          // required struct field with optional field
+          var df = sql("select a, b from complex_types")
+          checkSparkAnswer(df)
+
+          // Missing optional struct field
+          df = sql("select a, c from complex_types")
+          checkSparkAnswer(df)
+
+          // Missing optional struct field with nested required field
+          // TODO: This produces incorrect results in both native_datafusion and native_iceberg_compat
+          //          df = sql("select a, c.c1 from complex_types")
+          //          checkSparkAnswer(df)
+
+          // required nested field in a struct
+          df = sql("select a, b.b2 from complex_types")
+          checkSparkAnswer(df)
+
+        }
+      }
+    }
+  }
+
+  // TODO: This test fails for both native_datafusion and native_iceberg_compat
+  ignore(" Missing optional struct field with nested required field") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      def makeRawParquetFile(path: Path): Unit = {
+        val schemaStr =
+          """message schema {
+            |  optional int32 a;
+            |  required group b {
+            |    optional int32 b1;
+            |    required int32 b2;
+            |  }
+            |  optional group c {
+            |    required int32 c1;
+            |    optional int32 c2;
+            |  }
+            |}
+        """.stripMargin
+        val schema = MessageTypeParser.parseMessageType(schemaStr)
+
+        val writer = createParquetWriter(schema, path, dictionaryEnabled)
+
+        // All optional fields are specified
+        var record = new SimpleGroup(schema)
+        record.add("a", 1)
+        var b = record.addGroup("b")
+        b.add("b1", 1)
+        b.add("b2", 1)
+        var c = record.addGroup("c")
+        c.add("c1", 1)
+        c.add("c2", 1)
+        writer.write(record)
+
+        // No optional values
+        record = new SimpleGroup(schema)
+        record.add("a", 2)
+        b = record.addGroup("b")
+        b.add("b1", 2)
+        b.add("b2", 2)
+        writer.write(record)
+
+        writer.close()
+      }
+
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+        makeRawParquetFile(path)
+
+        withParquetTable(spark.read.format("parquet").load(path.toString), "complex_types") {
+          // Missing optional struct field with nested required field
+          // TODO: This produces incorrect results in both native_datafusion and native_iceberg_compat
+          val df = sql("select a, c.c1 from complex_types")
+          checkSparkAnswer(df)
+
+        }
+      }
+    }
+  }
+
+  test("missing required fields in structs") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      def makeRawParquetFile(path: Path): Unit = {
+        val schemaStr =
+          """message schema {
+            |  optional int32 a;
+            |  required group b {
+            |    optional int32 b1;
+            |    required int32 b2;
+            |  }
+            |  optional group c {
+            |    required int32 c1;
+            |    optional int32 c2;
+            |  }
+            |}
+        """.stripMargin
+        val schema = MessageTypeParser.parseMessageType(schemaStr)
+        val writer = createParquetWriter(schema, path, dictionaryEnabled)
+        // Missing required field b.b2
+        val record = new SimpleGroup(schema)
+        record.add("a", 3)
+        val b = record.addGroup("b")
+        b.add("b1", 4)
+        writer.write(record)
+
+        writer.close()
+      }
+
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+        makeRawParquetFile(path)
+
+        withParquetTable(
+          spark.read.format("parquet").load(path.toString),
+          "complex_types_missing_struct") {
+          // missing required nested field in a struct
+          var failed = false
+          try {
+            val df = sql("select a, b.b2 from complex_types_missing_struct")
+            checkSparkAnswer(df)
+          } catch {
+            case _: Exception => failed = true
+          }
+          assert(failed)
+          // missing required struct field
+          failed = false
+          try {
+            val df = sql("select a, b from complex_types_missing_struct")
+            checkSparkAnswer(df)
+          } catch {
+            case _: Exception => failed = true
+          }
+          assert(failed)
+        }
+      }
+    }
+  }
+
   test("unsigned int supported") {
     Seq(true, false).foreach { dictionaryEnabled =>
       def makeRawParquetFile(path: Path): Unit = {

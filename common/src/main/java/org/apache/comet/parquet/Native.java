@@ -244,15 +244,15 @@ public final class Native extends NativeBase {
    * Initialize a record batch reader for a PartitionedFile
    *
    * @param filePath
-   * @param start
-   * @param length
+   * @param starts
+   * @param lengths
    * @return a handle to the record batch reader, used in subsequent calls.
    */
   public static native long initRecordBatchReader(
       String filePath,
       long fileSize,
-      long start,
-      long length,
+      long[] starts,
+      long[] lengths,
       byte[] filter,
       byte[] requiredSchema,
       byte[] dataSchema,

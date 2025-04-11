@@ -80,6 +80,7 @@ import org.apache.parquet.internal.filter2.columnindex.RowRanges;
 import org.apache.parquet.io.InputFile;
 import org.apache.parquet.io.ParquetDecodingException;
 import org.apache.parquet.io.SeekableInputStream;
+import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType;
 import org.apache.spark.sql.execution.metric.SQLMetric;
 
@@ -578,6 +579,10 @@ public class FileReader implements Closeable {
   }
 
   public long[] getRowIndices() {
+    return getRowIndices(blocks);
+  }
+
+  public static long[] getRowIndices(List<BlockMetaData> blocks) {
     long[] rowIndices = new long[blocks.size() * 2];
     for (int i = 0, n = blocks.size(); i < n; i++) {
       BlockMetaData block = blocks.get(i);
@@ -591,7 +596,7 @@ public class FileReader implements Closeable {
   //
   // The reason reflection is used here is that some Spark versions still depend on a
   // Parquet version where the method `getRowIndexOffset` is not public.
-  private long getRowIndexOffset(BlockMetaData metaData) {
+  public static long getRowIndexOffset(BlockMetaData metaData) {
     try {
       Method method = BlockMetaData.class.getMethod("getRowIndexOffset");
       method.setAccessible(true);
@@ -699,6 +704,11 @@ public class FileReader implements Closeable {
   }
 
   private List<BlockMetaData> filterRowGroups(List<BlockMetaData> blocks) {
+    return filterRowGroups(options, blocks, this);
+  }
+
+  public static List<BlockMetaData> filterRowGroups(
+      ParquetReadOptions options, List<BlockMetaData> blocks, FileReader fileReader) {
     FilterCompat.Filter recordFilter = options.getRecordFilter();
     if (FilterCompat.isFilteringRequired(recordFilter)) {
       // set up data filters based on configured levels
@@ -715,7 +725,31 @@ public class FileReader implements Closeable {
       if (options.useBloomFilter()) {
         levels.add(BLOOMFILTER);
       }
-      return RowGroupFilter.filterRowGroups(levels, recordFilter, blocks, this);
+      return RowGroupFilter.filterRowGroups(levels, recordFilter, blocks, fileReader);
+    }
+
+    return blocks;
+  }
+
+  public static List<BlockMetaData> filterRowGroups(
+      ParquetReadOptions options, List<BlockMetaData> blocks, MessageType schema) {
+    FilterCompat.Filter recordFilter = options.getRecordFilter();
+    if (FilterCompat.isFilteringRequired(recordFilter)) {
+      // set up data filters based on configured levels
+      List<RowGroupFilter.FilterLevel> levels = new ArrayList<>();
+
+      if (options.useStatsFilter()) {
+        levels.add(STATISTICS);
+      }
+
+      if (options.useDictionaryFilter()) {
+        levels.add(DICTIONARY);
+      }
+
+      if (options.useBloomFilter()) {
+        levels.add(BLOOMFILTER);
+      }
+      return RowGroupFilter.filterRowGroups(levels, recordFilter, blocks, schema);
     }
 
     return blocks;
