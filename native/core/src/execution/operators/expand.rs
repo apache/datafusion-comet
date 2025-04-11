@@ -85,6 +85,7 @@ impl DisplayAs for ExpandExec {
 
                 Ok(())
             }
+            DisplayFormatType::TreeRender => unimplemented!(),
         }
     }
 }

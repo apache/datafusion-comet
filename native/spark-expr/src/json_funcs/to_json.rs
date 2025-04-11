@@ -83,6 +83,10 @@ impl PhysicalExpr for ToJson {
         self
     }
 
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
+    }
+
     fn data_type(&self, _: &Schema) -> Result<DataType> {
         Ok(DataType::Utf8)
     }

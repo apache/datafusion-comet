@@ -1731,6 +1731,10 @@ impl PhysicalExpr for Cast {
         self
     }
 
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
+    }
+
     fn data_type(&self, _: &Schema) -> DataFusionResult<DataType> {
         Ok(self.data_type.clone())
     }
