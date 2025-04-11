@@ -59,11 +59,11 @@ pub(crate) fn init_datasource_exec(
     file_groups: Vec<Vec<PartitionedFile>>,
     projection_vector: Option<Vec<usize>>,
     data_filters: Option<Vec<Arc<dyn PhysicalExpr>>>,
-    pushdown_filters: bool,
     session_timezone: &str,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
+    let has_data_filters = data_filters.is_some();
     let (table_parquet_options, spark_parquet_options) =
-        get_options(session_timezone, pushdown_filters);
+        get_options(session_timezone, has_data_filters);
     let mut parquet_source = ParquetSource::new(table_parquet_options).with_schema_adapter_factory(
         Arc::new(SparkSchemaAdapterFactory::new(spark_parquet_options)),
     );

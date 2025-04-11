@@ -652,7 +652,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     data_schema: jbyteArray,
     session_timezone: jstring,
     batch_size: jint,
-    pushdown_filters: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| unsafe {
         let session_config = SessionConfig::new().with_batch_size(batch_size as usize);
@@ -704,7 +703,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             file_groups,
             None,
             data_filters,
-            pushdown_filters != 0,
             session_timezone.as_str(),
         )?;
 

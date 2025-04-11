@@ -145,7 +145,6 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
             useFieldId,
             ignoreMissingIds,
             datetimeRebaseSpec.mode == CORRECTED,
-            parquetFilterPushDown,
             partitionSchema,
             file.partitionValues,
             JavaConverters.mapAsJavaMap(metrics))
