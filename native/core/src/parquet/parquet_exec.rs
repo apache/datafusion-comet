@@ -63,7 +63,7 @@ pub(crate) fn init_datasource_exec(
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
     let has_data_filters = match &data_filters {
         Some(filters) => !filters.is_empty(),
-        None => false
+        None => false,
     };
     let (table_parquet_options, spark_parquet_options) =
         get_options(session_timezone, has_data_filters);
