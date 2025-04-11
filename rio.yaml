@@ -20,8 +20,12 @@ machine:
     MAVEN_OPTS: "-Xms12g -Xmx12g -Xss128M -XX:MaxMetaspaceSize=4g"
 
 builds:
-  - group: test-comet-rust
-    branchName: main-apple
+  - &test-comet-rust
+    group: test-comet-rust
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: platform
     machine: &rio3-machine
       baseImage: docker.apple.com/pie/comet-builder-ubi8-jdk11:latest
@@ -43,7 +47,7 @@ builds:
         no_proxy: "localhost,127.0.0.1,10.100.0.0/16,*.internal,*.apple.com,internal,apple.com"
         # Proxy settings converted into Java system properties
         PROXY_OPTS: "-Dhttp.proxyHost=proxy.config.pcp.local -Dhttp.proxyPort=3128 -Dhttps.proxyHost=proxy.config.pcp.local -Dhttps.proxyPort=3128 -Dhttp.nonProxyHosts=\"localhost|127.0.0.1|10.100.0.0/16|*.internal|*.apple.com|internal|apple.com\""
-    build:
+    build: &test-comet-rust-build
       template: freestyle:v4:prb
       steps:
         # Verify that debuginfo is being stripped
@@ -76,9 +80,17 @@ builds:
         paths:
           - "**/target/**/*-output.txt"
 
+  - <<: *test-comet-rust
+    build:
+      <<: *test-comet-rust-build
+      template: freestyle:v4:build
+
   - &comet-java
     group: test-comet-java
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.2_2.12
     disabled: true
     machine:
@@ -126,6 +138,18 @@ builds:
       template: freestyle:v4:prb
 
   - <<: *comet-java
+    version: 3.4_2.12
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.12"
+    build:
+      <<: *test_comet_java_build
+      template: freestyle:v4:build
+
+  - <<: *comet-java
     version: 3.4_2.13
     disabled: false
     machine:
@@ -137,9 +161,24 @@ builds:
       <<: *test_comet_java_build
       template: freestyle:v4:prb
 
+  - <<: *comet-java
+    version: 3.4_2.13
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.13"
+    build:
+      <<: *test_comet_java_build
+      template: freestyle:v4:build
+
   - &comet-tpcds
     group: test-comet-tpcds-queries
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.4_2.13
     disabled: false
     machine:
@@ -162,9 +201,17 @@ builds:
         - cd spark && MAVEN_OPTS='-Xmx20g --add-exports java.base/sun.nio.ch=ALL-UNNAMED' ../mvnw ${PROFILES} exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCDSData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--dsdgenDir `pwd`/../tpcds-kit/tools --location `pwd`/tpcds --scaleFactor 1  --numPartitions 1"
         - cd .. && SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/spark/tpcds MAVEN_OPTS='--add-exports java.base/sun.nio.ch=ALL-UNNAMED' ./mvnw ${PROFILES} -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
 
+  - <<: *comet-tpcds
+    build:
+      <<: *comet-tpcds-build
+      template: freestyle:v4:build
+
   - &comet-tpch
     group: test-comet-tpch-queries
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.4_2.13
     disabled: false
     machine:
@@ -181,9 +228,17 @@ builds:
         - cd spark && MAVEN_OPTS='-Xmx20g --add-exports java.base/sun.nio.ch=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED --add-opens java.base/java.lang.invoke=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED' ../mvnw ${PROFILES} exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCHData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--location `pwd` --scaleFactor 1 --numPartitions 1 --overwrite"
         - cd .. && SPARK_HOME=`pwd` SPARK_TPCH_DATA=`pwd`/spark/tpch/sf1_parquet MAVEN_OPTS='--add-exports java.base/sun.nio.ch=ALL-UNNAMED' ./mvnw ${PROFILES} -Dsuites=org.apache.spark.sql.CometTPCHQuerySuite test
 
+  - <<: *comet-tpch
+    build:
+      <<: *comet-tpch-build
+      template: freestyle:v4:build
+
   - &comet-spark-32
     group: test-spark-sql-catalyst
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.2_2.12
     disabled: true
     timeout: 180
@@ -231,9 +286,12 @@ builds:
 
   - &comet-spark
     group: test-spark-sql-catalyst
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.3_2.12
     disabled: true
-    branchName: main-apple
     timeout: 180
     machine:
       <<: *rio3-machine
@@ -291,6 +349,23 @@ builds:
 
   - <<: *comet-spark
     group: test-spark-sql-catalyst
+    version: 3.4_2.12
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4"
+        TEST1: catalyst/test
+        TEST2: ""
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:build
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-spark
+    group: test-spark-sql-catalyst-2
     version: 3.4_2.13
     disabled: false
     machine:
@@ -306,6 +381,23 @@ builds:
     finally:
       <<: *slack-no-notification
 
+  - <<: *comet-spark
+    group: test-spark-sql-catalyst
+    version: 3.4_2.13
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.13"
+        TEST1: catalyst/test
+        TEST2: ""
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:build
+    finally:
+      <<: *slack-no-notification
+
   - <<: *comet-spark-32
     group: test-spark-sql-core-1
     machine:
@@ -362,6 +454,25 @@ builds:
 
   - <<: *comet-spark
     group: test-spark-sql-core-1
+    version: 3.4_2.12
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      # NOTE: Requires ubi8 due to leveldbjni and graviton
+      baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4"
+        TEST1: sql/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedSQLTest,org.apache.spark.tags.SlowSQLTest
+        TEST2: ""
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:build
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-spark
+    group: test-spark-sql-core-1
     version: 3.4_2.13
     disabled: false
     machine:
@@ -378,6 +489,25 @@ builds:
     finally:
       <<: *slack-no-notification
 
+  - <<: *comet-spark
+    group: test-spark-sql-core-1
+    version: 3.4_2.13
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      # NOTE: Requires ubi8 due to leveldbjni and graviton
+      baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.13"
+        TEST1: sql/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedSQLTest,org.apache.spark.tags.SlowSQLTest
+        TEST2: ""
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:build
+    finally:
+      <<: *slack-no-notification
+
   - <<: *comet-spark-32
     group: test-spark-sql-core-2
     machine:
@@ -431,6 +561,23 @@ builds:
 
   - <<: *comet-spark
     group: test-spark-sql-core-2
+    version: 3.4_2.12
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4"
+        TEST1: ''
+        TEST2: sql/testOnly *.SQLQueryTestSuite *.ExpressionsSchemaSuite *.ParquetV1FilterSuite *.ParquetV2FilterSuite *.ParquetV1SchemaPruningSuite *.ParquetV2SchemaPruningSuite org.apache.spark.sql.TPCDSQuery*
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:build
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-spark
+    group: test-spark-sql-core-2
     version: 3.4_2.13
     disabled: false
     machine:
@@ -443,6 +590,23 @@ builds:
     build:
       <<: *comet-spark-build
       template: freestyle:v4:prb
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-spark
+    group: test-spark-sql-core-2
+    version: 3.4_2.13
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.13"
+        TEST1: ''
+        TEST2: sql/testOnly *.SQLQueryTestSuite *.ExpressionsSchemaSuite *.ParquetV1FilterSuite *.ParquetV2FilterSuite *.ParquetV1SchemaPruningSuite *.ParquetV2SchemaPruningSuite org.apache.spark.sql.TPCDSQuery*
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:build
     finally:
       <<: *slack-no-notification
 
@@ -465,6 +629,23 @@ builds:
 
   - <<: *comet-spark
     group: test-spark-sql-core-3
+    version: 3.4_2.12
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4"
+        TEST1: ''
+        TEST2: sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:build
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-spark
+    group: test-spark-sql-core-3
     version: 3.4_2.13
     disabled: false
     machine:
@@ -480,6 +661,23 @@ builds:
     finally:
       <<: *slack-no-notification
 
+  - <<: *comet-spark
+    group: test-spark-sql-core-3
+    version: 3.4_2.13
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.13"
+        TEST1: ''
+        TEST2: sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:build
+    finally:
+      <<: *slack-no-notification
+
   - <<: *comet-spark-32
     group: test-spark-sql-hive-1
     machine:
@@ -533,6 +731,23 @@ builds:
 
   - <<: *comet-spark
     group: test-spark-sql-hive-1
+    version: 3.4_2.12
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4"
+        TEST1: hive/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest
+        TEST2: ""
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:build
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-spark
+    group: test-spark-sql-hive-1
     version: 3.4_2.13
     disabled: false
     machine:
@@ -545,6 +760,23 @@ builds:
     build:
       <<: *comet-spark-build
       template: freestyle:v4:prb
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-spark
+    group: test-spark-sql-hive-1
+    version: 3.4_2.13
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.13"
+        TEST1: hive/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest
+        TEST2: ""
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:build
     finally:
       <<: *slack-no-notification
 
@@ -601,6 +833,23 @@ builds:
 
   - <<: *comet-spark
     group: test-spark-sql-hive-2
+    version: 3.4_2.12
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4"
+        TEST1: ''
+        TEST2: hive/testOnly *.HiveSparkSubmitSuite *.VersionsSuite *.HiveDDLSuite *.HiveCatalogedDDLSuite *.HiveSerDeSuite *.HiveQuerySuite *.SQLQuerySuite
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:build
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-spark
+    group: test-spark-sql-hive-2
     version: 3.4_2.13
     disabled: false
     machine:
@@ -613,12 +862,32 @@ builds:
     build:
       <<: *comet-spark-build
       template: freestyle:v4:prb
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-spark
+    group: test-spark-sql-hive-2
+    version: 3.4_2.13
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.13"
+        TEST1: ''
+        TEST2: hive/testOnly *.HiveSparkSubmitSuite *.VersionsSuite *.HiveDDLSuite *.HiveCatalogedDDLSuite *.HiveSerDeSuite *.HiveQuerySuite *.SQLQuerySuite
+    build:
+      <<: *comet-spark-build
+      template: freestyle:v4:build
     finally:
       <<: *slack-no-notification
 
   - &comet-iceberg
     group: test-iceberg
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.2_2.12
     disabled: true
     machine:
@@ -694,6 +963,24 @@ builds:
       <<: *slack-no-notification
 
   - <<: *comet-iceberg
+    version: 3.4_2.12
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4"
+        COMET_TAG: 3.4_2.12
+        ICEBERG_BRANCH: apple-1.5.0.x
+        ICEBERG_TAG: 3.4_2.12
+        ICEBERG_SCALA_VERSION: 2.12
+    build:
+      <<: *comet-iceberg-build
+      template: freestyle:v4:build
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-iceberg
     version: 3.4_2.13
     disabled: false
     machine:
@@ -711,8 +998,26 @@ builds:
     finally:
       <<: *slack-no-notification
 
-  - branchName: main-apple
-    group: builder-ubi8
+  - <<: *comet-iceberg
+    version: 3.4_2.13
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4,scala-2.13"
+        COMET_TAG: 3.4_2.13
+        ICEBERG_BRANCH: apple-1.5.0.x
+        ICEBERG_TAG: 3.4_2.13
+        ICEBERG_SCALA_VERSION: 2.13
+    build:
+      <<: *comet-iceberg-build
+      template: freestyle:v4:build
+    finally:
+      <<: *slack-no-notification
+
+  - group: builder-ubi8
+    branchName: main-apple
     trigger:
       # Run once a week, at a random but consistent offset, to automatically update rust, rust index, os patches, etc.
       timer: '@weekly'
@@ -739,8 +1044,8 @@ builds:
           publish:
             - repo: docker.apple.com/pie/comet-builder-ubi8
 
-  - branchName: main-apple
-    group: builder-ubi8-jdk11
+  - group: builder-ubi8-jdk11
+    branchName: main-apple
     trigger:
       # Run once a week, at a random but consistent offset, to automatically update rust, rust index, os patches, etc.
       timer: '@weekly'
@@ -757,7 +1062,10 @@ builds:
             - repo: docker.apple.com/pie/comet-builder-ubi8-jdk11
 
   - group: build
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: platform
     disabled: false
     machine:
@@ -785,7 +1093,10 @@ builds:
   # Capture the build artifacts from the RIO_CONTEXT_FILE, and convert them to build arguments for
   # the downstream jobs so that they can be restarted when there is a Rio hiccup.
   - group: build-artifacts
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: platform
     trigger:
       gitPush: false
@@ -813,7 +1124,10 @@ builds:
               value: "${ARTIFACT_AARCH64}"
 
   - group: build
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.2_2.12
     disabled: true
     trigger:
@@ -861,7 +1175,10 @@ builds:
         - pipeline: build-artifacts-main-apple-build-3.2_2.12
 
   - group: build
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.3_2.12
     disabled: true
     trigger:
@@ -884,7 +1201,10 @@ builds:
         - pipeline: build-artifacts-main-apple-build-3.3_2.12
 
   - group: build
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.3_2.13
     disabled: true
     trigger:
@@ -907,7 +1227,10 @@ builds:
         - pipeline: build-artifacts-main-apple-build-3.3_2.13
 
   - group: build
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.4_2.12
     disabled: false
     trigger:
@@ -930,7 +1253,10 @@ builds:
         - pipeline: build-artifacts-main-apple-build-3.4_2.12
 
   - group: build
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.4_2.13
     disabled: false
     trigger:
@@ -955,7 +1281,10 @@ builds:
   # Capture the build artifacts from the RIO_CONTEXT_FILE, and convert them to build arguments for
   # the downstream jobs so that they can be restarted when there is a Rio hiccup.
   - group: build-artifacts
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.2_2.12
     disabled: true
     trigger:
@@ -964,6 +1293,8 @@ builds:
       env:
         # Has to work for snapshot and release, matching snapshot numbers or `-apple.jar`
         ARTIFACT: $(dev/rio-context-file-artifacts.sh | grep 'comet-spark-spark' | grep '[^a-df-z].jar$')
+        ARTIFACT_DIR: $(dirname $ARTIFACT)
+        ARTIFACT_VERSION: $(basename $ARTIFACT_DIR)
     build: &build-artifacts-build
       template: freestyle:v4:build
       steps:
@@ -974,9 +1305,14 @@ builds:
           buildArguments:
             - name: "ARTIFACT"
               value: "${ARTIFACT}"
+            - name: "ARTIFACT_VERSION"
+              value: "${ARTIFACT_VERSION}"
 
   - group: build-artifacts
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.3_2.12
     disabled: true
     trigger:
@@ -991,9 +1327,14 @@ builds:
           buildArguments:
             - name: "ARTIFACT"
               value: "${ARTIFACT}"
+            - name: "ARTIFACT_VERSION"
+              value: "${ARTIFACT_VERSION}"
 
   - group: build-artifacts
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.3_2.13
     disabled: true
     trigger:
@@ -1008,9 +1349,14 @@ builds:
           buildArguments:
             - name: "ARTIFACT"
               value: "${ARTIFACT}"
+            - name: "ARTIFACT_VERSION"
+              value: "${ARTIFACT_VERSION}"
 
   - group: build-artifacts
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.4_2.12
     disabled: false
     trigger:
@@ -1025,9 +1371,14 @@ builds:
           buildArguments:
             - name: "ARTIFACT"
               value: "${ARTIFACT}"
+            - name: "ARTIFACT_VERSION"
+              value: "${ARTIFACT_VERSION}"
 
   - group: build-artifacts
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.4_2.13
     disabled: false
     trigger:
@@ -1042,9 +1393,14 @@ builds:
           buildArguments:
             - name: "ARTIFACT"
               value: "${ARTIFACT}"
+            - name: "ARTIFACT_VERSION"
+              value: "${ARTIFACT_VERSION}"
 
   - group: image
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.2_2.12
     disabled: true
     trigger:
@@ -1063,6 +1419,7 @@ builds:
       template: freestyle:v4:publish
       buildParameters:
         - parameter: ARTIFACT
+        - parameter: ARTIFACT_VERSION
       steps:
         - if [ -z "${BUILD_PARAM_ARTIFACT}" ]; then echo 'ARTIFACT is required!'; exit 1; fi
 
@@ -1077,12 +1434,17 @@ builds:
             SCALA_VERSION: ${SCALA_VERSION}
           dockerfilePath: dev/Dockerfile-spark
           perApplication: false
-          version: snapshot
+          version: ${BUILD_PARAM_ARTIFACT_VERSION}
+          extraTags:
+            - snapshot
           publish:
             - repo: docker.apple.com/comet-dev/spark${VERSION}
 
   - group: image
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.3_2.12
     disabled: true
     trigger:
@@ -1103,7 +1465,10 @@ builds:
       <<: *snapshot_image_package
 
   - group: image
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.3_2.13
     disabled: true
     trigger:
@@ -1124,7 +1489,10 @@ builds:
       <<: *snapshot_image_package
 
   - group: image
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.4_2.12
     disabled: false
     trigger:
@@ -1145,7 +1513,10 @@ builds:
       <<: *snapshot_image_package
 
   - group: image
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.4_2.13
     disabled: false
     trigger:
@@ -1259,7 +1630,10 @@ builds:
       <<: *nightly_image_package
 
   - group: build
-    branchName: main-apple-release
+    branchRules:
+      includePatterns:
+        - "main-apple-release"
+        - "branch-.*-apple-release"
     version: platform
     machine:
       <<: *rio3-machine
@@ -1290,7 +1664,10 @@ builds:
   # Capture the build artifacts from the RIO_CONTEXT_FILE, and convert them to build arguments for
   # the downstream jobs so that they can be restarted when there is a Rio hiccup.
   - group: build-artifacts
-    branchName: main-apple-release
+    branchRules:
+      includePatterns:
+        - "main-apple-release"
+        - "branch-.*-apple-release"
     version: platform
     trigger:
       gitPush: false
@@ -1321,7 +1698,10 @@ builds:
               value: "${ARTIFACT_AARCH64}"
 
   - group: build
-    branchName: main-apple-release
+    branchRules:
+      includePatterns:
+        - "main-apple-release"
+        - "branch-.*-apple-release"
     version: 3.2_2.12
     disabled: true
     trigger:
@@ -1366,7 +1746,10 @@ builds:
         - pipeline: build-artifacts-main-apple-release-build-3.2_2.12
 
   - group: build
-    branchName: main-apple-release
+    branchRules:
+      includePatterns:
+        - "main-apple-release"
+        - "branch-.*-apple-release"
     version: 3.3_2.12
     disabled: true
     trigger:
@@ -1387,7 +1770,10 @@ builds:
         - pipeline: build-artifacts-main-apple-release-build-3.3_2.12
 
   - group: build
-    branchName: main-apple-release
+    branchRules:
+      includePatterns:
+        - "main-apple-release"
+        - "branch-.*-apple-release"
     version: 3.3_2.13
     disabled: true
     trigger:
@@ -1408,7 +1794,10 @@ builds:
         - pipeline: build-artifacts-main-apple-release-build-3.3_2.13
 
   - group: build
-    branchName: main-apple-release
+    branchRules:
+      includePatterns:
+        - "main-apple-release"
+        - "branch-.*-apple-release"
     version: 3.4_2.12
     disabled: false
     trigger:
@@ -1429,7 +1818,10 @@ builds:
         - pipeline: build-artifacts-main-apple-release-build-3.4_2.12
 
   - group: build
-    branchName: main-apple-release
+    branchRules:
+      includePatterns:
+        - "main-apple-release"
+        - "branch-.*-apple-release"
     version: 3.4_2.13
     disabled: false
     trigger:
@@ -1452,7 +1844,10 @@ builds:
   # Capture the build artifacts from the RIO_CONTEXT_FILE, and convert them to build arguments for
   # the downstream jobs so that they can be restarted when there is a Rio hiccup.
   - group: build-artifacts
-    branchName: main-apple-release
+    branchRules:
+      includePatterns:
+        - "main-apple-release"
+        - "branch-.*-apple-release"
     version: 3.2_2.12
     disabled: true
     trigger:
@@ -1469,7 +1864,10 @@ builds:
               value: "${ARTIFACT}"
 
   - group: build-artifacts
-    branchName: main-apple-release
+    branchRules:
+      includePatterns:
+        - "main-apple-release"
+        - "branch-.*-apple-release"
     version: 3.3_2.12
     disabled: true
     trigger:
@@ -1486,7 +1884,10 @@ builds:
               value: "${ARTIFACT}"
 
   - group: build-artifacts
-    branchName: main-apple-release
+    branchRules:
+      includePatterns:
+        - "main-apple-release"
+        - "branch-.*-apple-release"
     version: 3.3_2.13
     disabled: true
     trigger:
@@ -1503,7 +1904,10 @@ builds:
               value: "${ARTIFACT}"
 
   - group: build-artifacts
-    branchName: main-apple-release
+    branchRules:
+      includePatterns:
+        - "main-apple-release"
+        - "branch-.*-apple-release"
     version: 3.4_2.12
     disabled: false
     trigger:
@@ -1520,7 +1924,10 @@ builds:
               value: "${ARTIFACT}"
 
   - group: build-artifacts
-    branchName: main-apple-release
+    branchRules:
+      includePatterns:
+        - "main-apple-release"
+        - "branch-.*-apple-release"
     version: 3.4_2.13
     disabled: false
     trigger:
@@ -1537,7 +1944,10 @@ builds:
               value: "${ARTIFACT}"
 
   - group: image
-    branchName: main-apple-release
+    branchRules:
+      includePatterns:
+        - "main-apple-release"
+        - "branch-.*-apple-release"
     version: 3.2_2.12
     disabled: true
     trigger:
@@ -1562,12 +1972,17 @@ builds:
             SCALA_VERSION: ${SCALA_VERSION}
           dockerfilePath: dev/Dockerfile-spark
           perApplication: false
-          version: latest
+          version: ${BUILD_PARAM_ARTIFACT_VERSION}
+          extraTags:
+            - latest
           publish:
             - repo: docker.apple.com/comet-dev/spark${VERSION}
 
   - group: image
-    branchName: main-apple-release
+    branchRules:
+      includePatterns:
+        - "main-apple-release"
+        - "branch-.*-apple-release"
     version: 3.3_2.12
     disabled: true
     trigger:
@@ -1588,7 +2003,10 @@ builds:
       <<: *release_image_package
 
   - group: image
-    branchName: main-apple-release
+    branchRules:
+      includePatterns:
+        - "main-apple-release"
+        - "branch-.*-apple-release"
     version: 3.3_2.13
     disabled: true
     trigger:
@@ -1609,7 +2027,10 @@ builds:
       <<: *release_image_package
 
   - group: image
-    branchName: main-apple-release
+    branchRules:
+      includePatterns:
+        - "main-apple-release"
+        - "branch-.*-apple-release"
     version: 3.4_2.12
     disabled: false
     trigger:
@@ -1630,7 +2051,10 @@ builds:
       <<: *release_image_package
 
   - group: image
-    branchName: main-apple-release
+    branchRules:
+      includePatterns:
+        - "main-apple-release"
+        - "branch-.*-apple-release"
     version: 3.4_2.13
     disabled: false
     trigger:
@@ -1651,7 +2075,10 @@ builds:
       <<: *release_image_package
 
   - group: pr-build
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: start
     machine:
       <<: *rio3-machine
@@ -1699,7 +2126,10 @@ builds:
   # Capture the build artifacts from the RIO_CONTEXT_FILE, and convert them to build arguments for
   # the downstream jobs so that they can be restarted when there is a Rio hiccup.
   - group: pr-build-artifacts
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: platform
     trigger:
       gitPush: false
@@ -1734,7 +2164,10 @@ builds:
               value: "${ARTIFACT_AARCH64}"
 
   - group: pr-build
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.2_2.12
     disabled: true
     trigger:
@@ -1794,7 +2227,10 @@ builds:
               value: "${BUILD_PARAM_PR_NUMBER}"
 
   - group: pr-build
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.3_2.12
     disabled: true
     trigger:
@@ -1818,7 +2254,10 @@ builds:
               value: "${BUILD_PARAM_PR_NUMBER}"
 
   - group: pr-build
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.3_2.13
     disabled: true
     trigger:
@@ -1842,7 +2281,10 @@ builds:
               value: "${BUILD_PARAM_PR_NUMBER}"
 
   - group: pr-build
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.4_2.12
     disabled: false
     trigger:
@@ -1870,7 +2312,10 @@ builds:
             - repo: docker.apple.com/comet-dev/spark${SPARK_VERSION}_${SCALA_VERSION}
 
   - group: pr-build
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.4_2.13
     disabled: false
     trigger:
@@ -1890,7 +2335,10 @@ builds:
   # Capture the build artifacts from the RIO_CONTEXT_FILE, and convert them to build arguments for
   # the downstream jobs so that they can be restarted when there is a Rio hiccup.
   - group: pr-build-artifacts
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.2_2.12
     disabled: true
     trigger:
@@ -1909,7 +2357,10 @@ builds:
               value: "${ARTIFACT}"
 
   - group: pr-build-artifacts
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.3_2.12
     disabled: true
     trigger:
@@ -1928,7 +2379,10 @@ builds:
               value: "${ARTIFACT}"
 
   - group: pr-build-artifacts
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.3_2.13
     disabled: true
     trigger:
@@ -1947,7 +2401,10 @@ builds:
               value: "${ARTIFACT}"
 
   - group: pr-image
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.2_2.12
     disabled: true
     trigger:
@@ -2019,7 +2476,10 @@ builds:
             - repo: docker.apple.com/comet-dev/spark${VERSION}
 
   - group: pr-image
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.3_2.12
     disabled: true
     trigger:
@@ -2038,7 +2498,10 @@ builds:
       <<: *pr_image_package
 
   - group: pr-image
-    branchName: main-apple
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
     version: 3.3_2.13
     disabled: true
     trigger:
@@ -2055,3 +2518,4 @@ builds:
       <<: *pr_image_build
     package:
       <<: *pr_image_package
+
