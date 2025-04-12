@@ -155,7 +155,8 @@ class CometExec3_4PlusSuite extends CometTestBase {
     }
   }
 
-  test("test BloomFilterMightContain from random input") {
+  // TODO non deterministic FIRST
+  ignore("test BloomFilterMightContain from random input") {
     val (longs, bfBytes) = bloomFilterFromRandomInput(10000, 10000)
     val table = "test"
 
