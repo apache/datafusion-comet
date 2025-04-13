@@ -171,18 +171,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       "select c0 from tbl")
   }
 
-  /*
-    org.apache.spark.SparkException: Job aborted due to stage failure: Task 1 in stage 171.0 failed 1 times, most recent failure:
-    Lost task 1.0 in stage 171.0 (TID 179) (knode0099.cngya03.pie.silu.net executor driver): org.apache.comet.CometNativeException: called `Result::unwrap()`
-    on an `Err` value: InvalidArgumentError("Incorrect datatype for StructArray field \"m0\", expected Map(Field { name: \"entries\",
-    data_type: Struct([Field { name: \"key\", data_type: Utf8, nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} },
-    Field { name: \"value\", data_type: Int32, nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} }]),
-    nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} }, false) got Map(Field { name: \"entries\", d
-    ata_type: Struct([Field { name: \"key\", data_type: Utf8, nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} },
-    Field { name: \"value\", data_type: Int32, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }]), nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} }, false)")
-
-   */
-  ignore("native reader - read STRUCT of MAP fields") {
+  test("native reader - read STRUCT of MAP fields") {
     testSingleLineQuery(
       """
         |select named_struct('m0', map('a', 1)) as c0 union all
