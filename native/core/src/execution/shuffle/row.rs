@@ -904,7 +904,7 @@ pub(crate) fn append_field(
                     append_map_element!(StringBuilder, Decimal128Builder, field);
                 }
                 (DataType::Utf8, DataType::Struct(_)) => {
-                    //append_map_element!(StringBuilder, StructBuilder, field);
+                    append_map_element!(StringBuilder, StructBuilder, field);
                 }
                 (DataType::Decimal128(_, _), DataType::Boolean) => {
                     append_map_element!(Decimal128Builder, BooleanBuilder, field);
