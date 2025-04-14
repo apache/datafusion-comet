@@ -289,6 +289,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
 
       // Initialize missing columns and use null vectors for them
       missingColumns = new boolean[numColumns];
+      ShimFileFormat.findRowIndexColumnIndexInSchema(sparkSchema);
       StructField[] nonPartitionFields = sparkSchema.fields();
       boolean hasRowIndexColumn = false;
       // Ranges of rows to read (needed iff row indexes are being read)
