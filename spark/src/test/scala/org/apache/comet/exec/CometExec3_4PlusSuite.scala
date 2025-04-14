@@ -155,8 +155,7 @@ class CometExec3_4PlusSuite extends CometTestBase {
     }
   }
 
-  // TODO re-enable once https://github.com/apache/datafusion-comet/issues/1646 is implemented
-  ignore("test BloomFilterMightContain from random input") {
+  test("test BloomFilterMightContain from random input") {
     val (longs, bfBytes) = bloomFilterFromRandomInput(10000, 10000)
     val table = "test"
 
