@@ -107,13 +107,13 @@ Run the following command (the `--data` parameter will need to be updated to poi
 ```shell
 $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
-    --conf spark.driver.memory=16G \
+    --conf spark.driver.memory=8G \
     --conf spark.executor.instances=1 \
     --conf spark.executor.cores=8 \
     --conf spark.cores.max=8 \
     --conf spark.executor.memory=16g \
     --conf spark.memory.offHeap.enabled=true \
-    --conf spark.memory.offHeap.size=8g \
+    --conf spark.memory.offHeap.size=16g \
     --conf spark.eventLog.enabled=true \
     --jars $COMET_JAR \
     --driver-class-path $COMET_JAR \
