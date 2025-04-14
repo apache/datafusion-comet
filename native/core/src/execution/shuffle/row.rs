@@ -23,7 +23,7 @@ use crate::{
         shuffle::{
             codec::{Checksum, ShuffleBlockWriter},
             list::{append_list_element, SparkUnsafeArray},
-            map::{append_map_elements, get_map_key_value_dt, SparkUnsafeMap},
+            map::{append_map_elements, get_map_key_value_fields, SparkUnsafeMap},
         },
         utils::bytes_to_i128,
     },
@@ -466,10 +466,10 @@ pub(crate) fn append_field(
             }
         }
         DataType::Map(field, _) => {
-            let (key_dt, value_dt, _) = get_map_key_value_dt(field).unwrap();
+            let (key_field, value_field, _) = get_map_key_value_fields(field)?;
 
             // macro cannot expand to match arm
-            match (key_dt, value_dt) {
+            match (key_field.data_type(), value_field.data_type()) {
                 (DataType::Boolean, DataType::Boolean) => {
                     append_map_element!(BooleanBuilder, BooleanBuilder, field);
                 }
@@ -987,7 +987,8 @@ pub(crate) fn append_field(
                 _ => {
                     unreachable!(
                         "Unsupported data type of map key and value: {:?} and {:?}",
-                        key_dt, value_dt
+                        key_field.data_type(),
+                        value_field.data_type()
                     )
                 }
             }
@@ -1286,10 +1287,10 @@ pub(crate) fn append_columns(
             );
         }
         DataType::Map(field, _) => {
-            let (key_dt, value_dt, _) = get_map_key_value_dt(field)?;
+            let (key_field, value_field, _) = get_map_key_value_fields(field)?;
 
             // macro cannot expand to match arm
-            match (key_dt, value_dt) {
+            match (key_field.data_type(), value_field.data_type()) {
                 (DataType::Boolean, DataType::Boolean) => {
                     append_column_to_map_builder!(BooleanBuilder, BooleanBuilder, field)
                 }
@@ -1865,8 +1866,9 @@ fn make_builders(
             Box::new(TimestampMicrosecondBuilder::with_capacity(row_num).with_data_type(dt.clone()))
         }
         DataType::Map(field, _) => {
-            let (key_dt, value_dt, map_fieldnames) = get_map_key_value_dt(field)?;
-
+            let (key_field, value_field, map_field_names) = get_map_key_value_fields(field)?;
+            let key_dt = key_field.data_type();
+            let value_dt = value_field.data_type();
             let key_builder = make_builders(key_dt, NESTED_TYPE_BUILDER_CAPACITY, 1.0)?;
             let value_builder = make_builders(value_dt, NESTED_TYPE_BUILDER_CAPACITY, 1.0)?;
 
@@ -1876,937 +1878,834 @@ fn make_builders(
                 (DataType::Boolean, DataType::Boolean) => {
                     let key_builder = downcast_builder!(BooleanBuilder, key_builder);
                     let value_builder = downcast_builder!(BooleanBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Boolean, DataType::Int8) => {
                     let key_builder = downcast_builder!(BooleanBuilder, key_builder);
                     let value_builder = downcast_builder!(Int8Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Boolean, DataType::Int16) => {
                     let key_builder = downcast_builder!(BooleanBuilder, key_builder);
                     let value_builder = downcast_builder!(Int16Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Boolean, DataType::Int32) => {
                     let key_builder = downcast_builder!(BooleanBuilder, key_builder);
                     let value_builder = downcast_builder!(Int32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Boolean, DataType::Int64) => {
                     let key_builder = downcast_builder!(BooleanBuilder, key_builder);
                     let value_builder = downcast_builder!(Int64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Boolean, DataType::Float32) => {
                     let key_builder = downcast_builder!(BooleanBuilder, key_builder);
                     let value_builder = downcast_builder!(Float32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Boolean, DataType::Float64) => {
                     let key_builder = downcast_builder!(BooleanBuilder, key_builder);
                     let value_builder = downcast_builder!(Float64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Boolean, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
                     let key_builder = downcast_builder!(BooleanBuilder, key_builder);
                     let value_builder =
                         downcast_builder!(TimestampMicrosecondBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Boolean, DataType::Date32) => {
                     let key_builder = downcast_builder!(BooleanBuilder, key_builder);
                     let value_builder = downcast_builder!(Date32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Boolean, DataType::Binary) => {
                     let key_builder = downcast_builder!(BooleanBuilder, key_builder);
                     let value_builder = downcast_builder!(BinaryBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Boolean, DataType::Utf8) => {
                     let key_builder = downcast_builder!(BooleanBuilder, key_builder);
                     let value_builder = downcast_builder!(StringBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Boolean, DataType::Decimal128(_, _)) => {
                     let key_builder = downcast_builder!(BooleanBuilder, key_builder);
                     let value_builder = downcast_builder!(Decimal128Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int8, DataType::Boolean) => {
                     let key_builder = downcast_builder!(Int8Builder, key_builder);
                     let value_builder = downcast_builder!(BooleanBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int8, DataType::Int8) => {
                     let key_builder = downcast_builder!(Int8Builder, key_builder);
                     let value_builder = downcast_builder!(Int8Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int8, DataType::Int16) => {
                     let key_builder = downcast_builder!(Int8Builder, key_builder);
                     let value_builder = downcast_builder!(Int16Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int8, DataType::Int32) => {
                     let key_builder = downcast_builder!(Int8Builder, key_builder);
                     let value_builder = downcast_builder!(Int32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int8, DataType::Int64) => {
                     let key_builder = downcast_builder!(Int8Builder, key_builder);
                     let value_builder = downcast_builder!(Int64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int8, DataType::Float32) => {
                     let key_builder = downcast_builder!(Int8Builder, key_builder);
                     let value_builder = downcast_builder!(Float32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int8, DataType::Float64) => {
                     let key_builder = downcast_builder!(Int8Builder, key_builder);
                     let value_builder = downcast_builder!(Float64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int8, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
                     let key_builder = downcast_builder!(Int8Builder, key_builder);
                     let value_builder =
                         downcast_builder!(TimestampMicrosecondBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int8, DataType::Date32) => {
                     let key_builder = downcast_builder!(Int8Builder, key_builder);
                     let value_builder = downcast_builder!(Date32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int8, DataType::Binary) => {
                     let key_builder = downcast_builder!(Int8Builder, key_builder);
                     let value_builder = downcast_builder!(BinaryBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int8, DataType::Utf8) => {
                     let key_builder = downcast_builder!(Int8Builder, key_builder);
                     let value_builder = downcast_builder!(StringBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int8, DataType::Decimal128(_, _)) => {
                     let key_builder = downcast_builder!(Int8Builder, key_builder);
                     let value_builder = downcast_builder!(Decimal128Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int16, DataType::Boolean) => {
                     let key_builder = downcast_builder!(Int16Builder, key_builder);
                     let value_builder = downcast_builder!(BooleanBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int16, DataType::Int8) => {
                     let key_builder = downcast_builder!(Int16Builder, key_builder);
                     let value_builder = downcast_builder!(Int8Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int16, DataType::Int16) => {
                     let key_builder = downcast_builder!(Int16Builder, key_builder);
                     let value_builder = downcast_builder!(Int16Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int16, DataType::Int32) => {
                     let key_builder = downcast_builder!(Int16Builder, key_builder);
                     let value_builder = downcast_builder!(Int32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int16, DataType::Int64) => {
                     let key_builder = downcast_builder!(Int16Builder, key_builder);
                     let value_builder = downcast_builder!(Int64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int16, DataType::Float32) => {
                     let key_builder = downcast_builder!(Int16Builder, key_builder);
                     let value_builder = downcast_builder!(Float32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int16, DataType::Float64) => {
                     let key_builder = downcast_builder!(Int16Builder, key_builder);
                     let value_builder = downcast_builder!(Float64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int16, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
                     let key_builder = downcast_builder!(Int16Builder, key_builder);
                     let value_builder =
                         downcast_builder!(TimestampMicrosecondBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int16, DataType::Date32) => {
                     let key_builder = downcast_builder!(Int16Builder, key_builder);
                     let value_builder = downcast_builder!(Date32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int16, DataType::Binary) => {
                     let key_builder = downcast_builder!(Int16Builder, key_builder);
                     let value_builder = downcast_builder!(BinaryBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int16, DataType::Utf8) => {
                     let key_builder = downcast_builder!(Int16Builder, key_builder);
                     let value_builder = downcast_builder!(StringBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int16, DataType::Decimal128(_, _)) => {
                     let key_builder = downcast_builder!(Int16Builder, key_builder);
                     let value_builder = downcast_builder!(Decimal128Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int32, DataType::Boolean) => {
                     let key_builder = downcast_builder!(Int32Builder, key_builder);
                     let value_builder = downcast_builder!(BooleanBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int32, DataType::Int8) => {
                     let key_builder = downcast_builder!(Int32Builder, key_builder);
                     let value_builder = downcast_builder!(Int8Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int32, DataType::Int16) => {
                     let key_builder = downcast_builder!(Int32Builder, key_builder);
                     let value_builder = downcast_builder!(Int16Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int32, DataType::Int32) => {
                     let key_builder = downcast_builder!(Int32Builder, key_builder);
                     let value_builder = downcast_builder!(Int32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int32, DataType::Int64) => {
                     let key_builder = downcast_builder!(Int32Builder, key_builder);
                     let value_builder = downcast_builder!(Int64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int32, DataType::Float32) => {
                     let key_builder = downcast_builder!(Int32Builder, key_builder);
                     let value_builder = downcast_builder!(Float32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int32, DataType::Float64) => {
                     let key_builder = downcast_builder!(Int32Builder, key_builder);
                     let value_builder = downcast_builder!(Float64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int32, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
                     let key_builder = downcast_builder!(Int32Builder, key_builder);
                     let value_builder =
                         downcast_builder!(TimestampMicrosecondBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int32, DataType::Date32) => {
                     let key_builder = downcast_builder!(Int32Builder, key_builder);
                     let value_builder = downcast_builder!(Date32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int32, DataType::Binary) => {
                     let key_builder = downcast_builder!(Int32Builder, key_builder);
                     let value_builder = downcast_builder!(BinaryBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int32, DataType::Utf8) => {
                     let key_builder = downcast_builder!(Int32Builder, key_builder);
                     let value_builder = downcast_builder!(StringBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int32, DataType::Decimal128(_, _)) => {
                     let key_builder = downcast_builder!(Int32Builder, key_builder);
                     let value_builder = downcast_builder!(Decimal128Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int64, DataType::Boolean) => {
                     let key_builder = downcast_builder!(Int64Builder, key_builder);
                     let value_builder = downcast_builder!(BooleanBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int64, DataType::Int8) => {
                     let key_builder = downcast_builder!(Int64Builder, key_builder);
                     let value_builder = downcast_builder!(Int8Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int64, DataType::Int16) => {
                     let key_builder = downcast_builder!(Int64Builder, key_builder);
                     let value_builder = downcast_builder!(Int16Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int64, DataType::Int32) => {
                     let key_builder = downcast_builder!(Int64Builder, key_builder);
                     let value_builder = downcast_builder!(Int32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int64, DataType::Int64) => {
                     let key_builder = downcast_builder!(Int64Builder, key_builder);
                     let value_builder = downcast_builder!(Int64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int64, DataType::Float32) => {
                     let key_builder = downcast_builder!(Int64Builder, key_builder);
                     let value_builder = downcast_builder!(Float32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int64, DataType::Float64) => {
                     let key_builder = downcast_builder!(Int64Builder, key_builder);
                     let value_builder = downcast_builder!(Float64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int64, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
                     let key_builder = downcast_builder!(Int64Builder, key_builder);
                     let value_builder =
                         downcast_builder!(TimestampMicrosecondBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int64, DataType::Date32) => {
                     let key_builder = downcast_builder!(Int64Builder, key_builder);
                     let value_builder = downcast_builder!(Date32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int64, DataType::Binary) => {
                     let key_builder = downcast_builder!(Int64Builder, key_builder);
                     let value_builder = downcast_builder!(BinaryBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int64, DataType::Utf8) => {
                     let key_builder = downcast_builder!(Int64Builder, key_builder);
                     let value_builder = downcast_builder!(StringBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Int64, DataType::Decimal128(_, _)) => {
                     let key_builder = downcast_builder!(Int64Builder, key_builder);
                     let value_builder = downcast_builder!(Decimal128Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float32, DataType::Boolean) => {
                     let key_builder = downcast_builder!(Float32Builder, key_builder);
                     let value_builder = downcast_builder!(BooleanBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float32, DataType::Int8) => {
                     let key_builder = downcast_builder!(Float32Builder, key_builder);
                     let value_builder = downcast_builder!(Int8Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float32, DataType::Int16) => {
                     let key_builder = downcast_builder!(Float32Builder, key_builder);
                     let value_builder = downcast_builder!(Int16Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float32, DataType::Int32) => {
                     let key_builder = downcast_builder!(Float32Builder, key_builder);
                     let value_builder = downcast_builder!(Int32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float32, DataType::Int64) => {
                     let key_builder = downcast_builder!(Float32Builder, key_builder);
                     let value_builder = downcast_builder!(Int64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float32, DataType::Float32) => {
                     let key_builder = downcast_builder!(Float32Builder, key_builder);
                     let value_builder = downcast_builder!(Float32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float32, DataType::Float64) => {
                     let key_builder = downcast_builder!(Float32Builder, key_builder);
                     let value_builder = downcast_builder!(Float64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float32, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
                     let key_builder = downcast_builder!(Float32Builder, key_builder);
                     let value_builder =
                         downcast_builder!(TimestampMicrosecondBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float32, DataType::Date32) => {
                     let key_builder = downcast_builder!(Float32Builder, key_builder);
                     let value_builder = downcast_builder!(Date32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float32, DataType::Binary) => {
                     let key_builder = downcast_builder!(Float32Builder, key_builder);
                     let value_builder = downcast_builder!(BinaryBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float32, DataType::Utf8) => {
                     let key_builder = downcast_builder!(Float32Builder, key_builder);
                     let value_builder = downcast_builder!(StringBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float32, DataType::Decimal128(_, _)) => {
                     let key_builder = downcast_builder!(Float32Builder, key_builder);
                     let value_builder = downcast_builder!(Decimal128Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float64, DataType::Boolean) => {
                     let key_builder = downcast_builder!(Float64Builder, key_builder);
                     let value_builder = downcast_builder!(BooleanBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float64, DataType::Int8) => {
                     let key_builder = downcast_builder!(Float64Builder, key_builder);
                     let value_builder = downcast_builder!(Int8Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float64, DataType::Int16) => {
                     let key_builder = downcast_builder!(Float64Builder, key_builder);
                     let value_builder = downcast_builder!(Int16Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float64, DataType::Int32) => {
                     let key_builder = downcast_builder!(Float64Builder, key_builder);
                     let value_builder = downcast_builder!(Int32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float64, DataType::Int64) => {
                     let key_builder = downcast_builder!(Float64Builder, key_builder);
                     let value_builder = downcast_builder!(Int64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float64, DataType::Float32) => {
                     let key_builder = downcast_builder!(Float64Builder, key_builder);
                     let value_builder = downcast_builder!(Float32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float64, DataType::Float64) => {
                     let key_builder = downcast_builder!(Float64Builder, key_builder);
                     let value_builder = downcast_builder!(Float64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float64, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
                     let key_builder = downcast_builder!(Float64Builder, key_builder);
                     let value_builder =
                         downcast_builder!(TimestampMicrosecondBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float64, DataType::Date32) => {
                     let key_builder = downcast_builder!(Float64Builder, key_builder);
                     let value_builder = downcast_builder!(Date32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float64, DataType::Binary) => {
                     let key_builder = downcast_builder!(Float64Builder, key_builder);
                     let value_builder = downcast_builder!(BinaryBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float64, DataType::Utf8) => {
                     let key_builder = downcast_builder!(Float64Builder, key_builder);
                     let value_builder = downcast_builder!(StringBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Float64, DataType::Decimal128(_, _)) => {
                     let key_builder = downcast_builder!(Float64Builder, key_builder);
                     let value_builder = downcast_builder!(Decimal128Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Date32, DataType::Boolean) => {
                     let key_builder = downcast_builder!(Date32Builder, key_builder);
                     let value_builder = downcast_builder!(BooleanBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Date32, DataType::Int8) => {
                     let key_builder = downcast_builder!(Date32Builder, key_builder);
                     let value_builder = downcast_builder!(Int8Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Date32, DataType::Int16) => {
                     let key_builder = downcast_builder!(Date32Builder, key_builder);
                     let value_builder = downcast_builder!(Int16Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Date32, DataType::Int32) => {
                     let key_builder = downcast_builder!(Date32Builder, key_builder);
                     let value_builder = downcast_builder!(Int32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Date32, DataType::Int64) => {
                     let key_builder = downcast_builder!(Date32Builder, key_builder);
                     let value_builder = downcast_builder!(Int64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Date32, DataType::Float32) => {
                     let key_builder = downcast_builder!(Date32Builder, key_builder);
                     let value_builder = downcast_builder!(Float32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Date32, DataType::Float64) => {
                     let key_builder = downcast_builder!(Date32Builder, key_builder);
                     let value_builder = downcast_builder!(Float64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Date32, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
                     let key_builder = downcast_builder!(Date32Builder, key_builder);
                     let value_builder =
                         downcast_builder!(TimestampMicrosecondBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Date32, DataType::Date32) => {
                     let key_builder = downcast_builder!(Date32Builder, key_builder);
                     let value_builder = downcast_builder!(Date32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Date32, DataType::Binary) => {
                     let key_builder = downcast_builder!(Date32Builder, key_builder);
                     let value_builder = downcast_builder!(BinaryBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Date32, DataType::Utf8) => {
                     let key_builder = downcast_builder!(Date32Builder, key_builder);
                     let value_builder = downcast_builder!(StringBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Date32, DataType::Decimal128(_, _)) => {
                     let key_builder = downcast_builder!(Date32Builder, key_builder);
                     let value_builder = downcast_builder!(Decimal128Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Boolean) => {
                     let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
                     let value_builder = downcast_builder!(BooleanBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Int8) => {
                     let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
                     let value_builder = downcast_builder!(Int8Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Int16) => {
                     let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
                     let value_builder = downcast_builder!(Int16Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Int32) => {
                     let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
                     let value_builder = downcast_builder!(Int32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Int64) => {
                     let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
                     let value_builder = downcast_builder!(Int64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Float32) => {
                     let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
                     let value_builder = downcast_builder!(Float32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Float64) => {
                     let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
                     let value_builder = downcast_builder!(Float64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (
                     DataType::Timestamp(TimeUnit::Microsecond, _),
@@ -2815,374 +2714,333 @@ fn make_builders(
                     let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
                     let value_builder =
                         downcast_builder!(TimestampMicrosecondBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Date32) => {
                     let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
                     let value_builder = downcast_builder!(Date32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Binary) => {
                     let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
                     let value_builder = downcast_builder!(BinaryBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Utf8) => {
                     let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
                     let value_builder = downcast_builder!(StringBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Timestamp(TimeUnit::Microsecond, _), DataType::Decimal128(_, _)) => {
                     let key_builder = downcast_builder!(TimestampMicrosecondBuilder, key_builder);
                     let value_builder = downcast_builder!(Decimal128Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Binary, DataType::Boolean) => {
                     let key_builder = downcast_builder!(BinaryBuilder, key_builder);
                     let value_builder = downcast_builder!(BooleanBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Binary, DataType::Int8) => {
                     let key_builder = downcast_builder!(BinaryBuilder, key_builder);
                     let value_builder = downcast_builder!(Int8Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Binary, DataType::Int16) => {
                     let key_builder = downcast_builder!(BinaryBuilder, key_builder);
                     let value_builder = downcast_builder!(Int16Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Binary, DataType::Int32) => {
                     let key_builder = downcast_builder!(BinaryBuilder, key_builder);
                     let value_builder = downcast_builder!(Int32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Binary, DataType::Int64) => {
                     let key_builder = downcast_builder!(BinaryBuilder, key_builder);
                     let value_builder = downcast_builder!(Int64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Binary, DataType::Float32) => {
                     let key_builder = downcast_builder!(BinaryBuilder, key_builder);
                     let value_builder = downcast_builder!(Float32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Binary, DataType::Float64) => {
                     let key_builder = downcast_builder!(BinaryBuilder, key_builder);
                     let value_builder = downcast_builder!(Float64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Binary, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
                     let key_builder = downcast_builder!(BinaryBuilder, key_builder);
                     let value_builder =
                         downcast_builder!(TimestampMicrosecondBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Binary, DataType::Date32) => {
                     let key_builder = downcast_builder!(BinaryBuilder, key_builder);
                     let value_builder = downcast_builder!(Date32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Binary, DataType::Binary) => {
                     let key_builder = downcast_builder!(BinaryBuilder, key_builder);
                     let value_builder = downcast_builder!(BinaryBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Binary, DataType::Utf8) => {
                     let key_builder = downcast_builder!(BinaryBuilder, key_builder);
                     let value_builder = downcast_builder!(StringBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Binary, DataType::Decimal128(_, _)) => {
                     let key_builder = downcast_builder!(BinaryBuilder, key_builder);
                     let value_builder = downcast_builder!(Decimal128Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Utf8, DataType::Boolean) => {
                     let key_builder = downcast_builder!(StringBuilder, key_builder);
                     let value_builder = downcast_builder!(BooleanBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Utf8, DataType::Int8) => {
                     let key_builder = downcast_builder!(StringBuilder, key_builder);
                     let value_builder = downcast_builder!(Int8Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Utf8, DataType::Int16) => {
                     let key_builder = downcast_builder!(StringBuilder, key_builder);
                     let value_builder = downcast_builder!(Int16Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Utf8, DataType::Int32) => {
                     let key_builder = downcast_builder!(StringBuilder, key_builder);
                     let value_builder = downcast_builder!(Int32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Utf8, DataType::Int64) => {
                     let key_builder = downcast_builder!(StringBuilder, key_builder);
                     let value_builder = downcast_builder!(Int64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Utf8, DataType::Float32) => {
                     let key_builder = downcast_builder!(StringBuilder, key_builder);
                     let value_builder = downcast_builder!(Float32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Utf8, DataType::Float64) => {
                     let key_builder = downcast_builder!(StringBuilder, key_builder);
                     let value_builder = downcast_builder!(Float64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Utf8, DataType::Timestamp(TimeUnit::Microsecond, _)) => {
                     let key_builder = downcast_builder!(StringBuilder, key_builder);
                     let value_builder =
                         downcast_builder!(TimestampMicrosecondBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Utf8, DataType::Date32) => {
                     let key_builder = downcast_builder!(StringBuilder, key_builder);
                     let value_builder = downcast_builder!(Date32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Utf8, DataType::Binary) => {
                     let key_builder = downcast_builder!(StringBuilder, key_builder);
                     let value_builder = downcast_builder!(BinaryBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Utf8, DataType::Utf8) => {
                     let key_builder = downcast_builder!(StringBuilder, key_builder);
                     let value_builder = downcast_builder!(StringBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Utf8, DataType::Decimal128(_, _)) => {
                     let key_builder = downcast_builder!(StringBuilder, key_builder);
                     let value_builder = downcast_builder!(Decimal128Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Decimal128(_, _), DataType::Boolean) => {
                     let key_builder = downcast_builder!(Decimal128Builder, key_builder);
                     let value_builder = downcast_builder!(BooleanBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Decimal128(_, _), DataType::Int8) => {
                     let key_builder = downcast_builder!(Decimal128Builder, key_builder);
                     let value_builder = downcast_builder!(Int8Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Decimal128(_, _), DataType::Int16) => {
                     let key_builder = downcast_builder!(Decimal128Builder, key_builder);
                     let value_builder = downcast_builder!(Int16Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Decimal128(_, _), DataType::Int32) => {
                     let key_builder = downcast_builder!(Decimal128Builder, key_builder);
                     let value_builder = downcast_builder!(Int32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Decimal128(_, _), DataType::Int64) => {
                     let key_builder = downcast_builder!(Decimal128Builder, key_builder);
                     let value_builder = downcast_builder!(Int64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Decimal128(_, _), DataType::Float32) => {
                     let key_builder = downcast_builder!(Decimal128Builder, key_builder);
                     let value_builder = downcast_builder!(Float32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Decimal128(_, _), DataType::Float64) => {
                     let key_builder = downcast_builder!(Decimal128Builder, key_builder);
                     let value_builder = downcast_builder!(Float64Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Decimal128(_, _), DataType::Timestamp(TimeUnit::Microsecond, _)) => {
                     let key_builder = downcast_builder!(Decimal128Builder, key_builder);
                     let value_builder =
                         downcast_builder!(TimestampMicrosecondBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Decimal128(_, _), DataType::Date32) => {
                     let key_builder = downcast_builder!(Decimal128Builder, key_builder);
                     let value_builder = downcast_builder!(Date32Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Decimal128(_, _), DataType::Binary) => {
                     let key_builder = downcast_builder!(Decimal128Builder, key_builder);
                     let value_builder = downcast_builder!(BinaryBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Decimal128(_, _), DataType::Utf8) => {
                     let key_builder = downcast_builder!(Decimal128Builder, key_builder);
                     let value_builder = downcast_builder!(StringBuilder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
                 (DataType::Decimal128(_, _), DataType::Decimal128(_, _)) => {
                     let key_builder = downcast_builder!(Decimal128Builder, key_builder);
                     let value_builder = downcast_builder!(Decimal128Builder, value_builder);
-                    Box::new(MapBuilder::new(
-                        Some(map_fieldnames),
-                        *key_builder,
-                        *value_builder,
-                    ))
+                    Box::new(
+                        MapBuilder::new(Some(map_field_names), *key_builder, *value_builder)
+                            .with_values_field(Arc::clone(value_field)),
+                    )
                 }
 
                 _ => {
