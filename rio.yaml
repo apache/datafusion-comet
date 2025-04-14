@@ -1293,8 +1293,8 @@ builds:
       env:
         # Has to work for snapshot and release, matching snapshot numbers or `-apple.jar`
         ARTIFACT: $(dev/rio-context-file-artifacts.sh | grep 'comet-spark-spark' | grep '[^a-df-z].jar$')
-        ARTIFACT_DIR: $(dirname $ARTIFACT)
-        ARTIFACT_VERSION: $(basename $ARTIFACT_DIR)
+        # Calculate the artifact twice since the dependency between ARTIFACT and ARTIFACT_VERSION wasn't working
+        ARTIFACT_VERISON: $(basename $(dirname $(dev/rio-context-file-artifacts.sh | grep 'comet-spark-spark' | grep '[^a-df-z].jar$')))
     build: &build-artifacts-build
       template: freestyle:v4:build
       steps:
