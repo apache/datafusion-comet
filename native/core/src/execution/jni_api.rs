@@ -382,13 +382,19 @@ fn create_memory_pool(
         MemoryPoolType::Unified => {
             // Set Comet memory pool for native
             let memory_pool = CometMemoryPool::new(comet_task_memory_manager);
-            Arc::new(memory_pool)
+            Arc::new(TrackConsumersPool::new(
+                memory_pool,
+                NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
+            ))
         }
         MemoryPoolType::FairUnified => {
             // Set Comet fair memory pool for native
             let memory_pool =
                 CometFairMemoryPool::new(comet_task_memory_manager, memory_pool_config.pool_size);
-            Arc::new(memory_pool)
+            Arc::new(TrackConsumersPool::new(
+                memory_pool,
+                NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
+            ))
         }
         MemoryPoolType::Greedy => Arc::new(TrackConsumersPool::new(
             GreedyMemoryPool::new(memory_pool_config.pool_size),
