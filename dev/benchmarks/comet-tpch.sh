@@ -1,10 +1,6 @@
 #!/bin/bash
 
-export COMET_JAR=`pwd`/../../spark/target/comet-spark-spark3.5_2.12-0.7.0-SNAPSHOT.jar
-
-export SPARK_HOME=/opt/spark-3.5.3-bin-hadoop3/
-export SPARK_MASTER=spark://woody:7077
-
+export COMET_JAR=`pwd`/../../spark/target/comet-spark-spark3.5_2.12-0.8.0-SNAPSHOT.jar
 
 $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
