@@ -18,6 +18,11 @@ git clone https://github.com/apache/datafusion-comet
 
 Install prerequisites (this will all get scripted once verified).
 
+```shell
+git clone https://github.com/apache/datafusion-benchmarks.git
+```
+
+
 Java
 
 ```shell
