@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
-use arrow::array::{DictionaryArray, StructArray};
+use arrow::array::{new_null_array, DictionaryArray, StructArray};
 use arrow::datatypes::DataType;
 use arrow::{
     array::{cast::AsArray, types::Int32Type, Array, ArrayRef},
@@ -188,13 +188,20 @@ fn cast_struct_to_struct(
             assert_eq!(field_name_to_index_map.len(), from_fields.len());
             let mut cast_fields: Vec<ArrayRef> = Vec::with_capacity(to_fields.len());
             for i in 0..to_fields.len() {
-                let from_index = field_name_to_index_map[to_fields[i].name()];
-                let cast_field = cast_array(
-                    Arc::clone(array.column(from_index)),
-                    to_fields[i].data_type(),
-                    parquet_options,
-                )?;
-                cast_fields.push(cast_field);
+                // Fields in the to_type schema may not exist in the from_type schema
+                // i.e. the required schema may have fields that the file does not
+                // have
+                if field_name_to_index_map.contains_key(to_fields[i].name()) {
+                    let from_index = field_name_to_index_map[to_fields[i].name()];
+                    let cast_field = cast_array(
+                        Arc::clone(array.column(from_index)),
+                        to_fields[i].data_type(),
+                        parquet_options,
+                    )?;
+                    cast_fields.push(cast_field);
+                } else {
+                    cast_fields.push(new_null_array(to_fields[i].data_type(), array.len()));
+                }
             }
             Ok(Arc::new(StructArray::new(
                 to_fields.clone(),
