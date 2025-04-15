@@ -21,13 +21,25 @@ under the License.
 
 Comet provides some tuning options to help you get the best performance from your queries.
 
+## Parquet Scans
+
+Comet currently has three distinct implementations of the Parquet scan operator. The configuration property
+`spark.comet.scan.impl` is used to select an implementation. These scans are described in the
+[Compatibility Guide].
+
+[Compatibility Guide]: compatibility.md
+
+When using `native_datafusion` or `native_iceberg_compat`, there are known performance issues when pushing filters
+down to Parquet scans. Until this issue is resolved, performance can be improved by setting
+`spark.sql.parquet.filterPushdown=false`.
+
 ## Configuring Tokio Runtime
 
-Comet uses a global tokio runtime per executor process using tokio's defaults of one worker thread per core and a 
+Comet uses a global tokio runtime per executor process using tokio's defaults of one worker thread per core and a
 maximum of 512 blocking threads. These values can be overridden using the environment variables `COMET_WORKER_THREADS`
 and `COMET_MAX_BLOCKING_THREADS`.
 
-DataFusion currently has a known issue when merging spill files in sort operators where the process can deadlock if 
+DataFusion currently has a known issue when merging spill files in sort operators where the process can deadlock if
 there are more spill files than `COMET_MAX_BLOCKING_THREADS` ([tracking issue](https://github.com/apache/datafusion/issues/15323)).
 
 ## Memory Tuning
@@ -54,14 +66,14 @@ Spark documentation: https://spark.apache.org/docs/latest/configuration.html.
 
 When running in on-heap mode, Comet memory can be allocated by setting `spark.comet.memoryOverhead`. If this setting
 is not provided, it will be calculated by multiplying the current Spark executor memory by
-`spark.comet.memory.overhead.factor` (default value is `0.2`) which may or may not result in enough memory for 
+`spark.comet.memory.overhead.factor` (default value is `0.2`) which may or may not result in enough memory for
 Comet to operate. It is not recommended to rely on this behavior. It is better to specify `spark.comet.memoryOverhead`
 explicitly.
 
-Comet supports native shuffle and columnar shuffle (these terms are explained in the [shuffle] section below). 
-In on-heap mode, columnar shuffle memory must be separately allocated using `spark.comet.columnar.shuffle.memorySize`. 
+Comet supports native shuffle and columnar shuffle (these terms are explained in the [shuffle] section below).
+In on-heap mode, columnar shuffle memory must be separately allocated using `spark.comet.columnar.shuffle.memorySize`.
 If this setting is not provided, it will be calculated by multiplying `spark.comet.memoryOverhead` by
-`spark.comet.columnar.shuffle.memory.factor` (default value is `1.0`). If a shuffle exceeds this amount of memory 
+`spark.comet.columnar.shuffle.memory.factor` (default value is `1.0`). If a shuffle exceeds this amount of memory
 then the query will fail.
 
 [shuffle]: #shuffle
@@ -73,10 +85,10 @@ amount of time spent spilling to disk, especially for aggregate, join, and shuff
 memory can result in out-of-memory errors. This is no different from allocating memory in Spark and the amount of
 memory will vary for different workloads, so some experimentation will be required.
 
-Here is a real-world example, based on running benchmarks derived from TPC-H, running on a single executor against 
+Here is a real-world example, based on running benchmarks derived from TPC-H, running on a single executor against
 local Parquet files using the 100 GB data set.
 
-Baseline Spark Performance 
+Baseline Spark Performance
 
 - Spark completes the benchmark in 632 seconds with 8 cores and 8 GB RAM
 - With less than 8 GB RAM, performance degrades due to spilling
@@ -84,24 +96,24 @@ Baseline Spark Performance
 
 Comet Performance
 
-- Comet requires at least 5 GB of RAM in off-heap mode and 6 GB RAM in on-heap mode, but performance at this level 
+- Comet requires at least 5 GB of RAM in off-heap mode and 6 GB RAM in on-heap mode, but performance at this level
   is around 340 seconds, which is significantly faster than Spark with any amount of RAM
 - Comet running in off-heap with 8 cores completes the benchmark in 295 seconds, more than 2x faster than Spark
-- It is worth noting that running Comet with only 4 cores and 4 GB RAM completes the benchmark in 520 seconds, 
+- It is worth noting that running Comet with only 4 cores and 4 GB RAM completes the benchmark in 520 seconds,
   providing better performance than Spark for half the resource
 
 It may be possible to reduce Comet's memory overhead by reducing batch sizes or increasing number of partitions.
 
 ### SortExec
 
-Comet's SortExec implementation spills to disk when under memory pressure, but there are some known issues in the 
+Comet's SortExec implementation spills to disk when under memory pressure, but there are some known issues in the
 underlying DataFusion SortExec implementation that could cause out-of-memory errors during spilling. See
 https://github.com/apache/datafusion/issues/14692 for more information.
 
 Workarounds for this problem include:
 
 - Allocating more off-heap memory
-- Disabling native sort by setting `spark.comet.exec.sort.enabled=false` 
+- Disabling native sort by setting `spark.comet.exec.sort.enabled=false`
 
 ## Advanced Memory Tuning
 
@@ -122,11 +134,11 @@ The valid pool types for off-heap mode are:
 - `unified` (default when `spark.memory.offHeap.enabled=true` is set)
 - `fair_unified`
 
-Both of these pools share off-heap memory between Spark and Comet. This approach is referred to as 
+Both of these pools share off-heap memory between Spark and Comet. This approach is referred to as
 unified memory management. The size of the pool is specified by `spark.memory.offHeap.size`.
 
 The `unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
-need to spill or have a single spillable operator. 
+need to spill or have a single spillable operator.
 
 The `fair_unified` pool type prevents operators from using more than an even fraction of the available memory
 (i.e. `pool_size / num_reservations`). This pool works best when you know beforehand
