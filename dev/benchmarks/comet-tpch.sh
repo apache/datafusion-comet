@@ -15,35 +15,24 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.executor.memory=8g \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=8g \
-    --conf spark.comet.explain.verbose.enabled=false \
-    --conf spark.comet.explainFallback.enabled=false \
-    --conf spark.comet.exec.sortMergeJoinWithJoinFilter.enabled=false \
+    --conf spark.local.dir=/home/ec2-user/tmp \
+    --conf spark.driver.extraJavaOptions="-Djava.io.tmpdir=/home/ec2-user/tmp" \
+    --conf spark.executor.extraJavaOptions="-Djava.io.tmpdir=/home/ec2-user/tmp" \
     --conf spark.comet.exec.replaceSortMergeJoin=true \
-    --conf spark.comet.scan.enabled=true \
-    --conf spark.comet.explain.native.enabled=false \
-    --conf spark.comet.scan.impl=native_comet \
-    --conf spark.eventLog.enabled=true \
     --jars $COMET_JAR \
     --driver-class-path $COMET_JAR \
     --conf spark.driver.extraClassPath=$COMET_JAR \
     --conf spark.executor.extraClassPath=$COMET_JAR \
-    --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
+    --conf spark.sql.plugins=org.apache.spark.CometPlugin \
+    --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.comet.enabled=true \
-    --conf spark.comet.exec.enabled=true \
-    --conf spark.comet.batchSize=8192 \
-    --conf spark.comet.columnar.shuffle.batch.size=8192 \
-    --conf spark.comet.exec.shuffle.enabled=true \
-    --conf spark.comet.exec.shuffle.mode=auto \
     --conf spark.comet.exec.shuffle.enableFastEncoding=true \
     --conf spark.comet.exec.shuffle.fallbackToColumnar=true \
     --conf spark.comet.cast.allowIncompatible=true \
-    --conf spark.comet.exec.shuffle.compression.codec=lz4 \
-    --conf spark.comet.exec.shuffle.compression.level=1 \
-    --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     tpcbench.py \
     --name comet \
     --benchmark tpch \
-    --data /mnt/bigdata/tpch/sf100/ \
-    --queries ../../tpch \
+    --data /home/ec2-user/ \
+    --queries /home/ec2-user/datafusion-benchmarks/tpch/queries \
     --output . \
     --iterations 1

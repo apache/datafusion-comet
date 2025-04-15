@@ -13,6 +13,7 @@ export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto
 git clone https://github.com/apache/datafusion-benchmarks.git
 
 # Install Spark
+mkdir /home/ec2-user/tmp
 wget https://dlcdn.apache.org/spark/spark-3.5.5/spark-3.5.5-bin-hadoop3.tgz
 tar xzf spark-3.5.5-bin-hadoop3.tgz
 cp spark-env.sh spark-3.5.5-bin-hadoop3/conf

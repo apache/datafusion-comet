@@ -16,31 +16,14 @@ Connect to the instance and clone this repo (or the fork/branch to be used for b
 git clone https://github.com/apache/datafusion-comet
 ```
 
-Install prerequisites (this will all get scripted once verified).
+## Install Prerequisites
+
+This is not tested yet. I am copying and pasting from the script for testing. 
 
 ```shell
-git clone https://github.com/apache/datafusion-benchmarks.git
+cd dev/benchmarks
+./setup.sh
 ```
-
-
-Java
-
-```shell
-sudo yum install -y java-17-amazon-corretto-headless java-17-amazon-corretto-devel
-export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto
-```
-
-Rust
-
-```shell
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-. "$HOME/.cargo/env"
-
-sudo yum groupinstall "Development Tools"
-```
-
-
-
 Generate data locally
 
 ```shell
@@ -48,21 +31,14 @@ cargo install tpchgen-cli
 tpchgen-cli -s 100 --format parquet
 ```
 
-Spark
+## Spark Benchmark
 
-```shell
-wget https://dlcdn.apache.org/spark/spark-3.5.5/spark-3.5.5-bin-hadoop3.tgz
-tar xzf spark-3.5.5-bin-hadoop3.tgz
-cp spark-env.sh spark-3.5.5-bin-hadoop3/conf
-export SPARK_HOME=/home/ec2-user/spark-3.5.5-bin-hadoop3/
-export SPARK_MASTER=spark://localhost:7077
-$SPARK_HOME/sbin/start-master.sh --host localhost
-$SPARK_HOME/sbin/start-worker.sh $SPARK_MASTER
-```
+run `spark-tpch.sh` to run Spark benchmark. This will take around one hour.
 
-run `spark-tpch.sh` to run Spark benchmark
-
-Comet
+## Comet Benchmark
 
 TBD
 
+## Produce Charts
+
+TBD
