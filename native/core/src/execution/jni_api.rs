@@ -18,17 +18,31 @@
 //! Define JNI APIs which can be called from Java/Scala.
 
 use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
+use crate::{
+    errors::{try_unwrap_or_throw, CometError, CometResult},
+    execution::{
+        metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
+        shuffle::row::process_sorted_row_partition, sort::RdxSort,
+    },
+    jvm_bridge::{jni_new_global_ref, JVMClasses},
+};
 use arrow::array::RecordBatch;
 use arrow::datatypes::DataType as ArrowDataType;
+use datafusion::common::ScalarValue;
 use datafusion::execution::memory_pool::{
     FairSpillPool, GreedyMemoryPool, MemoryPool, TrackConsumersPool, UnboundedMemoryPool,
 };
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::{
     execution::{disk_manager::DiskManagerConfig, runtime_env::RuntimeEnv},
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
+use datafusion_comet_proto::spark_operator::Operator;
 use futures::poll;
+use futures::stream::StreamExt;
+use jni::objects::{JByteBuffer, JMap};
+use jni::sys::JNI_FALSE;
 use jni::{
     errors::Result as JNIResult,
     objects::{
@@ -38,30 +52,15 @@ use jni::{
     sys::{jbyteArray, jint, jlong, jlongArray},
     JNIEnv,
 };
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
-use std::{collections::HashMap, sync::Arc, task::Poll};
-
-use crate::{
-    errors::{try_unwrap_or_throw, CometError, CometResult},
-    execution::{
-        metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
-        shuffle::row::process_sorted_row_partition, sort::RdxSort,
-    },
-    jvm_bridge::{jni_new_global_ref, JVMClasses},
-};
-use datafusion::common::ScalarValue;
-use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-use datafusion_comet_proto::spark_operator::Operator;
-use futures::stream::StreamExt;
-use jni::objects::JByteBuffer;
-use jni::sys::JNI_FALSE;
 use jni::{
     objects::GlobalRef,
     sys::{jboolean, jdouble, jintArray, jobjectArray, jstring},
 };
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
+use std::{collections::HashMap, sync::Arc, task::Poll};
 use tokio::runtime::Runtime;
 
 use crate::execution::fair_memory_pool::CometFairMemoryPool;
@@ -128,6 +127,8 @@ struct ExecutionContext {
     pub explain_native: bool,
     /// Memory pool config
     pub memory_pool_config: MemoryPoolConfig,
+    /// Apache Spark config
+    pub spark_config: HashMap<String, String>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -198,6 +199,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     task_attempt_id: jlong,
     debug_native: jboolean,
     explain_native: jboolean,
+    spark_conf: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         // Init JVM classes
@@ -261,6 +263,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             None
         };
 
+        // Read Apache Spark runtime config
+        let spark_conf_map = JMap::from_env(&mut env, &spark_conf)?;
+        let mut spark_conf_iter = spark_conf_map.iter(&mut env)?;
+        let mut spark_conf = HashMap::new();
+
+        while let Some((key, value)) = spark_conf_iter.next(&mut env)? {
+            let key: String = env.get_string(&JString::from(key)).unwrap().into();
+            let value: String = env.get_string(&JString::from(value)).unwrap().into();
+            spark_conf.insert(key, value);
+        }
+
         let exec_context = Box::new(ExecutionContext {
             id,
             task_attempt_id,
@@ -278,6 +291,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             debug_native: debug_native == 1,
             explain_native: explain_native == 1,
             memory_pool_config,
+            spark_config: spark_conf,
         });
 
         Ok(Box::into_raw(exec_context) as i64)
@@ -632,17 +646,17 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
     exec_context: jlong,
 ) {
     try_unwrap_or_throw(&e, |mut env| unsafe {
-        let execution_context = get_execution_context(exec_context);
+        let exec_context = get_execution_context(exec_context);
 
         // Update metrics
-        update_metrics(&mut env, execution_context)?;
+        update_metrics(&mut env, exec_context)?;
 
-        if execution_context.memory_pool_config.pool_type == MemoryPoolType::FairSpillTaskShared
-            || execution_context.memory_pool_config.pool_type == MemoryPoolType::GreedyTaskShared
+        if exec_context.memory_pool_config.pool_type == MemoryPoolType::FairSpillTaskShared
+            || exec_context.memory_pool_config.pool_type == MemoryPoolType::GreedyTaskShared
         {
             // Decrement the number of native plans using the per-task shared memory pool, and
             // remove the memory pool if the released native plan is the last native plan using it.
-            let task_attempt_id = execution_context.task_attempt_id;
+            let task_attempt_id = exec_context.task_attempt_id;
             let mut memory_pool_map = TASK_SHARED_MEMORY_POOLS.lock().unwrap();
             if let Some(per_task_memory_pool) = memory_pool_map.get_mut(&task_attempt_id) {
                 per_task_memory_pool.num_plans -= 1;
@@ -653,7 +667,7 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
                 }
             }
         }
-        let _: Box<ExecutionContext> = Box::from_raw(execution_context);
+        let _: Box<ExecutionContext> = Box::from_raw(exec_context);
         Ok(())
     })
 }

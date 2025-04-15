@@ -31,8 +31,6 @@ class Native extends NativeBase {
    * Create a native query plan from execution SparkPlan serialized in bytes.
    * @param id
    *   The id of the query plan.
-   * @param configMap
-   *   The Java Map object for the configs of native engine.
    * @param iterators
    *   the input iterators to the native query plan. It should be the same number as the number of
    *   scan nodes in the SparkPlan.
@@ -46,6 +44,8 @@ class Native extends NativeBase {
    * @param taskMemoryManager
    *   the task-level memory manager that is responsible for tracking memory usage across JVM and
    *   native side.
+   * @param sparkConfig
+   *   Apache Spark runtime configuration
    * @return
    *   the address to native query plan.
    */
@@ -59,14 +59,15 @@ class Native extends NativeBase {
       metricsUpdateInterval: Long,
       taskMemoryManager: CometTaskMemoryManager,
       localDirs: Array[String],
-      batchSize: Int,
-      offHeapMode: Boolean,
-      memoryPoolType: String,
-      memoryLimit: Long,
-      memoryLimitPerTask: Long,
+      batchSize: Int, // move to spark conf ?
+      offHeapMode: Boolean, // move to spark conf ?
+      memoryPoolType: String, // move to spark conf ?
+      memoryLimit: Long, // move to spark conf ?
+      memoryLimitPerTask: Long, // move to spark conf ?
       taskAttemptId: Long,
       debug: Boolean,
-      explain: Boolean): Long
+      explain: Boolean,
+      sparkConfig: Map[String, String]): Long
   // scalastyle:on
 
   /**
