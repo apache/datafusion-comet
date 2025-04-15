@@ -11,6 +11,9 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.executor.memory=8g \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=8g \
+    --conf spark.local.dir=/home/ec2-user/tmp \
+    --conf spark.driver.extraJavaOptions="-Djava.io.tmpdir=/home/ec2-user/tmp" \
+    --conf spark.executor.extraJavaOptions="-Djava.io.tmpdir=/home/ec2-user/tmp" \
     tpcbench.py \
     --name spark \
     --benchmark tpch \

@@ -1,0 +1,1 @@
+SPARK_LOCAL_DIRS=/home/ec2-user/tmp
