@@ -104,7 +104,6 @@ pub(crate) fn init_datasource_exec(
 
 fn get_options(session_timezone: &str) -> (TableParquetOptions, SparkParquetOptions) {
     let mut table_parquet_options = TableParquetOptions::new();
-    // TODO: Maybe these are configs?
     table_parquet_options.global.pushdown_filters = true;
     table_parquet_options.global.reorder_filters = true;
     let mut spark_parquet_options =
