@@ -26,7 +26,7 @@ This is separate from the general benchmarking advice that we have in the contri
 
 The documentation assumes that we are using instance type `m6id.2xlarge` (subject to change). 
 
-For now I am using 1024 GB EBS but this can probably be much smaller.
+For now I am using 1024 GB EBS but this can probably be much smaller, maybe as low as 100 GB.
 
 Connect to the instance and clone this repo (or the fork/branch to be used for benchmarking).
 
