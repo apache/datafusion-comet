@@ -24,7 +24,7 @@ can run this as part of the release process and update the charts that we use in
 
 This is separate from the general benchmarking advice that we have in the contributor guide but does duplicate much of it.
 
-The documentation assumes that we are using instance type `m5.2xlarge` (subject to change). 
+The documentation assumes that we are using instance type `m6id.2xlarge` (subject to change). 
 
 For now I am using 1024 GB EBS but this can probably be much smaller.
 
@@ -36,7 +36,7 @@ git clone https://github.com/apache/datafusion-comet
 
 ## Install Prerequisites
 
-This is not tested yet. I am copying and pasting from the script for testing. 
+This is not fully tested yet. I am copying and pasting from the script for testing. 
 
 ```shell
 cd dev/benchmarks
@@ -45,6 +45,10 @@ cd dev/benchmarks
 
 ## Generate data locally
 
+TODO this is using the new tpchgen-rs project, which is much more convenient that the previous approach, but it 
+only generates a single Parquet file per table by default. I have not looked into any performance impact that this may
+have on the benchmark.
+
 ```shell
 cargo install tpchgen-cli
 tpchgen-cli -s 100 --format parquet
@@ -52,11 +56,11 @@ tpchgen-cli -s 100 --format parquet
 
 ## Spark Benchmark
 
-run `spark-tpch.sh` to run Spark benchmark. This will take around one hour.
+run `spark-tpch.sh` to run Spark benchmark. This will take around TBD minutes.
 
 ## Comet Benchmark
 
-run `comet-tpch.sh`.
+run `comet-tpch.sh`. This will take around TBD minutes.
 
 ## Produce Charts
 

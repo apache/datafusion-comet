@@ -20,6 +20,9 @@
 
 export SPARK_MASTER=spark://localhost:7077
 
+# clear caches
+sync; echo 3 > /proc/sys/vm/drop_caches
+
 $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
     --conf spark.driver.memory=8G \

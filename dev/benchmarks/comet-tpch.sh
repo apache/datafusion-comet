@@ -20,6 +20,9 @@
 
 export COMET_JAR=`pwd`/../../spark/target/comet-spark-spark3.5_2.12-0.8.0-SNAPSHOT.jar
 
+# clear caches
+sync; echo 3 > /proc/sys/vm/drop_caches
+
 $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
     --conf spark.driver.memory=8G \
