@@ -635,6 +635,8 @@ under the License.
         <spark.version>3.4.3.2-apple</spark.version>
         <spark.version.short>3.4</spark.version.short>
         <parquet.version>1.13.1.1-apple</parquet.version>
+        <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
+        <shims.minorVerSrc>spark-3.4</shims.minorVerSrc>
       </properties>
     </profile>
 
