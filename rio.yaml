@@ -59,7 +59,7 @@ builds:
         - cargo check --benches
         - export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}$JAVA_HOME/lib:$JAVA_HOME/lib/server
         # We need to compile CometException so that the cargo test can pass
-        - (cd ../common && ../mvnw clean compile -DskipTests)
+        - (cd ../common && ../mvnw ${PROFILES} clean compile -DskipTests)
 
         # We create the target directory for the test results, following the naming convention used
         # by surefire and scalatest (i.e. "${basedir}/target/${runner}-reports")
@@ -132,7 +132,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.12"
+        PROFILES: "-Pspark-3.4-apple,scala-2.12"
     build:
       <<: *test_comet_java_build
       template: freestyle:v4:prb
@@ -144,7 +144,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.12"
+        PROFILES: "-Pspark-3.4-apple,scala-2.12"
     build:
       <<: *test_comet_java_build
       template: freestyle:v4:build
@@ -156,7 +156,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
     build:
       <<: *test_comet_java_build
       template: freestyle:v4:prb
@@ -168,7 +168,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
     build:
       <<: *test_comet_java_build
       template: freestyle:v4:build
@@ -187,7 +187,7 @@ builds:
         - linux/amd64
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
     build: &comet-tpcds-build
       template: freestyle:v4:prb
       steps:
@@ -197,7 +197,7 @@ builds:
         - git apply ../dev/diffs/tpcds-kit.diff
         - cd tools && make OS=LINUX
         - cd ../..
-        - make release
+        - PROFILES="${PROFILES}" make release
         - cd spark && MAVEN_OPTS='-Xmx20g --add-exports java.base/sun.nio.ch=ALL-UNNAMED' ../mvnw ${PROFILES} exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCDSData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--dsdgenDir `pwd`/../tpcds-kit/tools --location `pwd`/tpcds --scaleFactor 1  --numPartitions 1"
         - cd .. && SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/spark/tpcds MAVEN_OPTS='--add-exports java.base/sun.nio.ch=ALL-UNNAMED' ./mvnw ${PROFILES} -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
 
@@ -220,11 +220,11 @@ builds:
         - linux/amd64
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
     build: &comet-tpch-build
       template: freestyle:v4:prb
       steps:
-        - make release
+        - PROFILES="${PROFILES}" make release
         - cd spark && MAVEN_OPTS='-Xmx20g --add-exports java.base/sun.nio.ch=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED --add-opens java.base/java.lang.invoke=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED' ../mvnw ${PROFILES} exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCHData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--location `pwd` --scaleFactor 1 --numPartitions 1 --overwrite"
         - cd .. && SPARK_HOME=`pwd` SPARK_TPCH_DATA=`pwd`/spark/tpch/sf1_parquet MAVEN_OPTS='--add-exports java.base/sun.nio.ch=ALL-UNNAMED' ./mvnw ${PROFILES} -Dsuites=org.apache.spark.sql.CometTPCHQuerySuite test
 
@@ -336,7 +336,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4"
+        PROFILES: "-Pspark-3.4-apple"
         TEST1: catalyst/test
         TEST2: ""
     build:
@@ -355,7 +355,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4"
+        PROFILES: "-Pspark-3.4-apple"
         TEST1: catalyst/test
         TEST2: ""
     build:
@@ -372,7 +372,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
         TEST1: catalyst/test
         TEST2: ""
     build:
@@ -389,7 +389,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
         TEST1: catalyst/test
         TEST2: ""
     build:
@@ -443,7 +443,7 @@ builds:
       # NOTE: Requires ubi8 due to leveldbjni and graviton
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4"
+        PROFILES: "-Pspark-3.4-apple"
         TEST1: sql/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedSQLTest,org.apache.spark.tags.SlowSQLTest
         TEST2: ""
     build:
@@ -462,7 +462,7 @@ builds:
       baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4"
+        PROFILES: "-Pspark-3.4-apple"
         TEST1: sql/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedSQLTest,org.apache.spark.tags.SlowSQLTest
         TEST2: ""
     build:
@@ -480,7 +480,7 @@ builds:
       # NOTE: Requires ubi8 due to leveldbjni and graviton
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
         TEST1: sql/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedSQLTest,org.apache.spark.tags.SlowSQLTest
         TEST2: ""
     build:
@@ -499,7 +499,7 @@ builds:
       baseImage: docker.apple.com/pie/comet-builder-ubi8:latest
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
         TEST1: sql/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedSQLTest,org.apache.spark.tags.SlowSQLTest
         TEST2: ""
     build:
@@ -550,7 +550,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4"
+        PROFILES: "-Pspark-3.4-apple"
         TEST1: ''
         TEST2: sql/testOnly *.SQLQueryTestSuite *.ExpressionsSchemaSuite *.ParquetV1FilterSuite *.ParquetV2FilterSuite *.ParquetV1SchemaPruningSuite *.ParquetV2SchemaPruningSuite org.apache.spark.sql.TPCDSQuery*
     build:
@@ -567,7 +567,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4"
+        PROFILES: "-Pspark-3.4-apple"
         TEST1: ''
         TEST2: sql/testOnly *.SQLQueryTestSuite *.ExpressionsSchemaSuite *.ParquetV1FilterSuite *.ParquetV2FilterSuite *.ParquetV1SchemaPruningSuite *.ParquetV2SchemaPruningSuite org.apache.spark.sql.TPCDSQuery*
     build:
@@ -584,7 +584,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
         TEST1: ''
         TEST2: sql/testOnly *.SQLQueryTestSuite *.ExpressionsSchemaSuite *.ParquetV1FilterSuite *.ParquetV2FilterSuite *.ParquetV1SchemaPruningSuite *.ParquetV2SchemaPruningSuite org.apache.spark.sql.TPCDSQuery*
     build:
@@ -601,7 +601,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
         TEST1: ''
         TEST2: sql/testOnly *.SQLQueryTestSuite *.ExpressionsSchemaSuite *.ParquetV1FilterSuite *.ParquetV2FilterSuite *.ParquetV1SchemaPruningSuite *.ParquetV2SchemaPruningSuite org.apache.spark.sql.TPCDSQuery*
     build:
@@ -618,7 +618,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4"
+        PROFILES: "-Pspark-3.4-apple"
         TEST1: ''
         TEST2: sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest
     build:
@@ -635,7 +635,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4"
+        PROFILES: "-Pspark-3.4-apple"
         TEST1: ''
         TEST2: sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest
     build:
@@ -652,7 +652,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
         TEST1: ''
         TEST2: sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest
     build:
@@ -669,7 +669,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
         TEST1: ''
         TEST2: sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest
     build:
@@ -720,7 +720,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4"
+        PROFILES: "-Pspark-3.4-apple"
         TEST1: hive/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest
         TEST2: ""
     build:
@@ -737,7 +737,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4"
+        PROFILES: "-Pspark-3.4-apple"
         TEST1: hive/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest
         TEST2: ""
     build:
@@ -754,7 +754,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
         TEST1: hive/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest
         TEST2: ""
     build:
@@ -771,7 +771,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
         TEST1: hive/test -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest
         TEST2: ""
     build:
@@ -822,7 +822,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4"
+        PROFILES: "-Pspark-3.4-apple"
         TEST1: ''
         TEST2: hive/testOnly *.HiveSparkSubmitSuite *.VersionsSuite *.HiveDDLSuite *.HiveCatalogedDDLSuite *.HiveSerDeSuite *.HiveQuerySuite *.SQLQuerySuite
     build:
@@ -839,7 +839,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4"
+        PROFILES: "-Pspark-3.4-apple"
         TEST1: ''
         TEST2: hive/testOnly *.HiveSparkSubmitSuite *.VersionsSuite *.HiveDDLSuite *.HiveCatalogedDDLSuite *.HiveSerDeSuite *.HiveQuerySuite *.SQLQuerySuite
     build:
@@ -856,7 +856,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
         TEST1: ''
         TEST2: hive/testOnly *.HiveSparkSubmitSuite *.VersionsSuite *.HiveDDLSuite *.HiveCatalogedDDLSuite *.HiveSerDeSuite *.HiveQuerySuite *.SQLQuerySuite
     build:
@@ -873,7 +873,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
         TEST1: ''
         TEST2: hive/testOnly *.HiveSparkSubmitSuite *.VersionsSuite *.HiveDDLSuite *.HiveCatalogedDDLSuite *.HiveSerDeSuite *.HiveQuerySuite *.SQLQuerySuite
     build:
@@ -951,7 +951,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4"
+        PROFILES: "-Pspark-3.4-apple"
         COMET_TAG: 3.4_2.12
         ICEBERG_BRANCH: apple-1.5.0.x
         ICEBERG_TAG: 3.4_2.12
@@ -969,7 +969,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4"
+        PROFILES: "-Pspark-3.4-apple"
         COMET_TAG: 3.4_2.12
         ICEBERG_BRANCH: apple-1.5.0.x
         ICEBERG_TAG: 3.4_2.12
@@ -987,7 +987,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
         COMET_TAG: 3.4_2.13
         ICEBERG_BRANCH: apple-1.5.0.x
         ICEBERG_TAG: 3.4_2.13
@@ -1005,7 +1005,7 @@ builds:
       <<: *rio3-machine
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
         COMET_TAG: 3.4_2.13
         ICEBERG_BRANCH: apple-1.5.0.x
         ICEBERG_TAG: 3.4_2.13
@@ -1079,7 +1079,7 @@ builds:
         - if [ $(grep '^strip = "debuginfo"$' native/Cargo.toml | wc -l) -ne 1 ]; then echo "ERROR Debug Info must be stripped"; exit 1; fi
 
         # Build Comet
-        - make clean core-${RIO_ARCH}
+        - PROFILES="${PROFILES}" make clean core-${RIO_ARCH}
         - ci stage-lib --many-many-artifacts "$LOCAL_REPO/**/*" --exclude "**/*.xml" --exclude "**/*.md5" --exclude "**/*.sha1"
     package:
       release: false
@@ -1149,7 +1149,7 @@ builds:
 
         # Clear the previous build
         - rm -rf $LOCAL_REPO
-        - make clean
+        - PROFILES="${PROFILES}" make clean
 
         # Extract the native libraries into the "common" tree
         - mkdir -p common/target/classes/org/apache/comet
@@ -1241,7 +1241,7 @@ builds:
         - linux/amd64
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.12"
+        PROFILES: "-Pspark-3.4-apple,scala-2.12"
     build:
       <<: *snapshot_build_build
     reports:
@@ -1267,7 +1267,7 @@ builds:
         - linux/amd64
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
     build:
       <<: *snapshot_build_build
     reports:
@@ -1502,7 +1502,7 @@ builds:
       env:
         <<: *proxy_env
         VERSION: 3.4_2.12
-        PROFILES: "-Pspark-3.4,scala-2.12"
+        PROFILES: "-Pspark-3.4-apple,scala-2.12"
         HADOOP_BINARY_VERSION: "3"
         SPARK_VERSION: 3.4
         SCALA_VERSION: 2.12
@@ -1526,7 +1526,7 @@ builds:
       env:
         <<: *proxy_env
         VERSION: 3.4_2.13
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
         HADOOP_BINARY_VERSION: "3"
         SPARK_VERSION: 3.4
         SCALA_VERSION: 2.13
@@ -1650,7 +1650,7 @@ builds:
         - if [ $(grep '^strip = "debuginfo"$' native/Cargo.toml | wc -l) -ne 1 ]; then echo "ERROR Debug Info must be stripped"; exit 1; fi
 
         # Build Comet
-        - make clean core-${RIO_ARCH}
+        - PROFILES="${PROFILES}" make clean core-${RIO_ARCH}
         - ci stage-lib --many-many-artifacts "$LOCAL_REPO/**/*" --exclude "**/*.xml" --exclude "**/*.md5" --exclude "**/*.sha1"
     package:
       release: true
@@ -1727,7 +1727,7 @@ builds:
 
         # Clear the previous build
         - rm -rf $LOCAL_REPO
-        - make clean
+        - PROFILES="${PROFILES}" make clean
 
         # Extract the native libraries into the "common" tree
         - mkdir -p common/target/classes/org/apache/comet
@@ -1808,7 +1808,7 @@ builds:
         - linux/amd64
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.12"
+        PROFILES: "-Pspark-3.4-apple,scala-2.12"
     build:
       <<: *release_build_build
     package:
@@ -1832,7 +1832,7 @@ builds:
         - linux/amd64
       env:
         <<: *proxy_env
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
     build:
       <<: *release_build_build
     package:
@@ -2040,7 +2040,7 @@ builds:
       env:
         <<: *proxy_env
         VERSION: 3.4_2.12
-        PROFILES: "-Pspark-3.4,scala-2.12"
+        PROFILES: "-Pspark-3.4-apple,scala-2.12"
         HADOOP_BINARY_VERSION: "3"
         SPARK_VERSION: 3.4
         SCALA_VERSION: 2.12
@@ -2064,7 +2064,7 @@ builds:
       env:
         <<: *proxy_env
         VERSION: 3.4_2.13
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
         HADOOP_BINARY_VERSION: "3"
         SPARK_VERSION: 3.4
         SCALA_VERSION: 2.13
@@ -2109,7 +2109,7 @@ builds:
         - if [ "${BUILD_PARAM_STRIP}" != "debuginfo" ]; then sed -i.bak "s/strip = \"debuginfo\"/strip = \"${BUILD_PARAM_STRIP}\"/" native/Cargo.toml; fi
 
         # Build Comet
-        - make clean core-${RIO_ARCH}
+        - PROFILES="${PROFILES}" make clean core-${RIO_ARCH}
         - ci stage-lib --many-many-artifacts "$LOCAL_REPO/**/*" --exclude "**/*.xml" --exclude "**/*.md5" --exclude "**/*.sha1"
     package:
       release: false
@@ -2203,7 +2203,7 @@ builds:
 
         # Clear the previous build
         - rm -rf $LOCAL_REPO
-        - make clean
+        - PROFILES="${PROFILES}" make clean
 
         # Extract the native libraries into the "common" tree
         - mkdir -p common/target/classes/org/apache/comet
@@ -2295,7 +2295,7 @@ builds:
         <<: *proxy_env
         SPARK_VERSION: 3.4
         SCALA_VERSION: 2.12
-        PROFILES: "-Pspark-3.4,scala-2.12"
+        PROFILES: "-Pspark-3.4-apple,scala-2.12"
     build:
       <<: *pr_build_build
     package: &pr_spark_image_package
@@ -2326,7 +2326,7 @@ builds:
         <<: *proxy_env
         SPARK_VERSION: 3.4
         SCALA_VERSION: 2.13
-        PROFILES: "-Pspark-3.4,scala-2.13"
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
     build:
       <<: *pr_build_build
     package:
