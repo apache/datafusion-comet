@@ -92,7 +92,8 @@ class CometExecIterator(
       memoryLimitPerTask = getMemoryLimitPerTask(conf),
       taskAttemptId = TaskContext.get().taskAttemptId,
       debug = COMET_DEBUG_ENABLED.get(),
-      explain = COMET_EXPLAIN_NATIVE_ENABLED.get())
+      explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
+      sparkConfig = SparkEnv.get.conf.getAll.toMap)
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
