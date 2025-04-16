@@ -289,6 +289,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
 
       // Initialize missing columns and use null vectors for them
       missingColumns = new boolean[numColumns];
+      // We do not need the column index of the row index; but this method has the
+      // side effect of throwing an exception if a column with the same name is
+      // found which we do want (spark unit tests explicitly test for that).
       ShimFileFormat.findRowIndexColumnIndexInSchema(sparkSchema);
       StructField[] nonPartitionFields = sparkSchema.fields();
       boolean hasRowIndexColumn = false;
@@ -342,10 +345,16 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
                     + " in data file "
                     + filePath);
           }
-          ConstantColumnReader reader =
-              new ConstantColumnReader(nonPartitionFields[i], capacity, useDecimal128);
-          columnReaders[i] = reader;
-          missingColumns[i] = true;
+          if (field.isPrimitive()) {
+            ConstantColumnReader reader =
+                new ConstantColumnReader(nonPartitionFields[i], capacity, useDecimal128);
+            columnReaders[i] = reader;
+            missingColumns[i] = true;
+          } else {
+            // the column requested is not in the file, but the native reader can handle that
+            // and will return nulls for all rows requested
+            missingColumns[i] = false;
+          }
         }
       }
 
