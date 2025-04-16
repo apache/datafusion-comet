@@ -56,11 +56,19 @@ tpchgen-cli -s 100 --format parquet
 
 ## Spark Benchmark
 
-run `spark-tpch.sh` to run Spark benchmark. This will take around TBD minutes.
+TODO clear page cache before run
+
+```shell
+./spark-tpch.sh
+```
 
 ## Comet Benchmark
 
-run `comet-tpch.sh`. This will take around TBD minutes.
+TODO clear page cache before run
+
+```shell
+./comet-tpch.sh
+```
 
 ## Produce Charts
 
