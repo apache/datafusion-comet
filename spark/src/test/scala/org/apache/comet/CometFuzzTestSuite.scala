@@ -176,6 +176,11 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("Parquet temporal types written as INT96") {
+
+    // there are known issues with INT96 support in the new experimental scans
+    // https://github.com/apache/datafusion-comet/issues/1441
+    assume(!CometConf.isExperimentalNativeScan)
+
     testParquetTemporalTypes(ParquetOutputTimestampType.INT96)
   }
 
