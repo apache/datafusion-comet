@@ -16,12 +16,10 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
-use arrow::array::{new_null_array, DictionaryArray, StructArray};
-use arrow::datatypes::DataType;
 use arrow::{
     array::{
-        cast::AsArray, types::Int32Type, types::TimestampMicrosecondType, Array, ArrayRef,
-        DictionaryArray, StructArray,
+        cast::AsArray, new_null_array, types::Int32Type, types::TimestampMicrosecondType, Array,
+        ArrayRef, DictionaryArray, DictionaryArray, StructArray, StructArray,
     },
     compute::{cast_with_options, take, CastOptions},
     datatypes::{DataType, TimeUnit},
