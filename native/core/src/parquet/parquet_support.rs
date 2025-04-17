@@ -168,7 +168,7 @@ fn cast_array(
                 array
                     .as_primitive::<TimestampMicrosecondType>()
                     .reinterpret_cast::<TimestampMicrosecondType>()
-                    .with_timezone(tz.clone()),
+                    .with_timezone(Arc::clone(tz)),
             ))
         }
         _ => Ok(cast_with_options(&array, to_type, &PARQUET_OPTIONS)?),
