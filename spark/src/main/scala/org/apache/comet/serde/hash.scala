@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Murmur3
 import org.apache.spark.sql.types.{DecimalType, IntegerType, LongType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarExprToProtoWithReturnType, serializeDataType, supportedShuffleDataType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarExprToProtoWithReturnType, serializeDataType, supportedDataType}
 
 object CometXxHash64 extends CometExpressionSerde {
   override def convert(
@@ -74,7 +74,7 @@ private object HashUtils {
           // Java BigDecimal before hashing
           withInfo(expr, s"Unsupported datatype: $dt (precision > 18)")
           return false
-        case dt if !supportedShuffleDataType(dt) =>
+        case dt if !supportedDataType(dt) =>
           withInfo(expr, s"Unsupported datatype $dt")
           return false
         case _ =>
