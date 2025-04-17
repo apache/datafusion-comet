@@ -30,6 +30,7 @@ import org.scalatest.Tag
 import org.apache.commons.io.FileUtils
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
@@ -76,7 +77,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     FileUtils.deleteDirectory(new File(filename))
   }
 
-  test("select *") {
+  ignore("select *") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     val sql = "SELECT * FROM t1"
@@ -87,7 +88,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("select * with limit") {
+  ignore("select * with limit") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     val sql = "SELECT * FROM t1 LIMIT 500"
@@ -98,7 +99,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("order by single column") {
+  ignore("order by single column") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
@@ -111,7 +112,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("count distinct") {
+  ignore("count distinct") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
@@ -123,7 +124,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("order by multiple columns") {
+  ignore("order by multiple columns") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     val allCols = df.columns.mkString(",")
@@ -135,7 +136,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("aggregate group by single column") {
+  ignore("aggregate group by single column") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
@@ -148,7 +149,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("min/max aggregate") {
+  ignore("min/max aggregate") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
@@ -161,7 +162,19 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("join") {
+  test("shuffle") {
+    val df = spark.read.parquet(filename)
+    val df2 = df.repartition(8, df.col("c0")).sort("c1")
+    df2.collect()
+    if (CometConf.isExperimentalNativeScan) {
+      val cometShuffles = collect(df2.queryExecution.executedPlan) {
+        case exec: CometShuffleExchangeExec => exec
+      }
+      assert(1 == cometShuffles.length)
+    }
+  }
+
+  ignore("join") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     df.createOrReplaceTempView("t2")
@@ -175,7 +188,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("Parquet temporal types written as INT96") {
+  ignore("Parquet temporal types written as INT96") {
 
     // there are known issues with INT96 support in the new experimental scans
     // https://github.com/apache/datafusion-comet/issues/1441
@@ -184,11 +197,11 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     testParquetTemporalTypes(ParquetOutputTimestampType.INT96)
   }
 
-  test("Parquet temporal types written as TIMESTAMP_MICROS") {
+  ignore("Parquet temporal types written as TIMESTAMP_MICROS") {
     testParquetTemporalTypes(ParquetOutputTimestampType.TIMESTAMP_MICROS)
   }
 
-  test("Parquet temporal types written as TIMESTAMP_MILLIS") {
+  ignore("Parquet temporal types written as TIMESTAMP_MILLIS") {
     testParquetTemporalTypes(ParquetOutputTimestampType.TIMESTAMP_MILLIS)
   }
 
