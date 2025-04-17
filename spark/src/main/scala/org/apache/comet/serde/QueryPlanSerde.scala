@@ -2793,7 +2793,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case HashPartitioning(expressions, _) =>
         val supported =
           expressions.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-            expressions.forall(e => supportedShuffleDataType(e.dataType, CometColumnarShuffle)) &&
+            expressions.forall(e => supportedShufflePartitionDataType(e.dataType, CometColumnarShuffle)) &&
             inputs.forall(attr => supportedShuffleDataType(attr.dataType, CometColumnarShuffle))
         if (!supported) {
           msg = s"unsupported Spark partitioning expressions: $expressions"
@@ -2836,7 +2836,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case HashPartitioning(expressions, _) =>
         val supported =
           expressions.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-            expressions.forall(e => supportedShuffleDataType(e.dataType, CometNativeShuffle)) &&
+            expressions.forall(e => supportedShufflePartitionDataType(e.dataType, CometNativeShuffle)) &&
             inputs.forall(attr => supportedShuffleDataType(attr.dataType, CometNativeShuffle))
         if (!supported) {
           msg = s"unsupported Spark partitioning expressions: $expressions"
@@ -2857,6 +2857,22 @@ object QueryPlanSerde extends Logging with CometExprShim {
     }
   }
 
+  /**
+   * Determine which data types are supported as hash-partition keys in a shuffle.
+   */
+  def supportedShufflePartitionDataType(dt: DataType, shuffleType: ShuffleType): Boolean = dt match {
+    case _: BooleanType => true
+    case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
+         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
+         _: DecimalType | _: DateType =>
+      true
+    case _ =>
+      false
+  }
+
+  /**
+   * Determine which data types are supported in a shuffle.
+   */
   def supportedShuffleDataType(dt: DataType, shuffleType: ShuffleType): Boolean = dt match {
     case _: BooleanType =>
       shuffleType == CometColumnarShuffle
