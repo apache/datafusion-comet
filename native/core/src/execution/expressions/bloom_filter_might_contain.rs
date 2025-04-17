@@ -22,6 +22,7 @@ use arrow::record_batch::RecordBatch;
 use datafusion::common::{internal_err, Result, ScalarValue};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
+use std::fmt::Formatter;
 use std::hash::Hash;
 use std::{any::Any, fmt::Display, sync::Arc};
 
@@ -139,5 +140,9 @@ impl PhysicalExpr for BloomFilterMightContain {
             Arc::clone(&children[0]),
             Arc::clone(&children[1]),
         )?))
+    }
+
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
     }
 }
