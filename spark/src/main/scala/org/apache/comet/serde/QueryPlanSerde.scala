@@ -2874,8 +2874,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
    * Determine which data types are supported in a shuffle.
    */
   def supportedShuffleDataType(dt: DataType, shuffleType: ShuffleType): Boolean = dt match {
-    case _: BooleanType =>
-      shuffleType == CometColumnarShuffle
+    case _: BooleanType => true
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
         _: DecimalType | _: DateType =>
