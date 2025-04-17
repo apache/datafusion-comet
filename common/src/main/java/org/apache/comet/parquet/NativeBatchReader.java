@@ -24,6 +24,7 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.channels.Channels;
 import java.util.*;
@@ -50,6 +51,7 @@ import org.apache.parquet.HadoopReadOptions;
 import org.apache.parquet.ParquetReadOptions;
 import org.apache.parquet.Preconditions;
 import org.apache.parquet.column.ColumnDescriptor;
+import org.apache.parquet.hadoop.metadata.BlockMetaData;
 import org.apache.parquet.hadoop.metadata.ParquetMetadata;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.Type;
@@ -73,6 +75,8 @@ import org.apache.comet.shims.ShimBatchReader;
 import org.apache.comet.shims.ShimFileFormat;
 import org.apache.comet.vector.CometVector;
 import org.apache.comet.vector.NativeUtil;
+
+import static org.apache.comet.parquet.TypeUtil.isEqual;
 
 /**
  * A vectorized Parquet reader that reads a Parquet file in a batched fashion.
@@ -140,6 +144,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   /** The TaskContext object for executing this task. */
   private final TaskContext taskContext;
 
+  private long totalRowCount = 0;
   private long handle;
 
   // Only for testing
@@ -236,19 +241,23 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     String filePath = file.filePath().toString();
     long fileSize = file.fileSize();
 
-    requestedSchema = footer.getFileMetaData().getSchema();
-    MessageType fileSchema = requestedSchema;
-    // TODO: (ARROW NATIVE) Get requested schema - Convert the Spark schema (from catalyst) into  a
-    // list of fields to project (?). Fields must be matched by field id first  and then by name
-    { //////// Get requested Schema -  replace this block of code native (avoid reading the footer
-      ParquetReadOptions.Builder builder = HadoopReadOptions.builder(conf, new Path(filePath));
+    ParquetReadOptions.Builder builder = HadoopReadOptions.builder(conf, new Path(filePath));
 
-      if (start >= 0 && length >= 0) {
-        builder = builder.withRange(start, start + length);
-      }
-      ParquetReadOptions readOptions = builder.build();
+    if (start >= 0 && length >= 0) {
+      builder = builder.withRange(start, start + length);
+    }
+    ParquetReadOptions readOptions = builder.build();
 
-      ReadOptions cometReadOptions = ReadOptions.builder(conf).build();
+    // TODO: enable off-heap buffer when they are ready
+    ReadOptions cometReadOptions = ReadOptions.builder(conf).build();
+
+    Path path = new Path(new URI(filePath));
+    try (FileReader fileReader =
+        new FileReader(
+            CometInputFile.fromPath(path, conf), footer, readOptions, cometReadOptions, metrics)) {
+
+      requestedSchema = footer.getFileMetaData().getSchema();
+      MessageType fileSchema = requestedSchema;
 
       if (sparkSchema == null) {
         sparkSchema = new ParquetToSparkSchemaConverter(conf).convert(requestedSchema);
@@ -263,111 +272,130 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
                   sparkSchema.size(), requestedSchema.getColumns().size()));
         }
       }
-    } ////// End get requested schema
 
-    String timeZoneId = conf.get("spark.sql.session.timeZone");
-    // Native code uses "UTC" always as the timeZoneId when converting from spark to arrow schema.
-    Schema arrowSchema = Utils$.MODULE$.toArrowSchema(sparkSchema, "UTC");
-    byte[] serializedRequestedArrowSchema = serializeArrowSchema(arrowSchema);
-    Schema dataArrowSchema = Utils$.MODULE$.toArrowSchema(dataSchema, "UTC");
-    byte[] serializedDataArrowSchema = serializeArrowSchema(dataArrowSchema);
+      String timeZoneId = conf.get("spark.sql.session.timeZone");
+      // Native code uses "UTC" always as the timeZoneId when converting from spark to arrow schema.
+      Schema arrowSchema = Utils$.MODULE$.toArrowSchema(sparkSchema, "UTC");
+      byte[] serializedRequestedArrowSchema = serializeArrowSchema(arrowSchema);
+      Schema dataArrowSchema = Utils$.MODULE$.toArrowSchema(dataSchema, "UTC");
+      byte[] serializedDataArrowSchema = serializeArrowSchema(dataArrowSchema);
 
-    //// Create Column readers
-    List<ColumnDescriptor> columns = requestedSchema.getColumns();
-    List<Type> fields = requestedSchema.getFields();
-    int numColumns = fields.size();
-    if (partitionSchema != null) numColumns += partitionSchema.size();
-    columnReaders = new AbstractColumnReader[numColumns];
+      // Create Column readers
+      List<Type> fields = requestedSchema.getFields();
+      List<Type> fileFields = fileSchema.getFields();
+      int numColumns = fields.size();
+      if (partitionSchema != null) numColumns += partitionSchema.size();
+      columnReaders = new AbstractColumnReader[numColumns];
 
-    // Initialize missing columns and use null vectors for them
-    missingColumns = new boolean[columns.size()];
-    List<String[]> paths = requestedSchema.getPaths();
-    StructField[] nonPartitionFields = sparkSchema.fields();
-    //    ShimFileFormat.findRowIndexColumnIndexInSchema(sparkSchema);
-    for (int i = 0; i < requestedSchema.getFieldCount(); i++) {
-      Type t = requestedSchema.getFields().get(i);
-      //      Preconditions.checkState(
-      //          t.isPrimitive() && !t.isRepetition(Type.Repetition.REPEATED),
-      //          "Complex type is not supported");
-      String[] colPath = paths.get(i);
-      if (nonPartitionFields[i].name().equals(ShimFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME())) {
-        // Values of ROW_INDEX_TEMPORARY_COLUMN_NAME column are always populated with
-        // generated row indexes, rather than read from the file.
-        // TODO(SPARK-40059): Allow users to include columns named
-        //                    FileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME in their schemas.
-        // TODO: (ARROW NATIVE) Support row indices ...
-        //        long[] rowIndices = fileReader.getRowIndices();
-        //        columnReaders[i] = new RowIndexColumnReader(nonPartitionFields[i], capacity,
-        // rowIndices);
-        missingColumns[i] = true;
-      } else if (fileSchema.containsPath(colPath)) {
-        ColumnDescriptor fd = fileSchema.getColumnDescription(colPath);
-        if (!fd.equals(columns.get(i))) {
-          throw new UnsupportedOperationException("Schema evolution is not supported");
+      // Initialize missing columns and use null vectors for them
+      missingColumns = new boolean[numColumns];
+      ShimFileFormat.findRowIndexColumnIndexInSchema(sparkSchema);
+      StructField[] nonPartitionFields = sparkSchema.fields();
+      boolean hasRowIndexColumn = false;
+      // Ranges of rows to read (needed iff row indexes are being read)
+      List<BlockMetaData> blocks =
+          FileReader.filterRowGroups(readOptions, footer.getBlocks(), fileReader);
+      totalRowCount = fileReader.getFilteredRecordCount();
+      if (totalRowCount == 0) {
+        // all the data is filtered out.
+        isInitialized = true;
+        return;
+      }
+      long[] starts = new long[blocks.size()];
+      long[] lengths = new long[blocks.size()];
+      starts = new long[blocks.size()];
+      lengths = new long[blocks.size()];
+      int blockIndex = 0;
+      for (BlockMetaData block : blocks) {
+        long blockStart = block.getStartingPos();
+        long blockLength = block.getCompressedSize();
+        starts[blockIndex] = blockStart;
+        lengths[blockIndex] = blockLength;
+        blockIndex++;
+      }
+      for (int i = 0; i < fields.size(); i++) {
+        Type field = fields.get(i);
+        Optional<Type> optFileField =
+            fileFields.stream().filter(f -> f.getName().equals(field.getName())).findFirst();
+        if (nonPartitionFields[i].name().equals(ShimFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME())) {
+          // Values of ROW_INDEX_TEMPORARY_COLUMN_NAME column are always populated with
+          // generated row indexes, rather than read from the file.
+          // TODO(SPARK-40059): Allow users to include columns named
+          //                    FileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME in their schemas.
+          long[] rowIndices = FileReader.getRowIndices(blocks);
+          columnReaders[i] = new RowIndexColumnReader(nonPartitionFields[i], capacity, rowIndices);
+          hasRowIndexColumn = true;
+          missingColumns[i] = true;
+        } else if (optFileField.isPresent()) {
+          // The column we are reading may be a complex type in which case we check if each field in
+          // the requested type is in the file type (and the same data type)
+          if (!isEqual(field, optFileField.get())) {
+            throw new UnsupportedOperationException("Schema evolution is not supported");
+          }
+          missingColumns[i] = false;
+        } else {
+          if (field.getRepetition() == Type.Repetition.REQUIRED) {
+            throw new IOException(
+                "Required column '"
+                    + field.getName()
+                    + "' is missing"
+                    + " in data file "
+                    + filePath);
+          }
+          ConstantColumnReader reader =
+              new ConstantColumnReader(nonPartitionFields[i], capacity, useDecimal128);
+          columnReaders[i] = reader;
+          missingColumns[i] = true;
         }
-        missingColumns[i] = false;
-      } else {
-        if (columns.get(i).getMaxDefinitionLevel() == 0) {
-          throw new IOException(
-              "Required column '"
-                  + Arrays.toString(colPath)
-                  + "' is missing"
-                  + " in data file "
-                  + filePath);
+      }
+
+      // Initialize constant readers for partition columns
+      if (partitionSchema != null) {
+        StructField[] partitionFields = partitionSchema.fields();
+        for (int i = fields.size(); i < columnReaders.length; i++) {
+          int fieldIndex = i - fields.size();
+          StructField field = partitionFields[fieldIndex];
+          ConstantColumnReader reader =
+              new ConstantColumnReader(field, capacity, partitionValues, fieldIndex, useDecimal128);
+          columnReaders[i] = reader;
         }
-        ConstantColumnReader reader =
-            new ConstantColumnReader(nonPartitionFields[i], capacity, useDecimal128);
-        columnReaders[i] = reader;
-        missingColumns[i] = true;
       }
-    }
 
-    // Initialize constant readers for partition columns
-    if (partitionSchema != null) {
-      StructField[] partitionFields = partitionSchema.fields();
-      for (int i = columns.size(); i < columnReaders.length; i++) {
-        int fieldIndex = i - columns.size();
-        StructField field = partitionFields[fieldIndex];
-        ConstantColumnReader reader =
-            new ConstantColumnReader(field, capacity, partitionValues, fieldIndex, useDecimal128);
-        columnReaders[i] = reader;
+      vectors = new CometVector[numColumns];
+      currentBatch = new ColumnarBatch(vectors);
+
+      // For test purpose only
+      // If the last external accumulator is `NumRowGroupsAccumulator`, the row group number to read
+      // will be updated to the accumulator. So we can check if the row groups are filtered or not
+      // in test case.
+      // Note that this tries to get thread local TaskContext object, if this is called at other
+      // thread, it won't update the accumulator.
+      if (taskContext != null) {
+        Option<AccumulatorV2<?, ?>> accu = getTaskAccumulator(taskContext.taskMetrics());
+        if (accu.isDefined() && accu.get().getClass().getSimpleName().equals("NumRowGroupsAcc")) {
+          @SuppressWarnings("unchecked")
+          AccumulatorV2<Integer, Integer> intAccum = (AccumulatorV2<Integer, Integer>) accu.get();
+          // TODO: Get num_row_groups from native
+          // intAccum.add(fileReader.getRowGroups().size());
+        }
       }
+
+      int batchSize =
+          conf.getInt(
+              CometConf.COMET_BATCH_SIZE().key(),
+              (Integer) CometConf.COMET_BATCH_SIZE().defaultValue().get());
+      this.handle =
+          Native.initRecordBatchReader(
+              filePath,
+              fileSize,
+              starts,
+              lengths,
+              hasRowIndexColumn ? null : nativeFilter,
+              serializedRequestedArrowSchema,
+              serializedDataArrowSchema,
+              timeZoneId,
+              batchSize);
     }
-
-    vectors = new CometVector[numColumns];
-    currentBatch = new ColumnarBatch(vectors);
-
-    // For test purpose only
-    // If the last external accumulator is `NumRowGroupsAccumulator`, the row group number to read
-    // will be updated to the accumulator. So we can check if the row groups are filtered or not
-    // in test case.
-    // Note that this tries to get thread local TaskContext object, if this is called at other
-    // thread, it won't update the accumulator.
-    if (taskContext != null) {
-      Option<AccumulatorV2<?, ?>> accu = getTaskAccumulator(taskContext.taskMetrics());
-      if (accu.isDefined() && accu.get().getClass().getSimpleName().equals("NumRowGroupsAcc")) {
-        @SuppressWarnings("unchecked")
-        AccumulatorV2<Integer, Integer> intAccum = (AccumulatorV2<Integer, Integer>) accu.get();
-        // TODO: Get num_row_groups from native
-        // intAccum.add(fileReader.getRowGroups().size());
-      }
-    }
-
-    int batchSize =
-        conf.getInt(
-            CometConf.COMET_BATCH_SIZE().key(),
-            (Integer) CometConf.COMET_BATCH_SIZE().defaultValue().get());
-    this.handle =
-        Native.initRecordBatchReader(
-            filePath,
-            fileSize,
-            start,
-            length,
-            nativeFilter,
-            serializedRequestedArrowSchema,
-            serializedDataArrowSchema,
-            timeZoneId,
-            batchSize);
     isInitialized = true;
   }
 
@@ -423,6 +451,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     Preconditions.checkState(isInitialized, "init() should be called first!");
 
     //    if (rowsRead >= totalRowCount) return false;
+
+    if (totalRowCount == 0) return false;
+
     int batchSize;
 
     try {
@@ -496,25 +527,25 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     List<ColumnDescriptor> columns = requestedSchema.getColumns();
     List<Type> fields = requestedSchema.getFields();
     for (int i = 0; i < fields.size(); i++) {
-      // TODO: (ARROW NATIVE) check this. Currently not handling missing columns correctly?
-      if (missingColumns[i]) continue;
-      if (columnReaders[i] != null) columnReaders[i].close();
-      // TODO: (ARROW NATIVE) handle tz, datetime & int96 rebase
-      DataType dataType = sparkSchema.fields()[i].dataType();
-      Type field = fields.get(i);
-      NativeColumnReader reader =
-          new NativeColumnReader(
-              this.handle,
-              i,
-              dataType,
-              field,
-              null,
-              importer,
-              nativeUtil,
-              capacity,
-              useDecimal128,
-              useLegacyDateTimestamp);
-      columnReaders[i] = reader;
+      if (!missingColumns[i]) {
+        if (columnReaders[i] != null) columnReaders[i].close();
+        // TODO: (ARROW NATIVE) handle tz, datetime & int96 rebase
+        DataType dataType = sparkSchema.fields()[i].dataType();
+        Type field = fields.get(i);
+        NativeColumnReader reader =
+            new NativeColumnReader(
+                this.handle,
+                i,
+                dataType,
+                field,
+                null,
+                importer,
+                nativeUtil,
+                capacity,
+                useDecimal128,
+                useLegacyDateTimestamp);
+        columnReaders[i] = reader;
+      }
     }
     return batchSize;
   }
