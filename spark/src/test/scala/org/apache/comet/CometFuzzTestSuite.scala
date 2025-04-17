@@ -77,7 +77,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     FileUtils.deleteDirectory(new File(filename))
   }
 
-  ignore("select *") {
+  test("select *") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     val sql = "SELECT * FROM t1"
@@ -88,7 +88,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  ignore("select * with limit") {
+  test("select * with limit") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     val sql = "SELECT * FROM t1 LIMIT 500"
@@ -99,7 +99,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  ignore("order by single column") {
+  test("order by single column") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
@@ -112,7 +112,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  ignore("count distinct") {
+  test("count distinct") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
@@ -124,7 +124,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  ignore("order by multiple columns") {
+  test("order by multiple columns") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     val allCols = df.columns.mkString(",")
@@ -136,7 +136,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  ignore("aggregate group by single column") {
+  test("aggregate group by single column") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
@@ -149,7 +149,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  ignore("min/max aggregate") {
+  test("min/max aggregate") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
@@ -174,7 +174,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  ignore("join") {
+  test("join") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     df.createOrReplaceTempView("t2")
@@ -188,7 +188,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  ignore("Parquet temporal types written as INT96") {
+  test("Parquet temporal types written as INT96") {
 
     // there are known issues with INT96 support in the new experimental scans
     // https://github.com/apache/datafusion-comet/issues/1441
@@ -197,11 +197,11 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     testParquetTemporalTypes(ParquetOutputTimestampType.INT96)
   }
 
-  ignore("Parquet temporal types written as TIMESTAMP_MICROS") {
+  test("Parquet temporal types written as TIMESTAMP_MICROS") {
     testParquetTemporalTypes(ParquetOutputTimestampType.TIMESTAMP_MICROS)
   }
 
-  ignore("Parquet temporal types written as TIMESTAMP_MILLIS") {
+  test("Parquet temporal types written as TIMESTAMP_MILLIS") {
     testParquetTemporalTypes(ParquetOutputTimestampType.TIMESTAMP_MILLIS)
   }
 
