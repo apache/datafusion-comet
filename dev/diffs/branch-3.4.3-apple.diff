@@ -1,0 +1,21 @@
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
+index ab7584e768e..2ada8c28842 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
+@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.SchemaPruningTest
+ import org.apache.spark.sql.catalyst.expressions.Concat
+ import org.apache.spark.sql.catalyst.parser.CatalystSqlParser
+ import org.apache.spark.sql.catalyst.plans.logical.Expand
+-import org.apache.spark.sql.comet.CometScanExec
++import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
+ import org.apache.spark.sql.execution.FileSourceScanExec
+ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+ import org.apache.spark.sql.functions._
+@@ -869,6 +869,7 @@ abstract class SchemaPruningSuite
+       collect(df.queryExecution.executedPlan) {
+         case scan: FileSourceScanExec => scan.requiredSchema
+         case scan: CometScanExec => scan.requiredSchema
++        case scan: CometNativeScanExec => scan.requiredSchema
+       }
+     assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
+       s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
