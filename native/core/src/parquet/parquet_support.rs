@@ -19,7 +19,7 @@ use crate::execution::operators::ExecutionError;
 use arrow::{
     array::{
         cast::AsArray, new_null_array, types::Int32Type, types::TimestampMicrosecondType, Array,
-        ArrayRef, DictionaryArray, DictionaryArray, StructArray, StructArray,
+        ArrayRef, DictionaryArray, StructArray,
     },
     compute::{cast_with_options, take, CastOptions},
     datatypes::{DataType, TimeUnit},
