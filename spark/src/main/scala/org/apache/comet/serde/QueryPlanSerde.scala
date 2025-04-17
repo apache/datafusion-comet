@@ -2793,7 +2793,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case HashPartitioning(expressions, _) =>
         val supported =
           expressions.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-            expressions.forall(e => supportedShufflePartitionDataType(e.dataType)) &&
+            expressions.forall(e => supportedShufflePartitionKeyDataType(e.dataType)) &&
             inputs.forall(attr => supportedShuffleDataType(attr.dataType))
         if (!supported) {
           msg = s"unsupported Spark partitioning expressions: $expressions"
@@ -2836,7 +2836,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case HashPartitioning(expressions, _) =>
         val supported =
           expressions.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-            expressions.forall(e => supportedShufflePartitionDataType(e.dataType)) &&
+            expressions.forall(e => supportedShufflePartitionKeyDataType(e.dataType)) &&
             inputs.forall(attr => supportedShuffleDataType(attr.dataType))
         if (!supported) {
           msg = s"unsupported Spark partitioning expressions: $expressions"
@@ -2859,8 +2859,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
   /**
    * Determine which data types are supported as hash-partition keys in a shuffle.
+   *
+   * Hash Partition Key determines how data should be collocated for operations like `groupByKey`,
+   * `reduceByKey` or `join`.
    */
-  def supportedShufflePartitionDataType(dt: DataType): Boolean = dt match {
+  def supportedShufflePartitionKeyDataType(dt: DataType): Boolean = dt match {
     case _: BooleanType => true
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
