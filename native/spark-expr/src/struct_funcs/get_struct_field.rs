@@ -67,6 +67,10 @@ impl PhysicalExpr for GetStructField {
         self
     }
 
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
+    }
+
     fn data_type(&self, input_schema: &Schema) -> DataFusionResult<DataType> {
         Ok(self.child_field(input_schema)?.data_type().clone())
     }
