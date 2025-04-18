@@ -99,6 +99,7 @@ impl DisplayAs for CopyExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "CopyExec [{:?}]", self.mode)
             }
+            DisplayFormatType::TreeRender => unimplemented!(),
         }
     }
 }

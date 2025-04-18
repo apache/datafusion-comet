@@ -27,6 +27,7 @@ use datafusion::{
     logical_expr::{interval_arithmetic::Interval, ColumnarValue},
     physical_expr::PhysicalExpr,
 };
+use std::fmt::Formatter;
 use std::hash::Hash;
 use std::{any::Any, sync::Arc};
 
@@ -257,5 +258,9 @@ impl PhysicalExpr for NegativeExpr {
     fn get_properties(&self, children: &[ExprProperties]) -> Result<ExprProperties> {
         let properties = children[0].clone().with_order(children[0].sort_properties);
         Ok(properties)
+    }
+
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
     }
 }

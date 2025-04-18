@@ -89,6 +89,10 @@ impl PhysicalExpr for TimestampTruncExpr {
         self
     }
 
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
+    }
+
     fn data_type(&self, input_schema: &Schema) -> datafusion::common::Result<DataType> {
         match self.child.data_type(input_schema)? {
             DataType::Dictionary(key_type, _) => Ok(DataType::Dictionary(

@@ -128,7 +128,20 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
 
       val recordBatchReader =
         if (nativeIcebergCompat) {
+          // We still need the predicate in the conf to allow us to generate row indexes based on
+          // the actual row groups read
           val pushed = if (parquetFilterPushDown) {
+            filters
+              // Collects all converted Parquet filter predicates. Notice that not all predicates
+              // can be converted (`ParquetFilters.createFilter` returns an `Option`). That's why
+              // a `flatMap` is used here.
+              .flatMap(parquetFilters.createFilter)
+              .reduceOption(FilterApi.and)
+          } else {
+            None
+          }
+          pushed.foreach(p => ParquetInputFormat.setFilterPredicate(sharedConf, p))
+          val pushedNative = if (parquetFilterPushDown) {
             parquetFilters.createNativeFilters(filters)
           } else {
             None
@@ -137,7 +150,7 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
             sharedConf,
             file,
             footer,
-            pushed.orNull,
+            pushedNative.orNull,
             capacity,
             requiredSchema,
             dataSchema,
