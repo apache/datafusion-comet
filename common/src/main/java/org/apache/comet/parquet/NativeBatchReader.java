@@ -384,8 +384,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
         if (accu.isDefined() && accu.get().getClass().getSimpleName().equals("NumRowGroupsAcc")) {
           @SuppressWarnings("unchecked")
           AccumulatorV2<Integer, Integer> intAccum = (AccumulatorV2<Integer, Integer>) accu.get();
-          // TODO: Get num_row_groups from native
-          // intAccum.add(fileReader.getRowGroups().size());
+          intAccum.add(blocks.size());
         }
       }
 
