@@ -26,7 +26,9 @@ use arrow::{
 };
 
 use datafusion::common::{cast::as_int64_array, exec_err, Result, ScalarValue};
-use datafusion::logical_expr::{ColumnarValue, ScalarUDFImpl, Signature, Volatility};
+use datafusion::logical_expr::{
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+};
 
 fn chr(args: &[ArrayRef]) -> Result<ArrayRef> {
     let integer_array = as_int64_array(&args[0])?;
@@ -91,8 +93,8 @@ impl ScalarUDFImpl for SparkChrFunc {
         Ok(Utf8)
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> Result<ColumnarValue> {
-        spark_chr(args)
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        spark_chr(&args.args)
     }
 }
 

@@ -384,6 +384,7 @@ impl DisplayAs for ScanExec {
                     .collect();
                 write!(f, "schema=[{}]", fields.join(", "))?;
             }
+            DisplayFormatType::TreeRender => unimplemented!(),
         }
         Ok(())
     }

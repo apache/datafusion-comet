@@ -624,17 +624,22 @@ fn get_batch_context<'a>(handle: jlong) -> Result<&'a mut BatchContext, CometErr
 fn get_file_groups_single_file(
     path: &Path,
     file_size: u64,
-    start: i64,
-    length: i64,
+    starts: &mut [i64],
+    lengths: &mut [i64],
 ) -> Vec<Vec<PartitionedFile>> {
-    let mut partitioned_file = PartitionedFile::new_with_range(
-        String::new(), // Dummy file path. We will override this with our path so that url encoding does not occur
-        file_size,
-        start,
-        start + length,
-    );
-    partitioned_file.object_meta.location = (*path).clone();
-    vec![vec![partitioned_file]]
+    assert!(!starts.is_empty() && starts.len() == lengths.len());
+    let mut groups: Vec<PartitionedFile> = Vec::with_capacity(starts.len());
+    for (i, &start) in starts.iter().enumerate() {
+        let mut partitioned_file = PartitionedFile::new_with_range(
+            String::new(), // Dummy file path. We will override this with our path so that url encoding does not occur
+            file_size,
+            start,
+            start + lengths[i],
+        );
+        partitioned_file.object_meta.location = (*path).clone();
+        groups.push(partitioned_file);
+    }
+    vec![groups]
 }
 
 /// # Safety
@@ -645,8 +650,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     _jclass: JClass,
     file_path: jstring,
     file_size: jlong,
-    start: jlong,
-    length: jlong,
+    starts: jlongArray,
+    lengths: jlongArray,
     filter: jbyteArray,
     required_schema: jbyteArray,
     data_schema: jbyteArray,
@@ -685,9 +690,16 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         } else {
             None
         };
+        let starts_array = JLongArray::from_raw(starts);
+        let starts = env.get_array_elements(&starts_array, ReleaseMode::NoCopyBack)?;
+        let starts = core::slice::from_raw_parts_mut(starts.as_ptr(), starts.len());
+
+        let lengths_array = JLongArray::from_raw(lengths);
+        let lengths = env.get_array_elements(&lengths_array, ReleaseMode::NoCopyBack)?;
+        let lengths = core::slice::from_raw_parts_mut(lengths.as_ptr(), lengths.len());
 
         let file_groups =
-            get_file_groups_single_file(&object_store_path, file_size as u64, start, length);
+            get_file_groups_single_file(&object_store_path, file_size as u64, starts, lengths);
 
         let session_timezone: String = env
             .get_string(&JString::from_raw(session_timezone))

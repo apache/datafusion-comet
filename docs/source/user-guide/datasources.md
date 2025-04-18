@@ -51,12 +51,12 @@ Unlike to native Comet reader the Datafusion reader fully supports nested types 
 To build Comet with native DataFusion reader and remote HDFS support it is required to have a JDK installed
 
 Example:
-Build a Comet for `spark-3.4` provide a JDK path in `JAVA_HOME` 
+Build a Comet for `spark-3.5` provide a JDK path in `JAVA_HOME` 
 Provide the JRE linker path in `RUSTFLAGS`, the path can vary depending on the system. Typically JRE linker is a part of installed JDK
 
 ```shell
 export JAVA_HOME="/opt/homebrew/opt/openjdk@11"
-make release PROFILES="-Pspark-3.4" COMET_FEATURES=hdfs RUSTFLAGS="-L $JAVA_HOME/libexec/openjdk.jdk/Contents/Home/lib/server"
+make release PROFILES="-Pspark-3.5" COMET_FEATURES=hdfs RUSTFLAGS="-L $JAVA_HOME/libexec/openjdk.jdk/Contents/Home/lib/server"
 ```
 
 Start Comet with experimental reader and HDFS support as [described](installation.md/#run-spark-shell-with-comet-enabled)
