@@ -2791,9 +2791,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
     var msg = ""
     val supported = partitioning match {
       case HashPartitioning(expressions, _) =>
+        // columnar shuffle supports the same data types (including complex types) both for
+        // partition keys and for other columns
         val supported =
           expressions.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-            expressions.forall(e => supportedShufflePartitionKeyDataType(e.dataType)) &&
+            expressions.forall(e => supportedShuffleDataType(e.dataType)) &&
             inputs.forall(attr => supportedShuffleDataType(attr.dataType))
         if (!supported) {
           msg = s"unsupported Spark partitioning expressions: $expressions"
@@ -2834,6 +2836,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     var msg = ""
     val supported = partitioning match {
       case HashPartitioning(expressions, _) =>
+        // native shuffle currently does not support complex types as partition keys
+        // due to lack of hashing support for those types
         val supported =
           expressions.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
             expressions.forall(e => supportedShufflePartitionKeyDataType(e.dataType)) &&
