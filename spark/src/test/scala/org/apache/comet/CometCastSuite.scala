@@ -900,8 +900,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast TimestampType to LongType") {
-    // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!CometConf.isExperimentalNativeScan)
     castTest(generateTimestampsExtended(), DataTypes.LongType)
   }
 
@@ -924,14 +922,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast TimestampType to StringType") {
-    // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!CometConf.isExperimentalNativeScan)
     castTest(generateTimestamps(), DataTypes.StringType)
   }
 
   test("cast TimestampType to DateType") {
-    // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!CometConf.isExperimentalNativeScan)
     castTest(generateTimestamps(), DataTypes.DateType)
   }
 
