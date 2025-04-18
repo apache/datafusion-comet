@@ -2839,10 +2839,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
      * `groupByKey`, `reduceByKey` or `join`.
      */
     def supportedPartitionKeyDataType(dt: DataType): Boolean = dt match {
-      case _: BooleanType => true
-      case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-          _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
-          _: DecimalType | _: DateType =>
+      case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
+          _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
+          _: TimestampNTZType | _: DecimalType | _: DateType =>
         true
       case _ =>
         false
@@ -2882,10 +2881,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
    * Determine which data types are supported in a shuffle.
    */
   def supportedShuffleDataType(dt: DataType): Boolean = dt match {
-    case _: BooleanType => true
-    case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-        _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
-        _: DecimalType | _: DateType =>
+    case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
+        _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
+        _: TimestampNTZType | _: DecimalType | _: DateType =>
       true
     case StructType(fields) =>
       fields.forall(f => supportedShuffleDataType(f.dataType)) &&
@@ -2938,7 +2936,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
       val canSort = sortOrder.head.dataType match {
         case _: BooleanType => true
         case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-            _: DoubleType | _: TimestampType | _: TimestampType | _: DecimalType | _: DateType =>
+            _: DoubleType | _: TimestampType | _: TimestampNTZType | _: DecimalType |
+            _: DateType =>
           true
         case _: BinaryType | _: StringType => true
         case ArrayType(elementType, _) => canRank(elementType)
