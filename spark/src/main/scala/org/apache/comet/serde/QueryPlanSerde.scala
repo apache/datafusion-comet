@@ -2831,6 +2831,23 @@ object QueryPlanSerde extends Logging with CometExprShim {
    * Whether the given Spark partitioning is supported by Comet native shuffle.
    */
   def nativeShuffleSupported(s: ShuffleExchangeExec): (Boolean, String) = {
+
+    /**
+     * Determine which data types are supported as hash-partition keys in native shuffle.
+     *
+     * Hash Partition Key determines how data should be collocated for operations like
+     * `groupByKey`, `reduceByKey` or `join`.
+     */
+    def supportedPartitionKeyDataType(dt: DataType): Boolean = dt match {
+      case _: BooleanType => true
+      case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
+          _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
+          _: DecimalType | _: DateType =>
+        true
+      case _ =>
+        false
+    }
+
     val inputs = s.child.output
     val partitioning = s.outputPartitioning
     var msg = ""
@@ -2840,7 +2857,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         // due to lack of hashing support for those types
         val supported =
           expressions.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-            expressions.forall(e => supportedShufflePartitionKeyDataType(e.dataType)) &&
+            expressions.forall(e => supportedPartitionKeyDataType(e.dataType)) &&
             inputs.forall(attr => supportedShuffleDataType(attr.dataType))
         if (!supported) {
           msg = s"unsupported Spark partitioning expressions: $expressions"
@@ -2859,22 +2876,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     } else {
       (true, null)
     }
-  }
-
-  /**
-   * Determine which data types are supported as hash-partition keys in a shuffle.
-   *
-   * Hash Partition Key determines how data should be collocated for operations like `groupByKey`,
-   * `reduceByKey` or `join`.
-   */
-  def supportedShufflePartitionKeyDataType(dt: DataType): Boolean = dt match {
-    case _: BooleanType => true
-    case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-        _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
-        _: DecimalType | _: DateType =>
-      true
-    case _ =>
-      false
   }
 
   /**
