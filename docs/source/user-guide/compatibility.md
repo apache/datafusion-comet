@@ -40,7 +40,7 @@ Comet currently has three distinct implementations of the Parquet scan operator.
 | `native_datafusion`     | This implementation delegates to DataFusion's `DataSourceExec`.                                                                                                                           |
 | `native_iceberg_compat` | This implementation also delegates to DataFusion's `DataSourceExec` but uses a hybrid approach of JVM and native code. This scan is designed to be integrated with Iceberg in the future. |
 
-The new `native_datafusion` and `native_iceberg_compat` scans provide the following benefits over the `native_comet`
+The new (and currently experimental) `native_datafusion` and `native_iceberg_compat` scans provide the following benefits over the `native_comet`
 implementation:
 
 - Leverages the DataFusion community's ongoing improvements to `DataSourceExec`
@@ -57,6 +57,10 @@ The new scans have the following limitations:
   setting `spark.comet.scan.allowIncompatible=true`. This issue does not occur when reading Parquet files that
   were written by Spark.
 - Reading legacy INT96 timestamps contained within complex types can produce different results to Spark
+- There are failures in the Spark SQL test suite when enabling these new scans (tracking issues: [#1542] and [#1545]).
+
+[#1545]: https://github.com/apache/datafusion-comet/issues/1545
+[#1542]: https://github.com/apache/datafusion-comet/issues/1542
 
 ## ANSI mode
 
