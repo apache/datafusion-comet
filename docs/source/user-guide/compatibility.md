@@ -34,19 +34,19 @@ This guide offers information about areas of functionality where there are known
 Comet currently has three distinct implementations of the Parquet scan operator. The configuration property
 `spark.comet.scan.impl` is used to select an implementation.
 
-| Implementation          | Description                                                                                                                                                                            |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `native_comet`          | This is the default implementation. It provides strong compatibility with Spark but does not support complex types.                                                                    |
-| `native_datafusion`     | This implementation delegates to DataFusion's `ParquetExec`.                                                                                                                           |
-| `native_iceberg_compat` | This implementation also delegates to DataFusion's `ParquetExec` but uses a hybrid approach of JVM and native code. This scan is designed to be integrated with Iceberg in the future. |
+| Implementation          | Description                                                                                                                                                                               |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `native_comet`          | This is the default implementation. It provides strong compatibility with Spark but does not support complex types.                                                                       |
+| `native_datafusion`     | This implementation delegates to DataFusion's `DataSourceExec`.                                                                                                                           |
+| `native_iceberg_compat` | This implementation also delegates to DataFusion's `DataSourceExec` but uses a hybrid approach of JVM and native code. This scan is designed to be integrated with Iceberg in the future. |
 
 The new `native_datafusion` and `native_iceberg_compat` scans provide the following benefits over the `native_comet`
 implementation:
 
-- Leverages the DataFusion community's ongoing improvements to `ParquetExec`
+- Leverages the DataFusion community's ongoing improvements to `DataSourceExec`
 - Provides support for reading complex types (structs, arrays, and maps)
 - Removes the use of reusable mutable-buffers in Comet, which is complex to maintain
-- Improved performance
+- Improves performance
 
 The new scans have the following limitations:
 
