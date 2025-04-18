@@ -48,7 +48,7 @@ implementation:
 - Removes the use of reusable mutable-buffers in Comet, which is complex to maintain
 - Improves performance
 
-The new scans have the following limitations:
+The new scans currently have the following limitations:
 
 - Comet is not compatible with Spark when reading Parquet columns using the logical types `UINT_8` or `UINT_16`. Spark
   does not preserve or understand these logical types. Arrow-based readers, such as DataFusion and Comet do respect
@@ -57,10 +57,13 @@ The new scans have the following limitations:
   setting `spark.comet.scan.allowIncompatible=true`. This issue does not occur when reading Parquet files that
   were written by Spark.
 - Reading legacy INT96 timestamps contained within complex types can produce different results to Spark
+- There is a known performance issue when pushing filters down to Parquet. See the [Comet Tuning Guide] for more 
+ information.
 - There are failures in the Spark SQL test suite when enabling these new scans (tracking issues: [#1542] and [#1545]).
 
 [#1545]: https://github.com/apache/datafusion-comet/issues/1545
 [#1542]: https://github.com/apache/datafusion-comet/issues/1542
+[Comet Tuning Guide]: tuning.md 
 
 ## ANSI mode
 
