@@ -24,6 +24,7 @@ benchmarking documentation and scripts are available in the [DataFusion Benchmar
 
 Available benchmarking guides:
 
+- [Benchmarking on macOS](benchmarking_macos.md) 
 - [Benchmarking on AWS EC2](benchmarking_aws_ec2) 
 
 We also have many micro benchmarks that can be run from an IDE located [here](https://github.com/apache/datafusion-comet/tree/main/spark/src/test/scala/org/apache/spark/sql/benchmark). 
