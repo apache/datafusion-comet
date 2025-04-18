@@ -29,6 +29,12 @@ Comet aims to provide consistent results with the version of Apache Spark that i
 
 This guide offers information about areas of functionality where there are known differences.
 
+# Compatibility Guide
+
+Comet aims to provide consistent results with the version of Apache Spark that is being used.
+
+This guide offers information about areas of functionality where there are known differences.
+
 ## Parquet Scans
 
 Comet currently has three distinct implementations of the Parquet scan operator. The configuration property
@@ -53,7 +59,7 @@ The new scans currently have the following limitations:
 - When reading Parquet files written by systems other than Spark that contain columns with the logical types `UINT_8`
 or `UINT_16`, Comet will produce different results than Spark because Spark does not preserve or understand these
 logical types. Arrow-based readers, such as DataFusion and Comet do respect these types and read the data as unsigned
-rather than signed. By default, Comet will fall back to Spark when scanning Parquet files containing byte or short
+rather than signed. By default, Comet will fall back to Spark when scanning Parquet files containing `byte` or `short`
 types (regardless of the logical type). This behavior can be disabled by setting
 `spark.comet.scan.allowIncompatible=true`.
 - Reading legacy INT96 timestamps contained within complex types can produce different results to Spark
