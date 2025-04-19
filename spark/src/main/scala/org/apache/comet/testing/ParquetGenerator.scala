@@ -22,6 +22,8 @@ package org.apache.comet.testing
 import java.math.{BigDecimal, RoundingMode}
 import java.nio.charset.Charset
 import java.sql.Timestamp
+import java.text.SimpleDateFormat
+import java.time.{Instant, LocalDateTime, ZoneId}
 
 import scala.collection.mutable.ListBuffer
 import scala.util.Random
@@ -30,6 +32,16 @@ import org.apache.spark.sql.{Row, SaveMode, SparkSession}
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, StructField, StructType}
 
 object ParquetGenerator {
+
+  /**
+   * Date to use as base for generating temporal columns. Random integers will be added to or
+   * subtracted from this value.
+   *
+   * Date was chosen to trigger generating a timestamp that's larger than a 64-bit nanosecond
+   * timestamp can represent so that we test support for INT96 timestamps.
+   */
+  val defaultBaseDate: Long =
+    new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("3333-05-25 12:34:56").getTime
 
   private val primitiveTypes = Seq(
     DataTypes.BooleanType,
@@ -43,8 +55,7 @@ object ParquetGenerator {
     DataTypes.createDecimalType(36, 18),
     DataTypes.DateType,
     DataTypes.TimestampType,
-    // TimestampNTZType only in Spark 3.4+
-    // DataTypes.TimestampNTZType,
+    DataTypes.TimestampNTZType,
     DataTypes.StringType,
     DataTypes.BinaryType)
 
@@ -58,9 +69,16 @@ object ParquetGenerator {
     val dataTypes = ListBuffer[DataType]()
     dataTypes.appendAll(primitiveTypes)
 
+    val arraysOfPrimitives = primitiveTypes.map(DataTypes.createArrayType)
+
     if (options.generateStruct) {
       dataTypes += StructType(
         primitiveTypes.zipWithIndex.map(x => StructField(s"c${x._2}", x._1, true)))
+
+      if (options.generateArray) {
+        dataTypes += StructType(
+          arraysOfPrimitives.zipWithIndex.map(x => StructField(s"c${x._2}", x._1, true)))
+      }
     }
 
     if (options.generateMap) {
@@ -68,7 +86,7 @@ object ParquetGenerator {
     }
 
     if (options.generateArray) {
-      dataTypes.appendAll(primitiveTypes.map(DataTypes.createArrayType))
+      dataTypes.appendAll(arraysOfPrimitives)
 
       if (options.generateStruct) {
         dataTypes += DataTypes.createArrayType(
@@ -202,9 +220,14 @@ object ParquetGenerator {
               null
           }
       case DataTypes.DateType =>
-        Range(0, numRows).map(_ => new java.sql.Date(1716645600011L + r.nextInt()))
+        Range(0, numRows).map(_ => new java.sql.Date(options.baseDate + r.nextInt()))
       case DataTypes.TimestampType =>
-        Range(0, numRows).map(_ => new Timestamp(1716645600011L + r.nextInt()))
+        Range(0, numRows).map(_ => new Timestamp(options.baseDate + r.nextInt()))
+      case DataTypes.TimestampNTZType =>
+        Range(0, numRows).map(_ =>
+          LocalDateTime.ofInstant(
+            Instant.ofEpochMilli(options.baseDate + r.nextInt()),
+            ZoneId.systemDefault()))
       case _ => throw new IllegalStateException(s"Cannot generate data for $dataType yet")
     }
   }
@@ -214,6 +237,7 @@ object ParquetGenerator {
 case class DataGenOptions(
     allowNull: Boolean = true,
     generateNegativeZero: Boolean = true,
+    baseDate: Long = ParquetGenerator.defaultBaseDate,
     generateArray: Boolean = false,
     generateStruct: Boolean = false,
     generateMap: Boolean = false)

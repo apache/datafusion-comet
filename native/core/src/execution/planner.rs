@@ -48,7 +48,6 @@ use datafusion::{
     functions_aggregate::first_last::{FirstValue, LastValue},
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
-        execution_props::ExecutionProps,
         expressions::{
             in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNotNullExpr, IsNullExpr,
             Literal as DataFusionLiteral, NotExpr,
@@ -141,17 +140,14 @@ pub const TEST_EXEC_CONTEXT_ID: i64 = -1;
 pub struct PhysicalPlanner {
     // The execution context id of this planner.
     exec_context_id: i64,
-    execution_props: ExecutionProps,
     session_ctx: Arc<SessionContext>,
 }
 
 impl Default for PhysicalPlanner {
     fn default() -> Self {
         let session_ctx = Arc::new(SessionContext::new());
-        let execution_props = ExecutionProps::new();
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
-            execution_props,
             session_ctx,
         }
     }
@@ -159,10 +155,8 @@ impl Default for PhysicalPlanner {
 
 impl PhysicalPlanner {
     pub fn new(session_ctx: Arc<SessionContext>) -> Self {
-        let execution_props = ExecutionProps::new();
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
-            execution_props,
             session_ctx,
         }
     }
@@ -170,9 +164,13 @@ impl PhysicalPlanner {
     pub fn with_exec_id(self, exec_context_id: i64) -> Self {
         Self {
             exec_context_id,
-            execution_props: self.execution_props,
             session_ctx: Arc::clone(&self.session_ctx),
         }
+    }
+
+    /// Return session context of this planner.
+    pub fn session_ctx(&self) -> &Arc<SessionContext> {
+        &self.session_ctx
     }
 
     /// get DataFusion PartitionedFiles from a Spark FilePartition
@@ -211,9 +209,7 @@ impl PhysicalPlanner {
                         .as_any()
                         .downcast_ref::<DataFusionLiteral>()
                         .ok_or_else(|| {
-                            ExecutionError::GeneralError(
-                                "Expected literal of partition value".to_string(),
-                            )
+                            GeneralError("Expected literal of partition value".to_string())
                         })
                         .map(|literal| literal.value().clone())
                 })
@@ -230,7 +226,7 @@ impl PhysicalPlanner {
     }
 
     /// Create a DataFusion physical expression from Spark physical expression
-    fn create_expr(
+    pub(crate) fn create_expr(
         &self,
         spark_expr: &Expr,
         input_schema: SchemaRef,
@@ -326,7 +322,7 @@ impl PhysicalPlanner {
             ExprStruct::Bound(bound) => {
                 let idx = bound.index as usize;
                 if idx >= input_schema.fields().len() {
-                    return Err(ExecutionError::GeneralError(format!(
+                    return Err(GeneralError(format!(
                         "Column index {} is out of bound. Schema: {}",
                         idx, input_schema
                     )));
@@ -384,10 +380,7 @@ impl PhysicalPlanner {
                         DataType::Struct(fields) => ScalarStructBuilder::new_null(fields),
                         DataType::Null => ScalarValue::Null,
                         dt => {
-                            return Err(ExecutionError::GeneralError(format!(
-                                "{:?} is not supported in Comet",
-                                dt
-                            )))
+                            return Err(GeneralError(format!("{:?} is not supported in Comet", dt)))
                         }
                     }
                 } else {
@@ -399,7 +392,7 @@ impl PhysicalPlanner {
                             DataType::Int32 => ScalarValue::Int32(Some(*value)),
                             DataType::Date32 => ScalarValue::Date32(Some(*value)),
                             dt => {
-                                return Err(ExecutionError::GeneralError(format!(
+                                return Err(GeneralError(format!(
                                     "Expected either 'Int32' or 'Date32' for IntVal, but found {:?}",
                                     dt
                                 )))
@@ -414,7 +407,7 @@ impl PhysicalPlanner {
                                 ScalarValue::TimestampMicrosecond(Some(*value), Some(tz))
                             }
                             dt => {
-                                return Err(ExecutionError::GeneralError(format!(
+                                return Err(GeneralError(format!(
                                     "Expected either 'Int64' or 'Timestamp' for LongVal, but found {:?}",
                                     dt
                                 )))
@@ -427,7 +420,7 @@ impl PhysicalPlanner {
                         Value::DecimalVal(value) => {
                             let big_integer = BigInt::from_signed_bytes_be(value);
                             let integer = big_integer.to_i128().ok_or_else(|| {
-                                ExecutionError::GeneralError(format!(
+                                GeneralError(format!(
                                     "Cannot parse {:?} as i128 for Decimal literal",
                                     big_integer
                                 ))
@@ -438,7 +431,7 @@ impl PhysicalPlanner {
                                     ScalarValue::Decimal128(Some(integer), p, s)
                                 }
                                 dt => {
-                                    return Err(ExecutionError::GeneralError(format!(
+                                    return Err(GeneralError(format!(
                                         "Decimal literal's data type should be Decimal128 but got {:?}",
                                         dt
                                     )))
@@ -546,7 +539,7 @@ impl PhysicalPlanner {
                     ScalarValue::Utf8(Some(pattern)) => {
                         Ok(Arc::new(RLike::try_new(left, pattern)?))
                     }
-                    _ => Err(ExecutionError::GeneralError(
+                    _ => Err(GeneralError(
                         "RLike only supports scalar patterns".to_string(),
                     )),
                 }
@@ -691,7 +684,7 @@ impl PhysicalPlanner {
                 let child: Arc<dyn PhysicalExpr> =
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let result = create_negate_expr(child, expr.fail_on_error);
-                result.map_err(|e| ExecutionError::GeneralError(e.to_string()))
+                result.map_err(|e| GeneralError(e.to_string()))
             }
             ExprStruct::NormalizeNanAndZero(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
@@ -775,10 +768,7 @@ impl PhysicalPlanner {
                     expr.legacy_negative_index,
                 )))
             }
-            expr => Err(ExecutionError::GeneralError(format!(
-                "Not implemented: {:?}",
-                expr
-            ))),
+            expr => Err(GeneralError(format!("Not implemented: {:?}", expr))),
         }
     }
 
@@ -804,10 +794,7 @@ impl PhysicalPlanner {
                     options,
                 })
             }
-            expr => Err(ExecutionError::GeneralError(format!(
-                "{:?} isn't a SortOrder",
-                expr
-            ))),
+            expr => Err(GeneralError(format!("{:?} isn't a SortOrder", expr))),
         }
     }
 
@@ -1131,9 +1118,7 @@ impl PhysicalPlanner {
                     .first()
                     .and_then(|f| f.partitioned_file.first())
                     .map(|f| f.file_path.clone())
-                    .ok_or(ExecutionError::GeneralError(
-                        "Failed to locate file".to_string(),
-                    ))?;
+                    .ok_or(GeneralError("Failed to locate file".to_string()))?;
                 let (object_store_url, _) =
                     prepare_object_store(self.session_ctx.runtime_env(), one_file)?;
 
@@ -1177,9 +1162,7 @@ impl PhysicalPlanner {
                 // If it is not test execution context for unit test, we should have at least one
                 // input source
                 if self.exec_context_id != TEST_EXEC_CONTEXT_ID && inputs.is_empty() {
-                    return Err(ExecutionError::GeneralError(
-                        "No input for scan".to_string(),
-                    ));
+                    return Err(GeneralError("No input for scan".to_string()));
                 }
 
                 // Consumes the first input source for the scan
@@ -1213,14 +1196,14 @@ impl PhysicalPlanner {
                         Ok(CompressionCodec::Zstd(writer.compression_level))
                     }
                     Ok(SparkCompressionCodec::Lz4) => Ok(CompressionCodec::Lz4Frame),
-                    _ => Err(ExecutionError::GeneralError(format!(
+                    _ => Err(GeneralError(format!(
                         "Unsupported shuffle compression codec: {:?}",
                         writer.codec
                     ))),
                 }?;
 
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
-                    Arc::clone(&child.native_plan),
+                    Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
                     partitioning,
                     codec,
                     writer.output_data_file.clone(),
@@ -1514,7 +1497,7 @@ impl PhysicalPlanner {
             Ok(JoinType::LeftAnti) => DFJoinType::LeftAnti,
             Ok(JoinType::RightAnti) => DFJoinType::RightAnti,
             Err(_) => {
-                return Err(ExecutionError::GeneralError(format!(
+                return Err(GeneralError(format!(
                     "Unsupported join type: {:?}",
                     join_type
                 )));
@@ -1843,7 +1826,7 @@ impl PhysicalPlanner {
                             func,
                         )
                     }
-                    stats_type => Err(ExecutionError::GeneralError(format!(
+                    stats_type => Err(GeneralError(format!(
                         "Unknown StatisticsType {:?} for Variance",
                         stats_type
                     ))),
@@ -1873,7 +1856,7 @@ impl PhysicalPlanner {
 
                         Self::create_aggr_func_expr("variance_pop", schema, vec![child], func)
                     }
-                    stats_type => Err(ExecutionError::GeneralError(format!(
+                    stats_type => Err(GeneralError(format!(
                         "Unknown StatisticsType {:?} for Variance",
                         stats_type
                     ))),
@@ -1903,7 +1886,7 @@ impl PhysicalPlanner {
 
                         Self::create_aggr_func_expr("stddev_pop", schema, vec![child], func)
                     }
-                    stats_type => Err(ExecutionError::GeneralError(format!(
+                    stats_type => Err(GeneralError(format!(
                         "Unknown StatisticsType {:?} for stddev",
                         stats_type
                     ))),
@@ -1960,7 +1943,7 @@ impl PhysicalPlanner {
                         .collect::<Result<Vec<_>, ExecutionError>>()?;
                 }
                 other => {
-                    return Err(ExecutionError::GeneralError(format!(
+                    return Err(GeneralError(format!(
                         "{other:?} not supported for window function"
                     )))
                 }
@@ -1970,7 +1953,7 @@ impl PhysicalPlanner {
             window_func_name = result.0;
             window_args = result.1;
         } else {
-            return Err(ExecutionError::GeneralError(
+            return Err(GeneralError(
                 "Both func and agg_func are not set".to_string(),
             ));
         }
@@ -1978,7 +1961,7 @@ impl PhysicalPlanner {
         let window_func = match self.find_df_window_function(&window_func_name) {
             Some(f) => f,
             _ => {
-                return Err(ExecutionError::GeneralError(format!(
+                return Err(GeneralError(format!(
                     "{window_func_name} not supported for window function"
                 )))
             }
@@ -2016,7 +1999,7 @@ impl PhysicalPlanner {
                         WindowFrameBound::Preceding(ScalarValue::Int64(None))
                     }
                     WindowFrameUnits::Groups => {
-                        return Err(ExecutionError::GeneralError(
+                        return Err(GeneralError(
                             "WindowFrameUnits::Groups is not supported.".to_string(),
                         ));
                     }
@@ -2031,7 +2014,7 @@ impl PhysicalPlanner {
                             WindowFrameBound::Preceding(ScalarValue::Int64(Some(offset_value)))
                         }
                         WindowFrameUnits::Groups => {
-                            return Err(ExecutionError::GeneralError(
+                            return Err(GeneralError(
                                 "WindowFrameUnits::Groups is not supported.".to_string(),
                             ));
                         }
@@ -2043,7 +2026,7 @@ impl PhysicalPlanner {
                 WindowFrameUnits::Rows => WindowFrameBound::Preceding(ScalarValue::UInt64(None)),
                 WindowFrameUnits::Range => WindowFrameBound::Preceding(ScalarValue::Int64(None)),
                 WindowFrameUnits::Groups => {
-                    return Err(ExecutionError::GeneralError(
+                    return Err(GeneralError(
                         "WindowFrameUnits::Groups is not supported.".to_string(),
                     ));
                 }
@@ -2064,7 +2047,7 @@ impl PhysicalPlanner {
                         WindowFrameBound::Following(ScalarValue::Int64(None))
                     }
                     WindowFrameUnits::Groups => {
-                        return Err(ExecutionError::GeneralError(
+                        return Err(GeneralError(
                             "WindowFrameUnits::Groups is not supported.".to_string(),
                         ));
                     }
@@ -2077,7 +2060,7 @@ impl PhysicalPlanner {
                         WindowFrameBound::Following(ScalarValue::Int64(Some(offset.offset)))
                     }
                     WindowFrameUnits::Groups => {
-                        return Err(ExecutionError::GeneralError(
+                        return Err(GeneralError(
                             "WindowFrameUnits::Groups is not supported.".to_string(),
                         ));
                     }
@@ -2088,7 +2071,7 @@ impl PhysicalPlanner {
                 WindowFrameUnits::Rows => WindowFrameBound::Following(ScalarValue::UInt64(None)),
                 WindowFrameUnits::Range => WindowFrameBound::Following(ScalarValue::Int64(None)),
                 WindowFrameUnits::Groups => {
-                    return Err(ExecutionError::GeneralError(
+                    return Err(GeneralError(
                         "WindowFrameUnits::Groups is not supported.".to_string(),
                     ));
                 }
@@ -2144,7 +2127,7 @@ impl PhysicalPlanner {
                 };
                 Ok(("sum".to_string(), vec![child]))
             }
-            other => Err(ExecutionError::GeneralError(format!(
+            other => Err(GeneralError(format!(
                 "{other:?} not supported for window function"
             ))),
         }
@@ -2792,7 +2775,7 @@ mod tests {
         let op = create_filter(op_scan, 0);
         let planner = PhysicalPlanner::default();
 
-        let (mut _scans, filter_exec) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+        let (_scans, filter_exec) = planner.create_plan(&op, &mut vec![], 1).unwrap();
 
         assert_eq!("CometFilterExec", filter_exec.native_plan.name());
         assert_eq!(1, filter_exec.children.len());

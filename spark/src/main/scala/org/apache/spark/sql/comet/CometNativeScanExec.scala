@@ -21,9 +21,11 @@ package org.apache.spark.sql.comet
 
 import scala.reflect.ClassTag
 
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst._
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources._
@@ -53,29 +55,50 @@ case class CometNativeScanExec(
     disableBucketedScan: Boolean = false,
     originalPlan: FileSourceScanExec,
     override val serializedPlanOpt: SerializedPlan)
-    extends CometLeafExec {
+    extends CometLeafExec
+    with DataSourceScanExec {
 
-  override def nodeName: String =
-    s"${super.nodeName}: ${tableIdentifier.map(_.toString).getOrElse("")}"
+  override lazy val metadata: Map[String, String] = originalPlan.metadata
 
-  override def outputPartitioning: Partitioning =
+  override val nodeName: String =
+    s"CometNativeScan $relation ${tableIdentifier.map(_.unquotedString).getOrElse("")}"
+
+  override lazy val outputPartitioning: Partitioning =
     UnknownPartitioning(originalPlan.inputRDD.getNumPartitions)
 
-  override def outputOrdering: Seq[SortOrder] = originalPlan.outputOrdering
+  override lazy val outputOrdering: Seq[SortOrder] = originalPlan.outputOrdering
+
+  override def doCanonicalize(): CometNativeScanExec = {
+    CometNativeScanExec(
+      nativeOp,
+      relation,
+      output.map(QueryPlan.normalizeExpressions(_, output)),
+      requiredSchema,
+      QueryPlan.normalizePredicates(
+        CometScanUtils.filterUnusedDynamicPruningExpressions(partitionFilters),
+        output),
+      optionalBucketSet,
+      optionalNumCoalescedBuckets,
+      QueryPlan.normalizePredicates(dataFilters, output),
+      None,
+      disableBucketedScan,
+      originalPlan.doCanonicalize(),
+      SerializedPlan(None))
+  }
 
   override def stringArgs: Iterator[Any] = Iterator(output)
 
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometNativeScanExec =>
-        this.output == other.output &&
+        this.originalPlan == other.originalPlan &&
         this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
         false
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(output)
+  override def hashCode(): Int = Objects.hashCode(originalPlan, serializedPlanOpt)
 
   override lazy val metrics: Map[String, SQLMetric] = {
     // We don't append CometMetricNode.baselineMetrics because
@@ -153,6 +176,11 @@ case class CometNativeScanExec(
           sparkContext,
           "Time spent reading and parsing metadata from the footer"))
   }
+
+  /**
+   * See [[org.apache.spark.sql.execution.DataSourceScanExec.inputRDDs]]. Only used for tests.
+   */
+  override def inputRDDs(): Seq[RDD[InternalRow]] = originalPlan.inputRDDs()
 }
 
 object CometNativeScanExec extends DataTypeSupport {
@@ -202,10 +230,10 @@ object CometNativeScanExec extends DataTypeSupport {
   }
 
   override def isAdditionallySupported(dt: DataType): Boolean = {
-    // TODO add map
     dt match {
       case s: StructType => s.fields.map(_.dataType).forall(isTypeSupported)
       case a: ArrayType => isTypeSupported(a.elementType)
+      case m: MapType => isTypeSupported(m.keyType) && isTypeSupported(m.valueType)
       case _ => false
     }
   }

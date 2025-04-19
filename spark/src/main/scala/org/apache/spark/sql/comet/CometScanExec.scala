@@ -459,20 +459,13 @@ case class CometScanExec(
     }
   }
 
-  // Filters unused DynamicPruningExpression expressions - one which has been replaced
-  // with DynamicPruningExpression(Literal.TrueLiteral) during Physical Planning
-  private def filterUnusedDynamicPruningExpressions(
-      predicates: Seq[Expression]): Seq[Expression] = {
-    predicates.filterNot(_ == DynamicPruningExpression(Literal.TrueLiteral))
-  }
-
   override def doCanonicalize(): CometScanExec = {
     CometScanExec(
       relation,
       output.map(QueryPlan.normalizeExpressions(_, output)),
       requiredSchema,
       QueryPlan.normalizePredicates(
-        filterUnusedDynamicPruningExpressions(partitionFilters),
+        CometScanUtils.filterUnusedDynamicPruningExpressions(partitionFilters),
         output),
       optionalBucketSet,
       optionalNumCoalescedBuckets,
@@ -487,10 +480,10 @@ object CometScanExec extends DataTypeSupport {
 
   override def isAdditionallySupported(dt: DataType): Boolean = {
     if (CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
-      // TODO add map
       dt match {
         case s: StructType => s.fields.map(_.dataType).forall(isTypeSupported)
         case a: ArrayType => isTypeSupported(a.elementType)
+        case m: MapType => isTypeSupported(m.keyType) && isTypeSupported(m.valueType)
         case _ => false
       }
     } else {

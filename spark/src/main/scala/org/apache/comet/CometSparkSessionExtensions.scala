@@ -21,6 +21,7 @@ package org.apache.comet
 
 import java.nio.ByteOrder
 
+import scala.annotation.tailrec
 import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.SparkConf
@@ -37,7 +38,7 @@ import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
@@ -55,7 +56,7 @@ import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometLoaded, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometLoaded, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.rules.RewriteJoin
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -113,78 +114,14 @@ class CometSparkSessionExtensions
         plan.transform {
           case scan if hasMetadataCol(scan) =>
             withInfo(scan, "Metadata column is not supported")
-            scan
 
           // data source V1
           case scanExec: FileSourceScanExec =>
             transformV1Scan(scanExec)
 
           // data source V2
-          case scanExec: BatchScanExec
-              if scanExec.scan.isInstanceOf[ParquetScan] &&
-                CometBatchScanExec.isSchemaSupported(
-                  scanExec.scan.asInstanceOf[ParquetScan].readDataSchema) &&
-                CometBatchScanExec.isSchemaSupported(
-                  scanExec.scan.asInstanceOf[ParquetScan].readPartitionSchema) &&
-                // Comet does not support pushedAggregate
-                scanExec.scan.asInstanceOf[ParquetScan].pushedAggregate.isEmpty =>
-            val cometScan = CometParquetScan(scanExec.scan.asInstanceOf[ParquetScan])
-            logInfo("Comet extension enabled for Scan")
-            CometBatchScanExec(
-              scanExec.copy(scan = cometScan),
-              runtimeFilters = scanExec.runtimeFilters)
-
-          // If it is a `ParquetScan` but unsupported by Comet, attach the exact
-          // reason to the plan.
-          case scanExec: BatchScanExec if scanExec.scan.isInstanceOf[ParquetScan] =>
-            val requiredSchema = scanExec.scan.asInstanceOf[ParquetScan].readDataSchema
-            val info1 = createMessage(
-              !CometBatchScanExec.isSchemaSupported(requiredSchema),
-              s"Schema $requiredSchema is not supported")
-            val readPartitionSchema = scanExec.scan.asInstanceOf[ParquetScan].readPartitionSchema
-            val info2 = createMessage(
-              !CometBatchScanExec.isSchemaSupported(readPartitionSchema),
-              s"Partition schema $readPartitionSchema is not supported")
-            // Comet does not support pushedAggregate
-            val info3 = createMessage(
-              scanExec.scan.asInstanceOf[ParquetScan].pushedAggregate.isDefined,
-              "Comet does not support pushed aggregate")
-            withInfos(scanExec, Seq(info1, info2, info3).flatten.toSet)
-            scanExec
-
-          // Other datasource V2 scan
           case scanExec: BatchScanExec =>
-            scanExec.scan match {
-              // Iceberg scan, supported cases
-              case s: SupportsComet
-                  if s.isCometEnabled &&
-                    CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema()) =>
-                logInfo(s"Comet extension enabled for ${scanExec.scan.getClass.getSimpleName}")
-                // When reading from Iceberg, we automatically enable type promotion
-                SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
-                CometBatchScanExec(
-                  scanExec.clone().asInstanceOf[BatchScanExec],
-                  runtimeFilters = scanExec.runtimeFilters)
-
-              // Iceberg scan but disabled or unsupported by Comet
-              case s: SupportsComet =>
-                val info1 = createMessage(
-                  !s.isCometEnabled,
-                  "Comet extension is not enabled for " +
-                    s"${scanExec.scan.getClass.getSimpleName}: not enabled on data source side")
-                val info2 = createMessage(
-                  !CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema()),
-                  "Comet extension is not enabled for " +
-                    s"${scanExec.scan.getClass.getSimpleName}: Schema not supported")
-                withInfos(scanExec, Seq(info1, info2).flatten.toSet)
-
-              // If it is data source V2 other than Parquet or Iceberg,
-              // attach the unsupported reason to the plan.
-              case _ =>
-                withInfo(scanExec, "Comet Scan only supports Parquet")
-                scanExec
-            }
-
+            transformV2Scan(scanExec)
         }
       }
     }
@@ -196,8 +133,7 @@ class CometSparkSessionExtensions
 
       if (COMET_DPP_FALLBACK_ENABLED.get() &&
         scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
-        withInfo(scanExec, "DPP not supported")
-        return scanExec
+        return withInfo(scanExec, "Dynamic Partition Pruning is not supported")
       }
 
       scanExec.relation match {
@@ -235,13 +171,67 @@ class CometSparkSessionExtensions
             CometScanExec(scanExec, session)
           } else {
             withInfo(scanExec, fallbackReasons.mkString(", "))
-            scanExec
           }
 
         case _ =>
           withInfo(scanExec, s"Unsupported relation ${scanExec.relation}")
-          scanExec
       }
+    }
+  }
+
+  private def transformV2Scan(scanExec: BatchScanExec): SparkPlan = {
+
+    scanExec.scan match {
+      case scan: ParquetScan =>
+        val fallbackReasons = new ListBuffer[String]()
+        if (!CometBatchScanExec.isSchemaSupported(scan.readDataSchema)) {
+          fallbackReasons += s"Schema ${scan.readDataSchema} is not supported"
+        }
+
+        if (!CometBatchScanExec.isSchemaSupported(scan.readPartitionSchema)) {
+          fallbackReasons += s"Partition schema ${scan.readPartitionSchema} is not supported"
+        }
+
+        if (scan.pushedAggregate.nonEmpty) {
+          fallbackReasons += "Comet does not support pushed aggregate"
+        }
+
+        if (fallbackReasons.isEmpty) {
+          val cometScan = CometParquetScan(scanExec.scan.asInstanceOf[ParquetScan])
+          logInfo("Comet extension enabled for Scan")
+          CometBatchScanExec(
+            scanExec.copy(scan = cometScan),
+            runtimeFilters = scanExec.runtimeFilters)
+        } else {
+          withInfo(scanExec, fallbackReasons.mkString(", "))
+        }
+
+      // Iceberg scan
+      case s: SupportsComet =>
+        val fallbackReasons = new ListBuffer[String]()
+
+        if (!s.isCometEnabled) {
+          fallbackReasons += "Comet extension is not enabled for " +
+            s"${scanExec.scan.getClass.getSimpleName}: not enabled on data source side"
+        }
+
+        if (!CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema())) {
+          fallbackReasons += "Comet extension is not enabled for " +
+            s"${scanExec.scan.getClass.getSimpleName}: Schema not supported"
+        }
+
+        if (fallbackReasons.isEmpty) {
+          // When reading from Iceberg, we automatically enable type promotion
+          SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
+          CometBatchScanExec(
+            scanExec.clone().asInstanceOf[BatchScanExec],
+            runtimeFilters = scanExec.runtimeFilters)
+        } else {
+          withInfo(scanExec, fallbackReasons.mkString(", "))
+        }
+
+      case _ =>
+        withInfo(scanExec, "Comet Scan only supports Parquet and Iceberg Parquet file formats")
     }
   }
 
@@ -351,7 +341,7 @@ class CometSparkSessionExtensions
      */
     // spotless:on
     private def transform(plan: SparkPlan): SparkPlan = {
-      def transform1(op: SparkPlan): Option[Operator] = {
+      def operator2Proto(op: SparkPlan): Option[Operator] = {
         if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
           QueryPlanSerde.operator2Proto(
             op,
@@ -365,10 +355,18 @@ class CometSparkSessionExtensions
         }
       }
 
+      /**
+       * Convert operator to proto and then apply a transformation to wrap the proto in a new
+       * plan.
+       */
+      def newPlanWithProto(op: SparkPlan, fun: Operator => SparkPlan): SparkPlan = {
+        operator2Proto(op).map(fun).getOrElse(op)
+      }
+
       plan.transformUp {
         // Fully native scan for V1
         case scan: CometScanExec
-            if COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_DATAFUSION) =>
+            if COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_DATAFUSION =>
           val nativeOp = QueryPlanSerde.operator2Proto(scan).get
           CometNativeScanExec(nativeOp, scan.wrapped, scan.session)
 
@@ -383,97 +381,54 @@ class CometSparkSessionExtensions
           CometScanWrapper(nativeOp.get, cometOp)
 
         case op: ProjectExec =>
-          val newOp = transform1(op)
-          newOp match {
-            case Some(nativeOp) =>
-              CometProjectExec(
-                nativeOp,
-                op,
-                op.output,
-                op.projectList,
-                op.child,
-                SerializedPlan(None))
-            case None =>
-              op
-          }
+          newPlanWithProto(
+            op,
+            CometProjectExec(_, op, op.output, op.projectList, op.child, SerializedPlan(None)))
 
         case op: FilterExec =>
-          val newOp = transform1(op)
-          newOp match {
-            case Some(nativeOp) =>
-              CometFilterExec(
-                nativeOp,
-                op,
-                op.output,
-                op.condition,
-                op.child,
-                SerializedPlan(None))
-            case None =>
-              op
-          }
+          newPlanWithProto(
+            op,
+            CometFilterExec(_, op, op.output, op.condition, op.child, SerializedPlan(None)))
 
         case op: SortExec =>
-          val newOp = transform1(op)
-          newOp match {
-            case Some(nativeOp) =>
-              CometSortExec(
-                nativeOp,
-                op,
-                op.output,
-                op.outputOrdering,
-                op.sortOrder,
-                op.child,
-                SerializedPlan(None))
-            case None =>
-              op
-          }
+          newPlanWithProto(
+            op,
+            CometSortExec(
+              _,
+              op,
+              op.output,
+              op.outputOrdering,
+              op.sortOrder,
+              op.child,
+              SerializedPlan(None)))
 
         case op: LocalLimitExec =>
-          val newOp = transform1(op)
-          newOp match {
-            case Some(nativeOp) =>
-              CometLocalLimitExec(nativeOp, op, op.limit, op.child, SerializedPlan(None))
-            case None =>
-              op
-          }
+          newPlanWithProto(
+            op,
+            CometLocalLimitExec(_, op, op.limit, op.child, SerializedPlan(None)))
 
         case op: GlobalLimitExec if op.offset == 0 =>
-          val newOp = transform1(op)
-          newOp match {
-            case Some(nativeOp) =>
-              CometGlobalLimitExec(nativeOp, op, op.limit, op.child, SerializedPlan(None))
-            case None =>
-              op
-          }
+          newPlanWithProto(
+            op,
+            CometGlobalLimitExec(_, op, op.limit, op.child, SerializedPlan(None)))
 
         case op: CollectLimitExec
             if isCometNative(op.child) && CometConf.COMET_EXEC_COLLECT_LIMIT_ENABLED.get(conf)
               && isCometShuffleEnabled(conf)
               && op.offset == 0 =>
-          QueryPlanSerde.operator2Proto(op) match {
-            case Some(nativeOp) =>
-              val offset = op.offset
+          QueryPlanSerde
+            .operator2Proto(op)
+            .map { nativeOp =>
               val cometOp =
-                CometCollectLimitExec(op, op.limit, offset, op.child)
+                CometCollectLimitExec(op, op.limit, op.offset, op.child)
               CometSinkPlaceHolder(nativeOp, op, cometOp)
-            case None =>
-              op
-          }
+            }
+            .getOrElse(op)
 
         case op: ExpandExec =>
-          val newOp = transform1(op)
-          newOp match {
-            case Some(nativeOp) =>
-              CometExpandExec(
-                nativeOp,
-                op,
-                op.output,
-                op.projections,
-                op.child,
-                SerializedPlan(None))
-            case None =>
-              op
-          }
+          newPlanWithProto(
+            op,
+            CometExpandExec(_, op, op.output, op.projections, op.child, SerializedPlan(None)))
 
         case op: BaseAggregateExec
             if op.isInstanceOf[HashAggregateExec] ||
@@ -502,9 +457,9 @@ class CometSparkSessionExtensions
             if (sparkFinalMode) {
               op
             } else {
-              val newOp = transform1(op)
-              newOp match {
-                case Some(nativeOp) =>
+              newPlanWithProto(
+                op,
+                nativeOp => {
                   val modes = aggExprs.map(_.mode).distinct
                   // The aggExprs could be empty. For example, if the aggregate functions only have
                   // distinct aggregate functions or only have group by, the aggExprs is empty and
@@ -522,90 +477,74 @@ class CometSparkSessionExtensions
                     modes.headOption,
                     child,
                     SerializedPlan(None))
-                case None =>
-                  op
-              }
+                })
             }
           }
 
         case op: ShuffledHashJoinExec
             if CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(conf) &&
               op.children.forall(isCometNative) =>
-          val newOp = transform1(op)
-          newOp match {
-            case Some(nativeOp) =>
-              CometHashJoinExec(
-                nativeOp,
-                op,
-                op.output,
-                op.outputOrdering,
-                op.leftKeys,
-                op.rightKeys,
-                op.joinType,
-                op.condition,
-                op.buildSide,
-                op.left,
-                op.right,
-                SerializedPlan(None))
-            case None =>
-              op
-          }
+          newPlanWithProto(
+            op,
+            CometHashJoinExec(
+              _,
+              op,
+              op.output,
+              op.outputOrdering,
+              op.leftKeys,
+              op.rightKeys,
+              op.joinType,
+              op.condition,
+              op.buildSide,
+              op.left,
+              op.right,
+              SerializedPlan(None)))
 
         case op: ShuffledHashJoinExec if !CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(conf) =>
           withInfo(op, "ShuffleHashJoin is not enabled")
-          op
 
         case op: ShuffledHashJoinExec if !op.children.forall(isCometNative) =>
           withInfo(
             op,
             "ShuffleHashJoin disabled because the following children are not native " +
               s"${explainChildNotNative(op)}")
-          op
 
         case op: BroadcastHashJoinExec
             if CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) &&
               op.children.forall(isCometNative) =>
-          val newOp = transform1(op)
-          newOp match {
-            case Some(nativeOp) =>
-              CometBroadcastHashJoinExec(
-                nativeOp,
-                op,
-                op.output,
-                op.outputOrdering,
-                op.leftKeys,
-                op.rightKeys,
-                op.joinType,
-                op.condition,
-                op.buildSide,
-                op.left,
-                op.right,
-                SerializedPlan(None))
-            case None =>
-              op
-          }
+          newPlanWithProto(
+            op,
+            CometBroadcastHashJoinExec(
+              _,
+              op,
+              op.output,
+              op.outputOrdering,
+              op.leftKeys,
+              op.rightKeys,
+              op.joinType,
+              op.condition,
+              op.buildSide,
+              op.left,
+              op.right,
+              SerializedPlan(None)))
 
         case op: SortMergeJoinExec
             if CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) &&
               op.children.forall(isCometNative) =>
-          val newOp = transform1(op)
-          newOp match {
-            case Some(nativeOp) =>
-              CometSortMergeJoinExec(
-                nativeOp,
-                op,
-                op.output,
-                op.outputOrdering,
-                op.leftKeys,
-                op.rightKeys,
-                op.joinType,
-                op.condition,
-                op.left,
-                op.right,
-                SerializedPlan(None))
-            case None =>
-              op
-          }
+          newPlanWithProto(
+            op,
+            CometSortMergeJoinExec(
+              _,
+              op,
+              op.output,
+              op.outputOrdering,
+              op.leftKeys,
+              op.rightKeys,
+              op.joinType,
+              op.condition,
+              op.left,
+              op.right,
+              SerializedPlan(None)))
 
         case op: SortMergeJoinExec
             if CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) &&
@@ -614,48 +553,44 @@ class CometSparkSessionExtensions
             op,
             "SortMergeJoin is not enabled because the following children are not native " +
               s"${explainChildNotNative(op)}")
-          op
 
         case op: SortMergeJoinExec if !CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) =>
           withInfo(op, "SortMergeJoin is not enabled")
-          op
 
         case op: SortMergeJoinExec if !op.children.forall(isCometNative(_)) =>
           withInfo(
             op,
             "SortMergeJoin is not enabled because the following children are not native " +
               s"${explainChildNotNative(op)}")
-          op
 
         case c @ CoalesceExec(numPartitions, child)
             if CometConf.COMET_EXEC_COALESCE_ENABLED.get(conf)
               && isCometNative(child) =>
-          QueryPlanSerde.operator2Proto(c) match {
-            case Some(nativeOp) =>
+          QueryPlanSerde
+            .operator2Proto(c)
+            .map { nativeOp =>
               val cometOp = CometCoalesceExec(c, c.output, numPartitions, child)
               CometSinkPlaceHolder(nativeOp, c, cometOp)
-            case None =>
-              c
-          }
+            }
+            .getOrElse(c)
 
         case c @ CoalesceExec(_, _) if !CometConf.COMET_EXEC_COALESCE_ENABLED.get(conf) =>
           withInfo(c, "Coalesce is not enabled")
-          c
 
         case op: CoalesceExec if !op.children.forall(isCometNative(_)) =>
           withInfo(
             op,
             "Coalesce is not enabled because the following children are not native " +
               s"${explainChildNotNative(op)}")
-          op
 
         case s: TakeOrderedAndProjectExec
             if isCometNative(s.child) && CometConf.COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED
               .get(conf)
               && isCometShuffleEnabled(conf) &&
               CometTakeOrderedAndProjectExec.isSupported(s) =>
-          QueryPlanSerde.operator2Proto(s) match {
-            case Some(nativeOp) =>
+          QueryPlanSerde
+            .operator2Proto(s)
+            .map { nativeOp =>
               val cometOp =
                 CometTakeOrderedAndProjectExec(
                   s,
@@ -665,9 +600,8 @@ class CometSparkSessionExtensions
                   s.projectList,
                   s.child)
               CometSinkPlaceHolder(nativeOp, s, cometOp)
-            case None =>
-              s
-          }
+            }
+            .getOrElse(s)
 
         case s: TakeOrderedAndProjectExec =>
           val info1 = createMessage(
@@ -677,56 +611,47 @@ class CometSparkSessionExtensions
             !isCometShuffleEnabled(conf),
             "TakeOrderedAndProject requires shuffle to be enabled")
           withInfo(s, Seq(info1, info2).flatten.mkString(","))
-          s
 
         case w: WindowExec =>
-          val newOp = transform1(w)
-          newOp match {
-            case Some(nativeOp) =>
-              CometWindowExec(
-                nativeOp,
-                w,
-                w.output,
-                w.windowExpression,
-                w.partitionSpec,
-                w.orderSpec,
-                w.child,
-                SerializedPlan(None))
-            case None =>
-              w
-          }
+          newPlanWithProto(
+            w,
+            CometWindowExec(
+              _,
+              w,
+              w.output,
+              w.windowExpression,
+              w.partitionSpec,
+              w.orderSpec,
+              w.child,
+              SerializedPlan(None)))
 
         case u: UnionExec
             if CometConf.COMET_EXEC_UNION_ENABLED.get(conf) &&
               u.children.forall(isCometNative) =>
-          QueryPlanSerde.operator2Proto(u) match {
-            case Some(nativeOp) =>
+          newPlanWithProto(
+            u, {
               val cometOp = CometUnionExec(u, u.output, u.children)
-              CometSinkPlaceHolder(nativeOp, u, cometOp)
-            case None =>
-              u
-          }
+              CometSinkPlaceHolder(_, u, cometOp)
+            })
 
         case u: UnionExec if !CometConf.COMET_EXEC_UNION_ENABLED.get(conf) =>
           withInfo(u, "Union is not enabled")
-          u
 
         case op: UnionExec if !op.children.forall(isCometNative(_)) =>
           withInfo(
             op,
             "Union is not enabled because the following children are not native " +
               s"${explainChildNotNative(op)}")
-          op
 
         // For AQE broadcast stage on a Comet broadcast exchange
         case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
-          val newOp = transform1(s)
-          newOp match {
-            case Some(nativeOp) =>
-              CometSinkPlaceHolder(nativeOp, s, s)
-            case None =>
-              s
-          }
+          newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
+
+        case s @ BroadcastQueryStageExec(
+              _,
+              ReusedExchangeExec(_, _: CometBroadcastExchangeExec),
+              _) =>
+          newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
 
         // `CometBroadcastExchangeExec`'s broadcast output is not compatible with Spark's broadcast
         // exchange. It is only used for Comet native execution. We only transform Spark broadcast
@@ -739,7 +664,7 @@ class CometSparkSessionExtensions
                   CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf) =>
               QueryPlanSerde.operator2Proto(b) match {
                 case Some(nativeOp) =>
-                  val cometOp = CometBroadcastExchangeExec(b, b.output, b.child)
+                  val cometOp = CometBroadcastExchangeExec(b, b.output, b.mode, b.child)
                   CometSinkPlaceHolder(nativeOp, b, cometOp)
                 case None => b
               }
@@ -762,7 +687,6 @@ class CometSparkSessionExtensions
               plan,
               s"${plan.nodeName} is not native because the following children are not native " +
                 s"${explainChildNotNative(plan)}")
-            plan
           }
 
         // this case should be checked only after the previous case checking for a
@@ -773,22 +697,14 @@ class CometSparkSessionExtensions
             op,
             "BroadcastHashJoin is not enabled because the following children are not native " +
               s"${explainChildNotNative(op)}")
-          op
 
         case op: BroadcastHashJoinExec
             if !CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) =>
           withInfo(op, "BroadcastHashJoin is not enabled")
-          op
 
         // For AQE shuffle stage on a Comet shuffle exchange
         case s @ ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) =>
-          val newOp = transform1(s)
-          newOp match {
-            case Some(nativeOp) =>
-              CometSinkPlaceHolder(nativeOp, s, s)
-            case None =>
-              s
-          }
+          newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
 
         // For AQE shuffle stage on a reused Comet shuffle exchange
         // Note that we don't need to handle `ReusedExchangeExec` for non-AQE case, because
@@ -797,13 +713,7 @@ class CometSparkSessionExtensions
               _,
               ReusedExchangeExec(_, _: CometShuffleExchangeExec),
               _) =>
-          val newOp = transform1(s)
-          newOp match {
-            case Some(nativeOp) =>
-              CometSinkPlaceHolder(nativeOp, s, s)
-            case None =>
-              s
-          }
+          newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
 
         // Native shuffle for Comet operators
         case s: ShuffleExchangeExec =>
@@ -813,7 +723,7 @@ class CometSparkSessionExtensions
 
           val nativeShuffle: Option[SparkPlan] =
             if (nativePrecondition) {
-              val newOp = transform1(s)
+              val newOp = operator2Proto(s)
               newOp match {
                 case Some(nativeOp) =>
                   // Switch to use Decimal128 regardless of precision, since Arrow native execution
@@ -891,7 +801,6 @@ class CometSparkSessionExtensions
               "JVM shuffle: " +
                 s"$typeInfo")
             withInfo(s, Seq(msg1, msg2, msg3).flatten.mkString(","))
-            s
           }
 
         case op =>
@@ -904,7 +813,6 @@ class CometSparkSessionExtensions
             case _ =>
               // An operator that is not supported by Comet
               withInfo(op, s"${op.nodeName} is not supported")
-              op
           }
       }
     }
@@ -1127,8 +1035,16 @@ class CometSparkSessionExtensions
   case class EliminateRedundantTransitions(session: SparkSession) extends Rule[SparkPlan] {
     override def apply(plan: SparkPlan): SparkPlan = {
       val eliminatedPlan = plan transformUp {
-        case ColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) => sparkToColumnar.child
-        case c @ ColumnarToRowExec(child) if child.exists(_.isInstanceOf[CometPlan]) =>
+        case ColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
+          if (sparkToColumnar.child.supportsColumnar) {
+            // For Spark Columnar to Comet Columnar, we should keep the ColumnarToRowExec
+            ColumnarToRowExec(sparkToColumnar.child)
+          } else {
+            // For Spark Row to Comet Columnar, we should remove ColumnarToRowExec
+            // and CometSparkToColumnarExec
+            sparkToColumnar.child
+          }
+        case c @ ColumnarToRowExec(child) if hasCometNativeChild(child) =>
           val op = CometColumnarToRowExec(child)
           if (c.logicalLink.isEmpty) {
             op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
@@ -1160,6 +1076,14 @@ class CometSparkSessionExtensions
         case other =>
           other
       }
+    }
+  }
+
+  @tailrec
+  private def hasCometNativeChild(op: SparkPlan): Boolean = {
+    op match {
+      case c: QueryStageExec => hasCometNativeChild(c.plan)
+      case _ => op.exists(_.isInstanceOf[CometPlan])
     }
   }
 }

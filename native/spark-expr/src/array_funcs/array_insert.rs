@@ -98,6 +98,10 @@ impl PhysicalExpr for ArrayInsert {
         self
     }
 
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
+    }
+
     fn data_type(&self, input_schema: &Schema) -> DataFusionResult<DataType> {
         self.array_type(&self.src_array_expr.data_type(input_schema)?)
     }

@@ -207,7 +207,7 @@ impl Accumulator for CorrelationAccumulator {
             Arc::clone(&states[5]),
         ];
 
-        if states[0].len() > 0 && states[1].len() > 0 && states[2].len() > 0 {
+        if !states[0].is_empty() && !states[1].is_empty() && !states[2].is_empty() {
             self.covar.merge_batch(&states_c)?;
             self.stddev1.merge_batch(&states_s1)?;
             self.stddev2.merge_batch(&states_s2)?;

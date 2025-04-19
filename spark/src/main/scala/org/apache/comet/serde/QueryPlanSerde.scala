@@ -51,12 +51,12 @@ import org.apache.comet.expressions._
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType._
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
-import org.apache.comet.shims.{CometExprShim, ShimQueryPlanSerde}
+import org.apache.comet.shims.CometExprShim
 
 /**
  * An utility object for query plan and expression serialization.
  */
-object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim {
+object QueryPlanSerde extends Logging with CometExprShim {
   def emitWarning(reason: String): Unit = {
     logWarning(s"Comet native execution is disabled due to: $reason")
   }
@@ -70,6 +70,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       s.fields.map(_.dataType).forall(supportedDataType(_, allowComplex))
     case a: ArrayType if allowComplex =>
       supportedDataType(a.elementType, allowComplex)
+    case m: MapType if allowComplex =>
+      supportedDataType(m.keyType, allowComplex) && supportedDataType(m.valueType, allowComplex)
     case dt =>
       emitWarning(s"unsupported Spark data type: $dt")
       false
@@ -564,7 +566,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           inputs,
           binding,
           add.dataType,
-          getFailOnError(add),
+          add.evalMode == EvalMode.ANSI,
           (builder, mathExpr) => builder.setAdd(mathExpr))
 
       case add @ Add(left, _, _) if !supportedDataType(left.dataType) =>
@@ -579,7 +581,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           inputs,
           binding,
           sub.dataType,
-          getFailOnError(sub),
+          sub.evalMode == EvalMode.ANSI,
           (builder, mathExpr) => builder.setSubtract(mathExpr))
 
       case sub @ Subtract(left, _, _) if !supportedDataType(left.dataType) =>
@@ -594,7 +596,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           inputs,
           binding,
           mul.dataType,
-          getFailOnError(mul),
+          mul.evalMode == EvalMode.ANSI,
           (builder, mathExpr) => builder.setMultiply(mathExpr))
 
       case mul @ Multiply(left, _, _) =>
@@ -616,7 +618,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           inputs,
           binding,
           div.dataType,
-          getFailOnError(div),
+          div.evalMode == EvalMode.ANSI,
           (builder, mathExpr) => builder.setDivide(mathExpr))
 
       case div @ Divide(left, _, _) =>
@@ -643,7 +645,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           inputs,
           binding,
           dataType,
-          getFailOnError(div),
+          div.evalMode == EvalMode.ANSI,
           (builder, mathExpr) => builder.setIntegralDivide(mathExpr))
 
         if (divideExpr.isDefined) {
@@ -651,7 +653,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
             // check overflow for decimal type
             val builder = ExprOuterClass.CheckOverflow.newBuilder()
             builder.setChild(divideExpr.get)
-            builder.setFailOnError(getFailOnError(div))
+            builder.setFailOnError(div.evalMode == EvalMode.ANSI)
             builder.setDatatype(serializeDataType(dataType).get)
             Some(
               ExprOuterClass.Expr
@@ -684,7 +686,7 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           inputs,
           binding,
           rem.dataType,
-          getFailOnError(rem),
+          rem.evalMode == EvalMode.ANSI,
           (builder, mathExpr) => builder.setRemainder(mathExpr))
 
       case rem @ Remainder(left, _, _) =>
@@ -1988,6 +1990,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case _: ArraysOverlap => convert(CometArraysOverlap)
       case _ @ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
         convert(CometArrayCompact)
+      case _: ArrayExcept =>
+        convert(CometArrayExcept)
       case _ =>
         withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
         None
@@ -2246,9 +2250,11 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
           // Sink operators don't have children
           result.clearChildren()
 
-          // TODO remove flatMap and add error handling for unsupported data filters
-          val dataFilters = scan.dataFilters.flatMap(exprToProto(_, scan.output))
-          nativeScanBuilder.addAllDataFilters(dataFilters.asJava)
+          if (conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED)) {
+            // TODO remove flatMap and add error handling for unsupported data filters
+            val dataFilters = scan.dataFilters.flatMap(exprToProto(_, scan.output))
+            nativeScanBuilder.addAllDataFilters(dataFilters.asJava)
+          }
 
           // TODO: modify CometNativeScan to generate the file partitions without instantiating RDD.
           scan.inputRDD match {
@@ -2466,6 +2472,10 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
         }
 
         val groupingExprs = groupingExpressions.map(exprToProto(_, child.output))
+        if (groupingExprs.exists(_.isEmpty)) {
+          withInfo(op, "Not all grouping expressions are supported")
+          return None
+        }
 
         // In some of the cases, the aggregateExpressions could be empty.
         // For example, if the aggregate functions only have group by or if the aggregate
@@ -2772,6 +2782,8 @@ object QueryPlanSerde extends Logging with ShimQueryPlanSerde with CometExprShim
       case ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) => true
       case _: TakeOrderedAndProjectExec => true
       case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
+      case BroadcastQueryStageExec(_, ReusedExchangeExec(_, _: CometBroadcastExchangeExec), _) =>
+        true
       case _: BroadcastExchangeExec => true
       case _: WindowExec => true
       case _ => false
