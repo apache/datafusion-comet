@@ -30,6 +30,7 @@ import org.scalatest.Tag
 import org.apache.commons.io.FileUtils
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
@@ -158,6 +159,18 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       if (CometConf.isExperimentalNativeScan) {
         assert(1 == collectNativeScans(cometPlan).length)
       }
+    }
+  }
+
+  test("shuffle") {
+    val df = spark.read.parquet(filename)
+    val df2 = df.repartition(8, df.col("c0")).sort("c1")
+    df2.collect()
+    if (CometConf.isExperimentalNativeScan) {
+      val cometShuffles = collect(df2.queryExecution.executedPlan) {
+        case exec: CometShuffleExchangeExec => exec
+      }
+      assert(1 == cometShuffles.length)
     }
   }
 
