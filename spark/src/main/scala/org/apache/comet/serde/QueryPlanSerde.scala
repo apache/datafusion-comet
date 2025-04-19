@@ -2785,52 +2785,31 @@ object QueryPlanSerde extends Logging with CometExprShim {
    * Check if the datatypes of shuffle input are supported. This is used for Columnar shuffle
    * which supports struct/array.
    */
-  def supportPartitioningTypes(
-      inputs: Seq[Attribute],
-      partitioning: Partitioning): (Boolean, String) = {
-    def supportedDataType(dt: DataType): Boolean = dt match {
-      case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-          _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: DecimalType |
-          _: DateType | _: BooleanType =>
-        true
-      case StructType(fields) =>
-        fields.forall(f => supportedDataType(f.dataType)) &&
-        // Java Arrow stream reader cannot work on duplicate field name
-        fields.map(f => f.name).distinct.length == fields.length
-      case ArrayType(ArrayType(_, _), _) => false // TODO: nested array is not supported
-      case ArrayType(MapType(_, _, _), _) => false // TODO: map array element is not supported
-      case ArrayType(elementType, _) =>
-        supportedDataType(elementType)
-      case MapType(MapType(_, _, _), _, _) => false // TODO: nested map is not supported
-      case MapType(_, MapType(_, _, _), _) => false
-      case MapType(StructType(_), _, _) => false // TODO: struct map key/value is not supported
-      case MapType(_, StructType(_), _) => false
-      case MapType(ArrayType(_, _), _, _) => false // TODO: array map key/value is not supported
-      case MapType(_, ArrayType(_, _), _) => false
-      case MapType(keyType, valueType, _) =>
-        supportedDataType(keyType) && supportedDataType(valueType)
-      case _ =>
-        false
-    }
-
+  def columnarShuffleSupported(s: ShuffleExchangeExec): (Boolean, String) = {
+    val inputs = s.child.output
+    val partitioning = s.outputPartitioning
     var msg = ""
     val supported = partitioning match {
       case HashPartitioning(expressions, _) =>
+        // columnar shuffle supports the same data types (including complex types) both for
+        // partition keys and for other columns
         val supported =
           expressions.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-            expressions.forall(e => supportedDataType(e.dataType)) &&
-            inputs.forall(attr => supportedDataType(attr.dataType))
+            expressions.forall(e => supportedShuffleDataType(e.dataType)) &&
+            inputs.forall(attr => supportedShuffleDataType(attr.dataType))
         if (!supported) {
           msg = s"unsupported Spark partitioning expressions: $expressions"
         }
         supported
-      case SinglePartition => inputs.forall(attr => supportedDataType(attr.dataType))
-      case RoundRobinPartitioning(_) => inputs.forall(attr => supportedDataType(attr.dataType))
+      case SinglePartition =>
+        inputs.forall(attr => supportedShuffleDataType(attr.dataType))
+      case RoundRobinPartitioning(_) =>
+        inputs.forall(attr => supportedShuffleDataType(attr.dataType))
       case RangePartitioning(orderings, _) =>
         val supported =
           orderings.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-            orderings.forall(e => supportedDataType(e.dataType)) &&
-            inputs.forall(attr => supportedDataType(attr.dataType))
+            orderings.forall(e => supportedShuffleDataType(e.dataType)) &&
+            inputs.forall(attr => supportedShuffleDataType(attr.dataType))
         if (!supported) {
           msg = s"unsupported Spark partitioning expressions: $orderings"
         }
@@ -2849,33 +2828,42 @@ object QueryPlanSerde extends Logging with CometExprShim {
   }
 
   /**
-   * Whether the given Spark partitioning is supported by Comet.
+   * Whether the given Spark partitioning is supported by Comet native shuffle.
    */
-  def supportPartitioning(
-      inputs: Seq[Attribute],
-      partitioning: Partitioning): (Boolean, String) = {
-    def supportedDataType(dt: DataType): Boolean = dt match {
-      case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-          _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: DecimalType |
-          _: DateType | _: BooleanType =>
+  def nativeShuffleSupported(s: ShuffleExchangeExec): (Boolean, String) = {
+
+    /**
+     * Determine which data types are supported as hash-partition keys in native shuffle.
+     *
+     * Hash Partition Key determines how data should be collocated for operations like
+     * `groupByKey`, `reduceByKey` or `join`.
+     */
+    def supportedPartitionKeyDataType(dt: DataType): Boolean = dt match {
+      case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
+          _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
+          _: TimestampNTZType | _: DecimalType | _: DateType =>
         true
       case _ =>
-        // Native shuffle doesn't support struct/array yet
         false
     }
 
+    val inputs = s.child.output
+    val partitioning = s.outputPartitioning
     var msg = ""
     val supported = partitioning match {
       case HashPartitioning(expressions, _) =>
+        // native shuffle currently does not support complex types as partition keys
+        // due to lack of hashing support for those types
         val supported =
           expressions.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-            expressions.forall(e => supportedDataType(e.dataType)) &&
-            inputs.forall(attr => supportedDataType(attr.dataType))
+            expressions.forall(e => supportedPartitionKeyDataType(e.dataType)) &&
+            inputs.forall(attr => supportedShuffleDataType(attr.dataType))
         if (!supported) {
           msg = s"unsupported Spark partitioning expressions: $expressions"
         }
         supported
-      case SinglePartition => inputs.forall(attr => supportedDataType(attr.dataType))
+      case SinglePartition =>
+        inputs.forall(attr => supportedShuffleDataType(attr.dataType))
       case _ =>
         msg = s"unsupported Spark partitioning: ${partitioning.getClass.getName}"
         false
@@ -2887,6 +2875,34 @@ object QueryPlanSerde extends Logging with CometExprShim {
     } else {
       (true, null)
     }
+  }
+
+  /**
+   * Determine which data types are supported in a shuffle.
+   */
+  def supportedShuffleDataType(dt: DataType): Boolean = dt match {
+    case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
+        _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
+        _: TimestampNTZType | _: DecimalType | _: DateType =>
+      true
+    case StructType(fields) =>
+      fields.forall(f => supportedShuffleDataType(f.dataType)) &&
+      // Java Arrow stream reader cannot work on duplicate field name
+      fields.map(f => f.name).distinct.length == fields.length
+    case ArrayType(ArrayType(_, _), _) => false // TODO: nested array is not supported
+    case ArrayType(MapType(_, _, _), _) => false // TODO: map array element is not supported
+    case ArrayType(elementType, _) =>
+      supportedShuffleDataType(elementType)
+    case MapType(MapType(_, _, _), _, _) => false // TODO: nested map is not supported
+    case MapType(_, MapType(_, _, _), _) => false
+    case MapType(StructType(_), _, _) => false // TODO: struct map key/value is not supported
+    case MapType(_, StructType(_), _) => false
+    case MapType(ArrayType(_, _), _, _) => false // TODO: array map key/value is not supported
+    case MapType(_, ArrayType(_, _), _) => false
+    case MapType(keyType, valueType, _) =>
+      supportedShuffleDataType(keyType) && supportedShuffleDataType(valueType)
+    case _ =>
+      false
   }
 
   // Utility method. Adds explain info if the result of calling exprToProto is None
@@ -2920,7 +2936,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
       val canSort = sortOrder.head.dataType match {
         case _: BooleanType => true
         case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-            _: DoubleType | _: TimestampType | _: TimestampType | _: DecimalType | _: DateType =>
+            _: DoubleType | _: TimestampType | _: TimestampNTZType | _: DecimalType |
+            _: DateType =>
           true
         case _: BinaryType | _: StringType => true
         case ArrayType(elementType, _) => canRank(elementType)
