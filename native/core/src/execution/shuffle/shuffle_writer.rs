@@ -686,16 +686,6 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
         for i in 0..num_output_partitions {
             offsets[i] = output_data.stream_position()?;
 
-            // Write in memory batches to output data file
-            let mut partition_iter = partitioned_batches.produce(i);
-            Self::shuffle_write_partition(
-                &mut partition_iter,
-                &mut self.shuffle_block_writer,
-                &mut output_data,
-                &self.metrics.encode_time,
-                &self.metrics.write_time,
-            )?;
-
             // if we wrote a spill file for this partition then copy the
             // contents into the shuffle file
             if let Some(spill_data) = self.partition_writers[i].spill_file.as_ref() {
@@ -705,6 +695,16 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                 std::io::copy(&mut spill_file, &mut output_data).map_err(to_df_err)?;
                 write_timer.stop();
             }
+
+            // Write in memory batches to output data file
+            let mut partition_iter = partitioned_batches.produce(i);
+            Self::shuffle_write_partition(
+                &mut partition_iter,
+                &mut self.shuffle_block_writer,
+                &mut output_data,
+                &self.metrics.encode_time,
+                &self.metrics.write_time,
+            )?;
         }
 
         let mut write_timer = self.metrics.write_time.timer();
