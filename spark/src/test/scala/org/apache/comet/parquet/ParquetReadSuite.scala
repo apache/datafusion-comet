@@ -46,7 +46,7 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import com.google.common.primitives.UnsignedLong
 
-import org.apache.comet.{CometConf, CometSparkSessionExtensions, DataTypeSupport}
+import org.apache.comet.{CometConf, DataTypeSupport}
 import org.apache.comet.CometConf.SCAN_NATIVE_ICEBERG_COMPAT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, usingDataFusionParquetExec}
 
