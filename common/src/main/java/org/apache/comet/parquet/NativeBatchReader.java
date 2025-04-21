@@ -25,11 +25,11 @@ import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.nio.channels.Channels;
 import java.util.*;
 
 import scala.Option;
+import scala.collection.JavaConverters;
 import scala.collection.Seq;
 import scala.collection.mutable.Buffer;
 
@@ -52,6 +52,7 @@ import org.apache.parquet.Preconditions;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.hadoop.metadata.BlockMetaData;
 import org.apache.parquet.hadoop.metadata.ParquetMetadata;
+import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.Type;
 import org.apache.spark.TaskContext;
@@ -61,6 +62,7 @@ import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.comet.parquet.CometParquetReadSupport;
 import org.apache.spark.sql.comet.util.Utils$;
 import org.apache.spark.sql.execution.datasources.PartitionedFile;
+import org.apache.spark.sql.execution.datasources.parquet.ParquetColumn;
 import org.apache.spark.sql.execution.datasources.parquet.ParquetToSparkSchemaConverter;
 import org.apache.spark.sql.execution.metric.SQLMetric;
 import org.apache.spark.sql.types.DataType;
@@ -75,8 +77,6 @@ import org.apache.comet.shims.ShimBatchReader;
 import org.apache.comet.shims.ShimFileFormat;
 import org.apache.comet.vector.CometVector;
 import org.apache.comet.vector.NativeUtil;
-
-import static org.apache.comet.parquet.TypeUtil.isEqual;
 
 /**
  * A vectorized Parquet reader that reads a Parquet file in a batched fashion.
@@ -113,6 +113,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
 
   private StructType sparkSchema;
   private StructType dataSchema;
+  MessageType fileSchema;
   private MessageType requestedSchema;
   private CometVector[] vectors;
   private AbstractColumnReader[] columnReaders;
@@ -123,6 +124,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   private boolean isInitialized;
   private ParquetMetadata footer;
   private byte[] nativeFilter;
+
+  private ParquetColumn parquetColumn;
 
   /**
    * Whether the native scan should always return decimal represented by 128 bits, regardless of its
@@ -229,7 +232,13 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
    * Initialize this reader. The reason we don't do it in the constructor is that we want to close
    * any resource hold by this reader when error happens during the initialization.
    */
-  public void init() throws URISyntaxException, IOException {
+  public void init() throws Throwable {
+
+    conf.set("spark.sql.parquet.binaryAsString", "false");
+    conf.set("spark.sql.parquet.int96AsTimestamp", "false");
+    conf.set("spark.sql.caseSensitive", "false");
+    conf.set("spark.sql.parquet.inferTimestampNTZ.enabled", "true");
+    conf.set("spark.sql.legacy.parquet.nanosAsLong", "false");
 
     useDecimal128 =
         conf.getBoolean(
@@ -257,21 +266,27 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
             CometInputFile.fromPath(path, conf), footer, readOptions, cometReadOptions, metrics)) {
 
       requestedSchema = footer.getFileMetaData().getSchema();
-      MessageType fileSchema = requestedSchema;
+      fileSchema = requestedSchema;
+      ParquetToSparkSchemaConverter converter = new ParquetToSparkSchemaConverter(conf);
 
       if (sparkSchema == null) {
-        sparkSchema = new ParquetToSparkSchemaConverter(conf).convert(requestedSchema);
+        sparkSchema = converter.convert(requestedSchema);
       } else {
         requestedSchema =
             CometParquetReadSupport.clipParquetSchema(
                 requestedSchema, sparkSchema, isCaseSensitive, useFieldId, ignoreMissingIds);
+        //        requestedSchema =
+        //            ParquetReadSupport.clipParquetSchema(
+        //                requestedSchema, sparkSchema, isCaseSensitive, useFieldId);
         if (requestedSchema.getFieldCount() != sparkSchema.size()) {
           throw new IllegalArgumentException(
               String.format(
                   "Spark schema has %d columns while " + "Parquet schema has %d columns",
-                  sparkSchema.size(), requestedSchema.getColumns().size()));
+                  sparkSchema.size(), requestedSchema.getFieldCount()));
         }
       }
+      this.parquetColumn =
+          converter.convertParquetColumn(requestedSchema, Option.apply(this.sparkSchema));
 
       String timeZoneId = conf.get("spark.sql.session.timeZone");
       // Native code uses "UTC" always as the timeZoneId when converting from spark to arrow schema.
@@ -283,6 +298,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       // Create Column readers
       List<Type> fields = requestedSchema.getFields();
       List<Type> fileFields = fileSchema.getFields();
+      ParquetColumn[] parquetFields =
+          JavaConverters.seqAsJavaList(parquetColumn.children()).toArray(new ParquetColumn[0]);
       int numColumns = fields.size();
       if (partitionSchema != null) numColumns += partitionSchema.size();
       columnReaders = new AbstractColumnReader[numColumns];
@@ -332,9 +349,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
         } else if (optFileField.isPresent()) {
           // The column we are reading may be a complex type in which case we check if each field in
           // the requested type is in the file type (and the same data type)
-          if (!isEqual(field, optFileField.get())) {
-            throw new UnsupportedOperationException("Schema evolution is not supported");
-          }
+          // This makes the same check as Spark's VectorzedParquetReader
+          checkColumn(parquetFields[i]);
           missingColumns[i] = false;
         } else {
           if (field.getRepetition() == Type.Repetition.REQUIRED) {
@@ -405,6 +421,78 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
               batchSize);
     }
     isInitialized = true;
+  }
+
+  private void checkParquetType(ParquetColumn column) throws IOException {
+    String[] path = JavaConverters.seqAsJavaList(column.path()).toArray(new String[0]);
+    if (containsPath(fileSchema, path)) {
+      if (column.isPrimitive()) {
+        ColumnDescriptor desc = column.descriptor().get();
+        ColumnDescriptor fd = fileSchema.getColumnDescription(desc.getPath());
+        TypeUtil.checkParquetType(fd, column.sparkType());
+      } else {
+        for (ParquetColumn childColumn : JavaConverters.seqAsJavaList(column.children())) {
+          checkColumn(childColumn);
+        }
+      }
+    } else { // A missing column which is either primitive or complex
+      if (column.required()) {
+        // Column is missing in data but the required data is non-nullable. This file is invalid.
+        throw new IOException(
+            "Required column is missing in data file. Col: " + Arrays.toString(path));
+      }
+    }
+  }
+
+  /**
+   * Checks whether the given 'path' exists in 'parquetType'. The difference between this and {@link
+   * MessageType#containsPath(String[])} is that the latter only support paths to leaf /** From
+   * Spark: VectorizedParquetRecordReader Check whether a column from requested schema is missing
+   * from the file schema, or whether it conforms to the type of the file schema.
+   */
+  private void checkColumn(ParquetColumn column) throws IOException {
+    String[] path = JavaConverters.seqAsJavaList(column.path()).toArray(new String[0]);
+    if (containsPath(fileSchema, path)) {
+      if (column.isPrimitive()) {
+        ColumnDescriptor desc = column.descriptor().get();
+        ColumnDescriptor fd = fileSchema.getColumnDescription(desc.getPath());
+        if (!fd.equals(desc)) {
+          throw new UnsupportedOperationException("Schema evolution not supported.");
+        }
+      } else {
+        for (ParquetColumn childColumn : JavaConverters.seqAsJavaList(column.children())) {
+          checkColumn(childColumn);
+        }
+      }
+    } else { // A missing column which is either primitive or complex
+      if (column.required()) {
+        // Column is missing in data but the required data is non-nullable. This file is invalid.
+        throw new IOException(
+            "Required column is missing in data file. Col: " + Arrays.toString(path));
+      }
+      //      missingColumns.add(column);
+    }
+  }
+
+  /**
+   * Checks whether the given 'path' exists in 'parquetType'. The difference between this and {@link
+   * MessageType#containsPath(String[])} is that the latter only support paths to leaf nodes, while
+   * this support paths both to leaf and non-leaf nodes.
+   */
+  private boolean containsPath(Type parquetType, String[] path) {
+    return containsPath(parquetType, path, 0);
+  }
+
+  private boolean containsPath(Type parquetType, String[] path, int depth) {
+    if (path.length == depth) return true;
+    if (parquetType instanceof GroupType) {
+      String fieldName = path[depth];
+      GroupType parquetGroupType = (GroupType) parquetType;
+      if (parquetGroupType.containsField(fieldName)) {
+        return containsPath(parquetGroupType.getType(fieldName), path, depth + 1);
+      }
+    }
+    return false;
   }
 
   public void setSparkSchema(StructType schema) {
@@ -532,7 +620,10 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     if (importer != null) importer.close();
     importer = new CometSchemaImporter(ALLOCATOR);
 
-    List<ColumnDescriptor> columns = requestedSchema.getColumns();
+    for (ParquetColumn childColumn : JavaConverters.seqAsJavaList(parquetColumn.children())) {
+      checkParquetType(childColumn);
+    }
+
     List<Type> fields = requestedSchema.getFields();
     for (int i = 0; i < fields.size(); i++) {
       if (!missingColumns[i]) {

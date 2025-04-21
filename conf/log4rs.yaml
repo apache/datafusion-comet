@@ -21,6 +21,6 @@ appenders:
     path: "target/unit-tests.log"
 
 root:
-  level: info
+  level: debug
   appenders:
     - unittest
