@@ -189,12 +189,12 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("Parquet temporal types written as INT96") {
-
-    // there are known issues with INT96 support in the new experimental scans
-    // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!CometConf.isExperimentalNativeScan)
-
-    testParquetTemporalTypes(ParquetOutputTimestampType.INT96)
+    // int96 coercion in DF does not work with nested types yet
+    // https://github.com/apache/datafusion/issues/15763
+    testParquetTemporalTypes(
+      ParquetOutputTimestampType.INT96,
+      generateArray = false,
+      generateStruct = false)
   }
 
   test("Parquet temporal types written as TIMESTAMP_MICROS") {
@@ -206,10 +206,15 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   private def testParquetTemporalTypes(
-      outputTimestampType: ParquetOutputTimestampType.Value): Unit = {
+      outputTimestampType: ParquetOutputTimestampType.Value,
+      generateArray: Boolean = true,
+      generateStruct: Boolean = true): Unit = {
 
     val options =
-      DataGenOptions(generateArray = true, generateStruct = true, generateNegativeZero = false)
+      DataGenOptions(
+        generateArray = generateArray,
+        generateStruct = generateStruct,
+        generateNegativeZero = false)
 
     withTempPath { filename =>
       val random = new Random(42)
