@@ -140,7 +140,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 Byte.MaxValue)
               withParquetTable(path.toString, "tbl") {
                 val qry = "select _9 from tbl order by _11"
-                if (CometSparkSessionExtensions.usingDataFusionParquetExec(conf)) {
+                if (CometSparkSessionExtensions.usingDataFusionParquetExec(
+                    CometConf.COMET_NATIVE_SCAN_IMPL.get(conf))) {
                   if (!allowIncompatible) {
                     checkSparkAnswer(qry)
                   } else {

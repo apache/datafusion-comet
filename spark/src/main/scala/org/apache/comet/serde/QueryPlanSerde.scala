@@ -2707,9 +2707,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
               // Complex type supported if
               // - Native datafusion reader enabled (experimental) OR
               // - conversion from Parquet/JSON enabled
-              allowComplex =
-                usingDataFusionParquetExec(conf) || CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED
-                  .get(conf) || CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf))) =>
+              allowComplex = usingDataFusionParquetExec(CometConf.COMET_NATIVE_SCAN_IMPL.get(
+                conf)) || CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED
+                .get(conf) || CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf))) =>
         // These operators are source of Comet native execution chain
         val scanBuilder = OperatorOuterClass.Scan.newBuilder()
         val source = op.simpleStringWithNodeId()

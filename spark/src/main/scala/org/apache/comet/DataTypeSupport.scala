@@ -22,6 +22,8 @@ package org.apache.comet
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
+import org.apache.comet.DataTypeSupport.usingParquetExecWithIncompatTypes
+
 trait DataTypeSupport {
 
   /**
@@ -37,8 +39,7 @@ trait DataTypeSupport {
 
   private def isGloballySupported(dt: DataType): Boolean = dt match {
     case ByteType | ShortType
-        if CometSparkSessionExtensions.usingDataFusionParquetExec(SQLConf.get) &&
-          !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get() =>
+        if usingParquetExecWithIncompatTypes(CometConf.COMET_NATIVE_SCAN_IMPL.get(SQLConf.get)) =>
       false
     case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
         BinaryType | StringType | _: DecimalType | DateType | TimestampType =>
@@ -60,6 +61,10 @@ trait DataTypeSupport {
     struct.fields.map(_.dataType).forall(isTypeSupported)
   }
 
+  def findUnsupportedField(struct: StructType): Option[StructField] = {
+    struct.fields.find(f => !isTypeSupported(f.dataType))
+  }
+
   def isTypeSupported(dt: DataType): Boolean = {
     if (isGloballySupported(dt) || isAdditionallySupported(dt)) {
       // If complex types are supported, we additionally want to recurse into their children
@@ -74,5 +79,12 @@ trait DataTypeSupport {
     } else {
       false
     }
+  }
+}
+
+object DataTypeSupport {
+  def usingParquetExecWithIncompatTypes(scanImpl: String): Boolean = {
+    CometSparkSessionExtensions.usingDataFusionParquetExec(scanImpl) &&
+    !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
   }
 }

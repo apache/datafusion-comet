@@ -52,7 +52,7 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExc
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DoubleType, FloatType}
+import org.apache.spark.sql.types.{DoubleType, FloatType, StructField}
 
 import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
@@ -161,10 +161,28 @@ class CometSparkSessionExtensions
           }
 
           if (!schemaSupported) {
-            fallbackReasons += s"Unsupported schema ${scanExec.requiredSchema} for $scanImpl"
+            val field: Option[StructField] =
+              CometNativeScanExec
+                .findUnsupportedField(scanExec.requiredSchema)
+                .orElse(CometScanExec.findUnsupportedField(scanExec.requiredSchema))
+            assert(field.nonEmpty)
+            fallbackReasons +=
+              s"Unsupported field ${field.get} in schema ${scanExec.requiredSchema} for $scanImpl"
           }
           if (!partitionSchemaSupported) {
-            fallbackReasons += s"Unsupported partitioning schema ${r.partitionSchema} for $scanImpl"
+            val field: Option[StructField] =
+              CometNativeScanExec
+                .findUnsupportedField(r.partitionSchema)
+                .orElse(CometScanExec.findUnsupportedField(r.partitionSchema))
+            assert(field.nonEmpty)
+            fallbackReasons +=
+              s"Unsupported field ${field.get} in partitioning schema ${r.partitionSchema}" +
+                s"for $scanImpl"
+          }
+
+          if (DataTypeSupport.usingParquetExecWithIncompatTypes(scanImpl) || DataTypeSupport
+              .usingParquetExecWithIncompatTypes(scanImpl)) {
+            fallbackReasons += s"and ${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false"
           }
 
           if (fallbackReasons.isEmpty) {
@@ -1253,9 +1271,8 @@ object CometSparkSessionExtensions extends Logging {
     org.apache.spark.SPARK_VERSION >= "4.0"
   }
 
-  def usingDataFusionParquetExec(conf: SQLConf): Boolean =
-    Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION).contains(
-      CometConf.COMET_NATIVE_SCAN_IMPL.get(conf))
+  def usingDataFusionParquetExec(scanImpl: String): Boolean =
+    Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION).contains(scanImpl)
 
   /**
    * Whether we should override Spark memory configuration for Comet. This only returns true when
