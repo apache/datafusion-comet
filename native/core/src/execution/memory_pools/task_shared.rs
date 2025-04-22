@@ -41,7 +41,7 @@ impl PerTaskMemoryPool {
 
 // This function reduces the refcount of a per-task memory pool when a native plan is released.
 // If the refcount reaches zero, the memory pool is removed from the map and dropped.
-pub(crate) fn handle_task_shared_poll_release(pool_type: MemoryPoolType, task_attempt_id: i64) {
+pub(crate) fn handle_task_shared_pool_release(pool_type: MemoryPoolType, task_attempt_id: i64) {
     if !pool_type.is_task_shared() {
         return;
     }

@@ -61,7 +61,7 @@ use jni::{
 use tokio::runtime::Runtime;
 
 use crate::execution::memory_pools::{
-    create_memory_pool, handle_task_shared_poll_release, parse_memory_pool_config, MemoryPoolConfig,
+    create_memory_pool, handle_task_shared_pool_release, parse_memory_pool_config, MemoryPoolConfig,
 };
 use crate::execution::operators::ScanExec;
 use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
@@ -468,7 +468,7 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
         // Update metrics
         update_metrics(&mut env, execution_context)?;
 
-        handle_task_shared_poll_release(
+        handle_task_shared_pool_release(
             execution_context.memory_pool_config.pool_type,
             execution_context.task_attempt_id,
         );
