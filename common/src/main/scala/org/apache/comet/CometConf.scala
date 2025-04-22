@@ -421,8 +421,9 @@ object CometConf extends ShimCometConf {
         "Spark choosing a different join strategy due to the estimated size of the exchange " +
         "being smaller. Comet will multiple sizeInBytes by this amount to avoid regressions " +
         "in join strategy.")
+    .internal()
     .doubleConf
-    .createWithDefault(2.0)
+    .createWithDefault(1.0)
 
   val COMET_DPP_FALLBACK_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.dppFallback.enabled")
