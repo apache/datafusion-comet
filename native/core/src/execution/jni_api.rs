@@ -17,12 +17,10 @@
 
 //! Define JNI APIs which can be called from Java/Scala.
 
-use super::{serde, utils::SparkArrowConvert, CometMemoryPool};
+use super::{serde, utils::SparkArrowConvert};
 use arrow::array::RecordBatch;
 use arrow::datatypes::DataType as ArrowDataType;
-use datafusion::execution::memory_pool::{
-    FairSpillPool, GreedyMemoryPool, MemoryPool, TrackConsumersPool, UnboundedMemoryPool,
-};
+use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::{
     execution::{disk_manager::DiskManagerConfig, runtime_env::RuntimeEnv},
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
@@ -40,7 +38,7 @@ use jni::{
 };
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use std::{collections::HashMap, sync::Arc, task::Poll};
+use std::{sync::Arc, task::Poll};
 
 use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
@@ -60,16 +58,16 @@ use jni::{
     objects::GlobalRef,
     sys::{jboolean, jdouble, jintArray, jobjectArray, jstring},
 };
-use std::num::NonZeroUsize;
-use std::sync::Mutex;
 use tokio::runtime::Runtime;
 
-use crate::execution::fair_memory_pool::CometFairMemoryPool;
+use crate::execution::memory_pools::{
+    create_memory_pool, handle_task_shared_pool_release, parse_memory_pool_config, MemoryPoolConfig,
+};
 use crate::execution::operators::ScanExec;
 use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 use log::info;
-use once_cell::sync::{Lazy, OnceCell};
+use once_cell::sync::Lazy;
 
 static TOKIO_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
@@ -128,51 +126,6 @@ struct ExecutionContext {
     pub explain_native: bool,
     /// Memory pool config
     pub memory_pool_config: MemoryPoolConfig,
-}
-
-#[derive(PartialEq, Eq)]
-enum MemoryPoolType {
-    Unified,
-    FairUnified,
-    Greedy,
-    FairSpill,
-    GreedyTaskShared,
-    FairSpillTaskShared,
-    GreedyGlobal,
-    FairSpillGlobal,
-    Unbounded,
-}
-
-struct MemoryPoolConfig {
-    pool_type: MemoryPoolType,
-    pool_size: usize,
-}
-
-impl MemoryPoolConfig {
-    fn new(pool_type: MemoryPoolType, pool_size: usize) -> Self {
-        Self {
-            pool_type,
-            pool_size,
-        }
-    }
-}
-
-/// The per-task memory pools keyed by task attempt id.
-static TASK_SHARED_MEMORY_POOLS: Lazy<Mutex<HashMap<i64, PerTaskMemoryPool>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
-
-struct PerTaskMemoryPool {
-    memory_pool: Arc<dyn MemoryPool>,
-    num_plans: usize,
-}
-
-impl PerTaskMemoryPool {
-    fn new(memory_pool: Arc<dyn MemoryPool>) -> Self {
-        Self {
-            memory_pool,
-            num_plans: 0,
-        }
-    }
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -319,134 +272,6 @@ fn prepare_datafusion_session_context(
     datafusion::functions_nested::register_all(&mut session_ctx)?;
 
     Ok(session_ctx)
-}
-
-fn parse_memory_pool_config(
-    off_heap_mode: bool,
-    memory_pool_type: String,
-    memory_limit: i64,
-    memory_limit_per_task: i64,
-) -> CometResult<MemoryPoolConfig> {
-    let pool_size = memory_limit as usize;
-    let memory_pool_config = if off_heap_mode {
-        match memory_pool_type.as_str() {
-            "fair_unified" => MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size),
-            "default" | "unified" => {
-                // the `unified` memory pool interacts with Spark's memory pool to allocate
-                // memory therefore does not need a size to be explicitly set. The pool size
-                // shared with Spark is set by `spark.memory.offHeap.size`.
-                MemoryPoolConfig::new(MemoryPoolType::Unified, 0)
-            }
-            _ => {
-                return Err(CometError::Config(format!(
-                    "Unsupported memory pool type for off-heap mode: {}",
-                    memory_pool_type
-                )))
-            }
-        }
-    } else {
-        // Use the memory pool from DF
-        let pool_size_per_task = memory_limit_per_task as usize;
-        match memory_pool_type.as_str() {
-            "fair_spill_task_shared" => {
-                MemoryPoolConfig::new(MemoryPoolType::FairSpillTaskShared, pool_size_per_task)
-            }
-            "default" | "greedy_task_shared" => {
-                MemoryPoolConfig::new(MemoryPoolType::GreedyTaskShared, pool_size_per_task)
-            }
-            "fair_spill_global" => {
-                MemoryPoolConfig::new(MemoryPoolType::FairSpillGlobal, pool_size)
-            }
-            "greedy_global" => MemoryPoolConfig::new(MemoryPoolType::GreedyGlobal, pool_size),
-            "fair_spill" => MemoryPoolConfig::new(MemoryPoolType::FairSpill, pool_size_per_task),
-            "greedy" => MemoryPoolConfig::new(MemoryPoolType::Greedy, pool_size_per_task),
-            "unbounded" => MemoryPoolConfig::new(MemoryPoolType::Unbounded, 0),
-            _ => {
-                return Err(CometError::Config(format!(
-                    "Unsupported memory pool type for on-heap mode: {}",
-                    memory_pool_type
-                )))
-            }
-        }
-    };
-    Ok(memory_pool_config)
-}
-
-fn create_memory_pool(
-    memory_pool_config: &MemoryPoolConfig,
-    comet_task_memory_manager: Arc<GlobalRef>,
-    task_attempt_id: i64,
-) -> Arc<dyn MemoryPool> {
-    const NUM_TRACKED_CONSUMERS: usize = 10;
-    match memory_pool_config.pool_type {
-        MemoryPoolType::Unified => {
-            // Set Comet memory pool for native
-            let memory_pool = CometMemoryPool::new(comet_task_memory_manager);
-            Arc::new(TrackConsumersPool::new(
-                memory_pool,
-                NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
-            ))
-        }
-        MemoryPoolType::FairUnified => {
-            // Set Comet fair memory pool for native
-            let memory_pool =
-                CometFairMemoryPool::new(comet_task_memory_manager, memory_pool_config.pool_size);
-            Arc::new(TrackConsumersPool::new(
-                memory_pool,
-                NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
-            ))
-        }
-        MemoryPoolType::Greedy => Arc::new(TrackConsumersPool::new(
-            GreedyMemoryPool::new(memory_pool_config.pool_size),
-            NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
-        )),
-        MemoryPoolType::FairSpill => Arc::new(TrackConsumersPool::new(
-            FairSpillPool::new(memory_pool_config.pool_size),
-            NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
-        )),
-        MemoryPoolType::GreedyGlobal => {
-            static GLOBAL_MEMORY_POOL_GREEDY: OnceCell<Arc<dyn MemoryPool>> = OnceCell::new();
-            let memory_pool = GLOBAL_MEMORY_POOL_GREEDY.get_or_init(|| {
-                Arc::new(TrackConsumersPool::new(
-                    GreedyMemoryPool::new(memory_pool_config.pool_size),
-                    NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
-                ))
-            });
-            Arc::clone(memory_pool)
-        }
-        MemoryPoolType::FairSpillGlobal => {
-            static GLOBAL_MEMORY_POOL_FAIR: OnceCell<Arc<dyn MemoryPool>> = OnceCell::new();
-            let memory_pool = GLOBAL_MEMORY_POOL_FAIR.get_or_init(|| {
-                Arc::new(TrackConsumersPool::new(
-                    FairSpillPool::new(memory_pool_config.pool_size),
-                    NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
-                ))
-            });
-            Arc::clone(memory_pool)
-        }
-        MemoryPoolType::GreedyTaskShared | MemoryPoolType::FairSpillTaskShared => {
-            let mut memory_pool_map = TASK_SHARED_MEMORY_POOLS.lock().unwrap();
-            let per_task_memory_pool =
-                memory_pool_map.entry(task_attempt_id).or_insert_with(|| {
-                    let pool: Arc<dyn MemoryPool> =
-                        if memory_pool_config.pool_type == MemoryPoolType::GreedyTaskShared {
-                            Arc::new(TrackConsumersPool::new(
-                                GreedyMemoryPool::new(memory_pool_config.pool_size),
-                                NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
-                            ))
-                        } else {
-                            Arc::new(TrackConsumersPool::new(
-                                FairSpillPool::new(memory_pool_config.pool_size),
-                                NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
-                            ))
-                        };
-                    PerTaskMemoryPool::new(pool)
-                });
-            per_task_memory_pool.num_plans += 1;
-            Arc::clone(&per_task_memory_pool.memory_pool)
-        }
-        MemoryPoolType::Unbounded => Arc::new(UnboundedMemoryPool::default()),
-    }
 }
 
 /// Prepares arrow arrays for output.
@@ -643,22 +468,11 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
         // Update metrics
         update_metrics(&mut env, execution_context)?;
 
-        if execution_context.memory_pool_config.pool_type == MemoryPoolType::FairSpillTaskShared
-            || execution_context.memory_pool_config.pool_type == MemoryPoolType::GreedyTaskShared
-        {
-            // Decrement the number of native plans using the per-task shared memory pool, and
-            // remove the memory pool if the released native plan is the last native plan using it.
-            let task_attempt_id = execution_context.task_attempt_id;
-            let mut memory_pool_map = TASK_SHARED_MEMORY_POOLS.lock().unwrap();
-            if let Some(per_task_memory_pool) = memory_pool_map.get_mut(&task_attempt_id) {
-                per_task_memory_pool.num_plans -= 1;
-                if per_task_memory_pool.num_plans == 0 {
-                    // Drop the memory pool from the per-task memory pool map if there are no
-                    // more native plans using it.
-                    memory_pool_map.remove(&task_attempt_id);
-                }
-            }
-        }
+        handle_task_shared_pool_release(
+            execution_context.memory_pool_config.pool_type,
+            execution_context.task_attempt_id,
+        );
+
         let _: Box<ExecutionContext> = Box::from_raw(execution_context);
         Ok(())
     })
