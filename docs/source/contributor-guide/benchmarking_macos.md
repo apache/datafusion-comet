@@ -21,6 +21,10 @@ under the License.
 
 This guide is for setting up TPC-H benchmarks locally on macOS using the 100 GB dataset.
 
+Note that running this benchmark on macOS is not ideal because we cannot force Spark or Comet to use performance 
+cores rather than efficiency cores, and background processes are sharing these cores. Also, power and thermal 
+management may throttle CPU cores.  
+
 ## Prerequisites
 
 Java and Rust must be installed locally.
@@ -84,7 +88,7 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=16g \
     --conf spark.eventLog.enabled=true \
-    /path/to/datafusion-benchmarks/tpcbench.py \
+    /path/to/datafusion-benchmarks/runners/datafusion-comet/tpcbench.py \
     --name spark \
     --benchmark tpch \
     --data /Users/andy/Data/tpch/sf100 \
@@ -95,11 +99,16 @@ $SPARK_HOME/bin/spark-submit \
 
 ## Run Comet Benchmarks
 
-Install Comet JAR from Maven:
+Build Comet from source, with `mimalloc` enabled.
 
 ```shell
-wget https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.12/0.7.0/comet-spark-spark3.5_2.12-0.7.0.jar -P $SPARK_HOME/jars
-export COMET_JAR=$SPARK_HOME/jars/comet-spark-spark3.5_2.12-0.7.0.jar
+make release COMET_FEATURES="mimalloc"
+```
+
+Set `COMET_JAR` to point to the location of the Comet jar file.
+
+```shell
+export COMET_JAR=`pwd`/spark/target/comet-spark-spark3.5_2.12-0.8.0-SNAPSHOT.jar
 ```
 
 Run the following command (the `--data` parameter will need to be updated to point to your S3 bucket):
@@ -126,7 +135,7 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.comet.exec.shuffle.fallbackToColumnar=true \
     --conf spark.comet.exec.replaceSortMergeJoin=true \
     --conf spark.comet.cast.allowIncompatible=true \
-    /path/to/datafusion-benchmarks/tpcbench.py \
+    /path/to/datafusion-benchmarks/runners/datafusion-comet/tpcbench.py \
     --name comet \
     --benchmark tpch \
     --data /path/to/tpch-data/ \
