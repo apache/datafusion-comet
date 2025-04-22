@@ -119,7 +119,7 @@ More on [HDFS Reader](../../../native/hdfs/README.md)
 ::1             localhost namenode datanode1 datanode2 datanode3
 ```
 
-- Start local HDFS Kubernetes cluster 
+- Start local HDFS cluster, 3 datanodes, namenode url is `namenode:9000` 
 ```commandline
 docker compose -f kube/local/hdfs-docker-compose.yml up
 ```
