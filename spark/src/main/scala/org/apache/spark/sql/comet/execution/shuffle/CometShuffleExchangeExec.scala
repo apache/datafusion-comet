@@ -114,7 +114,8 @@ case class CometShuffleExchangeExec(
     new CometShuffledBatchRDD(shuffleDependency, readMetrics, partitionSpecs)
 
   override def runtimeStatistics: Statistics = {
-    val dataSize = metrics("dataSize").value * CometConf.COMET_EXCHANGE_SIZE_MULTIPLIER.get(conf)
+    val dataSize =
+      metrics("dataSize").value * Math.max(CometConf.COMET_EXCHANGE_SIZE_MULTIPLIER.get(conf), 1)
     val rowCount = metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_RECORDS_WRITTEN).value
     Statistics(dataSize.toLong, Some(rowCount))
   }
