@@ -64,7 +64,7 @@ $SPARK_HOME/sbin/start-master.sh
 Set `SPARK_MASTER` env var (host name will need to be edited):
 
 ```shell
-export SPARK_MASTER=spark://Andys-MacBook-Pro.local:7077
+export SPARK_MASTER=spark://Rustys-MacBook-Pro.local:7077
 ```
 
 
@@ -91,7 +91,7 @@ $SPARK_HOME/bin/spark-submit \
     /path/to/datafusion-benchmarks/runners/datafusion-comet/tpcbench.py \
     --name spark \
     --benchmark tpch \
-    --data /Users/andy/Data/tpch/sf100 \
+    --data /Users/rusty/Data/tpch/sf100 \
     --queries /path/to/datafusion-benchmarks/tpch/queries \
     --output . \
     --iterations 1
@@ -102,7 +102,7 @@ $SPARK_HOME/bin/spark-submit \
 Build Comet from source, with `mimalloc` enabled.
 
 ```shell
-make release COMET_FEATURES="mimalloc"
+make release COMET_FEATURES=mimalloc
 ```
 
 Set `COMET_JAR` to point to the location of the Comet jar file.
