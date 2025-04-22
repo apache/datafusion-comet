@@ -328,6 +328,11 @@ under the License.
        Using experimental native DataFusion reader
       </a>
      </li>
+     <li class="toc-h3 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#local-hdfs-development">
+       Local HDFS development
+      </a>
+     </li>
     </ul>
    </li>
    <li class="toc-h2 nav-item toc-entry">
@@ -467,6 +472,47 @@ Input<span class="w"> </span><span class="o">[</span><span class="m">3</span><sp
 </div>
 <p>Verify the native scan type should be <code class="docutils literal notranslate"><span class="pre">CometNativeScan</span></code>.</p>
 <p>More on <span class="xref myst">HDFS Reader</span></p>
+</section>
+<section id="local-hdfs-development">
+<h3>Local HDFS development<a class="headerlink" href="#local-hdfs-development" title="Link to this heading">¶</a></h3>
+<ul class="simple">
+<li><p>Configure local machine network. Add hostname to <code class="docutils literal notranslate"><span class="pre">/etc/hosts</span></code></p></li>
+</ul>
+<div class="highlight-commandline notranslate"><div class="highlight"><pre><span></span>127.0.0.1	localhost   namenode datanode1 datanode2 datanode3
+::1             localhost namenode datanode1 datanode2 datanode3
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>Start local HDFS cluster, 3 datanodes, namenode url is <code class="docutils literal notranslate"><span class="pre">namenode:9000</span></code></p></li>
+</ul>
+<div class="highlight-commandline notranslate"><div class="highlight"><pre><span></span>docker compose -f kube/local/hdfs-docker-compose.yml up
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>Check the local namenode is up and running on <code class="docutils literal notranslate"><span class="pre">http://localhost:9870/dfshealth.html#tab-overview</span></code></p></li>
+<li><p>Build a project with HDFS support</p></li>
+</ul>
+<div class="highlight-commandline notranslate"><div class="highlight"><pre><span></span>JAVA_HOME=&quot;/opt/homebrew/opt/openjdk@11&quot; make release PROFILES=&quot;-Pspark-3.5&quot; COMET_FEATURES=hdfs RUSTFLAGS=&quot;-L /opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk/Contents/Home/lib/server&quot;
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>Run local test</p></li>
+</ul>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="w">    </span><span class="n">withSQLConf</span><span class="p">(</span>
+<span class="w">      </span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">COMET_ENABLED</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;true&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">COMET_EXEC_ENABLED</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;true&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">COMET_NATIVE_SCAN_IMPL</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">SCAN_NATIVE_DATAFUSION</span><span class="p">,</span>
+<span class="w">      </span><span class="nc">SQLConf</span><span class="p">.</span><span class="nc">USE_V1_SOURCE_LIST</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;parquet&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="s">&quot;fs.defaultFS&quot;</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;hdfs://namenode:9000&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="s">&quot;dfs.client.use.datanode.hostname&quot;</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;true&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="kd">val</span><span class="w"> </span><span class="n">df</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">read</span><span class="p">.</span><span class="n">parquet</span><span class="p">(</span><span class="s">&quot;/tmp/2&quot;</span><span class="p">)</span>
+<span class="w">      </span><span class="n">df</span><span class="p">.</span><span class="n">show</span><span class="p">(</span><span class="kc">false</span><span class="p">)</span>
+<span class="w">      </span><span class="n">df</span><span class="p">.</span><span class="n">explain</span><span class="p">(</span><span class="s">&quot;extended&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+</pre></div>
+</div>
+<p>Or use <code class="docutils literal notranslate"><span class="pre">spark-shell</span></code> with HDFS support as described <a class="reference internal" href="#using-experimental-native-datafusion-reader">above</a></p>
 </section>
 </section>
 <section id="s3">
