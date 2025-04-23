@@ -681,6 +681,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f46ad14479a25103f283c0f10005961cf086d8dc42205bb44c46ac563475dca6"
 
 [[package]]
+name = "cmake"
+version = "0.1.54"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7caa3f9de89ddbe2c607f4101924c5abec803763ae9534e4f4d7d8f84aa81f0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1017,8 +1026,11 @@ dependencies = [
  "serde",
  "simd-adler32",
  "snap",
+ "snmalloc-rs",
+ "tcmalloc",
  "tempfile",
  "thiserror 1.0.69",
+ "tikv-jemallocator",
  "tokio",
  "url",
  "zstd 0.11.2+zstd.1.5.2",
@@ -3694,6 +3706,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b6b67fb9a61334225b5b790716f609cd58395f895b3fe8b328786812a40bc3b"
 
 [[package]]
+name = "snmalloc-rs"
+version = "0.3.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb317153089fdfa4d8a2eec059d40a5a23c3bde43995ea23b19121c3f621e74a"
+dependencies = [
+ "snmalloc-sys",
+]
+
+[[package]]
+name = "snmalloc-sys"
+version = "0.3.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "065fea53d32bb77bc36cca466cb191f2e5216ebfd0ed360b1d64889ee6e559ea"
+dependencies = [
+ "cmake",
+]
+
+[[package]]
 name = "socket2"
 version = "0.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3828,6 +3858,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tcmalloc"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "375205113d84a1c5eeed67beaa0ce08e41be1a9d5acc3425ad2381fddd9d819b"
+dependencies = [
+ "tcmalloc-sys",
+]
+
+[[package]]
+name = "tcmalloc-sys"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b7ad73e635dd232c2c2106d59269f59a61de421cc6b95252d2d932094ff1f40"
+
+[[package]]
 name = "tempfile"
 version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3899,6 +3944,26 @@ dependencies = [
  "byteorder",
  "integer-encoding",
  "ordered-float",
+]
+
+[[package]]
+name = "tikv-jemalloc-sys"
+version = "0.6.0+5.3.0-1-ge13ca993e8ccb9ba9847cc330696e02839f328f7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd3c60906412afa9c2b5b5a48ca6a5abe5736aec9eb48ad05037a677e52e4e2d"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
+name = "tikv-jemallocator"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cec5ff18518d81584f477e9bfdf957f5bb0979b0bac3af4ca30b5b3ae2d2865"
+dependencies = [
+ "libc",
+ "tikv-jemalloc-sys",
 ]
 
 [[package]]

@@ -36,9 +36,19 @@ use log4rs::{
     encode::pattern::PatternEncoder,
     Config,
 };
+use once_cell::sync::OnceCell;
+
+#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
+use tikv_jemallocator::Jemalloc;
+
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
-use once_cell::sync::OnceCell;
+
+#[cfg(feature = "snmalloc")]
+use snmalloc_rs::SnMalloc;
+
+#[cfg(feature = "tcmalloc")]
+use tcmalloc::TCMalloc;
 
 use errors::{try_unwrap_or_throw, CometError, CometResult};
 
@@ -50,9 +60,35 @@ pub mod execution;
 mod jvm_bridge;
 pub mod parquet;
 
+#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
+
+#[cfg(feature = "snmalloc")]
+#[global_allocator]
+static GLOBAL: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
+
+#[cfg(feature = "tcmalloc")]
+#[global_allocator]
+static GLOBAL: TCMalloc = TCMalloc;
+
+const _: () = {
+    let enabled_features = {
+        cfg!(feature = "jemalloc") as u32
+            + cfg!(feature = "mimalloc") as u32
+            + cfg!(feature = "snmalloc") as u32
+            + cfg!(feature = "tcmalloc") as u32
+    };
+
+    match enabled_features {
+        0 | 1=> {}
+        2.. => panic!("Invalid feature flags for custom allocators. Please enable at most one of [\"jemalloc\", \"mimalloc\", \"snmalloc\", \"tcmalloc\"]"),
+    }
+};
 
 static JAVA_VM: OnceCell<JavaVM> = OnceCell::new();
 
