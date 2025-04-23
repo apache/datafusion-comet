@@ -13,7 +13,7 @@ machine:
   env: &base_env
     LOCAL_REPO: ".dist/local-repo"
     ENABLE_COMET: true
-    COMET_VERSION: 0.8.0.0-apple-SNAPSHOT
+    COMET_VERSION: 0.9.0.0-apple-SNAPSHOT
     RUST_BACKTRACE: full
     LANG: "en_US.UTF-8"
     LC_ALL: "en_US.UTF-8"
@@ -1673,7 +1673,7 @@ builds:
     finally:
       tag:
         enabled: true
-        expression: "0.8.0.0-apple"
+        expression: "0.9.0.0-apple"
       pipelineChain:
         - pipeline: build-main-apple-release-publish-3.4_2.12
           buildArguments:
