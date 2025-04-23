@@ -44,9 +44,6 @@ use tikv_jemallocator::Jemalloc;
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
 
-#[cfg(feature = "tcmalloc")]
-use tcmalloc::TCMalloc;
-
 use errors::{try_unwrap_or_throw, CometError, CometResult};
 
 #[macro_use]
@@ -68,10 +65,6 @@ static GLOBAL: MiMalloc = MiMalloc;
 #[cfg(feature = "snmalloc")]
 #[global_allocator]
 static ALLOC: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
-
-#[cfg(feature = "tcmalloc")]
-#[global_allocator]
-static GLOBAL: TCMalloc = TCMalloc;
 
 static JAVA_VM: OnceCell<JavaVM> = OnceCell::new();
 
