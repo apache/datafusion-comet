@@ -1063,6 +1063,7 @@ under the License.
             <exclude>dev/Dockerfile*</exclude>
             <exclude>dev/boson-to-comet.sh</exclude>
             <exclude>dev/bump-version.sh</exclude>
+            <exclude>dev/cometSync.sh</exclude>
             <exclude>dev/get-patch-list.sh</exclude>
             <exclude>dev/diff/**</exclude>
             <exclude>dev/diffs/**</exclude>

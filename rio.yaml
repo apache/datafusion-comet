@@ -244,15 +244,6 @@ builds:
     timeout: 180
     machine: &rio2-machine
       baseImage: docker.apple.com/pie/comet-builder-ubi8-jdk11:latest
-      targetPlatforms:
-        - linux/amd64
-        # FIXME Disabld due to leveldbjni
-        # - linux/arm64
-        # resources:
-        #   size: xlarge
-        # FIXME Disabled until a proxy configuration for Ivy is figured out
-        # executor:
-        #   type: moes
       env:
         <<: *base_env
         PROFILES: "-Pspark-3.2"
@@ -2519,3 +2510,16 @@ builds:
     package:
       <<: *pr_image_package
 
+  - group: sync
+    branchRules:
+      includePatterns:
+        - "main-apple"
+    trigger:
+      timer: '@hourly'
+      gitPush: false
+    machine:
+      <<: *rio2-machine
+    build:
+      template: freestyle:v4:build
+      steps:
+        - dev/cometSync.sh
