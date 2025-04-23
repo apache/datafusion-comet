@@ -1979,6 +1979,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case _: ArrayIntersect => convert(CometArrayIntersect)
       case _: ArrayJoin => convert(CometArrayJoin)
       case _: ArraysOverlap => convert(CometArraysOverlap)
+      case _: ArrayRepeat => convert(CometArrayRepeat)
       case _ @ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
         convert(CometArrayCompact)
       case _: ArrayExcept =>
@@ -3068,7 +3069,7 @@ trait CometAggregateExpressionSerde {
    * Convert a Spark expression into a protocol buffer representation that can be passed into
    * native code.
    *
-   * @param expr
+   * @param aggExpr
    *   The aggregate expression.
    * @param expr
    *   The aggregate function.

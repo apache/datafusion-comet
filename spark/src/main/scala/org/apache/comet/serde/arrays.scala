@@ -179,6 +179,20 @@ object CometArraysOverlap extends CometExpressionSerde with IncompatExpr {
   }
 }
 
+object CometArrayRepeat extends CometExpressionSerde with IncompatExpr {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val leftArrayExprProto = exprToProto(expr.children.head, inputs, binding)
+    val rightArrayExprProto = exprToProto(expr.children(1), inputs, binding)
+
+    val arraysRepeatScalarExpr =
+      scalarExprToProto("array_repeat", leftArrayExprProto, rightArrayExprProto)
+    optExprWithInfo(arraysRepeatScalarExpr, expr, expr.children: _*)
+  }
+}
+
 object CometArrayCompact extends CometExpressionSerde with IncompatExpr {
   override def convert(
       expr: Expression,
