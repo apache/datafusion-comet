@@ -76,20 +76,6 @@ static GLOBAL: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
 #[global_allocator]
 static GLOBAL: TCMalloc = TCMalloc;
 
-const _: () = {
-    let enabled_features = {
-        cfg!(feature = "jemalloc") as u32
-            + cfg!(feature = "mimalloc") as u32
-            + cfg!(feature = "snmalloc") as u32
-            + cfg!(feature = "tcmalloc") as u32
-    };
-
-    match enabled_features {
-        0 | 1=> {}
-        2.. => panic!("Invalid feature flags for custom allocators. Please enable at most one of [\"jemalloc\", \"mimalloc\", \"snmalloc\", \"tcmalloc\"]"),
-    }
-};
-
 static JAVA_VM: OnceCell<JavaVM> = OnceCell::new();
 
 #[no_mangle]
