@@ -44,9 +44,6 @@ use tikv_jemallocator::Jemalloc;
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
 
-#[cfg(feature = "snmalloc")]
-use snmalloc_rs::SnMalloc;
-
 #[cfg(feature = "tcmalloc")]
 use tcmalloc::TCMalloc;
 
@@ -70,7 +67,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 #[cfg(feature = "snmalloc")]
 #[global_allocator]
-static GLOBAL: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
+static ALLOC: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
 
 #[cfg(feature = "tcmalloc")]
 #[global_allocator]
