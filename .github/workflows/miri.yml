@@ -38,6 +38,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+      - name: Install Build Dependencies
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y protobuf-compiler
+          apt-get install -y clang
       - name: Install Miri
         run: |
           rustup toolchain install nightly --component miri
