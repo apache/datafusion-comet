@@ -121,7 +121,7 @@ fn build_plain_int32_pages(
         let mut values = Vec::with_capacity(VALUES_PER_PAGE);
         let mut def_levels = Vec::with_capacity(VALUES_PER_PAGE);
         for _ in 0..VALUES_PER_PAGE {
-            let def_level = if rng.gen::<f32>() < null_density {
+            let def_level = if rng.random::<f32>() < null_density {
                 max_def_level - 1
             } else {
                 max_def_level

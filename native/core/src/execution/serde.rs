@@ -40,8 +40,20 @@ impl From<prost::DecodeError> for ExpressionError {
     }
 }
 
+impl From<prost::UnknownEnumValue> for ExpressionError {
+    fn from(error: prost::UnknownEnumValue) -> ExpressionError {
+        ExpressionError::Deserialize(error.to_string())
+    }
+}
+
 impl From<prost::DecodeError> for ExecutionError {
     fn from(error: prost::DecodeError) -> ExecutionError {
+        ExecutionError::DeserializeError(error.to_string())
+    }
+}
+
+impl From<prost::UnknownEnumValue> for ExecutionError {
+    fn from(error: prost::UnknownEnumValue) -> ExecutionError {
         ExecutionError::DeserializeError(error.to_string())
     }
 }
