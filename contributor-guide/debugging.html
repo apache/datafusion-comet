@@ -461,7 +461,7 @@ To enable this option with Comet it is needed to include <code class="docutils l
 </div>
 <p>Then build the Comet as <a class="reference external" href="https://github.com/apache/arrow-datafusion-comet/blob/main/README.md#getting-started">described</a></p>
 <p>Start Comet with <code class="docutils literal notranslate"><span class="pre">RUST_BACKTRACE=1</span></code></p>
-<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">RUST_BACKTRACE=1 $SPARK_HOME/spark-shell --jars spark/target/comet-spark-spark3.5_2.12-0.8.0-SNAPSHOT.jar --conf spark.plugins=org.apache.spark.CometPlugin --conf spark.comet.enabled=true --conf spark.comet.exec.enabled=true</span>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">RUST_BACKTRACE=1 $SPARK_HOME/spark-shell --jars spark/target/comet-spark-spark3.5_2.12-0.9.0-SNAPSHOT.jar --conf spark.plugins=org.apache.spark.CometPlugin --conf spark.comet.enabled=true --conf spark.comet.exec.enabled=true</span>
 </pre></div>
 </div>
 <p>Get the expanded exception details</p>
