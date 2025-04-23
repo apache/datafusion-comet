@@ -46,6 +46,7 @@ import org.apache.spark.util.random.XORShiftRandom
 
 import com.google.common.base.Objects
 
+import org.apache.comet.CometConf
 import org.apache.comet.shims.ShimCometShuffleExchangeExec
 
 /**
@@ -113,9 +114,10 @@ case class CometShuffleExchangeExec(
     new CometShuffledBatchRDD(shuffleDependency, readMetrics, partitionSpecs)
 
   override def runtimeStatistics: Statistics = {
-    val dataSize = metrics("dataSize").value
+    val dataSize =
+      metrics("dataSize").value * Math.max(CometConf.COMET_EXCHANGE_SIZE_MULTIPLIER.get(conf), 1)
     val rowCount = metrics(SQLShuffleWriteMetricsReporter.SHUFFLE_RECORDS_WRITTEN).value
-    Statistics(dataSize, Some(rowCount))
+    Statistics(dataSize.toLong, Some(rowCount))
   }
 
   // TODO: add `override` keyword after dropping Spark-3.x supports
