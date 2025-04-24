@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index d3544881af1..26ab186c65d 100644
+index d3544881af1..2860f13daf9 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -148,6 +148,8 @@
@@ -7,7 +7,7 @@ index d3544881af1..26ab186c65d 100644
      <ivy.version>2.5.1</ivy.version>
      <oro.version>2.0.8</oro.version>
 +    <spark.version.short>3.4</spark.version.short>
-+    <comet.version>0.8.0-SNAPSHOT</comet.version>
++    <comet.version>0.9.0-SNAPSHOT</comet.version>
      <!--
      If you changes codahale.metrics.version, you also need to change
      the link to metrics.dropwizard.io in docs/monitoring.md.
@@ -1893,22 +1893,23 @@ index 593bd7bb4ba..32af28b0238 100644
          assert(shuffles2.size == 4)
          val smj2 = findTopLevelSortMergeJoin(adaptive2)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
-index bd9c79e5b96..ab7584e768e 100644
+index bd9c79e5b96..2ada8c28842 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
 @@ -27,6 +27,7 @@ import org.apache.spark.sql.catalyst.SchemaPruningTest
  import org.apache.spark.sql.catalyst.expressions.Concat
  import org.apache.spark.sql.catalyst.parser.CatalystSqlParser
  import org.apache.spark.sql.catalyst.plans.logical.Expand
-+import org.apache.spark.sql.comet.CometScanExec
++import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
  import org.apache.spark.sql.execution.FileSourceScanExec
  import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
  import org.apache.spark.sql.functions._
-@@ -867,6 +868,7 @@ abstract class SchemaPruningSuite
+@@ -867,6 +868,8 @@ abstract class SchemaPruningSuite
      val fileSourceScanSchemata =
        collect(df.queryExecution.executedPlan) {
          case scan: FileSourceScanExec => scan.requiredSchema
 +        case scan: CometScanExec => scan.requiredSchema
++        case scan: CometNativeScanExec => scan.requiredSchema
        }
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +

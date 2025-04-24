@@ -50,11 +50,23 @@ public class RowGroupFilter implements Visitor<List<BlockMetaData>> {
     return filter.accept(new RowGroupFilter(levels, blocks, reader));
   }
 
+  public static List<BlockMetaData> filterRowGroups(
+      List<FilterLevel> levels, Filter filter, List<BlockMetaData> blocks, MessageType schema) {
+    return filter.accept(new RowGroupFilter(levels, blocks, schema));
+  }
+
   private RowGroupFilter(List<FilterLevel> levels, List<BlockMetaData> blocks, FileReader reader) {
     this.levels = levels;
     this.blocks = blocks;
     this.reader = reader;
     this.schema = reader.getFileMetaData().getSchema();
+  }
+
+  private RowGroupFilter(List<FilterLevel> levels, List<BlockMetaData> blocks, MessageType schema) {
+    this.levels = levels;
+    this.blocks = blocks;
+    this.reader = null;
+    this.schema = schema;
   }
 
   @Override

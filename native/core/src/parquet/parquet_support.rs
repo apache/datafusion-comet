@@ -16,18 +16,19 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
-use arrow::array::{DictionaryArray, StructArray};
-use arrow::datatypes::DataType;
 use arrow::{
-    array::{cast::AsArray, types::Int32Type, Array, ArrayRef},
+    array::{
+        cast::AsArray, new_null_array, types::Int32Type, types::TimestampMicrosecondType, Array,
+        ArrayRef, DictionaryArray, StructArray,
+    },
     compute::{cast_with_options, take, CastOptions},
+    datatypes::{DataType, TimeUnit},
     util::display::FormatOptions,
 };
 use datafusion::common::{Result as DataFusionResult, ScalarValue};
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_comet_spark_expr::utils::array_with_timezone;
 use datafusion_comet_spark_expr::EvalMode;
 use object_store::path::Path;
 use object_store::{parse_url, ObjectStore};
@@ -128,10 +129,6 @@ fn cast_array(
     parquet_options: &SparkParquetOptions,
 ) -> DataFusionResult<ArrayRef> {
     use DataType::*;
-    let array = match to_type {
-        Timestamp(_, None) => array, // array_with_timezone does not support to_type of NTZ.
-        _ => array_with_timezone(array, parquet_options.timezone.clone(), Some(to_type))?,
-    };
     let from_type = array.data_type().clone();
 
     let array = match &from_type {
@@ -166,6 +163,14 @@ fn cast_array(
             to_type,
             parquet_options,
         )?),
+        (Timestamp(TimeUnit::Microsecond, None), Timestamp(TimeUnit::Microsecond, Some(tz))) => {
+            Ok(Arc::new(
+                array
+                    .as_primitive::<TimestampMicrosecondType>()
+                    .reinterpret_cast::<TimestampMicrosecondType>()
+                    .with_timezone(Arc::clone(tz)),
+            ))
+        }
         _ => Ok(cast_with_options(&array, to_type, &PARQUET_OPTIONS)?),
     }
 }
@@ -188,13 +193,20 @@ fn cast_struct_to_struct(
             assert_eq!(field_name_to_index_map.len(), from_fields.len());
             let mut cast_fields: Vec<ArrayRef> = Vec::with_capacity(to_fields.len());
             for i in 0..to_fields.len() {
-                let from_index = field_name_to_index_map[to_fields[i].name()];
-                let cast_field = cast_array(
-                    Arc::clone(array.column(from_index)),
-                    to_fields[i].data_type(),
-                    parquet_options,
-                )?;
-                cast_fields.push(cast_field);
+                // Fields in the to_type schema may not exist in the from_type schema
+                // i.e. the required schema may have fields that the file does not
+                // have
+                if field_name_to_index_map.contains_key(to_fields[i].name()) {
+                    let from_index = field_name_to_index_map[to_fields[i].name()];
+                    let cast_field = cast_array(
+                        Arc::clone(array.column(from_index)),
+                        to_fields[i].data_type(),
+                        parquet_options,
+                    )?;
+                    cast_fields.push(cast_field);
+                } else {
+                    cast_fields.push(new_null_array(to_fields[i].data_type(), array.len()));
+                }
             }
             Ok(Arc::new(StructArray::new(
                 to_fields.clone(),

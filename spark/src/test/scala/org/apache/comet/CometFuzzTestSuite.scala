@@ -30,6 +30,7 @@ import org.scalatest.Tag
 import org.apache.commons.io.FileUtils
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
@@ -161,6 +162,18 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("shuffle") {
+    val df = spark.read.parquet(filename)
+    val df2 = df.repartition(8, df.col("c0")).sort("c1")
+    df2.collect()
+    if (CometConf.isExperimentalNativeScan) {
+      val cometShuffles = collect(df2.queryExecution.executedPlan) {
+        case exec: CometShuffleExchangeExec => exec
+      }
+      assert(1 == cometShuffles.length)
+    }
+  }
+
   test("join") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
@@ -176,12 +189,12 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("Parquet temporal types written as INT96") {
-
-    // there are known issues with INT96 support in the new experimental scans
-    // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!CometConf.isExperimentalNativeScan)
-
-    testParquetTemporalTypes(ParquetOutputTimestampType.INT96)
+    // int96 coercion in DF does not work with nested types yet
+    // https://github.com/apache/datafusion/issues/15763
+    testParquetTemporalTypes(
+      ParquetOutputTimestampType.INT96,
+      generateArray = false,
+      generateStruct = false)
   }
 
   test("Parquet temporal types written as TIMESTAMP_MICROS") {
@@ -193,10 +206,15 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   private def testParquetTemporalTypes(
-      outputTimestampType: ParquetOutputTimestampType.Value): Unit = {
+      outputTimestampType: ParquetOutputTimestampType.Value,
+      generateArray: Boolean = true,
+      generateStruct: Boolean = true): Unit = {
 
     val options =
-      DataGenOptions(generateArray = true, generateStruct = true, generateNegativeZero = false)
+      DataGenOptions(
+        generateArray = generateArray,
+        generateStruct = generateStruct,
+        generateNegativeZero = false)
 
     withTempPath { filename =>
       val random = new Random(42)

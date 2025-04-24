@@ -86,8 +86,8 @@ impl HadoopFileSystem {
         }
     }
 
-    fn read_range(range: &Range<usize>, file: &HdfsFile) -> Result<Bytes> {
-        let to_read = range.end - range.start;
+    fn read_range(range: &Range<u64>, file: &HdfsFile) -> Result<Bytes> {
+        let to_read = (range.end - range.start) as usize;
         let mut buf = vec![0; to_read];
         let read = file
             .read_with_pos(range.start as i64, buf.as_mut_slice())
@@ -155,7 +155,7 @@ impl ObjectStore for HadoopFileSystem {
 
             let range = Range {
                 start: 0,
-                end: file_status.len(),
+                end: file_status.len() as u64,
             };
 
             Ok((buf.into(), object_metadata, range))
@@ -197,7 +197,7 @@ impl ObjectStore for HadoopFileSystem {
                 Some(GetRange::Bounded(range)) => range,
                 _ => Range {
                     start: 0,
-                    end: file_status.len(),
+                    end: file_status.len() as u64,
                 },
             };
 
@@ -221,7 +221,7 @@ impl ObjectStore for HadoopFileSystem {
         })
     }
 
-    async fn get_range(&self, location: &Path, range: Range<usize>) -> Result<Bytes> {
+    async fn get_range(&self, location: &Path, range: Range<u64>) -> Result<Bytes> {
         let hdfs = self.hdfs.clone();
         let location = HadoopFileSystem::path_to_filesystem(location);
 
@@ -235,7 +235,7 @@ impl ObjectStore for HadoopFileSystem {
         .await
     }
 
-    async fn get_ranges(&self, location: &Path, ranges: &[Range<usize>]) -> Result<Vec<Bytes>> {
+    async fn get_ranges(&self, location: &Path, ranges: &[Range<u64>]) -> Result<Vec<Bytes>> {
         coalesce_ranges(
             ranges,
             |range| self.get_range(location, range),
@@ -270,7 +270,7 @@ impl ObjectStore for HadoopFileSystem {
 
     /// List all of the leaf files under the prefix path.
     /// It will recursively search leaf files whose depth is larger than 1
-    fn list(&self, prefix: Option<&Path>) -> BoxStream<'_, Result<ObjectMeta>> {
+    fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, Result<ObjectMeta>> {
         let default_path = Path::from(self.get_path_root());
         let prefix = prefix.unwrap_or(&default_path);
         let hdfs = self.hdfs.clone();
@@ -451,7 +451,7 @@ pub fn convert_metadata(file: FileStatus, prefix: &str) -> ObjectMeta {
     ObjectMeta {
         location: get_path(file.name(), prefix),
         last_modified: last_modified(&file),
-        size: file.len(),
+        size: file.len() as u64,
         e_tag: None,
         version: None,
     }
@@ -503,7 +503,7 @@ fn convert_walkdir_result(
 
 /// Range requests with a gap less than or equal to this,
 /// will be coalesced into a single request by [`coalesce_ranges`]
-pub const HDFS_COALESCE_DEFAULT: usize = 1024 * 1024;
+pub const HDFS_COALESCE_DEFAULT: u64 = 1024 * 1024;
 
 /// Up to this number of range requests will be performed in parallel by [`coalesce_ranges`]
 pub const OBJECT_STORE_COALESCE_PARALLEL: usize = 10;
@@ -511,12 +511,12 @@ pub const OBJECT_STORE_COALESCE_PARALLEL: usize = 10;
 /// Takes a function to fetch ranges and coalesces adjacent ranges if they are
 /// less than `coalesce` bytes apart.
 pub async fn coalesce_ranges<F, Fut>(
-    ranges: &[Range<usize>],
+    ranges: &[Range<u64>],
     fetch: F,
-    coalesce: usize,
+    coalesce: u64,
 ) -> Result<Vec<Bytes>>
 where
-    F: FnMut(Range<usize>) -> Fut,
+    F: FnMut(Range<u64>) -> Fut,
     Fut: std::future::Future<Output = Result<Bytes>>,
 {
     let fetch_ranges = merge_ranges(ranges, coalesce);
@@ -534,8 +534,8 @@ where
             let fetch_range = &fetch_ranges[idx];
             let fetch_bytes = &fetched[idx];
 
-            let start = range.start - fetch_range.start;
-            let end = range.end - fetch_range.start;
+            let start = (range.start - fetch_range.start) as usize;
+            let end = (range.end - fetch_range.start) as usize;
             fetch_bytes.slice(start..end)
         })
         .collect())
@@ -558,7 +558,7 @@ where
 }
 
 /// Returns a sorted list of ranges that cover `ranges`
-fn merge_ranges(ranges: &[Range<usize>], coalesce: usize) -> Vec<Range<usize>> {
+fn merge_ranges(ranges: &[Range<u64>], coalesce: u64) -> Vec<Range<u64>> {
     if ranges.is_empty() {
         return vec![];
     }
@@ -629,7 +629,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_coalesce_ranges() {
-        let do_fetch = |ranges: Vec<Range<usize>>, coalesce: usize| async move {
+        let do_fetch = |ranges: Vec<Range<u64>>, coalesce: u64| async move {
             let max = ranges.iter().map(|x| x.end).max().unwrap_or(0);
             let src: Vec<_> = (0..max).map(|x| x as u8).collect();
 
@@ -638,6 +638,10 @@ mod tests {
                 &ranges,
                 |range| {
                     fetches.push(range.clone());
+                    let range = Range {
+                        start: range.start as usize,
+                        end: range.end as usize,
+                    };
                     futures::future::ready(Ok(Bytes::from(src[range].to_vec())))
                 },
                 coalesce,
@@ -647,6 +651,10 @@ mod tests {
 
             assert_eq!(ranges.len(), coalesced.len());
             for (range, bytes) in ranges.iter().zip(coalesced) {
+                let range = Range {
+                    start: range.start as usize,
+                    end: range.end as usize,
+                };
                 assert_eq!(bytes.as_ref(), &src[range.clone()]);
             }
             fetches

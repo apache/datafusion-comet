@@ -23,10 +23,7 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -285,8 +282,11 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     // Initialize missing columns and use null vectors for them
     missingColumns = new boolean[columns.size()];
     List<String[]> paths = requestedSchema.getPaths();
-    StructField[] nonPartitionFields = sparkSchema.fields();
+    // We do not need the column index of the row index; but this method has the
+    // side effect of throwing an exception if a column with the same name is
+    // found which we do want (spark unit tests explicitly test for that).
     ShimFileFormat.findRowIndexColumnIndexInSchema(sparkSchema);
+    StructField[] nonPartitionFields = sparkSchema.fields();
     for (int i = 0; i < requestedSchema.getFieldCount(); i++) {
       Type t = requestedSchema.getFields().get(i);
       Preconditions.checkState(

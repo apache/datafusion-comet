@@ -29,30 +29,47 @@ Comet aims to provide consistent results with the version of Apache Spark that i
 
 This guide offers information about areas of functionality where there are known differences.
 
+# Compatibility Guide
+
+Comet aims to provide consistent results with the version of Apache Spark that is being used.
+
+This guide offers information about areas of functionality where there are known differences.
+
 ## Parquet Scans
 
 Comet currently has three distinct implementations of the Parquet scan operator. The configuration property
 `spark.comet.scan.impl` is used to select an implementation.
 
-| Implementation          | Description                                                                                                                                                                            |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `native_comet`          | This is the default implementation. It provides strong compatibility with Spark but does not support complex types.                                                                    |
-| `native_datafusion`     | This implementation delegates to DataFusion's `ParquetExec`.                                                                                                                           |
-| `native_iceberg_compat` | This implementation also delegates to DataFusion's `ParquetExec` but uses a hybrid approach of JVM and native code. This scan is designed to be integrated with Iceberg in the future. |
+| Implementation          | Description                                                                                                                                                                               |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `native_comet`          | This is the default implementation. It provides strong compatibility with Spark but does not support complex types.                                                                       |
+| `native_datafusion`     | This implementation delegates to DataFusion's `DataSourceExec`.                                                                                                                           |
+| `native_iceberg_compat` | This implementation also delegates to DataFusion's `DataSourceExec` but uses a hybrid approach of JVM and native code. This scan is designed to be integrated with Iceberg in the future. |
 
-The new (and currently experimental) `native_datafusion` and `native_iceberg_compat` scans are being added to
-provide the following benefits over the `native_comet` implementation:
+The new (and currently experimental) `native_datafusion` and `native_iceberg_compat` scans provide the following benefits over the `native_comet`
+implementation:
 
-- Leverage the DataFusion community's ongoing improvements to `ParquetExec`
-- Provide support for reading complex types (structs, arrays, and maps)
-- Remove the use of reusable mutable-buffers in Comet, which is complex to maintain
+- Leverages the DataFusion community's ongoing improvements to `DataSourceExec`
+- Provides support for reading complex types (structs, arrays, and maps)
+- Removes the use of reusable mutable-buffers in Comet, which is complex to maintain
+- Improves performance
 
-These new implementations are not fully implemented. Some of the current limitations are:
+The new scans currently have the following limitations:
 
-- Scanning Parquet files containing unsigned 8 or 16-bit integers can produce results that don't match Spark. By default, Comet  
-  will fall back to Spark when using these scan implementations to read Parquet files containing 8 or 16-bit integers.
-  This behavior can be disabled by setting `spark.comet.scan.allowIncompatible=true`.
-- These implementations do not yet fully support timestamps, decimals, or complex types.
+- When reading Parquet files written by systems other than Spark that contain columns with the logical types `UINT_8`
+  or `UINT_16`, Comet will produce different results than Spark because Spark does not preserve or understand these
+  logical types. Arrow-based readers, such as DataFusion and Comet do respect these types and read the data as unsigned
+  rather than signed. By default, Comet will fall back to Spark when scanning Parquet files containing `byte` or `short`
+  types (regardless of the logical type). This behavior can be disabled by setting
+  `spark.comet.scan.allowIncompatible=true`.
+- Reading legacy INT96 timestamps contained within complex types can produce different results to Spark
+- There is a known performance issue when pushing filters down to Parquet. See the [Comet Tuning Guide] for more
+  information.
+- There are failures in the Spark SQL test suite when enabling these new scans (tracking issues: [#1542] and [#1545]).
+
+[#1545]: https://github.com/apache/datafusion-comet/issues/1545
+[#1542]: https://github.com/apache/datafusion-comet/issues/1542
+[Comet Tuning Guide]: tuning.md
 
 ## ANSI mode
 
