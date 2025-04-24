@@ -485,10 +485,10 @@ object CometScanExec extends DataTypeSupport {
     if (CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
       dt match {
         case s: StructType =>
-          s.fields.forall(f => isTypeSupported(f.dataType, f.name, fallbackReasons))
-        case a: ArrayType => isTypeSupported(a.elementType, name, fallbackReasons)
+          s.fields.forall(f => validateTypeSupported(f.dataType, f.name, fallbackReasons))
+        case a: ArrayType => validateTypeSupported(a.elementType, name, fallbackReasons)
         case m: MapType =>
-          isTypeSupported(m.keyType, name, fallbackReasons) && isTypeSupported(
+          validateTypeSupported(m.keyType, name, fallbackReasons) && validateTypeSupported(
             m.valueType,
             name,
             fallbackReasons)

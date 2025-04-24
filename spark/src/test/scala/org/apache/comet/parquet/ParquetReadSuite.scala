@@ -118,10 +118,10 @@ abstract class ParquetReadSuite extends CometTestBase {
       MapType(keyType = IntegerType, valueType = BinaryType) -> usingNativeIcebergCompat)
       .foreach { case (dt, expected) =>
         val fallbackReasons = new ListBuffer[String]()
-        assert(CometScanExec.isTypeSupported(dt, "", fallbackReasons) == expected)
+        assert(CometScanExec.validateTypeSupported(dt, "", fallbackReasons) == expected)
         // usingDataFusionParquetExec does not support CometBatchScanExec yet
         if (!usingDataFusionParquetExec(SCAN_IMPL)) {
-          assert(CometBatchScanExec.isTypeSupported(dt, "", fallbackReasons) == expected)
+          assert(CometBatchScanExec.validateTypeSupported(dt, "", fallbackReasons) == expected)
         }
       }
   }
