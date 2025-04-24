@@ -24,7 +24,7 @@ import scala.collection.mutable.ListBuffer
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.DataTypeSupport.usingParquetExecWithIncompatTypes
+import org.apache.comet.DataTypeSupport.{usingParquetExecWithIncompatTypes, ARRAY_ELEMENT, MAP_KEY, MAP_VALUE}
 
 trait DataTypeSupport {
 
@@ -82,23 +82,27 @@ trait DataTypeSupport {
         case StructType(fields) =>
           fields.forall(f => validateTypeSupported(f.dataType, f.name, fallbackReasons))
         case ArrayType(elementType, _) =>
-          validateTypeSupported(elementType, name, fallbackReasons)
+          validateTypeSupported(elementType, ARRAY_ELEMENT, fallbackReasons)
         case MapType(keyType, valueType, _) =>
-          validateTypeSupported(keyType, name, fallbackReasons) && validateTypeSupported(
+          validateTypeSupported(keyType, MAP_KEY, fallbackReasons) && validateTypeSupported(
             valueType,
-            name,
+            MAP_VALUE,
             fallbackReasons)
         // Not a complex type
         case _ => true
       }
     } else {
-      fallbackReasons += s"Unsupported field ${name} of type ${dt}"
+      fallbackReasons += s"Unsupported ${name} of type ${dt}"
       false
     }
   }
 }
 
 object DataTypeSupport {
+  val ARRAY_ELEMENT = "array element"
+  val MAP_KEY = "map key"
+  val MAP_VALUE = "map value"
+
   def usingParquetExecWithIncompatTypes(scanImpl: String): Boolean = {
     CometSparkSessionExtensions.usingDataFusionParquetExec(scanImpl) &&
     !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()

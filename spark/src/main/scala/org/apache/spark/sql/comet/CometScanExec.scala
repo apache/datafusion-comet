@@ -45,6 +45,7 @@ import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.collection._
 
 import org.apache.comet.{CometConf, DataTypeSupport, MetricsSupport}
+import org.apache.comet.DataTypeSupport.{ARRAY_ELEMENT, MAP_KEY, MAP_VALUE}
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionReaderFactory}
 
 /**
@@ -486,11 +487,12 @@ object CometScanExec extends DataTypeSupport {
       dt match {
         case s: StructType =>
           s.fields.forall(f => validateTypeSupported(f.dataType, f.name, fallbackReasons))
-        case a: ArrayType => validateTypeSupported(a.elementType, name, fallbackReasons)
+        case a: ArrayType =>
+          validateTypeSupported(a.elementType, ARRAY_ELEMENT, fallbackReasons)
         case m: MapType =>
-          validateTypeSupported(m.keyType, name, fallbackReasons) && validateTypeSupported(
+          validateTypeSupported(m.keyType, MAP_KEY, fallbackReasons) && validateTypeSupported(
             m.valueType,
-            name,
+            MAP_VALUE,
             fallbackReasons)
         case _ => false
       }
