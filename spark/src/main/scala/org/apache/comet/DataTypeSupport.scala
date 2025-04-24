@@ -67,7 +67,7 @@ trait DataTypeSupport {
         case StructType(fields) => fields.map(_.dataType).forall(isTypeSupported)
         case ArrayType(elementType, _) => isSupportedButNotStruct(elementType)
         case MapType(keyType, valueType, _) =>
-          isTypeSupported(keyType) && isSupportedButNotStruct(valueType)
+          isSupportedButNotStruct(keyType) && isSupportedButNotStruct(valueType)
         // Not a complex type
         case _ => true
       }
@@ -76,7 +76,7 @@ trait DataTypeSupport {
     }
   }
 
-  def isSupportedButNotStruct(dt: DataType): Boolean = {
+  private def isSupportedButNotStruct(dt: DataType): Boolean = {
     dt match {
       case StructType(_) => false
       case ArrayType(elementType, _) => isSupportedButNotStruct(elementType)
