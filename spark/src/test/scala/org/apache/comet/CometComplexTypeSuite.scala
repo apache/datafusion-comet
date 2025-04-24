@@ -28,8 +28,13 @@ class CometComplexTypeSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("nested data - array of struct") {
     val data = (1 to 10).map(i => Tuple1(Seq(i -> s"val_$i")))
     withParquetTable(data, "t") {
-      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
-        checkSparkAnswer/*AndOperator*/(sql("SELECT _1[0]._2 FROM t"))
+      Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach {
+        scan =>
+          withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan) {
+            // TODO check for Comet operators once
+            // https://github.com/apache/datafusion-comet/issues/1681 is resolved
+            checkSparkAnswer /*AndOperator*/ (sql("SELECT _1[0]._2 FROM t"))
+          }
       }
     }
   }
