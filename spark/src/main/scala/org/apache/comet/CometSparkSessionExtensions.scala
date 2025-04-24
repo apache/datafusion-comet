@@ -52,7 +52,7 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExc
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DoubleType, FloatType, StructField}
+import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import org.apache.comet.CometConf._
 import org.apache.comet.CometExplainInfo.getActualPlan
@@ -152,37 +152,19 @@ class CometSparkSessionExtensions
           val (schemaSupported, partitionSchemaSupported) = scanImpl match {
             case CometConf.SCAN_NATIVE_DATAFUSION =>
               (
-                CometNativeScanExec.isSchemaSupported(scanExec.requiredSchema),
-                CometNativeScanExec.isSchemaSupported(r.partitionSchema))
+                CometNativeScanExec.isSchemaSupported(scanExec.requiredSchema, fallbackReasons),
+                CometNativeScanExec.isSchemaSupported(r.partitionSchema, fallbackReasons))
             case CometConf.SCAN_NATIVE_COMET | SCAN_NATIVE_ICEBERG_COMPAT =>
               (
-                CometScanExec.isSchemaSupported(scanExec.requiredSchema),
-                CometScanExec.isSchemaSupported(r.partitionSchema))
+                CometScanExec.isSchemaSupported(scanExec.requiredSchema, fallbackReasons),
+                CometScanExec.isSchemaSupported(r.partitionSchema, fallbackReasons))
           }
 
           if (!schemaSupported) {
-            val field: Option[StructField] =
-              CometNativeScanExec
-                .findUnsupportedField(scanExec.requiredSchema)
-                .orElse(CometScanExec.findUnsupportedField(scanExec.requiredSchema))
-            assert(field.nonEmpty)
-            fallbackReasons +=
-              s"Unsupported field ${field.get} in schema ${scanExec.requiredSchema} for $scanImpl"
+            fallbackReasons += s"Unsupported schema ${scanExec.requiredSchema} for $scanImpl"
           }
           if (!partitionSchemaSupported) {
-            val field: Option[StructField] =
-              CometNativeScanExec
-                .findUnsupportedField(r.partitionSchema)
-                .orElse(CometScanExec.findUnsupportedField(r.partitionSchema))
-            assert(field.nonEmpty)
-            fallbackReasons +=
-              s"Unsupported field ${field.get} in partitioning schema ${r.partitionSchema}" +
-                s"for $scanImpl"
-          }
-
-          if (DataTypeSupport.usingParquetExecWithIncompatTypes(scanImpl) || DataTypeSupport
-              .usingParquetExecWithIncompatTypes(scanImpl)) {
-            fallbackReasons += s"and ${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false"
+            fallbackReasons += s"Unsupported partitioning schema ${r.partitionSchema} for $scanImpl"
           }
 
           if (fallbackReasons.isEmpty) {
@@ -202,11 +184,11 @@ class CometSparkSessionExtensions
     scanExec.scan match {
       case scan: ParquetScan =>
         val fallbackReasons = new ListBuffer[String]()
-        if (!CometBatchScanExec.isSchemaSupported(scan.readDataSchema)) {
+        if (!CometBatchScanExec.isSchemaSupported(scan.readDataSchema, fallbackReasons)) {
           fallbackReasons += s"Schema ${scan.readDataSchema} is not supported"
         }
 
-        if (!CometBatchScanExec.isSchemaSupported(scan.readPartitionSchema)) {
+        if (!CometBatchScanExec.isSchemaSupported(scan.readPartitionSchema, fallbackReasons)) {
           fallbackReasons += s"Partition schema ${scan.readPartitionSchema} is not supported"
         }
 
@@ -233,7 +215,7 @@ class CometSparkSessionExtensions
             s"${scanExec.scan.getClass.getSimpleName}: not enabled on data source side"
         }
 
-        if (!CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema())) {
+        if (!CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)) {
           fallbackReasons += "Comet extension is not enabled for " +
             s"${scanExec.scan.getClass.getSimpleName}: Schema not supported"
         }
@@ -1225,7 +1207,8 @@ object CometSparkSessionExtensions extends Logging {
     // operators can have a chance to be converted to columnar. Leaf operators that output
     // columnar batches, such as Spark's vectorized readers, will also be converted to native
     // comet batches.
-    if (CometSparkToColumnarExec.isSchemaSupported(op.schema)) {
+    val fallbackReasons = new ListBuffer[String]()
+    if (CometSparkToColumnarExec.isSchemaSupported(op.schema, fallbackReasons)) {
       op match {
         // Convert Spark DS v1 scan to Arrow format
         case scan: FileSourceScanExec =>

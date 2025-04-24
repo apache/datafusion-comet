@@ -19,7 +19,7 @@
 
 package org.apache.spark.sql.comet
 
-import scala.collection.mutable.HashMap
+import scala.collection.mutable.{HashMap, ListBuffer}
 import scala.concurrent.duration.NANOSECONDS
 import scala.reflect.ClassTag
 
@@ -478,12 +478,20 @@ case class CometScanExec(
 
 object CometScanExec extends DataTypeSupport {
 
-  override def isAdditionallySupported(dt: DataType): Boolean = {
+  override def isAdditionallySupported(
+      dt: DataType,
+      name: String,
+      fallbackReasons: ListBuffer[String]): Boolean = {
     if (CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
       dt match {
-        case s: StructType => s.fields.map(_.dataType).forall(isTypeSupported)
-        case a: ArrayType => isTypeSupported(a.elementType)
-        case m: MapType => isTypeSupported(m.keyType) && isTypeSupported(m.valueType)
+        case s: StructType =>
+          s.fields.forall(f => isTypeSupported(f.dataType, f.name, fallbackReasons))
+        case a: ArrayType => isTypeSupported(a.elementType, name, fallbackReasons)
+        case m: MapType =>
+          isTypeSupported(m.keyType, name, fallbackReasons) && isTypeSupported(
+            m.valueType,
+            name,
+            fallbackReasons)
         case _ => false
       }
     } else {

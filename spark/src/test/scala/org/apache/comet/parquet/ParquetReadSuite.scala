@@ -23,6 +23,7 @@ import java.io.{File, FileFilter}
 import java.math.{BigDecimal, BigInteger}
 import java.time.{ZoneId, ZoneOffset}
 
+import scala.collection.mutable.ListBuffer
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 import scala.util.control.Breaks.{break, breakable}
@@ -116,10 +117,11 @@ abstract class ParquetReadSuite extends CometTestBase {
           StructField("f2", StringType))) -> usingNativeIcebergCompat,
       MapType(keyType = IntegerType, valueType = BinaryType) -> usingNativeIcebergCompat)
       .foreach { case (dt, expected) =>
-        assert(CometScanExec.isTypeSupported(dt) == expected)
+        val fallbackReasons = new ListBuffer[String]()
+        assert(CometScanExec.isTypeSupported(dt, "", fallbackReasons) == expected)
         // usingDataFusionParquetExec does not support CometBatchScanExec yet
         if (!usingDataFusionParquetExec(SCAN_IMPL)) {
-          assert(CometBatchScanExec.isTypeSupported(dt) == expected)
+          assert(CometBatchScanExec.isTypeSupported(dt, "", fallbackReasons) == expected)
         }
       }
   }
@@ -137,13 +139,15 @@ abstract class ParquetReadSuite extends CometTestBase {
       else Seq(true, false, false)
 
     val cometBatchScanExecSupported = Seq(true, false, false)
+    val fallbackReasons = new ListBuffer[String]()
 
     schemaDDLs.zip(cometScanExecSupported).foreach { case (schema, expected) =>
-      assert(CometScanExec.isSchemaSupported(StructType(schema)) == expected)
+      assert(CometScanExec.isSchemaSupported(StructType(schema), fallbackReasons) == expected)
     }
 
     schemaDDLs.zip(cometBatchScanExecSupported).foreach { case (schema, expected) =>
-      assert(CometBatchScanExec.isSchemaSupported(StructType(schema)) == expected)
+      assert(
+        CometBatchScanExec.isSchemaSupported(StructType(schema), fallbackReasons) == expected)
     }
   }
 
