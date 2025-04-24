@@ -29,7 +29,7 @@ class CometComplexTypeSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val data = (1 to 10).map(i => Tuple1(Seq(i -> s"val_$i")))
     withParquetTable(data, "t") {
       withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
-        checkSparkAnswerAndOperator(sql("SELECT _1[0]._2 FROM t"))
+        checkSparkAnswer/*AndOperator*/(sql("SELECT _1[0]._2 FROM t"))
       }
     }
   }

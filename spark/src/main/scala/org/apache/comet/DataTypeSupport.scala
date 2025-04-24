@@ -65,14 +65,24 @@ trait DataTypeSupport {
       // If complex types are supported, we additionally want to recurse into their children
       dt match {
         case StructType(fields) => fields.map(_.dataType).forall(isTypeSupported)
-        case ArrayType(elementType, _) => isTypeSupported(elementType)
+        case ArrayType(elementType, _) => isSupportedButNotStruct(elementType)
         case MapType(keyType, valueType, _) =>
-          isTypeSupported(keyType) && isTypeSupported(valueType)
+          isTypeSupported(keyType) && isSupportedButNotStruct(valueType)
         // Not a complex type
         case _ => true
       }
     } else {
       false
+    }
+  }
+
+  def isSupportedButNotStruct(dt: DataType): Boolean = {
+    dt match {
+      case StructType(_) => false
+      case ArrayType(elementType, _) => isSupportedButNotStruct(elementType)
+      case MapType(keyType, valueType, _) =>
+        isSupportedButNotStruct(keyType) && isSupportedButNotStruct(valueType)
+      case _ => isTypeSupported(dt)
     }
   }
 }
