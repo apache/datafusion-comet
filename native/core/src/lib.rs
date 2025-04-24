@@ -62,10 +62,6 @@ static GLOBAL: Jemalloc = Jemalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-#[cfg(feature = "snmalloc")]
-#[global_allocator]
-static ALLOC: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
-
 static JAVA_VM: OnceCell<JavaVM> = OnceCell::new();
 
 #[no_mangle]
