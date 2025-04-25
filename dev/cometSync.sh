@@ -138,7 +138,7 @@ else
 fi
 
 export PROFILES="-Pspark-3.4-apple"
-make core jvm
+make clean core jvm
 
 # Work around for constant tweak of the user-guide configs
 git checkout HEAD -- docs/source/user-guide/configs.md

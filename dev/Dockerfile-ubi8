@@ -2,6 +2,15 @@ FROM docker.apple.com/base-images/ubi8/java17-builder
 
 USER root
 
+# Install protoc
+RUN mkdir /opt/protoc \
+    && cd /opt/protoc \
+    && case "$(uname -a)" in *x86_64*) ARCH=x86_64; ;; *) ARCH=aarch_64; ;; esac \
+    && wget https://github.com/protocolbuffers/protobuf/releases/download/v30.2/protoc-30.2-linux-$ARCH.zip \
+    && unzip protoc-*.zip \
+    && rm protoc-*.zip
+ENV PATH="/opt/protoc/bin:${PATH}"
+
 # Install Rust toolchain
 RUN dnf -y update \
     && dnf -y install --allowerasing curl \
