@@ -86,7 +86,7 @@ under the License.
       <plugin>
         <groupId>io.github.git-commit-id</groupId>
         <artifactId>git-commit-id-maven-plugin</artifactId>
-        <version>4.9.9</version>
+        <version>${git-commit-id-maven-plugin.version}</version>
         <executions>
           <execution>
             <id>get-the-git-infos</id>
