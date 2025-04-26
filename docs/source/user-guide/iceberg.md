@@ -84,7 +84,7 @@ scala> spark.sql(s"CREATE TABLE IF NOT EXISTS t1 (c0 INT, c1 STRING) USING icebe
 scala> spark.sql(s"INSERT INTO t1 VALUES ${(0 until 10000).map(i => (i, i)).mkString(",")}")
 ```
 
-Comet should now be able to accelarate reading the table:
+Comet should now be able to accelerate reading the table:
 
 ```shell
 scala> spark.sql(s"SELECT * from t1").show()
