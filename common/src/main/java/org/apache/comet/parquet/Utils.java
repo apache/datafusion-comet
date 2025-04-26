@@ -19,11 +19,12 @@
 
 package org.apache.comet.parquet;
 
-import org.apache.arrow.c.CometSchemaImporter;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.PrimitiveType;
 import org.apache.spark.sql.types.*;
+
+import org.apache.comet.CometSchemaImporter;
 
 public class Utils {
   public static ColumnReader getColumnReader(

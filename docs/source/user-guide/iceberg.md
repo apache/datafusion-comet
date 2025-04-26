@@ -40,7 +40,7 @@ git clone git@github.com:apache/iceberg.git
 It will be necessary to make some small changes to Iceberg:
 
 - Update Gradle files to change Comet version to `0.9.0-SNAPSHOT`.
-- Replace `import org.apache.comet.sharded.arrow.c.CometSchemaImporter;` with `import org.apache.arrow.c.CometSchemaImporter;` 
+- Replace `import org.apache.comet.shaded.arrow.c.CometSchemaImporter;` with `import org.apache.comet.CometSchemaImporter;` 
 
 Perform a clean build
 
