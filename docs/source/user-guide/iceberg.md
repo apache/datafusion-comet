@@ -42,7 +42,7 @@ Update Gradle files to change Comet version to `0.9.0-SNAPSHOT`.
 Set `COMET_JAR` and `ICEBERG_JAR` environment variables.
 
 ```shell
-export COMET_JAR=/path/to/comet-spark-spark3.5_2.12-0.8.0.jar
+export COMET_JAR=/path/to/comet-spark-spark3.5_2.12-0.9.0-SNAPSHOT.jar
 export ICEBERG_JAR=/path/to/iceberg-spark-runtime-3.5_2.12-1.8.1.jar
 ```
 
