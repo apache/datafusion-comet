@@ -42,7 +42,7 @@ converted into Arrow format, allowing native execution to happen after that.
 
 ### Apache Iceberg
 
-See
+See the dedicated [Comet and Iceberg Guide](iceberg.md).
 
 ## Supported Storages
 
