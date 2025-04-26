@@ -19,13 +19,25 @@
 
 # Accelerating Apache Iceberg Parquet Scans using Comet (Experimental)
 
-**Note: Iceberg integration is a work-in-progress. It may be necessary to build Iceberg from
+**Note: Iceberg integration is a work-in-progress. It is currently necessary to build Iceberg from
 source rather than using available artifacts in Maven**
 
-Download compatible Spark, Comet, and Iceberg versions from Maven, or compile projects from source.
+## Build Comet
 
-- [Comet Artifacts](https://central.sonatype.com/artifact/org.apache.datafusion/comet-spark-spark3.5_2.12)
-- [Iceberg Artifacts](https://central.sonatype.com/artifact/org.apache.iceberg/iceberg-spark-runtime-3.5_2.12/overview)
+```shell
+make release
+mvn install -DskipTests
+```
+
+## Build Iceberg
+
+Update Gradle files to change Comet version to `0.9.0-SNAPSHOT`.
+
+```shell
+./gradlew build
+```
+
+## Test
 
 Set `COMET_JAR` and `ICEBERG_JAR` environment variables.
 
@@ -65,11 +77,3 @@ Comet should now be able to accelarate reading the table:
 ```shell
 scala> spark.sql(s"SELECT * from t1").show()
 ```
-
-**Note: this currently fails**
-
-```
-Caused by: java.lang.NoSuchMethodError: 'org.apache.comet.parquet.ColumnReader org.apache.comet.parquet.Utils.getColumnReader(org.apache.spark.sql.types.DataType, org.apache.iceberg.shaded.org.apache.parquet.column.ColumnDescriptor, org.apache.comet.shaded.arrow.c.CometSchemaImporter, int, boolean, boolean)'
-```
-
-Tracking issue: https://github.com/apache/datafusion-comet/issues/1684
