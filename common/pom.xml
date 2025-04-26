@@ -149,6 +149,7 @@ under the License.
                   <excludes>
                     <!-- We can't allocate Jni classes. These classes has no extra dependencies
                        so it should be OK to exclude -->
+                    <exclude>org/apache/arrow/c/Comet**</exclude>
                     <exclude>org/apache/arrow/c/jni/JniWrapper</exclude>
                     <exclude>org/apache/arrow/c/jni/PrivateData</exclude>
                     <exclude>org/apache/arrow/c/jni/CDataJniException</exclude>
