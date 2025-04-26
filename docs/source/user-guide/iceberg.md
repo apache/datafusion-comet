@@ -47,23 +47,29 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.sql.catalog.spark_catalog.warehouse=/tmp/warehouse \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-    --conf spark.comet.scan.impl=native_iceberg_compat \
+    --conf spark.sql.iceberg.parquet.reader-type=COMET \
     --conf spark.comet.explainFallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=16g
 ```
 
+Create an Iceberg table. Note that Comet will not accelerate this part.
+
 ```shell
 scala> spark.sql(s"CREATE TABLE IF NOT EXISTS t1 (c0 INT, c1 STRING) USING iceberg")
 scala> spark.sql(s"INSERT INTO t1 VALUES ${(0 until 10000).map(i => (i, i)).mkString(",")}")
+```
+
+Comet should now be able to accelarate reading the table:
+
+```shell
 scala> spark.sql(s"SELECT * from t1").show()
 ```
 
-**Note: this is not actually accelerating the read**
+**Note: this currently fails**
 
 ```
-25/04/26 08:52:56 WARN CometSparkSessionExtensions$CometExecRule: Comet cannot execute some parts of this plan natively (set spark.comet.explainFallback.enabled=false to disable this logging):
- CollectLimit [COMET: CollectLimit is not supported]
-+-  Project [COMET: Project is not native because the following children are not native (BatchScan spark_catalog.default.t1)]
-   +-  BatchScan spark_catalog.default.t1 [COMET: Comet Scan only supports Parquet and Iceberg Parquet file formats, BatchScan spark_catalog.default.t1 is not supported]
+Caused by: java.lang.NoSuchMethodError: 'org.apache.comet.parquet.ColumnReader org.apache.comet.parquet.Utils.getColumnReader(org.apache.spark.sql.types.DataType, org.apache.iceberg.shaded.org.apache.parquet.column.ColumnDescriptor, org.apache.comet.shaded.arrow.c.CometSchemaImporter, int, boolean, boolean)'
 ```
+
+Tracking issue: https://github.com/apache/datafusion-comet/issues/1684
