@@ -24,7 +24,6 @@ import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.PrimitiveType;
 import org.apache.spark.sql.types.*;
-//org.apache.comet.shaded.arrow.c.CometSchemaImporter
 
 public class Utils {
   public static ColumnReader getColumnReader(
