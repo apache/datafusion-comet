@@ -101,12 +101,11 @@ use datafusion_comet_proto::{
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
-use datafusion_comet_spark_expr::rand::RandExpr;
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, BitwiseNotExpr, Cast, CheckOverflow, Contains, Correlation,
     Covariance, CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields, GetStructField,
-    HourExpr, IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike, SecondExpr,
-    SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
+    HourExpr, IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike, RandExpr,
+    SecondExpr, SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
     TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
 use itertools::Itertools;
@@ -157,7 +156,6 @@ impl Default for PhysicalPlanner {
 }
 
 impl PhysicalPlanner {
-    pub fn new(session_ctx: Arc<SessionContext>) -> Self {
     pub fn new(session_ctx: Arc<SessionContext>, partition: i32) -> Self {
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
@@ -767,6 +765,10 @@ impl PhysicalPlanner {
                     item_expr,
                     expr.legacy_negative_index,
                 )))
+            }
+            ExprStruct::Rand(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
+                Ok(Arc::new(RandExpr::new(child, self.partition)))
             }
             expr => Err(GeneralError(format!("Not implemented: {:?}", expr))),
         }
@@ -2841,7 +2843,7 @@ mod tests {
             datafusion_functions_nested::make_array::MakeArray::new(),
         ));
         let task_ctx = session_ctx.task_ctx();
-        let planner = PhysicalPlanner::new(Arc::from(session_ctx));
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
 
         // Create a plan for
         // ProjectionExec: expr=[make_array(col_0@0) as col_0]

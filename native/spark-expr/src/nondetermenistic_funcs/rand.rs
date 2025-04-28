@@ -16,15 +16,15 @@
 // under the License.
 
 use crate::hash_funcs::murmur3::spark_compatible_murmur3_hash;
-use arrow_array::builder::Float64Builder;
-use arrow_array::{Float64Array, RecordBatch};
-use arrow_schema::{DataType, Schema};
+use arrow::array::{Float64Array, Float64Builder, RecordBatch};
+use arrow::datatypes::{DataType, Schema};
+use datafusion::common::Result;
+use datafusion::common::ScalarValue;
+use datafusion::error::DataFusionError;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion_common::ScalarValue;
-use datafusion_common::{DataFusionError, Result};
 use std::any::Any;
-use std::fmt::Display;
+use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
@@ -173,6 +173,10 @@ impl PhysicalExpr for RandExpr {
         vec![&self.seed]
     }
 
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
@@ -191,10 +195,10 @@ pub fn rand(seed: Arc<dyn PhysicalExpr>, init_seed_shift: i32) -> Result<Arc<dyn
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::{Array, BooleanArray, Int64Array};
     use arrow::{array::StringArray, compute::concat, datatypes::*};
-    use arrow_array::{Array, BooleanArray, Float64Array, Int64Array};
-    use datafusion_common::cast::as_float64_array;
-    use datafusion_physical_expr::expressions::lit;
+    use datafusion::common::cast::as_float64_array;
+    use datafusion::physical_expr::expressions::lit;
 
     const SPARK_SEED_42_FIRST_5: [f64; 5] = [
         0.619189370225301,
