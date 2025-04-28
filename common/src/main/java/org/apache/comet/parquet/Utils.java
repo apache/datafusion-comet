@@ -31,35 +31,11 @@ public class Utils {
   /** This method is called from Apache Iceberg. */
   public static ColumnReader getColumnReader(
       DataType type,
+      ColumnDescriptor descriptor,
       CometSchemaImporter importer,
-      String[] path,
-      String typeName,
-      int maxRep,
-      int maxDef,
       int batchSize,
       boolean useDecimal128,
       boolean useLazyMaterialization) {
-    PrimitiveType.PrimitiveTypeName primitiveTypeName = null;
-    if (typeName.equalsIgnoreCase("FLOAT")) {
-      primitiveTypeName = PrimitiveType.PrimitiveTypeName.FLOAT;
-    } else if (typeName.equalsIgnoreCase("DOUBLE")) {
-      primitiveTypeName = PrimitiveType.PrimitiveTypeName.DOUBLE;
-    } else if (typeName.equalsIgnoreCase("INT32")) {
-      primitiveTypeName = PrimitiveType.PrimitiveTypeName.INT32;
-    } else if (typeName.equalsIgnoreCase("INT64")) {
-      primitiveTypeName = PrimitiveType.PrimitiveTypeName.INT64;
-    } else if (typeName.equalsIgnoreCase("INT96")) {
-      primitiveTypeName = PrimitiveType.PrimitiveTypeName.INT96;
-    } else if (typeName.equalsIgnoreCase("BOOLEAN")) {
-      primitiveTypeName = PrimitiveType.PrimitiveTypeName.BOOLEAN;
-    } else if (typeName.equalsIgnoreCase("BINARY")) {
-      primitiveTypeName = PrimitiveType.PrimitiveTypeName.BINARY;
-    } else if (typeName.equalsIgnoreCase("FIXED_LEN_BYTE_ARRAY")) {
-      primitiveTypeName = PrimitiveType.PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY;
-    } else {
-      throw new IllegalArgumentException("Unsupported column type: " + typeName);
-    }
-    ColumnDescriptor descriptor = new ColumnDescriptor(path, primitiveTypeName, maxRep, maxDef);
     // TODO: support `useLegacyDateTimestamp` for Iceberg
     return getColumnReader(
         type, descriptor, importer, batchSize, useDecimal128, useLazyMaterialization, true);
