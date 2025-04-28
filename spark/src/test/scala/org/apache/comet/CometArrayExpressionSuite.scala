@@ -421,6 +421,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           spark.read.parquet(path.toString).createOrReplaceTempView("t1")
 
           checkSparkAnswerAndOperator(sql("SELECT array_repeat(_4, null) from t1"))
+          checkSparkAnswerAndOperator(sql("SELECT array_repeat(_4, 0) from t1"))
           checkSparkAnswerAndOperator(
             sql("SELECT array_repeat(_2, 5) from t1 where _2 is not null"))
           checkSparkAnswerAndOperator(sql("SELECT array_repeat(_2, 5) from t1 where _2 is null"))
