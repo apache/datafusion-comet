@@ -63,7 +63,7 @@ object CometArrayRemove extends CometExpressionSerde with CometExprShim {
     val keyExprProto = exprToProto(ar.right, inputs, binding)
 
     val arrayRemoveScalarExpr =
-      scalarExprToProto("array_remove_all", arrayExprProto, keyExprProto)
+      scalarFunctionExprToProto("array_remove_all", arrayExprProto, keyExprProto)
 
     val isNotNullExpr = createUnaryExpr(
       expr,
@@ -104,7 +104,8 @@ object CometArrayAppend extends CometExpressionSerde with IncompatExpr {
     val arrayExprProto = exprToProto(expr.children(0), inputs, binding)
     val keyExprProto = exprToProto(expr.children(1), inputs, binding)
 
-    val arrayAppendScalarExpr = scalarExprToProto("array_append", arrayExprProto, keyExprProto)
+    val arrayAppendScalarExpr =
+      scalarFunctionExprToProto("array_append", arrayExprProto, keyExprProto)
 
     val isNotNullExpr = createUnaryExpr(
       expr,
@@ -143,7 +144,7 @@ object CometArrayContains extends CometExpressionSerde with IncompatExpr {
     val keyExprProto = exprToProto(expr.children(1), inputs, binding)
 
     val arrayContainsScalarExpr =
-      scalarExprToProto("array_has", arrayExprProto, keyExprProto)
+      scalarFunctionExprToProto("array_has", arrayExprProto, keyExprProto)
     optExprWithInfo(arrayContainsScalarExpr, expr, expr.children: _*)
   }
 }
@@ -157,7 +158,7 @@ object CometArrayIntersect extends CometExpressionSerde with IncompatExpr {
     val rightArrayExprProto = exprToProto(expr.children(1), inputs, binding)
 
     val arraysIntersectScalarExpr =
-      scalarExprToProto("array_intersect", leftArrayExprProto, rightArrayExprProto)
+      scalarFunctionExprToProto("array_intersect", leftArrayExprProto, rightArrayExprProto)
     optExprWithInfo(arraysIntersectScalarExpr, expr, expr.children: _*)
   }
 }
@@ -170,7 +171,7 @@ object CometArraysOverlap extends CometExpressionSerde with IncompatExpr {
     val leftArrayExprProto = exprToProto(expr.children(0), inputs, binding)
     val rightArrayExprProto = exprToProto(expr.children(1), inputs, binding)
 
-    val arraysOverlapScalarExpr = scalarExprToProtoWithReturnType(
+    val arraysOverlapScalarExpr = scalarFunctionExprToProtoWithReturnType(
       "array_has_any",
       BooleanType,
       leftArrayExprProto,
@@ -190,7 +191,7 @@ object CometArrayCompact extends CometExpressionSerde with IncompatExpr {
     val arrayExprProto = exprToProto(child, inputs, binding)
     val nullLiteralProto = exprToProto(Literal(null, elementType), Seq.empty)
 
-    val arrayCompactScalarExpr = scalarExprToProtoWithReturnType(
+    val arrayCompactScalarExpr = scalarFunctionExprToProtoWithReturnType(
       "array_remove_all",
       ArrayType(elementType = elementType),
       arrayExprProto,
@@ -232,7 +233,7 @@ object CometArrayExcept extends CometExpressionSerde with CometExprShim with Inc
     val rightArrayExprProto = exprToProto(arrayExceptExpr.right, inputs, binding)
 
     val arrayExceptScalarExpr =
-      scalarExprToProto("array_except", leftArrayExprProto, rightArrayExprProto)
+      scalarFunctionExprToProto("array_except", leftArrayExprProto, rightArrayExprProto)
     optExprWithInfo(arrayExceptScalarExpr, expr, expr.children: _*)
   }
 }
@@ -250,7 +251,7 @@ object CometArrayJoin extends CometExpressionSerde with IncompatExpr {
       case Some(nullReplacementExpr) =>
         val nullReplacementExprProto = exprToProto(nullReplacementExpr, inputs, binding)
 
-        val arrayJoinScalarExpr = scalarExprToProto(
+        val arrayJoinScalarExpr = scalarFunctionExprToProto(
           "array_to_string",
           arrayExprProto,
           delimiterExprProto,
@@ -264,7 +265,7 @@ object CometArrayJoin extends CometExpressionSerde with IncompatExpr {
           nullReplacementExpr)
       case None =>
         val arrayJoinScalarExpr =
-          scalarExprToProto("array_to_string", arrayExprProto, delimiterExprProto)
+          scalarFunctionExprToProto("array_to_string", arrayExprProto, delimiterExprProto)
 
         optExprWithInfo(arrayJoinScalarExpr, expr, arrayExpr, arrayExpr.delimiter)
     }
