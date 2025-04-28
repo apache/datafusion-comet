@@ -54,6 +54,7 @@ It will be necessary to make some small changes to Iceberg:
 
 - Update Gradle files to change Comet version to `0.9.0-SNAPSHOT`.
 - Replace `import org.apache.comet.shaded.arrow.c.CometSchemaImporter;` with `import org.apache.comet.CometSchemaImporter;` 
+- Modify `SparkBatchQueryScan` so that it implements the `SupportsComet` interface
 - Stop shading Parquet by commenting out the following lines in the iceberg-spark build:
  
 ```
