@@ -53,10 +53,10 @@ git clone git@github.com:apache/iceberg.git
 It will be necessary to make some small changes to Iceberg:
 
 - Update Gradle files to change Comet version to `0.9.0-SNAPSHOT`.
-- Replace `import org.apache.comet.shaded.arrow.c.CometSchemaImporter;` with `import org.apache.comet.CometSchemaImporter;` 
+- Replace `import org.apache.comet.shaded.arrow.c.CometSchemaImporter;` with `import org.apache.comet.CometSchemaImporter;`
 - Modify `SparkBatchQueryScan` so that it implements the `SupportsComet` interface
 - Stop shading Parquet by commenting out the following lines in the iceberg-spark build:
- 
+
 ```
 //    relocate 'org.apache.parquet', 'org.apache.iceberg.shaded.org.apache.parquet'
 //    relocate 'shaded.parquet', 'org.apache.iceberg.shaded.org.apache.parquet.shaded'
@@ -98,13 +98,50 @@ $SPARK_HOME/bin/spark-shell \
 
 Create an Iceberg table. Note that Comet will not accelerate this part.
 
-```shell
+```
 scala> spark.sql(s"CREATE TABLE IF NOT EXISTS t1 (c0 INT, c1 STRING) USING iceberg")
 scala> spark.sql(s"INSERT INTO t1 VALUES ${(0 until 10000).map(i => (i, i)).mkString(",")}")
 ```
 
 Comet should now be able to accelerate reading the table:
 
-```shell
+```
 scala> spark.sql(s"SELECT * from t1").show()
+```
+
+This should produce the following output:
+
+```
+scala> spark.sql(s"SELECT * from t1").show()
+25/04/28 07:29:37 INFO core/src/lib.rs: Comet native library version 0.9.0 initialized
+25/04/28 07:29:37 WARN CometSparkSessionExtensions$CometExecRule: Comet cannot execute some parts of this plan natively (set spark.comet.explainFallback.enabled=false to disable this logging):
+ CollectLimit [COMET: CollectLimit is not supported]
++-  Project [COMET: toprettystring is not supported]
+   +- CometScanWrapper
+
++---+---+
+| c0| c1|
++---+---+
+|  0|  0|
+|  1|  1|
+|  2|  2|
+|  3|  3|
+|  4|  4|
+|  5|  5|
+|  6|  6|
+|  7|  7|
+|  8|  8|
+|  9|  9|
+| 10| 10|
+| 11| 11|
+| 12| 12|
+| 13| 13|
+| 14| 14|
+| 15| 15|
+| 16| 16|
+| 17| 17|
+| 18| 18|
+| 19| 19|
++---+---+
+only showing top 20 rows
 ```
