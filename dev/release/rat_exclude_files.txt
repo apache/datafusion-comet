@@ -5,11 +5,14 @@
 native/Cargo.lock
 native/testdata/backtrace.txt
 native/testdata/stacktrace.txt
+native/core/testdata/backtrace.txt
+native/core/testdata/stacktrace.txt
 dev/copyright/scala-header.txt
 dev/release/requirements.txt
 dev/release/rat_exclude_files.txt
 docs/spark_builtin_expr_coverage.txt
 docs/source/_static/images/*.svg
+docs/source/_static/images/comet-dataflow.excalidraw
 docs/source/contributor-guide/benchmark-results/**/*.json
 docs/logos/*.png
 docs/logos/*.svg
