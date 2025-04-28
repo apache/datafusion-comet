@@ -24,9 +24,22 @@ source rather than using available artifacts in Maven**
 
 ## Build Comet
 
+Run a Maven install so that we can compile Iceberg against latest Comet:
+
+```shell
+mvn install -DskipTests
+```
+
+Build the release JAR to be used from Spark:
+
 ```shell
 make release
-mvn install -DskipTests
+```
+
+Set `COMET_JAR` env var:
+
+```shell
+export COMET_JAR=`pwd`/spark/target/comet-spark-spark3.5_2.12-0.9.0-SNAPSHOT.jar
 ```
 
 ## Build Iceberg
@@ -52,16 +65,15 @@ Perform a clean build
 
 ```shell
 ./gradlew clean
-./gradlew build
+./gradlew build -x test -x integrationTest
 ```
 
 ## Test
 
-Set `COMET_JAR` and `ICEBERG_JAR` environment variables.
+Set `ICEBERG_JAR` environment variable.
 
 ```shell
-export COMET_JAR=/path/to/comet-spark-spark3.5_2.12-0.9.0-SNAPSHOT.jar
-export ICEBERG_JAR=/path/to/iceberg-spark-runtime-3.5_2.12-1.8.1.jar
+export ICEBERG_JAR=`pwd`/spark/v3.5/spark-runtime/build/libs/iceberg-spark-runtime-3.5_2.12-1.10.0-SNAPSHOT.jar
 ```
 
 Launch Spark Shell:
