@@ -24,16 +24,16 @@ use std::{
     task::{Context, Poll},
 };
 
-use arrow_array::{
-    downcast_dictionary_array, make_array, Array, ArrayRef, RecordBatch, RecordBatchOptions,
+use arrow::array::{
+    downcast_dictionary_array, make_array, Array, ArrayRef, MutableArrayData, RecordBatch,
+    RecordBatchOptions,
 };
-use arrow_data::transform::MutableArrayData;
-use arrow_schema::{ArrowError, DataType, Field, FieldRef, Schema, SchemaRef};
-
+use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef};
+use arrow::error::ArrowError;
+use datafusion::common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::{execution::TaskContext, physical_expr::*, physical_plan::*};
-use datafusion_common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
 
 /// An utility execution node which makes deep copies of input batches.
 ///
@@ -99,6 +99,7 @@ impl DisplayAs for CopyExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "CopyExec [{:?}]", self.mode)
             }
+            DisplayFormatType::TreeRender => unimplemented!(),
         }
     }
 }

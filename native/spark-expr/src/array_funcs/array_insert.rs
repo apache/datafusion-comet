@@ -15,20 +15,20 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::array::{make_array, Array, ArrayRef, GenericListArray, Int32Array, OffsetSizeTrait};
+use arrow::datatypes::{DataType, Field, Schema};
 use arrow::{
     array::{as_primitive_array, Capacities, MutableArrayData},
     buffer::{NullBuffer, OffsetBuffer},
     datatypes::ArrowNativeType,
     record_batch::RecordBatch,
 };
-use arrow_array::{make_array, Array, ArrayRef, GenericListArray, Int32Array, OffsetSizeTrait};
-use arrow_schema::{DataType, Field, Schema};
-use datafusion::logical_expr::ColumnarValue;
-use datafusion_common::{
+use datafusion::common::{
     cast::{as_large_list_array, as_list_array},
     internal_err, DataFusionError, Result as DataFusionResult,
 };
-use datafusion_physical_expr::PhysicalExpr;
+use datafusion::logical_expr::ColumnarValue;
+use datafusion::physical_expr::PhysicalExpr;
 use std::hash::Hash;
 use std::{
     any::Any,
@@ -96,6 +96,10 @@ impl ArrayInsert {
 impl PhysicalExpr for ArrayInsert {
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
     }
 
     fn data_type(&self, input_schema: &Schema) -> DataFusionResult<DataType> {
@@ -320,10 +324,10 @@ impl Display for ArrayInsert {
 #[cfg(test)]
 mod test {
     use super::*;
+    use arrow::array::{Array, ArrayRef, Int32Array, ListArray};
     use arrow::datatypes::Int32Type;
-    use arrow_array::{Array, ArrayRef, Int32Array, ListArray};
-    use datafusion_common::Result;
-    use datafusion_expr::ColumnarValue;
+    use datafusion::common::Result;
+    use datafusion::physical_plan::ColumnarValue;
     use std::sync::Arc;
 
     #[test]

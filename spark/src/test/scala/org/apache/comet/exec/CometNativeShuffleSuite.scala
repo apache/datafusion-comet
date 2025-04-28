@@ -19,17 +19,19 @@
 
 package org.apache.comet.exec
 
+import scala.concurrent.duration.DurationInt
+
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
+import org.apache.spark.SparkEnv
 import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 
 class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
@@ -58,16 +60,14 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   test("native shuffle: different data type") {
+    // https://github.com/apache/datafusion-comet/issues/1538
+    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     Seq(true, false).foreach { execEnabled =>
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
           makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
           var allTypes: Seq[Int] = (1 to 20)
-          if (!isSpark34Plus) {
-            // TODO: Remove this once after https://github.com/apache/arrow/issues/40038 is fixed
-            allTypes = allTypes.filterNot(Set(14).contains)
-          }
           allTypes.map(i => s"_$i").foreach { c =>
             withSQLConf(
               CometConf.COMET_EXEC_ENABLED.key -> execEnabled.toString,
@@ -201,6 +201,20 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
 
       val shuffled = df.repartition(1, $"binary")
       checkShuffleAnswer(shuffled, 1)
+    }
+  }
+
+  test("fix: Comet native shuffle deletes shuffle files after query") {
+    withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
+      var df = sql("SELECT count(_2), sum(_2) FROM tbl GROUP BY _1")
+      df.collect()
+      val diskBlockManager = SparkEnv.get.blockManager.diskBlockManager
+      assert(diskBlockManager.getAllFiles().nonEmpty)
+      df = null
+      eventually(timeout(30.seconds), interval(1.seconds)) {
+        System.gc()
+        assert(diskBlockManager.getAllFiles().isEmpty)
+      }
     }
   }
 

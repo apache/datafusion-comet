@@ -15,11 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow_array::RecordBatch;
-use arrow_schema::{DataType, Schema};
+use arrow::array::RecordBatch;
+use arrow::datatypes::{DataType, Schema};
+use datafusion::common::{internal_err, Result};
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_common::{internal_err, Result};
-use datafusion_physical_expr::PhysicalExpr;
+use std::fmt::Formatter;
 use std::{hash::Hash, sync::Arc};
 
 /// This is similar to `UnKnownColumn` in DataFusion, but it has data type.
@@ -61,6 +62,10 @@ impl PhysicalExpr for UnboundColumn {
     /// Return a reference to Any that can be used for downcasting
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
     }
 
     /// Get the data type of this expression, given the schema of the input

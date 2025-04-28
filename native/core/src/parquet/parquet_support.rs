@@ -17,20 +17,24 @@
 
 use crate::execution::operators::ExecutionError;
 use arrow::{
-    array::{cast::AsArray, types::Int32Type, Array, ArrayRef},
+    array::{
+        cast::AsArray, new_null_array, types::Int32Type, types::TimestampMicrosecondType, Array,
+        ArrayRef, DictionaryArray, StructArray,
+    },
     compute::{cast_with_options, take, CastOptions},
+    datatypes::{DataType, TimeUnit},
     util::display::FormatOptions,
 };
-use arrow_array::{DictionaryArray, StructArray};
-use arrow_schema::DataType;
-use datafusion::prelude::SessionContext;
-use datafusion_comet_spark_expr::utils::array_with_timezone;
+use datafusion::common::{Result as DataFusionResult, ScalarValue};
+use datafusion::execution::object_store::ObjectStoreUrl;
+use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_spark_expr::EvalMode;
-use datafusion_common::{Result as DataFusionResult, ScalarValue};
-use datafusion_execution::object_store::ObjectStoreUrl;
-use datafusion_expr::ColumnarValue;
+use object_store::path::Path;
+use object_store::{parse_url, ObjectStore};
 use std::collections::HashMap;
 use std::{fmt::Debug, hash::Hash, sync::Arc};
+use url::Url;
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
@@ -61,6 +65,8 @@ pub struct SparkParquetOptions {
     pub use_decimal_128: bool,
     /// Whether to read dates/timestamps that were written in the legacy hybrid Julian + Gregorian calendar as it is. If false, throw exceptions instead. If the spark type is TimestampNTZ, this should be true.
     pub use_legacy_date_timestamp_or_ntz: bool,
+    // Whether schema field names are case sensitive
+    pub case_sensitive: bool,
 }
 
 impl SparkParquetOptions {
@@ -73,6 +79,7 @@ impl SparkParquetOptions {
             is_adapting_schema: false,
             use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
+            case_sensitive: false,
         }
     }
 
@@ -85,6 +92,7 @@ impl SparkParquetOptions {
             is_adapting_schema: false,
             use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
+            case_sensitive: false,
         }
     }
 }
@@ -121,10 +129,6 @@ fn cast_array(
     parquet_options: &SparkParquetOptions,
 ) -> DataFusionResult<ArrayRef> {
     use DataType::*;
-    let array = match to_type {
-        Timestamp(_, None) => array, // array_with_timezone does not support to_type of NTZ.
-        _ => array_with_timezone(array, parquet_options.timezone.clone(), Some(to_type))?,
-    };
     let from_type = array.data_type().clone();
 
     let array = match &from_type {
@@ -159,6 +163,14 @@ fn cast_array(
             to_type,
             parquet_options,
         )?),
+        (Timestamp(TimeUnit::Microsecond, None), Timestamp(TimeUnit::Microsecond, Some(tz))) => {
+            Ok(Arc::new(
+                array
+                    .as_primitive::<TimestampMicrosecondType>()
+                    .reinterpret_cast::<TimestampMicrosecondType>()
+                    .with_timezone(Arc::clone(tz)),
+            ))
+        }
         _ => Ok(cast_with_options(&array, to_type, &PARQUET_OPTIONS)?),
     }
 }
@@ -181,13 +193,20 @@ fn cast_struct_to_struct(
             assert_eq!(field_name_to_index_map.len(), from_fields.len());
             let mut cast_fields: Vec<ArrayRef> = Vec::with_capacity(to_fields.len());
             for i in 0..to_fields.len() {
-                let from_index = field_name_to_index_map[to_fields[i].name()];
-                let cast_field = cast_array(
-                    Arc::clone(array.column(from_index)),
-                    to_fields[i].data_type(),
-                    parquet_options,
-                )?;
-                cast_fields.push(cast_field);
+                // Fields in the to_type schema may not exist in the from_type schema
+                // i.e. the required schema may have fields that the file does not
+                // have
+                if field_name_to_index_map.contains_key(to_fields[i].name()) {
+                    let from_index = field_name_to_index_map[to_fields[i].name()];
+                    let cast_field = cast_array(
+                        Arc::clone(array.column(from_index)),
+                        to_fields[i].data_type(),
+                        parquet_options,
+                    )?;
+                    cast_fields.push(cast_field);
+                } else {
+                    cast_fields.push(new_null_array(to_fields[i].data_type(), array.len()));
+                }
             }
             Ok(Arc::new(StructArray::new(
                 to_fields.clone(),
@@ -199,38 +218,135 @@ fn cast_struct_to_struct(
     }
 }
 
-// Default object store which is local filesystem
-#[cfg(not(feature = "hdfs"))]
-pub(crate) fn register_object_store(
-    session_context: Arc<SessionContext>,
-) -> Result<ObjectStoreUrl, ExecutionError> {
-    let object_store = object_store::local::LocalFileSystem::new();
-    let url = ObjectStoreUrl::parse("file://")?;
-    session_context
-        .runtime_env()
-        .register_object_store(url.as_ref(), Arc::new(object_store));
-    Ok(url)
+// Mirrors object_store::parse::parse_url for the hdfs object store
+#[cfg(feature = "hdfs")]
+fn parse_hdfs_url(url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
+    match datafusion_comet_objectstore_hdfs::object_store::hdfs::HadoopFileSystem::new(url.as_ref())
+    {
+        Some(object_store) => {
+            let path = object_store.get_path(url.as_str());
+            Ok((Box::new(object_store), path))
+        }
+        _ => Err(object_store::Error::Generic {
+            store: "HadoopFileSystem",
+            source: "Could not create hdfs object store".into(),
+        }),
+    }
 }
 
-// HDFS object store
-#[cfg(feature = "hdfs")]
-pub(crate) fn register_object_store(
-    session_context: Arc<SessionContext>,
-) -> Result<ObjectStoreUrl, ExecutionError> {
-    // TODO: read the namenode configuration from file schema or from spark.defaultFS
-    let url = ObjectStoreUrl::parse("hdfs://namenode:9000")?;
-    if let Some(object_store) =
-        datafusion_comet_objectstore_hdfs::object_store::hdfs::HadoopFileSystem::new(url.as_ref())
-    {
-        session_context
-            .runtime_env()
-            .register_object_store(url.as_ref(), Arc::new(object_store));
+#[cfg(not(feature = "hdfs"))]
+fn parse_hdfs_url(_url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
+    Err(object_store::Error::Generic {
+        store: "HadoopFileSystem",
+        source: "Hdfs support is not enabled in this build".into(),
+    })
+}
 
-        return Ok(url);
+/// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
+pub(crate) fn prepare_object_store(
+    runtime_env: Arc<RuntimeEnv>,
+    url: String,
+) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
+    let mut url = Url::parse(url.as_str())
+        .map_err(|e| ExecutionError::GeneralError(format!("Error parsing URL {url}: {e}")))?;
+    let mut scheme = url.scheme();
+    if scheme == "s3a" {
+        scheme = "s3";
+        url.set_scheme("s3").map_err(|_| {
+            ExecutionError::GeneralError("Could not convert scheme from s3a to s3".to_string())
+        })?;
+    }
+    let url_key = format!(
+        "{}://{}",
+        scheme,
+        &url[url::Position::BeforeHost..url::Position::AfterPort],
+    );
+
+    let (object_store, object_store_path): (Box<dyn ObjectStore>, Path) = if scheme == "hdfs" {
+        parse_hdfs_url(&url)
+    } else {
+        parse_url(&url)
+    }
+    .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
+
+    let object_store_url = ObjectStoreUrl::parse(url_key.clone())?;
+    runtime_env.register_object_store(&url, Arc::from(object_store));
+    Ok((object_store_url, object_store_path))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parquet::parquet_support::prepare_object_store;
+    use datafusion::execution::object_store::ObjectStoreUrl;
+    use datafusion::execution::runtime_env::RuntimeEnv;
+    use object_store::path::Path;
+    use std::sync::Arc;
+    use url::Url;
+
+    #[cfg(not(feature = "hdfs"))]
+    #[test]
+    fn test_prepare_object_store() {
+        use crate::execution::operators::ExecutionError;
+
+        let local_file_system_url = "file:///comet/spark-warehouse/part-00000.snappy.parquet";
+        let s3_url = "s3a://test_bucket/comet/spark-warehouse/part-00000.snappy.parquet";
+        let hdfs_url = "hdfs://localhost:8020/comet/spark-warehouse/part-00000.snappy.parquet";
+
+        let all_urls = [local_file_system_url, s3_url, hdfs_url];
+        let expected: Vec<Result<(ObjectStoreUrl, Path), ExecutionError>> = vec![
+            Ok((
+                ObjectStoreUrl::parse("file://").unwrap(),
+                Path::from("/comet/spark-warehouse/part-00000.snappy.parquet"),
+            )),
+            Ok((
+                ObjectStoreUrl::parse("s3://test_bucket").unwrap(),
+                Path::from("/comet/spark-warehouse/part-00000.snappy.parquet"),
+            )),
+            Err(ExecutionError::GeneralError(
+                "Generic HadoopFileSystem error: Hdfs support is not enabled in this build"
+                    .parse()
+                    .unwrap(),
+            )),
+        ];
+
+        for (i, url_str) in all_urls.iter().enumerate() {
+            let url = &Url::parse(url_str).unwrap();
+            let res = prepare_object_store(Arc::new(RuntimeEnv::default()), url.to_string());
+
+            let expected = expected.get(i).unwrap();
+            match expected {
+                Ok((o, p)) => {
+                    let (r_o, r_p) = res.unwrap();
+                    assert_eq!(r_o, *o);
+                    assert_eq!(r_p, *p);
+                }
+                Err(e) => {
+                    assert!(res.is_err());
+                    let Err(res_e) = res else {
+                        panic!("test failed")
+                    };
+                    assert_eq!(e.to_string(), res_e.to_string())
+                }
+            }
+        }
     }
 
-    Err(ExecutionError::GeneralError(format!(
-        "HDFS object store cannot be created for {}",
-        url
-    )))
+    #[test]
+    #[cfg(feature = "hdfs")]
+    fn test_prepare_object_store() {
+        // we use a local file system url instead of an hdfs url because the latter requires
+        // a running namenode
+        let hdfs_url = "file:///comet/spark-warehouse/part-00000.snappy.parquet";
+        let expected: (ObjectStoreUrl, Path) = (
+            ObjectStoreUrl::parse("file://").unwrap(),
+            Path::from("/comet/spark-warehouse/part-00000.snappy.parquet"),
+        );
+
+        let url = &Url::parse(hdfs_url).unwrap();
+        let res = prepare_object_store(Arc::new(RuntimeEnv::default()), url.to_string());
+
+        let res = res.unwrap();
+        assert_eq!(res.0, expected.0);
+        assert_eq!(res.1, expected.1);
+    }
 }

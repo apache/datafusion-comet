@@ -30,7 +30,6 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.Decimal
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 
 class CometJoinSuite extends CometTestBase {
   import testImplicits._
@@ -75,7 +74,6 @@ class CometJoinSuite extends CometTestBase {
   }
 
   test("Broadcast HashJoin without join filter") {
-    assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
     withSQLConf(
       CometConf.COMET_BATCH_SIZE.key -> "100",
       SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
@@ -103,7 +101,6 @@ class CometJoinSuite extends CometTestBase {
   }
 
   test("Broadcast HashJoin with join filter") {
-    assume(isSpark34Plus, "ChunkedByteBuffer is not serializable before Spark 3.4+")
     withSQLConf(
       CometConf.COMET_BATCH_SIZE.key -> "100",
       SQLConf.PREFER_SORTMERGEJOIN.key -> "false",

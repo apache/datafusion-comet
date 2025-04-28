@@ -20,11 +20,12 @@
 package org.apache.comet.parquet
 
 import java.io.{File, FileFilter}
-import java.math.BigDecimal
+import java.math.{BigDecimal, BigInteger}
 import java.time.{ZoneId, ZoneOffset}
 
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
+import scala.util.control.Breaks.{break, breakable}
 
 import org.scalactic.source.Position
 import org.scalatest.Tag
@@ -46,7 +47,8 @@ import org.apache.spark.unsafe.types.UTF8String
 import com.google.common.primitives.UnsignedLong
 
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark34Plus, isSpark40Plus, usingDataFusionParquetExec}
+import org.apache.comet.CometConf.SCAN_NATIVE_ICEBERG_COMPAT
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, usingDataFusionParquetExec}
 
 abstract class ParquetReadSuite extends CometTestBase {
   import testImplicits._
@@ -86,7 +88,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     // note that native_datafusion does not use CometScanExec so we need not include that in
     // the check
     val usingNativeIcebergCompat =
-      (CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
+      CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT
     Seq(
       NullType -> false,
       BooleanType -> true,
@@ -98,34 +100,47 @@ abstract class ParquetReadSuite extends CometTestBase {
       DoubleType -> true,
       BinaryType -> true,
       StringType -> true,
-      ArrayType(TimestampType) -> false,
+      // Timestamp here arbitrary for picking a concrete data type to from ArrayType
+      // Any other type works
+      ArrayType(TimestampType) -> usingNativeIcebergCompat,
       StructType(
         Seq(
           StructField("f1", DecimalType.SYSTEM_DEFAULT),
           StructField("f2", StringType))) -> usingNativeIcebergCompat,
-      MapType(keyType = LongType, valueType = DateType) -> false,
+      MapType(keyType = LongType, valueType = DateType) -> usingNativeIcebergCompat,
       StructType(
         Seq(
           StructField("f1", ByteType),
           StructField("f2", StringType))) -> usingNativeIcebergCompat,
-      MapType(keyType = IntegerType, valueType = BinaryType) -> false).foreach {
-      case (dt, expected) =>
+      MapType(keyType = IntegerType, valueType = BinaryType) -> usingNativeIcebergCompat)
+      .foreach { case (dt, expected) =>
         assert(CometScanExec.isTypeSupported(dt) == expected)
         // usingDataFusionParquetExec does not support CometBatchScanExec yet
         if (!usingDataFusionParquetExec(conf)) {
           assert(CometBatchScanExec.isTypeSupported(dt) == expected)
         }
-    }
+      }
   }
 
   test("unsupported Spark schema") {
-    Seq(
-      Seq(StructField("f1", IntegerType), StructField("f2", BooleanType)) -> true,
-      Seq(StructField("f1", IntegerType), StructField("f2", ArrayType(IntegerType))) -> false,
-      Seq(
-        StructField("f1", MapType(keyType = LongType, valueType = StringType)),
-        StructField("f2", ArrayType(DoubleType))) -> false).foreach { case (schema, expected) =>
+    val schemaDDLs =
+      Seq("f1 int, f2 boolean", "f1 int, f2 array<int>", "f1 map<long, string>, f2 array<double>")
+        .map(s => StructType.fromDDL(s))
+
+    // Arrays support for iceberg compat native and for Parquet V1
+    val cometScanExecSupported =
+      if (sys.env.get("COMET_PARQUET_SCAN_IMPL").contains(SCAN_NATIVE_ICEBERG_COMPAT) && this
+          .isInstanceOf[ParquetReadV1Suite])
+        Seq(true, true, true)
+      else Seq(true, false, false)
+
+    val cometBatchScanExecSupported = Seq(true, false, false)
+
+    schemaDDLs.zip(cometScanExecSupported).foreach { case (schema, expected) =>
       assert(CometScanExec.isSchemaSupported(StructType(schema)) == expected)
+    }
+
+    schemaDDLs.zip(cometBatchScanExecSupported).foreach { case (schema, expected) =>
       assert(CometBatchScanExec.isSchemaSupported(StructType(schema)) == expected)
     }
   }
@@ -345,45 +360,24 @@ abstract class ParquetReadSuite extends CometTestBase {
         n: Int,
         pageSize: Int): Seq[Option[Int]] = {
       val schemaStr = {
-        if (isSpark34Plus) {
-          """
-            |message root {
-            |  optional boolean                 _1;
-            |  optional int32                   _2(INT_8);
-            |  optional int32                   _3(INT_16);
-            |  optional int32                   _4;
-            |  optional int64                   _5;
-            |  optional float                   _6;
-            |  optional double                  _7;
-            |  optional binary                  _8(UTF8);
-            |  optional int32                   _9(UINT_8);
-            |  optional int32                   _10(UINT_16);
-            |  optional int32                   _11(UINT_32);
-            |  optional int64                   _12(UINT_64);
-            |  optional binary                  _13(ENUM);
-            |  optional FIXED_LEN_BYTE_ARRAY(3) _14;
-            |}
-        """.stripMargin
-        } else {
-          """
-            |message root {
-            |  optional boolean                 _1;
-            |  optional int32                   _2(INT_8);
-            |  optional int32                   _3(INT_16);
-            |  optional int32                   _4;
-            |  optional int64                   _5;
-            |  optional float                   _6;
-            |  optional double                  _7;
-            |  optional binary                  _8(UTF8);
-            |  optional int32                   _9(UINT_8);
-            |  optional int32                   _10(UINT_16);
-            |  optional int32                   _11(UINT_32);
-            |  optional int64                   _12(UINT_64);
-            |  optional binary                  _13(ENUM);
-            |  optional binary                  _14(UTF8);
-            |}
-        """.stripMargin
-        }
+        """
+          |message root {
+          |  optional boolean                 _1;
+          |  optional int32                   _2(INT_8);
+          |  optional int32                   _3(INT_16);
+          |  optional int32                   _4;
+          |  optional int64                   _5;
+          |  optional float                   _6;
+          |  optional double                  _7;
+          |  optional binary                  _8(UTF8);
+          |  optional int32                   _9(UINT_8);
+          |  optional int32                   _10(UINT_16);
+          |  optional int32                   _11(UINT_32);
+          |  optional int64                   _12(UINT_64);
+          |  optional binary                  _13(ENUM);
+          |  optional FIXED_LEN_BYTE_ARRAY(3) _14;
+          |}
+      """.stripMargin
       }
 
       val schema = MessageTypeParser.parseMessageType(schemaStr)
@@ -441,11 +435,7 @@ abstract class ParquetReadSuite extends CometTestBase {
                 Row(null, null, null, null, null, null, null, null, null, null, null, null, null,
                   null)
               case Some(i) =>
-                val flba_field = if (isSpark34Plus) {
-                  Array.fill(3)(i % 10 + 48) // char '0' is 48 in ascii
-                } else {
-                  (i % 10).toString * 3
-                }
+                val flba_field = Array.fill(3)(i % 10 + 48) // char '0' is 48 in ascii
                 Row(
                   i % 2 == 0,
                   i.toByte,
@@ -860,6 +850,234 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("nested struct with new child field") {
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+
+      val df1 = sql("SELECT 1 c1, named_struct('c3', 2, 'c4', named_struct('c5', 3, 'c6', 4)) c2")
+      val df2 = sql(
+        "SELECT 1 c1, named_struct('c3', 2, 'c4', named_struct('c5', 3, 'c6', 4, 'c7', 5)) c2")
+      val dir1 = s"$path${File.separator}part=one"
+      val dir2 = s"$path${File.separator}part=two"
+
+      df1.write.parquet(dir1)
+      df2.write.parquet(dir2)
+
+      var df = spark.read
+        .schema(df2.schema)
+        .load(path)
+        .select($"c1", $"c2.c3")
+
+      // read a leaf field
+      val expected1 =
+        Seq(Row(1, 2), Row(1, 2))
+      checkAnswer(df, expected1)
+
+      // read a struct field
+      df = spark.read
+        .schema(df2.schema)
+        .load(path)
+        .select($"c1", $"c2")
+      val expected2 =
+        Seq(Row(1, Row(2, Row(3, 4, null))), Row(1, Row(2, Row(3, 4, 5))))
+      checkAnswer(df, expected2)
+
+      // read a missing field
+      df = spark.read
+        .schema(df2.schema)
+        .load(path)
+        .select($"c1", $"c2.c4.c7")
+      val expected3 =
+        Seq(Row(1, null), Row(1, 5))
+      checkAnswer(df, expected3)
+    }
+  }
+
+  test("reading required fields in structs") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      def makeRawParquetFile(path: Path): Unit = {
+        val schemaStr =
+          """message schema {
+            |  optional int32 a;
+            |  required group b {
+            |    optional int32 b1;
+            |    required int32 b2;
+            |  }
+            |  optional group c {
+            |    required int32 c1;
+            |    optional int32 c2;
+            |  }
+            |}
+        """.stripMargin
+        val schema = MessageTypeParser.parseMessageType(schemaStr)
+
+        val writer = createParquetWriter(schema, path, dictionaryEnabled)
+
+        // All optional fields are specified
+        var record = new SimpleGroup(schema)
+        record.add("a", 1)
+        var b = record.addGroup("b")
+        b.add("b1", 1)
+        b.add("b2", 1)
+        var c = record.addGroup("c")
+        c.add("c1", 1)
+        c.add("c2", 1)
+        writer.write(record)
+
+        // No optional values
+        record = new SimpleGroup(schema)
+        record.add("a", 2)
+        b = record.addGroup("b")
+        b.add("b1", 2)
+        b.add("b2", 2)
+        writer.write(record)
+
+        writer.close()
+      }
+
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+        makeRawParquetFile(path)
+
+        withParquetTable(spark.read.format("parquet").load(path.toString), "complex_types") {
+          // required struct field with optional field
+          var df = sql("select a, b from complex_types")
+          checkSparkAnswer(df)
+
+          // Missing optional struct field
+          df = sql("select a, c from complex_types")
+          checkSparkAnswer(df)
+
+          // Missing optional struct field with nested required field
+          // TODO: This produces incorrect results in both native_datafusion and native_iceberg_compat
+          //          df = sql("select a, c.c1 from complex_types")
+          //          checkSparkAnswer(df)
+
+          // required nested field in a struct
+          df = sql("select a, b.b2 from complex_types")
+          checkSparkAnswer(df)
+
+        }
+      }
+    }
+  }
+
+  // TODO: This test fails for both native_datafusion and native_iceberg_compat
+  ignore(" Missing optional struct field with nested required field") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      def makeRawParquetFile(path: Path): Unit = {
+        val schemaStr =
+          """message schema {
+            |  optional int32 a;
+            |  required group b {
+            |    optional int32 b1;
+            |    required int32 b2;
+            |  }
+            |  optional group c {
+            |    required int32 c1;
+            |    optional int32 c2;
+            |  }
+            |}
+        """.stripMargin
+        val schema = MessageTypeParser.parseMessageType(schemaStr)
+
+        val writer = createParquetWriter(schema, path, dictionaryEnabled)
+
+        // All optional fields are specified
+        var record = new SimpleGroup(schema)
+        record.add("a", 1)
+        var b = record.addGroup("b")
+        b.add("b1", 1)
+        b.add("b2", 1)
+        var c = record.addGroup("c")
+        c.add("c1", 1)
+        c.add("c2", 1)
+        writer.write(record)
+
+        // No optional values
+        record = new SimpleGroup(schema)
+        record.add("a", 2)
+        b = record.addGroup("b")
+        b.add("b1", 2)
+        b.add("b2", 2)
+        writer.write(record)
+
+        writer.close()
+      }
+
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+        makeRawParquetFile(path)
+
+        withParquetTable(spark.read.format("parquet").load(path.toString), "complex_types") {
+          // Missing optional struct field with nested required field
+          // TODO: This produces incorrect results in both native_datafusion and native_iceberg_compat
+          val df = sql("select a, c.c1 from complex_types")
+          checkSparkAnswer(df)
+
+        }
+      }
+    }
+  }
+
+  test("missing required fields in structs") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      def makeRawParquetFile(path: Path): Unit = {
+        val schemaStr =
+          """message schema {
+            |  optional int32 a;
+            |  required group b {
+            |    optional int32 b1;
+            |    required int32 b2;
+            |  }
+            |  optional group c {
+            |    required int32 c1;
+            |    optional int32 c2;
+            |  }
+            |}
+        """.stripMargin
+        val schema = MessageTypeParser.parseMessageType(schemaStr)
+        val writer = createParquetWriter(schema, path, dictionaryEnabled)
+        // Missing required field b.b2
+        val record = new SimpleGroup(schema)
+        record.add("a", 3)
+        val b = record.addGroup("b")
+        b.add("b1", 4)
+        writer.write(record)
+
+        writer.close()
+      }
+
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+        makeRawParquetFile(path)
+
+        withParquetTable(
+          spark.read.format("parquet").load(path.toString),
+          "complex_types_missing_struct") {
+          // missing required nested field in a struct
+          var failed = false
+          try {
+            val df = sql("select a, b.b2 from complex_types_missing_struct")
+            checkSparkAnswer(df)
+          } catch {
+            case _: Exception => failed = true
+          }
+          assert(failed)
+          // missing required struct field
+          failed = false
+          try {
+            val df = sql("select a, b from complex_types_missing_struct")
+            checkSparkAnswer(df)
+          } catch {
+            case _: Exception => failed = true
+          }
+          assert(failed)
+        }
+      }
+    }
+  }
+
   test("unsigned int supported") {
     Seq(true, false).foreach { dictionaryEnabled =>
       def makeRawParquetFile(path: Path): Unit = {
@@ -964,7 +1182,6 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("FIXED_LEN_BYTE_ARRAY support") {
-    assume(isSpark34Plus)
     Seq(true, false).foreach { dictionaryEnabled =>
       def makeRawParquetFile(path: Path): Unit = {
         val schemaStr =
@@ -1028,6 +1245,9 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("scan metrics") {
+    // https://github.com/apache/datafusion-comet/issues/1441
+    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
+
     val cometScanMetricNames = Seq(
       "ParquetRowGroups",
       "ParquetNativeDecodeTime",
@@ -1191,7 +1411,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   test("row group skipping doesn't overflow when reading into larger type") {
     // Spark 4.0 no longer fails for widening types SPARK-40876
     // https://github.com/apache/spark/commit/3361f25dc0ff6e5233903c26ee105711b79ba967
-    assume(isSpark34Plus && !isSpark40Plus && !usingDataFusionParquetExec(conf))
+    assume(!isSpark40Plus && !usingDataFusionParquetExec(conf))
     withTempPath { path =>
       Seq(0).toDF("a").write.parquet(path.toString)
       // Reading integer 'a' as a long isn't supported. Check that an exception is raised instead
@@ -1481,6 +1701,93 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
           cometNativeScanImpl,
           scanner = expectedScanner,
           v1 = Some("parquet"))
+    }
+  }
+
+  test("test V1 parquet native scan -- case insensitive") {
+    withTempPath { path =>
+      spark.range(10).toDF("a").write.parquet(path.toString)
+      Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach(
+        scanMode => {
+          withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode) {
+            withTable("test") {
+              sql("create table test (A long) using parquet options (path '" + path + "')")
+              val df = sql("select A from test")
+              checkSparkAnswer(df)
+              // TODO: pushed down filters do not used schema adapter in datafusion, will cause empty result
+              // val df = sql("select * from test where A > 5")
+              // checkSparkAnswer(df)
+            }
+          }
+        })
+    }
+  }
+
+  test("test V1 parquet scan filter pushdown of primitive types uses native_iceberg_compat") {
+    withTempPath { dir =>
+      val path = new Path(dir.toURI.toString, "test1.parquet")
+      val rows = 1000
+      withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
+        CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false") {
+        makeParquetFileAllTypes(path, dictionaryEnabled = false, 0, rows, nullEnabled = false)
+      }
+      Seq(
+        (CometConf.SCAN_NATIVE_DATAFUSION, "output_rows"),
+        (CometConf.SCAN_NATIVE_ICEBERG_COMPAT, "numOutputRows")).foreach {
+        case (scanMode, metricKey) =>
+          Seq(true, false).foreach { pushDown =>
+            breakable {
+              withSQLConf(
+                CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode,
+                SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> pushDown.toString) {
+                if (scanMode == CometConf.SCAN_NATIVE_DATAFUSION && !pushDown) {
+                  // FIXME: native_datafusion always pushdown data filters
+                  break()
+                }
+                Seq(
+                  ("_1 = true", Math.ceil(rows.toDouble / 2)), // Boolean
+                  ("_2 = 1", Math.ceil(rows.toDouble / 256)), // Byte
+                  ("_3 = 1", 1), // Short
+                  ("_4 = 1", 1), // Integer
+                  ("_5 = 1", 1), // Long
+                  ("_6 = 1.0", 1), // Float
+                  ("_7 = 1.0", 1), // Double
+                  (s"_8 = '${1.toString * 48}'", 1), // String
+                  ("_21 = to_binary('1', 'utf-8')", 1), // binary
+                  ("_15 = 0.0", 1), // DECIMAL(5, 2)
+                  ("_16 = 0.0", 1), // DECIMAL(18, 10)
+                  (
+                    s"_17 = ${new BigDecimal(new BigInteger(("1" * 16).getBytes), 37).toString}",
+                    Math.ceil(rows.toDouble / 10)
+                  ), // DECIMAL(38, 37)
+                  (s"_19 = TIMESTAMP '${DateTimeUtils.toJavaTimestamp(1)}'", 1), // Timestamp
+                  ("_20 = DATE '1970-01-02'", 1) // Date
+                ).foreach { case (whereCause, expectedRows) =>
+                  val df = spark.read
+                    .parquet(path.toString)
+                    .where(whereCause)
+                  val (_, cometPlan) = checkSparkAnswer(df)
+                  val scan = collect(cometPlan) {
+                    case p: CometScanExec =>
+                      assert(p.dataFilters.nonEmpty)
+                      p
+                    case p: CometNativeScanExec =>
+                      assert(p.dataFilters.nonEmpty)
+                      p
+                  }
+                  assert(scan.size == 1)
+
+                  if (pushDown) {
+                    assert(scan.head.metrics(metricKey).value == expectedRows)
+                  } else {
+                    assert(scan.head.metrics(metricKey).value == rows)
+                  }
+                }
+              }
+            }
+          }
+      }
     }
   }
 }

@@ -15,8 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow_array::{RecordBatch, RecordBatchOptions};
-use arrow_schema::SchemaRef;
+use arrow::array::{RecordBatch, RecordBatchOptions};
+use arrow::datatypes::SchemaRef;
+use datafusion::common::DataFusionError;
+use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::{
     execution::TaskContext,
@@ -25,8 +27,6 @@ use datafusion::{
         RecordBatchStream, SendableRecordBatchStream,
     },
 };
-use datafusion_common::DataFusionError;
-use datafusion_physical_expr::{EquivalenceProperties, PhysicalExpr};
 use futures::{Stream, StreamExt};
 use std::{
     any::Any,
@@ -85,6 +85,7 @@ impl DisplayAs for ExpandExec {
 
                 Ok(())
             }
+            DisplayFormatType::TreeRender => unimplemented!(),
         }
     }
 }
@@ -105,7 +106,7 @@ impl ExecutionPlan for ExpandExec {
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> datafusion_common::Result<Arc<dyn ExecutionPlan>> {
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         let new_expand = ExpandExec::new(
             self.projections.clone(),
             Arc::clone(&children[0]),
@@ -118,7 +119,7 @@ impl ExecutionPlan for ExpandExec {
         &self,
         partition: usize,
         context: Arc<TaskContext>,
-    ) -> datafusion_common::Result<SendableRecordBatchStream> {
+    ) -> datafusion::common::Result<SendableRecordBatchStream> {
         let child_stream = self.child.execute(partition, context)?;
         let expand_stream = ExpandStream::new(
             self.projections.clone(),
@@ -185,7 +186,7 @@ impl ExpandStream {
 }
 
 impl Stream for ExpandStream {
-    type Item = datafusion_common::Result<RecordBatch>;
+    type Item = datafusion::common::Result<RecordBatch>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if self.current_index == -1 {

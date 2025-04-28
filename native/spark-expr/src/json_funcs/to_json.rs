@@ -21,12 +21,12 @@
 
 use crate::SparkCastOptions;
 use crate::{spark_cast, EvalMode};
-use arrow_array::builder::StringBuilder;
-use arrow_array::{Array, ArrayRef, RecordBatch, StringArray, StructArray};
-use arrow_schema::{DataType, Schema};
-use datafusion_common::Result;
-use datafusion_expr::ColumnarValue;
-use datafusion_physical_expr::PhysicalExpr;
+use arrow::array::builder::StringBuilder;
+use arrow::array::{Array, ArrayRef, RecordBatch, StringArray, StructArray};
+use arrow::datatypes::{DataType, Schema};
+use datafusion::common::Result;
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_plan::ColumnarValue;
 use std::any::Any;
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
@@ -81,6 +81,10 @@ impl PartialEq<dyn Any> for ToJson {
 impl PhysicalExpr for ToJson {
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
     }
 
     fn data_type(&self, _: &Schema) -> Result<DataType> {
@@ -251,11 +255,11 @@ fn struct_to_json(array: &StructArray, timezone: &str) -> Result<ArrayRef> {
 #[cfg(test)]
 mod test {
     use crate::json_funcs::to_json::struct_to_json;
-    use arrow_array::types::Int32Type;
-    use arrow_array::{Array, PrimitiveArray, StringArray};
-    use arrow_array::{ArrayRef, BooleanArray, Int32Array, StructArray};
-    use arrow_schema::{DataType, Field};
-    use datafusion_common::Result;
+    use arrow::array::types::Int32Type;
+    use arrow::array::{Array, PrimitiveArray, StringArray};
+    use arrow::array::{ArrayRef, BooleanArray, Int32Array, StructArray};
+    use arrow::datatypes::{DataType, Field};
+    use datafusion::common::Result;
     use std::sync::Arc;
 
     #[test]

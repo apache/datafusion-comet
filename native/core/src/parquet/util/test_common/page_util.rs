@@ -17,7 +17,7 @@
 
 use std::{collections::VecDeque, mem, sync::Arc};
 
-use rand::distributions::uniform::SampleUniform;
+use rand::distr::uniform::SampleUniform;
 
 use parquet::{
     basic::Encoding,

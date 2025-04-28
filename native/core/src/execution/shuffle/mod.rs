@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub(crate) mod builders;
 pub(crate) mod codec;
 mod list;
 mod map;

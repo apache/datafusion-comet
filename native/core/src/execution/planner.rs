@@ -33,11 +33,12 @@ use crate::{
     },
 };
 use arrow::compute::CastOptions;
-use arrow_schema::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
+use arrow::datatypes::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
+use datafusion::physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
@@ -47,7 +48,6 @@ use datafusion::{
     functions_aggregate::first_last::{FirstValue, LastValue},
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
-        execution_props::ExecutionProps,
         expressions::{
             in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNotNullExpr, IsNullExpr,
             Literal as DataFusionLiteral, NotExpr,
@@ -65,22 +65,30 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr};
-use datafusion_functions_nested::array_has::array_has_any_udf;
-use datafusion_functions_nested::concat::ArrayAppend;
-use datafusion_functions_nested::remove::array_remove_all_udf;
-use datafusion_functions_nested::set_ops::array_intersect_udf;
-use datafusion_functions_nested::string::array_to_string_udf;
-use datafusion_physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 
+use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
-use crate::parquet::parquet_support::{register_object_store, SparkParquetOptions};
-use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
+use crate::parquet::parquet_exec::init_datasource_exec;
+use crate::parquet::parquet_support::prepare_object_store;
+use datafusion::common::scalar::ScalarStructBuilder;
+use datafusion::common::{
+    tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
+    JoinType as DFJoinType, ScalarValue,
+};
 use datafusion::datasource::listing::PartitionedFile;
-use datafusion::datasource::physical_plan::{FileScanConfig, ParquetSource};
-use datafusion::datasource::source::DataSourceExec;
+use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
+use datafusion::logical_expr::{
+    AggregateUDF, ReturnTypeArgs, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    WindowFunctionDefinition,
+};
+use datafusion::physical_expr::expressions::{Literal, StatsType};
+use datafusion::physical_expr::window::WindowExpr;
+use datafusion::physical_expr::LexOrdering;
+
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
+use datafusion_comet_proto::spark_operator::SparkFilePartition;
 use datafusion_comet_proto::{
     spark_expression::{
         self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
@@ -101,21 +109,6 @@ use datafusion_comet_spark_expr::{
     SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
     TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
-use datafusion_common::config::TableParquetOptions;
-use datafusion_common::scalar::ScalarStructBuilder;
-use datafusion_common::{
-    tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
-    JoinType as DFJoinType, ScalarValue,
-};
-use datafusion_expr::type_coercion::other::get_coerce_type_for_case_expression;
-use datafusion_expr::{
-    AggregateUDF, ReturnTypeArgs, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
-    WindowFunctionDefinition,
-};
-use datafusion_functions_nested::array_has::ArrayHas;
-use datafusion_physical_expr::expressions::{Literal, StatsType};
-use datafusion_physical_expr::window::WindowExpr;
-use datafusion_physical_expr::LexOrdering;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
@@ -149,31 +142,27 @@ pub struct PhysicalPlanner {
     // The execution context id of this planner.
     exec_context_id: i64,
     partition: i32,
-    execution_props: ExecutionProps,
     session_ctx: Arc<SessionContext>,
 }
 
 impl Default for PhysicalPlanner {
     fn default() -> Self {
         let session_ctx = Arc::new(SessionContext::new());
-        let execution_props = ExecutionProps::new();
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             partition: 0,
-            execution_props,
             session_ctx,
         }
     }
 }
 
 impl PhysicalPlanner {
+    pub fn new(session_ctx: Arc<SessionContext>) -> Self {
     pub fn new(session_ctx: Arc<SessionContext>, partition: i32) -> Self {
-        let execution_props = ExecutionProps::new();
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
-            partition,
-            execution_props,
             session_ctx,
+            partition,
         }
     }
 
@@ -181,13 +170,69 @@ impl PhysicalPlanner {
         Self {
             exec_context_id,
             partition: self.partition,
-            execution_props: self.execution_props,
             session_ctx: Arc::clone(&self.session_ctx),
         }
     }
 
+    /// Return session context of this planner.
+    pub fn session_ctx(&self) -> &Arc<SessionContext> {
+        &self.session_ctx
+    }
+
+    /// get DataFusion PartitionedFiles from a Spark FilePartition
+    fn get_partitioned_files(
+        &self,
+        partition: &SparkFilePartition,
+    ) -> Result<Vec<PartitionedFile>, ExecutionError> {
+        let mut files = Vec::with_capacity(partition.partitioned_file.len());
+        partition.partitioned_file.iter().try_for_each(|file| {
+            assert!(file.start + file.length <= file.file_size);
+
+            let mut partitioned_file = PartitionedFile::new_with_range(
+                String::new(), // Dummy file path.
+                file.file_size as u64,
+                file.start,
+                file.start + file.length,
+            );
+
+            // Spark sends the path over as URL-encoded, parse that first.
+            let url =
+                Url::parse(file.file_path.as_ref()).map_err(|e| GeneralError(e.to_string()))?;
+            // Convert that to a Path object to use in the PartitionedFile.
+            let path = Path::from_url_path(url.path()).map_err(|e| GeneralError(e.to_string()))?;
+            partitioned_file.object_meta.location = path;
+
+            // Process partition values
+            // Create an empty input schema for partition values because they are all literals.
+            let empty_schema = Arc::new(Schema::empty());
+            let partition_values: Result<Vec<_>, _> = file
+                .partition_values
+                .iter()
+                .map(|partition_value| {
+                    let literal =
+                        self.create_expr(partition_value, Arc::<Schema>::clone(&empty_schema))?;
+                    literal
+                        .as_any()
+                        .downcast_ref::<DataFusionLiteral>()
+                        .ok_or_else(|| {
+                            GeneralError("Expected literal of partition value".to_string())
+                        })
+                        .map(|literal| literal.value().clone())
+                })
+                .collect();
+            let partition_values = partition_values?;
+
+            partitioned_file.partition_values = partition_values;
+
+            files.push(partitioned_file);
+            Ok::<(), ExecutionError>(())
+        })?;
+
+        Ok(files)
+    }
+
     /// Create a DataFusion physical expression from Spark physical expression
-    fn create_expr(
+    pub(crate) fn create_expr(
         &self,
         spark_expr: &Expr,
         input_schema: SchemaRef,
@@ -283,7 +328,7 @@ impl PhysicalPlanner {
             ExprStruct::Bound(bound) => {
                 let idx = bound.index as usize;
                 if idx >= input_schema.fields().len() {
-                    return Err(ExecutionError::GeneralError(format!(
+                    return Err(GeneralError(format!(
                         "Column index {} is out of bound. Schema: {}",
                         idx, input_schema
                     )));
@@ -341,10 +386,7 @@ impl PhysicalPlanner {
                         DataType::Struct(fields) => ScalarStructBuilder::new_null(fields),
                         DataType::Null => ScalarValue::Null,
                         dt => {
-                            return Err(ExecutionError::GeneralError(format!(
-                                "{:?} is not supported in Comet",
-                                dt
-                            )))
+                            return Err(GeneralError(format!("{:?} is not supported in Comet", dt)))
                         }
                     }
                 } else {
@@ -356,7 +398,7 @@ impl PhysicalPlanner {
                             DataType::Int32 => ScalarValue::Int32(Some(*value)),
                             DataType::Date32 => ScalarValue::Date32(Some(*value)),
                             dt => {
-                                return Err(ExecutionError::GeneralError(format!(
+                                return Err(GeneralError(format!(
                                     "Expected either 'Int32' or 'Date32' for IntVal, but found {:?}",
                                     dt
                                 )))
@@ -371,7 +413,7 @@ impl PhysicalPlanner {
                                 ScalarValue::TimestampMicrosecond(Some(*value), Some(tz))
                             }
                             dt => {
-                                return Err(ExecutionError::GeneralError(format!(
+                                return Err(GeneralError(format!(
                                     "Expected either 'Int64' or 'Timestamp' for LongVal, but found {:?}",
                                     dt
                                 )))
@@ -384,7 +426,7 @@ impl PhysicalPlanner {
                         Value::DecimalVal(value) => {
                             let big_integer = BigInt::from_signed_bytes_be(value);
                             let integer = big_integer.to_i128().ok_or_else(|| {
-                                ExecutionError::GeneralError(format!(
+                                GeneralError(format!(
                                     "Cannot parse {:?} as i128 for Decimal literal",
                                     big_integer
                                 ))
@@ -395,7 +437,7 @@ impl PhysicalPlanner {
                                     ScalarValue::Decimal128(Some(integer), p, s)
                                 }
                                 dt => {
-                                    return Err(ExecutionError::GeneralError(format!(
+                                    return Err(GeneralError(format!(
                                         "Decimal literal's data type should be Decimal128 but got {:?}",
                                         dt
                                     )))
@@ -503,7 +545,7 @@ impl PhysicalPlanner {
                     ScalarValue::Utf8(Some(pattern)) => {
                         Ok(Arc::new(RLike::try_new(left, pattern)?))
                     }
-                    _ => Err(ExecutionError::GeneralError(
+                    _ => Err(GeneralError(
                         "RLike only supports scalar patterns".to_string(),
                     )),
                 }
@@ -642,7 +684,7 @@ impl PhysicalPlanner {
                 let child: Arc<dyn PhysicalExpr> =
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let result = create_negate_expr(child, expr.fail_on_error);
-                result.map_err(|e| ExecutionError::GeneralError(e.to_string()))
+                result.map_err(|e| GeneralError(e.to_string()))
             }
             ExprStruct::NormalizeNanAndZero(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
@@ -710,32 +752,6 @@ impl PhysicalPlanner {
                     expr.ordinal as usize,
                 )))
             }
-            ExprStruct::ArrayAppend(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right =
-                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let return_type = left.data_type(&input_schema)?;
-                let args = vec![Arc::clone(&left), right];
-                let datafusion_array_append =
-                    Arc::new(ScalarUDF::new_from_impl(ArrayAppend::new()));
-                let array_append_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
-                    "array_append",
-                    datafusion_array_append,
-                    args,
-                    return_type,
-                ));
-
-                let is_null_expr: Arc<dyn PhysicalExpr> = Arc::new(IsNullExpr::new(left));
-                let null_literal_expr: Arc<dyn PhysicalExpr> =
-                    Arc::new(Literal::new(ScalarValue::Null));
-
-                create_case_expr(
-                    vec![(is_null_expr, null_literal_expr)],
-                    Some(array_append_expr),
-                    &input_schema,
-                )
-            }
             ExprStruct::ArrayInsert(expr) => {
                 let src_array_expr = self.create_expr(
                     expr.src_array_expr.as_ref().unwrap(),
@@ -752,112 +768,7 @@ impl PhysicalPlanner {
                     expr.legacy_negative_index,
                 )))
             }
-            ExprStruct::ArrayContains(expr) => {
-                let src_array_expr =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let key_expr =
-                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let args = vec![Arc::clone(&src_array_expr), key_expr];
-                let array_has_expr = Arc::new(ScalarFunctionExpr::new(
-                    "array_has",
-                    Arc::new(ScalarUDF::new_from_impl(ArrayHas::new())),
-                    args,
-                    DataType::Boolean,
-                ));
-                Ok(array_has_expr)
-            }
-            ExprStruct::ArrayRemove(expr) => {
-                let src_array_expr =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let key_expr =
-                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let args = vec![Arc::clone(&src_array_expr), Arc::clone(&key_expr)];
-                let return_type = src_array_expr.data_type(&input_schema)?;
-
-                let datafusion_array_remove = array_remove_all_udf();
-
-                let array_remove_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
-                    "array_remove",
-                    datafusion_array_remove,
-                    args,
-                    return_type,
-                ));
-                let is_null_expr: Arc<dyn PhysicalExpr> = Arc::new(IsNullExpr::new(key_expr));
-
-                let null_literal_expr: Arc<dyn PhysicalExpr> =
-                    Arc::new(Literal::new(ScalarValue::Null));
-
-                create_case_expr(
-                    vec![(is_null_expr, null_literal_expr)],
-                    Some(array_remove_expr),
-                    &input_schema,
-                )
-            }
-            ExprStruct::ArrayIntersect(expr) => {
-                let left_expr =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right_expr =
-                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let args = vec![Arc::clone(&left_expr), right_expr];
-                let datafusion_array_intersect = array_intersect_udf();
-                let return_type = left_expr.data_type(&input_schema)?;
-                let array_intersect_expr = Arc::new(ScalarFunctionExpr::new(
-                    "array_intersect",
-                    datafusion_array_intersect,
-                    args,
-                    return_type,
-                ));
-                Ok(array_intersect_expr)
-            }
-            ExprStruct::ArrayJoin(expr) => {
-                let array_expr =
-                    self.create_expr(expr.array_expr.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let delimiter_expr = self.create_expr(
-                    expr.delimiter_expr.as_ref().unwrap(),
-                    Arc::clone(&input_schema),
-                )?;
-
-                let mut args = vec![Arc::clone(&array_expr), delimiter_expr];
-                if expr.null_replacement_expr.is_some() {
-                    let null_replacement_expr = self.create_expr(
-                        expr.null_replacement_expr.as_ref().unwrap(),
-                        Arc::clone(&input_schema),
-                    )?;
-                    args.push(null_replacement_expr)
-                }
-
-                let datafusion_array_to_string = array_to_string_udf();
-                let array_join_expr = Arc::new(ScalarFunctionExpr::new(
-                    "array_join",
-                    datafusion_array_to_string,
-                    args,
-                    DataType::Utf8,
-                ));
-                Ok(array_join_expr)
-            }
-            ExprStruct::ArraysOverlap(expr) => {
-                let left_array_expr =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right_array_expr =
-                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let args = vec![Arc::clone(&left_array_expr), right_array_expr];
-                let datafusion_array_has_any = array_has_any_udf();
-                let array_has_any_expr = Arc::new(ScalarFunctionExpr::new(
-                    "array_has_any",
-                    datafusion_array_has_any,
-                    args,
-                    DataType::Boolean,
-                ));
-                Ok(array_has_any_expr)
-            }
-            ExprStruct::Rand(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(RandExpr::new(child, self.partition)))
-            }
-            expr => Err(ExecutionError::GeneralError(format!(
-                "Not implemented: {:?}",
-                expr
-            ))),
+            expr => Err(GeneralError(format!("Not implemented: {:?}", expr))),
         }
     }
 
@@ -883,10 +794,7 @@ impl PhysicalPlanner {
                     options,
                 })
             }
-            expr => Err(ExecutionError::GeneralError(format!(
-                "{:?} isn't a SortOrder",
-                expr
-            ))),
+            expr => Err(GeneralError(format!("{:?} isn't a SortOrder", expr))),
         }
     }
 
@@ -1204,72 +1112,21 @@ impl PhysicalPlanner {
                     .map(|expr| self.create_expr(expr, Arc::clone(&required_schema)))
                     .collect();
 
-                // Create a conjunctive form of the vector because ParquetExecBuilder takes
-                // a single expression
-                let data_filters = data_filters?;
-                let cnf_data_filters = data_filters.clone().into_iter().reduce(|left, right| {
-                    Arc::new(BinaryExpr::new(
-                        left,
-                        datafusion::logical_expr::Operator::And,
-                        right,
-                    ))
-                });
-
-                // By default, local FS object store registered
-                // if `hdfs` feature enabled then HDFS file object store registered
-                let object_store_url = register_object_store(Arc::clone(&self.session_ctx))?;
+                // Get one file from the list of files
+                let one_file = scan
+                    .file_partitions
+                    .first()
+                    .and_then(|f| f.partitioned_file.first())
+                    .map(|f| f.file_path.clone())
+                    .ok_or(GeneralError("Failed to locate file".to_string()))?;
+                let (object_store_url, _) =
+                    prepare_object_store(self.session_ctx.runtime_env(), one_file)?;
 
                 // Generate file groups
                 let mut file_groups: Vec<Vec<PartitionedFile>> =
                     Vec::with_capacity(partition_count);
                 scan.file_partitions.iter().try_for_each(|partition| {
-                    let mut files = Vec::with_capacity(partition.partitioned_file.len());
-                    partition.partitioned_file.iter().try_for_each(|file| {
-                        assert!(file.start + file.length <= file.file_size);
-
-                        let mut partitioned_file = PartitionedFile::new_with_range(
-                            String::new(), // Dummy file path.
-                            file.file_size as u64,
-                            file.start,
-                            file.start + file.length,
-                        );
-
-                        // Spark sends the path over as URL-encoded, parse that first.
-                        let url = Url::parse(file.file_path.as_ref()).unwrap();
-                        // Convert that to a Path object to use in the PartitionedFile.
-                        let path = Path::from_url_path(url.path()).unwrap();
-                        partitioned_file.object_meta.location = path;
-
-                        // Process partition values
-                        // Create an empty input schema for partition values because they are all literals.
-                        let empty_schema = Arc::new(Schema::empty());
-                        let partition_values: Result<Vec<_>, _> = file
-                            .partition_values
-                            .iter()
-                            .map(|partition_value| {
-                                let literal = self.create_expr(
-                                    partition_value,
-                                    Arc::<Schema>::clone(&empty_schema),
-                                )?;
-                                literal
-                                    .as_any()
-                                    .downcast_ref::<DataFusionLiteral>()
-                                    .ok_or_else(|| {
-                                        ExecutionError::GeneralError(
-                                            "Expected literal of partition value".to_string(),
-                                        )
-                                    })
-                                    .map(|literal| literal.value().clone())
-                            })
-                            .collect();
-                        let partition_values = partition_values?;
-
-                        partitioned_file.partition_values = partition_values;
-
-                        files.push(partitioned_file);
-                        Ok::<(), ExecutionError>(())
-                    })?;
-
+                    let files = self.get_partitioned_files(partition)?;
                     file_groups.push(files);
                     Ok::<(), ExecutionError>(())
                 })?;
@@ -1283,47 +1140,20 @@ impl PhysicalPlanner {
                         Field::new(field.name(), field.data_type().clone(), field.is_nullable())
                     })
                     .collect_vec();
-
-                let mut table_parquet_options = TableParquetOptions::new();
-                // TODO: Maybe these are configs?
-                table_parquet_options.global.pushdown_filters = true;
-                table_parquet_options.global.reorder_filters = true;
-
-                let mut spark_parquet_options = SparkParquetOptions::new(
-                    EvalMode::Legacy,
-                    scan.session_timezone.as_str(),
-                    false,
-                );
-                spark_parquet_options.allow_cast_unsigned_ints = true;
-
-                let mut parquet_source = ParquetSource::new(table_parquet_options)
-                    .with_schema_adapter_factory(Arc::new(SparkSchemaAdapterFactory::new(
-                        spark_parquet_options,
-                    )));
-
-                if let Some(filter) = cnf_data_filters {
-                    parquet_source =
-                        parquet_source.with_predicate(Arc::clone(&data_schema), filter);
-                }
-
-                let mut file_scan_config = FileScanConfig::new(
+                let scan = init_datasource_exec(
+                    required_schema,
+                    Some(data_schema),
+                    Some(partition_schema),
+                    Some(partition_fields),
                     object_store_url,
-                    Arc::clone(&data_schema),
-                    Arc::new(parquet_source),
-                )
-                .with_file_groups(file_groups)
-                .with_table_partition_cols(partition_fields);
-
-                assert_eq!(
-                    projection_vector.len(),
-                    required_schema.fields.len() + partition_schema.fields.len()
-                );
-                file_scan_config = file_scan_config.with_projection(Some(projection_vector));
-
-                let scan = DataSourceExec::new(Arc::new(file_scan_config));
+                    file_groups,
+                    Some(projection_vector),
+                    Some(data_filters?),
+                    scan.session_timezone.as_str(),
+                )?;
                 Ok((
                     vec![],
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, Arc::new(scan), vec![])),
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, scan, vec![])),
                 ))
             }
             OpStruct::Scan(scan) => {
@@ -1332,9 +1162,7 @@ impl PhysicalPlanner {
                 // If it is not test execution context for unit test, we should have at least one
                 // input source
                 if self.exec_context_id != TEST_EXEC_CONTEXT_ID && inputs.is_empty() {
-                    return Err(ExecutionError::GeneralError(
-                        "No input for scan".to_string(),
-                    ));
+                    return Err(GeneralError("No input for scan".to_string()));
                 }
 
                 // Consumes the first input source for the scan
@@ -1368,14 +1196,14 @@ impl PhysicalPlanner {
                         Ok(CompressionCodec::Zstd(writer.compression_level))
                     }
                     Ok(SparkCompressionCodec::Lz4) => Ok(CompressionCodec::Lz4Frame),
-                    _ => Err(ExecutionError::GeneralError(format!(
+                    _ => Err(GeneralError(format!(
                         "Unsupported shuffle compression codec: {:?}",
                         writer.codec
                     ))),
                 }?;
 
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
-                    Arc::clone(&child.native_plan),
+                    Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
                     partitioning,
                     codec,
                     writer.output_data_file.clone(),
@@ -1669,7 +1497,7 @@ impl PhysicalPlanner {
             Ok(JoinType::LeftAnti) => DFJoinType::LeftAnti,
             Ok(JoinType::RightAnti) => DFJoinType::RightAnti,
             Err(_) => {
-                return Err(ExecutionError::GeneralError(format!(
+                return Err(GeneralError(format!(
                     "Unsupported join type: {:?}",
                     join_type
                 )));
@@ -1911,7 +1739,7 @@ impl PhysicalPlanner {
                 AggregateExprBuilder::new(Arc::new(func), vec![child])
                     .schema(schema)
                     .alias("first")
-                    .with_ignore_nulls(false)
+                    .with_ignore_nulls(expr.ignore_nulls)
                     .with_distinct(false)
                     .build()
                     .map_err(|e| e.into())
@@ -1923,7 +1751,7 @@ impl PhysicalPlanner {
                 AggregateExprBuilder::new(Arc::new(func), vec![child])
                     .schema(schema)
                     .alias("last")
-                    .with_ignore_nulls(false)
+                    .with_ignore_nulls(expr.ignore_nulls)
                     .with_distinct(false)
                     .build()
                     .map_err(|e| e.into())
@@ -1998,7 +1826,7 @@ impl PhysicalPlanner {
                             func,
                         )
                     }
-                    stats_type => Err(ExecutionError::GeneralError(format!(
+                    stats_type => Err(GeneralError(format!(
                         "Unknown StatisticsType {:?} for Variance",
                         stats_type
                     ))),
@@ -2028,7 +1856,7 @@ impl PhysicalPlanner {
 
                         Self::create_aggr_func_expr("variance_pop", schema, vec![child], func)
                     }
-                    stats_type => Err(ExecutionError::GeneralError(format!(
+                    stats_type => Err(GeneralError(format!(
                         "Unknown StatisticsType {:?} for Variance",
                         stats_type
                     ))),
@@ -2058,7 +1886,7 @@ impl PhysicalPlanner {
 
                         Self::create_aggr_func_expr("stddev_pop", schema, vec![child], func)
                     }
-                    stats_type => Err(ExecutionError::GeneralError(format!(
+                    stats_type => Err(GeneralError(format!(
                         "Unknown StatisticsType {:?} for stddev",
                         stats_type
                     ))),
@@ -2115,7 +1943,7 @@ impl PhysicalPlanner {
                         .collect::<Result<Vec<_>, ExecutionError>>()?;
                 }
                 other => {
-                    return Err(ExecutionError::GeneralError(format!(
+                    return Err(GeneralError(format!(
                         "{other:?} not supported for window function"
                     )))
                 }
@@ -2125,7 +1953,7 @@ impl PhysicalPlanner {
             window_func_name = result.0;
             window_args = result.1;
         } else {
-            return Err(ExecutionError::GeneralError(
+            return Err(GeneralError(
                 "Both func and agg_func are not set".to_string(),
             ));
         }
@@ -2133,7 +1961,7 @@ impl PhysicalPlanner {
         let window_func = match self.find_df_window_function(&window_func_name) {
             Some(f) => f,
             _ => {
-                return Err(ExecutionError::GeneralError(format!(
+                return Err(GeneralError(format!(
                     "{window_func_name} not supported for window function"
                 )))
             }
@@ -2171,7 +1999,7 @@ impl PhysicalPlanner {
                         WindowFrameBound::Preceding(ScalarValue::Int64(None))
                     }
                     WindowFrameUnits::Groups => {
-                        return Err(ExecutionError::GeneralError(
+                        return Err(GeneralError(
                             "WindowFrameUnits::Groups is not supported.".to_string(),
                         ));
                     }
@@ -2186,7 +2014,7 @@ impl PhysicalPlanner {
                             WindowFrameBound::Preceding(ScalarValue::Int64(Some(offset_value)))
                         }
                         WindowFrameUnits::Groups => {
-                            return Err(ExecutionError::GeneralError(
+                            return Err(GeneralError(
                                 "WindowFrameUnits::Groups is not supported.".to_string(),
                             ));
                         }
@@ -2198,7 +2026,7 @@ impl PhysicalPlanner {
                 WindowFrameUnits::Rows => WindowFrameBound::Preceding(ScalarValue::UInt64(None)),
                 WindowFrameUnits::Range => WindowFrameBound::Preceding(ScalarValue::Int64(None)),
                 WindowFrameUnits::Groups => {
-                    return Err(ExecutionError::GeneralError(
+                    return Err(GeneralError(
                         "WindowFrameUnits::Groups is not supported.".to_string(),
                     ));
                 }
@@ -2219,7 +2047,7 @@ impl PhysicalPlanner {
                         WindowFrameBound::Following(ScalarValue::Int64(None))
                     }
                     WindowFrameUnits::Groups => {
-                        return Err(ExecutionError::GeneralError(
+                        return Err(GeneralError(
                             "WindowFrameUnits::Groups is not supported.".to_string(),
                         ));
                     }
@@ -2232,7 +2060,7 @@ impl PhysicalPlanner {
                         WindowFrameBound::Following(ScalarValue::Int64(Some(offset.offset)))
                     }
                     WindowFrameUnits::Groups => {
-                        return Err(ExecutionError::GeneralError(
+                        return Err(GeneralError(
                             "WindowFrameUnits::Groups is not supported.".to_string(),
                         ));
                     }
@@ -2243,7 +2071,7 @@ impl PhysicalPlanner {
                 WindowFrameUnits::Rows => WindowFrameBound::Following(ScalarValue::UInt64(None)),
                 WindowFrameUnits::Range => WindowFrameBound::Following(ScalarValue::Int64(None)),
                 WindowFrameUnits::Groups => {
-                    return Err(ExecutionError::GeneralError(
+                    return Err(GeneralError(
                         "WindowFrameUnits::Groups is not supported.".to_string(),
                     ));
                 }
@@ -2299,7 +2127,7 @@ impl PhysicalPlanner {
                 };
                 Ok(("sum".to_string(), vec![child]))
             }
-            other => Err(ExecutionError::GeneralError(format!(
+            other => Err(GeneralError(format!(
                 "{other:?} not supported for window function"
             ))),
         }
@@ -2535,7 +2363,7 @@ impl JoinFilterRewriter<'_> {
 impl TreeNodeRewriter for JoinFilterRewriter<'_> {
     type Node = Arc<dyn PhysicalExpr>;
 
-    fn f_down(&mut self, node: Self::Node) -> datafusion_common::Result<Transformed<Self::Node>> {
+    fn f_down(&mut self, node: Self::Node) -> datafusion::common::Result<Transformed<Self::Node>> {
         if let Some(column) = node.as_any().downcast_ref::<Column>() {
             if column.index() < self.left_field_len {
                 // left side
@@ -2601,7 +2429,7 @@ fn rewrite_physical_expr(
     Ok(expr.rewrite(&mut rewriter).data()?)
 }
 
-fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::DecodeError> {
+fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::UnknownEnumValue> {
     match spark_expression::EvalMode::try_from(value)? {
         spark_expression::EvalMode::Legacy => Ok(EvalMode::Legacy),
         spark_expression::EvalMode::Try => Ok(EvalMode::Try),
@@ -2683,14 +2511,16 @@ mod tests {
 
     use futures::{poll, StreamExt};
 
-    use arrow_array::{DictionaryArray, Int32Array, StringArray};
-    use arrow_schema::DataType;
-    use datafusion::{physical_plan::common::collect, prelude::SessionContext};
+    use arrow::array::{DictionaryArray, Int32Array, StringArray};
+    use arrow::datatypes::DataType;
+    use datafusion::logical_expr::ScalarUDF;
+    use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
     use tokio::sync::mpsc;
 
     use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
 
     use crate::execution::operators::ExecutionError;
+    use datafusion_comet_proto::spark_expression::expr::ExprStruct;
     use datafusion_comet_proto::{
         spark_expression::expr::ExprStruct::*,
         spark_expression::Expr,
@@ -2884,7 +2714,7 @@ mod tests {
     #[tokio::test()]
     async fn from_datafusion_error_to_comet() {
         let err_msg = "exec error";
-        let err = datafusion_common::DataFusionError::Execution(err_msg.to_string());
+        let err = datafusion::common::DataFusionError::Execution(err_msg.to_string());
         let comet_err: ExecutionError = err.into();
         assert_eq!(comet_err.to_string(), "Error from DataFusion: exec error.");
     }
@@ -2945,7 +2775,7 @@ mod tests {
         let op = create_filter(op_scan, 0);
         let planner = PhysicalPlanner::default();
 
-        let (mut _scans, filter_exec) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+        let (_scans, filter_exec) = planner.create_plan(&op, &mut vec![], 1).unwrap();
 
         assert_eq!("CometFilterExec", filter_exec.native_plan.name());
         assert_eq!(1, filter_exec.children.len());
@@ -3002,5 +2832,131 @@ mod tests {
             type_id: 3,
             type_info: None,
         }
+    }
+
+    #[test]
+    fn test_create_array() {
+        let session_ctx = SessionContext::new();
+        session_ctx.register_udf(ScalarUDF::from(
+            datafusion_functions_nested::make_array::MakeArray::new(),
+        ));
+        let task_ctx = session_ctx.task_ctx();
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx));
+
+        // Create a plan for
+        // ProjectionExec: expr=[make_array(col_0@0) as col_0]
+        // ScanExec: source=[CometScan parquet  (unknown)], schema=[col_0: Int32]
+        let op_scan = Operator {
+            plan_id: 0,
+            children: vec![],
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![
+                    spark_expression::DataType {
+                        type_id: 3, // Int32
+                        type_info: None,
+                    },
+                    spark_expression::DataType {
+                        type_id: 3, // Int32
+                        type_info: None,
+                    },
+                    spark_expression::DataType {
+                        type_id: 3, // Int32
+                        type_info: None,
+                    },
+                ],
+                source: "".to_string(),
+            })),
+        };
+
+        let array_col = spark_expression::Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 0,
+                datatype: Some(spark_expression::DataType {
+                    type_id: 3,
+                    type_info: None,
+                }),
+            })),
+        };
+
+        let array_col_1 = spark_expression::Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 1,
+                datatype: Some(spark_expression::DataType {
+                    type_id: 3,
+                    type_info: None,
+                }),
+            })),
+        };
+
+        let projection = Operator {
+            children: vec![op_scan],
+            plan_id: 0,
+            op_struct: Some(OpStruct::Projection(spark_operator::Projection {
+                project_list: vec![spark_expression::Expr {
+                    expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
+                        func: "make_array".to_string(),
+                        args: vec![array_col, array_col_1],
+                        return_type: None,
+                    })),
+                }],
+            })),
+        };
+
+        let a = Int32Array::from(vec![0, 3]);
+        let b = Int32Array::from(vec![1, 4]);
+        let c = Int32Array::from(vec![2, 5]);
+        let input_batch = InputBatch::Batch(vec![Arc::new(a), Arc::new(b), Arc::new(c)], 2);
+
+        let (mut scans, datafusion_plan) =
+            planner.create_plan(&projection, &mut vec![], 1).unwrap();
+        scans[0].set_input_batch(input_batch);
+
+        let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (tx, mut rx) = mpsc::channel(1);
+
+        // Separate thread to send the EOF signal once we've processed the only input batch
+        runtime.spawn(async move {
+            // Create a dictionary array with 100 values, and use it as input to the execution.
+            let a = Int32Array::from(vec![0, 3]);
+            let b = Int32Array::from(vec![1, 4]);
+            let c = Int32Array::from(vec![2, 5]);
+            let input_batch1 = InputBatch::Batch(vec![Arc::new(a), Arc::new(b), Arc::new(c)], 2);
+            let input_batch2 = InputBatch::EOF;
+
+            let batches = vec![input_batch1, input_batch2];
+
+            for batch in batches.into_iter() {
+                tx.send(batch).await.unwrap();
+            }
+        });
+
+        runtime.block_on(async move {
+            loop {
+                let batch = rx.recv().await.unwrap();
+                scans[0].set_input_batch(batch);
+                match poll!(stream.next()) {
+                    Poll::Ready(Some(batch)) => {
+                        assert!(batch.is_ok(), "got error {}", batch.unwrap_err());
+                        let batch = batch.unwrap();
+                        assert_eq!(batch.num_rows(), 2);
+                        let expected = [
+                            "+--------+",
+                            "| col_0  |",
+                            "+--------+",
+                            "| [0, 1] |",
+                            "| [3, 4] |",
+                            "+--------+",
+                        ];
+                        assert_batches_eq!(expected, &[batch]);
+                    }
+                    Poll::Ready(None) => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
     }
 }

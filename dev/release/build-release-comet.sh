@@ -100,14 +100,14 @@ BUILDER_IMAGE_ARM64="comet-rm-arm64:$IMGTAG"
 BUILDER_IMAGE_AMD64="comet-rm-amd64:$IMGTAG"
 
 # Build the docker image in which we will do the build
-docker build \
+docker build --no-cache \
   --platform=linux/arm64 \
   -t "$BUILDER_IMAGE_ARM64" \
   --build-arg HAS_MACOS_SDK=${HAS_MACOS_SDK} \
   --build-arg MACOS_SDK=${MACOS_SDK} \
   "$SCRIPT_DIR/comet-rm"
 
-docker build \
+docker build --no-cache \
   --platform=linux/amd64 \
   -t "$BUILDER_IMAGE_AMD64" \
   --build-arg HAS_MACOS_SDK=${HAS_MACOS_SDK} \
@@ -192,8 +192,6 @@ LOCAL_REPO=$(mktemp -d /tmp/comet-staging-repo-XXXXX)
 
 ./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.4 -P scala-2.12  -DskipTests install
 ./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.4 -P scala-2.13  -DskipTests install
-./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.3 -P scala-2.12  -DskipTests install
-./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.3 -P scala-2.13  -DskipTests install
 ./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.5 -P scala-2.12  -DskipTests install
 ./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.5 -P scala-2.13  -DskipTests install
 

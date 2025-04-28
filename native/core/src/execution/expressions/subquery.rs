@@ -19,11 +19,11 @@ use crate::{
     execution::utils::bytes_to_i128,
     jvm_bridge::{jni_static_call, BinaryWrapper, JVMClasses, StringWrapper},
 };
-use arrow_array::RecordBatch;
-use arrow_schema::{DataType, Schema, TimeUnit};
+use arrow::array::RecordBatch;
+use arrow::datatypes::{DataType, Schema, TimeUnit};
+use datafusion::common::{internal_err, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion_common::{internal_err, ScalarValue};
-use datafusion_physical_expr::PhysicalExpr;
+use datafusion::physical_expr::PhysicalExpr;
 use jni::{
     objects::JByteArray,
     sys::{jboolean, jbyte, jint, jlong, jshort},
@@ -67,15 +67,19 @@ impl PhysicalExpr for Subquery {
         self
     }
 
-    fn data_type(&self, _: &Schema) -> datafusion_common::Result<DataType> {
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
+    }
+
+    fn data_type(&self, _: &Schema) -> datafusion::common::Result<DataType> {
         Ok(self.data_type.clone())
     }
 
-    fn nullable(&self, _: &Schema) -> datafusion_common::Result<bool> {
+    fn nullable(&self, _: &Schema) -> datafusion::common::Result<bool> {
         Ok(true)
     }
 
-    fn evaluate(&self, _: &RecordBatch) -> datafusion_common::Result<ColumnarValue> {
+    fn evaluate(&self, _: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
         let mut env = JVMClasses::get_env()?;
 
         unsafe {
@@ -192,7 +196,7 @@ impl PhysicalExpr for Subquery {
     fn with_new_children(
         self: Arc<Self>,
         _: Vec<Arc<dyn PhysicalExpr>>,
-    ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
+    ) -> datafusion::common::Result<Arc<dyn PhysicalExpr>> {
         Ok(self)
     }
 }

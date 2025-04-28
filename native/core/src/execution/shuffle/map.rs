@@ -22,12 +22,12 @@ use crate::{
         row::{append_field, downcast_builder_ref, SparkUnsafeObject, SparkUnsafeRow},
     },
 };
-use arrow_array::builder::{
+use arrow::array::builder::{
     ArrayBuilder, BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float32Builder,
     Float64Builder, Int16Builder, Int32Builder, Int64Builder, Int8Builder, MapBuilder,
     MapFieldNames, StringBuilder, StructBuilder, TimestampMicrosecondBuilder,
 };
-use arrow_schema::{DataType, FieldRef, Fields, TimeUnit};
+use arrow::datatypes::{DataType, FieldRef, Fields, TimeUnit};
 
 pub struct SparkUnsafeMap {
     pub(crate) keys: SparkUnsafeArray,
@@ -1925,10 +1925,10 @@ pub fn append_map_elements<K: ArrayBuilder, V: ArrayBuilder>(
     map_builder: &mut MapBuilder<K, V>,
     map: &SparkUnsafeMap,
 ) -> Result<(), CometError> {
-    let (key_dt, value_dt, _) = get_map_key_value_dt(field)?;
+    let (key_field, value_field, _) = get_map_key_value_fields(field)?;
 
     // macro cannot expand to match arm
-    match (key_dt, value_dt) {
+    match (key_field.data_type(), value_field.data_type()) {
         (DataType::Boolean, DataType::Boolean) => {
             let map_builder =
                 downcast_builder_ref!(MapBuilder<BooleanBuilder, BooleanBuilder>, map_builder);
@@ -2823,7 +2823,8 @@ pub fn append_map_elements<K: ArrayBuilder, V: ArrayBuilder>(
         _ => {
             return Err(CometError::Internal(format!(
                 "Unsupported map key/value data type: {:?}/{:?}",
-                key_dt, value_dt
+                key_field.data_type(),
+                value_field.data_type()
             )))
         }
     }
@@ -2832,13 +2833,13 @@ pub fn append_map_elements<K: ArrayBuilder, V: ArrayBuilder>(
 }
 
 #[allow(clippy::field_reassign_with_default)]
-pub fn get_map_key_value_dt(
+pub fn get_map_key_value_fields(
     field: &FieldRef,
-) -> Result<(&DataType, &DataType, MapFieldNames), CometError> {
+) -> Result<(&FieldRef, &FieldRef, MapFieldNames), CometError> {
     let mut map_fieldnames = MapFieldNames::default();
     map_fieldnames.entry = field.name().to_string();
 
-    let (key_dt, value_dt) = match field.data_type() {
+    let (key_field, value_field) = match field.data_type() {
         DataType::Struct(fields) => {
             if fields.len() != 2 {
                 return Err(CometError::Internal(format!(
@@ -2847,12 +2848,13 @@ pub fn get_map_key_value_dt(
                 )));
             }
 
-            map_fieldnames.key = fields[0].name().to_string();
-            map_fieldnames.value = fields[1].name().to_string();
+            let key = &fields[0];
+            let value = &fields[1];
 
-            let key_dt = fields[0].data_type();
-            let value_dt = fields[1].data_type();
-            (key_dt, value_dt)
+            map_fieldnames.key = key.name().to_string();
+            map_fieldnames.value = value.name().to_string();
+
+            (key, value)
         }
         _ => {
             return Err(CometError::Internal(format!(
@@ -2862,5 +2864,5 @@ pub fn get_map_key_value_dt(
         }
     };
 
-    Ok((key_dt, value_dt, map_fieldnames))
+    Ok((key_field, value_field, map_fieldnames))
 }

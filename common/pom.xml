@@ -26,7 +26,7 @@ under the License.
   <parent>
     <groupId>org.apache.datafusion</groupId>
     <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-    <version>0.7.0-SNAPSHOT</version>
+    <version>0.9.0-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
@@ -80,7 +80,7 @@ under the License.
       <plugin>
         <groupId>io.github.git-commit-id</groupId>
         <artifactId>git-commit-id-maven-plugin</artifactId>
-        <version>4.9.9</version>
+        <version>${git-commit-id-maven-plugin.version}</version>
         <executions>
           <execution>
             <id>get-the-git-infos</id>
@@ -181,7 +181,6 @@ under the License.
               <sources>
                 <source>src/main/${shims.majorVerSrc}</source>
                 <source>src/main/${shims.minorVerSrc}</source>
-                <source>src/main/${shims.pre35Src}</source>
               </sources>
             </configuration>
           </execution>

@@ -15,15 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::array::{Array, GenericListArray, Int32Array, OffsetSizeTrait};
+use arrow::datatypes::{DataType, FieldRef, Schema};
 use arrow::{array::MutableArrayData, datatypes::ArrowNativeType, record_batch::RecordBatch};
-use arrow_array::{Array, GenericListArray, Int32Array, OffsetSizeTrait};
-use arrow_schema::{DataType, FieldRef, Schema};
-use datafusion::logical_expr::ColumnarValue;
-use datafusion_common::{
+use datafusion::common::{
     cast::{as_int32_array, as_large_list_array, as_list_array},
     internal_err, DataFusionError, Result as DataFusionResult, ScalarValue,
 };
-use datafusion_physical_expr::PhysicalExpr;
+use datafusion::logical_expr::ColumnarValue;
+use datafusion::physical_expr::PhysicalExpr;
 use std::hash::Hash;
 use std::{
     any::Any,
@@ -90,6 +90,10 @@ impl ListExtract {
 impl PhysicalExpr for ListExtract {
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
     }
 
     fn data_type(&self, input_schema: &Schema) -> DataFusionResult<DataType> {
@@ -170,7 +174,7 @@ impl PhysicalExpr for ListExtract {
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
-    ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
+    ) -> datafusion::common::Result<Arc<dyn PhysicalExpr>> {
         match children.len() {
             2 => Ok(Arc::new(ListExtract::new(
                 Arc::clone(&children[0]),
@@ -266,10 +270,10 @@ impl Display for ListExtract {
 #[cfg(test)]
 mod test {
     use super::*;
+    use arrow::array::{Array, Int32Array, ListArray};
     use arrow::datatypes::Int32Type;
-    use arrow_array::{Array, Int32Array, ListArray};
-    use datafusion_common::{Result, ScalarValue};
-    use datafusion_expr::ColumnarValue;
+    use datafusion::common::{Result, ScalarValue};
+    use datafusion::physical_plan::ColumnarValue;
 
     #[test]
     fn test_list_extract_default_value() -> Result<()> {

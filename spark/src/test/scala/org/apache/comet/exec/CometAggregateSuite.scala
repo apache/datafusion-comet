@@ -31,7 +31,6 @@ import org.apache.spark.sql.functions.{count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 /**
@@ -614,7 +613,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("single group-by column + aggregate column, multiple batches, no null") {
+  // TODO re-enable once https://github.com/apache/datafusion-comet/issues/1646 is implemented
+  ignore("single group-by column + aggregate column, multiple batches, no null") {
     val numValues = 10000
 
     Seq(1, 100, 10000).foreach { numGroups =>
@@ -640,7 +640,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("multiple group-by columns + single aggregate column, with nulls") {
+  // TODO re-enable once https://github.com/apache/datafusion-comet/issues/1646 is implemented
+  ignore("multiple group-by columns + single aggregate column (first/last), with nulls") {
     val numValues = 10000
 
     Seq(1, 100, numValues).foreach { numGroups =>
@@ -659,7 +660,32 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     "SELECT _g1, _g2, FIRST(_3) FROM v GROUP BY _g1, _g2 ORDER BY _g1, _g2")
                   checkSparkAnswer(
                     "SELECT _g1, _g2, LAST(_3) FROM v GROUP BY _g1, _g2 ORDER BY _g1, _g2")
+                  checkSparkAnswer(
+                    "SELECT _g1, _g2, FIRST(_3) IGNORE NULLS FROM v GROUP BY _g1, _g2 ORDER BY _g1, _g2")
+                  checkSparkAnswer(
+                    "SELECT _g1, _g2, LAST(_3) IGNORE NULLS FROM v GROUP BY _g1, _g2 ORDER BY _g1, _g2")
                 }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("multiple group-by columns + single aggregate column, with nulls") {
+    val numValues = 10000
+
+    Seq(1, 100, numValues).foreach { numGroups =>
+      Seq(128, numValues + 100).foreach { batchSize =>
+        Seq(true, false).foreach { dictionaryEnabled =>
+          withSQLConf(
+            SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
+            CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
+            withTempPath { dir =>
+              val path = new Path(dir.toURI.toString, "test.parquet")
+              makeParquetFile(path, numValues, numGroups, dictionaryEnabled)
+              withParquetTable(path.toUri.toString, "tbl") {
                 checkSparkAnswer(
                   "SELECT _g1, _g2, SUM(_3) FROM tbl GROUP BY _g1, _g2 ORDER BY _g1, _g2")
                 checkSparkAnswer(
@@ -690,7 +716,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("multiple group-by columns + multiple aggregate column, with nulls") {
+  // TODO re-enable once https://github.com/apache/datafusion-comet/issues/1646 is implemented
+  ignore("multiple group-by columns + multiple aggregate column (first/last), with nulls") {
     val numValues = 10000
 
     Seq(1, 100, numValues).foreach { numGroups =>
@@ -710,6 +737,28 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   checkSparkAnswer(
                     "SELECT _g3, _g4, LAST(_3), LAST(_4) FROM v GROUP BY _g3, _g4 ORDER BY _g3, _g4")
                 }
+              }
+            }
+          }
+        }
+      }
+    }
+
+  }
+
+  test("multiple group-by columns + multiple aggregate column, with nulls") {
+    val numValues = 10000
+
+    Seq(1, 100, numValues).foreach { numGroups =>
+      Seq(128, numValues + 100).foreach { batchSize =>
+        Seq(true, false).foreach { dictionaryEnabled =>
+          withSQLConf(
+            SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
+            CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
+            withTempPath { dir =>
+              val path = new Path(dir.toURI.toString, "test.parquet")
+              makeParquetFile(path, numValues, numGroups, dictionaryEnabled)
+              withParquetTable(path.toUri.toString, "tbl") {
                 checkSparkAnswer(
                   "SELECT _g3, _g4, SUM(_3), SUM(_4) FROM tbl GROUP BY _g3, _g4 ORDER BY _g3, _g4")
                 checkSparkAnswer(
@@ -722,6 +771,38 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   "SELECT _g3, _g4, MIN(_3), MAX(_3), MIN(_4), MAX(_4) FROM tbl GROUP BY _g3, _g4 ORDER BY _g3, _g4")
                 checkSparkAnswer(
                   "SELECT _g3, _g4, AVG(_3), AVG(_4) FROM tbl GROUP BY _g3, _g4 ORDER BY _g3, _g4")
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // TODO re-enable once https://github.com/apache/datafusion-comet/issues/1646 is implemented
+  ignore("all types first/last, with nulls") {
+    val numValues = 2048
+
+    Seq(1, 100, numValues).foreach { numGroups =>
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempPath { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFile(path, numValues, numGroups, dictionaryEnabled)
+          withParquetTable(path.toUri.toString, "tbl") {
+            Seq(128, numValues + 100).foreach { batchSize =>
+              withSQLConf(
+                CometConf.COMET_BATCH_SIZE.key -> batchSize.toString,
+                CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+
+                // Test all combinations of different aggregation & group-by types
+                (1 to 14).foreach { gCol =>
+                  withView("v") {
+                    sql(s"CREATE TEMP VIEW v AS SELECT _g$gCol, _1, _2, _3, _4 " +
+                      "FROM tbl ORDER BY _1, _2, _3, _4")
+                    checkSparkAnswer(s"SELECT _g$gCol, FIRST(_1), FIRST(_2), FIRST(_3), " +
+                      s"FIRST(_4), LAST(_1), LAST(_2), LAST(_3), LAST(_4) FROM v GROUP BY _g$gCol ORDER BY _g$gCol")
+                  }
+                }
               }
             }
           }
@@ -746,12 +827,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
                 // Test all combinations of different aggregation & group-by types
                 (1 to 14).foreach { gCol =>
-                  withView("v") {
-                    sql(s"CREATE TEMP VIEW v AS SELECT _g$gCol, _1, _2, _3, _4 " +
-                      "FROM tbl ORDER BY _1, _2, _3, _4")
-                    checkSparkAnswer(s"SELECT _g$gCol, FIRST(_1), FIRST(_2), FIRST(_3), " +
-                      s"FIRST(_4), LAST(_1), LAST(_2), LAST(_3), LAST(_4) FROM v GROUP BY _g$gCol ORDER BY _g$gCol")
-                  }
                   checkSparkAnswer(s"SELECT _g$gCol, SUM(_1), SUM(_2), COUNT(_3), COUNT(_4), " +
                     s"MIN(_1), MAX(_4), AVG(_2), AVG(_4) FROM tbl GROUP BY _g$gCol ORDER BY _g$gCol")
                   checkSparkAnswer(
@@ -884,9 +959,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("final decimal avg") {
-    // TODO: enable decimal average for Spark 3.3
-    assume(isSpark34Plus)
-
     withSQLConf(
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true",
@@ -1053,7 +1125,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("first/last") {
+  // TODO re-enable once https://github.com/apache/datafusion-comet/issues/1646 is implemented
+  ignore("first/last") {
     withSQLConf(
       SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",

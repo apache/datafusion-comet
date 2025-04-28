@@ -15,12 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::array::{Array, StructArray};
+use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-use arrow_array::{Array, StructArray};
-use arrow_schema::{DataType, Field, Schema};
+use datafusion::common::{DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion_common::{DataFusionError, Result as DataFusionResult, ScalarValue};
-use datafusion_physical_expr::PhysicalExpr;
+use datafusion::physical_expr::PhysicalExpr;
 use std::{
     any::Any,
     fmt::{Display, Formatter},
@@ -67,6 +67,10 @@ impl PhysicalExpr for GetStructField {
         self
     }
 
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
+    }
+
     fn data_type(&self, input_schema: &Schema) -> DataFusionResult<DataType> {
         Ok(self.child_field(input_schema)?.data_type().clone())
     }
@@ -106,7 +110,7 @@ impl PhysicalExpr for GetStructField {
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
-    ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
+    ) -> datafusion::common::Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(GetStructField::new(
             Arc::clone(&children[0]),
             self.ordinal,

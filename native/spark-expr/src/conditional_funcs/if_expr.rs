@@ -19,9 +19,10 @@ use arrow::{
     datatypes::{DataType, Schema},
     record_batch::RecordBatch,
 };
+use datafusion::common::Result;
 use datafusion::logical_expr::ColumnarValue;
-use datafusion_common::Result;
-use datafusion_physical_expr::{expressions::CaseExpr, PhysicalExpr};
+use datafusion::physical_expr::{expressions::CaseExpr, PhysicalExpr};
+use std::fmt::Formatter;
 use std::hash::Hash;
 use std::{any::Any, sync::Arc};
 
@@ -87,6 +88,10 @@ impl PhysicalExpr for IfExpr {
         self
     }
 
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
+    }
+
     fn data_type(&self, input_schema: &Schema) -> Result<DataType> {
         let data_type = self.true_expr.data_type(input_schema)?;
         Ok(data_type)
@@ -122,11 +127,11 @@ impl PhysicalExpr for IfExpr {
 
 #[cfg(test)]
 mod tests {
+    use arrow::array::Int32Array;
     use arrow::{array::StringArray, datatypes::*};
-    use arrow_array::Int32Array;
+    use datafusion::common::cast::as_int32_array;
     use datafusion::logical_expr::Operator;
-    use datafusion_common::cast::as_int32_array;
-    use datafusion_physical_expr::expressions::{binary, col, lit};
+    use datafusion::physical_expr::expressions::{binary, col, lit};
 
     use super::*;
 

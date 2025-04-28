@@ -15,12 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::array::builder::GenericStringBuilder;
+use arrow::array::cast::as_dictionary_array;
+use arrow::array::types::Int32Type;
+use arrow::array::{make_array, Array, DictionaryArray};
 use arrow::array::{ArrayRef, OffsetSizeTrait};
-use arrow_array::builder::GenericStringBuilder;
-use arrow_array::Array;
-use arrow_schema::DataType;
+use arrow::datatypes::DataType;
+use datafusion::common::{cast::as_generic_string_array, DataFusionError, ScalarValue};
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_common::{cast::as_generic_string_array, DataFusionError, ScalarValue};
 use std::fmt::Write;
 use std::sync::Arc;
 
@@ -45,14 +47,26 @@ fn spark_read_side_padding2(
                 DataType::LargeUtf8 => {
                     spark_read_side_padding_internal::<i64>(array, *length, truncate)
                 }
-                // TODO: handle Dictionary types
+                // Dictionary support required for SPARK-48498
+                DataType::Dictionary(_, value_type) => {
+                    let dict = as_dictionary_array::<Int32Type>(array);
+                    let col = if value_type.as_ref() == &DataType::Utf8 {
+                        spark_read_side_padding_internal::<i32>(dict.values(), *length, truncate)?
+                    } else {
+                        spark_read_side_padding_internal::<i64>(dict.values(), *length, truncate)?
+                    };
+                    // col consists of an array, so arg of to_array() is not used. Can be anything
+                    let values = col.to_array(0)?;
+                    let result = DictionaryArray::try_new(dict.keys().clone(), values)?;
+                    Ok(ColumnarValue::Array(make_array(result.into())))
+                }
                 other => Err(DataFusionError::Internal(format!(
-                    "Unsupported data type {other:?} for function read_side_padding",
+                    "Unsupported data type {other:?} for function rpad/read_side_padding",
                 ))),
             }
         }
         other => Err(DataFusionError::Internal(format!(
-            "Unsupported arguments {other:?} for function read_side_padding",
+            "Unsupported arguments {other:?} for function rpad/read_side_padding",
         ))),
     }
 }

@@ -16,12 +16,13 @@
 // under the License.
 
 use crate::{execution::util::spark_bloom_filter::SparkBloomFilter, parquet::data_type::AsBytes};
+use arrow::array::cast::as_primitive_array;
+use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
-use arrow_array::cast::as_primitive_array;
-use arrow_schema::{DataType, Schema};
+use datafusion::common::{internal_err, Result, ScalarValue};
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_common::{internal_err, Result, ScalarValue};
-use datafusion_physical_expr::PhysicalExpr;
+use std::fmt::Formatter;
 use std::hash::Hash;
 use std::{any::Any, fmt::Display, sync::Arc};
 
@@ -139,5 +140,9 @@ impl PhysicalExpr for BloomFilterMightContain {
             Arc::clone(&children[0]),
             Arc::clone(&children[1]),
         )?))
+    }
+
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
     }
 }

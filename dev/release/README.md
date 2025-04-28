@@ -60,7 +60,6 @@ Create a PR against the main branch to prepare for developing the next release:
 - Update the Rust crate version to `0.2.0`.
 - Update the Maven version to `0.2.0-SNAPSHOT` (both in the `pom.xml` files and also in the diff files
   under `dev/diffs`).
-- Update the CI scripts under the `.github` directory.
 
 ### Generate the Change Log
 
@@ -174,7 +173,7 @@ The artifacts will be signed using the gpg key of the release manager and upload
 
 Note that installed GPG keys can be listed with `gpg --list-keys`. The gpg key is a 40 character hex string.
 
-Note: This script needs `xmllint` to be installed. On MacOS xmllint is available by default.
+Note: This script needs `xmllint` to be installed. On macOS xmllint is available by default.
 
 On Ubuntu `apt-get install -y libxml2-utils`
 

@@ -18,10 +18,10 @@
 //! Custom schema adapter that uses Spark-compatible conversions
 
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
-use arrow_array::{new_null_array, Array, RecordBatch, RecordBatchOptions};
-use arrow_schema::{Schema, SchemaRef};
+use arrow::array::{new_null_array, RecordBatch, RecordBatchOptions};
+use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
-use datafusion_expr::ColumnarValue;
+use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
 
 /// An implementation of DataFusion's `SchemaAdapterFactory` that uses a Spark-compatible
@@ -50,11 +50,10 @@ impl SchemaAdapterFactory for SparkSchemaAdapterFactory {
     fn create(
         &self,
         required_schema: SchemaRef,
-        table_schema: SchemaRef,
+        _table_schema: SchemaRef,
     ) -> Box<dyn SchemaAdapter> {
         Box::new(SparkSchemaAdapter {
             required_schema,
-            table_schema,
             parquet_options: self.parquet_options.clone(),
         })
     }
@@ -67,12 +66,6 @@ pub struct SparkSchemaAdapter {
     /// The schema for the table, projected to include only the fields being output (projected) by the
     /// associated ParquetExec
     required_schema: SchemaRef,
-    /// The entire table schema for the table we're using this to adapt.
-    ///
-    /// This is used to evaluate any filters pushed down into the scan
-    /// which may refer to columns that are not referred to anywhere
-    /// else in the plan.
-    table_schema: SchemaRef,
     /// Spark cast options
     parquet_options: SparkParquetOptions,
 }
@@ -84,7 +77,20 @@ impl SchemaAdapter for SparkSchemaAdapter {
     /// Panics if index is not in range for the table schema
     fn map_column_index(&self, index: usize, file_schema: &Schema) -> Option<usize> {
         let field = self.required_schema.field(index);
-        Some(file_schema.fields.find(field.name())?.0)
+        Some(
+            file_schema
+                .fields
+                .iter()
+                .enumerate()
+                .find(|(_, b)| {
+                    if self.parquet_options.case_sensitive {
+                        b.name() == field.name()
+                    } else {
+                        b.name().to_lowercase() == field.name().to_lowercase()
+                    }
+                })?
+                .0,
+        )
     }
 
     /// Creates a `SchemaMapping` for casting or mapping the columns from the
@@ -99,13 +105,23 @@ impl SchemaAdapter for SparkSchemaAdapter {
     fn map_schema(
         &self,
         file_schema: &Schema,
-    ) -> datafusion_common::Result<(Arc<dyn SchemaMapper>, Vec<usize>)> {
+    ) -> datafusion::common::Result<(Arc<dyn SchemaMapper>, Vec<usize>)> {
         let mut projection = Vec::with_capacity(file_schema.fields().len());
         let mut field_mappings = vec![None; self.required_schema.fields().len()];
 
         for (file_idx, file_field) in file_schema.fields.iter().enumerate() {
-            if let Some((table_idx, _table_field)) =
-                self.required_schema.fields().find(file_field.name())
+            if let Some((table_idx, _table_field)) = self
+                .required_schema
+                .fields()
+                .iter()
+                .enumerate()
+                .find(|(_, b)| {
+                    if self.parquet_options.case_sensitive {
+                        b.name() == file_field.name()
+                    } else {
+                        b.name().to_lowercase() == file_field.name().to_lowercase()
+                    }
+                })
             {
                 field_mappings[table_idx] = Some(projection.len());
                 projection.push(file_idx);
@@ -116,7 +132,6 @@ impl SchemaAdapter for SparkSchemaAdapter {
             Arc::new(SchemaMapping {
                 required_schema: Arc::<Schema>::clone(&self.required_schema),
                 field_mappings,
-                table_schema: Arc::<Schema>::clone(&self.table_schema),
                 parquet_options: self.parquet_options.clone(),
             }),
             projection,
@@ -163,11 +178,6 @@ pub struct SchemaMapping {
     /// They are Options instead of just plain `usize`s because the table could
     /// have fields that don't exist in the file.
     field_mappings: Vec<Option<usize>>,
-    /// The entire table schema, as opposed to the projected_table_schema (which
-    /// only contains the columns that we are projecting out of this query).
-    /// This contains all fields in the table, regardless of if they will be
-    /// projected out or not.
-    table_schema: SchemaRef,
     /// Spark cast options
     parquet_options: SparkParquetOptions,
 }
@@ -177,7 +187,7 @@ impl SchemaMapper for SchemaMapping {
     /// conversions. The produced RecordBatch has a schema that contains only the projected
     /// columns, so if one needs a RecordBatch with a schema that references columns which are not
     /// in the projected, it would be better to use `map_partial_batch`
-    fn map_batch(&self, batch: RecordBatch) -> datafusion_common::Result<RecordBatch> {
+    fn map_batch(&self, batch: RecordBatch) -> datafusion::common::Result<RecordBatch> {
         let batch_rows = batch.num_rows();
         let batch_cols = batch.columns().to_vec();
 
@@ -207,63 +217,12 @@ impl SchemaMapper for SchemaMapping {
                     },
                 )
             })
-            .collect::<datafusion_common::Result<Vec<_>, _>>()?;
+            .collect::<datafusion::common::Result<Vec<_>, _>>()?;
 
         // Necessary to handle empty batches
         let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
 
         let schema = Arc::<Schema>::clone(&self.required_schema);
-        let record_batch = RecordBatch::try_new_with_options(schema, cols, &options)?;
-        Ok(record_batch)
-    }
-
-    /// Adapts a [`RecordBatch`]'s schema into one that has all the correct output types and only
-    /// contains the fields that exist in both the file schema and table schema.
-    ///
-    /// Unlike `map_batch` this method also preserves the columns that
-    /// may not appear in the final output (`projected_table_schema`) but may
-    /// appear in push down predicates
-    fn map_partial_batch(&self, batch: RecordBatch) -> datafusion_common::Result<RecordBatch> {
-        let batch_cols = batch.columns().to_vec();
-        let schema = batch.schema();
-
-        // for each field in the batch's schema (which is based on a file, not a table)...
-        let (cols, fields) = schema
-            .fields()
-            .iter()
-            .zip(batch_cols.iter())
-            .flat_map(|(field, batch_col)| {
-                self.table_schema
-                    // try to get the same field from the table schema that we have stored in self
-                    .field_with_name(field.name())
-                    // and if we don't have it, that's fine, ignore it. This may occur when we've
-                    // created an external table whose fields are a subset of the fields in this
-                    // file, then tried to read data from the file into this table. If that is the
-                    // case here, it's fine to ignore because we don't care about this field
-                    // anyways
-                    .ok()
-                    // but if we do have it,
-                    .map(|table_field| {
-                        // try to cast it into the correct output type. we don't want to ignore this
-                        // error, though, so it's propagated.
-                        spark_parquet_convert(
-                            ColumnarValue::Array(Arc::clone(batch_col)),
-                            table_field.data_type(),
-                            &self.parquet_options,
-                        )?
-                        .into_array(batch_col.len())
-                        // and if that works, return the field and column.
-                        .map(|new_col| (new_col, table_field.clone()))
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .unzip::<_, _, Vec<_>, Vec<_>>();
-
-        // Necessary to handle empty batches
-        let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
-
-        let schema = Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
         let record_batch = RecordBatch::try_new_with_options(schema, cols, &options)?;
         Ok(record_batch)
     }
@@ -273,21 +232,21 @@ impl SchemaMapper for SchemaMapping {
 mod test {
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
+    use arrow::array::UInt32Array;
     use arrow::array::{Int32Array, StringArray};
+    use arrow::datatypes::SchemaRef;
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
-    use arrow_array::UInt32Array;
-    use arrow_schema::SchemaRef;
+    use datafusion::common::config::TableParquetOptions;
+    use datafusion::common::DataFusionError;
     use datafusion::datasource::listing::PartitionedFile;
-    use datafusion::datasource::physical_plan::{FileScanConfig, ParquetSource};
+    use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::execution::TaskContext;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
     use datafusion_comet_spark_expr::EvalMode;
-    use datafusion_common::config::TableParquetOptions;
-    use datafusion_common::DataFusionError;
     use futures::StreamExt;
     use parquet::arrow::ArrowWriter;
     use std::fs::File;
@@ -353,11 +312,11 @@ mod test {
             )),
         );
 
+        let files = FileGroup::new(vec![PartitionedFile::from_path(filename.to_string())?]);
         let file_scan_config =
-            FileScanConfig::new(object_store_url, required_schema, parquet_source)
-                .with_file_groups(vec![vec![PartitionedFile::from_path(
-                    filename.to_string(),
-                )?]]);
+            FileScanConfigBuilder::new(object_store_url, required_schema, parquet_source)
+                .with_file_groups(vec![files])
+                .build();
 
         let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
 

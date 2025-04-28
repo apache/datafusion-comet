@@ -15,15 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::datatypes::{DataType, Schema};
 use arrow::{
     array::{as_primitive_array, Array, ArrayRef, Decimal128Array},
     datatypes::{Decimal128Type, DecimalType},
     record_batch::RecordBatch,
 };
-use arrow_schema::{DataType, Schema};
+use datafusion::common::{DataFusionError, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion_common::{DataFusionError, ScalarValue};
-use datafusion_physical_expr::PhysicalExpr;
+use datafusion::physical_expr::PhysicalExpr;
 use std::hash::Hash;
 use std::{
     any::Any,
@@ -83,15 +83,19 @@ impl PhysicalExpr for CheckOverflow {
         self
     }
 
-    fn data_type(&self, _: &Schema) -> datafusion_common::Result<DataType> {
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
+    }
+
+    fn data_type(&self, _: &Schema) -> datafusion::common::Result<DataType> {
         Ok(self.data_type.clone())
     }
 
-    fn nullable(&self, _: &Schema) -> datafusion_common::Result<bool> {
+    fn nullable(&self, _: &Schema) -> datafusion::common::Result<bool> {
         Ok(true)
     }
 
-    fn evaluate(&self, batch: &RecordBatch) -> datafusion_common::Result<ColumnarValue> {
+    fn evaluate(&self, batch: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
         let arg = self.child.evaluate(batch)?;
         match arg {
             ColumnarValue::Array(array)
@@ -156,7 +160,7 @@ impl PhysicalExpr for CheckOverflow {
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
-    ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
+    ) -> datafusion::common::Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(CheckOverflow::new(
             Arc::clone(&children[0]),
             self.data_type.clone(),

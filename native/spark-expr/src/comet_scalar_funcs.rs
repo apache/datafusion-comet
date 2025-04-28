@@ -21,12 +21,14 @@ use crate::{
     spark_floor, spark_hex, spark_isnan, spark_make_decimal, spark_read_side_padding, spark_round,
     spark_rpad, spark_unhex, spark_unscaled_value, SparkChrFunc,
 };
-use arrow_schema::DataType;
-use datafusion_common::{DataFusionError, Result as DataFusionResult};
-use datafusion_expr::registry::FunctionRegistry;
-use datafusion_expr::{
-    ColumnarValue, ScalarFunctionImplementation, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+use arrow::datatypes::DataType;
+use datafusion::common::{DataFusionError, Result as DataFusionResult};
+use datafusion::execution::FunctionRegistry;
+use datafusion::logical_expr::{
+    ScalarFunctionArgs, ScalarFunctionImplementation, ScalarUDF, ScalarUDFImpl, Signature,
+    Volatility,
 };
+use datafusion::physical_plan::ColumnarValue;
 use std::any::Any;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -196,7 +198,7 @@ impl ScalarUDFImpl for CometScalarFunction {
         Ok(self.data_type.clone())
     }
 
-    fn invoke(&self, args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
-        (self.func)(args)
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DataFusionResult<ColumnarValue> {
+        (self.func)(&args.args)
     }
 }

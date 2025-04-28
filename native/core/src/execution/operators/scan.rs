@@ -22,12 +22,12 @@ use crate::{
     },
     jvm_bridge::{jni_call, JVMClasses},
 };
+use arrow::array::{make_array, ArrayData, ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow::compute::{cast_with_options, CastOptions};
-use arrow_array::{make_array, ArrayRef, RecordBatch, RecordBatchOptions};
-use arrow_data::ffi::FFI_ArrowArray;
-use arrow_data::ArrayData;
-use arrow_schema::ffi::FFI_ArrowSchema;
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::ffi::FFI_ArrowArray;
+use arrow::ffi::FFI_ArrowSchema;
+use datafusion::common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{
     BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, Time,
@@ -37,7 +37,6 @@ use datafusion::{
     physical_expr::*,
     physical_plan::{ExecutionPlan, *},
 };
-use datafusion_common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
 use futures::Stream;
 use itertools::Itertools;
 use jni::objects::JValueGen;
@@ -385,6 +384,7 @@ impl DisplayAs for ScanExec {
                     .collect();
                 write!(f, "schema=[{}]", fields.join(", "))?;
             }
+            DisplayFormatType::TreeRender => unimplemented!(),
         }
         Ok(())
     }

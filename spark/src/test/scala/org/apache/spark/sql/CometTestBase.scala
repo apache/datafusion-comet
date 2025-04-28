@@ -47,7 +47,6 @@ import org.apache.spark.sql.test._
 import org.apache.spark.sql.types.{DecimalType, StructType}
 
 import org.apache.comet._
-import org.apache.comet.CometSparkSessionExtensions.isSpark34Plus
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
@@ -440,114 +439,59 @@ abstract class CometTestBase
       // here: https://github.com/apache/parquet-java/issues/3142
       // here: https://github.com/apache/arrow-rs/issues/7040
       // and here: https://github.com/apache/datafusion-comet/issues/1348
-      if (isSpark34Plus) {
-        """
-         |message root {
-         |  optional boolean                  _1;
-         |  optional int32                    _2(INT_8);
-         |  optional int32                    _3(INT_16);
-         |  optional int32                    _4;
-         |  optional int64                    _5;
-         |  optional float                    _6;
-         |  optional double                   _7;
-         |  optional binary                   _8(UTF8);
-         |  optional int32                    _9(UINT_32);
-         |  optional int32                    _10(UINT_32);
-         |  optional int32                    _11(UINT_32);
-         |  optional int64                    _12(UINT_64);
-         |  optional binary                   _13(ENUM);
-         |  optional FIXED_LEN_BYTE_ARRAY(3)  _14;
-         |  optional int32                    _15(DECIMAL(5, 2));
-         |  optional int64                    _16(DECIMAL(18, 10));
-         |  optional FIXED_LEN_BYTE_ARRAY(16) _17(DECIMAL(38, 37));
-         |  optional INT64                    _18(TIMESTAMP(MILLIS,true));
-         |  optional INT64                    _19(TIMESTAMP(MICROS,true));
-         |  optional INT32                    _20(DATE);
-         |  optional INT32                    _id;
-         |}
-        """.stripMargin
-      } else {
-        """
-         |message root {
-         |  optional boolean                  _1;
-         |  optional int32                    _2(INT_8);
-         |  optional int32                    _3(INT_16);
-         |  optional int32                    _4;
-         |  optional int64                    _5;
-         |  optional float                    _6;
-         |  optional double                   _7;
-         |  optional binary                   _8(UTF8);
-         |  optional int32                    _9(UINT_32);
-         |  optional int32                    _10(UINT_32);
-         |  optional int32                    _11(UINT_32);
-         |  optional int64                    _12(UINT_64);
-         |  optional binary                   _13(ENUM);
-         |  optional binary                   _14(UTF8);
-         |  optional int32                    _15(DECIMAL(5, 2));
-         |  optional int64                    _16(DECIMAL(18, 10));
-         |  optional FIXED_LEN_BYTE_ARRAY(16) _17(DECIMAL(38, 37));
-         |  optional INT64                    _18(TIMESTAMP(MILLIS,true));
-         |  optional INT64                    _19(TIMESTAMP(MICROS,true));
-         |  optional INT32                    _20(DATE);
-         |  optional INT32                    _id;
-         |}
-        """.stripMargin
-      }
+      """
+       |message root {
+       |  optional boolean                  _1;
+       |  optional int32                    _2(INT_8);
+       |  optional int32                    _3(INT_16);
+       |  optional int32                    _4;
+       |  optional int64                    _5;
+       |  optional float                    _6;
+       |  optional double                   _7;
+       |  optional binary                   _8(UTF8);
+       |  optional int32                    _9(UINT_32);
+       |  optional int32                    _10(UINT_32);
+       |  optional int32                    _11(UINT_32);
+       |  optional int64                    _12(UINT_64);
+       |  optional binary                   _13(ENUM);
+       |  optional FIXED_LEN_BYTE_ARRAY(3)  _14;
+       |  optional int32                    _15(DECIMAL(5, 2));
+       |  optional int64                    _16(DECIMAL(18, 10));
+       |  optional FIXED_LEN_BYTE_ARRAY(16) _17(DECIMAL(38, 37));
+       |  optional INT64                    _18(TIMESTAMP(MILLIS,true));
+       |  optional INT64                    _19(TIMESTAMP(MICROS,true));
+       |  optional INT32                    _20(DATE);
+       |  optional binary                   _21;
+       |  optional INT32                    _id;
+       |}
+      """.stripMargin
     } else {
-
-      if (isSpark34Plus) {
-        """
-         |message root {
-         |  optional boolean                  _1;
-         |  optional int32                    _2(INT_8);
-         |  optional int32                    _3(INT_16);
-         |  optional int32                    _4;
-         |  optional int64                    _5;
-         |  optional float                    _6;
-         |  optional double                   _7;
-         |  optional binary                   _8(UTF8);
-         |  optional int32                    _9(UINT_8);
-         |  optional int32                    _10(UINT_16);
-         |  optional int32                    _11(UINT_32);
-         |  optional int64                    _12(UINT_64);
-         |  optional binary                   _13(ENUM);
-         |  optional FIXED_LEN_BYTE_ARRAY(3)  _14;
-         |  optional int32                    _15(DECIMAL(5, 2));
-         |  optional int64                    _16(DECIMAL(18, 10));
-         |  optional FIXED_LEN_BYTE_ARRAY(16) _17(DECIMAL(38, 37));
-         |  optional INT64                    _18(TIMESTAMP(MILLIS,true));
-         |  optional INT64                    _19(TIMESTAMP(MICROS,true));
-         |  optional INT32                    _20(DATE);
-         |  optional INT32                    _id;
-         |}
-        """.stripMargin
-      } else {
-        """
-         |message root {
-         |  optional boolean                  _1;
-         |  optional int32                    _2(INT_8);
-         |  optional int32                    _3(INT_16);
-         |  optional int32                    _4;
-         |  optional int64                    _5;
-         |  optional float                    _6;
-         |  optional double                   _7;
-         |  optional binary                   _8(UTF8);
-         |  optional int32                    _9(UINT_8);
-         |  optional int32                    _10(UINT_16);
-         |  optional int32                    _11(UINT_32);
-         |  optional int64                    _12(UINT_64);
-         |  optional binary                   _13(ENUM);
-         |  optional binary                   _14(UTF8);
-         |  optional int32                    _15(DECIMAL(5, 2));
-         |  optional int64                    _16(DECIMAL(18, 10));
-         |  optional FIXED_LEN_BYTE_ARRAY(16) _17(DECIMAL(38, 37));
-         |  optional INT64                    _18(TIMESTAMP(MILLIS,true));
-         |  optional INT64                    _19(TIMESTAMP(MICROS,true));
-         |  optional INT32                    _20(DATE);
-         |  optional INT32                    _id;
-         |}
-        """.stripMargin
-      }
+      """
+       |message root {
+       |  optional boolean                  _1;
+       |  optional int32                    _2(INT_8);
+       |  optional int32                    _3(INT_16);
+       |  optional int32                    _4;
+       |  optional int64                    _5;
+       |  optional float                    _6;
+       |  optional double                   _7;
+       |  optional binary                   _8(UTF8);
+       |  optional int32                    _9(UINT_8);
+       |  optional int32                    _10(UINT_16);
+       |  optional int32                    _11(UINT_32);
+       |  optional int64                    _12(UINT_64);
+       |  optional binary                   _13(ENUM);
+       |  optional FIXED_LEN_BYTE_ARRAY(3)  _14;
+       |  optional int32                    _15(DECIMAL(5, 2));
+       |  optional int64                    _16(DECIMAL(18, 10));
+       |  optional FIXED_LEN_BYTE_ARRAY(16) _17(DECIMAL(38, 37));
+       |  optional INT64                    _18(TIMESTAMP(MILLIS,true));
+       |  optional INT64                    _19(TIMESTAMP(MICROS,true));
+       |  optional INT32                    _20(DATE);
+       |  optional binary                   _21;
+       |  optional INT32                    _id;
+       |}
+      """.stripMargin
     }
   }
 
@@ -556,6 +500,7 @@ abstract class CometTestBase
       dictionaryEnabled: Boolean,
       begin: Int,
       end: Int,
+      nullEnabled: Boolean = true,
       pageSize: Int = 128,
       randomSize: Int = 0): Unit = {
     // alwaysIncludeUnsignedIntTypes means we include unsignedIntTypes in the test even if the
@@ -574,7 +519,7 @@ abstract class CometTestBase
 
     val rand = scala.util.Random
     val data = (begin until end).map { i =>
-      if (rand.nextBoolean()) {
+      if (nullEnabled && rand.nextBoolean()) {
         None
       } else {
         if (dictionaryEnabled) Some(i % 4) else Some(i)
@@ -604,7 +549,8 @@ abstract class CometTestBase
           record.add(17, i.toLong)
           record.add(18, i.toLong)
           record.add(19, i)
-          record.add(20, idGenerator.getAndIncrement())
+          record.add(20, i.toString)
+          record.add(21, idGenerator.getAndIncrement())
         case _ =>
       }
       writer.write(record)
@@ -632,7 +578,8 @@ abstract class CometTestBase
       record.add(17, i)
       record.add(18, i)
       record.add(19, i.toInt)
-      record.add(20, idGenerator.getAndIncrement())
+      record.add(20, i.toString)
+      record.add(21, idGenerator.getAndIncrement())
       writer.write(record)
     }
 
@@ -865,13 +812,56 @@ abstract class CometTestBase
     }
   }
 
-  // tests one liner query without necessity to create external table
+  /**
+   * The test encapsulates integration Comet test and does following:
+   *   - prepares data using SELECT query and saves it to the Parquet file in temp folder
+   *   - creates a temporary table with name `tableName` on top of temporary parquet file
+   *   - runs the query `testQuery` reading data from `tableName`
+   *
+   * Asserts the `testQuery` data with Comet is the same is with Apache Spark and also asserts
+   * only Comet operator are in the physical plan
+   *
+   * Example:
+   *
+   * {{{
+   *  test("native reader - read simple ARRAY fields with SHORT field") {
+   *     testSingleLineQuery(
+   *       """
+   *         |select array(cast(1 as short)) arr
+   *         |""".stripMargin,
+   *       "select arr from tbl",
+   *       sqlConf = Seq(
+   *         CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false",
+   *         "spark.comet.explainFallback.enabled" -> "false"
+   *       ),
+   *       debugCometDF = df => {
+   *         df.printSchema()
+   *         df.explain("extended")
+   *         df.show()
+   *       })
+   *   }
+   * }}}
+   *
+   * @param prepareQuery
+   *   prepare sample data with Comet disabled
+   * @param testQuery
+   *   the query to test. Typically with Comet enabled + other SQL config applied
+   * @param testName
+   *   test name
+   * @param tableName
+   *   table name where sample data stored
+   * @param sqlConf
+   *   additional spark sql configuration
+   * @param debugCometDF
+   *   optional debug access to DataFrame for `testQuery`
+   */
   def testSingleLineQuery(
       prepareQuery: String,
       testQuery: String,
       testName: String = "test",
       tableName: String = "tbl",
-      sqlConf: Seq[(String, String)] = Seq.empty): Unit = {
+      sqlConf: Seq[(String, String)] = Seq.empty,
+      debugCometDF: DataFrame => Unit = _ => ()): Unit = {
 
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, testName).toUri.toString
@@ -888,7 +878,9 @@ abstract class CometTestBase
       readParquetFile(path, Some(schema)) { df => df.createOrReplaceTempView(tableName) }
 
       withSQLConf(sqlConf: _*) {
-        checkSparkAnswerAndOperator(sql(testQuery))
+        val cometDF = sql(testQuery)
+        debugCometDF(cometDF)
+        checkSparkAnswerAndOperator(cometDF)
       }
     }
   }

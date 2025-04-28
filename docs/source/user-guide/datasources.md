@@ -51,12 +51,12 @@ Unlike to native Comet reader the Datafusion reader fully supports nested types 
 To build Comet with native DataFusion reader and remote HDFS support it is required to have a JDK installed
 
 Example:
-Build a Comet for `spark-3.4` provide a JDK path in `JAVA_HOME` 
+Build a Comet for `spark-3.5` provide a JDK path in `JAVA_HOME` 
 Provide the JRE linker path in `RUSTFLAGS`, the path can vary depending on the system. Typically JRE linker is a part of installed JDK
 
 ```shell
 export JAVA_HOME="/opt/homebrew/opt/openjdk@11"
-make release PROFILES="-Pspark-3.4" COMET_FEATURES=hdfs RUSTFLAGS="-L $JAVA_HOME/libexec/openjdk.jdk/Contents/Home/lib/server"
+make release PROFILES="-Pspark-3.5" COMET_FEATURES=hdfs RUSTFLAGS="-L $JAVA_HOME/libexec/openjdk.jdk/Contents/Home/lib/server"
 ```
 
 Start Comet with experimental reader and HDFS support as [described](installation.md/#run-spark-shell-with-comet-enabled)
@@ -81,7 +81,7 @@ root
  |    |-- lastName: string (nullable = true)
  |    |-- ageInYears: integer (nullable = true)
 
-25/01/30 16:50:43 INFO core/src/lib.rs: Comet native library version 0.6.0 initialized
+25/01/30 16:50:43 INFO core/src/lib.rs: Comet native library version 0.7.0 initialized
 == Physical Plan ==
 * CometColumnarToRow (2)
 +- CometNativeScan:  (1)
@@ -111,5 +111,41 @@ Verify the native scan type should be `CometNativeScan`.
 
 More on [HDFS Reader](../../../native/hdfs/README.md)
 
+### Local HDFS development
+
+- Configure local machine network. Add hostname to `/etc/hosts`
+```commandline
+127.0.0.1	localhost   namenode datanode1 datanode2 datanode3
+::1             localhost namenode datanode1 datanode2 datanode3
+```
+
+- Start local HDFS cluster, 3 datanodes, namenode url is `namenode:9000` 
+```commandline
+docker compose -f kube/local/hdfs-docker-compose.yml up
+```
+
+- Check the local namenode is up and running on `http://localhost:9870/dfshealth.html#tab-overview`
+- Build a project with HDFS support
+```commandline
+JAVA_HOME="/opt/homebrew/opt/openjdk@11" make release PROFILES="-Pspark-3.5" COMET_FEATURES=hdfs RUSTFLAGS="-L /opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk/Contents/Home/lib/server"
+```
+
+- Run local test 
+```scala
+
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      "fs.defaultFS" -> "hdfs://namenode:9000",
+      "dfs.client.use.datanode.hostname" -> "true") {
+      val df = spark.read.parquet("/tmp/2")
+      df.show(false)
+      df.explain("extended")
+    }
+  }
+```
+Or use `spark-shell` with HDFS support as described [above](#using-experimental-native-datafusion-reader)
 ## S3
 In progress 

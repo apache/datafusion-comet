@@ -58,16 +58,15 @@ class Native extends NativeBase {
       metrics: CometMetricNode,
       metricsUpdateInterval: Long,
       taskMemoryManager: CometTaskMemoryManager,
+      localDirs: Array[String],
       batchSize: Int,
-      use_unified_memory_manager: Boolean,
-      memory_pool_type: String,
-      memory_limit: Long,
-      memory_limit_per_task: Long,
-      task_attempt_id: Long,
+      offHeapMode: Boolean,
+      memoryPoolType: String,
+      memoryLimit: Long,
+      memoryLimitPerTask: Long,
+      taskAttemptId: Long,
       debug: Boolean,
-      explain: Boolean,
-      workerThreads: Int,
-      blockingThreads: Int): Long
+      explain: Boolean): Long
   // scalastyle:on
 
   /**

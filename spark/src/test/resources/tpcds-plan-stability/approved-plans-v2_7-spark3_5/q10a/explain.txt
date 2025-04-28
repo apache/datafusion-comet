@@ -1,11 +1,11 @@
 == Physical Plan ==
-* CometColumnarToRow (39)
-+- CometTakeOrderedAndProject (38)
-   +- CometHashAggregate (37)
-      +- CometExchange (36)
-         +- CometHashAggregate (35)
-            +- CometProject (34)
-               +- CometBroadcastHashJoin (33)
+* CometColumnarToRow (40)
++- CometTakeOrderedAndProject (39)
+   +- CometHashAggregate (38)
+      +- CometExchange (37)
+         +- CometHashAggregate (36)
+            +- CometProject (35)
+               +- CometBroadcastHashJoin (34)
                   :- CometProject (29)
                   :  +- CometBroadcastHashJoin (28)
                   :     :- CometProject (23)
@@ -35,9 +35,10 @@
                   :        +- CometProject (26)
                   :           +- CometFilter (25)
                   :              +- CometScan parquet spark_catalog.default.customer_address (24)
-                  +- CometBroadcastExchange (32)
-                     +- CometFilter (31)
-                        +- CometScan parquet spark_catalog.default.customer_demographics (30)
+                  +- CometBroadcastExchange (33)
+                     +- CometProject (32)
+                        +- CometFilter (31)
+                           +- CometScan parquet spark_catalog.default.customer_demographics (30)
 
 
 (1) CometScan parquet spark_catalog.default.customer
@@ -189,69 +190,73 @@ ReadSchema: struct<cd_demo_sk:int,cd_gender:string,cd_marital_status:string,cd_e
 Input [9]: [cd_demo_sk#22, cd_gender#23, cd_marital_status#24, cd_education_status#25, cd_purchase_estimate#26, cd_credit_rating#27, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30]
 Condition : isnotnull(cd_demo_sk#22)
 
-(32) CometBroadcastExchange
+(32) CometProject
 Input [9]: [cd_demo_sk#22, cd_gender#23, cd_marital_status#24, cd_education_status#25, cd_purchase_estimate#26, cd_credit_rating#27, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30]
-Arguments: [cd_demo_sk#22, cd_gender#23, cd_marital_status#24, cd_education_status#25, cd_purchase_estimate#26, cd_credit_rating#27, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30]
+Arguments: [cd_demo_sk#22, cd_gender#31, cd_marital_status#32, cd_education_status#33, cd_purchase_estimate#26, cd_credit_rating#34, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30], [cd_demo_sk#22, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_gender#23, 1, true, false, true) AS cd_gender#31, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_marital_status#24, 1, true, false, true) AS cd_marital_status#32, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_education_status#25, 20, true, false, true) AS cd_education_status#33, cd_purchase_estimate#26, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_credit_rating#27, 10, true, false, true) AS cd_credit_rating#34, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30]
 
-(33) CometBroadcastHashJoin
+(33) CometBroadcastExchange
+Input [9]: [cd_demo_sk#22, cd_gender#31, cd_marital_status#32, cd_education_status#33, cd_purchase_estimate#26, cd_credit_rating#34, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30]
+Arguments: [cd_demo_sk#22, cd_gender#31, cd_marital_status#32, cd_education_status#33, cd_purchase_estimate#26, cd_credit_rating#34, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30]
+
+(34) CometBroadcastHashJoin
 Left output [1]: [c_current_cdemo_sk#2]
-Right output [9]: [cd_demo_sk#22, cd_gender#23, cd_marital_status#24, cd_education_status#25, cd_purchase_estimate#26, cd_credit_rating#27, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30]
+Right output [9]: [cd_demo_sk#22, cd_gender#31, cd_marital_status#32, cd_education_status#33, cd_purchase_estimate#26, cd_credit_rating#34, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30]
 Arguments: [c_current_cdemo_sk#2], [cd_demo_sk#22], Inner, BuildRight
 
-(34) CometProject
-Input [10]: [c_current_cdemo_sk#2, cd_demo_sk#22, cd_gender#23, cd_marital_status#24, cd_education_status#25, cd_purchase_estimate#26, cd_credit_rating#27, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30]
-Arguments: [cd_gender#23, cd_marital_status#24, cd_education_status#25, cd_purchase_estimate#26, cd_credit_rating#27, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30], [cd_gender#23, cd_marital_status#24, cd_education_status#25, cd_purchase_estimate#26, cd_credit_rating#27, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30]
+(35) CometProject
+Input [10]: [c_current_cdemo_sk#2, cd_demo_sk#22, cd_gender#31, cd_marital_status#32, cd_education_status#33, cd_purchase_estimate#26, cd_credit_rating#34, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30]
+Arguments: [cd_gender#31, cd_marital_status#32, cd_education_status#33, cd_purchase_estimate#26, cd_credit_rating#34, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30], [cd_gender#31, cd_marital_status#32, cd_education_status#33, cd_purchase_estimate#26, cd_credit_rating#34, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30]
 
-(35) CometHashAggregate
-Input [8]: [cd_gender#23, cd_marital_status#24, cd_education_status#25, cd_purchase_estimate#26, cd_credit_rating#27, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30]
-Keys [8]: [cd_gender#23, cd_marital_status#24, cd_education_status#25, cd_purchase_estimate#26, cd_credit_rating#27, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30]
+(36) CometHashAggregate
+Input [8]: [cd_gender#31, cd_marital_status#32, cd_education_status#33, cd_purchase_estimate#26, cd_credit_rating#34, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30]
+Keys [8]: [cd_gender#31, cd_marital_status#32, cd_education_status#33, cd_purchase_estimate#26, cd_credit_rating#34, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30]
 Functions [1]: [partial_count(1)]
 
-(36) CometExchange
-Input [9]: [cd_gender#23, cd_marital_status#24, cd_education_status#25, cd_purchase_estimate#26, cd_credit_rating#27, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30, count#31]
-Arguments: hashpartitioning(cd_gender#23, cd_marital_status#24, cd_education_status#25, cd_purchase_estimate#26, cd_credit_rating#27, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
+(37) CometExchange
+Input [9]: [cd_gender#31, cd_marital_status#32, cd_education_status#33, cd_purchase_estimate#26, cd_credit_rating#34, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30, count#35]
+Arguments: hashpartitioning(cd_gender#31, cd_marital_status#32, cd_education_status#33, cd_purchase_estimate#26, cd_credit_rating#34, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(37) CometHashAggregate
-Input [9]: [cd_gender#23, cd_marital_status#24, cd_education_status#25, cd_purchase_estimate#26, cd_credit_rating#27, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30, count#31]
-Keys [8]: [cd_gender#23, cd_marital_status#24, cd_education_status#25, cd_purchase_estimate#26, cd_credit_rating#27, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30]
+(38) CometHashAggregate
+Input [9]: [cd_gender#31, cd_marital_status#32, cd_education_status#33, cd_purchase_estimate#26, cd_credit_rating#34, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30, count#35]
+Keys [8]: [cd_gender#31, cd_marital_status#32, cd_education_status#33, cd_purchase_estimate#26, cd_credit_rating#34, cd_dep_count#28, cd_dep_employed_count#29, cd_dep_college_count#30]
 Functions [1]: [count(1)]
 
-(38) CometTakeOrderedAndProject
-Input [14]: [cd_gender#23, cd_marital_status#24, cd_education_status#25, cnt1#32, cd_purchase_estimate#26, cnt2#33, cd_credit_rating#27, cnt3#34, cd_dep_count#28, cnt4#35, cd_dep_employed_count#29, cnt5#36, cd_dep_college_count#30, cnt6#37]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[cd_gender#23 ASC NULLS FIRST,cd_marital_status#24 ASC NULLS FIRST,cd_education_status#25 ASC NULLS FIRST,cd_purchase_estimate#26 ASC NULLS FIRST,cd_credit_rating#27 ASC NULLS FIRST,cd_dep_count#28 ASC NULLS FIRST,cd_dep_employed_count#29 ASC NULLS FIRST,cd_dep_college_count#30 ASC NULLS FIRST], output=[cd_gender#23,cd_marital_status#24,cd_education_status#25,cnt1#32,cd_purchase_estimate#26,cnt2#33,cd_credit_rating#27,cnt3#34,cd_dep_count#28,cnt4#35,cd_dep_employed_count#29,cnt5#36,cd_dep_college_count#30,cnt6#37]), [cd_gender#23, cd_marital_status#24, cd_education_status#25, cnt1#32, cd_purchase_estimate#26, cnt2#33, cd_credit_rating#27, cnt3#34, cd_dep_count#28, cnt4#35, cd_dep_employed_count#29, cnt5#36, cd_dep_college_count#30, cnt6#37], 100, [cd_gender#23 ASC NULLS FIRST, cd_marital_status#24 ASC NULLS FIRST, cd_education_status#25 ASC NULLS FIRST, cd_purchase_estimate#26 ASC NULLS FIRST, cd_credit_rating#27 ASC NULLS FIRST, cd_dep_count#28 ASC NULLS FIRST, cd_dep_employed_count#29 ASC NULLS FIRST, cd_dep_college_count#30 ASC NULLS FIRST], [cd_gender#23, cd_marital_status#24, cd_education_status#25, cnt1#32, cd_purchase_estimate#26, cnt2#33, cd_credit_rating#27, cnt3#34, cd_dep_count#28, cnt4#35, cd_dep_employed_count#29, cnt5#36, cd_dep_college_count#30, cnt6#37]
+(39) CometTakeOrderedAndProject
+Input [14]: [cd_gender#31, cd_marital_status#32, cd_education_status#33, cnt1#36, cd_purchase_estimate#26, cnt2#37, cd_credit_rating#34, cnt3#38, cd_dep_count#28, cnt4#39, cd_dep_employed_count#29, cnt5#40, cd_dep_college_count#30, cnt6#41]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[cd_gender#31 ASC NULLS FIRST,cd_marital_status#32 ASC NULLS FIRST,cd_education_status#33 ASC NULLS FIRST,cd_purchase_estimate#26 ASC NULLS FIRST,cd_credit_rating#34 ASC NULLS FIRST,cd_dep_count#28 ASC NULLS FIRST,cd_dep_employed_count#29 ASC NULLS FIRST,cd_dep_college_count#30 ASC NULLS FIRST], output=[cd_gender#31,cd_marital_status#32,cd_education_status#33,cnt1#36,cd_purchase_estimate#26,cnt2#37,cd_credit_rating#34,cnt3#38,cd_dep_count#28,cnt4#39,cd_dep_employed_count#29,cnt5#40,cd_dep_college_count#30,cnt6#41]), [cd_gender#31, cd_marital_status#32, cd_education_status#33, cnt1#36, cd_purchase_estimate#26, cnt2#37, cd_credit_rating#34, cnt3#38, cd_dep_count#28, cnt4#39, cd_dep_employed_count#29, cnt5#40, cd_dep_college_count#30, cnt6#41], 100, [cd_gender#31 ASC NULLS FIRST, cd_marital_status#32 ASC NULLS FIRST, cd_education_status#33 ASC NULLS FIRST, cd_purchase_estimate#26 ASC NULLS FIRST, cd_credit_rating#34 ASC NULLS FIRST, cd_dep_count#28 ASC NULLS FIRST, cd_dep_employed_count#29 ASC NULLS FIRST, cd_dep_college_count#30 ASC NULLS FIRST], [cd_gender#31, cd_marital_status#32, cd_education_status#33, cnt1#36, cd_purchase_estimate#26, cnt2#37, cd_credit_rating#34, cnt3#38, cd_dep_count#28, cnt4#39, cd_dep_employed_count#29, cnt5#40, cd_dep_college_count#30, cnt6#41]
 
-(39) CometColumnarToRow [codegen id : 1]
-Input [14]: [cd_gender#23, cd_marital_status#24, cd_education_status#25, cnt1#32, cd_purchase_estimate#26, cnt2#33, cd_credit_rating#27, cnt3#34, cd_dep_count#28, cnt4#35, cd_dep_employed_count#29, cnt5#36, cd_dep_college_count#30, cnt6#37]
+(40) CometColumnarToRow [codegen id : 1]
+Input [14]: [cd_gender#31, cd_marital_status#32, cd_education_status#33, cnt1#36, cd_purchase_estimate#26, cnt2#37, cd_credit_rating#34, cnt3#38, cd_dep_count#28, cnt4#39, cd_dep_employed_count#29, cnt5#40, cd_dep_college_count#30, cnt6#41]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 3 Hosting Expression = ss_sold_date_sk#5 IN dynamicpruning#6
-BroadcastExchange (44)
-+- * CometColumnarToRow (43)
-   +- CometProject (42)
-      +- CometFilter (41)
-         +- CometScan parquet spark_catalog.default.date_dim (40)
+BroadcastExchange (45)
++- * CometColumnarToRow (44)
+   +- CometProject (43)
+      +- CometFilter (42)
+         +- CometScan parquet spark_catalog.default.date_dim (41)
 
 
-(40) CometScan parquet spark_catalog.default.date_dim
+(41) CometScan parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#7, d_year#8, d_moy#9]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), IsNotNull(d_moy), EqualTo(d_year,2002), GreaterThanOrEqual(d_moy,4), LessThanOrEqual(d_moy,7), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
-(41) CometFilter
+(42) CometFilter
 Input [3]: [d_date_sk#7, d_year#8, d_moy#9]
 Condition : (((((isnotnull(d_year#8) AND isnotnull(d_moy#9)) AND (d_year#8 = 2002)) AND (d_moy#9 >= 4)) AND (d_moy#9 <= 7)) AND isnotnull(d_date_sk#7))
 
-(42) CometProject
+(43) CometProject
 Input [3]: [d_date_sk#7, d_year#8, d_moy#9]
 Arguments: [d_date_sk#7], [d_date_sk#7]
 
-(43) CometColumnarToRow [codegen id : 1]
+(44) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#7]
 
-(44) BroadcastExchange
+(45) BroadcastExchange
 Input [1]: [d_date_sk#7]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=2]
 

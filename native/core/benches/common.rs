@@ -15,13 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::error::ArrowError;
 use arrow::{
     array::{DictionaryArray, Int64Array, PrimitiveArray},
     datatypes::{ArrowPrimitiveType, Int32Type},
 };
-use arrow_schema::ArrowError;
 use rand::{
-    distributions::{Distribution, Standard},
+    distr::{Distribution, StandardUniform},
     rngs::StdRng,
     Rng, SeedableRng,
 };
@@ -36,10 +36,10 @@ pub fn create_int64_array(size: usize, null_density: f32, min: i64, max: i64) ->
     let mut rng = seedable_rng();
     (0..size)
         .map(|_| {
-            if rng.gen::<f32>() < null_density {
+            if rng.random::<f32>() < null_density {
                 None
             } else {
-                Some(rng.gen_range(min..max))
+                Some(rng.random_range(min..max))
             }
         })
         .collect()
@@ -49,15 +49,15 @@ pub fn create_int64_array(size: usize, null_density: f32, min: i64, max: i64) ->
 pub fn create_primitive_array<T>(size: usize, null_density: f32) -> PrimitiveArray<T>
 where
     T: ArrowPrimitiveType,
-    Standard: Distribution<T::Native>,
+    StandardUniform: Distribution<T::Native>,
 {
     let mut rng = seedable_rng();
     (0..size)
         .map(|_| {
-            if rng.gen::<f32>() < null_density {
+            if rng.random::<f32>() < null_density {
                 None
             } else {
-                Some(rng.gen())
+                Some(rng.random())
             }
         })
         .collect()
@@ -73,7 +73,7 @@ pub fn create_dictionary_array<T>(
 ) -> Result<DictionaryArray<Int32Type>, ArrowError>
 where
     T: ArrowPrimitiveType,
-    Standard: Distribution<T::Native>,
+    StandardUniform: Distribution<T::Native>,
 {
     // values are not null
     let values = create_primitive_array::<T>(value_size, 0.0);

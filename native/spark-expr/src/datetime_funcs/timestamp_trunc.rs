@@ -16,11 +16,11 @@
 // under the License.
 
 use crate::utils::array_with_timezone;
+use arrow::datatypes::{DataType, Schema, TimeUnit::Microsecond};
 use arrow::record_batch::RecordBatch;
-use arrow_schema::{DataType, Schema, TimeUnit::Microsecond};
+use datafusion::common::{DataFusionError, ScalarValue::Utf8};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion_common::{DataFusionError, ScalarValue::Utf8};
-use datafusion_physical_expr::PhysicalExpr;
+use datafusion::physical_expr::PhysicalExpr;
 use std::hash::Hash;
 use std::{
     any::Any,
@@ -89,7 +89,11 @@ impl PhysicalExpr for TimestampTruncExpr {
         self
     }
 
-    fn data_type(&self, input_schema: &Schema) -> datafusion_common::Result<DataType> {
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
+    }
+
+    fn data_type(&self, input_schema: &Schema) -> datafusion::common::Result<DataType> {
         match self.child.data_type(input_schema)? {
             DataType::Dictionary(key_type, _) => Ok(DataType::Dictionary(
                 key_type,
@@ -99,11 +103,11 @@ impl PhysicalExpr for TimestampTruncExpr {
         }
     }
 
-    fn nullable(&self, _: &Schema) -> datafusion_common::Result<bool> {
+    fn nullable(&self, _: &Schema) -> datafusion::common::Result<bool> {
         Ok(true)
     }
 
-    fn evaluate(&self, batch: &RecordBatch) -> datafusion_common::Result<ColumnarValue> {
+    fn evaluate(&self, batch: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
         let timestamp = self.child.evaluate(batch)?;
         let format = self.format.evaluate(batch)?;
         let tz = self.timezone.clone();

@@ -17,22 +17,22 @@
 
 use crate::errors::{CometError, CometResult};
 use crate::parquet::data_type::AsBytes;
-use arrow::ipc::reader::StreamReader;
-use arrow::ipc::writer::StreamWriter;
-use arrow_array::cast::AsArray;
-use arrow_array::types::Int32Type;
-use arrow_array::{
+use arrow::array::cast::AsArray;
+use arrow::array::types::Int32Type;
+use arrow::array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Date32Array, Decimal128Array, DictionaryArray,
     Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, RecordBatch,
     RecordBatchOptions, StringArray, TimestampMicrosecondArray,
 };
-use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
-use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
+use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+use arrow::ipc::reader::StreamReader;
+use arrow::ipc::writer::StreamWriter;
 use bytes::Buf;
 use crc32fast::Hasher;
+use datafusion::common::DataFusionError;
 use datafusion::error::Result;
 use datafusion::physical_plan::metrics::Time;
-use datafusion_common::DataFusionError;
 use simd_adler32::Adler32;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
@@ -181,7 +181,7 @@ impl<W: Write> BatchWriter<W> {
                 // be determined from the data buffer size (length is in bits rather than bytes)
                 self.write_all(&arr.len().to_le_bytes())?;
                 // write data buffer
-                self.write_buffer(arr.values().inner())?;
+                self.write_boolean_buffer(arr.values())?;
                 // write null buffer
                 self.write_null_buffer(arr.nulls())?;
             }
@@ -300,8 +300,7 @@ impl<W: Write> BatchWriter<W> {
             // write null buffer length in bits
             self.write_all(&buffer.len().to_le_bytes())?;
             // write null buffer
-            let buffer = buffer.inner();
-            self.write_buffer(buffer)?;
+            self.write_boolean_buffer(buffer)?;
         } else {
             self.inner.write_all(&0_usize.to_le_bytes())?;
         }
@@ -313,6 +312,19 @@ impl<W: Write> BatchWriter<W> {
         self.inner.write_all(&buffer.len().to_le_bytes())?;
         // write buffer data
         self.inner.write_all(buffer.as_slice())
+    }
+
+    fn write_boolean_buffer(&mut self, buffer: &BooleanBuffer) -> std::io::Result<()> {
+        let inner_buffer = buffer.inner();
+        if buffer.offset() == 0 && buffer.len() == inner_buffer.len() {
+            // Not a sliced buffer, write the inner buffer directly
+            self.write_buffer(inner_buffer)?;
+        } else {
+            // Sliced buffer, create and write the sliced buffer
+            let buffer = buffer.sliced();
+            self.write_buffer(&buffer)?;
+        }
+        Ok(())
     }
 
     pub fn inner(self) -> W {
@@ -604,7 +616,7 @@ impl<'a> BatchReader<'a> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow_array::builder::*;
+    use arrow::array::builder::*;
     use std::sync::Arc;
 
     #[test]
@@ -619,6 +631,29 @@ mod test {
         let mut reader = BatchReader::new(&buffer);
         let batch2 = reader.read_batch().unwrap();
         assert_eq!(batch, batch2);
+    }
+
+    #[test]
+    fn roundtrip_sliced() {
+        let batch = create_batch(8192, true);
+
+        let mut start = 0;
+        let batch_size = 128;
+        while start < batch.num_rows() {
+            let end = (start + batch_size).min(batch.num_rows());
+            let sliced_batch = batch.slice(start, end - start);
+            let buffer = Vec::new();
+            let mut writer = BatchWriter::new(buffer);
+            writer.write_partial_schema(&sliced_batch.schema()).unwrap();
+            writer.write_batch(&sliced_batch).unwrap();
+            let buffer = writer.inner();
+
+            let mut reader = BatchReader::new(&buffer);
+            let batch2 = reader.read_batch().unwrap();
+            assert_eq!(sliced_batch, batch2);
+
+            start = end;
+        }
     }
 
     fn create_batch(num_rows: usize, allow_nulls: bool) -> RecordBatch {
@@ -723,6 +758,7 @@ pub enum CompressionCodec {
     Snappy,
 }
 
+#[derive(Clone)]
 pub struct ShuffleBlockWriter {
     fast_encoding: bool,
     codec: CompressionCodec,

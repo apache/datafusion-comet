@@ -36,7 +36,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types.{Decimal, DecimalType}
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark33Plus, isSpark34Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -71,9 +71,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("decimals divide by zero") {
-    // TODO: enable Spark 3.3 tests after supporting decimal divide operation
-    assume(isSpark34Plus)
-
     Seq(true, false).foreach { dictionary =>
       withSQLConf(
         SQLConf.PARQUET_WRITE_LEGACY_FORMAT.key -> "false",
@@ -594,7 +591,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("date_trunc with format array") {
-    assume(isSpark33Plus, "TimestampNTZ is supported in Spark 3.3+, See SPARK-36182")
     withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
       val numRows = 1000
       Seq(true, false).foreach { dictionaryEnabled =>
@@ -998,9 +994,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("decimals arithmetic and comparison") {
-    // TODO: enable Spark 3.3 tests after supporting decimal reminder operation
-    assume(isSpark34Plus)
-
     def makeDecimalRDD(num: Int, decimal: DecimalType, useDictionary: Boolean): DataFrame = {
       val div = if (useDictionary) 5 else num // narrow the space to make it dictionary encoded
       spark
@@ -1072,7 +1065,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("scalar decimal arithmetic operations") {
-    assume(isSpark34Plus)
     withTable("tbl") {
       withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
         sql("CREATE TABLE tbl (a INT) USING PARQUET")
@@ -1737,7 +1729,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("Decimal binary ops multiply is aligned to Spark") {
-    assume(isSpark34Plus)
     Seq(true, false).foreach { allowPrecisionLoss =>
       withSQLConf(
         "spark.sql.decimalOperations.allowPrecisionLoss" -> allowPrecisionLoss.toString) {
@@ -1795,7 +1786,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("Decimal random number tests") {
-    assume(isSpark34Plus) // Only Spark 3.4+ has the fix for SPARK-45786
     val rand = scala.util.Random
     def makeNum(p: Int, s: Int): String = {
       val int1 = rand.nextLong()
@@ -1860,7 +1850,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("explain comet") {
-    assume(isSpark34Plus)
     withSQLConf(
       SQLConf.ANSI_ENABLED.key -> "false",
       SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
@@ -2700,38 +2689,52 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           randomSize = 10000)
         withParquetTable(path1.toString, "tbl1") {
           withParquetTable(path2.toString, "tbl2") {
-            // disable broadcast, as comet on spark 3.3 does not support broadcast exchange
-            withSQLConf(
-              SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-              SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
-              checkSparkAnswerAndOperator("""
-                  |select
-                  | t1._2 div t2._2, div(t1._2, t2._2),
-                  | t1._3 div t2._3, div(t1._3, t2._3),
-                  | t1._4 div t2._4, div(t1._4, t2._4),
-                  | t1._5 div t2._5, div(t1._5, t2._5),
-                  | t1._9 div t2._9, div(t1._9, t2._9),
-                  | t1._10 div t2._10, div(t1._10, t2._10),
-                  | t1._11 div t2._11, div(t1._11, t2._11)
-                  | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
-                  | order by t1._id""".stripMargin)
+            checkSparkAnswerAndOperator("""
+                |select
+                | t1._2 div t2._2, div(t1._2, t2._2),
+                | t1._3 div t2._3, div(t1._3, t2._3),
+                | t1._4 div t2._4, div(t1._4, t2._4),
+                | t1._5 div t2._5, div(t1._5, t2._5),
+                | t1._9 div t2._9, div(t1._9, t2._9),
+                | t1._10 div t2._10, div(t1._10, t2._10),
+                | t1._11 div t2._11, div(t1._11, t2._11)
+                | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
+                | order by t1._id""".stripMargin)
 
-              if (isSpark34Plus) {
-                // decimal support requires Spark 3.4 or later
-                checkSparkAnswerAndOperator("""
-                    |select
-                    | t1._12 div t2._12, div(t1._12, t2._12),
-                    | t1._15 div t2._15, div(t1._15, t2._15),
-                    | t1._16 div t2._16, div(t1._16, t2._16),
-                    | t1._17 div t2._17, div(t1._17, t2._17)
-                    | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
-                    | order by t1._id""".stripMargin)
-              }
-            }
+            checkSparkAnswerAndOperator("""
+                |select
+                | t1._12 div t2._12, div(t1._12, t2._12),
+                | t1._15 div t2._15, div(t1._15, t2._15),
+                | t1._16 div t2._16, div(t1._16, t2._16),
+                | t1._17 div t2._17, div(t1._17, t2._17)
+                | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
+                | order by t1._id""".stripMargin)
           }
         }
       }
     }
+  }
+
+  test("test integral divide overflow for decimal") {
+    if (isSpark40Plus) {
+      Seq(true, false)
+    } else
+      {
+        // ansi mode only supported in Spark 4.0+
+        Seq(false)
+      }.foreach { ansiMode =>
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiMode.toString) {
+          withTable("t1") {
+            sql("create table t1(a decimal(38,0), b decimal(2,2)) using parquet")
+            sql(
+              "insert into t1 values(-62672277069777110394022909049981876593,-0.40)," +
+                " (-68299431870253176399167726913574455270,-0.22), (-77532633078952291817347741106477071062,0.36)," +
+                " (-79918484954351746825313746420585672848,0.44), (54400354300704342908577384819323710194,0.18)," +
+                " (78585488402645143056239590008272527352,-0.51)")
+            checkSparkAnswerAndOperator("select a div b from t1")
+          }
+        }
+      }
   }
 
   test("rand expression with random parameters") {

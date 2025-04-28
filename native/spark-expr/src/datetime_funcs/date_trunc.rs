@@ -15,11 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
-use arrow_schema::{DataType, Schema};
+use datafusion::common::{DataFusionError, ScalarValue::Utf8};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion_common::{DataFusionError, ScalarValue::Utf8};
-use datafusion_physical_expr::PhysicalExpr;
+use datafusion::physical_expr::PhysicalExpr;
 use std::hash::Hash;
 use std::{
     any::Any,
@@ -70,15 +70,19 @@ impl PhysicalExpr for DateTruncExpr {
         self
     }
 
-    fn data_type(&self, input_schema: &Schema) -> datafusion_common::Result<DataType> {
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
+    }
+
+    fn data_type(&self, input_schema: &Schema) -> datafusion::common::Result<DataType> {
         self.child.data_type(input_schema)
     }
 
-    fn nullable(&self, _: &Schema) -> datafusion_common::Result<bool> {
+    fn nullable(&self, _: &Schema) -> datafusion::common::Result<bool> {
         Ok(true)
     }
 
-    fn evaluate(&self, batch: &RecordBatch) -> datafusion_common::Result<ColumnarValue> {
+    fn evaluate(&self, batch: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
         let date = self.child.evaluate(batch)?;
         let format = self.format.evaluate(batch)?;
         match (date, format) {

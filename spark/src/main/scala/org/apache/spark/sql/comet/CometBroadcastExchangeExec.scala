@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.comet
 
-import java.io.DataInputStream
-import java.nio.channels.Channels
 import java.util.UUID
 import java.util.concurrent.{Future, TimeoutException, TimeUnit}
 
@@ -28,15 +26,13 @@ import scala.concurrent.{ExecutionContext, Promise}
 import scala.concurrent.duration.NANOSECONDS
 import scala.util.control.NonFatal
 
-import org.apache.spark.{broadcast, Partition, SparkContext, SparkEnv, TaskContext}
-import org.apache.spark.comet.shims.ShimCometBroadcastExchangeExec
-import org.apache.spark.io.CompressionCodec
-import org.apache.spark.launcher.SparkLauncher
+import org.apache.spark.{broadcast, Partition, SparkContext, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
-import org.apache.spark.sql.comet.execution.shuffle.ArrowReaderIterator
+import org.apache.spark.sql.catalyst.plans.physical.{BroadcastMode, BroadcastPartitioning, Partitioning}
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, ShuffleQueryStageExec}
@@ -61,16 +57,14 @@ import org.apache.comet.CometRuntimeException
  * Note that this class cannot extend `CometExec` as usual similar to other Comet operators. As
  * the trait `BroadcastExchangeLike` in Spark extends abstract class `Exchange`, it limits the
  * flexibility to extend `CometExec` and `Exchange` at the same time.
- *
- * Note that this only supports Spark 3.4 and later, because the serialization class
- * `ChunkedByteBuffer` is only serializable in Spark 3.4 and later.
  */
 case class CometBroadcastExchangeExec(
     originalPlan: SparkPlan,
     override val output: Seq[Attribute],
+    mode: BroadcastMode,
     override val child: SparkPlan)
     extends BroadcastExchangeLike
-    with ShimCometBroadcastExchangeExec {
+    with CometPlan {
   import CometBroadcastExchangeExec._
 
   override val runId: UUID = UUID.randomUUID
@@ -83,7 +77,7 @@ case class CometBroadcastExchangeExec(
     "broadcastTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to broadcast"))
 
   override def doCanonicalize(): SparkPlan = {
-    CometBroadcastExchangeExec(null, null, child.canonicalized)
+    CometBroadcastExchangeExec(null, null, mode, child.canonicalized)
   }
 
   override def runtimeStatistics: Statistics = {
@@ -91,6 +85,8 @@ case class CometBroadcastExchangeExec(
     val rowCount = metrics("numOutputRows").value
     Statistics(dataSize, Some(rowCount))
   }
+
+  override def outputPartitioning: Partitioning = BroadcastPartitioning(mode)
 
   @transient
   private lazy val promise = Promise[broadcast.Broadcast[Any]]()
@@ -181,7 +177,8 @@ case class CometBroadcastExchangeExec(
         longMetric("buildTime") += NANOSECONDS.toMillis(beforeBroadcast - beforeBuild)
 
         // (3.4 only) SPARK-39983 - Broadcast the relation without caching the unserialized object.
-        val broadcasted = doBroadcast(sparkContext, batches)
+        val broadcasted = sparkContext
+          .broadcastInternal(batches, true)
           .asInstanceOf[broadcast.Broadcast[Any]]
         longMetric("broadcastTime") += NANOSECONDS.toMillis(System.nanoTime() - beforeBroadcast)
         val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
@@ -193,16 +190,7 @@ case class CometBroadcastExchangeExec(
         // SparkFatalException, which is a subclass of Exception. ThreadUtils.awaitResult
         // will catch this exception and re-throw the wrapped fatal throwable.
         case oe: OutOfMemoryError =>
-          // Spark 3.4 has two parameters for `notEnoughMemoryToBuildAndBroadcastTableError`, which
-          // is different to Spark 3.3. We simply create the error message here.
-          val error =
-            new OutOfMemoryError(
-              "Not enough memory to build and broadcast the table to all " +
-                "worker nodes. As a workaround, you can either disable broadcast by setting " +
-                s"${SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key} to -1 or increase the spark " +
-                s"driver memory by setting ${SparkLauncher.DRIVER_MEMORY} to a higher value.")
-              .initCause(oe.getCause)
-          val ex = new SparkFatalException(error)
+          val ex = new SparkFatalException(oe)
           promise.tryFailure(ex)
           throw ex
         case e if !NonFatal(e) =>
@@ -303,23 +291,7 @@ class CometBatchRDD(
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     val partition = split.asInstanceOf[CometBatchPartition]
     partition.value.value.toIterator
-      .flatMap(decodeBatches(_, this.getClass.getSimpleName))
-  }
-
-  /**
-   * Decodes the byte arrays back to ColumnarBatchs and put them into buffer.
-   */
-  private def decodeBatches(bytes: ChunkedByteBuffer, source: String): Iterator[ColumnarBatch] = {
-    if (bytes.size == 0) {
-      return Iterator.empty
-    }
-
-    // use Spark's compression codec (LZ4 by default) and not Comet's compression
-    val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
-    val cbbis = bytes.toInputStream()
-    val ins = new DataInputStream(codec.compressedInputStream(cbbis))
-    // batches are in Arrow IPC format
-    new ArrowReaderIterator(Channels.newChannel(ins), source)
+      .flatMap(Utils.decodeBatches(_, this.getClass.getSimpleName))
   }
 }
 

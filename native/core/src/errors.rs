@@ -18,7 +18,7 @@
 //! Common Parquet errors and macros.
 
 use arrow::error::ArrowError;
-use datafusion_common::DataFusionError;
+use datafusion::common::DataFusionError;
 use jni::errors::{Exception, ToException};
 use regex::Regex;
 
@@ -517,7 +517,7 @@ mod tests {
         AttachGuard, InitArgsBuilder, JNIEnv, JNIVersion, JavaVM,
     };
 
-    use assertables::{assert_starts_with, assert_starts_with_as_result};
+    use assertables::assert_starts_with;
 
     pub fn jvm() -> &'static Arc<JavaVM> {
         static mut JVM: Option<Arc<JavaVM>> = None;

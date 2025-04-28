@@ -19,12 +19,12 @@ use crate::{
     errors::CometError,
     execution::shuffle::row::{append_field, SparkUnsafeObject, SparkUnsafeRow},
 };
-use arrow_array::builder::{
+use arrow::array::builder::{
     ArrayBuilder, BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float32Builder,
     Float64Builder, Int16Builder, Int32Builder, Int64Builder, Int8Builder, ListBuilder,
     StringBuilder, StructBuilder, TimestampMicrosecondBuilder,
 };
-use arrow_schema::{DataType, TimeUnit};
+use arrow::datatypes::{DataType, TimeUnit};
 
 pub struct SparkUnsafeArray {
     row_addr: i64,

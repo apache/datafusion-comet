@@ -15,19 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow_array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
-use arrow_array::{builder::StringBuilder, RecordBatch};
-use arrow_schema::{DataType, Field, Schema};
+use arrow::array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
+use arrow::array::{builder::StringBuilder, RecordBatch};
+use arrow::datatypes::{DataType, Field, Schema};
 use comet::execution::shuffle::{CompressionCodec, ShuffleBlockWriter, ShuffleWriterExec};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
+use datafusion::physical_expr::{expressions::Column, Partitioning};
 use datafusion::physical_plan::metrics::Time;
 use datafusion::{
     physical_plan::{common::collect, ExecutionPlan},
     prelude::SessionContext,
 };
-use datafusion_physical_expr::{expressions::Column, Partitioning};
 use std::io::Cursor;
 use std::sync::Arc;
 use tokio::runtime::Runtime;

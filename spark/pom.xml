@@ -26,7 +26,7 @@ under the License.
   <parent>
     <groupId>org.apache.datafusion</groupId>
     <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-    <version>0.7.0-SNAPSHOT</version>
+    <version>0.9.0-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
@@ -141,6 +141,30 @@ under the License.
       <artifactId>arrow-c-data</artifactId>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-client-minicluster</artifactId>
+      <scope>test</scope>
+      <exclusions>
+        <!-- hadoop clients are provided by spark -->
+        <exclusion>
+          <artifactId>hadoop-client-api</artifactId>
+          <groupId>org.apache.hadoop</groupId>
+        </exclusion>
+        <exclusion>
+          <artifactId>hadoop-client-runtime</artifactId>
+          <groupId>org.apache.hadoop</groupId>
+        </exclusion>
+        <exclusion>
+          <artifactId>snappy-java</artifactId>
+          <groupId>org.xerial.snappy</groupId>
+        </exclusion>
+        <exclusion>
+          <artifactId>junit</artifactId>
+          <groupId>junit</groupId>
+        </exclusion>
+      </exclusions>
+    </dependency>
   </dependencies>
 
   <build>
@@ -148,7 +172,7 @@ under the License.
       <plugin>
         <groupId>com.github.os72</groupId>
         <artifactId>protoc-jar-maven-plugin</artifactId>
-        <version>3.11.4</version>
+        <version>${protoc-jar-maven-plugin.version}</version>
         <executions>
           <execution>
             <phase>generate-sources</phase>
@@ -260,10 +284,6 @@ under the License.
             </goals>
             <configuration>
               <sources>
-                <source>src/test/${additional.3_3.test.source}</source>
-                <source>src/test/${additional.3_4.test.source}</source>
-                <source>src/test/${additional.3_5.test.source}</source>
-                <source>src/test/${additional.pre35.test.source}</source>
                 <source>src/test/${shims.majorVerSrc}</source>
                 <source>src/test/${shims.minorVerSrc}</source>
               </sources>
@@ -279,7 +299,6 @@ under the License.
               <sources>
                 <source>src/main/${shims.majorVerSrc}</source>
                 <source>src/main/${shims.minorVerSrc}</source>
-                <source>src/main/${shims.pre35Src}</source>
               </sources>
             </configuration>
           </execution>
@@ -288,7 +307,7 @@ under the License.
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>exec-maven-plugin</artifactId>
-        <version>3.2.0</version>
+        <version>${exec-maven-plugin.version}</version>
         <executions>
           <execution>
             <id>generate-user-guide-reference-docs</id>

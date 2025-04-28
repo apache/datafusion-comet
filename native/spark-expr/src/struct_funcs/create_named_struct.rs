@@ -15,12 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::array::StructArray;
+use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-use arrow_array::StructArray;
-use arrow_schema::{DataType, Field, Schema};
+use datafusion::common::Result as DataFusionResult;
 use datafusion::logical_expr::ColumnarValue;
-use datafusion_common::Result as DataFusionResult;
-use datafusion_physical_expr::PhysicalExpr;
+use datafusion::physical_expr::PhysicalExpr;
 use std::{
     any::Any,
     fmt::{Display, Formatter},
@@ -57,6 +57,10 @@ impl PhysicalExpr for CreateNamedStruct {
         self
     }
 
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
+    }
+
     fn data_type(&self, input_schema: &Schema) -> DataFusionResult<DataType> {
         let fields = self.fields(input_schema)?;
         Ok(DataType::Struct(fields.into()))
@@ -71,7 +75,7 @@ impl PhysicalExpr for CreateNamedStruct {
             .values
             .iter()
             .map(|expr| expr.evaluate(batch))
-            .collect::<datafusion_common::Result<Vec<_>>>()?;
+            .collect::<datafusion::common::Result<Vec<_>>>()?;
         let arrays = ColumnarValue::values_to_arrays(&values)?;
         let fields = self.fields(&batch.schema())?;
         Ok(ColumnarValue::Array(Arc::new(StructArray::new(
@@ -88,7 +92,7 @@ impl PhysicalExpr for CreateNamedStruct {
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
-    ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
+    ) -> datafusion::common::Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(CreateNamedStruct::new(
             children.clone(),
             self.names.clone(),
@@ -109,12 +113,12 @@ impl Display for CreateNamedStruct {
 #[cfg(test)]
 mod test {
     use super::CreateNamedStruct;
-    use arrow_array::{Array, DictionaryArray, Int32Array, RecordBatch, StringArray};
-    use arrow_schema::{DataType, Field, Schema};
-    use datafusion_common::Result;
-    use datafusion_expr::ColumnarValue;
-    use datafusion_physical_expr::expressions::Column;
-    use datafusion_physical_expr::PhysicalExpr;
+    use arrow::array::{Array, DictionaryArray, Int32Array, RecordBatch, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::Result;
+    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::PhysicalExpr;
+    use datafusion::physical_plan::ColumnarValue;
     use std::sync::Arc;
 
     #[test]

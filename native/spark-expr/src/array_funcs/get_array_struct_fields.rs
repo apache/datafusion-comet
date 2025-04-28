@@ -15,15 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::array::{Array, GenericListArray, OffsetSizeTrait, StructArray};
+use arrow::datatypes::{DataType, FieldRef, Schema};
 use arrow::record_batch::RecordBatch;
-use arrow_array::{Array, GenericListArray, OffsetSizeTrait, StructArray};
-use arrow_schema::{DataType, FieldRef, Schema};
-use datafusion::logical_expr::ColumnarValue;
-use datafusion_common::{
+use datafusion::common::{
     cast::{as_large_list_array, as_list_array},
     internal_err, DataFusionError, Result as DataFusionResult,
 };
-use datafusion_physical_expr::PhysicalExpr;
+use datafusion::logical_expr::ColumnarValue;
+use datafusion::physical_expr::PhysicalExpr;
 use std::hash::Hash;
 use std::{
     any::Any,
@@ -80,6 +80,10 @@ impl PhysicalExpr for GetArrayStructFields {
         self
     }
 
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
+    }
+
     fn data_type(&self, input_schema: &Schema) -> DataFusionResult<DataType> {
         let struct_field = self.child_field(input_schema)?;
         match self.child.data_type(input_schema)? {
@@ -125,7 +129,7 @@ impl PhysicalExpr for GetArrayStructFields {
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
-    ) -> datafusion_common::Result<Arc<dyn PhysicalExpr>> {
+    ) -> datafusion::common::Result<Arc<dyn PhysicalExpr>> {
         match children.len() {
             1 => Ok(Arc::new(GetArrayStructFields::new(
                 Arc::clone(&children[0]),

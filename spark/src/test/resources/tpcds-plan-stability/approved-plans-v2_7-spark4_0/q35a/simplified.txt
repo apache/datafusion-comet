@@ -46,8 +46,10 @@ TakeOrderedAndProject [ca_state,cd_gender,cd_marital_status,cd_dep_count,cd_dep_
                                           ReusedSubquery [d_date_sk] #1
                                         ReusedExchange [d_date_sk] #4
                             CometBroadcastExchange [ca_address_sk,ca_state] #6
-                              CometFilter [ca_address_sk,ca_state]
-                                CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_state]
+                              CometProject [ca_state] [ca_address_sk,ca_state]
+                                CometFilter [ca_address_sk,ca_state]
+                                  CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_state]
                         CometBroadcastExchange [cd_demo_sk,cd_gender,cd_marital_status,cd_dep_count,cd_dep_employed_count,cd_dep_college_count] #7
-                          CometFilter [cd_demo_sk,cd_gender,cd_marital_status,cd_dep_count,cd_dep_employed_count,cd_dep_college_count]
-                            CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_gender,cd_marital_status,cd_dep_count,cd_dep_employed_count,cd_dep_college_count]
+                          CometProject [cd_gender,cd_marital_status] [cd_demo_sk,cd_gender,cd_marital_status,cd_dep_count,cd_dep_employed_count,cd_dep_college_count]
+                            CometFilter [cd_demo_sk,cd_gender,cd_marital_status,cd_dep_count,cd_dep_employed_count,cd_dep_college_count]
+                              CometScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_gender,cd_marital_status,cd_dep_count,cd_dep_employed_count,cd_dep_college_count]

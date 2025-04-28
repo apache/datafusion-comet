@@ -21,22 +21,15 @@ package org.apache.comet.parquet;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 
 import scala.Option;
-import scala.collection.Seq;
-import scala.collection.mutable.Buffer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -61,9 +54,9 @@ import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.Type;
 import org.apache.spark.TaskContext;
 import org.apache.spark.TaskContext$;
-import org.apache.spark.executor.TaskMetrics;
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.comet.parquet.CometParquetReadSupport;
+import org.apache.spark.sql.comet.shims.ShimTaskMetrics;
 import org.apache.spark.sql.execution.datasources.PartitionedFile;
 import org.apache.spark.sql.execution.datasources.parquet.ParquetToSparkSchemaConverter;
 import org.apache.spark.sql.execution.metric.SQLMetric;
@@ -289,8 +282,11 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     // Initialize missing columns and use null vectors for them
     missingColumns = new boolean[columns.size()];
     List<String[]> paths = requestedSchema.getPaths();
-    StructField[] nonPartitionFields = sparkSchema.fields();
+    // We do not need the column index of the row index; but this method has the
+    // side effect of throwing an exception if a column with the same name is
+    // found which we do want (spark unit tests explicitly test for that).
     ShimFileFormat.findRowIndexColumnIndexInSchema(sparkSchema);
+    StructField[] nonPartitionFields = sparkSchema.fields();
     for (int i = 0; i < requestedSchema.getFieldCount(); i++) {
       Type t = requestedSchema.getFields().get(i);
       Preconditions.checkState(
@@ -350,7 +346,8 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     // Note that this tries to get thread local TaskContext object, if this is called at other
     // thread, it won't update the accumulator.
     if (taskContext != null) {
-      Option<AccumulatorV2<?, ?>> accu = getTaskAccumulator(taskContext.taskMetrics());
+      Option<AccumulatorV2<?, ?>> accu =
+          ShimTaskMetrics.getTaskAccumulator(taskContext.taskMetrics());
       if (accu.isDefined() && accu.get().getClass().getSimpleName().equals("NumRowGroupsAcc")) {
         @SuppressWarnings("unchecked")
         AccumulatorV2<Integer, Integer> intAccum = (AccumulatorV2<Integer, Integer>) accu.get();
@@ -635,29 +632,6 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
           fileReader.closeStream();
         }
       }
-    }
-  }
-
-  // Signature of externalAccums changed from returning a Buffer to returning a Seq. If comet is
-  // expecting a Buffer but the Spark version returns a Seq or vice versa, we get a
-  // method not found exception.
-  @SuppressWarnings("unchecked")
-  private Option<AccumulatorV2<?, ?>> getTaskAccumulator(TaskMetrics taskMetrics) {
-    Method externalAccumsMethod;
-    try {
-      externalAccumsMethod = TaskMetrics.class.getDeclaredMethod("externalAccums");
-      externalAccumsMethod.setAccessible(true);
-      String returnType = externalAccumsMethod.getReturnType().getName();
-      if (returnType.equals("scala.collection.mutable.Buffer")) {
-        return ((Buffer<AccumulatorV2<?, ?>>) externalAccumsMethod.invoke(taskMetrics))
-            .lastOption();
-      } else if (returnType.equals("scala.collection.Seq")) {
-        return ((Seq<AccumulatorV2<?, ?>>) externalAccumsMethod.invoke(taskMetrics)).lastOption();
-      } else {
-        return Option.apply(null); // None
-      }
-    } catch (NoSuchMethodException | InvocationTargetException | IllegalAccessException e) {
-      return Option.apply(null); // None
     }
   }
 }
