@@ -23,19 +23,20 @@ use arrow::{
 use datafusion::common::Result;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::{error::DataFusionError, logical_expr::ColumnarValue};
+use std::fmt::Formatter;
 use std::hash::Hash;
 use std::{any::Any, sync::Arc};
 
 macro_rules! compute_op {
-    ($OPERAND:expr, $DT:ident, $TY:ty) => {{
+    ($OPERAND:expr, $DT:ident) => {{
         let operand = $OPERAND
             .as_any()
             .downcast_ref::<$DT>()
             .expect("compute_op failed to downcast array");
 
-        let result: $DT = operand
+        let result: Int32Array = operand
             .iter()
-            .map(|x| x.map(|y| bit_count(y.into()) as $TY))
+            .map(|x| x.map(|y| bit_count(y.into())))
             .collect();
 
         Ok(Arc::new(result))
@@ -85,8 +86,8 @@ impl PhysicalExpr for BitwiseCountExpr {
         self
     }
 
-    fn data_type(&self, input_schema: &Schema) -> Result<DataType> {
-        self.arg.data_type(input_schema)
+    fn data_type(&self, _: &Schema) -> Result<DataType> {
+        Ok(DataType::Int32)
     }
 
     fn nullable(&self, input_schema: &Schema) -> Result<bool> {
@@ -98,10 +99,10 @@ impl PhysicalExpr for BitwiseCountExpr {
         match arg {
             ColumnarValue::Array(array) => {
                 let result: Result<ArrayRef> = match array.data_type() {
-                    DataType::Int8 | DataType::Boolean => compute_op!(array, Int8Array, i8),
-                    DataType::Int16 => compute_op!(array, Int16Array, i16),
-                    DataType::Int32 => compute_op!(array, Int32Array, i32),
-                    DataType::Int64 => compute_op!(array, Int64Array, i64),
+                    DataType::Int8 | DataType::Boolean => compute_op!(array, Int8Array),
+                    DataType::Int16 => compute_op!(array, Int16Array),
+                    DataType::Int32 => compute_op!(array, Int32Array),
+                    DataType::Int64 => compute_op!(array, Int64Array),
                     _ => Err(DataFusionError::Execution(format!(
                         "(- '{:?}') can't be evaluated because the expression's type is {:?}, not signed int",
                         self,
@@ -125,6 +126,10 @@ impl PhysicalExpr for BitwiseCountExpr {
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(BitwiseCountExpr::new(Arc::clone(&children[0]))))
+    }
+
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
     }
 }
 
