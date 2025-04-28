@@ -1737,7 +1737,7 @@ impl PhysicalPlanner {
                 AggregateExprBuilder::new(Arc::new(func), vec![child])
                     .schema(schema)
                     .alias("first")
-                    .with_ignore_nulls(false)
+                    .with_ignore_nulls(expr.ignore_nulls)
                     .with_distinct(false)
                     .build()
                     .map_err(|e| e.into())
@@ -1749,7 +1749,7 @@ impl PhysicalPlanner {
                 AggregateExprBuilder::new(Arc::new(func), vec![child])
                     .schema(schema)
                     .alias("last")
-                    .with_ignore_nulls(false)
+                    .with_ignore_nulls(expr.ignore_nulls)
                     .with_distinct(false)
                     .build()
                     .map_err(|e| e.into())
@@ -2427,7 +2427,7 @@ fn rewrite_physical_expr(
     Ok(expr.rewrite(&mut rewriter).data()?)
 }
 
-fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::DecodeError> {
+fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::UnknownEnumValue> {
     match spark_expression::EvalMode::try_from(value)? {
         spark_expression::EvalMode::Legacy => Ok(EvalMode::Legacy),
         spark_expression::EvalMode::Try => Ok(EvalMode::Try),

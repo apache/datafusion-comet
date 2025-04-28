@@ -16,42 +16,42 @@
 // under the License.
 
 use rand::{
-    distributions::{uniform::SampleUniform, Distribution, Standard},
-    thread_rng, Rng,
+    distr::{uniform::SampleUniform, Distribution, StandardUniform},
+    rng, Rng,
 };
 
 pub fn random_bytes(n: usize) -> Vec<u8> {
     let mut result = vec![];
-    let mut rng = thread_rng();
+    let mut rng = rng();
     for _ in 0..n {
-        result.push(rng.gen_range(0..255));
+        result.push(rng.random_range(0..255));
     }
     result
 }
 
 pub fn random_bools(n: usize) -> Vec<bool> {
     let mut result = vec![];
-    let mut rng = thread_rng();
+    let mut rng = rng();
     for _ in 0..n {
-        result.push(rng.gen::<bool>());
+        result.push(rng.random::<bool>());
     }
     result
 }
 
 pub fn random_numbers<T>(n: usize) -> Vec<T>
 where
-    Standard: Distribution<T>,
+    StandardUniform: Distribution<T>,
 {
-    let mut rng = thread_rng();
-    Standard.sample_iter(&mut rng).take(n).collect()
+    let mut rng = rng();
+    StandardUniform.sample_iter(&mut rng).take(n).collect()
 }
 
 pub fn random_numbers_range<T>(n: usize, low: T, high: T, result: &mut Vec<T>)
 where
     T: PartialOrd + SampleUniform + Copy,
 {
-    let mut rng = thread_rng();
+    let mut rng = rng();
     for _ in 0..n {
-        result.push(rng.gen_range(low..high));
+        result.push(rng.random_range(low..high));
     }
 }

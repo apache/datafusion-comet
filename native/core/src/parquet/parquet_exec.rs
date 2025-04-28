@@ -118,6 +118,7 @@ fn get_options(session_timezone: &str) -> (TableParquetOptions, SparkParquetOpti
     let mut table_parquet_options = TableParquetOptions::new();
     table_parquet_options.global.pushdown_filters = true;
     table_parquet_options.global.reorder_filters = true;
+    table_parquet_options.global.coerce_int96 = Some("us".to_string());
     let mut spark_parquet_options =
         SparkParquetOptions::new(EvalMode::Legacy, session_timezone, false);
     spark_parquet_options.allow_cast_unsigned_ints = true;
