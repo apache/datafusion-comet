@@ -24,12 +24,12 @@ import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.types.pojo.Field;
 
 /** This is a simple wrapper around SchemaImporter to make it accessible from Java Arrow. */
-public class CometSchemaImporter {
+public abstract class AbstractCometSchemaImporter {
   private final BufferAllocator allocator;
   private final SchemaImporter importer;
   private final CDataDictionaryProvider provider = new CDataDictionaryProvider();
 
-  public CometSchemaImporter(BufferAllocator allocator) {
+  public AbstractCometSchemaImporter(BufferAllocator allocator) {
     this.allocator = allocator;
     this.importer = new SchemaImporter(allocator);
   }
