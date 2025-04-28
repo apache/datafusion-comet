@@ -130,7 +130,7 @@ under the License.
  </li>
  <li class="toctree-l1 current active">
   <a class="current reference internal" href="#">
-   Supported Spark Data Sources
+   Supported Data Sources
   </a>
  </li>
  <li class="toctree-l1">
@@ -286,61 +286,66 @@ under the License.
 
 <nav id="bd-toc-nav">
     <ul class="visible nav section-nav flex-column">
- <li class="toc-h1 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#">
-   Supported Spark Data Sources
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#file-formats">
+   File Formats
   </a>
-  <ul class="visible nav section-nav flex-column">
-   <li class="toc-h2 nav-item toc-entry">
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
     <a class="reference internal nav-link" href="#parquet">
      Parquet
     </a>
    </li>
-   <li class="toc-h2 nav-item toc-entry">
+   <li class="toc-h3 nav-item toc-entry">
     <a class="reference internal nav-link" href="#csv">
      CSV
     </a>
    </li>
-   <li class="toc-h2 nav-item toc-entry">
+   <li class="toc-h3 nav-item toc-entry">
     <a class="reference internal nav-link" href="#json">
      JSON
     </a>
    </li>
   </ul>
  </li>
- <li class="toc-h1 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#supported-storages">
-   Supported Storages
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#data-catalogs">
+   Data Catalogs
   </a>
-  <ul class="visible nav section-nav flex-column">
-   <li class="toc-h2 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#local">
-     Local
-    </a>
-   </li>
-   <li class="toc-h2 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#hdfs">
-     HDFS
-    </a>
-    <ul class="nav section-nav flex-column">
-     <li class="toc-h3 nav-item toc-entry">
-      <a class="reference internal nav-link" href="#using-experimental-native-datafusion-reader">
-       Using experimental native DataFusion reader
-      </a>
-     </li>
-     <li class="toc-h3 nav-item toc-entry">
-      <a class="reference internal nav-link" href="#local-hdfs-development">
-       Local HDFS development
-      </a>
-     </li>
-    </ul>
-   </li>
-   <li class="toc-h2 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#s3">
-     S3
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#apache-iceberg">
+     Apache Iceberg
     </a>
    </li>
   </ul>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#supported-storages">
+   Supported Storages
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#hdfs">
+     HDFS
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#using-experimental-native-datafusion-reader">
+     Using experimental native DataFusion reader
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#local-hdfs-development">
+     Local HDFS development
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#s3">
+   S3
+  </a>
  </li>
 </ul>
 
@@ -390,33 +395,40 @@ under the License.
 -->
 <section id="supported-spark-data-sources">
 <h1>Supported Spark Data Sources<a class="headerlink" href="#supported-spark-data-sources" title="Link to this heading">¶</a></h1>
+<section id="file-formats">
+<h2>File Formats<a class="headerlink" href="#file-formats" title="Link to this heading">¶</a></h2>
 <section id="parquet">
-<h2>Parquet<a class="headerlink" href="#parquet" title="Link to this heading">¶</a></h2>
+<h3>Parquet<a class="headerlink" href="#parquet" title="Link to this heading">¶</a></h3>
 <p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.enabled</span></code> is enabled, Parquet scans will be performed natively by Comet if all data types
 in the schema are supported. When this option is not enabled, the scan will fall back to Spark. In this case,
 enabling <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.parquet.enabled</span></code> will immediately convert the data into Arrow format, allowing native
 execution to happen after that, but the process may not be efficient.</p>
 </section>
 <section id="csv">
-<h2>CSV<a class="headerlink" href="#csv" title="Link to this heading">¶</a></h2>
+<h3>CSV<a class="headerlink" href="#csv" title="Link to this heading">¶</a></h3>
 <p>Comet does not provide native CSV scan, but when <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.csv.enabled</span></code> is enabled, data is immediately
 converted into Arrow format, allowing native execution to happen after that.</p>
 </section>
 <section id="json">
-<h2>JSON<a class="headerlink" href="#json" title="Link to this heading">¶</a></h2>
+<h3>JSON<a class="headerlink" href="#json" title="Link to this heading">¶</a></h3>
 <p>Comet does not provide native JSON scan, but when <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.json.enabled</span></code> is enabled, data is immediately
 converted into Arrow format, allowing native execution to happen after that.</p>
 </section>
 </section>
-<section id="supported-storages">
-<h1>Supported Storages<a class="headerlink" href="#supported-storages" title="Link to this heading">¶</a></h1>
-<section id="local">
-<h2>Local<a class="headerlink" href="#local" title="Link to this heading">¶</a></h2>
-<p>In progress</p>
+<section id="data-catalogs">
+<h2>Data Catalogs<a class="headerlink" href="#data-catalogs" title="Link to this heading">¶</a></h2>
+<section id="apache-iceberg">
+<h3>Apache Iceberg<a class="headerlink" href="#apache-iceberg" title="Link to this heading">¶</a></h3>
+<p>See the dedicated <a class="reference internal" href="iceberg.html"><span class="std std-doc">Comet and Iceberg Guide</span></a>.</p>
 </section>
+</section>
+<section id="supported-storages">
+<h2>Supported Storages<a class="headerlink" href="#supported-storages" title="Link to this heading">¶</a></h2>
+<p>Comet supports most standard storage systems, such as local file system and object storage.</p>
 <section id="hdfs">
-<h2>HDFS<a class="headerlink" href="#hdfs" title="Link to this heading">¶</a></h2>
+<h3>HDFS<a class="headerlink" href="#hdfs" title="Link to this heading">¶</a></h3>
 <p>Apache DataFusion Comet native reader seamlessly scans files from remote HDFS for <a class="reference internal" href="#supported-spark-data-sources">supported formats</a></p>
+</section>
 <section id="using-experimental-native-datafusion-reader">
 <h3>Using experimental native DataFusion reader<a class="headerlink" href="#using-experimental-native-datafusion-reader" title="Link to this heading">¶</a></h3>
 <p>Unlike to native Comet reader the Datafusion reader fully supports nested types processing. This reader is currently experimental only</p>

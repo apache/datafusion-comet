@@ -24,7 +24,7 @@ under the License.
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Comet Overview &#8212; Apache DataFusion Comet  documentation</title>
+    <title>Accelerating Apache Iceberg Parquet Scans using Comet (Experimental) &#8212; Apache DataFusion Comet  documentation</title>
     
     <link href="../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
 <link href="../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
@@ -53,8 +53,6 @@ under the License.
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Installing DataFusion Comet" href="installation.html" />
-    <link rel="prev" title="Apache DataFusion Comet" href="../index.html" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="docsearch:language" content="en">
     
@@ -107,9 +105,9 @@ under the License.
   User Guide
  </span>
 </p>
-<ul class="current nav bd-sidenav">
- <li class="toctree-l1 current active">
-  <a class="current reference internal" href="#">
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="overview.html">
    Comet Overview
   </a>
  </li>
@@ -287,18 +285,18 @@ under the License.
 <nav id="bd-toc-nav">
     <ul class="visible nav section-nav flex-column">
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#architecture">
-   Architecture
+  <a class="reference internal nav-link" href="#build-comet">
+   Build Comet
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#feature-parity-with-apache-spark">
-   Feature Parity with Apache Spark
+  <a class="reference internal nav-link" href="#build-iceberg">
+   Build Iceberg
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#getting-started">
-   Getting Started
+  <a class="reference internal nav-link" href="#test">
+   Test
   </a>
  </li>
 </ul>
@@ -310,7 +308,7 @@ under the License.
                 
 
 <div class="tocsection editthispage">
-    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/user-guide/overview.md">
+    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/user-guide/iceberg.md">
         <i class="fas fa-pencil-alt"></i> Edit this page
     </a>
 </div>
@@ -347,41 +345,115 @@ under the License.
   specific language governing permissions and limitations
   under the License.
 -->
-<section id="comet-overview">
-<h1>Comet Overview<a class="headerlink" href="#comet-overview" title="Link to this heading">¶</a></h1>
-<p>Apache DataFusion Comet is a high-performance accelerator for Apache Spark, built on top of the powerful
-<a class="reference external" href="https://datafusion.apache.org">Apache DataFusion</a> query engine. Comet is designed to significantly enhance the
-performance of Apache Spark workloads while leveraging commodity hardware and seamlessly integrating with the
-Spark ecosystem without requiring any code changes.</p>
-<p>The following diagram provides an overview of Comet’s architecture.</p>
-<p><img alt="Comet Overview" src="../_images/comet-overview.png" /></p>
-<p>Comet aims to support:</p>
+<section id="accelerating-apache-iceberg-parquet-scans-using-comet-experimental">
+<h1>Accelerating Apache Iceberg Parquet Scans using Comet (Experimental)<a class="headerlink" href="#accelerating-apache-iceberg-parquet-scans-using-comet-experimental" title="Link to this heading">¶</a></h1>
+<p><strong>Note: Iceberg integration is a work-in-progress. It is currently necessary to build Iceberg from
+source rather than using available artifacts in Maven</strong></p>
+<section id="build-comet">
+<h2>Build Comet<a class="headerlink" href="#build-comet" title="Link to this heading">¶</a></h2>
+<p>Run a Maven install so that we can compile Iceberg against latest Comet:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>mvn<span class="w"> </span>install<span class="w"> </span>-DskipTests
+</pre></div>
+</div>
+<p>Build the release JAR to be used from Spark:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>make<span class="w"> </span>release
+</pre></div>
+</div>
+<p>Set <code class="docutils literal notranslate"><span class="pre">COMET_JAR</span></code> env var:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">COMET_JAR</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>/spark/target/comet-spark-spark3.5_2.12-0.9.0-SNAPSHOT.jar
+</pre></div>
+</div>
+</section>
+<section id="build-iceberg">
+<h2>Build Iceberg<a class="headerlink" href="#build-iceberg" title="Link to this heading">¶</a></h2>
+<p>Clone the Iceberg repository.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>git@github.com:apache/iceberg.git
+</pre></div>
+</div>
+<p>It will be necessary to make some small changes to Iceberg:</p>
 <ul class="simple">
-<li><p>a native Parquet implementation, including both reader and writer</p></li>
-<li><p>full implementation of Spark operators, including
-Filter/Project/Aggregation/Join/Exchange etc.</p></li>
-<li><p>full implementation of Spark built-in expressions.</p></li>
-<li><p>a UDF framework for users to migrate their existing UDF to native</p></li>
+<li><p>Update Gradle files to change Comet version to <code class="docutils literal notranslate"><span class="pre">0.9.0-SNAPSHOT</span></code>.</p></li>
+<li><p>Replace <code class="docutils literal notranslate"><span class="pre">import</span> <span class="pre">org.apache.comet.shaded.arrow.c.CometSchemaImporter;</span></code> with <code class="docutils literal notranslate"><span class="pre">import</span> <span class="pre">org.apache.comet.CometSchemaImporter;</span></code></p></li>
+<li><p>Modify <code class="docutils literal notranslate"><span class="pre">SparkBatchQueryScan</span></code> so that it implements the <code class="docutils literal notranslate"><span class="pre">SupportsComet</span></code> interface</p></li>
+<li><p>Stop shading Parquet by commenting out the following lines in the iceberg-spark build:</p></li>
 </ul>
-<section id="architecture">
-<h2>Architecture<a class="headerlink" href="#architecture" title="Link to this heading">¶</a></h2>
-<p>The following diagram shows how Comet integrates with Apache Spark.</p>
-<p><img alt="Comet System Diagram" src="../_images/comet-system-diagram.png" /></p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">//</span>    <span class="n">relocate</span> <span class="s1">&#39;org.apache.parquet&#39;</span><span class="p">,</span> <span class="s1">&#39;org.apache.iceberg.shaded.org.apache.parquet&#39;</span>
+<span class="o">//</span>    <span class="n">relocate</span> <span class="s1">&#39;shaded.parquet&#39;</span><span class="p">,</span> <span class="s1">&#39;org.apache.iceberg.shaded.org.apache.parquet.shaded&#39;</span>
+</pre></div>
+</div>
+<p>Perform a clean build</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./gradlew<span class="w"> </span>clean
+./gradlew<span class="w"> </span>build<span class="w"> </span>-x<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-x<span class="w"> </span>integrationTest
+</pre></div>
+</div>
 </section>
-<section id="feature-parity-with-apache-spark">
-<h2>Feature Parity with Apache Spark<a class="headerlink" href="#feature-parity-with-apache-spark" title="Link to this heading">¶</a></h2>
-<p>The project strives to keep feature parity with Apache Spark, that is,
-users should expect the same behavior (w.r.t features, configurations,
-query results, etc) with Comet turned on or turned off in their Spark
-jobs. In addition, Comet extension should automatically detect unsupported
-features and fallback to Spark engine.</p>
-<p>To achieve this, besides unit tests within Comet itself, we also re-use
-Spark SQL tests and make sure they all pass with Comet extension
-enabled.</p>
-</section>
-<section id="getting-started">
-<h2>Getting Started<a class="headerlink" href="#getting-started" title="Link to this heading">¶</a></h2>
-<p>Refer to the <a class="reference internal" href="installation.html"><span class="std std-doc">Comet Installation Guide</span></a> to get started.</p>
+<section id="test">
+<h2>Test<a class="headerlink" href="#test" title="Link to this heading">¶</a></h2>
+<p>Set <code class="docutils literal notranslate"><span class="pre">ICEBERG_JAR</span></code> environment variable.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">ICEBERG_JAR</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>/spark/v3.5/spark-runtime/build/libs/iceberg-spark-runtime-3.5_2.12-1.10.0-SNAPSHOT.jar
+</pre></div>
+</div>
+<p>Launch Spark Shell:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--jars<span class="w"> </span><span class="nv">$COMET_JAR</span>,<span class="nv">$ICEBERG_JAR</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.driver.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span>,<span class="nv">$ICEBERG_JAR</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.executor.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span>,<span class="nv">$ICEBERG_JAR</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.extensions<span class="o">=</span>org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.spark_catalog<span class="o">=</span>org.apache.iceberg.spark.SparkCatalog<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.spark_catalog.type<span class="o">=</span>hadoop<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.spark_catalog.warehouse<span class="o">=</span>/tmp/warehouse<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.plugins<span class="o">=</span>org.apache.spark.CometPlugin<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.shuffle.manager<span class="o">=</span>org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.iceberg.parquet.reader-type<span class="o">=</span>COMET<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.comet.explainFallback.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>16g
+</pre></div>
+</div>
+<p>Create an Iceberg table. Note that Comet will not accelerate this part.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">&quot;CREATE TABLE IF NOT EXISTS t1 (c0 INT, c1 STRING) USING iceberg&quot;</span><span class="p">)</span>
+<span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">&quot;INSERT INTO t1 VALUES ${(0 until 10000).map(i =&gt; (i, i)).mkString(&quot;</span><span class="p">,</span><span class="s2">&quot;)}&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Comet should now be able to accelerate reading the table:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">&quot;SELECT * from t1&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>This should produce the following output:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>scala&gt; spark.sql(s&quot;SELECT * from t1&quot;).show()
+25/04/28 07:29:37 INFO core/src/lib.rs: Comet native library version 0.9.0 initialized
+25/04/28 07:29:37 WARN CometSparkSessionExtensions$CometExecRule: Comet cannot execute some parts of this plan natively (set spark.comet.explainFallback.enabled=false to disable this logging):
+ CollectLimit [COMET: CollectLimit is not supported]
++-  Project [COMET: toprettystring is not supported]
+   +- CometScanWrapper
+
++---+---+
+| c0| c1|
++---+---+
+|  0|  0|
+|  1|  1|
+|  2|  2|
+|  3|  3|
+|  4|  4|
+|  5|  5|
+|  6|  6|
+|  7|  7|
+|  8|  8|
+|  9|  9|
+| 10| 10|
+| 11| 11|
+| 12| 12|
+| 13| 13|
+| 14| 14|
+| 15| 15|
+| 16| 16|
+| 17| 17|
+| 18| 18|
+| 19| 19|
++---+---+
+only showing top 20 rows
+</pre></div>
+</div>
 </section>
 </section>
 
@@ -391,20 +463,6 @@ enabled.</p>
               
               <!-- Previous / next buttons -->
 <div class='prev-next-area'>
-    <a class='left-prev' id="prev-link" href="../index.html" title="previous page">
-        <i class="fas fa-angle-left"></i>
-        <div class="prev-next-info">
-            <p class="prev-next-subtitle">previous</p>
-            <p class="prev-next-title">Apache DataFusion Comet</p>
-        </div>
-    </a>
-    <a class='right-next' id="next-link" href="installation.html" title="next page">
-    <div class="prev-next-info">
-        <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Installing DataFusion Comet</p>
-    </div>
-    <i class="fas fa-angle-right"></i>
-    </a>
 </div>
               
           </main>
