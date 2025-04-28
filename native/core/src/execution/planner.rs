@@ -3081,4 +3081,172 @@ mod tests {
             }
         });
     }
+
+    #[test]
+    fn test_struct_field() {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx));
+
+        // Mock scan operator with 3 INT32 columns
+        let op_scan = Operator {
+            plan_id: 0,
+            children: vec![],
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![
+                    spark_expression::DataType {
+                        type_id: 4, // Int32
+                        type_info: None,
+                    },
+                    spark_expression::DataType {
+                        type_id: 4, // Int32
+                        type_info: None,
+                    },
+                    spark_expression::DataType {
+                        type_id: 4, // Int32
+                        type_info: None,
+                    },
+                ],
+                source: "".to_string(),
+            })),
+        };
+
+        // Mock expression to read a INT32 column with position 0
+        let col_0 = spark_expression::Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 0,
+                datatype: Some(spark_expression::DataType {
+                    type_id: 4,
+                    type_info: None,
+                }),
+            })),
+        };
+
+        // Mock expression to read a INT32 column with position 1
+        let col_1 = spark_expression::Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 1,
+                datatype: Some(spark_expression::DataType {
+                    type_id: 4,
+                    type_info: None,
+                }),
+            })),
+        };
+
+        let array_of_struct = spark_expression::Expr {
+            expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
+                func: "make_array".to_string(),
+                args: vec![spark_expression::Expr {
+                    expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
+                        func: "struct".to_string(),
+                        args: vec![col_0, col_1],
+                        return_type: None,
+                    })),
+                }],
+                return_type: None,
+            }))
+        };
+
+        let get_first_array_element = spark_expression::Expr {
+            expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
+                func: "array_element".to_string(),
+                args: vec![array_of_struct, spark_expression::Expr {
+                    expr_struct: Some(ExprStruct::Literal(spark_expression::Literal {
+                        value: Some(literal::Value::LongVal(1)),
+                        datatype: Some(spark_expression::DataType {
+                            type_id: 4,
+                            type_info: None,
+                        }),
+                        is_null: false,
+                    }))
+                }],
+                return_type: None,
+            }))
+        };
+
+        let get_field_of_struct = spark_expression::Expr {
+            expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
+                func: "get_field".to_string(),
+                args: vec![get_first_array_element, spark_expression::Expr {
+                    expr_struct: Some(ExprStruct::Literal(spark_expression::Literal {
+                        value: Some(literal::Value::StringVal("c1".to_string())),
+                        datatype: Some(spark_expression::DataType {
+                            type_id: 7,
+                            type_info: None,
+                        }),
+                        is_null: false,
+                    }))
+                }],
+                return_type: None,
+            }))
+        };
+
+        // Make a projection operator with struct(array_col, array_col_1)
+        let projection = Operator {
+            children: vec![op_scan],
+            plan_id: 0,
+            op_struct: Some(OpStruct::Projection(spark_operator::Projection {
+                project_list: vec![get_field_of_struct],
+            })),
+        };
+
+        // Create a physical plan
+        let (mut scans, datafusion_plan) =
+            planner.create_plan(&projection, &mut vec![], 1).unwrap();
+
+        // Start executing the plan in a separate thread
+        // The plan waits for incoming batches and emitting result as input comes
+        let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        // create async channel
+        let (tx, mut rx) = mpsc::channel(1);
+
+        // Send data as input to the plan being executed in a separate thread
+        runtime.spawn(async move {
+            // create data batch
+            // 0, 1, 2
+            // 3, 4, 5
+            // 6, null, null
+            let a = Int64Array::from(vec![Some(0), Some(3), Some(6)]);
+            let b = Int64Array::from(vec![Some(1), Some(4), None]);
+            let c = Int64Array::from(vec![Some(2), Some(5), None]);
+            let input_batch1 = InputBatch::Batch(vec![Arc::new(a), Arc::new(b), Arc::new(c)], 3);
+            let input_batch2 = InputBatch::EOF;
+
+            let batches = vec![input_batch1, input_batch2];
+
+            for batch in batches.into_iter() {
+                tx.send(batch).await.unwrap();
+            }
+        });
+
+        // Wait for the plan to finish executing and assert the result
+        runtime.block_on(async move {
+            loop {
+                let batch = rx.recv().await.unwrap();
+                scans[0].set_input_batch(batch);
+                match poll!(stream.next()) {
+                    Poll::Ready(Some(batch)) => {
+                        assert!(batch.is_ok(), "got error {}", batch.unwrap_err());
+                        let batch = batch.unwrap();
+                        let expected = [
+                            "+-------+",
+                            "| col_0 |",
+                            "+-------+",
+                            "| 1     |",
+                            "| 4     |",
+                            "|       |",
+                            "+-------+",
+                        ];
+                        assert_batches_eq!(expected, &[batch]);
+                    }
+                    Poll::Ready(None) => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
 }

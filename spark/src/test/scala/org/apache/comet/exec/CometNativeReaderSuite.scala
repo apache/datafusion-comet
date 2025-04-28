@@ -224,4 +224,76 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         |""".stripMargin,
       "select c0 from tbl")
   }
+  test("native reader - read a STRUCT subfield from ARRAY of STRUCTS - second field") {
+    testSingleLineQuery(
+      """
+        | select array(str0, str1) c0 from
+        | (
+        |   select
+        |     named_struct('a', 1, 'b', 'n', 'c', 'x') str0,
+        |     named_struct('a', 2, 'b', 'w', 'c', 'y') str1
+        | )
+        |""".stripMargin,
+      "select c0[0].b col0 from tbl")
+  }
+
+  test("native reader - read a STRUCT subfield - field from second") {
+    testSingleLineQuery(
+      """
+        |select array(named_struct('a', 1, 'b', 'n')) c0
+        |""".stripMargin,
+      "select c0[0].b from tbl")
+  }
+
+  test("native reader - read a STRUCT subfield from ARRAY of STRUCTS - field from first") {
+    testSingleLineQuery(
+      """
+        | select array(str0, str1) c0 from
+        | (
+        |   select
+        |     named_struct('a', 1, 'b', 'n', 'c', 'x') str0,
+        |     named_struct('a', 2, 'b', 'w', 'c', 'y') str1
+        | )
+        |""".stripMargin,
+      "select c0[0].a, c0[0].b, c0[0].c from tbl")
+  }
+
+  test("native reader - read a STRUCT subfield from ARRAY of STRUCTS - reverse fields") {
+    testSingleLineQuery(
+      """
+        | select array(str0, str1) c0 from
+        | (
+        |   select
+        |     named_struct('a', 1, 'b', 'n', 'c', 'x') str0,
+        |     named_struct('a', 2, 'b', 'w', 'c', 'y') str1
+        | )
+        |""".stripMargin,
+      "select c0[0].c, c0[0].b, c0[0].a from tbl")
+  }
+
+  test("native reader - read a STRUCT subfield from ARRAY of STRUCTS - skip field") {
+    testSingleLineQuery(
+      """
+        | select array(str0, str1) c0 from
+        | (
+        |   select
+        |     named_struct('a', 1, 'b', 'n', 'c', 'x') str0,
+        |     named_struct('a', 2, 'b', 'w', 'c', 'y') str1
+        | )
+        |""".stripMargin,
+      "select c0[0].a, c0[0].c from tbl")
+  }
+
+  test("native reader - read a STRUCT subfield from ARRAY of STRUCTS - duplicate first") {
+    testSingleLineQuery(
+      """
+        | select array(str0, str1) c0 from
+        | (
+        |   select
+        |     named_struct('a', 1, 'b', 'n', 'c', 'x') str0,
+        |     named_struct('a', 2, 'b', 'w', 'c', 'y') str1
+        | )
+        |""".stripMargin,
+      "select c0[0].a, c0[0].a from tbl")
+  }
 }
