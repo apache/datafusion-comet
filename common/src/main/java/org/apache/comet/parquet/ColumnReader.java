@@ -27,7 +27,6 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.arrow.c.ArrowArray;
 import org.apache.arrow.c.ArrowSchema;
-import org.apache.arrow.c.CometSchemaImporter;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.FieldVector;
@@ -44,6 +43,7 @@ import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.spark.sql.types.DataType;
 
 import org.apache.comet.CometConf;
+import org.apache.comet.CometSchemaImporter;
 import org.apache.comet.vector.CometDecodedVector;
 import org.apache.comet.vector.CometDictionary;
 import org.apache.comet.vector.CometDictionaryVector;

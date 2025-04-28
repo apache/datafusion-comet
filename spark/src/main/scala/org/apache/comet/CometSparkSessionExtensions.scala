@@ -230,8 +230,11 @@ class CometSparkSessionExtensions
           withInfo(scanExec, fallbackReasons.mkString(", "))
         }
 
-      case _ =>
-        withInfo(scanExec, "Comet Scan only supports Parquet and Iceberg Parquet file formats")
+      case other =>
+        withInfo(
+          scanExec,
+          s"Unsupported scan: ${other.getClass.getName}. " +
+            "Comet Scan only supports Parquet and Iceberg Parquet file formats")
     }
   }
 
