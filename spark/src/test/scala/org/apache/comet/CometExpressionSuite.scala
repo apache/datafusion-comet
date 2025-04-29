@@ -2729,4 +2729,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
   }
 
+  test("test integral divide overflow for decimal123") {
+
+      testSingleLineQuery("select 'sPark' a", "select initcap(a) from tbl")
+
+
+  }
+
+
 }

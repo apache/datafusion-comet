@@ -25,7 +25,6 @@ import java.nio.file.{Files, Paths}
 import scala.collection.mutable
 import scala.sys.process._
 
-import org.scalatest.Ignore
 import org.scalatest.exceptions.TestFailedException
 import org.scalatest.matchers.should.Matchers.convertToAnyShouldWrapper
 
@@ -44,7 +43,7 @@ import org.apache.comet.CoverageResultStatus.{CoverageResultStatus, Passed}
  *
  * The test will update files docs/spark_builtin_expr_coverage.txt
  */
-@Ignore
+//@Ignore
 class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   import testImplicits._
@@ -57,8 +56,8 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
   private val valuesPattern = """(?i)FROM VALUES(.+?);""".r
   private val selectPattern = """(i?)SELECT(.+?)FROM""".r
 
-  // exclude funcs Comet has no plans to support streaming in near future
-  // like spark streaming functions, java calls
+  // exclude builtin function which Comet has no plans to support in near future
+  // like spark streaming functions, java calls, catalog, etc
   private val outOfRoadmapFuncs =
     List(
       "window",
@@ -72,7 +71,6 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
       "current_database")
   // Spark Comet configuration to run the tests
   private val sqlConf = Seq(
-    "spark.comet.exec.shuffle.enabled" -> "true",
     "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding",
     "spark.sql.adaptive.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding")
 
@@ -179,7 +177,7 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
 
   // key - function name
   // value - examples
-  def getExamples(): Map[FunctionInfo, List[String]] =
+  def getExamples: Map[FunctionInfo, List[String]] =
     spark.sessionState.functionRegistry
       .listFunction()
       .map(spark.sessionState.catalog.lookupFunctionInfo(_))
@@ -194,11 +192,11 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
   /**
    * Manual test to calculate Spark builtin expressions coverage support by the Comet
    *
-   * The test will update files doc/spark_builtin_expr_coverage.txt,
+   * The test updates files doc/spark_builtin_expr_coverage.txt,
    * doc/spark_builtin_expr_coverage_agg.txt
    */
   test("Test Spark builtin expressions coverage") {
-    val builtinExamplesMap = getExamples()
+    val builtinExamplesMap = getExamples
 
     // key - function name
     // value - list of result shows if function supported by Comet
@@ -387,7 +385,7 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
       "f5",
       CoverageResult("q5", CoverageResultStatus.Passed, CoverageResultDetails("", ""), "group3"))
     val str = generateMarkdown(map.toSeq.toDF("name", "details"))
-    str shouldBe s"${getLicenseHeader()}\n# Supported Spark Expressions\n\n### group1\n - [x] f1\n - [ ] f2\n\n### group2\n - [x] f3\n - [ ] f4\n\n### group3\n - [x] f5"
+    str shouldBe s"$getLicenseHeader\n# Supported Spark Expressions\n\n### group1\n - [x] f1\n - [ ] f2\n\n### group2\n - [x] f3\n - [ ] f4\n\n### group3\n - [x] f5"
   }
 
   test("get sql function arguments") {
@@ -423,7 +421,7 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
       .groupBy("details.group")
       .agg(collect_list("name").as("names"), collect_list("details.result").as("statuses"))
       .orderBy("group")
-    val sb = new StringBuilder(s"${getLicenseHeader()}\n# Supported Spark Expressions")
+    val sb = new StringBuilder(s"$getLicenseHeader\n# Supported Spark Expressions")
     groupedDF.collect().foreach { row =>
       val groupName = row.getAs[String]("group")
       val names = row.getAs[Seq[String]]("names")
@@ -443,7 +441,7 @@ class CometExpressionCoverageSuite extends CometTestBase with AdaptiveSparkPlanH
     sb.result()
   }
 
-  private def getLicenseHeader(): String = {
+  private def getLicenseHeader: String = {
     """<!---
       |  Licensed to the Apache Software Foundation (ASF) under one
       |  or more contributor license agreements.  See the NOTICE file

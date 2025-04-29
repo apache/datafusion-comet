@@ -29,6 +29,8 @@
  - [x] bit_and
  - [x] bit_or
  - [x] bit_xor
+ - [ ] bitmap_construct_agg
+ - [ ] bitmap_or_agg
  - [x] bool_and
  - [x] bool_or
  - [ ] collect_list
@@ -45,6 +47,8 @@
  - [ ] grouping
  - [ ] grouping_id
  - [ ] histogram_numeric
+ - [ ] hll_sketch_agg
+ - [ ] hll_union_agg
  - [ ] kurtosis
  - [x] last
  - [x] last_value
@@ -92,14 +96,14 @@
  - [ ] array_max
  - [ ] array_min
  - [ ] array_position
+ - [ ] array_prepend
  - [ ] array_remove
  - [ ] array_repeat
  - [ ] array_union
  - [ ] arrays_overlap
  - [ ] arrays_zip
- - [x] element_at
  - [ ] flatten
- - [x] get
+ - [ ] get
  - [ ] sequence
  - [ ] shuffle
  - [ ] slice
@@ -137,7 +141,7 @@
  - [ ] bigint
  - [ ] binary
  - [ ] boolean
- - [ ] cast
+ - [x] cast
  - [ ] date
  - [ ] decimal
  - [ ] double
@@ -160,14 +164,14 @@
  - [x] current_date
  - [ ] current_timestamp
  - [x] current_timezone
- - [ ] date_add
+ - [x] date_add
  - [ ] date_diff
  - [ ] date_format
  - [ ] date_from_unix_date
  - [x] date_part
- - [ ] date_sub
+ - [x] date_sub
  - [ ] date_trunc
- - [ ] dateadd
+ - [x] dateadd
  - [ ] datediff
  - [x] datepart
  - [ ] day
@@ -197,13 +201,13 @@
  - [ ] timestamp_micros
  - [ ] timestamp_millis
  - [ ] timestamp_seconds
- - [ ] to_date
+ - [x] to_date
  - [ ] to_timestamp
  - [ ] to_timestamp_ltz
  - [ ] to_timestamp_ntz
  - [ ] to_unix_timestamp
  - [ ] to_utc_timestamp
- - [ ] trunc
+ - [x] trunc
  - [ ] try_to_timestamp
  - [ ] unix_date
  - [ ] unix_micros
@@ -212,7 +216,7 @@
  - [ ] unix_timestamp
  - [ ] weekday
  - [ ] weekofyear
- - [ ] year
+ - [x] year
 
 ### generator_funcs
  - [ ] explode
@@ -274,7 +278,7 @@
  - [x] +
  - [x] -
  - [x] /
- - [x] abs
+ - [ ] abs
  - [x] acos
  - [ ] acosh
  - [x] asin
@@ -293,14 +297,14 @@
  - [ ] cot
  - [ ] csc
  - [ ] degrees
- - [ ] div
+ - [x] div
  - [ ] e
  - [x] exp
  - [ ] expm1
  - [ ] factorial
  - [x] floor
  - [ ] greatest
- - [ ] hex
+ - [x] hex
  - [ ] hypot
  - [ ] least
  - [x] ln
@@ -323,8 +327,8 @@
  - [x] round
  - [ ] sec
  - [x] shiftleft
- - [x] sign
- - [x] signum
+ - [ ] sign
+ - [ ] signum
  - [x] sin
  - [ ] sinh
  - [x] sqrt
@@ -341,17 +345,19 @@
  - [ ] aes_decrypt
  - [ ] aes_encrypt
  - [ ] assert_true
- - [x] current_catalog
- - [x] current_database
- - [x] current_schema
- - [x] current_user
+ - [ ] bitmap_bit_position
+ - [ ] bitmap_bucket_number
+ - [ ] bitmap_count
  - [x] equal_null
+ - [ ] hll_sketch_estimate
+ - [ ] hll_union
  - [ ] input_file_block_length
  - [ ] input_file_block_start
  - [ ] input_file_name
  - [ ] monotonically_increasing_id
  - [ ] raise_error
  - [ ] spark_partition_id
+ - [ ] try_aes_decrypt
  - [ ] typeof
  - [x] user
  - [ ] uuid
@@ -367,9 +373,9 @@
  - [x] >
  - [x] >=
  - [x] and
- - [x] ilike
+ - [ ] ilike
  - [x] in
- - [ ] isnan
+ - [x] isnan
  - [x] isnotnull
  - [x] isnull
  - [x] like
@@ -397,17 +403,18 @@
  - [ ] find_in_set
  - [ ] format_number
  - [ ] format_string
- - [x] initcap
+ - [ ] initcap
  - [x] instr
- - [x] lcase
+ - [ ] lcase
  - [ ] left
  - [x] len
  - [x] length
  - [ ] levenshtein
  - [ ] locate
- - [x] lower
+ - [ ] lower
  - [ ] lpad
  - [x] ltrim
+ - [ ] luhn_check
  - [ ] mask
  - [x] octet_length
  - [ ] overlay
@@ -436,17 +443,18 @@
  - [ ] to_binary
  - [ ] to_char
  - [ ] to_number
+ - [ ] to_varchar
  - [x] translate
  - [x] trim
  - [ ] try_to_binary
  - [ ] try_to_number
- - [x] ucase
+ - [ ] ucase
  - [ ] unbase64
- - [x] upper
+ - [ ] upper
 
 ### struct_funcs
- - [ ] named_struct
- - [ ] struct
+ - [x] named_struct
+ - [x] struct
 
 ### url_funcs
  - [ ] parse_url
