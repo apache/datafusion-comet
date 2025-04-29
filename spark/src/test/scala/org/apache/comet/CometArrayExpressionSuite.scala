@@ -410,4 +410,28 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("array_repeat") {
+    withSQLConf(
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
+      CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+
+          checkSparkAnswerAndOperator(sql("SELECT array_repeat(_4, null) from t1"))
+          checkSparkAnswerAndOperator(sql("SELECT array_repeat(_4, 0) from t1"))
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_repeat(_2, 5) from t1 where _2 is not null"))
+          checkSparkAnswerAndOperator(sql("SELECT array_repeat(_2, 5) from t1 where _2 is null"))
+          checkSparkAnswerAndOperator(sql("SELECT array_repeat(_3, _4) from t1 where _3 is null"))
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_repeat(_3, _4) from t1 where _3 is not null"))
+          checkSparkAnswerAndOperator(sql("SELECT array_repeat(cast(_3 as string), 2) from t1"))
+          checkSparkAnswerAndOperator(sql("SELECT array_repeat(array(_2, _3, _4), 2) from t1"))
+        }
+      }
+    }
+  }
 }

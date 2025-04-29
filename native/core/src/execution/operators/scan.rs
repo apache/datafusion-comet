@@ -497,14 +497,14 @@ pub enum InputBatch {
     /// The end of input batches.
     EOF,
 
-    /// A normal batch with columns and number of rows.
-    /// It is possible to have zero-column batch with non-zero number of rows,
+    /// A normal batch with columns and a number of rows.
+    /// It is possible to have a zero-column batch with a non-zero number of rows,
     /// i.e. reading empty schema from scan.
     Batch(Vec<ArrayRef>, usize),
 }
 
 impl InputBatch {
-    /// Constructs a `InputBatch` from columns and optional number of rows.
+    /// Constructs an ` InputBatch ` from columns and an optional number of rows.
     /// If `num_rows` is none, this function will calculate it from given
     /// columns.
     pub fn new(columns: Vec<ArrayRef>, num_rows: Option<usize>) -> Self {
