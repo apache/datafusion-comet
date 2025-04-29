@@ -17,9 +17,14 @@
  * under the License.
  */
 
-package org.apache.comet.parquet;
+package org.apache.comet;
 
-/** This is implemented in Apache Iceberg */
-public interface SupportsComet {
-  boolean isCometEnabled();
+import org.apache.arrow.c.*;
+import org.apache.arrow.memory.BufferAllocator;
+
+/** This is a simple wrapper around SchemaImporter to make it accessible from Java Arrow. */
+public class CometSchemaImporter extends AbstractCometSchemaImporter {
+  public CometSchemaImporter(BufferAllocator allocator) {
+    super(allocator);
+  }
 }
