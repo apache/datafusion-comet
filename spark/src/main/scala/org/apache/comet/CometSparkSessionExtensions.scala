@@ -415,55 +415,43 @@ class CometSparkSessionExtensions
             op,
             CometExpandExec(_, op, op.output, op.projections, op.child, SerializedPlan(None)))
 
+        // When Comet shuffle is disabled, we don't want to transform the HashAggregate
+        // to CometHashAggregate. Otherwise, we probably get partial Comet aggregation
+        // and final Spark aggregation.
         case op: BaseAggregateExec
             if op.isInstanceOf[HashAggregateExec] ||
               op.isInstanceOf[ObjectHashAggregateExec] &&
-              // When Comet shuffle is disabled, we don't want to transform the HashAggregate
-              // to CometHashAggregate. Otherwise, we probably get partial Comet aggregation
-              // and final Spark aggregation.
               isCometShuffleEnabled(conf) =>
-          val groupingExprs = op.groupingExpressions
-          val aggExprs = op.aggregateExpressions
-          val resultExpressions = op.resultExpressions
-          val child = op.child
-          val modes = aggExprs.map(_.mode).distinct
+          val modes = op.aggregateExpressions.map(_.mode).distinct
+          // In distinct aggregates there can be a combination of modes
+          val multiMode = modes.size > 1
+          // For a final mode HashAggregate, we only need to transform the HashAggregate
+          // if there is Comet partial aggregation.
+          val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(op.child).isEmpty
 
-          if (modes.nonEmpty && modes.size != 1) {
-            // This shouldn't happen as all aggregation expressions should share the same mode.
-            // Fallback to Spark nevertheless here.
+          if (multiMode || sparkFinalMode) {
             op
           } else {
-            // For a final mode HashAggregate, we only need to transform the HashAggregate
-            // if there is Comet partial aggregation.
-            val sparkFinalMode = {
-              modes.nonEmpty && modes.head == Final && findCometPartialAgg(child).isEmpty
-            }
-
-            if (sparkFinalMode) {
-              op
-            } else {
-              newPlanWithProto(
-                op,
-                nativeOp => {
-                  val modes = aggExprs.map(_.mode).distinct
-                  // The aggExprs could be empty. For example, if the aggregate functions only have
-                  // distinct aggregate functions or only have group by, the aggExprs is empty and
-                  // modes is empty too. If aggExprs is not empty, we need to verify all the
-                  // aggregates have the same mode.
-                  assert(modes.length == 1 || modes.isEmpty)
-                  CometHashAggregateExec(
-                    nativeOp,
-                    op,
-                    op.output,
-                    groupingExprs,
-                    aggExprs,
-                    resultExpressions,
-                    child.output,
-                    modes.headOption,
-                    child,
-                    SerializedPlan(None))
-                })
-            }
+            newPlanWithProto(
+              op,
+              nativeOp => {
+                // The aggExprs could be empty. For example, if the aggregate functions only have
+                // distinct aggregate functions or only have group by, the aggExprs is empty and
+                // modes is empty too. If aggExprs is not empty, we need to verify all the
+                // aggregates have the same mode.
+                assert(modes.length == 1 || modes.isEmpty)
+                CometHashAggregateExec(
+                  nativeOp,
+                  op,
+                  op.output,
+                  op.groupingExpressions,
+                  op.aggregateExpressions,
+                  op.resultExpressions,
+                  op.child.output,
+                  modes.headOption,
+                  op.child,
+                  SerializedPlan(None))
+              })
           }
 
         case op: ShuffledHashJoinExec
