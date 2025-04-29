@@ -1902,6 +1902,31 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("explain: CollectLimit disabled") {
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_COLLECT_LIMIT_ENABLED.key -> "false",
+      EXTENDED_EXPLAIN_PROVIDERS_KEY -> "org.apache.comet.ExtendedExplainInfo") {
+      val table = "test"
+      withTable(table) {
+        sql(s"create table $table(c0 int, c1 int , c2 float) using parquet")
+        sql(s"insert into $table values(0, 1, 100.000001)")
+        Seq(
+          (
+            s"select * from $table LIMIT 10",
+            Set("spark.comet.exec.collectLimit.enabled is false")))
+          .foreach(test => {
+            val qry = test._1
+            val expected = test._2
+            val df = sql(qry)
+            df.collect() // force an execution
+            checkSparkAnswerAndCompareExplainPlan(df, expected)
+          })
+      }
+    }
+  }
+
   test("hash functions") {
     Seq(true, false).foreach { dictionary =>
       withSQLConf(
