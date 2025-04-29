@@ -20,10 +20,8 @@
 package org.apache.comet
 
 import java.nio.ByteOrder
-
 import scala.annotation.tailrec
 import scala.collection.mutable.ListBuffer
-
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
@@ -53,11 +51,10 @@ import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHash
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DoubleType, FloatType}
-
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometLoaded, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
-import org.apache.comet.rules.RewriteJoin
+import org.apache.comet.rules.{CometScanRule, RewriteJoin}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
@@ -89,152 +86,6 @@ class CometSparkSessionExtensions
 
     override def postColumnarTransitions: Rule[SparkPlan] =
       EliminateRedundantTransitions(session)
-  }
-
-  case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
-    override def apply(plan: SparkPlan): SparkPlan = {
-      if (!isCometLoaded(conf) || !isCometScanEnabled(conf)) {
-        if (!isCometLoaded(conf)) {
-          withInfo(plan, "Comet is not enabled")
-        } else if (!isCometScanEnabled(conf)) {
-          withInfo(plan, "Comet Scan is not enabled")
-        }
-        plan
-      } else {
-
-        def hasMetadataCol(plan: SparkPlan): Boolean = {
-          plan.expressions.exists(_.exists {
-            case a: Attribute =>
-              a.isMetadataCol
-            case _ => false
-          })
-        }
-
-        plan.transform {
-          case scan if hasMetadataCol(scan) =>
-            withInfo(scan, "Metadata column is not supported")
-
-          // data source V1
-          case scanExec: FileSourceScanExec =>
-            transformV1Scan(scanExec)
-
-          // data source V2
-          case scanExec: BatchScanExec =>
-            transformV2Scan(scanExec)
-        }
-      }
-    }
-
-    private def isDynamicPruningFilter(e: Expression): Boolean =
-      e.exists(_.isInstanceOf[PlanExpression[_]])
-
-    private def transformV1Scan(scanExec: FileSourceScanExec): SparkPlan = {
-
-      if (COMET_DPP_FALLBACK_ENABLED.get() &&
-        scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
-        return withInfo(scanExec, "Dynamic Partition Pruning is not supported")
-      }
-
-      scanExec.relation match {
-        case r: HadoopFsRelation =>
-          val fallbackReasons = new ListBuffer[String]()
-          if (!CometScanExec.isFileFormatSupported(r.fileFormat)) {
-            fallbackReasons += s"Unsupported file format ${r.fileFormat}"
-          }
-
-          val scanImpl = COMET_NATIVE_SCAN_IMPL.get()
-          if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && !COMET_EXEC_ENABLED.get()) {
-            fallbackReasons +=
-              s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled"
-          }
-
-          val (schemaSupported, partitionSchemaSupported) = scanImpl match {
-            case CometConf.SCAN_NATIVE_DATAFUSION =>
-              (
-                CometNativeScanExec.isSchemaSupported(scanExec.requiredSchema),
-                CometNativeScanExec.isSchemaSupported(r.partitionSchema))
-            case CometConf.SCAN_NATIVE_COMET | SCAN_NATIVE_ICEBERG_COMPAT =>
-              (
-                CometScanExec.isSchemaSupported(scanExec.requiredSchema),
-                CometScanExec.isSchemaSupported(r.partitionSchema))
-          }
-
-          if (!schemaSupported) {
-            fallbackReasons += s"Unsupported schema ${scanExec.requiredSchema} for $scanImpl"
-          }
-          if (!partitionSchemaSupported) {
-            fallbackReasons += s"Unsupported partitioning schema ${r.partitionSchema} for $scanImpl"
-          }
-
-          if (fallbackReasons.isEmpty) {
-            CometScanExec(scanExec, session)
-          } else {
-            withInfo(scanExec, fallbackReasons.mkString(", "))
-          }
-
-        case _ =>
-          withInfo(scanExec, s"Unsupported relation ${scanExec.relation}")
-      }
-    }
-  }
-
-  private def transformV2Scan(scanExec: BatchScanExec): SparkPlan = {
-
-    scanExec.scan match {
-      case scan: ParquetScan =>
-        val fallbackReasons = new ListBuffer[String]()
-        if (!CometBatchScanExec.isSchemaSupported(scan.readDataSchema)) {
-          fallbackReasons += s"Schema ${scan.readDataSchema} is not supported"
-        }
-
-        if (!CometBatchScanExec.isSchemaSupported(scan.readPartitionSchema)) {
-          fallbackReasons += s"Partition schema ${scan.readPartitionSchema} is not supported"
-        }
-
-        if (scan.pushedAggregate.nonEmpty) {
-          fallbackReasons += "Comet does not support pushed aggregate"
-        }
-
-        if (fallbackReasons.isEmpty) {
-          val cometScan = CometParquetScan(scanExec.scan.asInstanceOf[ParquetScan])
-          logInfo("Comet extension enabled for Scan")
-          CometBatchScanExec(
-            scanExec.copy(scan = cometScan),
-            runtimeFilters = scanExec.runtimeFilters)
-        } else {
-          withInfo(scanExec, fallbackReasons.mkString(", "))
-        }
-
-      // Iceberg scan
-      case s: SupportsComet =>
-        val fallbackReasons = new ListBuffer[String]()
-
-        if (!s.isCometEnabled) {
-          fallbackReasons += "Comet extension is not enabled for " +
-            s"${scanExec.scan.getClass.getSimpleName}: not enabled on data source side"
-        }
-
-        if (!CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema())) {
-          fallbackReasons += "Comet extension is not enabled for " +
-            s"${scanExec.scan.getClass.getSimpleName}: Schema not supported"
-        }
-
-        if (fallbackReasons.isEmpty) {
-          // When reading from Iceberg, we automatically enable type promotion
-          SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
-          CometBatchScanExec(
-            scanExec.clone().asInstanceOf[BatchScanExec],
-            runtimeFilters = scanExec.runtimeFilters)
-        } else {
-          withInfo(scanExec, fallbackReasons.mkString(", "))
-        }
-
-      case other =>
-        withInfo(
-          scanExec,
-          s"Unsupported scan: ${other.getClass.getName}. " +
-            "Comet Scan only supports Parquet and Iceberg Parquet file formats")
-    }
   }
 
   case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
