@@ -21,7 +21,6 @@ package org.apache.comet.rules
 
 import scala.collection.mutable.ListBuffer
 
-import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, PlanExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -38,7 +37,7 @@ import org.apache.comet.CometConf.{COMET_DPP_FALLBACK_ENABLED, COMET_EXEC_ENABLE
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 
-case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Logging {
+case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
   override def apply(plan: SparkPlan): SparkPlan = {
     if (!isCometLoaded(conf) || !isCometScanEnabled(conf)) {
       if (!isCometLoaded(conf)) {
