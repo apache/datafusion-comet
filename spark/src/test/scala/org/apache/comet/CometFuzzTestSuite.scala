@@ -35,7 +35,7 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
-import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, StructType}
+import org.apache.spark.sql.types._
 
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
@@ -184,6 +184,19 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val (_, cometPlan) = checkSparkAnswer(sql)
       if (CometConf.isExperimentalNativeScan) {
         assert(2 == collectNativeScans(cometPlan).length)
+      }
+    }
+  }
+
+  test("decode") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    for (field <- df.schema.fields if field.dataType == BinaryType) {
+      val sql = s"SELECT decode(${field.name}, 'utf-8') FROM t1"
+      if (CometConf.isExperimentalNativeScan) {
+        checkSparkAnswerAndOperator(sql)
+      } else {
+        checkSparkAnswer(sql)
       }
     }
   }
