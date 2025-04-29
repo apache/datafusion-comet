@@ -70,7 +70,7 @@ object Meta {
     Function("repeat", 2),
     Function("length", 1),
     Function("reverse", 1),
-    Function("in_str", 2),
+    Function("instr", 2),
     Function("replace", 2),
     Function("translate", 2))
 

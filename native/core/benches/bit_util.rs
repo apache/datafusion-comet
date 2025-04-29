@@ -17,7 +17,7 @@
 
 use std::{mem::size_of, time::Duration};
 
-use rand::{thread_rng, Rng};
+use rand::{rng, Rng};
 
 use arrow::buffer::Buffer;
 use comet::common::bit::{
@@ -36,7 +36,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     const N: usize = 1024 * 1024;
     let mut writer: BitWriter = BitWriter::new(N * 10);
     for _ in 0..N {
-        if !writer.put_vlq_int(thread_rng().gen::<u64>()) {
+        if !writer.put_vlq_int(rng().random::<u64>()) {
             break;
         }
     }

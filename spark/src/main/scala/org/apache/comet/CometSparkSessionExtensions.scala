@@ -55,7 +55,6 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import org.apache.comet.CometConf._
-import org.apache.comet.CometExplainInfo.getActualPlan
 import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometLoaded, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.rules.RewriteJoin
@@ -230,8 +229,11 @@ class CometSparkSessionExtensions
           withInfo(scanExec, fallbackReasons.mkString(", "))
         }
 
-      case _ =>
-        withInfo(scanExec, "Comet Scan only supports Parquet and Iceberg Parquet file formats")
+      case other =>
+        withInfo(
+          scanExec,
+          s"Unsupported scan: ${other.getClass.getName}. " +
+            "Comet Scan only supports Parquet and Iceberg Parquet file formats")
     }
   }
 
@@ -263,19 +265,6 @@ class CometSparkSessionExtensions
     private def isCometPlan(op: SparkPlan): Boolean = op.isInstanceOf[CometPlan]
 
     private def isCometNative(op: SparkPlan): Boolean = op.isInstanceOf[CometNativeExec]
-
-    private def explainChildNotNative(op: SparkPlan): String = {
-      var nonNatives: Seq[String] = Seq()
-      val actualOp = getActualPlan(op)
-      actualOp.children.foreach {
-        case p: SparkPlan =>
-          if (!isCometNative(p)) {
-            nonNatives = nonNatives :+ getActualPlan(p).nodeName
-          }
-        case _ =>
-      }
-      nonNatives.mkString("(", ", ", ")")
-    }
 
     // spotless:off
     /**
@@ -347,10 +336,6 @@ class CometSparkSessionExtensions
             op,
             op.children.map(_.asInstanceOf[CometNativeExec].nativeOp): _*)
         } else {
-          withInfo(
-            op,
-            s"${op.nodeName} is not native because the following children are not native " +
-              s"${explainChildNotNative(op)}")
           None
         }
       }
@@ -430,55 +415,43 @@ class CometSparkSessionExtensions
             op,
             CometExpandExec(_, op, op.output, op.projections, op.child, SerializedPlan(None)))
 
+        // When Comet shuffle is disabled, we don't want to transform the HashAggregate
+        // to CometHashAggregate. Otherwise, we probably get partial Comet aggregation
+        // and final Spark aggregation.
         case op: BaseAggregateExec
             if op.isInstanceOf[HashAggregateExec] ||
               op.isInstanceOf[ObjectHashAggregateExec] &&
-              // When Comet shuffle is disabled, we don't want to transform the HashAggregate
-              // to CometHashAggregate. Otherwise, we probably get partial Comet aggregation
-              // and final Spark aggregation.
               isCometShuffleEnabled(conf) =>
-          val groupingExprs = op.groupingExpressions
-          val aggExprs = op.aggregateExpressions
-          val resultExpressions = op.resultExpressions
-          val child = op.child
-          val modes = aggExprs.map(_.mode).distinct
+          val modes = op.aggregateExpressions.map(_.mode).distinct
+          // In distinct aggregates there can be a combination of modes
+          val multiMode = modes.size > 1
+          // For a final mode HashAggregate, we only need to transform the HashAggregate
+          // if there is Comet partial aggregation.
+          val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(op.child).isEmpty
 
-          if (modes.nonEmpty && modes.size != 1) {
-            // This shouldn't happen as all aggregation expressions should share the same mode.
-            // Fallback to Spark nevertheless here.
+          if (multiMode || sparkFinalMode) {
             op
           } else {
-            // For a final mode HashAggregate, we only need to transform the HashAggregate
-            // if there is Comet partial aggregation.
-            val sparkFinalMode = {
-              modes.nonEmpty && modes.head == Final && findCometPartialAgg(child).isEmpty
-            }
-
-            if (sparkFinalMode) {
-              op
-            } else {
-              newPlanWithProto(
-                op,
-                nativeOp => {
-                  val modes = aggExprs.map(_.mode).distinct
-                  // The aggExprs could be empty. For example, if the aggregate functions only have
-                  // distinct aggregate functions or only have group by, the aggExprs is empty and
-                  // modes is empty too. If aggExprs is not empty, we need to verify all the
-                  // aggregates have the same mode.
-                  assert(modes.length == 1 || modes.isEmpty)
-                  CometHashAggregateExec(
-                    nativeOp,
-                    op,
-                    op.output,
-                    groupingExprs,
-                    aggExprs,
-                    resultExpressions,
-                    child.output,
-                    modes.headOption,
-                    child,
-                    SerializedPlan(None))
-                })
-            }
+            newPlanWithProto(
+              op,
+              nativeOp => {
+                // The aggExprs could be empty. For example, if the aggregate functions only have
+                // distinct aggregate functions or only have group by, the aggExprs is empty and
+                // modes is empty too. If aggExprs is not empty, we need to verify all the
+                // aggregates have the same mode.
+                assert(modes.length == 1 || modes.isEmpty)
+                CometHashAggregateExec(
+                  nativeOp,
+                  op,
+                  op.output,
+                  op.groupingExpressions,
+                  op.aggregateExpressions,
+                  op.resultExpressions,
+                  op.child.output,
+                  modes.headOption,
+                  op.child,
+                  SerializedPlan(None))
+              })
           }
 
         case op: ShuffledHashJoinExec
@@ -504,10 +477,7 @@ class CometSparkSessionExtensions
           withInfo(op, "ShuffleHashJoin is not enabled")
 
         case op: ShuffledHashJoinExec if !op.children.forall(isCometNative) =>
-          withInfo(
-            op,
-            "ShuffleHashJoin disabled because the following children are not native " +
-              s"${explainChildNotNative(op)}")
+          op
 
         case op: BroadcastHashJoinExec
             if CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) &&
@@ -548,20 +518,14 @@ class CometSparkSessionExtensions
 
         case op: SortMergeJoinExec
             if CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) &&
-              !op.children.forall(isCometNative(_)) =>
-          withInfo(
-            op,
-            "SortMergeJoin is not enabled because the following children are not native " +
-              s"${explainChildNotNative(op)}")
+              !op.children.forall(isCometNative) =>
+          op
 
         case op: SortMergeJoinExec if !CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) =>
           withInfo(op, "SortMergeJoin is not enabled")
 
-        case op: SortMergeJoinExec if !op.children.forall(isCometNative(_)) =>
-          withInfo(
-            op,
-            "SortMergeJoin is not enabled because the following children are not native " +
-              s"${explainChildNotNative(op)}")
+        case op: SortMergeJoinExec if !op.children.forall(isCometNative) =>
+          op
 
         case c @ CoalesceExec(numPartitions, child)
             if CometConf.COMET_EXEC_COALESCE_ENABLED.get(conf)
@@ -577,11 +541,8 @@ class CometSparkSessionExtensions
         case c @ CoalesceExec(_, _) if !CometConf.COMET_EXEC_COALESCE_ENABLED.get(conf) =>
           withInfo(c, "Coalesce is not enabled")
 
-        case op: CoalesceExec if !op.children.forall(isCometNative(_)) =>
-          withInfo(
-            op,
-            "Coalesce is not enabled because the following children are not native " +
-              s"${explainChildNotNative(op)}")
+        case op: CoalesceExec if !op.children.forall(isCometNative) =>
+          op
 
         case s: TakeOrderedAndProjectExec
             if isCometNative(s.child) && CometConf.COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED
@@ -637,11 +598,8 @@ class CometSparkSessionExtensions
         case u: UnionExec if !CometConf.COMET_EXEC_UNION_ENABLED.get(conf) =>
           withInfo(u, "Union is not enabled")
 
-        case op: UnionExec if !op.children.forall(isCometNative(_)) =>
-          withInfo(
-            op,
-            "Union is not enabled because the following children are not native " +
-              s"${explainChildNotNative(op)}")
+        case op: UnionExec if !op.children.forall(isCometNative) =>
+          op
 
         // For AQE broadcast stage on a Comet broadcast exchange
         case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
@@ -683,20 +641,14 @@ class CometSparkSessionExtensions
               plan
             }
           } else {
-            withInfo(
-              plan,
-              s"${plan.nodeName} is not native because the following children are not native " +
-                s"${explainChildNotNative(plan)}")
+            plan
           }
 
         // this case should be checked only after the previous case checking for a
         // child BroadcastExchange has been applied, otherwise that transform
         // never gets applied
-        case op: BroadcastHashJoinExec if !op.children.forall(isCometNative(_)) =>
-          withInfo(
-            op,
-            "BroadcastHashJoin is not enabled because the following children are not native " +
-              s"${explainChildNotNative(op)}")
+        case op: BroadcastHashJoinExec if !op.children.forall(isCometNative) =>
+          op
 
         case op: BroadcastHashJoinExec
             if !CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) =>
