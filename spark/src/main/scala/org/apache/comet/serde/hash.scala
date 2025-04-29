@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Murmur3
 import org.apache.spark.sql.types.{DecimalType, IntegerType, LongType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarExprToProtoWithReturnType, serializeDataType, supportedDataType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProtoWithReturnType, serializeDataType, supportedDataType}
 
 object CometXxHash64 extends CometExpressionSerde {
   override def convert(
@@ -41,7 +41,7 @@ object CometXxHash64 extends CometExpressionSerde {
       .setLongVal(hash.seed)
     val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
     // the seed is put at the end of the arguments
-    scalarExprToProtoWithReturnType("xxhash64", LongType, exprs :+ seedExpr: _*)
+    scalarFunctionExprToProtoWithReturnType("xxhash64", LongType, exprs :+ seedExpr: _*)
   }
 }
 
@@ -61,7 +61,7 @@ object CometMurmur3Hash extends CometExpressionSerde {
       .setIntVal(hash.seed)
     val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
     // the seed is put at the end of the arguments
-    scalarExprToProtoWithReturnType("murmur3_hash", IntegerType, exprs :+ seedExpr: _*)
+    scalarFunctionExprToProtoWithReturnType("murmur3_hash", IntegerType, exprs :+ seedExpr: _*)
   }
 }
 
