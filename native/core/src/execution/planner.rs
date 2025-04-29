@@ -2505,7 +2505,7 @@ mod tests {
 
     use futures::{poll, StreamExt};
 
-    use arrow::array::{Array, DictionaryArray, Int32Array, StringArray};
+    use arrow::array::{Array, DictionaryArray, Int32Array, Int64Array, StringArray};
     use arrow::datatypes::DataType;
     use datafusion::logical_expr::ScalarUDF;
     use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
@@ -3133,6 +3133,7 @@ mod tests {
             })),
         };
 
+        // create a list of structs - make_array(struct(col_0, col_1))
         let array_of_struct = spark_expression::Expr {
             expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
                 func: "make_array".to_string(),
@@ -3144,44 +3145,54 @@ mod tests {
                     })),
                 }],
                 return_type: None,
-            }))
+            })),
         };
 
+        // get first array element, array[1] - in SQL index starts with 1
         let get_first_array_element = spark_expression::Expr {
             expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
                 func: "array_element".to_string(),
-                args: vec![array_of_struct, spark_expression::Expr {
-                    expr_struct: Some(ExprStruct::Literal(spark_expression::Literal {
-                        value: Some(literal::Value::LongVal(1)),
-                        datatype: Some(spark_expression::DataType {
-                            type_id: 4,
-                            type_info: None,
-                        }),
-                        is_null: false,
-                    }))
-                }],
+                args: vec![
+                    array_of_struct,
+                    spark_expression::Expr {
+                        expr_struct: Some(ExprStruct::Literal(spark_expression::Literal {
+                            value: Some(literal::Value::LongVal(1)),
+                            datatype: Some(spark_expression::DataType {
+                                type_id: 4,
+                                type_info: None,
+                            }),
+                            is_null: false,
+                        })),
+                    },
+                ],
                 return_type: None,
-            }))
+            })),
         };
 
+        // Get the field c1 of struct struct.c1
         let get_field_of_struct = spark_expression::Expr {
             expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
                 func: "get_field".to_string(),
-                args: vec![get_first_array_element, spark_expression::Expr {
-                    expr_struct: Some(ExprStruct::Literal(spark_expression::Literal {
-                        value: Some(literal::Value::StringVal("c1".to_string())),
-                        datatype: Some(spark_expression::DataType {
-                            type_id: 7,
-                            type_info: None,
-                        }),
-                        is_null: false,
-                    }))
-                }],
+                args: vec![
+                    get_first_array_element,
+                    spark_expression::Expr {
+                        expr_struct: Some(ExprStruct::Literal(spark_expression::Literal {
+                            value: Some(literal::Value::StringVal("c1".to_string())),
+                            datatype: Some(spark_expression::DataType {
+                                type_id: 7,
+                                type_info: None,
+                            }),
+                            is_null: false,
+                        })),
+                    },
+                ],
                 return_type: None,
-            }))
+            })),
         };
 
-        // Make a projection operator with struct(array_col, array_col_1)
+        // Make a projection operator
+        // select make_array(struct(col_0, col_1))[1][c1] is equivalent to
+        // select get_field(array_element(make_array(struct(col_0, col_1)), 1), 'c1')
         let projection = Operator {
             children: vec![op_scan],
             plan_id: 0,
