@@ -52,7 +52,7 @@ trait DataTypeSupport {
         true
       case t: DataType if t.typeName == "timestamp_ntz" =>
         true
-      case other => 
+      case other =>
         fallbackReasons += s"Unsupported type: $other"
         false
     }
@@ -105,6 +105,6 @@ object DataTypeSupport {
 
   def usingParquetExecWithIncompatTypes(conf: SQLConf): Boolean = {
     CometSparkSessionExtensions.usingDataFusionParquetExec(conf) &&
-    !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
+    !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get(conf)
   }
 }
