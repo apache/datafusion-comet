@@ -432,8 +432,7 @@ abstract class CometTestBase
   }
 
   def getPrimitiveTypesParquetSchema: String = {
-    if (DataTypeSupport.usingParquetExecWithIncompatTypes(
-        CometConf.COMET_NATIVE_SCAN_IMPL.get(conf))) {
+    if (DataTypeSupport.usingParquetExecWithIncompatTypes(conf)) {
       // Comet complex type reader has different behavior for uint_8, uint_16 types.
       // The issue stems from undefined behavior in the parquet spec and is tracked
       // here: https://github.com/apache/parquet-java/issues/3142

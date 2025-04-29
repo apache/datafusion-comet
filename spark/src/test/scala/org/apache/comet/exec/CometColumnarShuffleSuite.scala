@@ -758,8 +758,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
         // TODO: revisit this when we have resolution of https://github.com/apache/arrow-rs/issues/7040
         // and https://github.com/apache/arrow-rs/issues/7097
         val fieldsToTest =
-          if (CometSparkSessionExtensions.usingDataFusionParquetExec(
-              CometConf.COMET_NATIVE_SCAN_IMPL.get(conf))) {
+          if (CometSparkSessionExtensions.usingDataFusionParquetExec(conf)) {
             Seq(
               $"_1",
               $"_4",

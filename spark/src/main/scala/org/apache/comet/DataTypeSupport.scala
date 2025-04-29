@@ -44,9 +44,7 @@ trait DataTypeSupport {
 
   private def isGloballySupported(dt: DataType, fallbackReasons: ListBuffer[String]): Boolean =
     dt match {
-      case ByteType | ShortType
-          if usingParquetExecWithIncompatTypes(
-            CometConf.COMET_NATIVE_SCAN_IMPL.get(SQLConf.get)) =>
+      case ByteType | ShortType if usingParquetExecWithIncompatTypes(SQLConf.get) =>
         fallbackReasons += s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false"
         false
       case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
@@ -103,8 +101,8 @@ object DataTypeSupport {
   val MAP_KEY = "map key"
   val MAP_VALUE = "map value"
 
-  def usingParquetExecWithIncompatTypes(scanImpl: String): Boolean = {
-    CometSparkSessionExtensions.usingDataFusionParquetExec(scanImpl) &&
+  def usingParquetExecWithIncompatTypes(conf: SQLConf): Boolean = {
+    CometSparkSessionExtensions.usingDataFusionParquetExec(conf) &&
     !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get()
   }
 }

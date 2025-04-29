@@ -118,7 +118,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         val fallbackReasons = new ListBuffer[String]()
         assert(CometScanExec.isTypeSupported(dt, "", fallbackReasons) == expected)
         // usingDataFusionParquetExec does not support CometBatchScanExec yet
-        if (!usingDataFusionParquetExec(CometConf.COMET_NATIVE_SCAN_IMPL.get(conf))) {
+        if (!usingDataFusionParquetExec(conf)) {
           assert(CometBatchScanExec.isTypeSupported(dt, "", fallbackReasons) == expected)
         }
       }
@@ -169,8 +169,7 @@ abstract class ParquetReadSuite extends CometTestBase {
             i.toDouble,
             DateTimeUtils.toJavaDate(i))
         }
-        if (!DataTypeSupport.usingParquetExecWithIncompatTypes(
-            CometConf.COMET_NATIVE_SCAN_IMPL.get(conf))) {
+        if (!DataTypeSupport.usingParquetExecWithIncompatTypes(conf)) {
           checkParquetScan(data)
         }
         checkParquetFile(data)
@@ -192,8 +191,7 @@ abstract class ParquetReadSuite extends CometTestBase {
             i.toDouble,
             DateTimeUtils.toJavaDate(i))
         }
-        if (!DataTypeSupport.usingParquetExecWithIncompatTypes(
-            CometConf.COMET_NATIVE_SCAN_IMPL.get(conf))) {
+        if (!DataTypeSupport.usingParquetExecWithIncompatTypes(conf)) {
           checkParquetScan(data)
         }
         checkParquetFile(data)
@@ -214,8 +212,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         DateTimeUtils.toJavaDate(i))
     }
     val filter = (row: Row) => row.getBoolean(0)
-    if (!DataTypeSupport.usingParquetExecWithIncompatTypes(
-        CometConf.COMET_NATIVE_SCAN_IMPL.get(conf))) {
+    if (!DataTypeSupport.usingParquetExecWithIncompatTypes(conf)) {
       checkParquetScan(data, filter)
     }
     checkParquetFile(data, filter)
@@ -1236,8 +1233,7 @@ abstract class ParquetReadSuite extends CometTestBase {
 
             withParquetDataFrame(data, schema = Some(readSchema)) { df =>
               // TODO: validate with Spark 3.x and 'usingDataFusionParquetExec=true'
-              if (enableSchemaEvolution || usingDataFusionParquetExec(
-                  CometConf.COMET_NATIVE_SCAN_IMPL.get(conf))) {
+              if (enableSchemaEvolution || usingDataFusionParquetExec(conf)) {
                 checkAnswer(df, data.map(Row.fromTuple))
               } else {
                 assertThrows[SparkException](df.collect())
@@ -1416,8 +1412,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   test("row group skipping doesn't overflow when reading into larger type") {
     // Spark 4.0 no longer fails for widening types SPARK-40876
     // https://github.com/apache/spark/commit/3361f25dc0ff6e5233903c26ee105711b79ba967
-    assume(
-      !isSpark40Plus && !usingDataFusionParquetExec(CometConf.COMET_NATIVE_SCAN_IMPL.get(conf)))
+    assume(!isSpark40Plus && !usingDataFusionParquetExec(conf))
     withTempPath { path =>
       Seq(0).toDF("a").write.parquet(path.toString)
       // Reading integer 'a' as a long isn't supported. Check that an exception is raised instead
