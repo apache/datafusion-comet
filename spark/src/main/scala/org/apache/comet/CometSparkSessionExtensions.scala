@@ -55,7 +55,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import org.apache.comet.CometConf._
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometLoaded, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometLoaded, isCometNativeShuffleMode, isCometScan, isCometScanEnabled, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.rules.RewriteJoin
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -397,19 +397,34 @@ class CometSparkSessionExtensions
             op,
             CometGlobalLimitExec(_, op, op.limit, op.child, SerializedPlan(None)))
 
-        case op: CollectLimitExec
-            if isCometNative(op.child) && CometConf.COMET_EXEC_COLLECT_LIMIT_ENABLED.get(conf)
-              && isCometShuffleEnabled(conf)
-              && op.offset == 0 =>
-          QueryPlanSerde
-            .operator2Proto(op)
-            .map { nativeOp =>
-              val cometOp =
-                CometCollectLimitExec(op, op.limit, op.offset, op.child)
-              CometSinkPlaceHolder(nativeOp, op, cometOp)
+        case op: CollectLimitExec =>
+          val fallbackReasons = new ListBuffer[String]()
+          if (!CometConf.COMET_EXEC_COLLECT_LIMIT_ENABLED.get(conf)) {
+            fallbackReasons += s"${CometConf.COMET_EXEC_COLLECT_LIMIT_ENABLED.key} is false"
+          }
+          if (!isCometShuffleEnabled(conf)) {
+            fallbackReasons += "Comet shuffle is not enabled"
+          }
+          if (op.offset != 0) {
+            fallbackReasons += "CollectLimit with non-zero offset is not supported"
+          }
+          if (fallbackReasons.nonEmpty) {
+            withInfos(op, fallbackReasons.toSet)
+          } else {
+            if (!isCometNative(op.child)) {
+              // no reason to report reason if child is not native
+              op
+            } else {
+              QueryPlanSerde
+                .operator2Proto(op)
+                .map { nativeOp =>
+                  val cometOp =
+                    CometCollectLimitExec(op, op.limit, op.offset, op.child)
+                  CometSinkPlaceHolder(nativeOp, op, cometOp)
+                }
+                .getOrElse(op)
             }
-            .getOrElse(op)
-
+          }
         case op: ExpandExec =>
           newPlanWithProto(
             op,

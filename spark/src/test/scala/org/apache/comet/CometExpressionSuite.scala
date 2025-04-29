@@ -1885,7 +1885,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               + "where A.c1 = B.c1 ",
             Set(
               "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
-              "make_interval is not supported")))
+              "make_interval is not supported")),
+          (
+            s"select * from $table LIMIT 10 OFFSET 3",
+            Set(
+              "Comet shuffle is not enabled",
+              "CollectLimit with non-zero offset is not supported")))
           .foreach(test => {
             val qry = test._1
             val expected = test._2

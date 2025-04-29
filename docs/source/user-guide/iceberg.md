@@ -115,7 +115,7 @@ This should produce the following output:
 scala> spark.sql(s"SELECT * from t1").show()
 25/04/28 07:29:37 INFO core/src/lib.rs: Comet native library version 0.9.0 initialized
 25/04/28 07:29:37 WARN CometSparkSessionExtensions$CometExecRule: Comet cannot execute some parts of this plan natively (set spark.comet.explainFallback.enabled=false to disable this logging):
- CollectLimit [COMET: CollectLimit is not supported]
+ CollectLimit
 +-  Project [COMET: toprettystring is not supported]
    +- CometScanWrapper
 
