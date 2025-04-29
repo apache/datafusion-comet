@@ -191,7 +191,11 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("decode") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
+    // We want to make sure that the schema generator wasn't modified to accidentally omit
+    // BinaryType, since then this test would not run any queries and silently pass.
+    var tested_binary = false
     for (field <- df.schema.fields if field.dataType == BinaryType) {
+      tested_binary = true
       val sql = s"SELECT decode(${field.name}, 'utf-8') FROM t1"
       if (CometConf.isExperimentalNativeScan) {
         checkSparkAnswerAndOperator(sql)
@@ -199,6 +203,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswer(sql)
       }
     }
+    assert(tested_binary)
   }
 
   test("Parquet temporal types written as INT96") {
