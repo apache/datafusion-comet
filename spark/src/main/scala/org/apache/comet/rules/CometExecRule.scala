@@ -1,10 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 package org.apache.comet.rules
 
-import org.apache.comet.CometConf.{COMET_ANSI_MODE_ENABLED, COMET_NATIVE_SCAN_IMPL, COMET_SHUFFLE_FALLBACK_TO_COLUMNAR}
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometLoaded, isCometNativeShuffleMode, isCometScan, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo}
-import org.apache.comet.{CometConf, ExtendedExplainInfo}
-import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
@@ -20,12 +34,18 @@ import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHash
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.types.{DoubleType, FloatType}
 
+import org.apache.comet.{CometConf, ExtendedExplainInfo}
+import org.apache.comet.CometConf.{COMET_ANSI_MODE_ENABLED, COMET_NATIVE_SCAN_IMPL, COMET_SHUFFLE_FALLBACK_TO_COLUMNAR}
+import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometLoaded, isCometNativeShuffleMode, isCometScan, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo}
+import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.serde.QueryPlanSerde
+
 case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   private def applyCometShuffle(plan: SparkPlan): SparkPlan = {
     plan.transformUp {
       case s: ShuffleExchangeExec
-        if isCometPlan(s.child) && isCometNativeShuffleMode(conf) &&
-          QueryPlanSerde.nativeShuffleSupported(s)._1 =>
+          if isCometPlan(s.child) && isCometNativeShuffleMode(conf) &&
+            QueryPlanSerde.nativeShuffleSupported(s)._1 =>
         logInfo("Comet extension enabled for Native Shuffle")
 
         // Switch to use Decimal128 regardless of precision, since Arrow native execution
@@ -36,10 +56,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
       // (if configured)
       case s: ShuffleExchangeExec
-        if (!s.child.supportsColumnar || isCometPlan(s.child)) && isCometJVMShuffleMode(
-          conf) &&
-          QueryPlanSerde.columnarShuffleSupported(s)._1 &&
-          !isShuffleOperator(s.child) =>
+          if (!s.child.supportsColumnar || isCometPlan(s.child)) && isCometJVMShuffleMode(conf) &&
+            QueryPlanSerde.columnarShuffleSupported(s)._1 &&
+            !isShuffleOperator(s.child) =>
         logInfo("Comet extension enabled for JVM Columnar Shuffle")
         CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
     }
@@ -124,8 +143,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
 
     /**
-     * Convert operator to proto and then apply a transformation to wrap the proto in a new
-     * plan.
+     * Convert operator to proto and then apply a transformation to wrap the proto in a new plan.
      */
     def newPlanWithProto(op: SparkPlan, fun: Operator => SparkPlan): SparkPlan = {
       operator2Proto(op).map(fun).getOrElse(op)
@@ -134,7 +152,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     plan.transformUp {
       // Fully native scan for V1
       case scan: CometScanExec
-        if COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_DATAFUSION =>
+          if COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_DATAFUSION =>
         val nativeOp = QueryPlanSerde.operator2Proto(scan).get
         CometNativeScanExec(nativeOp, scan.wrapped, scan.session)
 
@@ -171,9 +189,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             SerializedPlan(None)))
 
       case op: LocalLimitExec =>
-        newPlanWithProto(
-          op,
-          CometLocalLimitExec(_, op, op.limit, op.child, SerializedPlan(None)))
+        newPlanWithProto(op, CometLocalLimitExec(_, op, op.limit, op.child, SerializedPlan(None)))
 
       case op: GlobalLimitExec if op.offset == 0 =>
         newPlanWithProto(
@@ -181,9 +197,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           CometGlobalLimitExec(_, op, op.limit, op.child, SerializedPlan(None)))
 
       case op: CollectLimitExec
-        if isCometNative(op.child) && CometConf.COMET_EXEC_COLLECT_LIMIT_ENABLED.get(conf)
-          && isCometShuffleEnabled(conf)
-          && op.offset == 0 =>
+          if isCometNative(op.child) && CometConf.COMET_EXEC_COLLECT_LIMIT_ENABLED.get(conf)
+            && isCometShuffleEnabled(conf)
+            && op.offset == 0 =>
         QueryPlanSerde
           .operator2Proto(op)
           .map { nativeOp =>
@@ -202,8 +218,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // to CometHashAggregate. Otherwise, we probably get partial Comet aggregation
       // and final Spark aggregation.
       case op: BaseAggregateExec
-        if op.isInstanceOf[HashAggregateExec] ||
-          op.isInstanceOf[ObjectHashAggregateExec] &&
+          if op.isInstanceOf[HashAggregateExec] ||
+            op.isInstanceOf[ObjectHashAggregateExec] &&
             isCometShuffleEnabled(conf) =>
         val modes = op.aggregateExpressions.map(_.mode).distinct
         // In distinct aggregates there can be a combination of modes
@@ -238,8 +254,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         }
 
       case op: ShuffledHashJoinExec
-        if CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(conf) &&
-          op.children.forall(isCometNative) =>
+          if CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(conf) &&
+            op.children.forall(isCometNative) =>
         newPlanWithProto(
           op,
           CometHashJoinExec(
@@ -263,8 +279,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         op
 
       case op: BroadcastHashJoinExec
-        if CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) &&
-          op.children.forall(isCometNative) =>
+          if CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) &&
+            op.children.forall(isCometNative) =>
         newPlanWithProto(
           op,
           CometBroadcastHashJoinExec(
@@ -282,8 +298,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             SerializedPlan(None)))
 
       case op: SortMergeJoinExec
-        if CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) &&
-          op.children.forall(isCometNative) =>
+          if CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) &&
+            op.children.forall(isCometNative) =>
         newPlanWithProto(
           op,
           CometSortMergeJoinExec(
@@ -300,8 +316,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             SerializedPlan(None)))
 
       case op: SortMergeJoinExec
-        if CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) &&
-          !op.children.forall(isCometNative) =>
+          if CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) &&
+            !op.children.forall(isCometNative) =>
         op
 
       case op: SortMergeJoinExec if !CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) =>
@@ -311,8 +327,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         op
 
       case c @ CoalesceExec(numPartitions, child)
-        if CometConf.COMET_EXEC_COALESCE_ENABLED.get(conf)
-          && isCometNative(child) =>
+          if CometConf.COMET_EXEC_COALESCE_ENABLED.get(conf)
+            && isCometNative(child) =>
         QueryPlanSerde
           .operator2Proto(c)
           .map { nativeOp =>
@@ -328,10 +344,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         op
 
       case s: TakeOrderedAndProjectExec
-        if isCometNative(s.child) && CometConf.COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED
-          .get(conf)
-          && isCometShuffleEnabled(conf) &&
-          CometTakeOrderedAndProjectExec.isSupported(s) =>
+          if isCometNative(s.child) && CometConf.COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED
+            .get(conf)
+            && isCometShuffleEnabled(conf) &&
+            CometTakeOrderedAndProjectExec.isSupported(s) =>
         QueryPlanSerde
           .operator2Proto(s)
           .map { nativeOp =>
@@ -370,8 +386,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             SerializedPlan(None)))
 
       case u: UnionExec
-        if CometConf.COMET_EXEC_UNION_ENABLED.get(conf) &&
-          u.children.forall(isCometNative) =>
+          if CometConf.COMET_EXEC_UNION_ENABLED.get(conf) &&
+            u.children.forall(isCometNative) =>
         newPlanWithProto(
           u, {
             val cometOp = CometUnionExec(u, u.output, u.children)
@@ -389,9 +405,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
 
       case s @ BroadcastQueryStageExec(
-      _,
-      ReusedExchangeExec(_, _: CometBroadcastExchangeExec),
-      _) =>
+            _,
+            ReusedExchangeExec(_, _: CometBroadcastExchangeExec),
+            _) =>
         newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
 
       // `CometBroadcastExchangeExec`'s broadcast output is not compatible with Spark's broadcast
@@ -401,8 +417,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case plan if plan.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
         val newChildren = plan.children.map {
           case b: BroadcastExchangeExec
-            if isCometNative(b.child) &&
-              CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf) =>
+              if isCometNative(b.child) &&
+                CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf) =>
             QueryPlanSerde.operator2Proto(b) match {
               case Some(nativeOp) =>
                 val cometOp = CometBroadcastExchangeExec(b, b.output, b.mode, b.child)
@@ -434,7 +450,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         op
 
       case op: BroadcastHashJoinExec
-        if !CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) =>
+          if !CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) =>
         withInfo(op, "BroadcastHashJoin is not enabled")
 
       // For AQE shuffle stage on a Comet shuffle exchange
@@ -444,10 +460,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // For AQE shuffle stage on a reused Comet shuffle exchange
       // Note that we don't need to handle `ReusedExchangeExec` for non-AQE case, because
       // the query plan won't be re-optimized/planned in non-AQE mode.
-      case s @ ShuffleQueryStageExec(
-      _,
-      ReusedExchangeExec(_, _: CometShuffleExchangeExec),
-      _) =>
+      case s @ ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) =>
         newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
 
       // Native shuffle for Comet operators
@@ -541,7 +554,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case op =>
         op match {
           case _: CometExec | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
-               _: CometBroadcastExchangeExec | _: CometShuffleExchangeExec =>
+              _: CometBroadcastExchangeExec | _: CometShuffleExchangeExec =>
             // Some execs should never be replaced. We include
             // these cases specially here so we do not add a misleading 'info' message
             op
@@ -718,8 +731,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   /**
-   * Find the first Comet partial aggregate in the plan. If it reaches a Spark HashAggregate
-   * with partial mode, it will return None.
+   * Find the first Comet partial aggregate in the plan. If it reaches a Spark HashAggregate with
+   * partial mode, it will return None.
    */
   def findCometPartialAgg(plan: SparkPlan): Option[CometHashAggregateExec] = {
     plan.collectFirst {
