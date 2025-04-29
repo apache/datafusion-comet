@@ -66,10 +66,10 @@ trait DataTypeSupport {
    *   true if all fields in the struct are supported
    */
   def isSchemaSupported(struct: StructType, fallbackReasons: ListBuffer[String]): Boolean = {
-    struct.fields.forall(f => validateTypeSupported(f.dataType, f.name, fallbackReasons))
+    struct.fields.forall(f => isTypeSupported(f.dataType, f.name, fallbackReasons))
   }
 
-  def validateTypeSupported(
+  def isTypeSupported(
       dt: DataType,
       name: String,
       fallbackReasons: ListBuffer[String]): Boolean = {
@@ -80,11 +80,11 @@ trait DataTypeSupport {
       // If complex types are supported, we additionally want to recurse into their children
       dt match {
         case StructType(fields) =>
-          fields.forall(f => validateTypeSupported(f.dataType, f.name, fallbackReasons))
+          fields.forall(f => isTypeSupported(f.dataType, f.name, fallbackReasons))
         case ArrayType(elementType, _) =>
-          validateTypeSupported(elementType, ARRAY_ELEMENT, fallbackReasons)
+          isTypeSupported(elementType, ARRAY_ELEMENT, fallbackReasons)
         case MapType(keyType, valueType, _) =>
-          validateTypeSupported(keyType, MAP_KEY, fallbackReasons) && validateTypeSupported(
+          isTypeSupported(keyType, MAP_KEY, fallbackReasons) && isTypeSupported(
             valueType,
             MAP_VALUE,
             fallbackReasons)
