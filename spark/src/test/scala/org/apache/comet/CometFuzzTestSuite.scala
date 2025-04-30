@@ -35,7 +35,7 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
-import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, StructType}
+import org.apache.spark.sql.types._
 
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
@@ -186,6 +186,25 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(2 == collectNativeScans(cometPlan).length)
       }
     }
+  }
+
+  test("regexp_replace") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    // We want to make sure that the schema generator wasn't modified to accidentally omit
+    // BinaryType, since then this test would not run any queries and silently pass.
+    var tested_string = false
+    for (field <- df.schema.fields if field.dataType == StringType) {
+      tested_string = true
+      val sql = s"SELECT regexp_replace(${field.name}, 'foo', 'bar') FROM t1"
+      println(spark.sql(sql).explain())
+      if (CometConf.isExperimentalNativeScan) {
+        checkSparkAnswerAndOperator(sql)
+      } else {
+        checkSparkAnswer(sql)
+      }
+    }
+    assert(tested_string)
   }
 
   test("Parquet temporal types written as INT96") {
