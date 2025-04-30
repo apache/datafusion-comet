@@ -1430,15 +1430,21 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val optExpr = scalarFunctionExprToProto("ascii", childExpr)
         optExprWithInfo(optExpr, expr, castExpr)
 
-      case StringDecode(binary, Literal(str, DataTypes.StringType)) if str.toString == "utf-8" =>
-        // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
-        // for invalid strings.
-        castToProto(
-          expr,
-          None,
-          DataTypes.StringType,
-          exprToProtoInternal(binary, inputs, binding).get,
-          CometEvalMode.TRY)
+      case StringDecode(binary, encoding) =>
+        encoding match {
+          case Literal(str, DataTypes.StringType) if str.toString == "utf-8" =>
+            // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
+            // for invalid strings.
+            castToProto(
+              expr,
+              None,
+              DataTypes.StringType,
+              exprToProtoInternal(binary, inputs, binding).get,
+              CometEvalMode.TRY)
+          case _ =>
+            withInfo(expr, "Comet only supports decoding with 'utf-8'.")
+            None
+        }
 
       case BitLength(child) =>
         val castExpr = Cast(child, StringType)
