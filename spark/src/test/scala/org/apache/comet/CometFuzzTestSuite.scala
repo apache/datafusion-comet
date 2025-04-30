@@ -197,7 +197,6 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     for (field <- df.schema.fields if field.dataType == StringType) {
       tested_string = true
       val sql = s"SELECT regexp_replace(${field.name}, 'foo', 'bar') FROM t1"
-      println(spark.sql(sql).explain())
       checkSparkAnswerAndOperator(sql)
     }
     assert(tested_string)

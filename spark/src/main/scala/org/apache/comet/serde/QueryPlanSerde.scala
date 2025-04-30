@@ -1430,6 +1430,23 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val optExpr = scalarFunctionExprToProto("ascii", childExpr)
         optExprWithInfo(optExpr, expr, castExpr)
 
+      case RegExpReplace(subject, pattern, replacement, startPosition) =>
+        startPosition match {
+          case Literal(value, DataTypes.IntegerType) if value == 1 =>
+            val subjectExpr = exprToProtoInternal(subject, inputs, binding)
+            val patternExpr = exprToProtoInternal(pattern, inputs, binding)
+            val replacementExpr = exprToProtoInternal(replacement, inputs, binding)
+            val optExpr = scalarFunctionExprToProto(
+              "regexp_replace",
+              subjectExpr,
+              patternExpr,
+              replacementExpr)
+            optExprWithInfo(optExpr, expr, subject, pattern, replacement)
+          case _ =>
+            withInfo(expr, "Comet only supports regexp_replace with an offset of 1.")
+            None
+        }
+
       case BitLength(child) =>
         val castExpr = Cast(child, StringType)
         val childExpr = exprToProtoInternal(castExpr, inputs, binding)
