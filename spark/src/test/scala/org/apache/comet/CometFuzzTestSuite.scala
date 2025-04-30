@@ -193,14 +193,14 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     df.createOrReplaceTempView("t1")
     // We want to make sure that the schema generator wasn't modified to accidentally omit
     // BinaryType, since then this test would not run any queries and silently pass.
-    var tested_binary = false
+    var testedBinary = false
     for (field <- df.schema.fields if field.dataType == BinaryType) {
-      tested_binary = true
+      testedBinary = true
       // Intentionally use odd capitalization of 'utf-8' to test normalization.
       val sql = s"SELECT decode(${field.name}, 'utF-8') FROM t1"
       checkSparkAnswerAndOperator(sql)
     }
-    assert(tested_binary)
+    assert(testedBinary)
   }
 
   test("Parquet temporal types written as INT96") {
