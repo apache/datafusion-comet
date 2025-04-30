@@ -192,7 +192,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     // We want to make sure that the schema generator wasn't modified to accidentally omit
-    // BinaryType, since then this test would not run any queries and silently pass.
+    // StringType, since then this test would not run any queries and silently pass.
     var tested_string = false
     for (field <- df.schema.fields if field.dataType == StringType) {
       tested_string = true
