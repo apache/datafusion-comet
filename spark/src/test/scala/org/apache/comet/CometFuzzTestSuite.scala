@@ -198,11 +198,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       tested_string = true
       val sql = s"SELECT regexp_replace(${field.name}, 'foo', 'bar') FROM t1"
       println(spark.sql(sql).explain())
-      if (CometConf.isExperimentalNativeScan) {
-        checkSparkAnswerAndOperator(sql)
-      } else {
-        checkSparkAnswer(sql)
-      }
+      checkSparkAnswerAndOperator(sql)
     }
     assert(tested_string)
   }
