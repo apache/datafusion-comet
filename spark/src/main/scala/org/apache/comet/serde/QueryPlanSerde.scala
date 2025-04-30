@@ -1431,6 +1431,15 @@ object QueryPlanSerde extends Logging with CometExprShim {
         optExprWithInfo(optExpr, expr, castExpr)
 
       case RegExpReplace(subject, pattern, replacement, startPosition) =>
+        if (!RegExp.isSupportedPattern(pattern.toString) &&
+          !CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
+          withInfo(
+            expr,
+            s"Regexp pattern $pattern is not compatible with Spark. " +
+              s"Set ${CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key}=true " +
+              "to allow it anyway.")
+          return None
+        }
         startPosition match {
           case Literal(value, DataTypes.IntegerType) if value == 1 =>
             val subjectExpr = exprToProtoInternal(subject, inputs, binding)
@@ -1447,7 +1456,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
               flagsExpr)
             optExprWithInfo(optExpr, expr, subject, pattern, replacement, startPosition)
           case _ =>
-            withInfo(expr, "Comet only supports regexp_replace with an offset of 1.")
+            withInfo(expr, "Comet only supports regexp_replace with an offset of 1 (no offset).")
             None
         }
 
