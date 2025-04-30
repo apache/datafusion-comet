@@ -1436,12 +1436,16 @@ object QueryPlanSerde extends Logging with CometExprShim {
             val subjectExpr = exprToProtoInternal(subject, inputs, binding)
             val patternExpr = exprToProtoInternal(pattern, inputs, binding)
             val replacementExpr = exprToProtoInternal(replacement, inputs, binding)
+            // DataFusion's regexp_replace stops at the first match. We need to add the 'g' flag
+            // to apply the regex globally to match Spark behavior
+            val flagsExpr = exprToProtoInternal(Literal("g"), inputs, binding)
             val optExpr = scalarFunctionExprToProto(
               "regexp_replace",
               subjectExpr,
               patternExpr,
-              replacementExpr)
-            optExprWithInfo(optExpr, expr, subject, pattern, replacement)
+              replacementExpr,
+              flagsExpr)
+            optExprWithInfo(optExpr, expr, subject, pattern, replacement, startPosition)
           case _ =>
             withInfo(expr, "Comet only supports regexp_replace with an offset of 1.")
             None
