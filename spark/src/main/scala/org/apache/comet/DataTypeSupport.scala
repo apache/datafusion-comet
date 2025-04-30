@@ -52,9 +52,7 @@ trait DataTypeSupport {
         true
       case t: DataType if t.typeName == "timestamp_ntz" =>
         true
-      case other =>
-        fallbackReasons += s"Unsupported type: $other"
-        false
+      case _ => false
     }
 
   /**
