@@ -19,6 +19,8 @@
 
 package org.apache.comet.serde
 
+import java.util.Locale
+
 import scala.collection.JavaConverters._
 import scala.math.min
 
@@ -1432,7 +1434,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
       case StringDecode(binary, encoding) =>
         encoding match {
-          case Literal(str, DataTypes.StringType) if str.toString == "utf-8" =>
+          case Literal(str, DataTypes.StringType)
+              if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
             // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
             // for invalid strings.
             castToProto(

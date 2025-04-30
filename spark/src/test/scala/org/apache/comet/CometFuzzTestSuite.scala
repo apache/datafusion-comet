@@ -196,7 +196,8 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     var tested_binary = false
     for (field <- df.schema.fields if field.dataType == BinaryType) {
       tested_binary = true
-      val sql = s"SELECT decode(${field.name}, 'utf-8') FROM t1"
+      // Intentionally use odd capitalization of 'utf-8' to test normalization.
+      val sql = s"SELECT decode(${field.name}, 'utF-8') FROM t1"
       checkSparkAnswerAndOperator(sql)
     }
     assert(tested_binary)
