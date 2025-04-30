@@ -70,6 +70,7 @@ jobs:
         with:
           path: ./tpcds-sf-1
           key: tpcds-${{ hashFiles('.github/workflows/benchmark.yml') }}
+          fail-on-cache-miss: false
       - name: Checkout tpcds-kit repository
         if: steps.cache-tpcds-sf-1.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
