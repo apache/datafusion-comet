@@ -193,13 +193,13 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     df.createOrReplaceTempView("t1")
     // We want to make sure that the schema generator wasn't modified to accidentally omit
     // StringType, since then this test would not run any queries and silently pass.
-    var tested_string = false
+    var testedString = false
     for (field <- df.schema.fields if field.dataType == StringType) {
-      tested_string = true
+      testedString = true
       val sql = s"SELECT regexp_replace(${field.name}, 'a', 'b') FROM t1"
       checkSparkAnswerAndOperator(sql)
     }
-    assert(tested_string)
+    assert(testedString)
   }
 
   test("Parquet temporal types written as INT96") {
