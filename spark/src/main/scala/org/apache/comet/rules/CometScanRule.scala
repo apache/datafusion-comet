@@ -86,12 +86,14 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
         val fallbackReasons = new ListBuffer[String]()
         if (!CometScanExec.isFileFormatSupported(r.fileFormat)) {
           fallbackReasons += s"Unsupported file format ${r.fileFormat}"
+          return withInfo(scanExec, fallbackReasons.mkString(", "))
         }
 
         val scanImpl = COMET_NATIVE_SCAN_IMPL.get()
         if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && !COMET_EXEC_ENABLED.get()) {
           fallbackReasons +=
             s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled"
+          return withInfo(scanExec, fallbackReasons.mkString(", "))
         }
 
         val (schemaSupported, partitionSchemaSupported) = scanImpl match {
