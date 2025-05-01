@@ -49,7 +49,6 @@ fn criterion_benchmark(c: &mut Criterion) {
                 let ipc_time = Time::default();
                 let w = ShuffleBlockWriter::try_new(
                     &batch.schema(),
-                    enable_fast_encoding,
                     compression_codec.clone(),
                 )
                 .unwrap();
@@ -97,7 +96,6 @@ fn create_shuffle_writer_exec(compression_codec: CompressionCodec) -> ShuffleWri
         compression_codec,
         "/tmp/data.out".to_string(),
         "/tmp/index.out".to_string(),
-        true,
     )
     .unwrap()
 }
