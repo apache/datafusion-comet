@@ -364,6 +364,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         // Retrieve the query
         let exec_context = get_execution_context(exec_context);
 
+        // memory profiling is only available on linux
+        #[cfg(target_os = "linux")]
         if exec_context.memory_profiling_enabled {
             let pid = std::process::id();
             let process = Process::new(pid as i32).unwrap();
