@@ -1658,7 +1658,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case BitwiseCount(child) =>
         val childProto = exprToProto(child, inputs, binding)
         val bitCountScalarExpr =
-          scalarExprToProtoWithReturnType("bit_count", IntegerType, childProto)
+          scalarFunctionExprToProtoWithReturnType("bit_count", IntegerType, childProto)
         optExprWithInfo(bitCountScalarExpr, expr, expr.children: _*)
 
       case ShiftRight(left, right) =>
