@@ -17,10 +17,10 @@
 
 use crate::hash_funcs::*;
 use crate::{
-    spark_array_repeat, spark_bit_count, spark_ceil, spark_date_add, spark_date_sub, spark_decimal_div,
-    spark_decimal_integral_div, spark_floor, spark_hex, spark_isnan, spark_make_decimal,
-    spark_read_side_padding, spark_round, spark_rpad, spark_unhex, spark_unscaled_value,
-    SparkChrFunc,
+    spark_array_repeat, spark_bit_count, spark_ceil, spark_date_add, spark_date_sub,
+    spark_decimal_div, spark_decimal_integral_div, spark_floor, spark_hex, spark_isnan,
+    spark_make_decimal, spark_read_side_padding, spark_round, spark_rpad, spark_unhex,
+    spark_unscaled_value, SparkChrFunc,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
