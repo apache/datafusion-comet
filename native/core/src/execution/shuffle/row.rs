@@ -3161,7 +3161,6 @@ pub fn process_sorted_row_partition(
     // inside the loop within the method across batches.
     initial_checksum: Option<u32>,
     codec: &CompressionCodec,
-    enable_fast_encoding: bool,
 ) -> Result<(i64, Option<u32>), CometError> {
     // TODO: We can tune this parameter automatically based on row size and cache size.
     let row_step = 10;
@@ -3224,11 +3223,7 @@ pub fn process_sorted_row_partition(
 
         // we do not collect metrics in Native_writeSortedFileNative
         let ipc_time = Time::default();
-        let block_writer = ShuffleBlockWriter::try_new(
-            batch.schema().as_ref(),
-            enable_fast_encoding,
-            codec.clone(),
-        )?;
+        let block_writer = ShuffleBlockWriter::try_new(batch.schema().as_ref(), codec.clone())?;
         written += block_writer.write_batch(&batch, &mut cursor, &ipc_time)?;
 
         if let Some(checksum) = &mut current_checksum {
