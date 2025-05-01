@@ -68,6 +68,7 @@ use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 use log::info;
 use once_cell::sync::Lazy;
+#[cfg(target_os = "linux")]
 use procfs::process::Process;
 
 static TOKIO_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
