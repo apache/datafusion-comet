@@ -16,9 +16,11 @@
 // under the License.
 
 mod array_insert;
+mod array_repeat;
 mod get_array_struct_fields;
 mod list_extract;
 
 pub use array_insert::ArrayInsert;
+pub use array_repeat::spark_array_repeat;
 pub use get_array_struct_fields::GetArrayStructFields;
 pub use list_extract::ListExtract;

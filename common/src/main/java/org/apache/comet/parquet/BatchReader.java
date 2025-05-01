@@ -34,7 +34,6 @@ import scala.Option;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.arrow.c.CometSchemaImporter;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.commons.lang3.tuple.Pair;
@@ -65,6 +64,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch;
 import org.apache.spark.util.AccumulatorV2;
 
 import org.apache.comet.CometConf;
+import org.apache.comet.CometSchemaImporter;
 import org.apache.comet.shims.ShimBatchReader;
 import org.apache.comet.shims.ShimFileFormat;
 import org.apache.comet.vector.CometVector;
