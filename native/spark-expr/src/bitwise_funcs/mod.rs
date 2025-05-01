@@ -18,5 +18,5 @@
 mod bitwise_count;
 mod bitwise_not;
 
-pub use bitwise_count::{bitwise_count, BitwiseCountExpr};
+pub use bitwise_count::spark_bit_count;
 pub use bitwise_not::{bitwise_not, BitwiseNotExpr};

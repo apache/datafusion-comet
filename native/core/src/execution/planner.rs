@@ -102,10 +102,10 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, BitwiseCountExpr, BitwiseNotExpr, Cast, CheckOverflow, Contains,
-    Correlation, Covariance, CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields,
-    GetStructField, HourExpr, IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike,
-    SecondExpr, SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
+    ArrayInsert, Avg, AvgDecimal, BitwiseNotExpr, Cast, CheckOverflow, Contains, Correlation,
+    Covariance, CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields, GetStructField,
+    HourExpr, IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike, SecondExpr,
+    SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
     TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
 use itertools::Itertools;
@@ -608,10 +608,6 @@ impl PhysicalPlanner {
                 let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
                 let op = DataFusionOperator::BitwiseShiftLeft;
                 Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::BitwiseCount(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(BitwiseCountExpr::new(child)))
             }
             // https://github.com/apache/datafusion-comet/issues/666
             // ExprStruct::Abs(expr) => {

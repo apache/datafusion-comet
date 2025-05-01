@@ -15,17 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::{
-    array::*,
-    datatypes::{DataType, Schema},
-    record_batch::RecordBatch,
-};
+use arrow::{array::*, datatypes::DataType};
 use datafusion::common::Result;
-use datafusion::physical_expr::PhysicalExpr;
 use datafusion::{error::DataFusionError, logical_expr::ColumnarValue};
-use std::fmt::Formatter;
-use std::hash::Hash;
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 macro_rules! compute_op {
     ($OPERAND:expr, $DT:ident) => {{
@@ -43,98 +36,30 @@ macro_rules! compute_op {
     }};
 }
 
-/// BitwiseCount expression
-#[derive(Debug, Eq)]
-pub struct BitwiseCountExpr {
-    /// Input expression
-    arg: Arc<dyn PhysicalExpr>,
-}
-
-impl Hash for BitwiseCountExpr {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.arg.hash(state);
+pub fn spark_bit_count(args: &[ColumnarValue]) -> Result<ColumnarValue> {
+    if args.len() != 1 {
+        return Err(DataFusionError::Internal(
+            "hex expects exactly one argument".to_string(),
+        ));
     }
-}
-
-impl PartialEq for BitwiseCountExpr {
-    fn eq(&self, other: &Self) -> bool {
-        self.arg.eq(&other.arg)
-    }
-}
-
-impl BitwiseCountExpr {
-    /// Create new bitwise count expression
-    pub fn new(arg: Arc<dyn PhysicalExpr>) -> Self {
-        Self { arg }
-    }
-
-    /// Get the input expression
-    pub fn arg(&self) -> &Arc<dyn PhysicalExpr> {
-        &self.arg
-    }
-}
-
-impl std::fmt::Display for BitwiseCountExpr {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "(~ {})", self.arg)
-    }
-}
-
-impl PhysicalExpr for BitwiseCountExpr {
-    /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn data_type(&self, _: &Schema) -> Result<DataType> {
-        Ok(DataType::Int32)
-    }
-
-    fn nullable(&self, input_schema: &Schema) -> Result<bool> {
-        self.arg.nullable(input_schema)
-    }
-
-    fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
-        let arg = self.arg.evaluate(batch)?;
-        match arg {
-            ColumnarValue::Array(array) => {
-                let result: Result<ArrayRef> = match array.data_type() {
-                    DataType::Int8 | DataType::Boolean => compute_op!(array, Int8Array),
-                    DataType::Int16 => compute_op!(array, Int16Array),
-                    DataType::Int32 => compute_op!(array, Int32Array),
-                    DataType::Int64 => compute_op!(array, Int64Array),
-                    _ => Err(DataFusionError::Execution(format!(
-                        "(- '{:?}') can't be evaluated because the expression's type is {:?}, not signed int",
-                        self,
-                        array.data_type(),
-                    ))),
-                };
-                result.map(ColumnarValue::Array)
-            }
-            ColumnarValue::Scalar(_) => Err(DataFusionError::Internal(
-                "shouldn't go to bitwise count scalar path".to_string(),
-            )),
+    match &args[0] {
+        ColumnarValue::Array(array) => {
+            let result: Result<ArrayRef> = match array.data_type() {
+                DataType::Int8 | DataType::Boolean => compute_op!(array, Int8Array),
+                DataType::Int16 => compute_op!(array, Int16Array),
+                DataType::Int32 => compute_op!(array, Int32Array),
+                DataType::Int64 => compute_op!(array, Int64Array),
+                _ => Err(DataFusionError::Execution(format!(
+                    "Can't be evaluated because the expression's type is {:?}, not signed int",
+                    array.data_type(),
+                ))),
+            };
+            result.map(ColumnarValue::Array)
         }
+        ColumnarValue::Scalar(_) => Err(DataFusionError::Internal(
+            "shouldn't go to bitwise count scalar path".to_string(),
+        )),
     }
-
-    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
-        vec![&self.arg]
-    }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn PhysicalExpr>>,
-    ) -> Result<Arc<dyn PhysicalExpr>> {
-        Ok(Arc::new(BitwiseCountExpr::new(Arc::clone(&children[0]))))
-    }
-
-    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
-        unimplemented!()
-    }
-}
-
-pub fn bitwise_count(arg: Arc<dyn PhysicalExpr>) -> Result<Arc<dyn PhysicalExpr>> {
-    Ok(Arc::new(BitwiseCountExpr::new(arg)))
 }
 
 // Here’s the equivalent Rust implementation of the bitCount function (similar to Apache Spark's bitCount for LongType)
@@ -151,24 +76,25 @@ fn bit_count(i: i64) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use arrow::datatypes::*;
     use datafusion::common::{cast::as_int32_array, Result};
-    use datafusion::physical_expr::expressions::col;
 
     use super::*;
 
     #[test]
     fn bitwise_count_op() -> Result<()> {
-        let schema = Schema::new(vec![Field::new("field", DataType::Int32, true)]);
-
-        let expr = bitwise_count(col("field", &schema)?)?;
-
-        let input = Int32Array::from(vec![Some(1), None, Some(12345), Some(89), Some(-3456)]);
+        let args = vec![ColumnarValue::Array(Arc::new(Int32Array::from(vec![
+            Some(1),
+            None,
+            Some(12345),
+            Some(89),
+            Some(-3456),
+        ])))];
         let expected = &Int32Array::from(vec![Some(1), None, Some(6), Some(4), Some(54)]);
 
-        let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(input)])?;
+        let ColumnarValue::Array(result) = spark_bit_count(&args)? else {
+            unreachable!()
+        };
 
-        let result = expr.evaluate(&batch)?.into_array(batch.num_rows())?;
         let result = as_int32_array(&result).expect("failed to downcast to In32Array");
         assert_eq!(result, expected);
 
