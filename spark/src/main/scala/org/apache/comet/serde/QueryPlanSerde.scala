@@ -1620,83 +1620,27 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case BitwiseAnd(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setBitwiseAnd(binaryExpr))
+      case _: BitwiseAnd =>
+        CometBitwiseAdd.convert(expr, inputs, binding)
 
-      case BitwiseNot(child) =>
-        createUnaryExpr(
-          expr,
-          child,
-          inputs,
-          binding,
-          (builder, unaryExpr) => builder.setBitwiseNot(unaryExpr))
+      case _: BitwiseNot =>
+        CometBitwiseNot.convert(expr, inputs, binding)
 
-      case BitwiseOr(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setBitwiseOr(binaryExpr))
+      case _: BitwiseOr =>
+        CometBitwiseOr.convert(expr, inputs, binding)
 
-      case BitwiseXor(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setBitwiseXor(binaryExpr))
+      case _: BitwiseXor =>
+        CometBitwiseXor.convert(expr, inputs, binding)
 
-      case BitwiseGet(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setBitwiseGet(binaryExpr))
+      case _: ShiftRight =>
+        CometShiftRight.convert(expr, inputs, binding)
 
-      case ShiftRight(left, right) =>
-        // DataFusion bitwise shift right expression requires
-        // same data type between left and right side
-        val rightExpression = if (left.dataType == LongType) {
-          Cast(right, LongType)
-        } else {
-          right
-        }
+      case _: ShiftLeft =>
+        CometShiftLeft.convert(expr, inputs, binding)
 
-        createBinaryExpr(
-          expr,
-          left,
-          rightExpression,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setBitwiseShiftRight(binaryExpr))
+      case _: BitwiseGet =>
+        CometBitwiseGet.convert(expr, inputs, binding)
 
-      case ShiftLeft(left, right) =>
-        // DataFusion bitwise shift right expression requires
-        // same data type between left and right side
-        val rightExpression = if (left.dataType == LongType) {
-          Cast(right, LongType)
-        } else {
-          right
-        }
-
-        createBinaryExpr(
-          expr,
-          left,
-          rightExpression,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setBitwiseShiftLeft(binaryExpr))
       case In(value, list) =>
         in(expr, value, list, inputs, binding, negate = false)
 
