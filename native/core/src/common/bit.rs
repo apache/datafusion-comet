@@ -1014,7 +1014,7 @@ mod tests {
     use crate::parquet::util::test_common::*;
 
     use rand::{
-        distributions::{Distribution, Standard},
+        distr::{Distribution, StandardUniform},
         Rng,
     };
     use std::fmt::Debug;
@@ -1378,16 +1378,16 @@ mod tests {
         // test reading consecutively from a buffer
         let mut reader = BitReader::from(vec);
         let mut buffer = vec![0; NUM_BYTES];
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut bits_read = 0;
 
         loop {
             if bits_read >= total_num_bits {
                 break;
             }
-            let n: usize = rng.gen();
+            let n: u64 = rng.random();
             let num_bits = n % 20;
-            bits_read += reader.get_bits(&mut buffer, bits_read, num_bits);
+            bits_read += reader.get_bits(&mut buffer, bits_read, num_bits as usize);
         }
 
         assert_eq!(total_num_bits, bits_read);
@@ -1424,14 +1424,14 @@ mod tests {
         }
 
         // test skipping consecutively
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         loop {
             if bits_read >= total_num_bits {
                 break;
             }
-            let n: usize = rng.gen();
+            let n: u64 = rng.random();
             let num_bits = n % 20;
-            bits_read += reader.skip_bits(num_bits);
+            bits_read += reader.skip_bits(num_bits as usize);
         }
 
         assert_eq!(total_num_bits, bits_read);
@@ -1534,10 +1534,10 @@ mod tests {
     fn test_put_aligned_rand_numbers<T>(total: usize, num_bits: usize)
     where
         T: Copy + FromBytes + AsBytes + Debug + PartialEq,
-        Standard: Distribution<T>,
+        StandardUniform: Distribution<T>,
     {
         assert!(num_bits <= 32);
-        assert!(total % 2 == 0);
+        assert_eq!(total % 2, 0);
 
         let aligned_value_byte_width = std::mem::size_of::<T>();
         let value_byte_width = ceil(num_bits, 8);

@@ -27,18 +27,7 @@ license = "Apache-2.0"
 edition = "2021"
 
 [dependencies]
-prost = "0.12.1"
+prost = "0.13.5"
 
 [build-dependencies]
-prost-build = "0.9.0"
-
-[features]
-default = []
-
-[lib]
-name = "datafusion_comet_proto"
-path = "src/lib.rs"
-
-
-
-
+prost-build = "0.13.5"

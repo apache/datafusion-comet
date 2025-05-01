@@ -1739,7 +1739,7 @@ impl PhysicalPlanner {
                 AggregateExprBuilder::new(Arc::new(func), vec![child])
                     .schema(schema)
                     .alias("first")
-                    .with_ignore_nulls(false)
+                    .with_ignore_nulls(expr.ignore_nulls)
                     .with_distinct(false)
                     .build()
                     .map_err(|e| e.into())
@@ -1751,7 +1751,7 @@ impl PhysicalPlanner {
                 AggregateExprBuilder::new(Arc::new(func), vec![child])
                     .schema(schema)
                     .alias("last")
-                    .with_ignore_nulls(false)
+                    .with_ignore_nulls(expr.ignore_nulls)
                     .with_distinct(false)
                     .build()
                     .map_err(|e| e.into())
@@ -2429,7 +2429,7 @@ fn rewrite_physical_expr(
     Ok(expr.rewrite(&mut rewriter).data()?)
 }
 
-fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::DecodeError> {
+fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::UnknownEnumValue> {
     match spark_expression::EvalMode::try_from(value)? {
         spark_expression::EvalMode::Legacy => Ok(EvalMode::Legacy),
         spark_expression::EvalMode::Try => Ok(EvalMode::Try),
@@ -2511,7 +2511,7 @@ mod tests {
 
     use futures::{poll, StreamExt};
 
-    use arrow::array::{DictionaryArray, Int32Array, StringArray};
+    use arrow::array::{Array, DictionaryArray, Int32Array, StringArray};
     use arrow::datatypes::DataType;
     use datafusion::logical_expr::ScalarUDF;
     use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
@@ -2918,7 +2918,6 @@ mod tests {
 
         // Separate thread to send the EOF signal once we've processed the only input batch
         runtime.spawn(async move {
-            // Create a dictionary array with 100 values, and use it as input to the execution.
             let a = Int32Array::from(vec![0, 3]);
             let b = Int32Array::from(vec![1, 4]);
             let c = Int32Array::from(vec![2, 5]);
@@ -2948,6 +2947,135 @@ mod tests {
                             "| [0, 1] |",
                             "| [3, 4] |",
                             "+--------+",
+                        ];
+                        assert_batches_eq!(expected, &[batch]);
+                    }
+                    Poll::Ready(None) => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn test_array_repeat() {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx));
+
+        // Mock scan operator with 3 INT32 columns
+        let op_scan = Operator {
+            plan_id: 0,
+            children: vec![],
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![
+                    spark_expression::DataType {
+                        type_id: 3, // Int32
+                        type_info: None,
+                    },
+                    spark_expression::DataType {
+                        type_id: 3, // Int32
+                        type_info: None,
+                    },
+                    spark_expression::DataType {
+                        type_id: 3, // Int32
+                        type_info: None,
+                    },
+                ],
+                source: "".to_string(),
+            })),
+        };
+
+        // Mock expression to read a INT32 column with position 0
+        let array_col = spark_expression::Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 0,
+                datatype: Some(spark_expression::DataType {
+                    type_id: 3,
+                    type_info: None,
+                }),
+            })),
+        };
+
+        // Mock expression to read a INT32 column with position 1
+        let array_col_1 = spark_expression::Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 1,
+                datatype: Some(spark_expression::DataType {
+                    type_id: 3,
+                    type_info: None,
+                }),
+            })),
+        };
+
+        // Make a projection operator with array_repeat(array_col, array_col_1)
+        let projection = Operator {
+            children: vec![op_scan],
+            plan_id: 0,
+            op_struct: Some(OpStruct::Projection(spark_operator::Projection {
+                project_list: vec![spark_expression::Expr {
+                    expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
+                        func: "array_repeat".to_string(),
+                        args: vec![array_col, array_col_1],
+                        return_type: None,
+                    })),
+                }],
+            })),
+        };
+
+        // Create a physical plan
+        let (mut scans, datafusion_plan) =
+            planner.create_plan(&projection, &mut vec![], 1).unwrap();
+
+        // Feed the data into plan
+        //scans[0].set_input_batch(input_batch);
+
+        // Start executing the plan in a separate thread
+        // The plan waits for incoming batches and emitting result as input comes
+        let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        // create async channel
+        let (tx, mut rx) = mpsc::channel(1);
+
+        // Send data as input to the plan being executed in a separate thread
+        runtime.spawn(async move {
+            // create data batch
+            // 0, 1, 2
+            // 3, 4, 5
+            // 6, null, null
+            let a = Int32Array::from(vec![Some(0), Some(3), Some(6)]);
+            let b = Int32Array::from(vec![Some(1), Some(4), None]);
+            let c = Int32Array::from(vec![Some(2), Some(5), None]);
+            let input_batch1 = InputBatch::Batch(vec![Arc::new(a), Arc::new(b), Arc::new(c)], 3);
+            let input_batch2 = InputBatch::EOF;
+
+            let batches = vec![input_batch1, input_batch2];
+
+            for batch in batches.into_iter() {
+                tx.send(batch).await.unwrap();
+            }
+        });
+
+        // Wait for the plan to finish executing and assert the result
+        runtime.block_on(async move {
+            loop {
+                let batch = rx.recv().await.unwrap();
+                scans[0].set_input_batch(batch);
+                match poll!(stream.next()) {
+                    Poll::Ready(Some(batch)) => {
+                        assert!(batch.is_ok(), "got error {}", batch.unwrap_err());
+                        let batch = batch.unwrap();
+                        let expected = [
+                            "+--------------+",
+                            "| col_0        |",
+                            "+--------------+",
+                            "| [0]          |",
+                            "| [3, 3, 3, 3] |",
+                            "|              |",
+                            "+--------------+",
                         ];
                         assert_batches_eq!(expected, &[batch]);
                     }

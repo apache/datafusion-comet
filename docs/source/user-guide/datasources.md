@@ -19,29 +19,36 @@
 
 # Supported Spark Data Sources
 
-## Parquet
+## File Formats
+
+### Parquet
 
 When `spark.comet.scan.enabled` is enabled, Parquet scans will be performed natively by Comet if all data types
 in the schema are supported. When this option is not enabled, the scan will fall back to Spark. In this case,
 enabling `spark.comet.convert.parquet.enabled` will immediately convert the data into Arrow format, allowing native 
 execution to happen after that, but the process may not be efficient.
 
-## CSV
+### CSV
 
 Comet does not provide native CSV scan, but when `spark.comet.convert.csv.enabled` is enabled, data is immediately
 converted into Arrow format, allowing native execution to happen after that.
 
-## JSON
+### JSON
 
 Comet does not provide native JSON scan, but when `spark.comet.convert.json.enabled` is enabled, data is immediately
 converted into Arrow format, allowing native execution to happen after that.
 
-# Supported Storages
+## Data Catalogs
 
-## Local
-In progress
+### Apache Iceberg
 
-## HDFS
+See the dedicated [Comet and Iceberg Guide](iceberg.md).
+
+## Supported Storages
+
+Comet supports most standard storage systems, such as local file system and object storage.
+
+### HDFS
 
 Apache DataFusion Comet native reader seamlessly scans files from remote HDFS for [supported formats](#supported-spark-data-sources)
 
@@ -111,5 +118,41 @@ Verify the native scan type should be `CometNativeScan`.
 
 More on [HDFS Reader](../../../native/hdfs/README.md)
 
+### Local HDFS development
+
+- Configure local machine network. Add hostname to `/etc/hosts`
+```commandline
+127.0.0.1	localhost   namenode datanode1 datanode2 datanode3
+::1             localhost namenode datanode1 datanode2 datanode3
+```
+
+- Start local HDFS cluster, 3 datanodes, namenode url is `namenode:9000` 
+```commandline
+docker compose -f kube/local/hdfs-docker-compose.yml up
+```
+
+- Check the local namenode is up and running on `http://localhost:9870/dfshealth.html#tab-overview`
+- Build a project with HDFS support
+```commandline
+JAVA_HOME="/opt/homebrew/opt/openjdk@11" make release PROFILES="-Pspark-3.5" COMET_FEATURES=hdfs RUSTFLAGS="-L /opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk/Contents/Home/lib/server"
+```
+
+- Run local test 
+```scala
+
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      "fs.defaultFS" -> "hdfs://namenode:9000",
+      "dfs.client.use.datanode.hostname" -> "true") {
+      val df = spark.read.parquet("/tmp/2")
+      df.show(false)
+      df.explain("extended")
+    }
+  }
+```
+Or use `spark-shell` with HDFS support as described [above](#using-experimental-native-datafusion-reader)
 ## S3
 In progress 

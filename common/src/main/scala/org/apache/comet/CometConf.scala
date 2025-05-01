@@ -414,6 +414,16 @@ object CometConf extends ShimCometConf {
     .doubleConf
     .createWithDefault(10.0)
 
+  val COMET_EXCHANGE_SIZE_MULTIPLIER: ConfigEntry[Double] = conf(
+    "spark.comet.shuffle.sizeInBytesMultiplier")
+    .doc(
+      "Comet reports smaller sizes for shuffle due to using Arrow's columnar memory format " +
+        "and this can result in Spark choosing a different join strategy due to the estimated " +
+        "size of the exchange being smaller. Comet will multiple sizeInBytes by this amount to " +
+        "avoid regressions in join strategy.")
+    .doubleConf
+    .createWithDefault(1.0)
+
   val COMET_DPP_FALLBACK_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.dppFallback.enabled")
       .doc("Whether to fall back to Spark for queries that use DPP.")

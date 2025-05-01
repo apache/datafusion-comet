@@ -36,7 +36,6 @@ import scala.collection.mutable.Buffer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.arrow.c.CometSchemaImporter;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.ipc.WriteChannel;
@@ -71,6 +70,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch;
 import org.apache.spark.util.AccumulatorV2;
 
 import org.apache.comet.CometConf;
+import org.apache.comet.CometSchemaImporter;
 import org.apache.comet.shims.ShimBatchReader;
 import org.apache.comet.shims.ShimFileFormat;
 import org.apache.comet.vector.CometVector;
@@ -384,8 +384,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
         if (accu.isDefined() && accu.get().getClass().getSimpleName().equals("NumRowGroupsAcc")) {
           @SuppressWarnings("unchecked")
           AccumulatorV2<Integer, Integer> intAccum = (AccumulatorV2<Integer, Integer>) accu.get();
-          // TODO: Get num_row_groups from native
-          // intAccum.add(fileReader.getRowGroups().size());
+          intAccum.add(blocks.size());
         }
       }
 
