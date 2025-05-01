@@ -151,26 +151,26 @@ impl ShuffleBlockWriter {
 pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
     match &bytes[0..4] {
         b"SNAP" => {
-            let decoder = snap::read::FrameDecoder::new(&bytes[8..]);
+            let decoder = snap::read::FrameDecoder::new(&bytes[4..]);
             let mut reader =
                 unsafe { StreamReader::try_new(decoder, None)?.with_skip_validation(true) };
             reader.next().unwrap().map_err(|e| e.into())
         }
         b"LZ4_" => {
-            let decoder = lz4_flex::frame::FrameDecoder::new(&bytes[8..]);
+            let decoder = lz4_flex::frame::FrameDecoder::new(&bytes[4..]);
             let mut reader =
                 unsafe { StreamReader::try_new(decoder, None)?.with_skip_validation(true) };
             reader.next().unwrap().map_err(|e| e.into())
         }
         b"ZSTD" => {
-            let decoder = zstd::Decoder::new(&bytes[8..])?;
+            let decoder = zstd::Decoder::new(&bytes[4..])?;
             let mut reader =
                 unsafe { StreamReader::try_new(decoder, None)?.with_skip_validation(true) };
             reader.next().unwrap().map_err(|e| e.into())
         }
         b"NONE" => {
             let mut reader =
-                unsafe { StreamReader::try_new(&bytes[8..], None)?.with_skip_validation(true) };
+                unsafe { StreamReader::try_new(&bytes[4..], None)?.with_skip_validation(true) };
             reader.next().unwrap().map_err(|e| e.into())
         }
         other => Err(DataFusionError::Execution(format!(
