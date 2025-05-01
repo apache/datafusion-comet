@@ -68,6 +68,7 @@ use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 use log::info;
 use once_cell::sync::Lazy;
+use procfs::process::Process;
 
 static TOKIO_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
@@ -126,6 +127,8 @@ struct ExecutionContext {
     pub explain_native: bool,
     /// Memory pool config
     pub memory_pool_config: MemoryPoolConfig,
+    /// Whether to log memory usage on each call to execute_plan
+    pub memory_profiling_enabled: bool,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -151,6 +154,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     task_attempt_id: jlong,
     debug_native: jboolean,
     explain_native: jboolean,
+    memory_profiling_enabled: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         // Init JVM classes
@@ -231,6 +235,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             debug_native: debug_native == 1,
             explain_native: explain_native == 1,
             memory_pool_config,
+            memory_profiling_enabled: memory_profiling_enabled != JNI_FALSE,
         });
 
         Ok(Box::into_raw(exec_context) as i64)
@@ -358,6 +363,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     try_unwrap_or_throw(&e, |mut env| {
         // Retrieve the query
         let exec_context = get_execution_context(exec_context);
+
+        if exec_context.memory_profiling_enabled {
+            let pid = std::process::id();
+            let process = Process::new(pid as i32).unwrap();
+            let statm = process.statm().unwrap();
+            let page_size = procfs::page_size();
+            println!(
+                "NATIVE_MEMORY: {{ resident: {:.2} }}",
+                (statm.resident * page_size) as f64 / (1024.0 * 1024.0)
+            );
+        }
 
         let exec_context_id = exec_context.id;
 
