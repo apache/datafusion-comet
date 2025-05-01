@@ -366,16 +366,18 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         let exec_context = get_execution_context(exec_context);
 
         // memory profiling is only available on linux
-        #[cfg(target_os = "linux")]
         if exec_context.memory_profiling_enabled {
-            let pid = std::process::id();
-            let process = Process::new(pid as i32).unwrap();
-            let statm = process.statm().unwrap();
-            let page_size = procfs::page_size();
-            println!(
-                "NATIVE_MEMORY: {{ resident: {:.2} }}",
-                (statm.resident * page_size) as f64 / (1024.0 * 1024.0)
-            );
+            #[cfg(target_os = "linux")]
+            {
+                let pid = std::process::id();
+                let process = Process::new(pid as i32).unwrap();
+                let statm = process.statm().unwrap();
+                let page_size = procfs::page_size();
+                println!(
+                    "NATIVE_MEMORY: {{ resident: {} }}",
+                    (statm.resident * page_size) as f64 / (1024.0 * 1024.0)
+                );
+            }
         }
 
         let exec_context_id = exec_context.id;
