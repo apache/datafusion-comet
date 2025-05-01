@@ -39,7 +39,7 @@ macro_rules! compute_op {
 pub fn spark_bit_count(args: &[ColumnarValue]) -> Result<ColumnarValue> {
     if args.len() != 1 {
         return Err(DataFusionError::Internal(
-            "hex expects exactly one argument".to_string(),
+            "bit_count expects exactly one argument".to_string(),
         ));
     }
     match &args[0] {
@@ -57,7 +57,7 @@ pub fn spark_bit_count(args: &[ColumnarValue]) -> Result<ColumnarValue> {
             result.map(ColumnarValue::Array)
         }
         ColumnarValue::Scalar(_) => Err(DataFusionError::Internal(
-            "shouldn't go to bitwise count scalar path".to_string(),
+            "shouldn't go to bit_count scalar path".to_string(),
         )),
     }
 }
