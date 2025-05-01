@@ -21,6 +21,8 @@ package org.apache.comet
 
 import java.nio.ByteOrder
 
+import scala.collection.mutable.ListBuffer
+
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
@@ -193,7 +195,8 @@ object CometSparkSessionExtensions extends Logging {
     // operators can have a chance to be converted to columnar. Leaf operators that output
     // columnar batches, such as Spark's vectorized readers, will also be converted to native
     // comet batches.
-    if (CometSparkToColumnarExec.isSchemaSupported(op.schema)) {
+    val fallbackReasons = new ListBuffer[String]()
+    if (CometSparkToColumnarExec.isSchemaSupported(op.schema, fallbackReasons)) {
       op match {
         // Convert Spark DS v1 scan to Arrow format
         case scan: FileSourceScanExec =>
