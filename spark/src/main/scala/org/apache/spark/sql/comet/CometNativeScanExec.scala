@@ -19,6 +19,7 @@
 
 package org.apache.spark.sql.comet
 
+import scala.collection.mutable.ListBuffer
 import scala.reflect.ClassTag
 
 import org.apache.spark.rdd.RDD
@@ -36,6 +37,7 @@ import org.apache.spark.util.collection._
 import com.google.common.base.Objects
 
 import org.apache.comet.DataTypeSupport
+import org.apache.comet.DataTypeSupport.{ARRAY_ELEMENT, MAP_KEY, MAP_VALUE}
 import org.apache.comet.parquet.CometParquetFileFormat
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
@@ -229,11 +231,19 @@ object CometNativeScanExec extends DataTypeSupport {
     batchScanExec
   }
 
-  override def isAdditionallySupported(dt: DataType): Boolean = {
+  override def isAdditionallySupported(
+      dt: DataType,
+      name: String,
+      fallbackReasons: ListBuffer[String]): Boolean = {
     dt match {
-      case s: StructType => s.fields.map(_.dataType).forall(isTypeSupported)
-      case a: ArrayType => isTypeSupported(a.elementType)
-      case m: MapType => isTypeSupported(m.keyType) && isTypeSupported(m.valueType)
+      case s: StructType =>
+        s.fields.forall(f => isTypeSupported(f.dataType, f.name, fallbackReasons))
+      case a: ArrayType => isTypeSupported(a.elementType, ARRAY_ELEMENT, fallbackReasons)
+      case m: MapType =>
+        isTypeSupported(m.keyType, MAP_KEY, fallbackReasons) && isTypeSupported(
+          m.valueType,
+          MAP_VALUE,
+          fallbackReasons)
       case _ => false
     }
   }
