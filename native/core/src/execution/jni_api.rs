@@ -670,17 +670,16 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
 #[no_mangle]
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+#[cfg(feature = "tracing")]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_traceBegin(
     e: JNIEnv,
     _class: JClass,
     event: jstring,
 ) {
+    #[cfg(feature = "tracing")]
     try_unwrap_or_throw(&e, |mut env| {
-        #[cfg(feature = "tracing")]
-        {
-            let name: String = env.get_string(&JString::from_raw(event)).unwrap().into();
-            trace_begin(&name);
-        }
+        let name: String = env.get_string(&JString::from_raw(event)).unwrap().into();
+        trace_begin(&name);
         Ok(())
     })
 }
@@ -688,17 +687,39 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceBegin(
 #[no_mangle]
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+#[cfg(feature = "tracing")]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
     e: JNIEnv,
     _class: JClass,
     event: jstring,
 ) {
     try_unwrap_or_throw(&e, |mut env| {
-        #[cfg(feature = "tracing")]
-        {
-            let name: String = env.get_string(&JString::from_raw(event)).unwrap().into();
-            trace_end(&name);
-        }
+        let name: String = env.get_string(&JString::from_raw(event)).unwrap().into();
+        trace_end(&name);
         Ok(())
     })
+}
+
+#[no_mangle]
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+#[cfg(not(feature = "tracing"))]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_traceBegin(
+    _e: JNIEnv,
+    _class: JClass,
+    _event: jstring,
+) {
+    // no implementation
+}
+
+#[no_mangle]
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+#[cfg(not(feature = "tracing"))]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
+    _e: JNIEnv,
+    _class: JClass,
+    _event: jstring,
+) {
+    // no implementation
 }

@@ -33,6 +33,8 @@ pub struct Recorder {
 #[cfg(feature = "tracing")]
 impl Recorder {
     pub fn new() -> Self {
+        // Write start of JSON array. Note that there is no requirement to write
+        // the closing ']'.
         print!("[ ");
         Self {
             now: Instant::now(),
