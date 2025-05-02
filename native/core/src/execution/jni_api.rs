@@ -670,10 +670,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
 #[no_mangle]
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
-pub unsafe extern "system" fn Java_org_apache_comet_Native_traceBegin(e: JNIEnv, event: jstring) {
+pub unsafe extern "system" fn Java_org_apache_comet_Native_traceBegin(
+    e: JNIEnv,
+    _class: JClass,
+    event: jstring,
+) {
     try_unwrap_or_throw(&e, |mut env| {
-        let name: String = env.get_string(&JString::from_raw(event)).unwrap().into();
-        trace_begin(&name);
+        #[cfg(feature = "tracing")]
+        {
+            let name: String = env.get_string(&JString::from_raw(event)).unwrap().into();
+            trace_begin(&name);
+        }
         Ok(())
     })
 }
@@ -681,10 +688,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceBegin(e: JNIEnv,
 #[no_mangle]
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
-pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(e: JNIEnv, event: jstring) {
+pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
+    e: JNIEnv,
+    _class: JClass,
+    event: jstring,
+) {
     try_unwrap_or_throw(&e, |mut env| {
-        let name: String = env.get_string(&JString::from_raw(event)).unwrap().into();
-        trace_end(&name);
+        #[cfg(feature = "tracing")]
+        {
+            let name: String = env.get_string(&JString::from_raw(event)).unwrap().into();
+            trace_end(&name);
+        }
         Ok(())
     })
 }
