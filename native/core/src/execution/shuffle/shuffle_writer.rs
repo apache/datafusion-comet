@@ -651,6 +651,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
     /// This function will slice input batch according to configured batch size and then
     /// shuffle rows into corresponding partition buffer.
     async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()> {
+        trace_begin("insert_batch");
         let start_time = Instant::now();
         let mut start = 0;
         while start < batch.num_rows() {
@@ -664,6 +665,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
             .baseline
             .elapsed_compute()
             .add_duration(start_time.elapsed());
+        trace_end("insert_batch");
         Ok(())
     }
 
