@@ -175,4 +175,8 @@ class Native extends NativeBase {
       arrayAddrs: Array[Long],
       schemaAddrs: Array[Long]): Long
 
+  @native def traceBegin(name: String): Unit
+
+  @native def traceEnd(name: String): Unit
+
 }

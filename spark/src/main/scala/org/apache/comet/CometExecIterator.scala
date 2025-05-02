@@ -129,13 +129,15 @@ class CometExecIterator(
 
   def getNextBatch(): Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
-
-    nativeUtil.getNextBatch(
+    nativeLib.traceBegin("CometExecIterator_getNextBatch")
+    val batch = nativeUtil.getNextBatch(
       numOutputCols,
       (arrayAddrs, schemaAddrs) => {
         val ctx = TaskContext.get()
         nativeLib.executePlan(ctx.stageId(), partitionIndex, plan, arrayAddrs, schemaAddrs)
       })
+    nativeLib.traceEnd("CometExecIterator_getNextBatch")
+    batch
   }
 
   override def hasNext: Boolean = {
