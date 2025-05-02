@@ -376,7 +376,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 let statm = process.statm().unwrap();
                 let page_size = procfs::page_size();
                 println!(
-                    "NATIVE_MEMORY: {{ resident: {} }}",
+                    "NATIVE_MEMORY: {{ resident: {:.0} }}",
                     (statm.resident * page_size) as f64 / (1024.0 * 1024.0)
                 );
 
