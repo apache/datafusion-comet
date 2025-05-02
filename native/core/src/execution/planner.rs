@@ -2220,7 +2220,7 @@ impl PhysicalPlanner {
             fun_name,
             fun_expr,
             args.to_vec(),
-            Field::new("foo", data_type, false),
+            Field::new("foo", data_type, true),
         ));
 
         Ok(scalar_expr)
