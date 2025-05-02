@@ -48,4 +48,4 @@ Traces can be viewed with [Trace Viewer].
 
 Example trace visualization:
 
-![flamegraph](../_static/images/tracing.png)
+![tracing](../_static/images/tracing.png)
