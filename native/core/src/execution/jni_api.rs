@@ -70,6 +70,8 @@ use log::info;
 use once_cell::sync::Lazy;
 #[cfg(target_os = "linux")]
 use procfs::process::Process;
+#[cfg(feature = "jemalloc")]
+use tikv_jemalloc_ctl::{epoch, stats};
 
 static TOKIO_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
@@ -377,6 +379,27 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     "NATIVE_MEMORY: {{ resident: {} }}",
                     (statm.resident * page_size) as f64 / (1024.0 * 1024.0)
                 );
+
+                #[cfg(feature = "jemalloc")]
+                {
+                    // Obtain a MIB for the `epoch`, `stats.allocated`, and
+                    // `atats.resident` keys:
+                    let e = epoch::mib().unwrap();
+                    let allocated = stats::allocated::mib().unwrap();
+                    let resident = stats::resident::mib().unwrap();
+
+                    // Many statistics are cached and only updated
+                    // when the epoch is advanced:
+                    e.advance().unwrap();
+
+                    // Read statistics using MIB key:
+                    let allocated = allocated.read().unwrap();
+                    let resident = resident.read().unwrap();
+                    println!(
+                        "NATIVE_MEMORY_JEMALLOC: {{ allocated={}, resident={} }}",
+                        allocated, resident
+                    );
+                }
             }
         }
 
