@@ -79,7 +79,8 @@ use datafusion::common::{
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{
-    AggregateUDF, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
+    AggregateUDF, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    WindowFunctionDefinition,
 };
 use datafusion::physical_expr::expressions::{Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
@@ -107,6 +108,7 @@ use datafusion_comet_spark_expr::{
     SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
     TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
+use datafusion_spark::function::math::expm1::SparkExpm1;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
@@ -145,6 +147,10 @@ pub struct PhysicalPlanner {
 impl Default for PhysicalPlanner {
     fn default() -> Self {
         let session_ctx = Arc::new(SessionContext::new());
+
+        // register UDFs from datafusion-spark crate
+        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
+
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,

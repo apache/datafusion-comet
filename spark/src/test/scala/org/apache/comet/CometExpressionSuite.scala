@@ -1134,6 +1134,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           // checkSparkAnswerWithTol("SELECT round(_1), round(_2) FROM tbl")
           checkSparkAnswerWithTol("SELECT signum(_1), sin(_1), sqrt(_1) FROM tbl")
           checkSparkAnswerWithTol("SELECT tan(_1) FROM tbl")
+          // TODO this test is pretty inadequate and does not test edge cases
+          checkSparkAnswerWithTol("SELECT expm1(_1) FROM tbl")
         }
       }
     }

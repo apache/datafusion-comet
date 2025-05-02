@@ -975,6 +975,7 @@ dependencies = [
  "datafusion-comet-proto",
  "datafusion-comet-spark-expr",
  "datafusion-functions-nested",
+ "datafusion-spark",
  "futures",
  "hex",
  "itertools 0.14.0",
@@ -1485,6 +1486,21 @@ dependencies = [
  "object_store",
  "parking_lot",
  "tokio",
+]
+
+[[package]]
+name = "datafusion-spark"
+version = "47.0.0"
+source = "git+https://github.com/apache/datafusion?rev=6bda479#6bda4796a3c8142b87d0fad072bdbe25f9d12934"
+dependencies = [
+ "arrow",
+ "datafusion-catalog",
+ "datafusion-common",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-functions",
+ "datafusion-macros",
+ "log",
 ]
 
 [[package]]
@@ -2989,7 +3005,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "log",
  "multimap",
  "once_cell",
@@ -3009,7 +3025,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.100",
