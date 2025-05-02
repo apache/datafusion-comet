@@ -23,6 +23,7 @@ use arrow::{
     error::ArrowError,
     ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema},
 };
+#[cfg(feature = "tracing")]
 use datafusion::common::instant::Instant;
 
 impl From<ArrowError> for ExecutionError {
@@ -131,10 +132,12 @@ pub fn bytes_to_i128(slice: &[u8]) -> i128 {
 
 /// Log events using Chrome trace format JSON
 /// https://github.com/catapult-project/catapult/blob/main/tracing/README.md
+#[cfg(feature = "tracing")]
 pub struct Recorder {
     now: Instant,
 }
 
+#[cfg(feature = "tracing")]
 impl Recorder {
     pub fn new() -> Self {
         print!("[ ");

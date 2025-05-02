@@ -66,6 +66,7 @@ use crate::execution::memory_pools::{
 use crate::execution::operators::ScanExec;
 use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
+#[cfg(feature = "tracing")]
 use crate::execution::utils::Recorder;
 use log::info;
 use once_cell::sync::Lazy;
@@ -84,6 +85,7 @@ static TOKIO_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
         .expect("Failed to create Tokio runtime")
 });
 
+#[cfg(feature = "tracing")]
 pub(crate) static RECORDER: Lazy<Recorder> = Lazy::new(|| Recorder::new());
 
 fn parse_usize_env_var(name: &str) -> Option<usize> {
@@ -156,6 +158,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     explain_native: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
+        #[cfg(feature = "tracing")]
         RECORDER.begin_task("create_plan");
 
         // Init JVM classes
@@ -238,6 +241,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             memory_pool_config,
         });
 
+        #[cfg(feature = "tracing")]
         RECORDER.end_task("create_plan");
 
         Ok(Box::into_raw(exec_context) as i64)
@@ -363,6 +367,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     schema_addrs: jlongArray,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
+        #[cfg(feature = "tracing")]
         RECORDER.begin_task("execute_plan");
 
         // Retrieve the query
@@ -424,6 +429,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             match poll_output {
                 Poll::Ready(Some(output)) => {
                     // prepare output for FFI transfer
+
+                    #[cfg(feature = "tracing")]
                     RECORDER.end_task("execute_plan");
 
                     return prepare_output(
@@ -450,6 +457,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         }
                     }
 
+                    #[cfg(feature = "tracing")]
                     RECORDER.end_task("execute_plan");
 
                     return Ok(-1);
@@ -553,6 +561,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
     enable_fast_encoding: jboolean,
 ) -> jlongArray {
     try_unwrap_or_throw(&e, |mut env| unsafe {
+        #[cfg(feature = "tracing")]
         RECORDER.begin_task("writeSortedFileNative");
 
         let data_types = convert_datatype_arrays(&mut env, serialized_datatypes)?;
@@ -618,6 +627,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
         let long_array = env.new_long_array(2)?;
         env.set_long_array_region(&long_array, 0, &[written_bytes, checksum])?;
 
+        #[cfg(feature = "tracing")]
         RECORDER.end_task("writeSortedFileNative");
 
         Ok(long_array.into_raw())
@@ -654,6 +664,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
     schema_addrs: jlongArray,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
+        #[cfg(feature = "tracing")]
         RECORDER.begin_task("decodeShuffleBlock");
 
         let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
@@ -661,6 +672,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
         let batch = read_ipc_compressed(slice)?;
 
+        #[cfg(feature = "tracing")]
         RECORDER.end_task("decodeShuffleBlock");
 
         prepare_output(&mut env, array_addrs, schema_addrs, batch, false)

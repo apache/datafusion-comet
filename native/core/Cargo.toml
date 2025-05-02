@@ -81,6 +81,7 @@ datafusion-functions-nested = { version = "47.0.0" }
 
 [features]
 default = []
+tracing = []
 hdfs = ["datafusion-comet-objectstore-hdfs"]
 jemalloc = ["tikv-jemallocator"]
 
