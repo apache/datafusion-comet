@@ -17,6 +17,7 @@
 
 //! Defines the External shuffle repartition plan.
 
+use crate::execution::jni_api::RECORDER;
 use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
 use arrow::compute::interleave_record_batch;
 use async_trait::async_trait;
@@ -215,6 +216,8 @@ async fn external_shuffle(
     codec: CompressionCodec,
     enable_fast_encoding: bool,
 ) -> Result<SendableRecordBatchStream> {
+    RECORDER.begin_task("external_shuffle");
+
     let schema = input.schema();
 
     let mut repartitioner: Box<dyn ShufflePartitioner> = match &partitioning {
@@ -250,6 +253,8 @@ async fn external_shuffle(
     }
 
     repartitioner.shuffle_write().await?;
+
+    RECORDER.end_task("external_shuffle");
 
     // shuffle writer always has empty output
     Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))))

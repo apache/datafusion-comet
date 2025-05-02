@@ -15,15 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+/// Utils for array vector, etc.
+use crate::errors::ExpressionError;
+use crate::execution::operators::ExecutionError;
 use arrow::{
     array::ArrayData,
     error::ArrowError,
     ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema},
 };
-
-/// Utils for array vector, etc.
-use crate::errors::ExpressionError;
-use crate::execution::operators::ExecutionError;
+use datafusion::common::instant::Instant;
 
 impl From<ArrowError> for ExecutionError {
     fn from(error: ArrowError) -> ExecutionError {
@@ -127,4 +127,54 @@ pub fn bytes_to_i128(slice: &[u8]) -> i128 {
     }
 
     i128::from_le_bytes(bytes)
+}
+
+/// Log events using Chrome trace format JSON
+/// https://github.com/catapult-project/catapult/blob/main/tracing/README.md
+pub struct Recorder {
+    now: Instant,
+}
+
+impl Recorder {
+    pub fn new() -> Self {
+        print!("[ ");
+        Self {
+            now: Instant::now(),
+        }
+    }
+    pub fn begin_task(&self, name: &str) {
+        let thread_id = std::thread::current().id();
+
+        // TODO could be more efficient
+        let id_num: u64 = format!("{:?}", thread_id)
+            .trim_start_matches("ThreadId(")
+            .trim_end_matches(")")
+            .parse()
+            .unwrap();
+
+        println!(
+            "{{ \"name\": \"{}\", \"cat\": \"PERF\", \"ph\": \"B\", \"pid\": 1, \"tid\": {}, \"ts\": {} }},",
+            name,
+            id_num,
+            self.now.elapsed().as_nanos()
+        );
+    }
+
+    pub fn end_task(&self, name: &str) {
+        let thread_id = std::thread::current().id();
+
+        // TODO could be more efficient
+        let id_num: u64 = format!("{:?}", thread_id)
+            .trim_start_matches("ThreadId(")
+            .trim_end_matches(")")
+            .parse()
+            .unwrap();
+
+        println!(
+            "{{ \"name\": \"{}\", \"cat\": \"PERF\", \"ph\": \"E\", \"pid\": 1, \"tid\": {}, \"ts\": {} }},",
+            name,
+            id_num,
+            self.now.elapsed().as_nanos()
+        );
+    }
 }
