@@ -669,6 +669,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
 
     /// Writes buffered shuffled record batches into Arrow IPC bytes.
     async fn shuffle_write(&mut self) -> Result<()> {
+        RECORDER.begin_task("shuffle_write");
         let start_time = Instant::now();
 
         let mut partitioned_batches = self.partitioned_batches();
@@ -736,6 +737,8 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
             .baseline
             .elapsed_compute()
             .add_duration(start_time.elapsed());
+
+        RECORDER.end_task("shuffle_write");
         Ok(())
     }
 }

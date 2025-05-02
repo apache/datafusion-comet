@@ -143,24 +143,14 @@ impl Recorder {
         }
     }
     pub fn begin_task(&self, name: &str) {
-        let thread_id = std::thread::current().id();
-
-        // TODO could be more efficient
-        let id_num: u64 = format!("{:?}", thread_id)
-            .trim_start_matches("ThreadId(")
-            .trim_end_matches(")")
-            .parse()
-            .unwrap();
-
-        println!(
-            "{{ \"name\": \"{}\", \"cat\": \"PERF\", \"ph\": \"B\", \"pid\": 1, \"tid\": {}, \"ts\": {} }},",
-            name,
-            id_num,
-            self.now.elapsed().as_nanos()
-        );
+        self.log_event(name, "B")
     }
 
     pub fn end_task(&self, name: &str) {
+        self.log_event(name, "E")
+    }
+
+    fn log_event(&self, name: &str, ph: &str) {
         let thread_id = std::thread::current().id();
 
         // TODO could be more efficient
@@ -171,7 +161,7 @@ impl Recorder {
             .unwrap();
 
         println!(
-            "{{ \"name\": \"{}\", \"cat\": \"PERF\", \"ph\": \"E\", \"pid\": 1, \"tid\": {}, \"ts\": {} }},",
+            "{{ \"name\": \"{}\", \"cat\": \"PERF\", \"ph\": \"{ph}\", \"pid\": 1, \"tid\": {}, \"ts\": {} }},",
             name,
             id_num,
             self.now.elapsed().as_nanos()
