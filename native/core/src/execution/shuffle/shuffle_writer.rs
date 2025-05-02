@@ -17,9 +17,8 @@
 
 //! Defines the External shuffle repartition plan.
 
-#[cfg(feature = "tracing")]
-use crate::execution::jni_api::RECORDER;
 use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
+use crate::execution::tracing::{trace_begin, trace_end};
 use arrow::compute::interleave_record_batch;
 use async_trait::async_trait;
 use datafusion::common::utils::proxy::VecAllocExt;
@@ -217,8 +216,7 @@ async fn external_shuffle(
     codec: CompressionCodec,
     enable_fast_encoding: bool,
 ) -> Result<SendableRecordBatchStream> {
-    #[cfg(feature = "tracing")]
-    RECORDER.begin_task("external_shuffle");
+    trace_begin("external_shuffle");
 
     let schema = input.schema();
 
@@ -256,8 +254,7 @@ async fn external_shuffle(
 
     repartitioner.shuffle_write().await?;
 
-    #[cfg(feature = "tracing")]
-    RECORDER.end_task("external_shuffle");
+    trace_end("external_shuffle");
 
     // shuffle writer always has empty output
     Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))))
@@ -672,8 +669,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
 
     /// Writes buffered shuffled record batches into Arrow IPC bytes.
     async fn shuffle_write(&mut self) -> Result<()> {
-        #[cfg(feature = "tracing")]
-        RECORDER.begin_task("shuffle_write");
+        trace_begin("shuffle_write");
 
         let start_time = Instant::now();
 
@@ -743,8 +739,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
             .elapsed_compute()
             .add_duration(start_time.elapsed());
 
-        #[cfg(feature = "tracing")]
-        RECORDER.end_task("shuffle_write");
+        trace_end("shuffle_write");
         Ok(())
     }
 }
