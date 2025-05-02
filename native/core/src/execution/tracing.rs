@@ -51,7 +51,6 @@ impl Recorder {
     fn log_event(&self, name: &str, ph: &str) {
         let thread_id = std::thread::current().id();
 
-        // TODO could be more efficient
         let id_num: u64 = format!("{:?}", thread_id)
             .trim_start_matches("ThreadId(")
             .trim_end_matches(")")
