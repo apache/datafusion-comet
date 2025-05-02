@@ -182,7 +182,6 @@ public abstract class SpillWriter {
 
     long start = System.nanoTime();
     int batchSize = (int) CometConf.COMET_COLUMNAR_SHUFFLE_BATCH_SIZE().get();
-    boolean enableFastEncoding = (boolean) CometConf.COMET_SHUFFLE_ENABLE_FAST_ENCODING().get();
     long[] results =
         nativeLib.writeSortedFileNative(
             addresses,
@@ -195,8 +194,7 @@ public abstract class SpillWriter {
             checksumAlgo,
             currentChecksum,
             compressionCodec,
-            compressionLevel,
-            enableFastEncoding);
+            compressionLevel);
 
     long written = results[0];
     checksum = results[1];

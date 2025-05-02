@@ -537,7 +537,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
     current_checksum: jlong,
     compression_codec: jstring,
     compression_level: jint,
-    enable_fast_encoding: jboolean,
 ) -> jlongArray {
     try_unwrap_or_throw(&e, |mut env| unsafe {
         let data_types = convert_datatype_arrays(&mut env, serialized_datatypes)?;
@@ -589,7 +588,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
             checksum_algo,
             current_checksum,
             &compression_codec,
-            enable_fast_encoding != JNI_FALSE,
         )?;
 
         let checksum = if let Some(checksum) = checksum {
