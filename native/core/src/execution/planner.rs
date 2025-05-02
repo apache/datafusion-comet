@@ -883,7 +883,7 @@ impl PhysicalPlanner {
                     func_name,
                     fun_expr,
                     vec![left, right],
-                    Field::new("foo", data_type, false),
+                    Field::new("foo", data_type, true),
                 )))
             }
             _ => Ok(Arc::new(BinaryExpr::new(left, op, right))),
@@ -2188,11 +2188,7 @@ impl PhysicalPlanner {
                         .coerce_types(&input_expr_types)
                         .unwrap_or_else(|_| input_expr_types.clone());
 
-                    let arg_types = args
-                        .iter()
-                        .map(|expr| expr.data_type(input_schema.as_ref()))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    let data_type = func.inner().return_type(&arg_types)?.clone();
+                    let data_type = func.inner().return_type(&coerced_types)?.clone();
 
                     (data_type, coerced_types)
                 }
