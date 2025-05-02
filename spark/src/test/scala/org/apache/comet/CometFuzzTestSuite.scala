@@ -188,6 +188,21 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("decode") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    // We want to make sure that the schema generator wasn't modified to accidentally omit
+    // BinaryType, since then this test would not run any queries and silently pass.
+    var testedBinary = false
+    for (field <- df.schema.fields if field.dataType == BinaryType) {
+      testedBinary = true
+      // Intentionally use odd capitalization of 'utf-8' to test normalization.
+      val sql = s"SELECT decode(${field.name}, 'utF-8') FROM t1"
+      checkSparkAnswerAndOperator(sql)
+    }
+    assert(testedBinary)
+  }
+
   test("regexp_replace") {
     withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
       val df = spark.read.parquet(filename)
