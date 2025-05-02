@@ -1134,10 +1134,28 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           // checkSparkAnswerWithTol("SELECT round(_1), round(_2) FROM tbl")
           checkSparkAnswerWithTol("SELECT signum(_1), sin(_1), sqrt(_1) FROM tbl")
           checkSparkAnswerWithTol("SELECT tan(_1) FROM tbl")
-          // TODO this test is pretty inadequate and does not test edge cases
-          checkSparkAnswerWithTol("SELECT expm1(_1) FROM tbl")
         }
       }
+    }
+  }
+
+  // TODO: test currently fails with
+  // Unsupported Data Type: Spark `expm1` function expects Float64, got Utf8
+  test("expm1") {
+    // TODO test with null inputs
+    val testValues = Seq(
+      -1,
+      0,
+      +1,
+      Double.MinValue,
+      Double.MaxValue,
+      Double.NaN,
+      Double.MinPositiveValue,
+      Double.PositiveInfinity,
+      Double.NegativeInfinity)
+    val testValuesRepeated = testValues.flatMap(v => Seq.fill(1000)(v))
+    withParquetTable(testValuesRepeated.map(n => (n, n)), "tbl") {
+      checkSparkAnswerWithTol("SELECT expm1(_1) FROM tbl")
     }
   }
 

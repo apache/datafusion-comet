@@ -160,6 +160,8 @@ impl Default for PhysicalPlanner {
 
 impl PhysicalPlanner {
     pub fn new(session_ctx: Arc<SessionContext>) -> Self {
+        // register UDFs from datafusion-spark crate
+        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,
