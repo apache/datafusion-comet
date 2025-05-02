@@ -393,11 +393,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     e.advance().unwrap();
 
                     // Read statistics using MIB key:
-                    let allocated = allocated.read().unwrap() as f64 / 1024.0 / 1024.0;
-                    let resident = resident.read().unwrap() as f64 / 1024.0 / 1024.0;
+                    let allocated = allocated.read().unwrap() as f64 / (1024.0 * 1024.0);
+                    let resident = resident.read().unwrap() as f64 / (1024.0 * 1024.0);
                     println!(
-                        "NATIVE_MEMORY_JEMALLOC: {{ allocated: {}, resident: {} }}",
-                        allocated, resident
+                        "NATIVE_MEMORY_JEMALLOC: {{ allocated: {allocated:.0}, resident: {resident:.0} }}"
                     );
                 }
             }
