@@ -21,7 +21,5 @@ mod map;
 pub mod row;
 mod shuffle_writer;
 
-pub use codec::BatchWriter;
-
 pub use codec::{read_ipc_compressed, CompressionCodec, ShuffleBlockWriter};
 pub use shuffle_writer::ShuffleWriterExec;
