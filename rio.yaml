@@ -1853,6 +1853,8 @@ builds:
           buildArguments:
             - name: "ARTIFACT"
               value: "${ARTIFACT}"
+            - name: "ARTIFACT_VERSION"
+              value: "${ARTIFACT_VERSION}"
 
   - group: build-artifacts
     branchRules:
@@ -1873,6 +1875,8 @@ builds:
           buildArguments:
             - name: "ARTIFACT"
               value: "${ARTIFACT}"
+            - name: "ARTIFACT_VERSION"
+              value: "${ARTIFACT_VERSION}"
 
   - group: build-artifacts
     branchRules:
@@ -1893,6 +1897,8 @@ builds:
           buildArguments:
             - name: "ARTIFACT"
               value: "${ARTIFACT}"
+            - name: "ARTIFACT_VERSION"
+              value: "${ARTIFACT_VERSION}"
 
   - group: build-artifacts
     branchRules:
@@ -1913,6 +1919,8 @@ builds:
           buildArguments:
             - name: "ARTIFACT"
               value: "${ARTIFACT}"
+            - name: "ARTIFACT_VERSION"
+              value: "${ARTIFACT_VERSION}"
 
   - group: build-artifacts
     branchRules:
@@ -1933,6 +1941,8 @@ builds:
           buildArguments:
             - name: "ARTIFACT"
               value: "${ARTIFACT}"
+            - name: "ARTIFACT_VERSION"
+              value: "${ARTIFACT_VERSION}"
 
   - group: image
     branchRules:
@@ -2514,6 +2524,7 @@ builds:
     branchRules:
       includePatterns:
         - "main-apple"
+        - "branch-.*-apple"
     trigger:
       timer: '@hourly'
       gitPush: false
