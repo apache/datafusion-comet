@@ -147,6 +147,7 @@ class CometExecIterator(
           s"heapUsed: ${mb(heap.getUsed)}, heapCommitted: ${mb(heap.getCommitted)}, " +
           s"nonHeapUsed: ${mb(nonHeap.getUsed)}, nonHeapCommitted: ${mb(nonHeap.getCommitted)} " +
           "}")
+      // scalastyle:on println
     }
 
     nativeUtil.getNextBatch(
