@@ -55,7 +55,7 @@ fn wrap_digest_result_as_hex_string(
         ColumnarValue::Array(array) => array.len(),
         ColumnarValue::Scalar(_) => 1,
     };
-    let return_field = Field::new("foo", DataType::UInt32, false);
+    let return_field = Field::new("foo", DataType::Utf8, false);
     let value = digest.invoke_with_args(ScalarFunctionArgs {
         args: args.into(),
         arg_fields: vec![],
