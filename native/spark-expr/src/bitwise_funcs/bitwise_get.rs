@@ -22,6 +22,12 @@ use std::sync::Arc;
 
 macro_rules! bit_get_scalar_position {
     ($args:expr, $array_type:ty, $pos:expr, $bit_size:expr) => {{
+        if let Some(pos) = $pos {
+            let check_result = check_position(*pos, $bit_size as i32);
+            if let Err(e) = check_result {
+                return Err(e);
+            }
+        }
         let args = $args
             .as_any()
             .downcast_ref::<$array_type>()
@@ -29,7 +35,7 @@ macro_rules! bit_get_scalar_position {
 
         let result: Int8Array = args
             .iter()
-            .map(|x| x.map(|x| bit_get(x.into(), $pos)))
+            .map(|x| x.and_then(|x| $pos.map(|pos| bit_get(x.into(), pos))))
             .collect();
 
         Ok(Arc::new(result))
@@ -47,6 +53,12 @@ macro_rules! bit_get_array_positions {
             .as_any()
             .downcast_ref::<Int32Array>()
             .expect("bit_get_array_positions failed to downcast positions array");
+
+        for pos in positions.iter().flatten() {
+            if let Err(e) = check_position(pos, $bit_size as i32) {
+                return Err(e);
+            }
+        }
 
         let result: Int8Array = args
             .iter()
@@ -93,16 +105,16 @@ pub fn spark_bit_get(args: &[ColumnarValue]) -> Result<ColumnarValue> {
         (ColumnarValue::Array(args), ColumnarValue::Scalar(ScalarValue::Int32(pos))) => {
             let result: Result<ArrayRef> = match args.data_type() {
                 DataType::Int8 => {
-                    bit_get_scalar_position!(args, Int8Array, pos.unwrap(), i8::BITS)
+                    bit_get_scalar_position!(args, Int8Array, pos, i8::BITS)
                 }
                 DataType::Int16 => {
-                    bit_get_scalar_position!(args, Int16Array, pos.unwrap(), i16::BITS)
+                    bit_get_scalar_position!(args, Int16Array, pos, i16::BITS)
                 }
                 DataType::Int32 => {
-                    bit_get_scalar_position!(args, Int32Array, pos.unwrap(), i32::BITS)
+                    bit_get_scalar_position!(args, Int32Array, pos, i32::BITS)
                 }
                 DataType::Int64 => {
-                    bit_get_scalar_position!(args, Int64Array, pos.unwrap(), i64::BITS)
+                    bit_get_scalar_position!(args, Int64Array, pos, i64::BITS)
                 }
                 _ => Err(DataFusionError::Execution(format!(
                     "Can't be evaluated because the expression's type is {:?}, not signed int",
@@ -121,4 +133,154 @@ pub fn spark_bit_get(args: &[ColumnarValue]) -> Result<ColumnarValue> {
 
 fn bit_get(arg: i64, pos: i32) -> i8 {
     ((arg >> pos) & 1) as i8
+}
+
+fn check_position(pos: i32, bit_size: i32) -> Result<()> {
+    if pos < 0 {
+        return Err(DataFusionError::Execution(format!(
+            "Invalid bit position: {:?} is less than zero",
+            pos
+        )));
+    }
+    if bit_size <= pos {
+        return Err(DataFusionError::Execution(format!(
+            "Invalid bit position: {:?} exceeds the bit upper limit: {:?}",
+            pos, bit_size
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::common::cast::as_int8_array;
+
+    #[test]
+    fn bitwise_get_scalar_position() -> Result<()> {
+        let args = vec![
+            ColumnarValue::Array(Arc::new(Int32Array::from(vec![
+                Some(1),
+                None,
+                Some(1234553454),
+            ]))),
+            ColumnarValue::Scalar(ScalarValue::Int32(Some(1))),
+        ];
+
+        let expected = &Int8Array::from(vec![Some(0), None, Some(1)]);
+
+        let ColumnarValue::Array(result) = spark_bit_get(&args)? else {
+            unreachable!()
+        };
+
+        let result = as_int8_array(&result).expect("failed to downcast to Int8Array");
+
+        assert_eq!(result, expected);
+
+        Ok(())
+    }
+
+    #[test]
+    fn bitwise_get_scalar_negative_position() -> Result<()> {
+        let args = vec![
+            ColumnarValue::Array(Arc::new(Int32Array::from(vec![
+                Some(1),
+                None,
+                Some(1234553454),
+            ]))),
+            ColumnarValue::Scalar(ScalarValue::Int32(Some(-1))),
+        ];
+
+        let expected = String::from("Execution error: Invalid bit position: -1 is less than zero");
+        let result = spark_bit_get(&args).err().unwrap().to_string();
+
+        assert_eq!(result, expected);
+
+        Ok(())
+    }
+
+    #[test]
+    fn bitwise_get_scalar_overflow_position() -> Result<()> {
+        let args = vec![
+            ColumnarValue::Array(Arc::new(Int32Array::from(vec![
+                Some(1),
+                None,
+                Some(1234553454),
+            ]))),
+            ColumnarValue::Scalar(ScalarValue::Int32(Some(33))),
+        ];
+
+        let expected = String::from(
+            "Execution error: Invalid bit position: 33 exceeds the bit upper limit: 32",
+        );
+        let result = spark_bit_get(&args).err().unwrap().to_string();
+
+        assert_eq!(result, expected);
+
+        Ok(())
+    }
+
+    #[test]
+    fn bitwise_get_array_positions() -> Result<()> {
+        let args = vec![
+            ColumnarValue::Array(Arc::new(Int32Array::from(vec![
+                Some(1),
+                None,
+                Some(1234553454),
+            ]))),
+            ColumnarValue::Array(Arc::new(Int32Array::from(vec![Some(1), None, Some(1)]))),
+        ];
+
+        let expected = &Int8Array::from(vec![Some(0), None, Some(1)]);
+
+        let ColumnarValue::Array(result) = spark_bit_get(&args)? else {
+            unreachable!()
+        };
+
+        let result = as_int8_array(&result).expect("failed to downcast to Int8Array");
+
+        assert_eq!(result, expected);
+
+        Ok(())
+    }
+
+    #[test]
+    fn bitwise_get_array_positions_contains_negative() -> Result<()> {
+        let args = vec![
+            ColumnarValue::Array(Arc::new(Int32Array::from(vec![
+                Some(1),
+                None,
+                Some(1234553454),
+            ]))),
+            ColumnarValue::Array(Arc::new(Int32Array::from(vec![Some(-1), None, Some(1)]))),
+        ];
+
+        let expected = String::from("Execution error: Invalid bit position: -1 is less than zero");
+        let result = spark_bit_get(&args).err().unwrap().to_string();
+
+        assert_eq!(result, expected);
+
+        Ok(())
+    }
+
+    #[test]
+    fn bitwise_get_array_positions_contains_overflow() -> Result<()> {
+        let args = vec![
+            ColumnarValue::Array(Arc::new(Int32Array::from(vec![
+                Some(1),
+                None,
+                Some(1234553454),
+            ]))),
+            ColumnarValue::Array(Arc::new(Int32Array::from(vec![Some(33), None, Some(1)]))),
+        ];
+
+        let expected = String::from(
+            "Execution error: Invalid bit position: 33 exceeds the bit upper limit: 32",
+        );
+        let result = spark_bit_get(&args).err().unwrap().to_string();
+
+        assert_eq!(result, expected);
+
+        Ok(())
+    }
 }

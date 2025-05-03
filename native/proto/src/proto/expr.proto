@@ -84,7 +84,6 @@ message Expr {
     GetArrayStructFields get_array_struct_fields = 57;
     ArrayInsert array_insert = 58;
     MathExpr integral_divide = 59;
-    BinaryExpr bitwiseGet = 60;
   }
 }
 
