@@ -19,8 +19,13 @@
 
 package org.apache.comet
 
+import scala.util.Random
+
+import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+
+import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 class CometBitwiseExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -66,6 +71,45 @@ class CometBitwiseExpressionSuite extends CometTestBase with AdaptiveSparkPlanHe
             s"SELECT shiftleft(col1, 2), shiftleft(col1, col2) FROM $table")
         }
       }
+    }
+  }
+
+  test("bitwise_get - throws exceptions") {
+    def checkSparkAndCometEqualThrows(query: String): Unit = {
+      checkSparkMaybeThrows(sql(query)) match {
+        case (Some(sparkExc), Some(cometExc)) =>
+          assert(sparkExc.getMessage == cometExc.getMessage)
+        case _ => fail("Exception should be thrown")
+      }
+    }
+    checkSparkAndCometEqualThrows("select bit_get(1000, -30)")
+    checkSparkAndCometEqualThrows("select bit_get(cast(1000 as byte), 9)")
+    checkSparkAndCometEqualThrows("select bit_count(cast(null as byte), 4)")
+    checkSparkAndCometEqualThrows("select bit_count(1000, cast(null as int))")
+  }
+
+  test("bitwise_get - random values") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          100,
+          DataGenOptions(
+            allowNull = true,
+            generateNegativeZero = true,
+            generateArray = false,
+            generateStruct = false,
+            generateMap = false))
+      }
+      val table = spark.read.parquet(filename)
+      checkSparkAnswerAndOperator(
+        table
+          .selectExpr("bit_get(c1, 7)", "bit_get(c2, 10)", "bit_get(c3, 12)", "bit_get(c3, 16)"))
     }
   }
 }

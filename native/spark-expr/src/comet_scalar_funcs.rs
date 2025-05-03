@@ -16,7 +16,12 @@
 // under the License.
 
 use crate::hash_funcs::*;
-use crate::{spark_array_repeat, spark_bit_get, spark_ceil, spark_date_add, spark_date_sub, spark_decimal_div, spark_decimal_integral_div, spark_floor, spark_hex, spark_isnan, spark_make_decimal, spark_read_side_padding, spark_round, spark_rpad, spark_unhex, spark_unscaled_value, SparkChrFunc};
+use crate::{
+    spark_array_repeat, spark_bit_get, spark_ceil, spark_date_add, spark_date_sub,
+    spark_decimal_div, spark_decimal_integral_div, spark_floor, spark_hex, spark_isnan,
+    spark_make_decimal, spark_read_side_padding, spark_round, spark_rpad, spark_unhex,
+    spark_unscaled_value, SparkChrFunc,
+};
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::execution::FunctionRegistry;
@@ -143,7 +148,7 @@ pub fn create_comet_physical_fun(
         "bit_get" => {
             let func = Arc::new(spark_bit_get);
             make_comet_scalar_udf!("bit_get", func, without data_type)
-        },
+        }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
                 "Function {fun_name} not found in the registry: {e}",
