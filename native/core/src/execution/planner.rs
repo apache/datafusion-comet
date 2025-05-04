@@ -2195,9 +2195,20 @@ impl PhysicalPlanner {
                         .map(|(i, dt)| Field::new(format!("arg{i}"), dt.clone(), true))
                         .collect::<Vec<_>>();
 
+                    // TODO this should try and find scalar
+                    let arguments = args
+                        .iter()
+                        .map(|e| {
+                            e.as_ref()
+                                .as_any()
+                                .downcast_ref::<Literal>()
+                                .map(|lit| lit.value())
+                        })
+                        .collect::<Vec<_>>();
+
                     let args = ReturnFieldArgs {
                         arg_fields: &arg_fields,
-                        scalar_arguments: &[],
+                        scalar_arguments: &arguments,
                     };
 
                     let data_type = func
