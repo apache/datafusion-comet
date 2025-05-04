@@ -111,6 +111,8 @@ abstract class CometTestBase
       actualAnswer: Row,
       expectedAnswer: Row,
       absTol: Double): Unit = {
+    // scalastyle:off println
+    println(s"actual=$actualAnswer, expected=$expectedAnswer")
     require(
       actualAnswer.length == expectedAnswer.length,
       s"actual answer length ${actualAnswer.length} != " +
@@ -119,7 +121,10 @@ abstract class CometTestBase
 
     actualAnswer.toSeq.zip(expectedAnswer.toSeq).foreach {
       case (actual: Double, expected: Double) =>
-        if (!actual.isNaN && !expected.isNaN) {
+        if (actual.isInfinity || expected.isInfinity) {
+          assert(actual.isInfinity == expected.isInfinity,
+            s"actual answer $actual != $expected")
+        } else if (!actual.isNaN && !expected.isNaN) {
           assert(
             math.abs(actual - expected) < absTol,
             s"actual answer $actual not within $absTol of correct answer $expected")
