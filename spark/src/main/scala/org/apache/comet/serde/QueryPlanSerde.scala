@@ -1431,10 +1431,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
         optExprWithInfo(optExpr, expr, castExpr)
 
       case Expm1(child) =>
-        val castExpr = Cast(child, StringType)
-        val childExpr = exprToProtoInternal(castExpr, inputs, binding)
+        val childExpr = exprToProtoInternal(child, inputs, binding)
         val optExpr = scalarFunctionExprToProto("expm1", childExpr)
-        optExprWithInfo(optExpr, expr, castExpr)
+        optExprWithInfo(optExpr, expr, child)
 
       case BitLength(child) =>
         val castExpr = Cast(child, StringType)
