@@ -79,7 +79,7 @@ use datafusion::common::{
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{
-    AggregateUDF, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    AggregateUDF, ReturnFieldArgs, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
     WindowFunctionDefinition,
 };
 use datafusion::physical_expr::expressions::{Literal, StatsType};
@@ -2196,7 +2196,34 @@ impl PhysicalPlanner {
                         .coerce_types(&input_expr_types)
                         .unwrap_or_else(|_| input_expr_types.clone());
 
-                    let data_type = func.inner().return_type(&coerced_types)?.clone();
+                    let arg_fields = coerced_types
+                        .iter()
+                        .enumerate()
+                        .map(|(i, dt)| Field::new(format!("arg{i}"), dt.clone(), true))
+                        .collect::<Vec<_>>();
+
+                    // TODO this should try and find scalar
+                    let arguments = args
+                        .iter()
+                        .map(|e| {
+                            e.as_ref()
+                                .as_any()
+                                .downcast_ref::<Literal>()
+                                .map(|lit| lit.value())
+                        })
+                        .collect::<Vec<_>>();
+
+                    let args = ReturnFieldArgs {
+                        arg_fields: &arg_fields,
+                        scalar_arguments: &arguments,
+                    };
+
+                    let data_type = func
+                        .inner()
+                        .return_field_from_args(args)?
+                        .clone()
+                        .data_type()
+                        .clone();
 
                     (data_type, coerced_types)
                 }
