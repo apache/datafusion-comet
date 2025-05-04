@@ -23,10 +23,7 @@ use std::sync::Arc;
 macro_rules! bit_get_scalar_position {
     ($args:expr, $array_type:ty, $pos:expr, $bit_size:expr) => {{
         if let Some(pos) = $pos {
-            let check_result = check_position(*pos, $bit_size as i32);
-            if let Err(e) = check_result {
-                return Err(e);
-            }
+            check_position(*pos, $bit_size as i32)?;
         }
         let args = $args
             .as_any()
@@ -55,9 +52,7 @@ macro_rules! bit_get_array_positions {
             .expect("bit_get_array_positions failed to downcast positions array");
 
         for pos in positions.iter().flatten() {
-            if let Err(e) = check_position(pos, $bit_size as i32) {
-                return Err(e);
-            }
+            check_position(pos, $bit_size as i32)?
         }
 
         let result: Int8Array = args
