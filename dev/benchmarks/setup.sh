@@ -18,6 +18,8 @@
 # under the License.
 #
 
+sudo yum install -y wget
+
 # Install Rust
 sudo yum groupinstall -y "Development Tools"
 curl https://sh.rustup.rs -sSf | sh -s -- -y
