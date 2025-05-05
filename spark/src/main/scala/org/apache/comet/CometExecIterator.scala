@@ -19,6 +19,8 @@
 
 package org.apache.comet
 
+import java.lang.management.ManagementFactory
+
 import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
@@ -57,6 +59,7 @@ class CometExecIterator(
     extends Iterator[ColumnarBatch]
     with Logging {
 
+  private val memoryProfilingEnabled = CometConf.COMET_MEMORY_PROFILING.get()
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
   private val cometBatchIterators = inputs.map { iterator =>
@@ -92,7 +95,8 @@ class CometExecIterator(
       memoryLimitPerTask = getMemoryLimitPerTask(conf),
       taskAttemptId = TaskContext.get().taskAttemptId,
       debug = COMET_DEBUG_ENABLED.get(),
-      explain = COMET_EXPLAIN_NATIVE_ENABLED.get())
+      explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
+      memoryProfilingEnabled)
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
@@ -129,6 +133,22 @@ class CometExecIterator(
 
   def getNextBatch(): Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
+
+    if (memoryProfilingEnabled) {
+      val memoryMXBean = ManagementFactory.getMemoryMXBean
+      val heap = memoryMXBean.getHeapMemoryUsage
+      val nonHeap = memoryMXBean.getNonHeapMemoryUsage
+
+      def mb(n: Long) = n / 1024 / 1024
+
+      // scalastyle:off println
+      println(
+        "JVM_MEMORY: { " +
+          s"heapUsed: ${mb(heap.getUsed)}, heapCommitted: ${mb(heap.getCommitted)}, " +
+          s"nonHeapUsed: ${mb(nonHeap.getUsed)}, nonHeapCommitted: ${mb(nonHeap.getCommitted)} " +
+          "}")
+      // scalastyle:on println
+    }
 
     nativeUtil.getNextBatch(
       numOutputCols,
