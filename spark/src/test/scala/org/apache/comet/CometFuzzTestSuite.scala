@@ -203,6 +203,22 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     assert(testedBinary)
   }
 
+  test("regexp_replace") {
+    withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
+      val df = spark.read.parquet(filename)
+      df.createOrReplaceTempView("t1")
+      // We want to make sure that the schema generator wasn't modified to accidentally omit
+      // StringType, since then this test would not run any queries and silently pass.
+      var testedString = false
+      for (field <- df.schema.fields if field.dataType == StringType) {
+        testedString = true
+        val sql = s"SELECT regexp_replace(${field.name}, 'a', 'b') FROM t1"
+        checkSparkAnswerAndOperator(sql)
+      }
+      assert(testedString)
+    }
+  }
+
   test("Parquet temporal types written as INT96") {
     // int96 coercion in DF does not work with nested types yet
     // https://github.com/apache/datafusion/issues/15763
