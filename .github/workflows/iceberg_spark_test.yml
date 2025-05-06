@@ -69,7 +69,6 @@ jobs:
           iceberg-short-version: ${{ matrix.iceberg-version.short }}
           scala-version: ${{ matrix.scala-version }}
           spark-short-version: ${{ matrix.spark-version.short }}
-      - run: echo -e "$(ip addr show eth0 | grep "inet\b" | awk '{print $2}' | cut -d/ -f1)\t$(hostname -f) $(hostname -s)" | sudo tee -a /etc/hosts
       - name: Run Iceberg Spark tests
         run: |
           cd apache-iceberg
