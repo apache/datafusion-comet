@@ -209,7 +209,7 @@ async fn external_shuffle(
     context: Arc<TaskContext>,
     codec: CompressionCodec,
 ) -> Result<SendableRecordBatchStream> {
-    trace_begin("external_shuffle");
+    let _ = TraceGuard::new("external_shuffle");
 
     let schema = input.schema();
 
@@ -244,8 +244,6 @@ async fn external_shuffle(
     }
 
     repartitioner.shuffle_write().await?;
-
-    trace_end("external_shuffle");
 
     // shuffle writer always has empty output
     Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))))
@@ -604,6 +602,8 @@ impl MultiPartitionShuffleRepartitioner {
     }
 
     async fn spill(&mut self) -> Result<()> {
+        let _ = TraceGuard::new("spill");
+
         log::debug!(
             "ShuffleRepartitioner spilling shuffle data of {} to disk while inserting ({} time(s) so far)",
             self.used(),
@@ -659,7 +659,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
 
     /// Writes buffered shuffled record batches into Arrow IPC bytes.
     async fn shuffle_write(&mut self) -> Result<()> {
-        trace_begin("shuffle_write");
+        let _ = TraceGuard::new("shuffle_write");
 
         let start_time = Instant::now();
 
@@ -729,7 +729,6 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
             .elapsed_compute()
             .add_duration(start_time.elapsed());
 
-        trace_end("shuffle_write");
         Ok(())
     }
 }
