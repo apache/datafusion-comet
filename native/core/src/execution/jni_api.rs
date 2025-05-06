@@ -67,9 +67,9 @@ use crate::execution::operators::ScanExec;
 use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 
-#[cfg(feature="tracing")]
-use crate::execution::tracing::{log_counter, trace_begin, trace_end};
 use crate::execution::tracing::TraceGuard;
+#[cfg(feature = "tracing")]
+use crate::execution::tracing::{log_counter, trace_begin, trace_end};
 
 use log::info;
 use once_cell::sync::Lazy;
@@ -375,7 +375,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         let exec_context = get_execution_context(exec_context);
 
         if exec_context.memory_profiling_enabled {
-            #[cfg(feature="tracing")]
+            #[cfg(feature = "tracing")]
             {
                 #[cfg(feature = "jemalloc")]
                 {
