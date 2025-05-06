@@ -162,7 +162,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     memory_profiling_enabled: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
-        trace_begin("create_plan");
+        let _ = TraceGuard::new("createPlan");
 
         // Init JVM classes
         JVMClasses::init(&mut env);
@@ -244,8 +244,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             memory_pool_config,
             memory_profiling_enabled: memory_profiling_enabled != JNI_FALSE,
         });
-
-        trace_end("create_plan");
 
         Ok(Box::into_raw(exec_context) as i64)
     })
@@ -370,7 +368,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     schema_addrs: jlongArray,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
-        trace_begin("execute_plan");
+        let _ = TraceGuard::new("executePlan");
 
         // Retrieve the query
         let exec_context = get_execution_context(exec_context);
@@ -466,9 +464,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             match poll_output {
                 Poll::Ready(Some(output)) => {
                     // prepare output for FFI transfer
-
-                    trace_end("execute_plan");
-
                     return prepare_output(
                         &mut env,
                         array_addrs,
@@ -492,9 +487,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                             );
                         }
                     }
-
-                    trace_end("execute_plan");
-
                     return Ok(-1);
                 }
                 // A poll pending means there are more than one blocking operators,
@@ -595,7 +587,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
     compression_level: jint,
 ) -> jlongArray {
     try_unwrap_or_throw(&e, |mut env| unsafe {
-        trace_begin("writeSortedFileNative");
+        let _ = TraceGuard::new("writeSortedFileNative");
 
         let data_types = convert_datatype_arrays(&mut env, serialized_datatypes)?;
 
@@ -659,8 +651,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
         let long_array = env.new_long_array(2)?;
         env.set_long_array_region(&long_array, 0, &[written_bytes, checksum])?;
 
-        trace_end("writeSortedFileNative");
-
         Ok(long_array.into_raw())
     })
 }
@@ -674,12 +664,10 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
     size: jlong,
 ) {
     try_unwrap_or_throw(&e, |_| {
-        trace_begin("sortRowPartitionsNative");
+        let _ = TraceGuard::new("sortRowPartitionsNative");
         // SAFETY: JVM unsafe memory allocation is aligned with long.
         let array = unsafe { std::slice::from_raw_parts_mut(address as *mut i64, size as usize) };
         array.rdxsort();
-        trace_end("sortRowPartitionsNative");
-
         Ok(())
     })
 }
@@ -697,17 +685,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
     schema_addrs: jlongArray,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
-        trace_begin("decodeShuffleBlock");
-
+        let _ = TraceGuard::new("decodeShuffleBlock");
         let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
         let length = length as usize;
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
         let batch = read_ipc_compressed(slice)?;
-        let return_value = prepare_output(&mut env, array_addrs, schema_addrs, batch, false);
-
-        trace_end("decodeShuffleBlock");
-
-        return_value
+        prepare_output(&mut env, array_addrs, schema_addrs, batch, false)
     })
 }
 
@@ -766,4 +749,21 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
     _event: jstring,
 ) {
     // no implementation
+}
+
+struct TraceGuard<'a> {
+    label: &'a str,
+}
+
+impl<'a> TraceGuard<'a> {
+    fn new(label: &'a str) -> Self {
+        trace_begin(label);
+        Self { label }
+    }
+}
+
+impl<'a> Drop for TraceGuard<'a> {
+    fn drop(&mut self) {
+        trace_end(self.label);
+    }
 }
