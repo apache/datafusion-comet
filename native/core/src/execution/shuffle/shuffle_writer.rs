@@ -18,7 +18,7 @@
 //! Defines the External shuffle repartition plan.
 
 use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
-use crate::execution::tracing::{trace_begin, trace_end, TraceGuard};
+use crate::execution::tracing::TraceGuard;
 use arrow::compute::interleave_record_batch;
 use async_trait::async_trait;
 use datafusion::common::utils::proxy::VecAllocExt;
