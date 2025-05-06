@@ -19,10 +19,11 @@ under the License.
 
 # Tracing
 
-Tracing can be enabled by building Comet with the `tracing` feature enabled.
+Tracing can be enabled by building Comet with the `tracing` feature enabled. Additionally, enabling the `jemalloc` 
+feature will enable tracing of native memory allocations.
 
 ```shell
-make release COMET_FEATURES="tracing"
+make release COMET_FEATURES="tracing,jemalloc"
 ```
 
 With this feature enabled, each Spark executor will write a JSON event log to stdout using 
