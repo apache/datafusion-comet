@@ -30,7 +30,7 @@ env:
   RUST_VERSION: stable
 
 jobs:
-  spark-sql-catalyst-native-iceberg-compat:
+  spark-sql-catalyst-native-datafusion:
     strategy:
       matrix:
         os: [ubuntu-24.04]

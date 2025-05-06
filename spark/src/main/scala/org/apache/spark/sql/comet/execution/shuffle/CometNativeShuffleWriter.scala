@@ -151,8 +151,6 @@ class CometNativeShuffleWriter[K, V](
       val shuffleWriterBuilder = OperatorOuterClass.ShuffleWriter.newBuilder()
       shuffleWriterBuilder.setOutputDataFile(dataFile)
       shuffleWriterBuilder.setOutputIndexFile(indexFile)
-      shuffleWriterBuilder.setEnableFastEncoding(
-        CometConf.COMET_SHUFFLE_ENABLE_FAST_ENCODING.get())
 
       if (SparkEnv.get.conf.getBoolean("spark.shuffle.compress", true)) {
         val codec = CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_CODEC.get() match {

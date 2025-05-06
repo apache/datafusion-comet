@@ -529,7 +529,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           nativeOrColumnarShuffle.get
         } else {
           val isShuffleEnabled = isCometShuffleEnabled(conf)
-          s.outputPartitioning
           val reason = getCometShuffleNotEnabledReason(conf).getOrElse("no reason available")
           val msg1 = createMessage(!isShuffleEnabled, s"Comet shuffle is not enabled: $reason")
           val columnarShuffleEnabled = isCometJVMShuffleMode(conf)

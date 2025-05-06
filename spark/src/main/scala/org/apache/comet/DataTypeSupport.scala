@@ -19,8 +19,12 @@
 
 package org.apache.comet
 
+import scala.collection.mutable.ListBuffer
+
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
+
+import org.apache.comet.DataTypeSupport.{usingParquetExecWithIncompatTypes, ARRAY_ELEMENT, MAP_KEY, MAP_VALUE}
 
 trait DataTypeSupport {
 
@@ -33,20 +37,25 @@ trait DataTypeSupport {
    * @return
    *   true if the datatype is supported
    */
-  def isAdditionallySupported(dt: DataType): Boolean = false
+  def isAdditionallySupported(
+      dt: DataType,
+      name: String,
+      fallbackReasons: ListBuffer[String]): Boolean = false
 
-  private def isGloballySupported(dt: DataType): Boolean = dt match {
-    case ByteType | ShortType
-        if CometSparkSessionExtensions.usingDataFusionParquetExec(SQLConf.get) &&
-          !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get() =>
-      false
-    case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-        BinaryType | StringType | _: DecimalType | DateType | TimestampType =>
-      true
-    case t: DataType if t.typeName == "timestamp_ntz" =>
-      true
-    case _ => false
-  }
+  private def isGloballySupported(dt: DataType, fallbackReasons: ListBuffer[String]): Boolean =
+    dt match {
+      case ByteType | ShortType if usingParquetExecWithIncompatTypes(SQLConf.get) =>
+        fallbackReasons += s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false"
+        false
+      case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
+          BinaryType | StringType | _: DecimalType | DateType | TimestampType =>
+        true
+      case t: DataType if t.typeName == "timestamp_ntz" =>
+        true
+      case other =>
+        fallbackReasons += s"Unsupported type: $other"
+        false
+    }
 
   /**
    * Checks if this schema is supported by checking if each field in the struct is supported.
@@ -56,23 +65,46 @@ trait DataTypeSupport {
    * @return
    *   true if all fields in the struct are supported
    */
-  def isSchemaSupported(struct: StructType): Boolean = {
-    struct.fields.map(_.dataType).forall(isTypeSupported)
+  def isSchemaSupported(struct: StructType, fallbackReasons: ListBuffer[String]): Boolean = {
+    struct.fields.forall(f => isTypeSupported(f.dataType, f.name, fallbackReasons))
   }
 
-  def isTypeSupported(dt: DataType): Boolean = {
-    if (isGloballySupported(dt) || isAdditionallySupported(dt)) {
+  def isTypeSupported(
+      dt: DataType,
+      name: String,
+      fallbackReasons: ListBuffer[String]): Boolean = {
+    if (isGloballySupported(dt, fallbackReasons) || isAdditionallySupported(
+        dt,
+        name,
+        fallbackReasons)) {
       // If complex types are supported, we additionally want to recurse into their children
       dt match {
-        case StructType(fields) => fields.map(_.dataType).forall(isTypeSupported)
-        case ArrayType(elementType, _) => isTypeSupported(elementType)
+        case StructType(fields) =>
+          fields.forall(f => isTypeSupported(f.dataType, f.name, fallbackReasons))
+        case ArrayType(elementType, _) =>
+          isTypeSupported(elementType, ARRAY_ELEMENT, fallbackReasons)
         case MapType(keyType, valueType, _) =>
-          isTypeSupported(keyType) && isTypeSupported(valueType)
+          isTypeSupported(keyType, MAP_KEY, fallbackReasons) && isTypeSupported(
+            valueType,
+            MAP_VALUE,
+            fallbackReasons)
         // Not a complex type
         case _ => true
       }
     } else {
+      fallbackReasons += s"Unsupported ${name} of type ${dt}"
       false
     }
+  }
+}
+
+object DataTypeSupport {
+  val ARRAY_ELEMENT = "array element"
+  val MAP_KEY = "map key"
+  val MAP_VALUE = "map value"
+
+  def usingParquetExecWithIncompatTypes(conf: SQLConf): Boolean = {
+    CometSparkSessionExtensions.usingDataFusionParquetExec(conf) &&
+    !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get(conf)
   }
 }
