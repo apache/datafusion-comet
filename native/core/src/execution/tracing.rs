@@ -50,7 +50,7 @@ impl Recorder {
 
     pub fn log_counter(&self, name: &str, value: usize) {
         println!(
-            "{{ \"name\": \"ctr\", \"cat\": \"PERF\", \"ph\": \"C\", \"pid\": 1, \"tid\": {}, \"ts\": {}, \"args\": {{ \"{name}\": {value} }} }},",
+            "{{ \"name\": \"{name}\", \"cat\": \"PERF\", \"ph\": \"C\", \"pid\": 1, \"tid\": {}, \"ts\": {}, \"args\": {{ \"{name}\": {value} }} }},",
             Self::get_thread_id(),
             self.now.elapsed().as_nanos()
         );
@@ -88,6 +88,7 @@ pub(crate) fn trace_end(name: &str) {
 }
 
 #[allow(unused_variables)]
+#[allow(dead_code)]
 pub(crate) fn log_counter(name: &str, value: usize) {
     #[cfg(feature = "tracing")]
     RECORDER.log_counter(name, value);

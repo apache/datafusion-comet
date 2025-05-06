@@ -66,12 +66,13 @@ use crate::execution::memory_pools::{
 use crate::execution::operators::ScanExec;
 use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
+
+#[cfg(feature="tracing")]
+use crate::execution::tracing::{log_counter, trace_begin, trace_end};
 use crate::execution::tracing::TraceGuard;
 
 use log::info;
 use once_cell::sync::Lazy;
-#[cfg(target_os = "linux")]
-use procfs::process::Process;
 #[cfg(feature = "jemalloc")]
 use tikv_jemalloc_ctl::{epoch, stats};
 
@@ -373,37 +374,15 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         // Retrieve the query
         let exec_context = get_execution_context(exec_context);
 
-        // memory profiling is only available on linux
         if exec_context.memory_profiling_enabled {
-            #[cfg(target_os = "linux")]
+            #[cfg(feature="tracing")]
             {
-                let pid = std::process::id();
-                let process = Process::new(pid as i32).unwrap();
-                let statm = process.statm().unwrap();
-                let page_size = procfs::page_size();
-                println!(
-                    "NATIVE_MEMORY: {{ resident: {:.0} }}",
-                    (statm.resident * page_size) as f64 / (1024.0 * 1024.0)
-                );
-
                 #[cfg(feature = "jemalloc")]
                 {
-                    // Obtain a MIB for the `epoch`, `stats.allocated`, and
-                    // `atats.resident` keys:
                     let e = epoch::mib().unwrap();
                     let allocated = stats::allocated::mib().unwrap();
-                    let resident = stats::resident::mib().unwrap();
-
-                    // Many statistics are cached and only updated
-                    // when the epoch is advanced:
                     e.advance().unwrap();
-
-                    // Read statistics using MIB key:
                     let allocated = allocated.read().unwrap() as f64 / (1024.0 * 1024.0);
-                    let resident = resident.read().unwrap() as f64 / (1024.0 * 1024.0);
-                    println!(
-                        "NATIVE_MEMORY_JEMALLOC: {{ allocated: {allocated:.0}, resident: {resident:.0} }}"
-                    );
                     use crate::execution::tracing::log_counter;
                     log_counter("jemalloc_allocated", allocated as usize);
                 }
@@ -725,6 +704,23 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
     try_unwrap_or_throw(&e, |mut env| {
         let name: String = env.get_string(&JString::from_raw(event)).unwrap().into();
         trace_end(&name);
+        Ok(())
+    })
+}
+
+#[no_mangle]
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+#[cfg(feature = "tracing")]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_logCounter(
+    e: JNIEnv,
+    _class: JClass,
+    name: jstring,
+    value: jint,
+) {
+    try_unwrap_or_throw(&e, |mut env| {
+        let name: String = env.get_string(&JString::from_raw(name)).unwrap().into();
+        log_counter(&name, value as usize);
         Ok(())
     })
 }

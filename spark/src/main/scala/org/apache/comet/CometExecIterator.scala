@@ -139,16 +139,8 @@ class CometExecIterator(
       if (memoryProfilingEnabled) {
         val memoryMXBean = ManagementFactory.getMemoryMXBean
         val heap = memoryMXBean.getHeapMemoryUsage
-        val nonHeap = memoryMXBean.getNonHeapMemoryUsage
-
         def mb(n: Long) = n / 1024 / 1024
-
-        // scalastyle:off println
-        println("JVM_MEMORY: { " +
-          s"heapUsed: ${mb(heap.getUsed)}, heapCommitted: ${mb(heap.getCommitted)}, " +
-          s"nonHeapUsed: ${mb(nonHeap.getUsed)}, nonHeapCommitted: ${mb(nonHeap.getCommitted)} " +
-          "}")
-        // scalastyle:on println
+        nativeLib.logCounter("jvm_heapUsed", mb(heap.getUsed).toInt)
       }
 
       nativeUtil.getNextBatch(
