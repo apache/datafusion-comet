@@ -18,7 +18,7 @@
 //! Defines the External shuffle repartition plan.
 
 use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
-use crate::execution::tracing::{trace_begin, trace_end};
+use crate::execution::tracing::{trace_begin, trace_end, TraceGuard};
 use arrow::compute::interleave_record_batch;
 use async_trait::async_trait;
 use datafusion::common::utils::proxy::VecAllocExt;
@@ -640,7 +640,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
     /// This function will slice input batch according to configured batch size and then
     /// shuffle rows into corresponding partition buffer.
     async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()> {
-        trace_begin("insert_batch");
+        let _ = TraceGuard::new("insert_batch");
         let start_time = Instant::now();
         let mut start = 0;
         while start < batch.num_rows() {
@@ -654,7 +654,6 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
             .baseline
             .elapsed_compute()
             .add_duration(start_time.elapsed());
-        trace_end("insert_batch");
         Ok(())
     }
 

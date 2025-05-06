@@ -66,8 +66,8 @@ use crate::execution::memory_pools::{
 use crate::execution::operators::ScanExec;
 use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
+use crate::execution::tracing::TraceGuard;
 
-use crate::execution::tracing::{trace_begin, trace_end};
 use log::info;
 use once_cell::sync::Lazy;
 #[cfg(target_os = "linux")]
@@ -404,6 +404,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     println!(
                         "NATIVE_MEMORY_JEMALLOC: {{ allocated: {allocated:.0}, resident: {resident:.0} }}"
                     );
+                    use crate::execution::tracing::log_counter;
+                    log_counter("jemalloc_allocated", allocated as usize);
                 }
             }
         }
@@ -749,21 +751,4 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
     _event: jstring,
 ) {
     // no implementation
-}
-
-struct TraceGuard<'a> {
-    label: &'a str,
-}
-
-impl<'a> TraceGuard<'a> {
-    fn new(label: &'a str) -> Self {
-        trace_begin(label);
-        Self { label }
-    }
-}
-
-impl<'a> Drop for TraceGuard<'a> {
-    fn drop(&mut self) {
-        trace_end(self.label);
-    }
 }

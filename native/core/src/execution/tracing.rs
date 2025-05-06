@@ -48,21 +48,30 @@ impl Recorder {
         self.log_event(name, "E")
     }
 
+    pub fn log_counter(&self, name: &str, value: usize) {
+        println!(
+            "{{ \"name\": \"ctr\", \"cat\": \"PERF\", \"ph\": \"C\", \"pid\": 1, \"tid\": {}, \"ts\": {}, \"args\": {{ \"{name}\": {value} }} }},",
+            Self::get_thread_id(),
+            self.now.elapsed().as_nanos()
+        );
+    }
+
     fn log_event(&self, name: &str, ph: &str) {
-        let thread_id = std::thread::current().id();
-
-        let id_num: u64 = format!("{:?}", thread_id)
-            .trim_start_matches("ThreadId(")
-            .trim_end_matches(")")
-            .parse()
-            .unwrap();
-
         println!(
             "{{ \"name\": \"{}\", \"cat\": \"PERF\", \"ph\": \"{ph}\", \"pid\": 1, \"tid\": {}, \"ts\": {} }},",
             name,
-            id_num,
+            Self::get_thread_id(),
             self.now.elapsed().as_nanos()
         );
+    }
+
+    fn get_thread_id() -> u64 {
+        let thread_id = std::thread::current().id();
+        format!("{:?}", thread_id)
+            .trim_start_matches("ThreadId(")
+            .trim_end_matches(")")
+            .parse()
+            .unwrap()
     }
 }
 
@@ -76,4 +85,26 @@ pub(crate) fn trace_begin(name: &str) {
 pub(crate) fn trace_end(name: &str) {
     #[cfg(feature = "tracing")]
     RECORDER.end_task(name);
+}
+
+#[allow(unused_variables)]
+pub(crate) fn log_counter(name: &str, value: usize) {
+    #[cfg(feature = "tracing")]
+    RECORDER.log_counter(name, value);
+}
+pub(crate) struct TraceGuard<'a> {
+    label: &'a str,
+}
+
+impl<'a> TraceGuard<'a> {
+    pub fn new(label: &'a str) -> Self {
+        trace_begin(label);
+        Self { label }
+    }
+}
+
+impl<'a> Drop for TraceGuard<'a> {
+    fn drop(&mut self) {
+        trace_end(self.label);
+    }
 }
