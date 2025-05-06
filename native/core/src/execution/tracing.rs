@@ -104,7 +104,7 @@ impl<'a> TraceGuard<'a> {
     }
 }
 
-impl<'a> Drop for TraceGuard<'a> {
+impl Drop for TraceGuard<'_> {
     fn drop(&mut self) {
         trace_end(self.label);
     }
