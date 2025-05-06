@@ -19,3 +19,70 @@ index ab7584e768e..2ada8c28842 100644
        }
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
+index 18123a4d6ec..fbe4c766eee 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
+@@ -17,6 +17,8 @@
+ 
+ package org.apache.spark.sql
+ 
++import org.apache.comet.CometConf
++
+ import org.apache.spark.{SPARK_DOC_ROOT, SparkRuntimeException}
+ import org.apache.spark.sql.catalyst.expressions.Cast._
+ import org.apache.spark.sql.catalyst.expressions.TryToNumber
+@@ -133,29 +135,31 @@ class StringFunctionsSuite extends QueryTest with SharedSparkSession {
+   }
+ 
+   test("string regex_replace / regex_extract") {
+-    val df = Seq(
+-      ("100-200", "(\\d+)-(\\d+)", "300"),
+-      ("100-200", "(\\d+)-(\\d+)", "400"),
+-      ("100-200", "(\\d+)", "400")).toDF("a", "b", "c")
+-
+-    checkAnswer(
+-      df.select(
+-        regexp_replace($"a", "(\\d+)", "num"),
+-        regexp_replace($"a", $"b", $"c"),
+-        regexp_extract($"a", "(\\d+)-(\\d+)", 1)),
+-      Row("num-num", "300", "100") :: Row("num-num", "400", "100") ::
+-        Row("num-num", "400-400", "100") :: Nil)
++    withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
++      val df = Seq(
++        ("100-200", "(\\d+)-(\\d+)", "300"),
++        ("100-200", "(\\d+)-(\\d+)", "400"),
++        ("100-200", "(\\d+)", "400")).toDF("a", "b", "c")
+ 
+-    // for testing the mutable state of the expression in code gen.
+-    // This is a hack way to enable the codegen, thus the codegen is enable by default,
+-    // it will still use the interpretProjection if projection followed by a LocalRelation,
+-    // hence we add a filter operator.
+-    // See the optimizer rule `ConvertToLocalRelation`
+-    checkAnswer(
+-      df.filter("isnotnull(a)").selectExpr(
+-        "regexp_replace(a, b, c)",
+-        "regexp_extract(a, b, 1)"),
+-      Row("300", "100") :: Row("400", "100") :: Row("400-400", "100") :: Nil)
++      checkAnswer(
++        df.select(
++          regexp_replace($"a", "(\\d+)", "num"),
++          regexp_replace($"a", $"b", $"c"),
++          regexp_extract($"a", "(\\d+)-(\\d+)", 1)),
++        Row("num-num", "300", "100") :: Row("num-num", "400", "100") ::
++          Row("num-num", "400-400", "100") :: Nil)
++
++      // for testing the mutable state of the expression in code gen.
++      // This is a hack way to enable the codegen, thus the codegen is enable by default,
++      // it will still use the interpretProjection if projection followed by a LocalRelation,
++      // hence we add a filter operator.
++      // See the optimizer rule `ConvertToLocalRelation`
++      checkAnswer(
++        df.filter("isnotnull(a)").selectExpr(
++          "regexp_replace(a, b, c)",
++          "regexp_extract(a, b, 1)"),
++        Row("300", "100") :: Row("400", "100") :: Row("400-400", "100") :: Nil)
++    }
+   }
+ 
+   test("non-matching optional group") {
