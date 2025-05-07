@@ -28,6 +28,7 @@ import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
 
 import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_POOL_TYPE, COMET_EXPLAIN_NATIVE_ENABLED, COMET_METRICS_UPDATE_INTERVAL}
+import org.apache.comet.telemetry.TelemetryProvider
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -55,7 +56,8 @@ class CometExecIterator(
     protobufQueryPlan: Array[Byte],
     nativeMetrics: CometMetricNode,
     numParts: Int,
-    partitionIndex: Int)
+    partitionIndex: Int,
+    telemetryProvider: TelemetryProvider)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -137,24 +139,17 @@ class CometExecIterator(
     if (memoryProfilingEnabled) {
       val memoryMXBean = ManagementFactory.getMemoryMXBean
       val heap = memoryMXBean.getHeapMemoryUsage
-      val nonHeap = memoryMXBean.getNonHeapMemoryUsage
-
-      def mb(n: Long) = n / 1024 / 1024
-
-      // scalastyle:off println
-      println(
-        "JVM_MEMORY: { " +
-          s"heapUsed: ${mb(heap.getUsed)}, heapCommitted: ${mb(heap.getCommitted)}, " +
-          s"nonHeapUsed: ${mb(nonHeap.getUsed)}, nonHeapCommitted: ${mb(nonHeap.getCommitted)} " +
-          "}")
-      // scalastyle:on println
+      telemetryProvider.setGauge("jvmHeap", heap.getUsed)
     }
 
-    nativeUtil.getNextBatch(
-      numOutputCols,
-      (arrayAddrs, schemaAddrs) => {
-        val ctx = TaskContext.get()
-        nativeLib.executePlan(ctx.stageId(), partitionIndex, plan, arrayAddrs, schemaAddrs)
+    telemetryProvider.withSpan[Option[ColumnarBatch]](
+      "CometExecIterator.getNextBatch", {
+        nativeUtil.getNextBatch(
+          numOutputCols,
+          (arrayAddrs, schemaAddrs) => {
+            val ctx = TaskContext.get()
+            nativeLib.executePlan(ctx.stageId(), partitionIndex, plan, arrayAddrs, schemaAddrs)
+          })
       })
   }
 

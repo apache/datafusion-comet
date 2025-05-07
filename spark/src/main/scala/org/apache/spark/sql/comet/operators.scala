@@ -47,6 +47,7 @@ import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException}
 import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.telemetry.TelemetryProviderFactory
 
 /**
  * A Comet physical operator
@@ -135,7 +136,8 @@ object CometExec {
       bytes,
       nativeMetrics,
       numParts,
-      partitionIdx)
+      partitionIdx,
+      TelemetryProviderFactory.create())
   }
 
   /**
@@ -212,7 +214,8 @@ abstract class CometNativeExec extends CometExec {
             serializedPlanCopy,
             nativeMetrics,
             numParts,
-            partitionIndex)
+            partitionIndex,
+            TelemetryProviderFactory.create())
 
           setSubqueries(it.id, this)
 
