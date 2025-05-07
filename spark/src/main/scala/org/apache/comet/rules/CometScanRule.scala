@@ -33,8 +33,8 @@ import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometConf.{COMET_DPP_FALLBACK_ENABLED, COMET_EXEC_ENABLED, COMET_NATIVE_SCAN_IMPL, COMET_SCHEMA_EVOLUTION_ENABLED, SCAN_NATIVE_ICEBERG_COMPAT}
-import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo}
+import org.apache.comet.CometConf._
+import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 
 case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
@@ -86,21 +86,21 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
         val fallbackReasons = new ListBuffer[String]()
         if (!CometScanExec.isFileFormatSupported(r.fileFormat)) {
           fallbackReasons += s"Unsupported file format ${r.fileFormat}"
-          return withInfo(scanExec, fallbackReasons.mkString(", "))
+          return withInfos(scanExec, fallbackReasons.toSet)
         }
 
         val scanImpl = COMET_NATIVE_SCAN_IMPL.get()
         if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && !COMET_EXEC_ENABLED.get()) {
           fallbackReasons +=
             s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled"
-          return withInfo(scanExec, fallbackReasons.mkString(", "))
+          return withInfos(scanExec, fallbackReasons.toSet)
         }
 
         if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && scanExec.bucketedScan) {
           // https://github.com/apache/datafusion-comet/issues/1719
           fallbackReasons +=
             "Full native scan disabled because bucketed scan is not supported"
-          return withInfo(scanExec, fallbackReasons.mkString(", "))
+          return withInfos(scanExec, fallbackReasons.toSet)
         }
 
         val (schemaSupported, partitionSchemaSupported) = scanImpl match {
@@ -124,7 +124,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
         if (schemaSupported && partitionSchemaSupported) {
           CometScanExec(scanExec, session)
         } else {
-          withInfo(scanExec, fallbackReasons.mkString(", "))
+          withInfos(scanExec, fallbackReasons.toSet)
         }
 
       case _ =>
@@ -159,7 +159,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
             scanExec.copy(scan = cometScan),
             runtimeFilters = scanExec.runtimeFilters)
         } else {
-          withInfo(scanExec, fallbackReasons.mkString(", "))
+          withInfos(scanExec, fallbackReasons.toSet)
         }
 
       // Iceberg scan
@@ -186,7 +186,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters)
         } else {
-          withInfo(scanExec, fallbackReasons.mkString(", "))
+          withInfos(scanExec, fallbackReasons.toSet)
         }
 
       case other =>
