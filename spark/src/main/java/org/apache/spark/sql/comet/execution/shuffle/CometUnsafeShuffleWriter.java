@@ -62,6 +62,8 @@ import org.apache.spark.shuffle.api.ShuffleMapOutputWriter;
 import org.apache.spark.shuffle.api.ShufflePartitionWriter;
 import org.apache.spark.shuffle.api.SingleSpillShuffleMapOutputWriter;
 import org.apache.spark.shuffle.api.WritableByteChannelWrapper;
+import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator;
+import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocatorTrait;
 import org.apache.spark.shuffle.sort.CometShuffleExternalSorter;
 import org.apache.spark.shuffle.sort.SortShuffleManager;
 import org.apache.spark.shuffle.sort.UnsafeShuffleWriter;
@@ -75,6 +77,8 @@ import org.apache.spark.util.Utils;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.io.ByteStreams;
 import com.google.common.io.Closeables;
+
+import org.apache.comet.Native;
 
 /**
  * This is based on Spark {@link UnsafeShuffleWriter}, as a writer to write shuffling rows into
@@ -121,6 +125,8 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
   private long peakMemoryUsedBytes = 0;
   private ExposedByteArrayOutputStream serBuffer;
   private SerializationStream serOutputStream;
+  private Native nativeLib = new Native();
+  private CometShuffleMemoryAllocatorTrait allocator;
 
   /**
    * Are we in the process of stopping? Because map tasks can call stop() with success = true and
@@ -201,13 +207,17 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     // We do this rather than a standard try/catch/re-throw to handle
     // generic throwables.
     boolean success = false;
+    nativeLib.traceBegin("CometUnsafeShuffleWriter");
+    String offheapMemKey = "offheap_shuffle_" + Thread.currentThread().getId();
     try {
       while (records.hasNext()) {
         insertRecordIntoSorter(records.next());
       }
+      nativeLib.logCounter(offheapMemKey, (int) this.allocator.getUsed() / 1024 / 1024);
       closeAndWriteOutput();
       success = true;
     } finally {
+      nativeLib.traceEnd("CometUnsafeShuffleWriter");
       if (sorter != null) {
         try {
           sorter.cleanupResources();
@@ -222,14 +232,23 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
           }
         }
       }
+      nativeLib.logCounter(offheapMemKey, (int) this.allocator.getUsed() / 1024 / 1024);
     }
   }
 
   private void open() {
     assert (sorter == null);
+    allocator =
+        CometShuffleMemoryAllocator.getInstance(
+            sparkConf,
+            memoryManager,
+            // TODO fix
+            /*Math.min(PackedRecordPointer.MAXIMUM_PAGE_SIZE_BYTES,*/ memoryManager
+                .pageSizeBytes() /*)*/);
+
     sorter =
         new CometShuffleExternalSorter(
-            memoryManager,
+            allocator,
             blockManager,
             taskContext,
             initialSortBufferSize,
