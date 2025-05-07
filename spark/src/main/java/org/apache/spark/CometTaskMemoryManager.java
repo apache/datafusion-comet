@@ -53,6 +53,10 @@ public class CometTaskMemoryManager {
     internal.releaseExecutionMemory(size, nativeMemoryConsumer);
   }
 
+  public long getUsed() {
+    return nativeMemoryConsumer.getUsed();
+  }
+
   /**
    * A dummy memory consumer that does nothing when spilling. At the moment, Comet native doesn't
    * share the same API as Spark and cannot trigger spill when acquire memory. Therefore, when

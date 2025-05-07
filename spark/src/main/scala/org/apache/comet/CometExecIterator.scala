@@ -62,6 +62,7 @@ class CometExecIterator(
   private val memoryProfilingEnabled = CometConf.COMET_MEMORY_PROFILING.get()
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
+  private val cometTaskMemoryManager = new CometTaskMemoryManager(id)
   private val cometBatchIterators = inputs.map { iterator =>
     new CometBatchIterator(iterator, nativeUtil)
   }.toArray
@@ -78,7 +79,6 @@ class CometExecIterator(
       // and `memory_fraction` below.
       CometSparkSessionExtensions.getCometMemoryOverhead(conf)
     }
-
     nativeLib.createPlan(
       id,
       cometBatchIterators,
@@ -86,7 +86,7 @@ class CometExecIterator(
       numParts,
       nativeMetrics,
       metricsUpdateInterval = COMET_METRICS_UPDATE_INTERVAL.get(),
-      new CometTaskMemoryManager(id),
+      cometTaskMemoryManager,
       localDiskDirs,
       batchSize = COMET_BATCH_SIZE.get(),
       offHeapMode,
@@ -151,6 +151,9 @@ class CometExecIterator(
         })
     } finally {
       nativeLib.traceEnd("CometExecIterator_getNextBatch")
+      nativeLib.logCounter(
+        "CometTaskMemoryManager",
+        (cometTaskMemoryManager.getUsed / 1024.0 / 1024.0).toInt)
     }
   }
 
@@ -204,6 +207,9 @@ class CometExecIterator(
       }
       nativeUtil.close()
       nativeLib.releasePlan(plan)
+      nativeLib.logCounter(
+        "CometTaskMemoryManager",
+        (cometTaskMemoryManager.getUsed / 1024.0 / 1024.0).toInt)
 
       // The allocator thoughts the exported ArrowArray and ArrowSchema structs are not released,
       // so it will report:
