@@ -96,6 +96,13 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
           return withInfo(scanExec, fallbackReasons.mkString(", "))
         }
 
+        if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && scanExec.bucketedScan) {
+          // https://github.com/apache/datafusion-comet/issues/1719
+          fallbackReasons +=
+            "Full native scan disabled because bucketed scan is not supported"
+          return withInfo(scanExec, fallbackReasons.mkString(", "))
+        }
+
         val (schemaSupported, partitionSchemaSupported) = scanImpl match {
           case CometConf.SCAN_NATIVE_DATAFUSION =>
             (
