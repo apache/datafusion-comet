@@ -237,15 +237,14 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
   }
 
   private void open() {
+    assert (allocator == null);
     assert (sorter == null);
     allocator =
         CometShuffleMemoryAllocator.getInstance(
             sparkConf,
             memoryManager,
-            // TODO fix
-            /*Math.min(PackedRecordPointer.MAXIMUM_PAGE_SIZE_BYTES,*/ memoryManager
-                .pageSizeBytes() /*)*/);
-
+            Math.min(
+                CometShuffleExternalSorter.MAXIMUM_PAGE_SIZE_BYTES, memoryManager.pageSizeBytes()));
     sorter =
         new CometShuffleExternalSorter(
             allocator,

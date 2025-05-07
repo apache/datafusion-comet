@@ -50,6 +50,9 @@ import org.apache.spark.shuffle.api.ShuffleMapOutputWriter;
 import org.apache.spark.shuffle.api.ShufflePartitionWriter;
 import org.apache.spark.shuffle.api.WritableByteChannelWrapper;
 import org.apache.spark.shuffle.comet.CometShuffleChecksumSupport;
+import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator;
+import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocatorTrait;
+import org.apache.spark.shuffle.sort.CometShuffleExternalSorter;
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.storage.BlockManager;
@@ -60,6 +63,7 @@ import org.apache.spark.util.Utils;
 import com.google.common.io.Closeables;
 
 import org.apache.comet.CometConf$;
+import org.apache.comet.Native;
 
 /**
  * This is based on Spark `BypassMergeSortShuffleWriter`. Instead of `DiskBlockObjectWriter`, this
@@ -77,6 +81,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
   private final int numPartitions;
   private final BlockManager blockManager;
   private final TaskMemoryManager memoryManager;
+  private CometShuffleMemoryAllocatorTrait allocator;
   private final TaskContext taskContext;
   private final SerializerInstance serializer;
 
@@ -173,6 +178,14 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
 
       final String checksumAlgorithm = getChecksumAlgorithm(conf);
 
+      allocator =
+          CometShuffleMemoryAllocator.getInstance(
+              conf,
+              memoryManager,
+              Math.min(
+                  CometShuffleExternalSorter.MAXIMUM_PAGE_SIZE_BYTES,
+                  memoryManager.pageSizeBytes()));
+
       // Allocate the disk writers, and open the files that we'll be writing to
       for (int i = 0; i < numPartitions; i++) {
         final Tuple2<TempShuffleBlockId, File> tempShuffleBlockIdPlusFile =
@@ -181,7 +194,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
         CometDiskBlockWriter writer =
             new CometDiskBlockWriter(
                 file,
-                memoryManager,
+                allocator,
                 taskContext,
                 serializer,
                 schema,
@@ -215,6 +228,9 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
             (UnsafeRow) record._2(), partition_id);
       }
 
+      Native _native = new Native();
+      _native.logCounter("BypassMergeShortShuffle", (int) (allocator.getUsed() / 1024.0 / 1024.0));
+
       long spillRecords = 0;
 
       for (int i = 0; i < numPartitions; i++) {
@@ -223,6 +239,8 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
 
         spillRecords += writer.getOutputRecords();
       }
+
+      _native.logCounter("BypassMergeShortShuffle", (int) (allocator.getUsed() / 1024.0 / 1024.0));
 
       if (outputRows != spillRecords) {
         throw new RuntimeException(

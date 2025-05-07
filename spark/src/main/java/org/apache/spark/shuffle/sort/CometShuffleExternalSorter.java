@@ -76,6 +76,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
 
   private static final Logger logger = LoggerFactory.getLogger(CometShuffleExternalSorter.class);
 
+  public static int MAXIMUM_PAGE_SIZE_BYTES = PackedRecordPointer.MAXIMUM_PAGE_SIZE_BYTES;
   private final int numPartitions;
   private final BlockManager blockManager;
   private final TaskContext taskContext;
