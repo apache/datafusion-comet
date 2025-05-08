@@ -28,19 +28,6 @@ import org.apache.comet.CometSchemaImporter;
 
 public class Utils {
 
-  /** This method is called from Apache Iceberg. */
-  public static ColumnReader getColumnReader(
-      DataType type,
-      ColumnDescriptor descriptor,
-      CometSchemaImporter importer,
-      int batchSize,
-      boolean useDecimal128,
-      boolean useLazyMaterialization) {
-    // TODO: support `useLegacyDateTimestamp` for Iceberg
-    return getColumnReader(
-        type, descriptor, importer, batchSize, useDecimal128, useLazyMaterialization, true);
-  }
-
   public static ColumnReader getColumnReader(
       DataType type,
       ColumnDescriptor descriptor,
@@ -48,13 +35,26 @@ public class Utils {
       int batchSize,
       boolean useDecimal128,
       boolean useLazyMaterialization,
-      boolean useLegacyDateTimestamp) {
+      boolean useLegacyDateTimestamp,
+      boolean supportsSchemaEvolution) {
     if (useLazyMaterialization && supportLazyMaterialization(type)) {
       return new LazyColumnReader(
-          type, descriptor, importer, batchSize, useDecimal128, useLegacyDateTimestamp);
+          type,
+          descriptor,
+          importer,
+          batchSize,
+          useDecimal128,
+          useLegacyDateTimestamp,
+          supportsSchemaEvolution);
     } else {
       return new ColumnReader(
-          type, descriptor, importer, batchSize, useDecimal128, useLegacyDateTimestamp);
+          type,
+          descriptor,
+          importer,
+          batchSize,
+          useDecimal128,
+          useLegacyDateTimestamp,
+          supportsSchemaEvolution);
     }
   }
 

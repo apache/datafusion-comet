@@ -27,7 +27,6 @@ import org.apache.parquet.schema.Type;
 import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.TimestampNTZType$;
 
-import org.apache.comet.CometConf;
 import org.apache.comet.vector.CometVector;
 
 /** Base class for Comet Parquet column reader implementations. */
@@ -63,6 +62,13 @@ public abstract class AbstractColumnReader implements AutoCloseable {
   /** A pointer to the native implementation of ColumnReader. */
   protected long nativeHandle;
 
+  /**
+   * Whether to enable schema evolution in Comet. For instance, promoting a integer column to a long
+   * column, a float column to a double column, etc. This is automatically enabled when reading from
+   * Iceberg tables.
+   */
+  protected boolean supportsSchemaEvolution;
+
   public AbstractColumnReader(
       DataType type,
       Type fieldType,
@@ -80,9 +86,11 @@ public abstract class AbstractColumnReader implements AutoCloseable {
       DataType type,
       ColumnDescriptor descriptor,
       boolean useDecimal128,
-      boolean useLegacyDateTimestamp) {
+      boolean useLegacyDateTimestamp,
+      boolean supportsSchemaEvolution) {
     this(type, null, descriptor, useDecimal128, useLegacyDateTimestamp);
-    TypeUtil.checkParquetType(descriptor, type);
+    this.supportsSchemaEvolution = supportsSchemaEvolution;
+    TypeUtil.checkParquetType(descriptor, type, supportsSchemaEvolution);
   }
 
   public ColumnDescriptor getDescriptor() {
@@ -120,7 +128,7 @@ public abstract class AbstractColumnReader implements AutoCloseable {
 
   protected void initNative() {
     LOG.debug("initializing the native column reader");
-    DataType readType = (boolean) CometConf.COMET_SCHEMA_EVOLUTION_ENABLED().get() ? type : null;
+    DataType readType = supportsSchemaEvolution ? type : null;
     boolean useLegacyDateTimestampOrNTZ =
         useLegacyDateTimestamp || type == TimestampNTZType$.MODULE$;
     nativeHandle =

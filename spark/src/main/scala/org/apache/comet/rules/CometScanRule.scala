@@ -180,8 +180,6 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
         }
 
         if (s.isCometEnabled && schemaSupported) {
-          // When reading from Iceberg, we automatically enable type promotion
-          SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters)

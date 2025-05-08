@@ -49,8 +49,16 @@ public class LazyColumnReader extends ColumnReader {
       CometSchemaImporter importer,
       int batchSize,
       boolean useDecimal128,
-      boolean useLegacyDateTimestamp) {
-    super(sparkReadType, descriptor, importer, batchSize, useDecimal128, useLegacyDateTimestamp);
+      boolean useLegacyDateTimestamp,
+      boolean supportsSchemaEvolution) {
+    super(
+        sparkReadType,
+        descriptor,
+        importer,
+        batchSize,
+        useDecimal128,
+        useLegacyDateTimestamp,
+        supportsSchemaEvolution);
     this.batchSize = 0; // the batch size is set later in `readBatch`
     this.vector = new CometLazyVector(sparkReadType, this, useDecimal128);
   }
