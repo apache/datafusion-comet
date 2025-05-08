@@ -46,6 +46,7 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 import com.google.common.base.Objects
 
 import org.apache.comet.CometRuntimeException
+import org.apache.comet.shims.ShimCometBroadcastExchangeExec
 
 /**
  * A [[CometBroadcastExchangeExec]] collects, transforms and finally broadcasts the result of a
@@ -64,8 +65,8 @@ case class CometBroadcastExchangeExec(
     mode: BroadcastMode,
     override val child: SparkPlan)
     extends BroadcastExchangeLike
+    with ShimCometBroadcastExchangeExec
     with CometPlan {
-  import CometBroadcastExchangeExec._
 
   override val runId: UUID = UUID.randomUUID
 
@@ -117,11 +118,7 @@ case class CometBroadcastExchangeExec(
       session,
       CometBroadcastExchangeExec.executionContext) {
       try {
-        // Setup a job group here so later it may get cancelled by groupId if necessary.
-        sparkContext.setJobGroup(
-          runId.toString,
-          s"broadcast exchange (runId $runId)",
-          interruptOnCancel = true)
+        setJobGroupOrTag(sparkContext, this)
         val beforeCollect = System.nanoTime()
 
         val countsAndBytes = child match {
@@ -167,9 +164,10 @@ case class CometBroadcastExchangeExec(
         val dataSize = batches.map(_.size).sum
 
         longMetric("dataSize") += dataSize
-        if (dataSize >= MAX_BROADCAST_TABLE_BYTES) {
+        val maxBytes = maxBroadcastTableBytes(conf)
+        if (dataSize >= maxBytes) {
           throw QueryExecutionErrors.cannotBroadcastTableOverMaxTableBytesError(
-            MAX_BROADCAST_TABLE_BYTES,
+            maxBytes,
             dataSize)
         }
 
@@ -233,7 +231,7 @@ case class CometBroadcastExchangeExec(
       case ex: TimeoutException =>
         logError(s"Could not execute broadcast in $timeout secs.", ex)
         if (!relationFuture.isDone) {
-          sparkContext.cancelJobGroup(runId.toString)
+          cancelJobGroup(sparkContext, this)
           relationFuture.cancel(true)
         }
         throw QueryExecutionErrors.executeBroadcastTimeoutError(timeout, Some(ex))
@@ -259,8 +257,6 @@ case class CometBroadcastExchangeExec(
 }
 
 object CometBroadcastExchangeExec {
-  val MAX_BROADCAST_TABLE_BYTES: Long = 8L << 30
-
   private[comet] val executionContext = ExecutionContext.fromExecutorService(
     ThreadUtils.newDaemonCachedThreadPool(
       "comet-broadcast-exchange",
