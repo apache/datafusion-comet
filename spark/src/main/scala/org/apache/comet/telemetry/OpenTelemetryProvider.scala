@@ -19,53 +19,13 @@
 
 package org.apache.comet.telemetry
 
-import java.time.Duration
-import java.util.concurrent.TimeUnit
-
-// scalastyle and spotless have different opinions on the correct ordering for these imports
-// scalastyle:off
-import io.opentelemetry.exporter.otlp.metrics.OtlpGrpcMetricExporter
-import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter
 import io.opentelemetry.sdk.OpenTelemetrySdk
-import io.opentelemetry.sdk.metrics.SdkMeterProvider
-import io.opentelemetry.sdk.metrics.export.PeriodicMetricReader
-import io.opentelemetry.sdk.resources.Resource
-import io.opentelemetry.sdk.trace.SdkTracerProvider
-import io.opentelemetry.sdk.trace.export.BatchSpanProcessor
-// scalastyle:on
+import io.opentelemetry.sdk.autoconfigure.AutoConfiguredOpenTelemetrySdk
 
 object OpenTelemetryProvider extends TelemetryProvider with Serializable {
 
   lazy val sdk: OpenTelemetrySdk = {
-
-    // TODO should use SERVICE_NAME constant from opentelemetry-semconv package
-    val resource =
-      Resource.getDefault.merge(Resource.builder.put("SERVICE_NAME", "CometOtlpExporter").build)
-
-    val openTelemetrySdk = OpenTelemetrySdk.builder
-      .setTracerProvider(
-        SdkTracerProvider.builder
-          .setResource(resource)
-          .addSpanProcessor(
-            BatchSpanProcessor
-              .builder(OtlpGrpcSpanExporter.builder.setTimeout(2, TimeUnit.SECONDS).build)
-              .setScheduleDelay(100, TimeUnit.MILLISECONDS)
-              .build)
-          .build)
-      .setMeterProvider(
-        SdkMeterProvider.builder
-          .setResource(resource)
-          .registerMetricReader(
-            PeriodicMetricReader
-              .builder(OtlpGrpcMetricExporter.getDefault)
-              .setInterval(Duration.ofMillis(1000))
-              .build)
-          .build)
-      .buildAndRegisterGlobal
-
-    // TODO shutdown hook
-
-    openTelemetrySdk
+    AutoConfiguredOpenTelemetrySdk.initialize().getOpenTelemetrySdk
   }
 
   override def setGauge(name: String, value: Long): Unit = {

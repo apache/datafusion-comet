@@ -51,6 +51,9 @@ object CometConf extends ShimCometConf {
   private val TUNING_GUIDE = "For more information, refer to the Comet Tuning " +
     "Guide (https://datafusion.apache.org/comet/user-guide/tuning.html)"
 
+  private val TELEMETRY_GUIDE = "For more information, refer to the Comet Telemetry " +
+    "Guide (https://datafusion.apache.org/comet/user-guide/telemetry.html)"
+
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
 
@@ -441,8 +444,10 @@ object CometConf extends ShimCometConf {
 
   val COMET_TELEMETRY_PROVIDER: ConfigEntry[String] =
     conf("spark.comet.telemetry.provider")
-      .doc("TBD.")
+      .doc("Experimental support for configuring an optional telemetry provider.")
+      .internal()
       .stringConf
+      .checkValues(Set("otel", "chrome", "none"))
       .createWithDefault("none")
 
   val COMET_EXPLAIN_VERBOSE_ENABLED: ConfigEntry[Boolean] =
