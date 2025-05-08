@@ -181,10 +181,6 @@ under the License.
       <groupId>io.opentelemetry</groupId>
       <artifactId>opentelemetry-sdk-extension-autoconfigure</artifactId>
     </dependency>
-    <dependency>
-      <groupId>io.opentelemetry</groupId>
-      <artifactId>opentelemetry-api-events</artifactId>
-    </dependency>
   </dependencies>
 
   <build>

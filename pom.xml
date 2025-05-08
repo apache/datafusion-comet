@@ -287,11 +287,6 @@ under the License.
         <artifactId>opentelemetry-exporter-otlp</artifactId>
         <version>1.38.0</version>
       </dependency>
-      <dependency>
-        <groupId>io.opentelemetry</groupId>
-        <artifactId>opentelemetry-api-events</artifactId>
-        <version>1.38.0</version>
-      </dependency>
 
       <!-- Shaded deps marked as provided. These are promoted to compile scope
            in the modules where we want the shaded classes to appear in the
