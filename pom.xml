@@ -74,7 +74,7 @@ under the License.
     <spark.version.short>3.5</spark.version.short>
     <spark.maven.scope>provided</spark.maven.scope>
     <protobuf.version>3.25.5</protobuf.version>
-    <parquet.version>1.13.1</parquet.version>
+    <parquet.version>1.15.2</parquet.version>
     <parquet.maven.scope>provided</parquet.maven.scope>
     <hadoop.version>3.3.4</hadoop.version>
     <arrow.version>16.0.0</arrow.version>
