@@ -22,22 +22,28 @@ package org.apache.comet.telemetry
 /**
  * Default provider that writes telemetry in Chrome Trace Event Format.
  */
-class ChromeTelemetryProvider extends TelemetryProvider {
+class ChromeTelemetryProvider extends TelemetryProvider with Serializable {
 
   override def startSpan(name: String): Span = new ChromeSpan(name)
 
   override def setGauge(name: String, value: Long): Unit = {
     // TODO write actual Chrome Trace Event Format JSON
+    // scalastyle:off println
     println(s"GAUGE $name = $value")
+    // scalastyle:on println
   }
 
   private class ChromeSpan(name: String) extends Span {
     // TODO write actual Chrome Trace Event Format JSON
+    // scalastyle:off println
     println(s"BEGIN $name")
+    // scalastyle:on println
 
     override def end(): Unit = {
       // TODO write actual Chrome Trace Event Format JSON
+      // scalastyle:off println
       println(s"END $name")
+      // scalastyle:on println
     }
   }
 }

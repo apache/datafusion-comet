@@ -47,6 +47,7 @@ import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException}
 import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.telemetry.TelemetryProvider
 import org.apache.comet.telemetry.TelemetryProviderFactory
 
 /**
@@ -103,6 +104,8 @@ object CometExec {
 
   def newIterId: Long = curId.getAndIncrement()
 
+  val telemetryProvider: TelemetryProvider = TelemetryProviderFactory.create(SQLConf.get)
+
   def getCometIterator(
       inputs: Seq[Iterator[ColumnarBatch]],
       numOutputCols: Int,
@@ -137,7 +140,7 @@ object CometExec {
       nativeMetrics,
       numParts,
       partitionIdx,
-      TelemetryProviderFactory.create())
+      telemetryProvider)
   }
 
   /**
@@ -203,6 +206,8 @@ abstract class CometNativeExec extends CometExec {
         // TODO: support native metrics for all operators.
         val nativeMetrics = CometMetricNode.fromCometPlan(this)
 
+        val telemetryProvider = TelemetryProviderFactory.create(SQLConf.get)
+
         def createCometExecIter(
             inputs: Seq[Iterator[ColumnarBatch]],
             numParts: Int,
@@ -215,7 +220,7 @@ abstract class CometNativeExec extends CometExec {
             nativeMetrics,
             numParts,
             partitionIndex,
-            TelemetryProviderFactory.create())
+            telemetryProvider)
 
           setSubqueries(it.id, this)
 

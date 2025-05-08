@@ -19,6 +19,10 @@
 
 package org.apache.comet.telemetry
 
+import org.apache.spark.sql.internal.SQLConf
+
+import org.apache.comet.CometConf
+
 trait TelemetryProvider {
 
   def setGauge(name: String, value: Long): Unit
@@ -37,8 +41,11 @@ trait TelemetryProvider {
 }
 
 object TelemetryProviderFactory {
-  def create(): TelemetryProvider = {
-    // TODO choose based on CometConf and/or env var
-    new NoopTelemetryProvider
+  def create(conf: SQLConf): TelemetryProvider = {
+    CometConf.COMET_TELEMETRY_PROVIDER.get(conf) match {
+      case "chrome" => new ChromeTelemetryProvider
+      case "otel" => new OpenTelemetryProvider
+      case _ => new NoopTelemetryProvider
+    }
   }
 }

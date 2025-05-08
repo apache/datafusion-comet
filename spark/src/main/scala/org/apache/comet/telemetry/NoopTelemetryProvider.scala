@@ -19,7 +19,7 @@
 
 package org.apache.comet.telemetry
 
-class NoopTelemetryProvider extends TelemetryProvider {
+class NoopTelemetryProvider extends TelemetryProvider with Serializable {
 
   override def startSpan(name: String): Span = NoopSpan
 

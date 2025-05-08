@@ -24,7 +24,7 @@ import io.opentelemetry.api.trace.Tracer
 import io.opentelemetry.sdk.OpenTelemetrySdk
 import io.opentelemetry.sdk.autoconfigure.AutoConfiguredOpenTelemetrySdk
 
-class OpenTelemetryProvider extends TelemetryProvider {
+class OpenTelemetryProvider extends TelemetryProvider with Serializable {
 
   lazy val sdk: OpenTelemetrySdk = AutoConfiguredOpenTelemetrySdk.initialize.getOpenTelemetrySdk
 
