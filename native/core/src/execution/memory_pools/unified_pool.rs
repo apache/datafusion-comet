@@ -76,6 +76,15 @@ impl CometMemoryPool {
     }
 }
 
+impl Drop for CometMemoryPool {
+    fn drop(&mut self) {
+        let used = self.used.load(Relaxed);
+        if used != 0 {
+            log::warn!("CometMemoryPool dropped with {} bytes still reserved", used);
+        }
+    }
+}
+
 unsafe impl Send for CometMemoryPool {}
 unsafe impl Sync for CometMemoryPool {}
 
