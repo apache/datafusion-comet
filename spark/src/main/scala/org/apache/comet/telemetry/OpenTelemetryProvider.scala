@@ -22,16 +22,19 @@ package org.apache.comet.telemetry
 import java.time.Duration
 import java.util.concurrent.TimeUnit
 
+// scalastyle and spotless have different opinions on the correct ordering for these imports
+// scalastyle:off
 import io.opentelemetry.exporter.otlp.metrics.OtlpGrpcMetricExporter
 import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter
 import io.opentelemetry.sdk.OpenTelemetrySdk
-import io.opentelemetry.sdk.metrics.`export`.PeriodicMetricReader
 import io.opentelemetry.sdk.metrics.SdkMeterProvider
+import io.opentelemetry.sdk.metrics.export.PeriodicMetricReader
 import io.opentelemetry.sdk.resources.Resource
-import io.opentelemetry.sdk.trace.`export`.BatchSpanProcessor
 import io.opentelemetry.sdk.trace.SdkTracerProvider
+import io.opentelemetry.sdk.trace.export.BatchSpanProcessor
+// scalastyle:on
 
-class OpenTelemetryProvider extends TelemetryProvider with Serializable {
+object OpenTelemetryProvider extends TelemetryProvider with Serializable {
 
   lazy val sdk: OpenTelemetrySdk = {
 

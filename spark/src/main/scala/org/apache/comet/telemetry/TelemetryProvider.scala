@@ -44,7 +44,7 @@ object TelemetryProviderFactory {
   def create(conf: SQLConf): TelemetryProvider = {
     CometConf.COMET_TELEMETRY_PROVIDER.get(conf) match {
       case "chrome" => new ChromeTelemetryProvider
-      case "otel" => new OpenTelemetryProvider
+      case "otel" => OpenTelemetryProvider
       case _ => new NoopTelemetryProvider
     }
   }
