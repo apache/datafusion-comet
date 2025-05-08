@@ -66,7 +66,8 @@ class Native extends NativeBase {
       memoryLimitPerTask: Long,
       taskAttemptId: Long,
       debug: Boolean,
-      explain: Boolean): Long
+      explain: Boolean,
+      memoryProfilingEnabled: Boolean): Long
   // scalastyle:on
 
   /**
@@ -144,8 +145,7 @@ class Native extends NativeBase {
       checksumAlgo: Int,
       currentChecksum: Long,
       compressionCodec: String,
-      compressionLevel: Int,
-      enableFastEncoding: Boolean): Array[Long]
+      compressionLevel: Int): Array[Long]
   // scalastyle:on
 
   /**

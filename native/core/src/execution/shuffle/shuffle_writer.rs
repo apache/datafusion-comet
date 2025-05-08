@@ -76,8 +76,6 @@ pub struct ShuffleWriterExec {
     cache: PlanProperties,
     /// The compression codec to use when compressing shuffle blocks
     codec: CompressionCodec,
-    /// When true, Comet will use a fast proprietary encoding rather than using Arrow IPC
-    enable_fast_encoding: bool,
 }
 
 impl ShuffleWriterExec {
@@ -88,7 +86,6 @@ impl ShuffleWriterExec {
         codec: CompressionCodec,
         output_data_file: String,
         output_index_file: String,
-        enable_fast_encoding: bool,
     ) -> Result<Self> {
         let cache = PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
@@ -105,7 +102,6 @@ impl ShuffleWriterExec {
             output_index_file,
             cache,
             codec,
-            enable_fast_encoding,
         })
     }
 }
@@ -116,8 +112,8 @@ impl DisplayAs for ShuffleWriterExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(
                     f,
-                    "ShuffleWriterExec: partitioning={:?}, fast_encoding={}, compression={:?}",
-                    self.partitioning, self.enable_fast_encoding, self.codec
+                    "ShuffleWriterExec: partitioning={:?}, compression={:?}",
+                    self.partitioning, self.codec
                 )
             }
             DisplayFormatType::TreeRender => unimplemented!(),
@@ -168,7 +164,6 @@ impl ExecutionPlan for ShuffleWriterExec {
                 self.codec.clone(),
                 self.output_data_file.clone(),
                 self.output_index_file.clone(),
-                self.enable_fast_encoding,
             )?)),
             _ => panic!("ShuffleWriterExec wrong number of children"),
         }
@@ -194,7 +189,6 @@ impl ExecutionPlan for ShuffleWriterExec {
                     metrics,
                     context,
                     self.codec.clone(),
-                    self.enable_fast_encoding,
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
@@ -213,7 +207,6 @@ async fn external_shuffle(
     metrics: ShuffleRepartitionerMetrics,
     context: Arc<TaskContext>,
     codec: CompressionCodec,
-    enable_fast_encoding: bool,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
 
@@ -225,7 +218,6 @@ async fn external_shuffle(
             metrics,
             context.session_config().batch_size(),
             codec,
-            enable_fast_encoding,
         )?),
         _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
             partition,
@@ -237,7 +229,6 @@ async fn external_shuffle(
             context.runtime_env(),
             context.session_config().batch_size(),
             codec,
-            enable_fast_encoding,
         )?),
     };
 
@@ -356,7 +347,6 @@ impl MultiPartitionShuffleRepartitioner {
         runtime: Arc<RuntimeEnv>,
         batch_size: usize,
         codec: CompressionCodec,
-        enable_fast_encoding: bool,
     ) -> Result<Self> {
         let num_output_partitions = partitioning.partition_count();
         assert_ne!(
@@ -374,8 +364,7 @@ impl MultiPartitionShuffleRepartitioner {
             partition_starts: vec![0; num_output_partitions + 1],
         };
 
-        let shuffle_block_writer =
-            ShuffleBlockWriter::try_new(schema.as_ref(), enable_fast_encoding, codec.clone())?;
+        let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
 
         let partition_writers = (0..num_output_partitions)
             .map(|_| PartitionWriter::try_new(shuffle_block_writer.clone()))
@@ -769,10 +758,8 @@ impl SinglePartitionShufflePartitioner {
         metrics: ShuffleRepartitionerMetrics,
         batch_size: usize,
         codec: CompressionCodec,
-        enable_fast_encoding: bool,
     ) -> Result<Self> {
-        let shuffle_block_writer =
-            ShuffleBlockWriter::try_new(schema.as_ref(), enable_fast_encoding, codec.clone())?;
+        let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
 
         let output_data_file = OpenOptions::new()
             .write(true)
@@ -1175,30 +1162,24 @@ mod test {
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     fn roundtrip_ipc() {
         let batch = create_batch(8192);
-        for fast_encoding in [true, false] {
-            for codec in &[
-                CompressionCodec::None,
-                CompressionCodec::Zstd(1),
-                CompressionCodec::Snappy,
-                CompressionCodec::Lz4Frame,
-            ] {
-                let mut output = vec![];
-                let mut cursor = Cursor::new(&mut output);
-                let writer = ShuffleBlockWriter::try_new(
-                    batch.schema().as_ref(),
-                    fast_encoding,
-                    codec.clone(),
-                )
+        for codec in &[
+            CompressionCodec::None,
+            CompressionCodec::Zstd(1),
+            CompressionCodec::Snappy,
+            CompressionCodec::Lz4Frame,
+        ] {
+            let mut output = vec![];
+            let mut cursor = Cursor::new(&mut output);
+            let writer =
+                ShuffleBlockWriter::try_new(batch.schema().as_ref(), codec.clone()).unwrap();
+            let length = writer
+                .write_batch(&batch, &mut cursor, &Time::default())
                 .unwrap();
-                let length = writer
-                    .write_batch(&batch, &mut cursor, &Time::default())
-                    .unwrap();
-                assert_eq!(length, output.len());
+            assert_eq!(length, output.len());
 
-                let ipc_without_length_prefix = &output[16..];
-                let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
-                assert_eq!(batch, batch2);
-            }
+            let ipc_without_length_prefix = &output[16..];
+            let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
+            assert_eq!(batch, batch2);
         }
     }
 
@@ -1254,7 +1235,6 @@ mod test {
             runtime_env,
             1024,
             CompressionCodec::Lz4Frame,
-            true,
         )
         .unwrap();
 
@@ -1303,7 +1283,6 @@ mod test {
             CompressionCodec::Zstd(1),
             "/tmp/data.out".to_string(),
             "/tmp/index.out".to_string(),
-            true,
         )
         .unwrap();
 

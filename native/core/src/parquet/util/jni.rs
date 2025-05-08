@@ -205,7 +205,9 @@ fn fix_type_length(t: &PhysicalType, type_length: i32) -> i32 {
 }
 
 pub fn deserialize_schema(ipc_bytes: &[u8]) -> Result<arrow::datatypes::Schema, ArrowError> {
-    let reader = StreamReader::try_new(std::io::Cursor::new(ipc_bytes), None)?;
+    let reader = unsafe {
+        StreamReader::try_new(std::io::Cursor::new(ipc_bytes), None)?.with_skip_validation(true)
+    };
     let schema = reader.schema().as_ref().clone();
     Ok(schema)
 }

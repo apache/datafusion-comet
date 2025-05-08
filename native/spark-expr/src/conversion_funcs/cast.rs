@@ -882,7 +882,10 @@ fn cast_array(
     let array = match &from_type {
         Dictionary(key_type, value_type)
             if key_type.as_ref() == &Int32
-                && (value_type.as_ref() == &Utf8 || value_type.as_ref() == &LargeUtf8) =>
+                && (value_type.as_ref() == &Utf8
+                    || value_type.as_ref() == &LargeUtf8
+                    || value_type.as_ref() == &Binary
+                    || value_type.as_ref() == &LargeBinary) =>
         {
             let dict_array = array
                 .as_any()

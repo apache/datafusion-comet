@@ -19,6 +19,8 @@
 
 package org.apache.comet.serde
 
+import java.util.Locale
+
 import scala.collection.JavaConverters._
 import scala.math.min
 
@@ -1429,6 +1431,55 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val childExpr = exprToProtoInternal(castExpr, inputs, binding)
         val optExpr = scalarFunctionExprToProto("ascii", childExpr)
         optExprWithInfo(optExpr, expr, castExpr)
+
+      case s: StringDecode =>
+        // Right child is the encoding expression.
+        s.right match {
+          case Literal(str, DataTypes.StringType)
+              if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
+            // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
+            // for invalid strings.
+            // Left child is the binary expression.
+            castToProto(
+              expr,
+              None,
+              DataTypes.StringType,
+              exprToProtoInternal(s.left, inputs, binding).get,
+              CometEvalMode.TRY)
+          case _ =>
+            withInfo(expr, "Comet only supports decoding with 'utf-8'.")
+            None
+        }
+
+      case RegExpReplace(subject, pattern, replacement, startPosition) =>
+        if (!RegExp.isSupportedPattern(pattern.toString) &&
+          !CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
+          withInfo(
+            expr,
+            s"Regexp pattern $pattern is not compatible with Spark. " +
+              s"Set ${CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key}=true " +
+              "to allow it anyway.")
+          return None
+        }
+        startPosition match {
+          case Literal(value, DataTypes.IntegerType) if value == 1 =>
+            val subjectExpr = exprToProtoInternal(subject, inputs, binding)
+            val patternExpr = exprToProtoInternal(pattern, inputs, binding)
+            val replacementExpr = exprToProtoInternal(replacement, inputs, binding)
+            // DataFusion's regexp_replace stops at the first match. We need to add the 'g' flag
+            // to apply the regex globally to match Spark behavior.
+            val flagsExpr = exprToProtoInternal(Literal("g"), inputs, binding)
+            val optExpr = scalarFunctionExprToProto(
+              "regexp_replace",
+              subjectExpr,
+              patternExpr,
+              replacementExpr,
+              flagsExpr)
+            optExprWithInfo(optExpr, expr, subject, pattern, replacement, startPosition)
+          case _ =>
+            withInfo(expr, "Comet only supports regexp_replace with an offset of 1 (no offset).")
+            None
+        }
 
       case BitLength(child) =>
         val castExpr = Cast(child, StringType)

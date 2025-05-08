@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index 8dc47f391f9..94cd1cee609 100644
+index 8dc47f391f9..73feb7e07d2 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -152,6 +152,8 @@
@@ -1003,6 +1003,73 @@ index 8b4ac474f87..3f79f20822f 100644
        .withExtensions { extensions =>
          extensions.injectColumnar(session =>
            MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())) }
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
+index fa1a64460fc..1d2e215d6a3 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
+@@ -17,6 +17,8 @@
+ 
+ package org.apache.spark.sql
+ 
++import org.apache.comet.CometConf
++
+ import org.apache.spark.{SPARK_DOC_ROOT, SparkIllegalArgumentException, SparkRuntimeException}
+ import org.apache.spark.sql.catalyst.expressions.Cast._
+ import org.apache.spark.sql.execution.FormattedMode
+@@ -178,29 +180,31 @@ class StringFunctionsSuite extends QueryTest with SharedSparkSession {
+   }
+ 
+   test("string regex_replace / regex_extract") {
+-    val df = Seq(
+-      ("100-200", "(\\d+)-(\\d+)", "300"),
+-      ("100-200", "(\\d+)-(\\d+)", "400"),
+-      ("100-200", "(\\d+)", "400")).toDF("a", "b", "c")
++    withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
++      val df = Seq(
++        ("100-200", "(\\d+)-(\\d+)", "300"),
++        ("100-200", "(\\d+)-(\\d+)", "400"),
++        ("100-200", "(\\d+)", "400")).toDF("a", "b", "c")
+ 
+-    checkAnswer(
+-      df.select(
+-        regexp_replace($"a", "(\\d+)", "num"),
+-        regexp_replace($"a", $"b", $"c"),
+-        regexp_extract($"a", "(\\d+)-(\\d+)", 1)),
+-      Row("num-num", "300", "100") :: Row("num-num", "400", "100") ::
+-        Row("num-num", "400-400", "100") :: Nil)
+-
+-    // for testing the mutable state of the expression in code gen.
+-    // This is a hack way to enable the codegen, thus the codegen is enable by default,
+-    // it will still use the interpretProjection if projection followed by a LocalRelation,
+-    // hence we add a filter operator.
+-    // See the optimizer rule `ConvertToLocalRelation`
+-    checkAnswer(
+-      df.filter("isnotnull(a)").selectExpr(
+-        "regexp_replace(a, b, c)",
+-        "regexp_extract(a, b, 1)"),
+-      Row("300", "100") :: Row("400", "100") :: Row("400-400", "100") :: Nil)
++      checkAnswer(
++        df.select(
++          regexp_replace($"a", "(\\d+)", "num"),
++          regexp_replace($"a", $"b", $"c"),
++          regexp_extract($"a", "(\\d+)-(\\d+)", 1)),
++        Row("num-num", "300", "100") :: Row("num-num", "400", "100") ::
++          Row("num-num", "400-400", "100") :: Nil)
++
++      // for testing the mutable state of the expression in code gen.
++      // This is a hack way to enable the codegen, thus the codegen is enable by default,
++      // it will still use the interpretProjection if projection followed by a LocalRelation,
++      // hence we add a filter operator.
++      // See the optimizer rule `ConvertToLocalRelation`
++      checkAnswer(
++        df.filter("isnotnull(a)").selectExpr(
++          "regexp_replace(a, b, c)",
++          "regexp_extract(a, b, 1)"),
++        Row("300", "100") :: Row("400", "100") :: Row("400-400", "100") :: Nil)
++    }
+   }
+ 
+   test("non-matching optional group") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 index 260c992f1ae..b9d8e22337c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala

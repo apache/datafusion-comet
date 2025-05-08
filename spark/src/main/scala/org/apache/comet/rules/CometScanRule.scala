@@ -86,23 +86,25 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
         val fallbackReasons = new ListBuffer[String]()
         if (!CometScanExec.isFileFormatSupported(r.fileFormat)) {
           fallbackReasons += s"Unsupported file format ${r.fileFormat}"
+          return withInfo(scanExec, fallbackReasons.mkString(", "))
         }
 
         val scanImpl = COMET_NATIVE_SCAN_IMPL.get()
         if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && !COMET_EXEC_ENABLED.get()) {
           fallbackReasons +=
             s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled"
+          return withInfo(scanExec, fallbackReasons.mkString(", "))
         }
 
         val (schemaSupported, partitionSchemaSupported) = scanImpl match {
           case CometConf.SCAN_NATIVE_DATAFUSION =>
             (
-              CometNativeScanExec.isSchemaSupported(scanExec.requiredSchema),
-              CometNativeScanExec.isSchemaSupported(r.partitionSchema))
+              CometNativeScanExec.isSchemaSupported(scanExec.requiredSchema, fallbackReasons),
+              CometNativeScanExec.isSchemaSupported(r.partitionSchema, fallbackReasons))
           case CometConf.SCAN_NATIVE_COMET | SCAN_NATIVE_ICEBERG_COMPAT =>
             (
-              CometScanExec.isSchemaSupported(scanExec.requiredSchema),
-              CometScanExec.isSchemaSupported(r.partitionSchema))
+              CometScanExec.isSchemaSupported(scanExec.requiredSchema, fallbackReasons),
+              CometScanExec.isSchemaSupported(r.partitionSchema, fallbackReasons))
         }
 
         if (!schemaSupported) {
@@ -112,7 +114,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
           fallbackReasons += s"Unsupported partitioning schema ${r.partitionSchema} for $scanImpl"
         }
 
-        if (fallbackReasons.isEmpty) {
+        if (schemaSupported && partitionSchemaSupported) {
           CometScanExec(scanExec, session)
         } else {
           withInfo(scanExec, fallbackReasons.mkString(", "))
@@ -128,11 +130,15 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
     scanExec.scan match {
       case scan: ParquetScan =>
         val fallbackReasons = new ListBuffer[String]()
-        if (!CometBatchScanExec.isSchemaSupported(scan.readDataSchema)) {
+        val schemaSupported =
+          CometBatchScanExec.isSchemaSupported(scan.readDataSchema, fallbackReasons)
+        if (!schemaSupported) {
           fallbackReasons += s"Schema ${scan.readDataSchema} is not supported"
         }
 
-        if (!CometBatchScanExec.isSchemaSupported(scan.readPartitionSchema)) {
+        val partitionSchemaSupported =
+          CometBatchScanExec.isSchemaSupported(scan.readPartitionSchema, fallbackReasons)
+        if (!partitionSchemaSupported) {
           fallbackReasons += s"Partition schema ${scan.readPartitionSchema} is not supported"
         }
 
@@ -140,7 +146,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
           fallbackReasons += "Comet does not support pushed aggregate"
         }
 
-        if (fallbackReasons.isEmpty) {
+        if (schemaSupported && partitionSchemaSupported && scan.pushedAggregate.isEmpty) {
           val cometScan = CometParquetScan(scanExec.scan.asInstanceOf[ParquetScan])
           CometBatchScanExec(
             scanExec.copy(scan = cometScan),
@@ -158,12 +164,15 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
             s"${scanExec.scan.getClass.getSimpleName}: not enabled on data source side"
         }
 
-        if (!CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema())) {
+        val schemaSupported =
+          CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)
+
+        if (!schemaSupported) {
           fallbackReasons += "Comet extension is not enabled for " +
             s"${scanExec.scan.getClass.getSimpleName}: Schema not supported"
         }
 
-        if (fallbackReasons.isEmpty) {
+        if (s.isCometEnabled && schemaSupported) {
           // When reading from Iceberg, we automatically enable type promotion
           SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
           CometBatchScanExec(
