@@ -1470,6 +1470,10 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("bucketed table") {
+    // native_datafusion actually passes this test, but in the case where buckets are pruned it fails, so we're
+    // falling back for bucketed scans entirely as a workaround.
+    // https://github.com/apache/datafusion-comet/issues/1719
+    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     val bucketSpec = Some(BucketSpec(8, Seq("i", "j"), Nil))
     val bucketedTableTestSpecLeft = BucketedTableTestSpec(bucketSpec, expectedShuffle = false)
     val bucketedTableTestSpecRight = BucketedTableTestSpec(bucketSpec, expectedShuffle = false)
