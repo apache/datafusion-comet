@@ -19,26 +19,58 @@
 
 package org.apache.comet.telemetry
 
-import io.opentelemetry.api.metrics.Meter
-import io.opentelemetry.api.trace.Tracer
+import java.time.Duration
+import java.util.concurrent.TimeUnit
+
+import io.opentelemetry.exporter.otlp.metrics.OtlpGrpcMetricExporter
+import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter
 import io.opentelemetry.sdk.OpenTelemetrySdk
-import io.opentelemetry.sdk.autoconfigure.AutoConfiguredOpenTelemetrySdk
+import io.opentelemetry.sdk.metrics.`export`.PeriodicMetricReader
+import io.opentelemetry.sdk.metrics.SdkMeterProvider
+import io.opentelemetry.sdk.resources.Resource
+import io.opentelemetry.sdk.trace.`export`.BatchSpanProcessor
+import io.opentelemetry.sdk.trace.SdkTracerProvider
 
 class OpenTelemetryProvider extends TelemetryProvider with Serializable {
 
-  lazy val sdk: OpenTelemetrySdk = AutoConfiguredOpenTelemetrySdk.initialize.getOpenTelemetrySdk
+  lazy val sdk: OpenTelemetrySdk = {
 
-  lazy val tracerProvider: Tracer = sdk.getTracerProvider.get("Comet")
+    // TODO should use SERVICE_NAME constant from opentelemetry-semconv package
+    val resource =
+      Resource.getDefault.merge(Resource.builder.put("SERVICE_NAME", "CometOtlpExporter").build)
 
-  lazy val meterProvider: Meter = sdk.getMeterProvider.meterBuilder("Comet").build()
+    val openTelemetrySdk = OpenTelemetrySdk.builder
+      .setTracerProvider(
+        SdkTracerProvider.builder
+          .setResource(resource)
+          .addSpanProcessor(
+            BatchSpanProcessor
+              .builder(OtlpGrpcSpanExporter.builder.setTimeout(2, TimeUnit.SECONDS).build)
+              .setScheduleDelay(100, TimeUnit.MILLISECONDS)
+              .build)
+          .build)
+      .setMeterProvider(
+        SdkMeterProvider.builder
+          .setResource(resource)
+          .registerMetricReader(
+            PeriodicMetricReader
+              .builder(OtlpGrpcMetricExporter.getDefault)
+              .setInterval(Duration.ofMillis(1000))
+              .build)
+          .build)
+      .buildAndRegisterGlobal
+
+    // TODO shutdown hook
+
+    openTelemetrySdk
+  }
 
   override def setGauge(name: String, value: Long): Unit = {
-    // TODO store gauges in map to avoid creating each time?
-    meterProvider.gaugeBuilder(name).build().set(value)
+    sdk.getMeterProvider.meterBuilder("Comet").build().gaugeBuilder(name).build().set(value)
   }
 
   override def startSpan(name: String): Span = {
-    new OpenTelemetrySpan(tracerProvider.spanBuilder(name).startSpan())
+    new OpenTelemetrySpan(sdk.tracerBuilder("Comet").build().spanBuilder(name).startSpan())
   }
 
   class OpenTelemetrySpan(span: io.opentelemetry.api.trace.Span) extends Span {

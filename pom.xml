@@ -267,6 +267,8 @@ under the License.
         <version>${slf4j.version}</version>
         <scope>${spark.maven.scope}</scope>
       </dependency>
+
+      <!-- OpenTelemetry -->
       <dependency>
         <groupId>io.opentelemetry</groupId>
         <artifactId>opentelemetry-api</artifactId>
@@ -279,13 +281,13 @@ under the License.
       </dependency>
       <dependency>
         <groupId>io.opentelemetry</groupId>
-        <artifactId>opentelemetry-sdk-extension-autoconfigure</artifactId>
+        <artifactId>opentelemetry-exporter-otlp</artifactId>
         <version>1.38.0</version>
       </dependency>
       <dependency>
         <groupId>io.opentelemetry</groupId>
-        <artifactId>opentelemetry-exporter-otlp</artifactId>
-        <version>1.38.0</version>
+        <artifactId>opentelemetry-semconv</artifactId>
+        <version>1.30.1-alpha</version>
       </dependency>
 
       <!-- Shaded deps marked as provided. These are promoted to compile scope
