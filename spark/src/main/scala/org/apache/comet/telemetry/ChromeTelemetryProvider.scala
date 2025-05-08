@@ -19,31 +19,49 @@
 
 package org.apache.comet.telemetry
 
+import java.io.FileWriter
+
 /**
  * Default provider that writes telemetry in Chrome Trace Event Format.
  */
-class ChromeTelemetryProvider extends TelemetryProvider with Serializable {
+object ChromeTelemetryProvider extends TelemetryProvider with Serializable {
+
+  lazy val pid: Long = {
+    val processName = java.lang.management.ManagementFactory.getRuntimeMXBean.getName
+    processName.split("@")(0).toLong
+  }
+
+  lazy val writer = {
+    val w = new FileWriter(s"comet-events-$pid-${System.currentTimeMillis()}.log")
+    w.append('[')
+    w
+  }
 
   override def startSpan(name: String): Span = new ChromeSpan(name)
 
   override def setGauge(name: String, value: Long): Unit = {
-    // TODO write actual Chrome Trace Event Format JSON
-    // scalastyle:off println
-    println(s"GAUGE $name = $value")
-    // scalastyle:on println
+    val threadId = Thread.currentThread().getId
+    val ts = System.currentTimeMillis()
+    // scalastyle:off
+    writer.write(
+      s"""{ "name": "$name", "cat": "PERF", "ph": "C", "pid": $pid, "tid": "$threadId", "ts": $ts, "args": { "$name": "$value" } },\n""".stripMargin)
+    // scalastyle:on
   }
 
   private class ChromeSpan(name: String) extends Span {
-    // TODO write actual Chrome Trace Event Format JSON
-    // scalastyle:off println
-    println(s"BEGIN $name")
-    // scalastyle:on println
+    logEvent(name, "B")
 
     override def end(): Unit = {
-      // TODO write actual Chrome Trace Event Format JSON
-      // scalastyle:off println
-      println(s"END $name")
-      // scalastyle:on println
+      logEvent(name, "E")
+    }
+
+    private def logEvent(name: String, ph: String): Unit = {
+      val threadId = Thread.currentThread().getId
+      val ts = System.currentTimeMillis()
+      // scalastyle:off
+      writer.write(
+        s"""{ "name": "$name", "cat": "PERF", "ph": "$ph", "pid": $pid, "tid": "$threadId", "ts": $ts },\n""".stripMargin)
+      // scalastyle:on
     }
   }
 }

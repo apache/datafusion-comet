@@ -43,7 +43,7 @@ trait TelemetryProvider {
 object TelemetryProviderFactory {
   def create(conf: SQLConf): TelemetryProvider = {
     CometConf.COMET_TELEMETRY_PROVIDER.get(conf) match {
-      case "chrome" => new ChromeTelemetryProvider
+      case "chrome" => ChromeTelemetryProvider
       case "otel" => OpenTelemetryProvider
       case _ => new NoopTelemetryProvider
     }

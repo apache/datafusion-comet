@@ -133,15 +133,12 @@ class CometExecIterator(
     }
   }
 
+  val mXBean = ManagementFactory.getMemoryMXBean
+
   def getNextBatch(): Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
 
-    if (memoryProfilingEnabled) {
-      val memoryMXBean = ManagementFactory.getMemoryMXBean
-      val heap = memoryMXBean.getHeapMemoryUsage
-      telemetryProvider.setGauge("jvmHeap", heap.getUsed)
-    }
-
+    telemetryProvider.setGauge("jvmHeap", mXBean.getHeapMemoryUsage.getUsed)
     telemetryProvider.withSpan[Option[ColumnarBatch]](
       "CometExecIterator.getNextBatch", {
         nativeUtil.getNextBatch(
