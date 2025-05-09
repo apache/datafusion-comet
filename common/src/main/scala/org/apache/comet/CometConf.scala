@@ -237,8 +237,7 @@ object CometConf extends ShimCometConf {
       notes = Some("stddev is slower than Spark's implementation"))
 
   val COMET_TRACING_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.tracing.enabled")
-    .doc("Enable fine-grained tracing of events and memory usage. " +
-      s"See $TRACING_GUIDE for more information.")
+    .doc(s"Enable fine-grained tracing of events and memory usage. $TRACING_GUIDE.")
     .internal()
     .booleanConf
     .createWithDefault(false)
