@@ -20,6 +20,10 @@
 package org.apache.spark;
 
 import java.io.IOException;
+import java.util.concurrent.atomic.AtomicLong;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.apache.spark.memory.MemoryConsumer;
 import org.apache.spark.memory.MemoryMode;
@@ -30,36 +34,41 @@ import org.apache.spark.memory.TaskMemoryManager;
  * memory manager. This assumes Spark's off-heap memory mode is enabled.
  */
 public class CometTaskMemoryManager {
+
+  private static final Logger logger = LoggerFactory.getLogger(CometTaskMemoryManager.class);
+
   /** The id uniquely identifies the native plan this memory manager is associated to */
   private final long id;
 
   private final TaskMemoryManager internal;
   private final NativeMemoryConsumer nativeMemoryConsumer;
-  private long used;
+  private final AtomicLong used = new AtomicLong();
 
   public CometTaskMemoryManager(long id) {
     this.id = id;
     this.internal = TaskContext$.MODULE$.get().taskMemoryManager();
     this.nativeMemoryConsumer = new NativeMemoryConsumer();
-    this.used = 0;
   }
 
   // Called by Comet native through JNI.
   // Returns the actual amount of memory (in bytes) granted.
   public long acquireMemory(long size) {
     long acquired = internal.acquireExecutionMemory(size, nativeMemoryConsumer);
-    used += acquired;
+    used.addAndGet(acquired);
     return acquired;
   }
 
   // Called by Comet native through JNI
   public void releaseMemory(long size) {
-    used -= size;
+    long newUsed = used.addAndGet(-size);
+    if (newUsed < 0) {
+      logger.warn("Used memory is negative: " + newUsed);
+    }
     internal.releaseExecutionMemory(size, nativeMemoryConsumer);
   }
 
   public long getUsed() {
-    return used;
+    return used.get();
   }
 
   /**
