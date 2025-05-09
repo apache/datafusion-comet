@@ -31,8 +31,6 @@ import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupporte
 import org.apache.spark.sql.internal.SQLConf;
 import org.apache.spark.sql.types.*;
 
-import org.apache.comet.CometConf;
-
 public class TypeUtil {
 
   /** Converts the input Spark 'field' into a Parquet column descriptor. */
@@ -116,11 +114,11 @@ public class TypeUtil {
    * @param descriptor descriptor for a Parquet primitive column
    * @param sparkType Spark read type
    */
-  public static void checkParquetType(ColumnDescriptor descriptor, DataType sparkType) {
+  public static void checkParquetType(
+      ColumnDescriptor descriptor, DataType sparkType, boolean allowTypePromotion) {
     PrimitiveType.PrimitiveTypeName typeName = descriptor.getPrimitiveType().getPrimitiveTypeName();
     LogicalTypeAnnotation logicalTypeAnnotation =
         descriptor.getPrimitiveType().getLogicalTypeAnnotation();
-    boolean allowTypePromotion = (boolean) CometConf.COMET_SCHEMA_EVOLUTION_ENABLED().get();
 
     if (sparkType instanceof NullType) {
       return;

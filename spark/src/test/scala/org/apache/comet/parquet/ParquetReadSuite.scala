@@ -1217,34 +1217,6 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  test("schema evolution") {
-    Seq(true, false).foreach { enableSchemaEvolution =>
-      Seq(true, false).foreach { useDictionary =>
-        {
-          withSQLConf(
-            CometConf.COMET_SCHEMA_EVOLUTION_ENABLED.key -> enableSchemaEvolution.toString) {
-            val data = (0 until 100).map(i => {
-              val v = if (useDictionary) i % 5 else i
-              (v, v.toFloat)
-            })
-            val readSchema =
-              StructType(
-                Seq(StructField("_1", LongType, false), StructField("_2", DoubleType, false)))
-
-            withParquetDataFrame(data, schema = Some(readSchema)) { df =>
-              // TODO: validate with Spark 3.x and 'usingDataFusionParquetExec=true'
-              if (enableSchemaEvolution || usingDataFusionParquetExec(conf)) {
-                checkAnswer(df, data.map(Row.fromTuple))
-              } else {
-                assertThrows[SparkException](df.collect())
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
   test("scan metrics") {
     // https://github.com/apache/datafusion-comet/issues/1441
     assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_ICEBERG_COMPAT)

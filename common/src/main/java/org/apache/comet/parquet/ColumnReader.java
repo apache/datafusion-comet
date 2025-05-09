@@ -99,8 +99,9 @@ public class ColumnReader extends AbstractColumnReader {
       CometSchemaImporter importer,
       int batchSize,
       boolean useDecimal128,
-      boolean useLegacyDateTimestamp) {
-    super(type, descriptor, useDecimal128, useLegacyDateTimestamp);
+      boolean useLegacyDateTimestamp,
+      boolean supportsSchemaEvolution) {
+    super(type, descriptor, useDecimal128, useLegacyDateTimestamp, supportsSchemaEvolution);
     assert batchSize > 0 : "Batch size must be positive, found " + batchSize;
     this.batchSize = batchSize;
     this.importer = importer;

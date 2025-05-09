@@ -45,7 +45,7 @@ public class MetadataColumnReader extends AbstractColumnReader {
   public MetadataColumnReader(
       DataType type, ColumnDescriptor descriptor, boolean useDecimal128, boolean isConstant) {
     // TODO: should we handle legacy dates & timestamps for metadata columns?
-    super(type, descriptor, useDecimal128, false);
+    super(type, descriptor, useDecimal128, false, false);
 
     this.isConstant = isConstant;
   }

@@ -583,7 +583,8 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
               capacity,
               useDecimal128,
               useLazyMaterialization,
-              useLegacyDateTimestamp);
+              useLegacyDateTimestamp,
+              false);
       reader.setPageReader(rowGroupReader.getPageReader(columns.get(i)));
       columnReaders[i] = reader;
     }
