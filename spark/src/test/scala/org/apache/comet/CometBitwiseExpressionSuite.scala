@@ -88,7 +88,7 @@ class CometBitwiseExpressionSuite extends CometTestBase with AdaptiveSparkPlanHe
     checkSparkAndCometEqualThrows("select bit_count(1000, cast(null as int))")
   }
 
-  test("bitwise_get - random values") {
+  test("bitwise_get - random values (spark parquet gen)") {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
       val filename = path.toString
@@ -110,6 +110,34 @@ class CometBitwiseExpressionSuite extends CometTestBase with AdaptiveSparkPlanHe
       checkSparkAnswerAndOperator(
         table
           .selectExpr("bit_get(c1, 7)", "bit_get(c2, 10)", "bit_get(c3, 12)", "bit_get(c3, 16)"))
+    }
+  }
+
+  test("bitwise_get - random values (native parquet gen)") {
+    def randomBitPosition(maxBitPosition: Int): Int = {
+      Random.nextInt(maxBitPosition)
+    }
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled, 0, 10000, nullEnabled = false)
+        val table = spark.read.parquet(path.toString)
+        (0 to 10).foreach { _ =>
+          val byteBitPosition = randomBitPosition(java.lang.Byte.SIZE)
+          val shortBitPosition = randomBitPosition(java.lang.Short.SIZE)
+          val intBitPosition = randomBitPosition(java.lang.Integer.SIZE)
+          val longBitPosition = randomBitPosition(java.lang.Long.SIZE)
+          checkSparkAnswerAndOperator(
+            table
+              .selectExpr(
+                s"bit_get(_2, $byteBitPosition)",
+                s"bit_get(_3, $shortBitPosition)",
+                s"bit_get(_4, $intBitPosition)",
+                s"bit_get(_5, $longBitPosition)",
+                s"bit_get(_10, $intBitPosition)",
+                s"bit_get(_11, $longBitPosition)"))
+        }
+      }
     }
   }
 }
