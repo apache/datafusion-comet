@@ -21,7 +21,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::sync::{Arc, Mutex};
 
-pub(crate) static RECORDER: Lazy<Recorder> = Lazy::new(|| Recorder::new());
+pub(crate) static RECORDER: Lazy<Recorder> = Lazy::new(Recorder::new);
 
 /// Log events using Chrome trace format JSON
 /// https://github.com/catapult-project/catapult/blob/main/tracing/README.md
