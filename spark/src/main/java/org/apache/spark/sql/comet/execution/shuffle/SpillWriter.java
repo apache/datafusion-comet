@@ -173,7 +173,8 @@ public abstract class SpillWriter {
       ShuffleWriteMetricsReporter writeMetricsToUse,
       double preferDictionaryRatio,
       String compressionCodec,
-      int compressionLevel) {
+      int compressionLevel,
+      boolean tracingEnabled) {
     long[] addresses = rowPartition.getRowAddresses();
     int[] sizes = rowPartition.getRowSizes();
 
@@ -194,7 +195,8 @@ public abstract class SpillWriter {
             checksumAlgo,
             currentChecksum,
             compressionCodec,
-            compressionLevel);
+            compressionLevel,
+            tracingEnabled);
 
     long written = results[0];
     checksum = results[1];

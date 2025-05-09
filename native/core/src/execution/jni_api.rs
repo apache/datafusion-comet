@@ -66,10 +66,12 @@ use crate::execution::memory_pools::{
 use crate::execution::operators::ScanExec;
 use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
+
+use crate::execution::tracing::TraceGuard;
+use crate::execution::tracing::{log_counter, trace_begin, trace_end};
+
 use log::info;
 use once_cell::sync::Lazy;
-#[cfg(target_os = "linux")]
-use procfs::process::Process;
 #[cfg(feature = "jemalloc")]
 use tikv_jemalloc_ctl::{epoch, stats};
 
@@ -131,7 +133,7 @@ struct ExecutionContext {
     /// Memory pool config
     pub memory_pool_config: MemoryPoolConfig,
     /// Whether to log memory usage on each call to execute_plan
-    pub memory_profiling_enabled: bool,
+    pub tracing_enabled: bool,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -157,9 +159,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     task_attempt_id: jlong,
     debug_native: jboolean,
     explain_native: jboolean,
-    memory_profiling_enabled: jboolean,
+    tracing_enabled: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
+        let _ = TraceGuard::new("createPlan", tracing_enabled != JNI_FALSE);
+
         // Init JVM classes
         JVMClasses::init(&mut env);
 
@@ -238,7 +242,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             debug_native: debug_native == 1,
             explain_native: explain_native == 1,
             memory_pool_config,
-            memory_profiling_enabled: memory_profiling_enabled != JNI_FALSE,
+            tracing_enabled: tracing_enabled != JNI_FALSE,
         });
 
         Ok(Box::into_raw(exec_context) as i64)
@@ -362,43 +366,22 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     exec_context: jlong,
     array_addrs: jlongArray,
     schema_addrs: jlongArray,
+    tracing_enabled: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
+        let _ = TraceGuard::new("executePlan", tracing_enabled != JNI_FALSE);
+
         // Retrieve the query
         let exec_context = get_execution_context(exec_context);
 
-        // memory profiling is only available on linux
-        if exec_context.memory_profiling_enabled {
-            #[cfg(target_os = "linux")]
+        if exec_context.tracing_enabled {
+            #[cfg(feature = "jemalloc")]
             {
-                let pid = std::process::id();
-                let process = Process::new(pid as i32).unwrap();
-                let statm = process.statm().unwrap();
-                let page_size = procfs::page_size();
-                println!(
-                    "NATIVE_MEMORY: {{ resident: {:.0} }}",
-                    (statm.resident * page_size) as f64 / (1024.0 * 1024.0)
-                );
-
-                #[cfg(feature = "jemalloc")]
-                {
-                    // Obtain a MIB for the `epoch`, `stats.allocated`, and
-                    // `atats.resident` keys:
-                    let e = epoch::mib().unwrap();
-                    let allocated = stats::allocated::mib().unwrap();
-                    let resident = stats::resident::mib().unwrap();
-
-                    // Many statistics are cached and only updated
-                    // when the epoch is advanced:
-                    e.advance().unwrap();
-
-                    // Read statistics using MIB key:
-                    let allocated = allocated.read().unwrap() as f64 / (1024.0 * 1024.0);
-                    let resident = resident.read().unwrap() as f64 / (1024.0 * 1024.0);
-                    println!(
-                        "NATIVE_MEMORY_JEMALLOC: {{ allocated: {allocated:.0}, resident: {resident:.0} }}"
-                    );
-                }
+                let e = epoch::mib().unwrap();
+                let allocated = stats::allocated::mib().unwrap();
+                e.advance().unwrap();
+                use crate::execution::tracing::log_counter;
+                log_counter("jemalloc_allocated", allocated.read().unwrap() as u64);
             }
         }
 
@@ -481,7 +464,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                             );
                         }
                     }
-
                     return Ok(-1);
                 }
                 // A poll pending means there are more than one blocking operators,
@@ -580,8 +562,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
     current_checksum: jlong,
     compression_codec: jstring,
     compression_level: jint,
+    tracing_enabled: jboolean,
 ) -> jlongArray {
     try_unwrap_or_throw(&e, |mut env| unsafe {
+        let _ = TraceGuard::new("writeSortedFileNative", tracing_enabled != JNI_FALSE);
+
         let data_types = convert_datatype_arrays(&mut env, serialized_datatypes)?;
 
         let row_address_array = JLongArray::from_raw(row_addresses);
@@ -655,12 +640,13 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
     _class: JClass,
     address: jlong,
     size: jlong,
+    tracing_enabled: jboolean,
 ) {
     try_unwrap_or_throw(&e, |_| {
+        let _ = TraceGuard::new("sortRowPartitionsNative", tracing_enabled != JNI_FALSE);
         // SAFETY: JVM unsafe memory allocation is aligned with long.
         let array = unsafe { std::slice::from_raw_parts_mut(address as *mut i64, size as usize) };
         array.rdxsort();
-
         Ok(())
     })
 }
@@ -676,12 +662,60 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
     length: jint,
     array_addrs: jlongArray,
     schema_addrs: jlongArray,
+    tracing_enabled: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
+        let _ = TraceGuard::new("decodeShuffleBlock", tracing_enabled != JNI_FALSE);
         let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
         let length = length as usize;
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
         let batch = read_ipc_compressed(slice)?;
         prepare_output(&mut env, array_addrs, schema_addrs, batch, false)
+    })
+}
+
+#[no_mangle]
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_traceBegin(
+    e: JNIEnv,
+    _class: JClass,
+    event: jstring,
+) {
+    try_unwrap_or_throw(&e, |mut env| {
+        let name: String = env.get_string(&JString::from_raw(event)).unwrap().into();
+        trace_begin(&name);
+        Ok(())
+    })
+}
+
+#[no_mangle]
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
+    e: JNIEnv,
+    _class: JClass,
+    event: jstring,
+) {
+    try_unwrap_or_throw(&e, |mut env| {
+        let name: String = env.get_string(&JString::from_raw(event)).unwrap().into();
+        trace_end(&name);
+        Ok(())
+    })
+}
+
+#[no_mangle]
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_logCounter(
+    e: JNIEnv,
+    _class: JClass,
+    name: jstring,
+    value: jlong,
+) {
+    try_unwrap_or_throw(&e, |mut env| {
+        let name: String = env.get_string(&JString::from_raw(name)).unwrap().into();
+        log_counter(&name, value as u64);
+        Ok(())
     })
 }
