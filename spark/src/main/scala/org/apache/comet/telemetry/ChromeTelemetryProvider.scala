@@ -19,21 +19,34 @@
 
 package org.apache.comet.telemetry
 
-import java.io.FileWriter
+import java.io.{BufferedWriter, FileWriter}
+
+import org.apache.spark.internal.Logging
 
 /**
  * Default provider that writes telemetry in Chrome Trace Event Format.
  */
-object ChromeTelemetryProvider extends TelemetryProvider with Serializable {
+object ChromeTelemetryProvider extends TelemetryProvider with Serializable with Logging {
 
   lazy val pid: Long = {
     val processName = java.lang.management.ManagementFactory.getRuntimeMXBean.getName
     processName.split("@")(0).toLong
   }
 
-  lazy val writer = {
-    val w = new FileWriter(s"comet-events-$pid-${System.currentTimeMillis()}.log")
+  lazy val writer: BufferedWriter = {
+    val w = new BufferedWriter(
+      new FileWriter(s"comet-events-$pid-${System.currentTimeMillis()}.log"))
     w.append('[')
+    // scalastyle:off runtimeaddshutdownhook
+    Runtime.getRuntime.addShutdownHook(new Thread(() => {
+      try {
+        w.close
+      } catch {
+        case e =>
+          logError("Error closing Comet event trace log", e)
+      }
+    }))
+    // scalastyle:on runtimeaddshutdownhook
     w
   }
 
@@ -42,10 +55,12 @@ object ChromeTelemetryProvider extends TelemetryProvider with Serializable {
   override def setGauge(name: String, value: Long): Unit = {
     val threadId = Thread.currentThread().getId
     val ts = System.currentTimeMillis()
-    // scalastyle:off
-    writer.write(
-      s"""{ "name": "$name", "cat": "PERF", "ph": "C", "pid": $pid, "tid": "$threadId", "ts": $ts, "args": { "$name": "$value" } },\n""".stripMargin)
-    // scalastyle:on
+    ChromeTelemetryProvider.synchronized {
+      // scalastyle:off
+      writer.write(
+        s"""{ "name": "$name", "cat": "PERF", "ph": "C", "pid": $pid, "tid": "$threadId", "ts": $ts, "args": { "$name": "$value" } },\n""".stripMargin)
+      // scalastyle:on
+    }
   }
 
   private class ChromeSpan(name: String) extends Span {
@@ -58,10 +73,12 @@ object ChromeTelemetryProvider extends TelemetryProvider with Serializable {
     private def logEvent(name: String, ph: String): Unit = {
       val threadId = Thread.currentThread().getId
       val ts = System.currentTimeMillis()
-      // scalastyle:off
-      writer.write(
-        s"""{ "name": "$name", "cat": "PERF", "ph": "$ph", "pid": $pid, "tid": "$threadId", "ts": $ts },\n""".stripMargin)
-      // scalastyle:on
+      ChromeTelemetryProvider.synchronized {
+        // scalastyle:off
+        writer.write(
+          s"""{ "name": "$name", "cat": "PERF", "ph": "$ph", "pid": $pid, "tid": "$threadId", "ts": $ts },\n""".stripMargin)
+        // scalastyle:on
+      }
     }
   }
 }
