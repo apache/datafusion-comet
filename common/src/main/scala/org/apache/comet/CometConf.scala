@@ -439,6 +439,14 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_TELEMETRY_PROVIDER: ConfigEntry[String] =
+    conf("spark.comet.telemetry.provider")
+      .doc("Experimental support for configuring an optional telemetry provider.")
+      .internal()
+      .stringConf
+      .checkValues(Set("otel", "chrome", "none"))
+      .createWithDefault("none")
+
   val COMET_EXPLAIN_VERBOSE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.explain.verbose.enabled")
       .doc(
