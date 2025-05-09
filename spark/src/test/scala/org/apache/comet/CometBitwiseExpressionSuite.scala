@@ -109,7 +109,7 @@ class CometBitwiseExpressionSuite extends CometTestBase with AdaptiveSparkPlanHe
       val table = spark.read.parquet(filename)
       checkSparkAnswerAndOperator(
         table
-          .selectExpr("bit_get(c1, 7)", "bit_get(c2, 10)", "bit_get(c3, 12)", "bit_get(c3, 16)"))
+          .selectExpr("bit_get(c1, 7)", "bit_get(c2, 10)", "bit_get(c3, 12)", "bit_get(c4, 16)"))
     }
   }
 
