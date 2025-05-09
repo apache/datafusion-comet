@@ -68,7 +68,6 @@ use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 
 use crate::execution::tracing::TraceGuard;
-#[cfg(feature = "tracing")]
 use crate::execution::tracing::{log_counter, trace_begin, trace_end};
 
 use log::info;
@@ -134,7 +133,7 @@ struct ExecutionContext {
     /// Memory pool config
     pub memory_pool_config: MemoryPoolConfig,
     /// Whether to log memory usage on each call to execute_plan
-    pub memory_profiling_enabled: bool,
+    pub tracing_enabled: bool,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -243,7 +242,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             debug_native: debug_native == 1,
             explain_native: explain_native == 1,
             memory_pool_config,
-            memory_profiling_enabled: memory_profiling_enabled != JNI_FALSE,
+            tracing_enabled: memory_profiling_enabled != JNI_FALSE,
         });
 
         Ok(Box::into_raw(exec_context) as i64)
@@ -374,18 +373,15 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         // Retrieve the query
         let exec_context = get_execution_context(exec_context);
 
-        if exec_context.memory_profiling_enabled {
-            #[cfg(feature = "tracing")]
+        if exec_context.tracing_enabled {
+            #[cfg(feature = "jemalloc")]
             {
-                #[cfg(feature = "jemalloc")]
-                {
-                    let e = epoch::mib().unwrap();
-                    let allocated = stats::allocated::mib().unwrap();
-                    e.advance().unwrap();
-                    let allocated = allocated.read().unwrap() as f64 / (1024.0 * 1024.0);
-                    use crate::execution::tracing::log_counter;
-                    log_counter("jemalloc_allocated", allocated as usize);
-                }
+                let e = epoch::mib().unwrap();
+                let allocated = stats::allocated::mib().unwrap();
+                e.advance().unwrap();
+                let allocated = allocated.read().unwrap() as f64 / (1024.0 * 1024.0);
+                use crate::execution::tracing::log_counter;
+                log_counter("jemalloc_allocated", allocated as usize);
             }
         }
 
@@ -678,13 +674,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
 #[no_mangle]
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
-#[cfg(feature = "tracing")]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_traceBegin(
     e: JNIEnv,
     _class: JClass,
     event: jstring,
 ) {
-    #[cfg(feature = "tracing")]
     try_unwrap_or_throw(&e, |mut env| {
         let name: String = env.get_string(&JString::from_raw(event)).unwrap().into();
         trace_begin(&name);
@@ -695,7 +689,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceBegin(
 #[no_mangle]
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
-#[cfg(feature = "tracing")]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
     e: JNIEnv,
     _class: JClass,
@@ -711,7 +704,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
 #[no_mangle]
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
-#[cfg(feature = "tracing")]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_logCounter(
     e: JNIEnv,
     _class: JClass,
@@ -723,28 +715,4 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_logCounter(
         log_counter(&name, value as usize);
         Ok(())
     })
-}
-
-#[no_mangle]
-/// # Safety
-/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
-#[cfg(not(feature = "tracing"))]
-pub unsafe extern "system" fn Java_org_apache_comet_Native_traceBegin(
-    _e: JNIEnv,
-    _class: JClass,
-    _event: jstring,
-) {
-    // no implementation
-}
-
-#[no_mangle]
-/// # Safety
-/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
-#[cfg(not(feature = "tracing"))]
-pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
-    _e: JNIEnv,
-    _class: JClass,
-    _event: jstring,
-) {
-    // no implementation
 }

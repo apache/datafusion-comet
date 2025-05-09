@@ -15,29 +15,37 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#[cfg(feature = "tracing")]
 use datafusion::common::instant::Instant;
-#[cfg(feature = "tracing")]
 use once_cell::sync::Lazy;
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Write};
+use std::sync::{Arc, Mutex};
 
-#[cfg(feature = "tracing")]
 pub(crate) static RECORDER: Lazy<Recorder> = Lazy::new(|| Recorder::new());
 
 /// Log events using Chrome trace format JSON
 /// https://github.com/catapult-project/catapult/blob/main/tracing/README.md
-#[cfg(feature = "tracing")]
 pub struct Recorder {
     now: Instant,
+    writer: Arc<Mutex<BufWriter<File>>>,
 }
 
-#[cfg(feature = "tracing")]
 impl Recorder {
     pub fn new() -> Self {
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("comet-event-trace.json")
+            .unwrap();
+
+        let mut writer = BufWriter::new(file);
+
         // Write start of JSON array. Note that there is no requirement to write
         // the closing ']'.
-        print!("[ ");
+        writer.write_all("[ ".as_bytes()).unwrap();
         Self {
             now: Instant::now(),
+            writer: Arc::new(Mutex::new(writer)),
         }
     }
     pub fn begin_task(&self, name: &str) {
@@ -49,20 +57,24 @@ impl Recorder {
     }
 
     pub fn log_counter(&self, name: &str, value: usize) {
-        println!(
-            "{{ \"name\": \"{name}\", \"cat\": \"PERF\", \"ph\": \"C\", \"pid\": 1, \"tid\": {}, \"ts\": {}, \"args\": {{ \"{name}\": {value} }} }},",
+        let json = format!(
+            "{{ \"name\": \"{name}\", \"cat\": \"PERF\", \"ph\": \"C\", \"pid\": 1, \"tid\": {}, \"ts\": {}, \"args\": {{ \"{name}\": {value} }} }},\n",
             Self::get_thread_id(),
             self.now.elapsed().as_nanos()
         );
+        let mut writer = self.writer.lock().unwrap();
+        writer.write_all(json.as_bytes()).unwrap();
     }
 
     fn log_event(&self, name: &str, ph: &str) {
-        println!(
-            "{{ \"name\": \"{}\", \"cat\": \"PERF\", \"ph\": \"{ph}\", \"pid\": 1, \"tid\": {}, \"ts\": {} }},",
+        let json = format!(
+            "{{ \"name\": \"{}\", \"cat\": \"PERF\", \"ph\": \"{ph}\", \"pid\": 1, \"tid\": {}, \"ts\": {} }},\n",
             name,
             Self::get_thread_id(),
             self.now.elapsed().as_nanos()
         );
+        let mut writer = self.writer.lock().unwrap();
+        writer.write_all(json.as_bytes()).unwrap();
     }
 
     fn get_thread_id() -> u64 {
@@ -77,20 +89,17 @@ impl Recorder {
 
 #[allow(unused_variables)]
 pub(crate) fn trace_begin(name: &str) {
-    #[cfg(feature = "tracing")]
     RECORDER.begin_task(name);
 }
 
 #[allow(unused_variables)]
 pub(crate) fn trace_end(name: &str) {
-    #[cfg(feature = "tracing")]
     RECORDER.end_task(name);
 }
 
 #[allow(unused_variables)]
 #[allow(dead_code)]
 pub(crate) fn log_counter(name: &str, value: usize) {
-    #[cfg(feature = "tracing")]
     RECORDER.log_counter(name, value);
 }
 pub(crate) struct TraceGuard<'a> {
