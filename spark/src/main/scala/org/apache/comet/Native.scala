@@ -179,6 +179,6 @@ class Native extends NativeBase {
 
   @native def traceEnd(name: String): Unit
 
-  @native def logCounter(name: String, value: Int): Unit
+  @native def logCounter(name: String, value: Long): Unit
 
 }

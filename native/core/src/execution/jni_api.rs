@@ -379,9 +379,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 let e = epoch::mib().unwrap();
                 let allocated = stats::allocated::mib().unwrap();
                 e.advance().unwrap();
-                let allocated = allocated.read().unwrap() as f64 / (1024.0 * 1024.0);
                 use crate::execution::tracing::log_counter;
-                log_counter("jemalloc_allocated", allocated as usize);
+                log_counter("jemalloc_allocated", allocated.read().unwrap() as u64);
             }
         }
 
@@ -708,11 +707,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_logCounter(
     e: JNIEnv,
     _class: JClass,
     name: jstring,
-    value: jint,
+    value: jlong,
 ) {
     try_unwrap_or_throw(&e, |mut env| {
         let name: String = env.get_string(&JString::from_raw(name)).unwrap().into();
-        log_counter(&name, value as usize);
+        log_counter(&name, value as u64);
         Ok(())
     })
 }

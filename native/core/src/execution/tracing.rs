@@ -56,7 +56,7 @@ impl Recorder {
         self.log_event(name, "E")
     }
 
-    pub fn log_counter(&self, name: &str, value: usize) {
+    pub fn log_counter(&self, name: &str, value: u64) {
         let json = format!(
             "{{ \"name\": \"{name}\", \"cat\": \"PERF\", \"ph\": \"C\", \"pid\": 1, \"tid\": {}, \"ts\": {}, \"args\": {{ \"{name}\": {value} }} }},\n",
             Self::get_thread_id(),
@@ -87,19 +87,15 @@ impl Recorder {
     }
 }
 
-#[allow(unused_variables)]
 pub(crate) fn trace_begin(name: &str) {
     RECORDER.begin_task(name);
 }
 
-#[allow(unused_variables)]
 pub(crate) fn trace_end(name: &str) {
     RECORDER.end_task(name);
 }
 
-#[allow(unused_variables)]
-#[allow(dead_code)]
-pub(crate) fn log_counter(name: &str, value: usize) {
+pub(crate) fn log_counter(name: &str, value: u64) {
     RECORDER.log_counter(name, value);
 }
 pub(crate) struct TraceGuard<'a> {

@@ -233,8 +233,8 @@ object CometConf extends ShimCometConf {
       defaultValue = true,
       notes = Some("stddev is slower than Spark's implementation"))
 
-  val COMET_MEMORY_PROFILING: ConfigEntry[Boolean] = conf("spark.comet.memory.profiling")
-    .doc("Enable logging of JVM and native memory statistics.")
+  val COMET_DEBUG_TRACING_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.tracing.enabled")
+    .doc("Enable logging of events and memory usage.")
     .internal()
     .booleanConf
     .createWithDefault(false)

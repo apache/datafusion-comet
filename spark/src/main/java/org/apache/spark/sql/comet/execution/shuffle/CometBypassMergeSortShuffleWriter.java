@@ -118,6 +118,8 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
 
   private final SparkConf conf;
 
+  private boolean tracingEnabled;
+
   CometBypassMergeSortShuffleWriter(
       BlockManager blockManager,
       TaskMemoryManager memoryManager,
@@ -147,6 +149,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
 
     this.isAsync = (boolean) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED().get();
     this.asyncThreadNum = (int) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_ASYNC_THREAD_NUM().get();
+    this.tracingEnabled = (boolean) CometConf$.MODULE$.COMET_DEBUG_TRACING_ENABLED().get();
 
     if (isAsync) {
       logger.info("Async shuffle writer enabled");
@@ -229,7 +232,9 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
       }
 
       Native _native = new Native();
-      _native.logCounter("BypassMergeShortShuffle", (int) (allocator.getUsed() / 1024.0 / 1024.0));
+      if (tracingEnabled) {
+        _native.logCounter("BypassMergeShortShuffle", allocator.getUsed());
+      }
 
       long spillRecords = 0;
 
@@ -240,7 +245,9 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
         spillRecords += writer.getOutputRecords();
       }
 
-      _native.logCounter("BypassMergeShortShuffle", (int) (allocator.getUsed() / 1024.0 / 1024.0));
+      if (tracingEnabled) {
+        _native.logCounter("BypassMergeShortShuffle", allocator.getUsed());
+      }
 
       if (outputRows != spillRecords) {
         throw new RuntimeException(

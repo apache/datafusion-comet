@@ -78,6 +78,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.io.ByteStreams;
 import com.google.common.io.Closeables;
 
+import org.apache.comet.CometConf;
 import org.apache.comet.Native;
 
 /**
@@ -127,6 +128,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
   private SerializationStream serOutputStream;
   private Native nativeLib = new Native();
   private CometShuffleMemoryAllocatorTrait allocator;
+  private boolean tracingEnabled;
 
   /**
    * Are we in the process of stopping? Because map tasks can call stop() with success = true and
@@ -168,6 +170,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
         (int) (long) sparkConf.get(package$.MODULE$.SHUFFLE_SORT_INIT_BUFFER_SIZE());
     this.inputBufferSizeInBytes =
         (int) (long) sparkConf.get(package$.MODULE$.SHUFFLE_FILE_BUFFER_SIZE()) * 1024;
+    this.tracingEnabled = (boolean) CometConf.COMET_DEBUG_TRACING_ENABLED().get();
     open();
   }
 
@@ -207,17 +210,23 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     // We do this rather than a standard try/catch/re-throw to handle
     // generic throwables.
     boolean success = false;
-    nativeLib.traceBegin("CometUnsafeShuffleWriter");
+    if (tracingEnabled) {
+      nativeLib.traceBegin("CometUnsafeShuffleWriter");
+    }
     String offheapMemKey = "offheap_shuffle_" + Thread.currentThread().getId();
     try {
       while (records.hasNext()) {
         insertRecordIntoSorter(records.next());
       }
-      nativeLib.logCounter(offheapMemKey, (int) this.allocator.getUsed() / 1024 / 1024);
+      if (tracingEnabled) {
+        nativeLib.logCounter(offheapMemKey, this.allocator.getUsed());
+      }
       closeAndWriteOutput();
       success = true;
     } finally {
-      nativeLib.traceEnd("CometUnsafeShuffleWriter");
+      if (tracingEnabled) {
+        nativeLib.traceEnd("CometUnsafeShuffleWriter");
+      }
       if (sorter != null) {
         try {
           sorter.cleanupResources();
@@ -232,7 +241,9 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
           }
         }
       }
-      nativeLib.logCounter(offheapMemKey, (int) this.allocator.getUsed() / 1024 / 1024);
+      if (tracingEnabled) {
+        nativeLib.logCounter(offheapMemKey, this.allocator.getUsed());
+      }
     }
   }
 
