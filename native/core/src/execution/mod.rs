@@ -28,6 +28,7 @@ pub(crate) mod spark_plan;
 pub(crate) mod util;
 pub use datafusion_comet_spark_expr::timezone;
 mod memory_pools;
+pub(crate) mod tracing;
 pub(crate) mod utils;
 
 #[cfg(test)]

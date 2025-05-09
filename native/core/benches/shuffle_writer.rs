@@ -93,6 +93,7 @@ fn create_shuffle_writer_exec(compression_codec: CompressionCodec) -> ShuffleWri
         compression_codec,
         "/tmp/data.out".to_string(),
         "/tmp/index.out".to_string(),
+        false,
     )
     .unwrap()
 }

@@ -59,9 +59,10 @@ class CometExecIterator(
     extends Iterator[ColumnarBatch]
     with Logging {
 
-  private val memoryProfilingEnabled = CometConf.COMET_MEMORY_PROFILING.get()
+  private val tracingEnabled = CometConf.COMET_TRACING_ENABLED.get()
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
+  private val cometTaskMemoryManager = new CometTaskMemoryManager(id)
   private val cometBatchIterators = inputs.map { iterator =>
     new CometBatchIterator(iterator, nativeUtil)
   }.toArray
@@ -78,7 +79,6 @@ class CometExecIterator(
       // and `memory_fraction` below.
       CometSparkSessionExtensions.getCometMemoryOverhead(conf)
     }
-
     nativeLib.createPlan(
       id,
       cometBatchIterators,
@@ -86,7 +86,7 @@ class CometExecIterator(
       numParts,
       nativeMetrics,
       metricsUpdateInterval = COMET_METRICS_UPDATE_INTERVAL.get(),
-      new CometTaskMemoryManager(id),
+      cometTaskMemoryManager,
       localDiskDirs,
       batchSize = COMET_BATCH_SIZE.get(),
       offHeapMode,
@@ -96,7 +96,7 @@ class CometExecIterator(
       taskAttemptId = TaskContext.get().taskAttemptId,
       debug = COMET_DEBUG_ENABLED.get(),
       explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
-      memoryProfilingEnabled)
+      tracingEnabled)
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
@@ -134,28 +134,33 @@ class CometExecIterator(
   def getNextBatch(): Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
 
-    if (memoryProfilingEnabled) {
-      val memoryMXBean = ManagementFactory.getMemoryMXBean
-      val heap = memoryMXBean.getHeapMemoryUsage
-      val nonHeap = memoryMXBean.getNonHeapMemoryUsage
+    // TODO introduce withTracing method to avoid the try/finish pattern here
+    try {
+      if (tracingEnabled) {
+        nativeLib.traceBegin("CometExecIterator_getNextBatch")
+        val memoryMXBean = ManagementFactory.getMemoryMXBean
+        val heap = memoryMXBean.getHeapMemoryUsage
+        nativeLib.logCounter("jvm_heapUsed", heap.getUsed)
+      }
 
-      def mb(n: Long) = n / 1024 / 1024
-
-      // scalastyle:off println
-      println(
-        "JVM_MEMORY: { " +
-          s"heapUsed: ${mb(heap.getUsed)}, heapCommitted: ${mb(heap.getCommitted)}, " +
-          s"nonHeapUsed: ${mb(nonHeap.getUsed)}, nonHeapCommitted: ${mb(nonHeap.getCommitted)} " +
-          "}")
-      // scalastyle:on println
+      nativeUtil.getNextBatch(
+        numOutputCols,
+        (arrayAddrs, schemaAddrs) => {
+          val ctx = TaskContext.get()
+          nativeLib.executePlan(
+            ctx.stageId(),
+            partitionIndex,
+            plan,
+            arrayAddrs,
+            schemaAddrs,
+            tracingEnabled)
+        })
+    } finally {
+      if (tracingEnabled) {
+        nativeLib.traceEnd("CometExecIterator_getNextBatch")
+        nativeLib.logCounter("CometTaskMemoryManager", cometTaskMemoryManager.getUsed)
+      }
     }
-
-    nativeUtil.getNextBatch(
-      numOutputCols,
-      (arrayAddrs, schemaAddrs) => {
-        val ctx = TaskContext.get()
-        nativeLib.executePlan(ctx.stageId(), partitionIndex, plan, arrayAddrs, schemaAddrs)
-      })
   }
 
   override def hasNext: Boolean = {
@@ -208,6 +213,9 @@ class CometExecIterator(
       }
       nativeUtil.close()
       nativeLib.releasePlan(plan)
+      if (tracingEnabled) {
+        nativeLib.logCounter("CometTaskMemoryManager", cometTaskMemoryManager.getUsed)
+      }
 
       // The allocator thoughts the exported ArrowArray and ArrowSchema structs are not released,
       // so it will report:
