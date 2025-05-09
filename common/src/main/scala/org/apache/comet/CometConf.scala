@@ -51,6 +51,9 @@ object CometConf extends ShimCometConf {
   private val TUNING_GUIDE = "For more information, refer to the Comet Tuning " +
     "Guide (https://datafusion.apache.org/comet/user-guide/tuning.html)"
 
+  private val TRACING_GUIDE = "For more information, refer to the Comet Tracing " +
+    "Guide (https://datafusion.apache.org/comet/user-guide/tracing.html)"
+
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
 
@@ -233,8 +236,9 @@ object CometConf extends ShimCometConf {
       defaultValue = true,
       notes = Some("stddev is slower than Spark's implementation"))
 
-  val COMET_DEBUG_TRACING_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.tracing.enabled")
-    .doc("Enable logging of events and memory usage.")
+  val COMET_TRACING_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.tracing.enabled")
+    .doc("Enable fine-grained tracing of events and memory usage. " +
+      s"See $TRACING_GUIDE for more information.")
     .internal()
     .booleanConf
     .createWithDefault(false)

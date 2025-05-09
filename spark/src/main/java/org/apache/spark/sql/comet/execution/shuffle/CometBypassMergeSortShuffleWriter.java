@@ -149,7 +149,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
 
     this.isAsync = (boolean) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED().get();
     this.asyncThreadNum = (int) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_ASYNC_THREAD_NUM().get();
-    this.tracingEnabled = (boolean) CometConf$.MODULE$.COMET_DEBUG_TRACING_ENABLED().get();
+    this.tracingEnabled = (boolean) CometConf$.MODULE$.COMET_TRACING_ENABLED().get();
 
     if (isAsync) {
       logger.info("Async shuffle writer enabled");
@@ -205,7 +205,8 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
                 conf,
                 isAsync,
                 asyncThreadNum,
-                threadPool);
+                threadPool,
+                tracingEnabled);
         if (partitionChecksums.length > 0) {
           writer.setChecksum(partitionChecksums[i]);
           writer.setChecksumAlgo(checksumAlgorithm);

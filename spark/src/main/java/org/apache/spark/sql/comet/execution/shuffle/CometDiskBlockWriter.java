@@ -104,6 +104,7 @@ public final class CometDiskBlockWriter {
   private final String compressionCodec;
   private final int compressionLevel;
   private final boolean isAsync;
+  private final boolean tracingEnabled;
   private final int asyncThreadNum;
   private final ExecutorService threadPool;
   private final int numElementsForSpillThreshold;
@@ -135,7 +136,8 @@ public final class CometDiskBlockWriter {
       SparkConf conf,
       boolean isAsync,
       int asyncThreadNum,
-      ExecutorService threadPool) {
+      ExecutorService threadPool,
+      boolean tracingEnabled) {
     this.nativeLib = new Native();
     this.allocator = allocator;
     this.taskContext = taskContext;
@@ -144,6 +146,7 @@ public final class CometDiskBlockWriter {
     this.writeMetrics = writeMetrics;
     this.file = file;
     this.isAsync = isAsync;
+    this.tracingEnabled = tracingEnabled;
     this.asyncThreadNum = asyncThreadNum;
     this.threadPool = threadPool;
 
@@ -402,7 +405,8 @@ public final class CometDiskBlockWriter {
                 writeMetricsToUse,
                 preferDictionaryRatio,
                 compressionCodec,
-                compressionLevel);
+                compressionLevel,
+                tracingEnabled);
       }
 
       // Update metrics

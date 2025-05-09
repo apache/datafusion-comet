@@ -128,6 +128,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
 
   private final int uaoSize = UnsafeAlignedOffset.getUaoSize();
   private final double preferDictionaryRatio;
+  private final boolean tracingEnabled;
 
   public CometShuffleExternalSorter(
       CometShuffleMemoryAllocatorTrait allocator,
@@ -157,6 +158,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
     this.initialSize = initialSize;
 
     this.isAsync = (boolean) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED().get();
+    this.tracingEnabled = (boolean) CometConf$.MODULE$.COMET_TRACING_ENABLED().get();
 
     if (isAsync) {
       this.threadNum = (int) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_ASYNC_THREAD_NUM().get();
@@ -208,7 +210,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
       SpillSorter spillingSorter = activeSpillSorter;
       Callable<Void> task =
           () -> {
-            spillingSorter.writeSortedFileNative(false);
+            spillingSorter.writeSortedFileNative(false, tracingEnabled);
             final long spillSize = spillingSorter.freeMemory();
             spillingSorter.freeArray();
             spillingSorters.remove(spillingSorter);
@@ -237,7 +239,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
 
       activeSpillSorter = new SpillSorter();
     } else {
-      activeSpillSorter.writeSortedFileNative(false);
+      activeSpillSorter.writeSortedFileNative(false, tracingEnabled);
       final long spillSize = activeSpillSorter.freeMemory();
       activeSpillSorter.reset();
 
@@ -401,7 +403,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
       }
 
       activeSpillSorter.setSpillInfo(spillInfo);
-      activeSpillSorter.writeSortedFileNative(true);
+      activeSpillSorter.writeSortedFileNative(true, tracingEnabled);
 
       freeMemory();
     }
@@ -507,11 +509,12 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
       return this.inMemSorter.numRecords();
     }
 
-    public void writeSortedFileNative(boolean isLastFile) throws IOException {
+    public void writeSortedFileNative(boolean isLastFile, boolean tracingEnabled)
+        throws IOException {
       // This call performs the actual sort.
       long arrayAddr = this.sorterArray.getBaseOffset();
       int pos = inMemSorter.numRecords();
-      nativeLib.sortRowPartitionsNative(arrayAddr, pos);
+      nativeLib.sortRowPartitionsNative(arrayAddr, pos, tracingEnabled);
       ShuffleInMemorySorter.ShuffleSorterIterator sortedRecords =
           new ShuffleInMemorySorter.ShuffleSorterIterator(pos, this.sorterArray, 0);
 
@@ -558,7 +561,8 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
                     writeMetricsToUse,
                     preferDictionaryRatio,
                     compressionCodec,
-                    compressionLevel);
+                    compressionLevel,
+                    tracingEnabled);
             spillInfo.partitionLengths[currentPartition] = written;
 
             // Store the checksum for the current partition.
@@ -586,7 +590,8 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
                 writeMetricsToUse,
                 preferDictionaryRatio,
                 compressionCodec,
-                compressionLevel);
+                compressionLevel,
+                tracingEnabled);
         spillInfo.partitionLengths[currentPartition] = written;
 
         synchronized (spills) {

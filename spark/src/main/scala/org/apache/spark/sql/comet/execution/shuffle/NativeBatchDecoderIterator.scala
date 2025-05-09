@@ -27,7 +27,7 @@ import org.apache.spark.TaskContext
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.Native
+import org.apache.comet.{CometConf, Native}
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -162,7 +162,12 @@ case class NativeBatchDecoderIterator(
     val batch = nativeUtil.getNextBatch(
       fieldCount,
       (arrayAddrs, schemaAddrs) => {
-        native.decodeShuffleBlock(dataBuf, bytesToRead.toInt, arrayAddrs, schemaAddrs)
+        native.decodeShuffleBlock(
+          dataBuf,
+          bytesToRead.toInt,
+          arrayAddrs,
+          schemaAddrs,
+          CometConf.COMET_TRACING_ENABLED.get())
       })
     decodeTime.add(System.nanoTime() - startTime)
 

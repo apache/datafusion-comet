@@ -77,6 +77,7 @@ pub struct ShuffleWriterExec {
     cache: PlanProperties,
     /// The compression codec to use when compressing shuffle blocks
     codec: CompressionCodec,
+    tracing_enabled: bool,
 }
 
 impl ShuffleWriterExec {
@@ -87,6 +88,7 @@ impl ShuffleWriterExec {
         codec: CompressionCodec,
         output_data_file: String,
         output_index_file: String,
+        tracing_enabled: bool,
     ) -> Result<Self> {
         let cache = PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
@@ -103,6 +105,7 @@ impl ShuffleWriterExec {
             output_index_file,
             cache,
             codec,
+            tracing_enabled,
         })
     }
 }
@@ -165,6 +168,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                 self.codec.clone(),
                 self.output_data_file.clone(),
                 self.output_index_file.clone(),
+                self.tracing_enabled,
             )?)),
             _ => panic!("ShuffleWriterExec wrong number of children"),
         }
@@ -190,6 +194,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                     metrics,
                     context,
                     self.codec.clone(),
+                    self.tracing_enabled,
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
@@ -208,8 +213,9 @@ async fn external_shuffle(
     metrics: ShuffleRepartitionerMetrics,
     context: Arc<TaskContext>,
     codec: CompressionCodec,
+    tracing_enabled: bool,
 ) -> Result<SendableRecordBatchStream> {
-    let _ = TraceGuard::new("external_shuffle");
+    let _ = TraceGuard::new("external_shuffle", tracing_enabled);
 
     let schema = input.schema();
 
@@ -232,6 +238,7 @@ async fn external_shuffle(
             context.runtime_env(),
             context.session_config().batch_size(),
             codec,
+            tracing_enabled,
         )?),
     };
 
@@ -320,6 +327,7 @@ struct MultiPartitionShuffleRepartitioner {
     batch_size: usize,
     /// Reservation for repartitioning
     reservation: MemoryReservation,
+    tracing_enabled: bool,
 }
 
 #[derive(Default)]
@@ -350,6 +358,7 @@ impl MultiPartitionShuffleRepartitioner {
         runtime: Arc<RuntimeEnv>,
         batch_size: usize,
         codec: CompressionCodec,
+        tracing_enabled: bool,
     ) -> Result<Self> {
         let num_output_partitions = partitioning.partition_count();
         assert_ne!(
@@ -390,6 +399,7 @@ impl MultiPartitionShuffleRepartitioner {
             scratch,
             batch_size,
             reservation,
+            tracing_enabled,
         })
     }
 
@@ -602,7 +612,7 @@ impl MultiPartitionShuffleRepartitioner {
     }
 
     async fn spill(&mut self) -> Result<()> {
-        let _ = TraceGuard::new("spill");
+        let _ = TraceGuard::new("spill", self.tracing_enabled);
 
         log::debug!(
             "ShuffleRepartitioner spilling shuffle data of {} to disk while inserting ({} time(s) so far)",
@@ -640,7 +650,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
     /// This function will slice input batch according to configured batch size and then
     /// shuffle rows into corresponding partition buffer.
     async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()> {
-        let _ = TraceGuard::new("insert_batch");
+        let _ = TraceGuard::new("insert_batch", self.tracing_enabled);
         let start_time = Instant::now();
         let mut start = 0;
         while start < batch.num_rows() {
@@ -659,7 +669,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
 
     /// Writes buffered shuffled record batches into Arrow IPC bytes.
     async fn shuffle_write(&mut self) -> Result<()> {
-        let _ = TraceGuard::new("shuffle_write");
+        let _ = TraceGuard::new("shuffle_write", self.tracing_enabled);
 
         let start_time = Instant::now();
 
@@ -1244,6 +1254,7 @@ mod test {
             runtime_env,
             1024,
             CompressionCodec::Lz4Frame,
+            false,
         )
         .unwrap();
 
@@ -1292,6 +1303,7 @@ mod test {
             CompressionCodec::Zstd(1),
             "/tmp/data.out".to_string(),
             "/tmp/index.out".to_string(),
+            false,
         )
         .unwrap();
 

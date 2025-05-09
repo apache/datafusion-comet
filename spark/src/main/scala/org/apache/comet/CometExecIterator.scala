@@ -59,7 +59,7 @@ class CometExecIterator(
     extends Iterator[ColumnarBatch]
     with Logging {
 
-  private val tracingEnabled = CometConf.COMET_DEBUG_TRACING_ENABLED.get()
+  private val tracingEnabled = CometConf.COMET_TRACING_ENABLED.get()
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
   private val cometTaskMemoryManager = new CometTaskMemoryManager(id)
@@ -147,7 +147,13 @@ class CometExecIterator(
         numOutputCols,
         (arrayAddrs, schemaAddrs) => {
           val ctx = TaskContext.get()
-          nativeLib.executePlan(ctx.stageId(), partitionIndex, plan, arrayAddrs, schemaAddrs)
+          nativeLib.executePlan(
+            ctx.stageId(),
+            partitionIndex,
+            plan,
+            arrayAddrs,
+            schemaAddrs,
+            tracingEnabled)
         })
     } finally {
       if (tracingEnabled) {
@@ -207,7 +213,9 @@ class CometExecIterator(
       }
       nativeUtil.close()
       nativeLib.releasePlan(plan)
-      nativeLib.logCounter("CometTaskMemoryManager", cometTaskMemoryManager.getUsed)
+      if (tracingEnabled) {
+        nativeLib.logCounter("CometTaskMemoryManager", cometTaskMemoryManager.getUsed)
+      }
 
       // The allocator thoughts the exported ArrowArray and ArrowSchema structs are not released,
       // so it will report:

@@ -67,7 +67,7 @@ class Native extends NativeBase {
       taskAttemptId: Long,
       debug: Boolean,
       explain: Boolean,
-      memoryProfilingEnabled: Boolean): Long
+      tracingEnabled: Boolean): Long
   // scalastyle:on
 
   /**
@@ -91,7 +91,8 @@ class Native extends NativeBase {
       partition: Int,
       plan: Long,
       arrayAddrs: Array[Long],
-      schemaAddrs: Array[Long]): Long
+      schemaAddrs: Array[Long],
+      tracingEnabled: Boolean): Long
 
   /**
    * Release and drop the native query plan object and context object.
@@ -145,7 +146,8 @@ class Native extends NativeBase {
       checksumAlgo: Int,
       currentChecksum: Long,
       compressionCodec: String,
-      compressionLevel: Int): Array[Long]
+      compressionLevel: Int,
+      tracingEnabled: Boolean): Array[Long]
   // scalastyle:on
 
   /**
@@ -156,7 +158,7 @@ class Native extends NativeBase {
    * @param size
    *   the size of the array.
    */
-  @native def sortRowPartitionsNative(addr: Long, size: Long): Unit
+  @native def sortRowPartitionsNative(addr: Long, size: Long, tracingEnabled: Boolean): Unit
 
   /**
    * Decompress and decode a native shuffle block.
@@ -173,7 +175,8 @@ class Native extends NativeBase {
       shuffleBlock: ByteBuffer,
       length: Int,
       arrayAddrs: Array[Long],
-      schemaAddrs: Array[Long]): Long
+      schemaAddrs: Array[Long],
+      tracingEnabled: Boolean): Long
 
   @native def traceBegin(name: String): Unit
 

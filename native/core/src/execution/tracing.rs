@@ -100,17 +100,25 @@ pub(crate) fn log_counter(name: &str, value: u64) {
 }
 pub(crate) struct TraceGuard<'a> {
     label: &'a str,
+    tracing_enabled: bool,
 }
 
 impl<'a> TraceGuard<'a> {
-    pub fn new(label: &'a str) -> Self {
-        trace_begin(label);
-        Self { label }
+    pub fn new(label: &'a str, tracing_enabled: bool) -> Self {
+        if tracing_enabled {
+            trace_begin(label);
+        }
+        Self {
+            label,
+            tracing_enabled,
+        }
     }
 }
 
 impl Drop for TraceGuard<'_> {
     fn drop(&mut self) {
-        trace_end(self.label);
+        if self.tracing_enabled {
+            trace_end(self.label);
+        }
     }
 }

@@ -159,10 +159,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     task_attempt_id: jlong,
     debug_native: jboolean,
     explain_native: jboolean,
-    memory_profiling_enabled: jboolean,
+    tracing_enabled: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
-        let _ = TraceGuard::new("createPlan");
+        let _ = TraceGuard::new("createPlan", tracing_enabled != JNI_FALSE);
 
         // Init JVM classes
         JVMClasses::init(&mut env);
@@ -242,7 +242,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             debug_native: debug_native == 1,
             explain_native: explain_native == 1,
             memory_pool_config,
-            tracing_enabled: memory_profiling_enabled != JNI_FALSE,
+            tracing_enabled: tracing_enabled != JNI_FALSE,
         });
 
         Ok(Box::into_raw(exec_context) as i64)
@@ -366,9 +366,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     exec_context: jlong,
     array_addrs: jlongArray,
     schema_addrs: jlongArray,
+    tracing_enabled: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
-        let _ = TraceGuard::new("executePlan");
+        let _ = TraceGuard::new("executePlan", tracing_enabled != JNI_FALSE);
 
         // Retrieve the query
         let exec_context = get_execution_context(exec_context);
@@ -561,9 +562,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
     current_checksum: jlong,
     compression_codec: jstring,
     compression_level: jint,
+    tracing_enabled: jboolean,
 ) -> jlongArray {
     try_unwrap_or_throw(&e, |mut env| unsafe {
-        let _ = TraceGuard::new("writeSortedFileNative");
+        let _ = TraceGuard::new("writeSortedFileNative", tracing_enabled != JNI_FALSE);
 
         let data_types = convert_datatype_arrays(&mut env, serialized_datatypes)?;
 
@@ -638,9 +640,10 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
     _class: JClass,
     address: jlong,
     size: jlong,
+    tracing_enabled: jboolean,
 ) {
     try_unwrap_or_throw(&e, |_| {
-        let _ = TraceGuard::new("sortRowPartitionsNative");
+        let _ = TraceGuard::new("sortRowPartitionsNative", tracing_enabled != JNI_FALSE);
         // SAFETY: JVM unsafe memory allocation is aligned with long.
         let array = unsafe { std::slice::from_raw_parts_mut(address as *mut i64, size as usize) };
         array.rdxsort();
@@ -659,9 +662,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
     length: jint,
     array_addrs: jlongArray,
     schema_addrs: jlongArray,
+    tracing_enabled: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
-        let _ = TraceGuard::new("decodeShuffleBlock");
+        let _ = TraceGuard::new("decodeShuffleBlock", tracing_enabled != JNI_FALSE);
         let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
         let length = length as usize;
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };

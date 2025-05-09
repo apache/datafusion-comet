@@ -170,7 +170,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
         (int) (long) sparkConf.get(package$.MODULE$.SHUFFLE_SORT_INIT_BUFFER_SIZE());
     this.inputBufferSizeInBytes =
         (int) (long) sparkConf.get(package$.MODULE$.SHUFFLE_FILE_BUFFER_SIZE()) * 1024;
-    this.tracingEnabled = (boolean) CometConf.COMET_DEBUG_TRACING_ENABLED().get();
+    this.tracingEnabled = (boolean) CometConf.COMET_TRACING_ENABLED().get();
     open();
   }
 
