@@ -2038,6 +2038,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
         convert(CometArrayCompact)
       case _: ArrayExcept =>
         convert(CometArrayExcept)
+      case Rand(child, _) =>
+        createUnaryExpr(
+          expr,
+          child,
+          inputs,
+          binding,
+          (builder, unaryExpr) => builder.setRand(unaryExpr))
+
       case _ =>
         withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
         None
