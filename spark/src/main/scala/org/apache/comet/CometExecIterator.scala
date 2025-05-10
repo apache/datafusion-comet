@@ -61,6 +61,7 @@ class CometExecIterator(
     with Logging {
 
   private val tracingEnabled = CometConf.COMET_TRACING_ENABLED.get()
+  private val memoryMXBean = ManagementFactory.getMemoryMXBean
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
   private val cometTaskMemoryManager = new CometTaskMemoryManager(id)
@@ -136,16 +137,7 @@ class CometExecIterator(
     assert(partitionIndex >= 0 && partitionIndex < numParts)
 
     if (tracingEnabled) {
-      val memoryMXBean = ManagementFactory.getMemoryMXBean
-      val heap = memoryMXBean.getHeapMemoryUsage
-      nativeLib.logCounter("jvm_heapUsed", heap.getUsed)
-
-      val totalTaskMemory = cometTaskMemoryManager.internal.getMemoryConsumptionForThisTask
-      val cometTaskMemory = cometTaskMemoryManager.getUsed
-      val sparkTaskMemory = totalTaskMemory - cometTaskMemory
-
-      nativeLib.logCounter("task_memory_comet", cometTaskMemory)
-      nativeLib.logCounter("task_memory_spark", sparkTaskMemory)
+      traceMemoryUsage()
     }
 
     withTrace(
@@ -217,6 +209,10 @@ class CometExecIterator(
       nativeUtil.close()
       nativeLib.releasePlan(plan)
 
+      if (tracingEnabled) {
+        traceMemoryUsage()
+      }
+
       // The allocator thoughts the exported ArrowArray and ArrowSchema structs are not released,
       // so it will report:
       // Caused by: java.lang.IllegalStateException: Memory was leaked by query.
@@ -238,5 +234,16 @@ class CometExecIterator(
       // allocator.close()
       closed = true
     }
+  }
+
+  private def traceMemoryUsage(): Unit = {
+    nativeLib.logCounter("jvm_heapUsed", memoryMXBean.getHeapMemoryUsage.getUsed)
+
+    val totalTaskMemory = cometTaskMemoryManager.internal.getMemoryConsumptionForThisTask
+    val cometTaskMemory = cometTaskMemoryManager.getUsed
+    val sparkTaskMemory = totalTaskMemory - cometTaskMemory
+
+    nativeLib.logCounter("task_memory_comet", cometTaskMemory)
+    nativeLib.logCounter("task_memory_spark", sparkTaskMemory)
   }
 }
