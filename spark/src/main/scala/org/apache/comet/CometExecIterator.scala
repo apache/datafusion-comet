@@ -28,6 +28,7 @@ import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
 
 import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_POOL_TYPE, COMET_EXPLAIN_NATIVE_ENABLED, COMET_METRICS_UPDATE_INTERVAL}
+import org.apache.comet.Tracing.withTrace
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -134,33 +135,35 @@ class CometExecIterator(
   def getNextBatch(): Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
 
-    // TODO introduce withTracing method to avoid the try/finish pattern here
-    try {
-      if (tracingEnabled) {
-        nativeLib.traceBegin("CometExecIterator_getNextBatch")
-        val memoryMXBean = ManagementFactory.getMemoryMXBean
-        val heap = memoryMXBean.getHeapMemoryUsage
-        nativeLib.logCounter("jvm_heapUsed", heap.getUsed)
-      }
+    if (tracingEnabled) {
+      val memoryMXBean = ManagementFactory.getMemoryMXBean
+      val heap = memoryMXBean.getHeapMemoryUsage
+      nativeLib.logCounter("jvm_heapUsed", heap.getUsed)
 
-      nativeUtil.getNextBatch(
-        numOutputCols,
-        (arrayAddrs, schemaAddrs) => {
-          val ctx = TaskContext.get()
-          nativeLib.executePlan(
-            ctx.stageId(),
-            partitionIndex,
-            plan,
-            arrayAddrs,
-            schemaAddrs,
-            tracingEnabled)
-        })
-    } finally {
-      if (tracingEnabled) {
-        nativeLib.traceEnd("CometExecIterator_getNextBatch")
-        nativeLib.logCounter("CometTaskMemoryManager", cometTaskMemoryManager.getUsed)
-      }
+      val totalTaskMemory = cometTaskMemoryManager.internal.getMemoryConsumptionForThisTask
+      val cometTaskMemory = cometTaskMemoryManager.getUsed
+      val sparkTaskMemory = totalTaskMemory - cometTaskMemory
+
+      nativeLib.logCounter("task_memory_comet", cometTaskMemory)
+      nativeLib.logCounter("task_memory_spark", sparkTaskMemory)
     }
+
+    withTrace(
+      "getNextBatch[JVM]",
+      tracingEnabled, {
+        nativeUtil.getNextBatch(
+          numOutputCols,
+          (arrayAddrs, schemaAddrs) => {
+            val ctx = TaskContext.get()
+            nativeLib.executePlan(
+              ctx.stageId(),
+              partitionIndex,
+              plan,
+              arrayAddrs,
+              schemaAddrs,
+              tracingEnabled)
+          })
+      })
   }
 
   override def hasNext: Boolean = {
