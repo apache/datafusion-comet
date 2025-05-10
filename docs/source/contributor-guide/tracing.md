@@ -19,17 +19,19 @@ under the License.
 
 # Tracing
 
-Tracing can be enabled by setting `spark.comet.tracing.enabled=true`. Additionally, enabling the `jemalloc` 
-feature will enable tracing of native memory allocations.
+Tracing can be enabled by setting `spark.comet.tracing.enabled=true`. 
+
+With this feature enabled, each Spark executor will write a JSON event log file in
+Chrome's [Trace Event Format]. The file will be written to the executor's current working 
+directory with the filename `comet-event-trace.json`.
+
+[Trace Event Format]: https://docs.google.com/document/d/1CvAClvFfyA5R-PhYUmn5OOQtYMH4h6I0nSsKchNAySU/preview?tab=t.0#heading=h.yr4qxyxotyw
+
+Additionally, enabling the `jemalloc` feature will enable tracing of native memory allocations.
 
 ```shell
 make release COMET_FEATURES="jemalloc"
 ```
-
-With this feature enabled, each Spark executor will write a JSON event log file in 
-Chrome's [Trace Event Format].
-
-[Trace Event Format]: https://docs.google.com/document/d/1CvAClvFfyA5R-PhYUmn5OOQtYMH4h6I0nSsKchNAySU/preview?tab=t.0#heading=h.yr4qxyxotyw
 
 Example output:
 
@@ -50,3 +52,13 @@ Traces can be viewed with [Trace Viewer].
 Example trace visualization:
 
 ![tracing](../_static/images/tracing.png)
+
+## Definition of Labels
+
+| Label               | Meaning                                                 |
+|---------------------|---------------------------------------------------------|
+| jvm_heapUsed        | JVM heap memory usage of live objects                   |
+| task_memory_comet   | Off-heap memory allocated by Comet for query execution  |
+| task_memory_spark   | On-heap & Off-heap memory allocated by Spark            |
+| offheap_shuffle_NNN | Off-heap memory allocated by Comet for columnar shuffle |
+

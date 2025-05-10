@@ -216,9 +216,6 @@ class CometExecIterator(
       }
       nativeUtil.close()
       nativeLib.releasePlan(plan)
-      if (tracingEnabled) {
-        nativeLib.logCounter("CometTaskMemoryManager", cometTaskMemoryManager.getUsed)
-      }
 
       // The allocator thoughts the exported ArrowArray and ArrowSchema structs are not released,
       // so it will report:
