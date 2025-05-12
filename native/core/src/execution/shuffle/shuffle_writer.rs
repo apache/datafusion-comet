@@ -18,7 +18,7 @@
 //! Defines the External shuffle repartition plan.
 
 use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
-use crate::execution::tracing::{trace_begin, trace_end, with_trace, with_trace_async};
+use crate::execution::tracing::{with_trace, with_trace_async};
 use arrow::compute::interleave_record_batch;
 use async_trait::async_trait;
 use datafusion::common::utils::proxy::VecAllocExt;
@@ -252,10 +252,6 @@ async fn external_shuffle(
         }
 
         repartitioner.shuffle_write().await?;
-
-        if tracing_enabled {
-            trace_end("external_shuffle");
-        }
 
         // shuffle writer always has empty output
         Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))) as SendableRecordBatchStream)
@@ -630,31 +626,24 @@ impl MultiPartitionShuffleRepartitioner {
             return Ok(());
         }
 
-        if self.tracing_enabled {
-            trace_begin("shuffle_spill");
-        }
+        with_trace("shuffle_spill", self.tracing_enabled, || {
+            let num_output_partitions = self.partition_writers.len();
+            let mut partitioned_batches = self.partitioned_batches();
+            let mut spilled_bytes = 0;
 
-        let num_output_partitions = self.partition_writers.len();
-        let mut partitioned_batches = self.partitioned_batches();
-        let mut spilled_bytes = 0;
+            for partition_id in 0..num_output_partitions {
+                let partition_writer = &mut self.partition_writers[partition_id];
+                let mut iter = partitioned_batches.produce(partition_id);
+                spilled_bytes += partition_writer.spill(&mut iter, &self.runtime, &self.metrics)?;
+            }
 
-        for partition_id in 0..num_output_partitions {
-            let partition_writer = &mut self.partition_writers[partition_id];
-            let mut iter = partitioned_batches.produce(partition_id);
-            spilled_bytes += partition_writer.spill(&mut iter, &self.runtime, &self.metrics)?;
-        }
-
-        let mut timer = self.metrics.mempool_time.timer();
-        self.reservation.free();
-        timer.stop();
-        self.metrics.spill_count.add(1);
-        self.metrics.spilled_bytes.add(spilled_bytes);
-
-        if self.tracing_enabled {
-            trace_end("shuffle_spill");
-        }
-
-        Ok(())
+            let mut timer = self.metrics.mempool_time.timer();
+            self.reservation.free();
+            timer.stop();
+            self.metrics.spill_count.add(1);
+            self.metrics.spilled_bytes.add(spilled_bytes);
+            Ok(())
+        })
     }
 }
 
@@ -664,29 +653,23 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
     /// This function will slice input batch according to configured batch size and then
     /// shuffle rows into corresponding partition buffer.
     async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()> {
-        if self.tracing_enabled {
-            trace_begin("shuffle_insert_batch");
-        }
-
-        let start_time = Instant::now();
-        let mut start = 0;
-        while start < batch.num_rows() {
-            let end = (start + self.batch_size).min(batch.num_rows());
-            let batch = batch.slice(start, end - start);
-            self.partitioning_batch(batch).await?;
-            start = end;
-        }
-        self.metrics.input_batches.add(1);
-        self.metrics
-            .baseline
-            .elapsed_compute()
-            .add_duration(start_time.elapsed());
-
-        if self.tracing_enabled {
-            trace_end("shuffle_insert_batch");
-        }
-
-        Ok(())
+        with_trace_async("shuffle_insert_batch", self.tracing_enabled, || async {
+            let start_time = Instant::now();
+            let mut start = 0;
+            while start < batch.num_rows() {
+                let end = (start + self.batch_size).min(batch.num_rows());
+                let batch = batch.slice(start, end - start);
+                self.partitioning_batch(batch).await?;
+                start = end;
+            }
+            self.metrics.input_batches.add(1);
+            self.metrics
+                .baseline
+                .elapsed_compute()
+                .add_duration(start_time.elapsed());
+            Ok(())
+        })
+        .await
     }
 
     /// Writes buffered shuffled record batches into Arrow IPC bytes.
