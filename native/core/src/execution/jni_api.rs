@@ -67,7 +67,6 @@ use crate::execution::operators::ScanExec;
 use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 
-use crate::execution::tracing::TraceGuard;
 use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end};
 
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
@@ -163,7 +162,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     tracing_enabled: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
-        let _ = TraceGuard::new("createPlan", tracing_enabled != JNI_FALSE);
+        if tracing_enabled != JNI_FALSE {
+            trace_begin("createPlan");
+        }
 
         // Init JVM classes
         JVMClasses::init(&mut env);
@@ -245,6 +246,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             memory_pool_config,
             tracing_enabled: tracing_enabled != JNI_FALSE,
         });
+
+        if tracing_enabled != JNI_FALSE {
+            trace_end("createPlan");
+        }
 
         Ok(Box::into_raw(exec_context) as i64)
     })
@@ -377,9 +382,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             _ => "executePlan",
         };
 
-        let _ = TraceGuard::new(tracing_event_name, exec_context.tracing_enabled);
-
         if exec_context.tracing_enabled {
+            trace_begin(tracing_event_name);
+
             #[cfg(feature = "jemalloc")]
             {
                 let e = epoch::mib().unwrap();
@@ -446,13 +451,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             match poll_output {
                 Poll::Ready(Some(output)) => {
                     // prepare output for FFI transfer
-                    return prepare_output(
+                    let addr = prepare_output(
                         &mut env,
                         array_addrs,
                         schema_addrs,
                         output?,
                         exec_context.debug_native,
                     );
+                    if exec_context.tracing_enabled {
+                        trace_end(tracing_event_name);
+                    }
+                    return addr;
                 }
                 Poll::Ready(None) => {
                     // Reaches EOF of output.
@@ -468,6 +477,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                                 plan.plan_id, stage_id, partition, exec_context.plan_creation_time
                             );
                         }
+                    }
+                    if exec_context.tracing_enabled {
+                        trace_end(tracing_event_name);
                     }
                     return Ok(-1);
                 }
@@ -570,7 +582,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
     tracing_enabled: jboolean,
 ) -> jlongArray {
     try_unwrap_or_throw(&e, |mut env| unsafe {
-        let _ = TraceGuard::new("writeSortedFileNative", tracing_enabled != JNI_FALSE);
+        if tracing_enabled != JNI_FALSE {
+            trace_begin("writeSortedFileNative");
+        }
 
         let data_types = convert_datatype_arrays(&mut env, serialized_datatypes)?;
 
@@ -634,6 +648,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
         let long_array = env.new_long_array(2)?;
         env.set_long_array_region(&long_array, 0, &[written_bytes, checksum])?;
 
+        if tracing_enabled != JNI_FALSE {
+            trace_end("writeSortedFileNative");
+        }
+
         Ok(long_array.into_raw())
     })
 }
@@ -648,10 +666,15 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
     tracing_enabled: jboolean,
 ) {
     try_unwrap_or_throw(&e, |_| {
-        let _ = TraceGuard::new("sortRowPartitionsNative", tracing_enabled != JNI_FALSE);
+        if tracing_enabled != JNI_FALSE {
+            trace_begin("sortRowPartitionsNative");
+        }
         // SAFETY: JVM unsafe memory allocation is aligned with long.
         let array = unsafe { std::slice::from_raw_parts_mut(address as *mut i64, size as usize) };
         array.rdxsort();
+        if tracing_enabled != JNI_FALSE {
+            trace_end("sortRowPartitionsNative");
+        }
         Ok(())
     })
 }
@@ -670,12 +693,18 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
     tracing_enabled: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
-        let _ = TraceGuard::new("decodeShuffleBlock", tracing_enabled != JNI_FALSE);
+        if tracing_enabled != JNI_FALSE {
+            trace_begin("decodeShuffleBlock");
+        }
         let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
         let length = length as usize;
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
         let batch = read_ipc_compressed(slice)?;
-        prepare_output(&mut env, array_addrs, schema_addrs, batch, false)
+        let addr = prepare_output(&mut env, array_addrs, schema_addrs, batch, false);
+        if tracing_enabled != JNI_FALSE {
+            trace_end("decodeShuffleBlock");
+        }
+        addr
     })
 }
 

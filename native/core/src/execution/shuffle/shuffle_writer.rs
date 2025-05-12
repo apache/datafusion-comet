@@ -18,7 +18,7 @@
 //! Defines the External shuffle repartition plan.
 
 use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
-use crate::execution::tracing::TraceGuard;
+use crate::execution::tracing::{trace_begin, trace_end};
 use arrow::compute::interleave_record_batch;
 use async_trait::async_trait;
 use datafusion::common::utils::proxy::VecAllocExt;
@@ -215,7 +215,9 @@ async fn external_shuffle(
     codec: CompressionCodec,
     tracing_enabled: bool,
 ) -> Result<SendableRecordBatchStream> {
-    let _ = TraceGuard::new("external_shuffle", tracing_enabled);
+    if tracing_enabled {
+        trace_begin("external_shuffle");
+    }
 
     let schema = input.schema();
 
@@ -251,6 +253,10 @@ async fn external_shuffle(
     }
 
     repartitioner.shuffle_write().await?;
+
+    if tracing_enabled {
+        trace_end("external_shuffle");
+    }
 
     // shuffle writer always has empty output
     Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))))
@@ -612,8 +618,6 @@ impl MultiPartitionShuffleRepartitioner {
     }
 
     async fn spill(&mut self) -> Result<()> {
-        let _ = TraceGuard::new("spill", self.tracing_enabled);
-
         log::debug!(
             "ShuffleRepartitioner spilling shuffle data of {} to disk while inserting ({} time(s) so far)",
             self.used(),
@@ -623,6 +627,10 @@ impl MultiPartitionShuffleRepartitioner {
         // we could always get a chance to free some memory as long as we are holding some
         if self.buffered_batches.is_empty() {
             return Ok(());
+        }
+
+        if self.tracing_enabled {
+            trace_begin("shuffle_spill");
         }
 
         let num_output_partitions = self.partition_writers.len();
@@ -640,6 +648,11 @@ impl MultiPartitionShuffleRepartitioner {
         timer.stop();
         self.metrics.spill_count.add(1);
         self.metrics.spilled_bytes.add(spilled_bytes);
+
+        if self.tracing_enabled {
+            trace_end("shuffle_spill");
+        }
+
         Ok(())
     }
 }
@@ -650,7 +663,10 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
     /// This function will slice input batch according to configured batch size and then
     /// shuffle rows into corresponding partition buffer.
     async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()> {
-        let _ = TraceGuard::new("insert_batch", self.tracing_enabled);
+        if self.tracing_enabled {
+            trace_begin("shuffle_insert_batch");
+        }
+
         let start_time = Instant::now();
         let mut start = 0;
         while start < batch.num_rows() {
@@ -664,12 +680,19 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
             .baseline
             .elapsed_compute()
             .add_duration(start_time.elapsed());
+
+        if self.tracing_enabled {
+            trace_end("shuffle_insert_batch");
+        }
+
         Ok(())
     }
 
     /// Writes buffered shuffled record batches into Arrow IPC bytes.
     async fn shuffle_write(&mut self) -> Result<()> {
-        let _ = TraceGuard::new("shuffle_write", self.tracing_enabled);
+        if self.tracing_enabled {
+            trace_begin("shuffle_write");
+        }
 
         let start_time = Instant::now();
 
@@ -738,6 +761,10 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
             .baseline
             .elapsed_compute()
             .add_duration(start_time.elapsed());
+
+        if self.tracing_enabled {
+            trace_end("shuffle_write");
+        }
 
         Ok(())
     }

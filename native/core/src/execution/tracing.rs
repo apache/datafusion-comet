@@ -105,27 +105,3 @@ pub(crate) fn trace_end(name: &str) {
 pub(crate) fn log_memory_usage(name: &str, value: u64) {
     RECORDER.log_memory_usage(name, value);
 }
-pub(crate) struct TraceGuard<'a> {
-    label: &'a str,
-    tracing_enabled: bool,
-}
-
-impl<'a> TraceGuard<'a> {
-    pub fn new(label: &'a str, tracing_enabled: bool) -> Self {
-        if tracing_enabled {
-            trace_begin(label);
-        }
-        Self {
-            label,
-            tracing_enabled,
-        }
-    }
-}
-
-impl Drop for TraceGuard<'_> {
-    fn drop(&mut self) {
-        if self.tracing_enabled {
-            trace_end(self.label);
-        }
-    }
-}
