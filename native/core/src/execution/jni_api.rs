@@ -74,6 +74,7 @@ use log::info;
 use once_cell::sync::Lazy;
 #[cfg(feature = "jemalloc")]
 use tikv_jemalloc_ctl::{epoch, stats};
+use datafusion_comet_proto::spark_operator::operator::OpStruct;
 
 static TOKIO_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
@@ -371,7 +372,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         // Retrieve the query
         let exec_context = get_execution_context(exec_context);
 
-        let _ = TraceGuard::new("executePlan", exec_context.tracing_enabled);
+        let tracing_event_name = match &exec_context.spark_plan.op_struct {
+            Some(OpStruct::ShuffleWriter(_)) => "executePlan(ShuffleWriter)",
+            _ => "executePlan"
+        };
+
+        let _ = TraceGuard::new(tracing_event_name, exec_context.tracing_enabled);
 
         if exec_context.tracing_enabled {
             #[cfg(feature = "jemalloc")]

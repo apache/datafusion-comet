@@ -60,7 +60,7 @@ impl Recorder {
         let json = format!(
             "{{ \"name\": \"{name}\", \"cat\": \"PERF\", \"ph\": \"C\", \"pid\": 1, \"tid\": {}, \"ts\": {}, \"args\": {{ \"{name}\": {value} }} }},\n",
             Self::get_thread_id(),
-            self.now.elapsed().as_nanos()
+            self.now.elapsed().as_micros()
         );
         let mut writer = self.writer.lock().unwrap();
         writer.write_all(json.as_bytes()).unwrap();
@@ -71,7 +71,7 @@ impl Recorder {
             "{{ \"name\": \"{}\", \"cat\": \"PERF\", \"ph\": \"{ph}\", \"pid\": 1, \"tid\": {}, \"ts\": {} }},\n",
             name,
             Self::get_thread_id(),
-            self.now.elapsed().as_nanos()
+            self.now.elapsed().as_micros()
         );
         let mut writer = self.writer.lock().unwrap();
         writer.write_all(json.as_bytes()).unwrap();
