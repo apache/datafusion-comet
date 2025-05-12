@@ -234,7 +234,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
 
       Native _native = new Native();
       if (tracingEnabled) {
-        _native.logCounter("BypassMergeShortShuffle", allocator.getUsed());
+        _native.logCounter("comet_shuffle_", allocator.getUsed());
       }
 
       long spillRecords = 0;
@@ -247,7 +247,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
       }
 
       if (tracingEnabled) {
-        _native.logCounter("BypassMergeShortShuffle", allocator.getUsed());
+        _native.logCounter("comet_shuffle_", allocator.getUsed());
       }
 
       if (outputRows != spillRecords) {

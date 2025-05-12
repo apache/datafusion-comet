@@ -366,13 +366,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     exec_context: jlong,
     array_addrs: jlongArray,
     schema_addrs: jlongArray,
-    tracing_enabled: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
-        let _ = TraceGuard::new("executePlan", tracing_enabled != JNI_FALSE);
-
         // Retrieve the query
         let exec_context = get_execution_context(exec_context);
+
+        let _ = TraceGuard::new("executePlan", exec_context.tracing_enabled);
 
         if exec_context.tracing_enabled {
             #[cfg(feature = "jemalloc")]

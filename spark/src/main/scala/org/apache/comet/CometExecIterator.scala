@@ -140,20 +140,14 @@ class CometExecIterator(
       traceMemoryUsage()
     }
 
+    val ctx = TaskContext.get()
     withTrace(
-      "getNextBatch[JVM]",
+      s"getNextBatch[JVM] stage=${ctx.stageId()}",
       tracingEnabled, {
         nativeUtil.getNextBatch(
           numOutputCols,
           (arrayAddrs, schemaAddrs) => {
-            val ctx = TaskContext.get()
-            nativeLib.executePlan(
-              ctx.stageId(),
-              partitionIndex,
-              plan,
-              arrayAddrs,
-              schemaAddrs,
-              tracingEnabled)
+            nativeLib.executePlan(ctx.stageId(), partitionIndex, plan, arrayAddrs, schemaAddrs)
           })
       })
   }
