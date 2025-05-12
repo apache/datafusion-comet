@@ -68,13 +68,13 @@ use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 
 use crate::execution::tracing::TraceGuard;
-use crate::execution::tracing::{log_counter, trace_begin, trace_end};
+use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end};
 
+use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::info;
 use once_cell::sync::Lazy;
 #[cfg(feature = "jemalloc")]
 use tikv_jemalloc_ctl::{epoch, stats};
-use datafusion_comet_proto::spark_operator::operator::OpStruct;
 
 static TOKIO_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
@@ -374,7 +374,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 
         let tracing_event_name = match &exec_context.spark_plan.op_struct {
             Some(OpStruct::ShuffleWriter(_)) => "executePlan(ShuffleWriter)",
-            _ => "executePlan"
+            _ => "executePlan",
         };
 
         let _ = TraceGuard::new(tracing_event_name, exec_context.tracing_enabled);
@@ -385,8 +385,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 let e = epoch::mib().unwrap();
                 let allocated = stats::allocated::mib().unwrap();
                 e.advance().unwrap();
-                use crate::execution::tracing::log_counter;
-                log_counter("jemalloc_allocated", allocated.read().unwrap() as u64);
+                use crate::execution::tracing::log_memory_usage;
+                log_memory_usage("jemalloc_allocated", allocated.read().unwrap() as u64);
             }
         }
 
@@ -712,7 +712,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
 #[no_mangle]
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
-pub unsafe extern "system" fn Java_org_apache_comet_Native_logCounter(
+pub unsafe extern "system" fn Java_org_apache_comet_Native_logMemoryUsage(
     e: JNIEnv,
     _class: JClass,
     name: jstring,
@@ -720,7 +720,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_logCounter(
 ) {
     try_unwrap_or_throw(&e, |mut env| {
         let name: String = env.get_string(&JString::from_raw(name)).unwrap().into();
-        log_counter(&name, value as u64);
+        log_memory_usage(&name, value as u64);
         Ok(())
     })
 }

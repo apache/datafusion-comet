@@ -36,13 +36,15 @@ impl Recorder {
             .create(true)
             .append(true)
             .open("comet-event-trace.json")
-            .unwrap();
+            .expect("Error writing tracing");
 
         let mut writer = BufWriter::new(file);
 
         // Write start of JSON array. Note that there is no requirement to write
         // the closing ']'.
-        writer.write_all("[ ".as_bytes()).unwrap();
+        writer
+            .write_all("[ ".as_bytes())
+            .expect("Error writing tracing");
         Self {
             now: Instant::now(),
             writer: Arc::new(Mutex::new(writer)),
@@ -56,14 +58,17 @@ impl Recorder {
         self.log_event(name, "E")
     }
 
-    pub fn log_counter(&self, name: &str, value: u64) {
+    pub fn log_memory_usage(&self, name: &str, usage_bytes: u64) {
+        let usage_mb = (usage_bytes as f64 / 1024.0 / 1024.0) as usize;
         let json = format!(
-            "{{ \"name\": \"{name}\", \"cat\": \"PERF\", \"ph\": \"C\", \"pid\": 1, \"tid\": {}, \"ts\": {}, \"args\": {{ \"{name}\": {value} }} }},\n",
+            "{{ \"name\": \"{name}\", \"cat\": \"PERF\", \"ph\": \"C\", \"pid\": 1, \"tid\": {}, \"ts\": {}, \"args\": {{ \"{name}\": {usage_mb} }} }},\n",
             Self::get_thread_id(),
             self.now.elapsed().as_micros()
         );
         let mut writer = self.writer.lock().unwrap();
-        writer.write_all(json.as_bytes()).unwrap();
+        writer
+            .write_all(json.as_bytes())
+            .expect("Error writing tracing");
     }
 
     fn log_event(&self, name: &str, ph: &str) {
@@ -74,7 +79,9 @@ impl Recorder {
             self.now.elapsed().as_micros()
         );
         let mut writer = self.writer.lock().unwrap();
-        writer.write_all(json.as_bytes()).unwrap();
+        writer
+            .write_all(json.as_bytes())
+            .expect("Error writing tracing");
     }
 
     fn get_thread_id() -> u64 {
@@ -83,7 +90,7 @@ impl Recorder {
             .trim_start_matches("ThreadId(")
             .trim_end_matches(")")
             .parse()
-            .unwrap()
+            .expect("Error parsing thread id")
     }
 }
 
@@ -95,8 +102,8 @@ pub(crate) fn trace_end(name: &str) {
     RECORDER.end_task(name);
 }
 
-pub(crate) fn log_counter(name: &str, value: u64) {
-    RECORDER.log_counter(name, value);
+pub(crate) fn log_memory_usage(name: &str, value: u64) {
+    RECORDER.log_memory_usage(name, value);
 }
 pub(crate) struct TraceGuard<'a> {
     label: &'a str,
