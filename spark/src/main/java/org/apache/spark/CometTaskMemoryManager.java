@@ -55,6 +55,10 @@ public class CometTaskMemoryManager {
   public long acquireMemory(long size) {
     long acquired = internal.acquireExecutionMemory(size, nativeMemoryConsumer);
     used.addAndGet(acquired);
+    if (acquired < size) {
+      // If memory manager is not able to acquire the requested size, log memory usage
+      internal.showMemoryUsage();
+    }
     return acquired;
   }
 

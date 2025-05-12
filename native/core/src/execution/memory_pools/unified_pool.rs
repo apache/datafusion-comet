@@ -89,10 +89,8 @@ unsafe impl Send for CometMemoryPool {}
 unsafe impl Sync for CometMemoryPool {}
 
 impl MemoryPool for CometMemoryPool {
-    fn grow(&self, _: &MemoryReservation, additional: usize) {
-        self.acquire(additional)
-            .unwrap_or_else(|_| panic!("Failed to acquire {} bytes", additional));
-        self.used.fetch_add(additional, Relaxed);
+    fn grow(&self, reservation: &MemoryReservation, additional: usize) {
+        self.try_grow(reservation, additional).unwrap();
     }
 
     fn shrink(&self, _: &MemoryReservation, size: usize) {
