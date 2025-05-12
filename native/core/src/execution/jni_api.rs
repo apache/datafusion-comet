@@ -570,77 +570,76 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
     tracing_enabled: jboolean,
 ) -> jlongArray {
     try_unwrap_or_throw(&e, |mut env| unsafe {
-        if tracing_enabled != JNI_FALSE {
-            trace_begin("writeSortedFileNative");
-        }
+        with_trace(
+            "writeSortedFileNative",
+            tracing_enabled != JNI_FALSE,
+            || {
+                let data_types = convert_datatype_arrays(&mut env, serialized_datatypes)?;
 
-        let data_types = convert_datatype_arrays(&mut env, serialized_datatypes)?;
+                let row_address_array = JLongArray::from_raw(row_addresses);
+                let row_num = env.get_array_length(&row_address_array)? as usize;
+                let row_addresses =
+                    env.get_array_elements(&row_address_array, ReleaseMode::NoCopyBack)?;
 
-        let row_address_array = JLongArray::from_raw(row_addresses);
-        let row_num = env.get_array_length(&row_address_array)? as usize;
-        let row_addresses = env.get_array_elements(&row_address_array, ReleaseMode::NoCopyBack)?;
+                let row_size_array = JIntArray::from_raw(row_sizes);
+                let row_sizes = env.get_array_elements(&row_size_array, ReleaseMode::NoCopyBack)?;
 
-        let row_size_array = JIntArray::from_raw(row_sizes);
-        let row_sizes = env.get_array_elements(&row_size_array, ReleaseMode::NoCopyBack)?;
+                let row_addresses_ptr = row_addresses.as_ptr();
+                let row_sizes_ptr = row_sizes.as_ptr();
 
-        let row_addresses_ptr = row_addresses.as_ptr();
-        let row_sizes_ptr = row_sizes.as_ptr();
+                let output_path: String = env
+                    .get_string(&JString::from_raw(file_path))
+                    .unwrap()
+                    .into();
 
-        let output_path: String = env
-            .get_string(&JString::from_raw(file_path))
-            .unwrap()
-            .into();
+                let checksum_enabled = checksum_enabled == 1;
+                let current_checksum = if current_checksum == i64::MIN {
+                    // Initial checksum is not available.
+                    None
+                } else {
+                    Some(current_checksum as u32)
+                };
 
-        let checksum_enabled = checksum_enabled == 1;
-        let current_checksum = if current_checksum == i64::MIN {
-            // Initial checksum is not available.
-            None
-        } else {
-            Some(current_checksum as u32)
-        };
+                let compression_codec: String = env
+                    .get_string(&JString::from_raw(compression_codec))
+                    .unwrap()
+                    .into();
 
-        let compression_codec: String = env
-            .get_string(&JString::from_raw(compression_codec))
-            .unwrap()
-            .into();
+                let compression_codec = match compression_codec.as_str() {
+                    "zstd" => CompressionCodec::Zstd(compression_level),
+                    "lz4" => CompressionCodec::Lz4Frame,
+                    "snappy" => CompressionCodec::Snappy,
+                    _ => CompressionCodec::Lz4Frame,
+                };
 
-        let compression_codec = match compression_codec.as_str() {
-            "zstd" => CompressionCodec::Zstd(compression_level),
-            "lz4" => CompressionCodec::Lz4Frame,
-            "snappy" => CompressionCodec::Snappy,
-            _ => CompressionCodec::Lz4Frame,
-        };
+                let (written_bytes, checksum) = process_sorted_row_partition(
+                    row_num,
+                    batch_size as usize,
+                    row_addresses_ptr,
+                    row_sizes_ptr,
+                    &data_types,
+                    output_path,
+                    prefer_dictionary_ratio,
+                    checksum_enabled,
+                    checksum_algo,
+                    current_checksum,
+                    &compression_codec,
+                )?;
 
-        let (written_bytes, checksum) = process_sorted_row_partition(
-            row_num,
-            batch_size as usize,
-            row_addresses_ptr,
-            row_sizes_ptr,
-            &data_types,
-            output_path,
-            prefer_dictionary_ratio,
-            checksum_enabled,
-            checksum_algo,
-            current_checksum,
-            &compression_codec,
-        )?;
+                let checksum = if let Some(checksum) = checksum {
+                    checksum as i64
+                } else {
+                    // Spark checksums (CRC32 or Adler32) are both u32, so we use i64::MIN to indicate
+                    // checksum is not available.
+                    i64::MIN
+                };
 
-        let checksum = if let Some(checksum) = checksum {
-            checksum as i64
-        } else {
-            // Spark checksums (CRC32 or Adler32) are both u32, so we use i64::MIN to indicate
-            // checksum is not available.
-            i64::MIN
-        };
+                let long_array = env.new_long_array(2)?;
+                env.set_long_array_region(&long_array, 0, &[written_bytes, checksum])?;
 
-        let long_array = env.new_long_array(2)?;
-        env.set_long_array_region(&long_array, 0, &[written_bytes, checksum])?;
-
-        if tracing_enabled != JNI_FALSE {
-            trace_end("writeSortedFileNative");
-        }
-
-        Ok(long_array.into_raw())
+                Ok(long_array.into_raw())
+            },
+        )
     })
 }
 
@@ -654,16 +653,17 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
     tracing_enabled: jboolean,
 ) {
     try_unwrap_or_throw(&e, |_| {
-        if tracing_enabled != JNI_FALSE {
-            trace_begin("sortRowPartitionsNative");
-        }
-        // SAFETY: JVM unsafe memory allocation is aligned with long.
-        let array = unsafe { std::slice::from_raw_parts_mut(address as *mut i64, size as usize) };
-        array.rdxsort();
-        if tracing_enabled != JNI_FALSE {
-            trace_end("sortRowPartitionsNative");
-        }
-        Ok(())
+        with_trace(
+            "sortRowPartitionsNative",
+            tracing_enabled != JNI_FALSE,
+            || {
+                // SAFETY: JVM unsafe memory allocation is aligned with long.
+                let array =
+                    unsafe { std::slice::from_raw_parts_mut(address as *mut i64, size as usize) };
+                array.rdxsort();
+                Ok(())
+            },
+        )
     })
 }
 
@@ -681,18 +681,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
     tracing_enabled: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
-        if tracing_enabled != JNI_FALSE {
-            trace_begin("decodeShuffleBlock");
-        }
-        let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
-        let length = length as usize;
-        let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
-        let batch = read_ipc_compressed(slice)?;
-        let addr = prepare_output(&mut env, array_addrs, schema_addrs, batch, false);
-        if tracing_enabled != JNI_FALSE {
-            trace_end("decodeShuffleBlock");
-        }
-        addr
+        with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
+            let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
+            let length = length as usize;
+            let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
+            let batch = read_ipc_compressed(slice)?;
+            prepare_output(&mut env, array_addrs, schema_addrs, batch, false)
+        })
     })
 }
 
