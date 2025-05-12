@@ -67,7 +67,7 @@ use crate::execution::operators::ScanExec;
 use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 
-use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end};
+use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end, with_trace};
 
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::info;
@@ -162,96 +162,90 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     tracing_enabled: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
-        if tracing_enabled != JNI_FALSE {
-            trace_begin("createPlan");
-        }
+        with_trace("createPlan", tracing_enabled != JNI_FALSE, || {
+            // Init JVM classes
+            JVMClasses::init(&mut env);
 
-        // Init JVM classes
-        JVMClasses::init(&mut env);
+            let start = Instant::now();
 
-        let start = Instant::now();
+            let array = unsafe { JPrimitiveArray::from_raw(serialized_query) };
+            let bytes = env.convert_byte_array(array)?;
 
-        let array = unsafe { JPrimitiveArray::from_raw(serialized_query) };
-        let bytes = env.convert_byte_array(array)?;
+            // Deserialize query plan
+            let spark_plan = serde::deserialize_op(bytes.as_slice())?;
 
-        // Deserialize query plan
-        let spark_plan = serde::deserialize_op(bytes.as_slice())?;
+            let metrics = Arc::new(jni_new_global_ref!(env, metrics_node)?);
 
-        let metrics = Arc::new(jni_new_global_ref!(env, metrics_node)?);
+            // Get the global references of input sources
+            let mut input_sources = vec![];
+            let iter_array = JObjectArray::from_raw(iterators);
+            let num_inputs = env.get_array_length(&iter_array)?;
+            for i in 0..num_inputs {
+                let input_source = env.get_object_array_element(&iter_array, i)?;
+                let input_source = Arc::new(jni_new_global_ref!(env, input_source)?);
+                input_sources.push(input_source);
+            }
 
-        // Get the global references of input sources
-        let mut input_sources = vec![];
-        let iter_array = JObjectArray::from_raw(iterators);
-        let num_inputs = env.get_array_length(&iter_array)?;
-        for i in 0..num_inputs {
-            let input_source = env.get_object_array_element(&iter_array, i)?;
-            let input_source = Arc::new(jni_new_global_ref!(env, input_source)?);
-            input_sources.push(input_source);
-        }
+            // Create DataFusion memory pool
+            let task_memory_manager =
+                Arc::new(jni_new_global_ref!(env, comet_task_memory_manager_obj)?);
 
-        // Create DataFusion memory pool
-        let task_memory_manager =
-            Arc::new(jni_new_global_ref!(env, comet_task_memory_manager_obj)?);
+            let memory_pool_type = env.get_string(&JString::from_raw(memory_pool_type))?.into();
+            let memory_pool_config = parse_memory_pool_config(
+                off_heap_mode != JNI_FALSE,
+                memory_pool_type,
+                memory_limit,
+                memory_limit_per_task,
+            )?;
+            let memory_pool =
+                create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
 
-        let memory_pool_type = env.get_string(&JString::from_raw(memory_pool_type))?.into();
-        let memory_pool_config = parse_memory_pool_config(
-            off_heap_mode != JNI_FALSE,
-            memory_pool_type,
-            memory_limit,
-            memory_limit_per_task,
-        )?;
-        let memory_pool =
-            create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
+            // Get local directories for storing spill files
+            let local_dirs_array = JObjectArray::from_raw(local_dirs);
+            let num_local_dirs = env.get_array_length(&local_dirs_array)?;
+            let mut local_dirs = vec![];
+            for i in 0..num_local_dirs {
+                let local_dir: JString = env.get_object_array_element(&local_dirs_array, i)?.into();
+                let local_dir = env.get_string(&local_dir)?;
+                local_dirs.push(local_dir.into());
+            }
 
-        // Get local directories for storing spill files
-        let local_dirs_array = JObjectArray::from_raw(local_dirs);
-        let num_local_dirs = env.get_array_length(&local_dirs_array)?;
-        let mut local_dirs = vec![];
-        for i in 0..num_local_dirs {
-            let local_dir: JString = env.get_object_array_element(&local_dirs_array, i)?.into();
-            let local_dir = env.get_string(&local_dir)?;
-            local_dirs.push(local_dir.into());
-        }
+            // We need to keep the session context alive. Some session state like temporary
+            // dictionaries are stored in session context. If it is dropped, the temporary
+            // dictionaries will be dropped as well.
+            let session =
+                prepare_datafusion_session_context(batch_size as usize, memory_pool, local_dirs)?;
 
-        // We need to keep the session context alive. Some session state like temporary
-        // dictionaries are stored in session context. If it is dropped, the temporary
-        // dictionaries will be dropped as well.
-        let session =
-            prepare_datafusion_session_context(batch_size as usize, memory_pool, local_dirs)?;
+            let plan_creation_time = start.elapsed();
 
-        let plan_creation_time = start.elapsed();
+            let metrics_update_interval = if metrics_update_interval > 0 {
+                Some(Duration::from_millis(metrics_update_interval as u64))
+            } else {
+                None
+            };
 
-        let metrics_update_interval = if metrics_update_interval > 0 {
-            Some(Duration::from_millis(metrics_update_interval as u64))
-        } else {
-            None
-        };
+            let exec_context = Box::new(ExecutionContext {
+                id,
+                task_attempt_id,
+                spark_plan,
+                partition_count: partition_count as usize,
+                root_op: None,
+                scans: vec![],
+                input_sources,
+                stream: None,
+                metrics,
+                metrics_update_interval,
+                metrics_last_update_time: Instant::now(),
+                plan_creation_time,
+                session_ctx: Arc::new(session),
+                debug_native: debug_native == 1,
+                explain_native: explain_native == 1,
+                memory_pool_config,
+                tracing_enabled: tracing_enabled != JNI_FALSE,
+            });
 
-        let exec_context = Box::new(ExecutionContext {
-            id,
-            task_attempt_id,
-            spark_plan,
-            partition_count: partition_count as usize,
-            root_op: None,
-            scans: vec![],
-            input_sources,
-            stream: None,
-            metrics,
-            metrics_update_interval,
-            metrics_last_update_time: Instant::now(),
-            plan_creation_time,
-            session_ctx: Arc::new(session),
-            debug_native: debug_native == 1,
-            explain_native: explain_native == 1,
-            memory_pool_config,
-            tracing_enabled: tracing_enabled != JNI_FALSE,
-        });
-
-        if tracing_enabled != JNI_FALSE {
-            trace_end("createPlan");
-        }
-
-        Ok(Box::into_raw(exec_context) as i64)
+            Ok(Box::into_raw(exec_context) as i64)
+        })
     })
 }
 

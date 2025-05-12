@@ -105,3 +105,20 @@ pub(crate) fn trace_end(name: &str) {
 pub(crate) fn log_memory_usage(name: &str, value: u64) {
     RECORDER.log_memory_usage(name, value);
 }
+
+pub(crate) fn with_trace<T, F>(label: &str, tracing_enabled: bool, f: F) -> T
+where
+    F: FnOnce() -> T,
+{
+    if tracing_enabled {
+        trace_begin(label);
+    }
+
+    let result = f();
+
+    if tracing_enabled {
+        trace_end(label);
+    }
+
+    result
+}
