@@ -40,6 +40,7 @@ use crate::{
 pub struct CometMemoryPool {
     task_memory_manager_handle: Arc<GlobalRef>,
     used: AtomicUsize,
+    acquired: AtomicUsize,
 }
 
 impl Debug for CometMemoryPool {
@@ -55,6 +56,7 @@ impl CometMemoryPool {
         Self {
             task_memory_manager_handle,
             used: AtomicUsize::new(0),
+            acquired: AtomicUsize::new(0),
         }
     }
 
@@ -65,13 +67,27 @@ impl CometMemoryPool {
             jni_call!(&mut env,
               comet_task_memory_manager(handle).acquire_memory(additional as i64) -> i64)
         }
+        .inspect(|&acquired| {
+            self.acquired.fetch_add(acquired as usize, Relaxed);
+        })
     }
 
     fn release(&self, size: usize) -> CometResult<()> {
         let mut env = JVMClasses::get_env()?;
         let handle = self.task_memory_manager_handle.as_obj();
+        let prev = self
+            .acquired
+            .fetch_update(Relaxed, Relaxed, |prev| {
+                if prev > size {
+                    Some(prev - size)
+                } else {
+                    Some(0)
+                }
+            })
+            .unwrap();
+        let updated = size.min(prev);
         unsafe {
-            jni_call!(&mut env, comet_task_memory_manager(handle).release_memory(size as i64) -> ())
+            jni_call!(&mut env, comet_task_memory_manager(handle).release_memory(updated as i64) -> ())
         }
     }
 }
