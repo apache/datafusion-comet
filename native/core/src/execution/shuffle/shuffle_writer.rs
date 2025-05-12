@@ -18,7 +18,7 @@
 //! Defines the External shuffle repartition plan.
 
 use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
-use crate::execution::tracing::{trace_begin, trace_end};
+use crate::execution::tracing::{trace_begin, trace_end, with_trace};
 use arrow::compute::interleave_record_batch;
 use async_trait::async_trait;
 use datafusion::common::utils::proxy::VecAllocExt;
@@ -690,83 +690,76 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
 
     /// Writes buffered shuffled record batches into Arrow IPC bytes.
     async fn shuffle_write(&mut self) -> Result<()> {
-        if self.tracing_enabled {
-            trace_begin("shuffle_write");
-        }
+        with_trace("shuffle_write", self.tracing_enabled, || {
+            let start_time = Instant::now();
 
-        let start_time = Instant::now();
+            let mut partitioned_batches = self.partitioned_batches();
+            let num_output_partitions = self.partition_indices.len();
+            let mut offsets = vec![0; num_output_partitions + 1];
 
-        let mut partitioned_batches = self.partitioned_batches();
-        let num_output_partitions = self.partition_indices.len();
-        let mut offsets = vec![0; num_output_partitions + 1];
+            let data_file = self.output_data_file.clone();
+            let index_file = self.output_index_file.clone();
 
-        let data_file = self.output_data_file.clone();
-        let index_file = self.output_index_file.clone();
+            let output_data = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(data_file)
+                .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
 
-        let output_data = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(data_file)
-            .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
+            let mut output_data = BufWriter::new(output_data);
 
-        let mut output_data = BufWriter::new(output_data);
+            #[allow(clippy::needless_range_loop)]
+            for i in 0..num_output_partitions {
+                offsets[i] = output_data.stream_position()?;
 
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..num_output_partitions {
-            offsets[i] = output_data.stream_position()?;
+                // if we wrote a spill file for this partition then copy the
+                // contents into the shuffle file
+                if let Some(spill_data) = self.partition_writers[i].spill_file.as_ref() {
+                    let mut spill_file =
+                        BufReader::new(File::open(spill_data.temp_file.path()).map_err(to_df_err)?);
+                    let mut write_timer = self.metrics.write_time.timer();
+                    std::io::copy(&mut spill_file, &mut output_data).map_err(to_df_err)?;
+                    write_timer.stop();
+                }
 
-            // if we wrote a spill file for this partition then copy the
-            // contents into the shuffle file
-            if let Some(spill_data) = self.partition_writers[i].spill_file.as_ref() {
-                let mut spill_file =
-                    BufReader::new(File::open(spill_data.temp_file.path()).map_err(to_df_err)?);
-                let mut write_timer = self.metrics.write_time.timer();
-                std::io::copy(&mut spill_file, &mut output_data).map_err(to_df_err)?;
-                write_timer.stop();
+                // Write in memory batches to output data file
+                let mut partition_iter = partitioned_batches.produce(i);
+                Self::shuffle_write_partition(
+                    &mut partition_iter,
+                    &mut self.shuffle_block_writer,
+                    &mut output_data,
+                    &self.metrics.encode_time,
+                    &self.metrics.write_time,
+                )?;
             }
 
-            // Write in memory batches to output data file
-            let mut partition_iter = partitioned_batches.produce(i);
-            Self::shuffle_write_partition(
-                &mut partition_iter,
-                &mut self.shuffle_block_writer,
-                &mut output_data,
-                &self.metrics.encode_time,
-                &self.metrics.write_time,
-            )?;
-        }
+            let mut write_timer = self.metrics.write_time.timer();
+            output_data.flush()?;
+            write_timer.stop();
 
-        let mut write_timer = self.metrics.write_time.timer();
-        output_data.flush()?;
-        write_timer.stop();
+            // add one extra offset at last to ease partition length computation
+            offsets[num_output_partitions] = output_data.stream_position().map_err(to_df_err)?;
 
-        // add one extra offset at last to ease partition length computation
-        offsets[num_output_partitions] = output_data.stream_position().map_err(to_df_err)?;
-
-        let mut write_timer = self.metrics.write_time.timer();
-        let mut output_index =
-            BufWriter::new(File::create(index_file).map_err(|e| {
+            let mut write_timer = self.metrics.write_time.timer();
+            let mut output_index = BufWriter::new(File::create(index_file).map_err(|e| {
                 DataFusionError::Execution(format!("shuffle write error: {:?}", e))
             })?);
-        for offset in offsets {
-            output_index
-                .write_all(&(offset as i64).to_le_bytes()[..])
-                .map_err(to_df_err)?;
-        }
-        output_index.flush()?;
-        write_timer.stop();
+            for offset in offsets {
+                output_index
+                    .write_all(&(offset as i64).to_le_bytes()[..])
+                    .map_err(to_df_err)?;
+            }
+            output_index.flush()?;
+            write_timer.stop();
 
-        self.metrics
-            .baseline
-            .elapsed_compute()
-            .add_duration(start_time.elapsed());
+            self.metrics
+                .baseline
+                .elapsed_compute()
+                .add_duration(start_time.elapsed());
 
-        if self.tracing_enabled {
-            trace_end("shuffle_write");
-        }
-
-        Ok(())
+            Ok(())
+        })
     }
 }
 
