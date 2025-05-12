@@ -377,8 +377,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         };
 
         if exec_context.tracing_enabled {
-            trace_begin(tracing_event_name);
-
             #[cfg(feature = "jemalloc")]
             {
                 let e = epoch::mib().unwrap();
@@ -389,105 +387,101 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             }
         }
 
-        let exec_context_id = exec_context.id;
+        with_trace(tracing_event_name, exec_context.tracing_enabled, || {
+            let exec_context_id = exec_context.id;
 
-        // Initialize the execution stream.
-        // Because we don't know if input arrays are dictionary-encoded when we create
-        // query plan, we need to defer stream initialization to first time execution.
-        if exec_context.root_op.is_none() {
-            let start = Instant::now();
-            let planner = PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx))
-                .with_exec_id(exec_context_id);
-            let (scans, root_op) = planner.create_plan(
-                &exec_context.spark_plan,
-                &mut exec_context.input_sources.clone(),
-                exec_context.partition_count,
-            )?;
-            let physical_plan_time = start.elapsed();
+            // Initialize the execution stream.
+            // Because we don't know if input arrays are dictionary-encoded when we create
+            // query plan, we need to defer stream initialization to first time execution.
+            if exec_context.root_op.is_none() {
+                let start = Instant::now();
+                let planner = PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx))
+                    .with_exec_id(exec_context_id);
+                let (scans, root_op) = planner.create_plan(
+                    &exec_context.spark_plan,
+                    &mut exec_context.input_sources.clone(),
+                    exec_context.partition_count,
+                )?;
+                let physical_plan_time = start.elapsed();
 
-            exec_context.plan_creation_time += physical_plan_time;
-            exec_context.root_op = Some(Arc::clone(&root_op));
-            exec_context.scans = scans;
+                exec_context.plan_creation_time += physical_plan_time;
+                exec_context.root_op = Some(Arc::clone(&root_op));
+                exec_context.scans = scans;
 
-            if exec_context.explain_native {
-                let formatted_plan_str =
-                    DisplayableExecutionPlan::new(root_op.native_plan.as_ref()).indent(true);
-                info!("Comet native query plan:\n{formatted_plan_str:}");
-            }
-
-            let task_ctx = exec_context.session_ctx.task_ctx();
-            let stream = exec_context
-                .root_op
-                .as_ref()
-                .unwrap()
-                .native_plan
-                .execute(partition as usize, task_ctx)?;
-            exec_context.stream = Some(stream);
-        } else {
-            // Pull input batches
-            pull_input_batches(exec_context)?;
-        }
-
-        loop {
-            // Polling the stream.
-            let next_item = exec_context.stream.as_mut().unwrap().next();
-            let poll_output = get_runtime().block_on(async { poll!(next_item) });
-
-            // update metrics at interval
-            if let Some(interval) = exec_context.metrics_update_interval {
-                let now = Instant::now();
-                if now - exec_context.metrics_last_update_time >= interval {
-                    update_metrics(&mut env, exec_context)?;
-                    exec_context.metrics_last_update_time = now;
+                if exec_context.explain_native {
+                    let formatted_plan_str =
+                        DisplayableExecutionPlan::new(root_op.native_plan.as_ref()).indent(true);
+                    info!("Comet native query plan:\n{formatted_plan_str:}");
                 }
+
+                let task_ctx = exec_context.session_ctx.task_ctx();
+                let stream = exec_context
+                    .root_op
+                    .as_ref()
+                    .unwrap()
+                    .native_plan
+                    .execute(partition as usize, task_ctx)?;
+                exec_context.stream = Some(stream);
+            } else {
+                // Pull input batches
+                pull_input_batches(exec_context)?;
             }
 
-            match poll_output {
-                Poll::Ready(Some(output)) => {
-                    // prepare output for FFI transfer
-                    let addr = prepare_output(
-                        &mut env,
-                        array_addrs,
-                        schema_addrs,
-                        output?,
-                        exec_context.debug_native,
-                    );
-                    if exec_context.tracing_enabled {
-                        trace_end(tracing_event_name);
+            loop {
+                // Polling the stream.
+                let next_item = exec_context.stream.as_mut().unwrap().next();
+                let poll_output = get_runtime().block_on(async { poll!(next_item) });
+
+                // update metrics at interval
+                if let Some(interval) = exec_context.metrics_update_interval {
+                    let now = Instant::now();
+                    if now - exec_context.metrics_last_update_time >= interval {
+                        update_metrics(&mut env, exec_context)?;
+                        exec_context.metrics_last_update_time = now;
                     }
-                    return addr;
                 }
-                Poll::Ready(None) => {
-                    // Reaches EOF of output.
-                    if exec_context.explain_native {
-                        if let Some(plan) = &exec_context.root_op {
-                            let formatted_plan_str =
-                                DisplayableExecutionPlan::with_metrics(plan.native_plan.as_ref())
-                                    .indent(true);
-                            info!(
-                                "Comet native query plan with metrics (Plan #{} Stage {} Partition {}):\
-                            \n plan creation (including CometScans fetching first batches) took {:?}:\
-                            \n{formatted_plan_str:}",
-                                plan.plan_id, stage_id, partition, exec_context.plan_creation_time
-                            );
+
+                match poll_output {
+                    Poll::Ready(Some(output)) => {
+                        // prepare output for FFI transfer
+                        return prepare_output(
+                            &mut env,
+                            array_addrs,
+                            schema_addrs,
+                            output?,
+                            exec_context.debug_native,
+                        );
+                    }
+                    Poll::Ready(None) => {
+                        // Reaches EOF of output.
+                        if exec_context.explain_native {
+                            if let Some(plan) = &exec_context.root_op {
+                                let formatted_plan_str = DisplayableExecutionPlan::with_metrics(
+                                    plan.native_plan.as_ref(),
+                                )
+                                .indent(true);
+                                info!(
+                                    "Comet native query plan with metrics (Plan #{} Stage {} Partition {}):\
+                                \n plan creation (including CometScans fetching first batches) took {:?}:\
+                                \n{formatted_plan_str:}",
+                                    plan.plan_id, stage_id, partition, exec_context.plan_creation_time
+                                );
+                            }
                         }
+                        return Ok(-1);
                     }
-                    if exec_context.tracing_enabled {
-                        trace_end(tracing_event_name);
-                    }
-                    return Ok(-1);
-                }
-                // A poll pending means there are more than one blocking operators,
-                // we don't need go back-forth between JVM/Native. Just keeping polling.
-                Poll::Pending => {
-                    // Pull input batches
-                    pull_input_batches(exec_context)?;
+                    // A poll pending means there are more than one blocking operators,
+                    // we don't need go back-forth between JVM/Native. Just keeping polling.
+                    Poll::Pending => {
+                        // Pull input batches
+                        pull_input_batches(exec_context)?;
 
-                    // Output not ready yet
-                    continue;
+                        // Output not ready yet
+                        continue;
+                    }
                 }
             }
-        }
+        })
     })
 }
 
