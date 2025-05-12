@@ -122,3 +122,21 @@ where
 
     result
 }
+
+pub(crate) async fn with_trace_async<F, Fut, T>(label: &str, tracing_enabled: bool, f: F) -> T
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    if tracing_enabled {
+        trace_begin(label);
+    }
+
+    let result = f().await;
+
+    if tracing_enabled {
+        trace_end(label);
+    }
+
+    result
+}

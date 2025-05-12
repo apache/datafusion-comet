@@ -18,7 +18,7 @@
 //! Defines the External shuffle repartition plan.
 
 use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
-use crate::execution::tracing::{trace_begin, trace_end, with_trace};
+use crate::execution::tracing::{trace_begin, trace_end, with_trace, with_trace_async};
 use arrow::compute::interleave_record_batch;
 use async_trait::async_trait;
 use datafusion::common::utils::proxy::VecAllocExt;
@@ -215,51 +215,52 @@ async fn external_shuffle(
     codec: CompressionCodec,
     tracing_enabled: bool,
 ) -> Result<SendableRecordBatchStream> {
-    if tracing_enabled {
-        trace_begin("external_shuffle");
-    }
+    with_trace_async("external_shuffle", tracing_enabled, || async {
+        let schema = input.schema();
 
-    let schema = input.schema();
+        let mut repartitioner: Box<dyn ShufflePartitioner> = match &partitioning {
+            any if any.partition_count() == 1 => {
+                Box::new(SinglePartitionShufflePartitioner::try_new(
+                    output_data_file,
+                    output_index_file,
+                    Arc::clone(&schema),
+                    metrics,
+                    context.session_config().batch_size(),
+                    codec,
+                )?)
+            }
+            _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
+                partition,
+                output_data_file,
+                output_index_file,
+                Arc::clone(&schema),
+                partitioning,
+                metrics,
+                context.runtime_env(),
+                context.session_config().batch_size(),
+                codec,
+                tracing_enabled,
+            )?),
+        };
 
-    let mut repartitioner: Box<dyn ShufflePartitioner> = match &partitioning {
-        any if any.partition_count() == 1 => Box::new(SinglePartitionShufflePartitioner::try_new(
-            output_data_file,
-            output_index_file,
-            Arc::clone(&schema),
-            metrics,
-            context.session_config().batch_size(),
-            codec,
-        )?),
-        _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
-            partition,
-            output_data_file,
-            output_index_file,
-            Arc::clone(&schema),
-            partitioning,
-            metrics,
-            context.runtime_env(),
-            context.session_config().batch_size(),
-            codec,
-            tracing_enabled,
-        )?),
-    };
+        while let Some(batch) = input.next().await {
+            // Block on the repartitioner to insert the batch and shuffle the rows
+            // into the corresponding partition buffer.
+            // Otherwise, pull the next batch from the input stream might overwrite the
+            // current batch in the repartitioner.
+            block_on(repartitioner.insert_batch(batch?))?;
+        }
 
-    while let Some(batch) = input.next().await {
-        // Block on the repartitioner to insert the batch and shuffle the rows
-        // into the corresponding partition buffer.
-        // Otherwise, pull the next batch from the input stream might overwrite the
-        // current batch in the repartitioner.
-        block_on(repartitioner.insert_batch(batch?))?;
-    }
+        repartitioner.shuffle_write().await?;
 
-    repartitioner.shuffle_write().await?;
+        if tracing_enabled {
+            trace_end("external_shuffle");
+        }
 
-    if tracing_enabled {
-        trace_end("external_shuffle");
-    }
-
-    // shuffle writer always has empty output
-    Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))))
+        // shuffle writer always has empty output
+        Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))) as SendableRecordBatchStream)
+    })
+    .await
 }
 
 struct ShuffleRepartitionerMetrics {
