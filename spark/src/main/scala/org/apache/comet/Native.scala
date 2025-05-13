@@ -91,8 +91,7 @@ class Native extends NativeBase {
       partition: Int,
       plan: Long,
       arrayAddrs: Array[Long],
-      schemaAddrs: Array[Long],
-      tracingEnabled: Boolean): Long
+      schemaAddrs: Array[Long]): Long
 
   /**
    * Release and drop the native query plan object and context object.
@@ -178,10 +177,28 @@ class Native extends NativeBase {
       schemaAddrs: Array[Long],
       tracingEnabled: Boolean): Long
 
+  /**
+   * Log the beginning of an event.
+   * @param name
+   *   The name of the event.
+   */
   @native def traceBegin(name: String): Unit
 
+  /**
+   * Log the end of an event.
+   * @param name
+   *   The name of the event.
+   */
   @native def traceEnd(name: String): Unit
 
-  @native def logCounter(name: String, value: Long): Unit
+  /**
+   * Log the amount of memory currently in use.
+   *
+   * @param name
+   *   Type of memory e.g. jvm, native, off-heap pool
+   * @param memoryUsageBytes
+   *   Number of bytes in use
+   */
+  @native def logMemoryUsage(name: String, memoryUsageBytes: Long): Unit
 
 }
