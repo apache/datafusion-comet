@@ -562,7 +562,7 @@ impl MultiPartitionShuffleRepartitioner {
             result
         };
         if grow_result.is_err() {
-            self.spill().await?;
+            self.spill()?;
         }
 
         Ok(())
@@ -614,7 +614,7 @@ impl MultiPartitionShuffleRepartitioner {
         PartitionedBatchesProducer::new(buffered_batches, indices, self.batch_size)
     }
 
-    async fn spill(&mut self) -> Result<()> {
+    fn spill(&mut self) -> Result<()> {
         log::debug!(
             "ShuffleRepartitioner spilling shuffle data of {} to disk while inserting ({} time(s) so far)",
             self.used(),
@@ -1269,7 +1269,7 @@ mod test {
         assert!(repartitioner.partition_writers[0].spill_file.is_none());
         assert!(repartitioner.partition_writers[1].spill_file.is_none());
 
-        repartitioner.spill().await.unwrap();
+        repartitioner.spill().unwrap();
 
         // after spill, there should be spill files
         assert!(repartitioner.partition_writers[0].spill_file.is_some());
