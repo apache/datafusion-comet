@@ -61,4 +61,4 @@ Example trace visualization:
 | jemalloc_allocated    | Native memory usage for the executor process                   |
 | task_memory_comet_NNN | Off-heap memory allocated by Comet for query execution         |
 | task_memory_spark_NNN | On-heap & Off-heap memory allocated by Spark                   |
-| offheap_shuffle_NNN   | Off-heap memory allocated by Comet for columnar shuffle        |
+| comet_shuffle_NNN     | Off-heap memory allocated by Comet for columnar shuffle        |
