@@ -251,7 +251,7 @@ async fn external_shuffle(
             block_on(repartitioner.insert_batch(batch?))?;
         }
 
-        repartitioner.shuffle_write().await?;
+        repartitioner.shuffle_write()?;
 
         // shuffle writer always has empty output
         Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))) as SendableRecordBatchStream)
@@ -309,7 +309,7 @@ trait ShufflePartitioner: Send + Sync {
     /// Insert a batch into the partitioner
     async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()>;
     /// Write shuffle data and shuffle index file to disk
-    async fn shuffle_write(&mut self) -> Result<()>;
+    fn shuffle_write(&mut self) -> Result<()>;
 }
 
 /// A partitioner that uses a hash function to partition data into multiple partitions
@@ -673,7 +673,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
     }
 
     /// Writes buffered shuffled record batches into Arrow IPC bytes.
-    async fn shuffle_write(&mut self) -> Result<()> {
+    fn shuffle_write(&mut self) -> Result<()> {
         with_trace("shuffle_write", self.tracing_enabled, || {
             let start_time = Instant::now();
 
@@ -887,7 +887,7 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
         Ok(())
     }
 
-    async fn shuffle_write(&mut self) -> Result<()> {
+    fn shuffle_write(&mut self) -> Result<()> {
         let start_time = Instant::now();
         let concatenated_batch = self.concat_buffered_batches()?;
 
