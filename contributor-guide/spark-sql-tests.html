@@ -453,7 +453,10 @@ command generated the following files.</p>
 </section>
 <section id="generating-the-diff-file">
 <h2>Generating The Diff File<a class="headerlink" href="#generating-the-diff-file" title="Link to this heading">¶</a></h2>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>diff<span class="w"> </span>v3.5.5<span class="w"> </span>&gt;<span class="w"> </span>../datafusion-comet/dev/diffs/3.5.5.diff
+<p>The diff file can be generated using the <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">diff</span></code> command. It may be necessary to set the <code class="docutils literal notranslate"><span class="pre">core.abbrev</span></code>
+configuration setting to use 11 digits hashes for consistency with existing diff files.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>config<span class="w"> </span>core.abbrev<span class="w"> </span><span class="m">11</span><span class="p">;</span>
+git<span class="w"> </span>diff<span class="w"> </span>v3.5.5<span class="w"> </span>&gt;<span class="w"> </span>../datafusion-comet/dev/diffs/3.5.5.diff
 </pre></div>
 </div>
 </section>
