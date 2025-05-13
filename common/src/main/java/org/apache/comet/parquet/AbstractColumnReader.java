@@ -27,6 +27,7 @@ import org.apache.parquet.schema.Type;
 import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.TimestampNTZType$;
 
+import org.apache.comet.CometConf;
 import org.apache.comet.vector.CometVector;
 
 /** Base class for Comet Parquet column reader implementations. */
@@ -128,7 +129,10 @@ public abstract class AbstractColumnReader implements AutoCloseable {
 
   protected void initNative() {
     LOG.debug("initializing the native column reader");
-    DataType readType = supportsSchemaEvolution ? type : null;
+    DataType readType =
+        ((boolean) CometConf.COMET_SCHEMA_EVOLUTION_ENABLED().get() || supportsSchemaEvolution)
+            ? type
+            : null;
     boolean useLegacyDateTimestampOrNTZ =
         useLegacyDateTimestamp || type == TimestampNTZType$.MODULE$;
     nativeHandle =

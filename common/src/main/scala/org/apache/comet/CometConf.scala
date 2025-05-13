@@ -539,6 +539,16 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(true)
 
+  val COMET_SCHEMA_EVOLUTION_ENABLED: ConfigEntry[Boolean] = conf(
+    "spark.comet.schemaEvolution.enabled")
+    .internal()
+    .doc(
+      "Whether to enable schema evolution in Comet. For instance, promoting a integer " +
+        "column to a long column, a float column to a double column, etc. This is automatically" +
+        "enabled when reading from Iceberg tables.")
+    .booleanConf
+    .createWithDefault(COMET_SCHEMA_EVOLUTION_ENABLED_DEFAULT)
+
   val COMET_SPARK_TO_ARROW_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.sparkToColumnar.enabled")
       .internal()
