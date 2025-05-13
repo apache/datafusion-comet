@@ -866,7 +866,7 @@ dependencies = [
 [[package]]
 name = "datafusion"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -876,24 +876,24 @@ dependencies = [
  "chrono",
  "datafusion-catalog",
  "datafusion-catalog-listing",
- "datafusion-common",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "datafusion-common-runtime",
  "datafusion-datasource",
  "datafusion-datasource-csv",
  "datafusion-datasource-json",
  "datafusion-datasource-parquet",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-functions",
- "datafusion-functions-aggregate",
- "datafusion-functions-nested",
+ "datafusion-execution 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-functions 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-functions-aggregate 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-functions-nested 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "datafusion-functions-table",
  "datafusion-functions-window",
- "datafusion-macros",
+ "datafusion-macros 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "datafusion-optimizer",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-physical-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "datafusion-physical-optimizer",
  "datafusion-physical-plan",
  "datafusion-session",
@@ -916,17 +916,17 @@ dependencies = [
 [[package]]
 name = "datafusion-catalog"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "arrow",
  "async-trait",
  "dashmap",
- "datafusion-common",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr",
+ "datafusion-execution 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "datafusion-physical-plan",
  "datafusion-session",
  "datafusion-sql",
@@ -941,17 +941,17 @@ dependencies = [
 [[package]]
 name = "datafusion-catalog-listing"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "arrow",
  "async-trait",
  "datafusion-catalog",
- "datafusion-common",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-execution 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
@@ -974,7 +974,7 @@ dependencies = [
  "datafusion-comet-objectstore-hdfs",
  "datafusion-comet-proto",
  "datafusion-comet-spark-expr",
- "datafusion-functions-nested",
+ "datafusion-functions-nested 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
  "futures",
  "hex",
  "itertools 0.14.0",
@@ -1049,7 +1049,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "ahash",
  "arrow",
@@ -1069,9 +1069,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-common"
+version = "47.0.0"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
+dependencies = [
+ "ahash",
+ "arrow",
+ "arrow-ipc",
+ "base64",
+ "half",
+ "hashbrown 0.14.5",
+ "indexmap",
+ "libc",
+ "log",
+ "paste",
+ "sqlparser",
+ "tokio",
+ "web-time",
+]
+
+[[package]]
 name = "datafusion-common-runtime"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "futures",
  "log",
@@ -1081,18 +1101,18 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "arrow",
  "async-trait",
  "bytes",
  "chrono",
- "datafusion-common",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "datafusion-common-runtime",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-execution 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
@@ -1110,19 +1130,19 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-csv"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "arrow",
  "async-trait",
  "bytes",
  "datafusion-catalog",
- "datafusion-common",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-execution 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
@@ -1134,19 +1154,19 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-json"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "arrow",
  "async-trait",
  "bytes",
  "datafusion-catalog",
- "datafusion-common",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-execution 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
@@ -1158,20 +1178,20 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-parquet"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "arrow",
  "async-trait",
  "bytes",
  "datafusion-catalog",
- "datafusion-common",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions-aggregate",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-execution 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-functions-aggregate 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "datafusion-physical-optimizer",
  "datafusion-physical-plan",
  "datafusion-session",
@@ -1188,17 +1208,40 @@ dependencies = [
 [[package]]
 name = "datafusion-doc"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
+
+[[package]]
+name = "datafusion-doc"
+version = "47.0.0"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 
 [[package]]
 name = "datafusion-execution"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "arrow",
  "dashmap",
- "datafusion-common",
- "datafusion-expr",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "futures",
+ "log",
+ "object_store",
+ "parking_lot",
+ "rand 0.8.5",
+ "tempfile",
+ "url",
+]
+
+[[package]]
+name = "datafusion-execution"
+version = "47.0.0"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
+dependencies = [
+ "arrow",
+ "dashmap",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
  "futures",
  "log",
  "object_store",
@@ -1211,16 +1254,35 @@ dependencies = [
 [[package]]
 name = "datafusion-expr"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "arrow",
  "chrono",
- "datafusion-common",
- "datafusion-doc",
- "datafusion-expr-common",
- "datafusion-functions-aggregate-common",
- "datafusion-functions-window-common",
- "datafusion-physical-expr-common",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-doc 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-functions-aggregate-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-functions-window-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "indexmap",
+ "paste",
+ "serde_json",
+ "sqlparser",
+]
+
+[[package]]
+name = "datafusion-expr"
+version = "47.0.0"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
+dependencies = [
+ "arrow",
+ "chrono",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-doc 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-functions-aggregate-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-functions-window-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-physical-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
  "indexmap",
  "paste",
  "serde_json",
@@ -1230,10 +1292,22 @@ dependencies = [
 [[package]]
 name = "datafusion-expr-common"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "arrow",
- "datafusion-common",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "indexmap",
+ "itertools 0.14.0",
+ "paste",
+]
+
+[[package]]
+name = "datafusion-expr-common"
+version = "47.0.0"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
+dependencies = [
+ "arrow",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
  "indexmap",
  "itertools 0.14.0",
  "paste",
@@ -1242,7 +1316,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "arrow",
  "arrow-buffer",
@@ -1250,12 +1324,12 @@ dependencies = [
  "blake2",
  "blake3",
  "chrono",
- "datafusion-common",
- "datafusion-doc",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-macros",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-doc 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-execution 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-macros 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "hex",
  "itertools 0.14.0",
  "log",
@@ -1268,20 +1342,64 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-functions"
+version = "47.0.0"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
+dependencies = [
+ "arrow",
+ "arrow-buffer",
+ "base64",
+ "chrono",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-doc 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-execution 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-macros 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "hex",
+ "itertools 0.14.0",
+ "log",
+ "rand 0.8.5",
+ "regex",
+ "unicode-segmentation",
+ "uuid",
+]
+
+[[package]]
 name = "datafusion-functions-aggregate"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "ahash",
  "arrow",
- "datafusion-common",
- "datafusion-doc",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions-aggregate-common",
- "datafusion-macros",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-doc 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-execution 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-functions-aggregate-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-macros 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "half",
+ "log",
+ "paste",
+]
+
+[[package]]
+name = "datafusion-functions-aggregate"
+version = "47.0.0"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
+dependencies = [
+ "ahash",
+ "arrow",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-doc 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-execution 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-functions-aggregate-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-macros 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-physical-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-physical-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
  "half",
  "log",
  "paste",
@@ -1290,30 +1408,62 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate-common"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "ahash",
  "arrow",
- "datafusion-common",
- "datafusion-expr-common",
- "datafusion-physical-expr-common",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+]
+
+[[package]]
+name = "datafusion-functions-aggregate-common"
+version = "47.0.0"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
+dependencies = [
+ "ahash",
+ "arrow",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-physical-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
 ]
 
 [[package]]
 name = "datafusion-functions-nested"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "arrow",
  "arrow-ord",
- "datafusion-common",
- "datafusion-doc",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions",
- "datafusion-functions-aggregate",
- "datafusion-macros",
- "datafusion-physical-expr-common",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-doc 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-execution 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-functions 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-functions-aggregate 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-macros 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "itertools 0.14.0",
+ "log",
+ "paste",
+]
+
+[[package]]
+name = "datafusion-functions-nested"
+version = "47.0.0"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
+dependencies = [
+ "arrow",
+ "arrow-ord",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-doc 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-execution 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-functions 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-functions-aggregate 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-macros 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-physical-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
  "itertools 0.14.0",
  "log",
  "paste",
@@ -1322,13 +1472,13 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-table"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "arrow",
  "async-trait",
  "datafusion-catalog",
- "datafusion-common",
- "datafusion-expr",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "datafusion-physical-plan",
  "parking_lot",
  "paste",
@@ -1337,15 +1487,15 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-window"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
- "datafusion-common",
- "datafusion-doc",
- "datafusion-expr",
- "datafusion-functions-window-common",
- "datafusion-macros",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-doc 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-functions-window-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-macros 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "log",
  "paste",
 ]
@@ -1353,18 +1503,37 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-window-common"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
- "datafusion-common",
- "datafusion-physical-expr-common",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+]
+
+[[package]]
+name = "datafusion-functions-window-common"
+version = "47.0.0"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
+dependencies = [
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-physical-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
 ]
 
 [[package]]
 name = "datafusion-macros"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
- "datafusion-expr",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "quote",
+ "syn 2.0.101",
+]
+
+[[package]]
+name = "datafusion-macros"
+version = "47.0.0"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
+dependencies = [
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
  "quote",
  "syn 2.0.101",
 ]
@@ -1372,13 +1541,13 @@ dependencies = [
 [[package]]
 name = "datafusion-optimizer"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "arrow",
  "chrono",
- "datafusion-common",
- "datafusion-expr",
- "datafusion-physical-expr",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "indexmap",
  "itertools 0.14.0",
  "log",
@@ -1389,15 +1558,36 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "ahash",
  "arrow",
- "datafusion-common",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-functions-aggregate-common",
- "datafusion-physical-expr-common",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-functions-aggregate-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "half",
+ "hashbrown 0.14.5",
+ "indexmap",
+ "itertools 0.14.0",
+ "log",
+ "paste",
+ "petgraph",
+]
+
+[[package]]
+name = "datafusion-physical-expr"
+version = "47.0.0"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
+dependencies = [
+ "ahash",
+ "arrow",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-functions-aggregate-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-physical-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
  "half",
  "hashbrown 0.14.5",
  "indexmap",
@@ -1410,12 +1600,25 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr-common"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "ahash",
  "arrow",
- "datafusion-common",
- "datafusion-expr-common",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "hashbrown 0.14.5",
+ "itertools 0.14.0",
+]
+
+[[package]]
+name = "datafusion-physical-expr-common"
+version = "47.0.0"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
+dependencies = [
+ "ahash",
+ "arrow",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
+ "datafusion-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020af2a3736db11ba7477efc1a5dae96c2d3)",
  "hashbrown 0.14.5",
  "itertools 0.14.0",
 ]
@@ -1423,15 +1626,15 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-optimizer"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "arrow",
- "datafusion-common",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-execution 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "datafusion-physical-plan",
  "itertools 0.14.0",
  "log",
@@ -1440,7 +1643,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-plan"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "ahash",
  "arrow",
@@ -1448,13 +1651,13 @@ dependencies = [
  "arrow-schema",
  "async-trait",
  "chrono",
- "datafusion-common",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "datafusion-common-runtime",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions-window-common",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-execution 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-functions-window-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "futures",
  "half",
  "hashbrown 0.14.5",
@@ -1469,16 +1672,16 @@ dependencies = [
 [[package]]
 name = "datafusion-session"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "arrow",
  "async-trait",
  "dashmap",
- "datafusion-common",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "datafusion-common-runtime",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr",
+ "datafusion-execution 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-physical-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "datafusion-physical-plan",
  "datafusion-sql",
  "futures",
@@ -1492,12 +1695,12 @@ dependencies = [
 [[package]]
 name = "datafusion-sql"
 version = "47.0.0"
-source = "git+https://github.com/apache/datafusion?rev=f7c7d92#f7c7d92199518a486cbcd3b1a6fe2f436d798a02"
+source = "git+https://github.com/apache/datafusion?rev=7a3d020#7a3d020af2a3736db11ba7477efc1a5dae96c2d3"
 dependencies = [
  "arrow",
  "bigdecimal",
- "datafusion-common",
- "datafusion-expr",
+ "datafusion-common 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
+ "datafusion-expr 47.0.0 (git+https://github.com/apache/datafusion?rev=7a3d020)",
  "indexmap",
  "log",
  "regex",
