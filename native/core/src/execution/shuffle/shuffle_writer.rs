@@ -18,7 +18,7 @@
 //! Defines the External shuffle repartition plan.
 
 use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
-use crate::execution::tracing::TraceGuard;
+use crate::execution::tracing::{with_trace, with_trace_async};
 use arrow::compute::interleave_record_batch;
 use async_trait::async_trait;
 use datafusion::common::utils::proxy::VecAllocExt;
@@ -215,45 +215,48 @@ async fn external_shuffle(
     codec: CompressionCodec,
     tracing_enabled: bool,
 ) -> Result<SendableRecordBatchStream> {
-    let _ = TraceGuard::new("external_shuffle", tracing_enabled);
+    with_trace_async("external_shuffle", tracing_enabled, || async {
+        let schema = input.schema();
 
-    let schema = input.schema();
+        let mut repartitioner: Box<dyn ShufflePartitioner> = match &partitioning {
+            any if any.partition_count() == 1 => {
+                Box::new(SinglePartitionShufflePartitioner::try_new(
+                    output_data_file,
+                    output_index_file,
+                    Arc::clone(&schema),
+                    metrics,
+                    context.session_config().batch_size(),
+                    codec,
+                )?)
+            }
+            _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
+                partition,
+                output_data_file,
+                output_index_file,
+                Arc::clone(&schema),
+                partitioning,
+                metrics,
+                context.runtime_env(),
+                context.session_config().batch_size(),
+                codec,
+                tracing_enabled,
+            )?),
+        };
 
-    let mut repartitioner: Box<dyn ShufflePartitioner> = match &partitioning {
-        any if any.partition_count() == 1 => Box::new(SinglePartitionShufflePartitioner::try_new(
-            output_data_file,
-            output_index_file,
-            Arc::clone(&schema),
-            metrics,
-            context.session_config().batch_size(),
-            codec,
-        )?),
-        _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
-            partition,
-            output_data_file,
-            output_index_file,
-            Arc::clone(&schema),
-            partitioning,
-            metrics,
-            context.runtime_env(),
-            context.session_config().batch_size(),
-            codec,
-            tracing_enabled,
-        )?),
-    };
+        while let Some(batch) = input.next().await {
+            // Block on the repartitioner to insert the batch and shuffle the rows
+            // into the corresponding partition buffer.
+            // Otherwise, pull the next batch from the input stream might overwrite the
+            // current batch in the repartitioner.
+            block_on(repartitioner.insert_batch(batch?))?;
+        }
 
-    while let Some(batch) = input.next().await {
-        // Block on the repartitioner to insert the batch and shuffle the rows
-        // into the corresponding partition buffer.
-        // Otherwise, pull the next batch from the input stream might overwrite the
-        // current batch in the repartitioner.
-        block_on(repartitioner.insert_batch(batch?))?;
-    }
+        repartitioner.shuffle_write()?;
 
-    repartitioner.shuffle_write().await?;
-
-    // shuffle writer always has empty output
-    Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))))
+        // shuffle writer always has empty output
+        Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))) as SendableRecordBatchStream)
+    })
+    .await
 }
 
 struct ShuffleRepartitionerMetrics {
@@ -306,7 +309,7 @@ trait ShufflePartitioner: Send + Sync {
     /// Insert a batch into the partitioner
     async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()>;
     /// Write shuffle data and shuffle index file to disk
-    async fn shuffle_write(&mut self) -> Result<()>;
+    fn shuffle_write(&mut self) -> Result<()>;
 }
 
 /// A partitioner that uses a hash function to partition data into multiple partitions
@@ -559,7 +562,7 @@ impl MultiPartitionShuffleRepartitioner {
             result
         };
         if grow_result.is_err() {
-            self.spill().await?;
+            self.spill()?;
         }
 
         Ok(())
@@ -611,9 +614,7 @@ impl MultiPartitionShuffleRepartitioner {
         PartitionedBatchesProducer::new(buffered_batches, indices, self.batch_size)
     }
 
-    async fn spill(&mut self) -> Result<()> {
-        let _ = TraceGuard::new("spill", self.tracing_enabled);
-
+    fn spill(&mut self) -> Result<()> {
         log::debug!(
             "ShuffleRepartitioner spilling shuffle data of {} to disk while inserting ({} time(s) so far)",
             self.used(),
@@ -625,22 +626,24 @@ impl MultiPartitionShuffleRepartitioner {
             return Ok(());
         }
 
-        let num_output_partitions = self.partition_writers.len();
-        let mut partitioned_batches = self.partitioned_batches();
-        let mut spilled_bytes = 0;
+        with_trace("shuffle_spill", self.tracing_enabled, || {
+            let num_output_partitions = self.partition_writers.len();
+            let mut partitioned_batches = self.partitioned_batches();
+            let mut spilled_bytes = 0;
 
-        for partition_id in 0..num_output_partitions {
-            let partition_writer = &mut self.partition_writers[partition_id];
-            let mut iter = partitioned_batches.produce(partition_id);
-            spilled_bytes += partition_writer.spill(&mut iter, &self.runtime, &self.metrics)?;
-        }
+            for partition_id in 0..num_output_partitions {
+                let partition_writer = &mut self.partition_writers[partition_id];
+                let mut iter = partitioned_batches.produce(partition_id);
+                spilled_bytes += partition_writer.spill(&mut iter, &self.runtime, &self.metrics)?;
+            }
 
-        let mut timer = self.metrics.mempool_time.timer();
-        self.reservation.free();
-        timer.stop();
-        self.metrics.spill_count.add(1);
-        self.metrics.spilled_bytes.add(spilled_bytes);
-        Ok(())
+            let mut timer = self.metrics.mempool_time.timer();
+            self.reservation.free();
+            timer.stop();
+            self.metrics.spill_count.add(1);
+            self.metrics.spilled_bytes.add(spilled_bytes);
+            Ok(())
+        })
     }
 }
 
@@ -650,96 +653,97 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
     /// This function will slice input batch according to configured batch size and then
     /// shuffle rows into corresponding partition buffer.
     async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()> {
-        let _ = TraceGuard::new("insert_batch", self.tracing_enabled);
-        let start_time = Instant::now();
-        let mut start = 0;
-        while start < batch.num_rows() {
-            let end = (start + self.batch_size).min(batch.num_rows());
-            let batch = batch.slice(start, end - start);
-            self.partitioning_batch(batch).await?;
-            start = end;
-        }
-        self.metrics.input_batches.add(1);
-        self.metrics
-            .baseline
-            .elapsed_compute()
-            .add_duration(start_time.elapsed());
-        Ok(())
+        with_trace_async("shuffle_insert_batch", self.tracing_enabled, || async {
+            let start_time = Instant::now();
+            let mut start = 0;
+            while start < batch.num_rows() {
+                let end = (start + self.batch_size).min(batch.num_rows());
+                let batch = batch.slice(start, end - start);
+                self.partitioning_batch(batch).await?;
+                start = end;
+            }
+            self.metrics.input_batches.add(1);
+            self.metrics
+                .baseline
+                .elapsed_compute()
+                .add_duration(start_time.elapsed());
+            Ok(())
+        })
+        .await
     }
 
     /// Writes buffered shuffled record batches into Arrow IPC bytes.
-    async fn shuffle_write(&mut self) -> Result<()> {
-        let _ = TraceGuard::new("shuffle_write", self.tracing_enabled);
+    fn shuffle_write(&mut self) -> Result<()> {
+        with_trace("shuffle_write", self.tracing_enabled, || {
+            let start_time = Instant::now();
 
-        let start_time = Instant::now();
+            let mut partitioned_batches = self.partitioned_batches();
+            let num_output_partitions = self.partition_indices.len();
+            let mut offsets = vec![0; num_output_partitions + 1];
 
-        let mut partitioned_batches = self.partitioned_batches();
-        let num_output_partitions = self.partition_indices.len();
-        let mut offsets = vec![0; num_output_partitions + 1];
+            let data_file = self.output_data_file.clone();
+            let index_file = self.output_index_file.clone();
 
-        let data_file = self.output_data_file.clone();
-        let index_file = self.output_index_file.clone();
+            let output_data = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(data_file)
+                .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
 
-        let output_data = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(data_file)
-            .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
+            let mut output_data = BufWriter::new(output_data);
 
-        let mut output_data = BufWriter::new(output_data);
+            #[allow(clippy::needless_range_loop)]
+            for i in 0..num_output_partitions {
+                offsets[i] = output_data.stream_position()?;
 
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..num_output_partitions {
-            offsets[i] = output_data.stream_position()?;
+                // if we wrote a spill file for this partition then copy the
+                // contents into the shuffle file
+                if let Some(spill_data) = self.partition_writers[i].spill_file.as_ref() {
+                    let mut spill_file =
+                        BufReader::new(File::open(spill_data.temp_file.path()).map_err(to_df_err)?);
+                    let mut write_timer = self.metrics.write_time.timer();
+                    std::io::copy(&mut spill_file, &mut output_data).map_err(to_df_err)?;
+                    write_timer.stop();
+                }
 
-            // if we wrote a spill file for this partition then copy the
-            // contents into the shuffle file
-            if let Some(spill_data) = self.partition_writers[i].spill_file.as_ref() {
-                let mut spill_file =
-                    BufReader::new(File::open(spill_data.temp_file.path()).map_err(to_df_err)?);
-                let mut write_timer = self.metrics.write_time.timer();
-                std::io::copy(&mut spill_file, &mut output_data).map_err(to_df_err)?;
-                write_timer.stop();
+                // Write in memory batches to output data file
+                let mut partition_iter = partitioned_batches.produce(i);
+                Self::shuffle_write_partition(
+                    &mut partition_iter,
+                    &mut self.shuffle_block_writer,
+                    &mut output_data,
+                    &self.metrics.encode_time,
+                    &self.metrics.write_time,
+                )?;
             }
 
-            // Write in memory batches to output data file
-            let mut partition_iter = partitioned_batches.produce(i);
-            Self::shuffle_write_partition(
-                &mut partition_iter,
-                &mut self.shuffle_block_writer,
-                &mut output_data,
-                &self.metrics.encode_time,
-                &self.metrics.write_time,
-            )?;
-        }
+            let mut write_timer = self.metrics.write_time.timer();
+            output_data.flush()?;
+            write_timer.stop();
 
-        let mut write_timer = self.metrics.write_time.timer();
-        output_data.flush()?;
-        write_timer.stop();
+            // add one extra offset at last to ease partition length computation
+            offsets[num_output_partitions] = output_data.stream_position().map_err(to_df_err)?;
 
-        // add one extra offset at last to ease partition length computation
-        offsets[num_output_partitions] = output_data.stream_position().map_err(to_df_err)?;
-
-        let mut write_timer = self.metrics.write_time.timer();
-        let mut output_index =
-            BufWriter::new(File::create(index_file).map_err(|e| {
+            let mut write_timer = self.metrics.write_time.timer();
+            let mut output_index = BufWriter::new(File::create(index_file).map_err(|e| {
                 DataFusionError::Execution(format!("shuffle write error: {:?}", e))
             })?);
-        for offset in offsets {
-            output_index
-                .write_all(&(offset as i64).to_le_bytes()[..])
-                .map_err(to_df_err)?;
-        }
-        output_index.flush()?;
-        write_timer.stop();
+            for offset in offsets {
+                output_index
+                    .write_all(&(offset as i64).to_le_bytes()[..])
+                    .map_err(to_df_err)?;
+            }
+            output_index.flush()?;
+            write_timer.stop();
 
-        self.metrics
-            .baseline
-            .elapsed_compute()
-            .add_duration(start_time.elapsed());
+            self.metrics
+                .baseline
+                .elapsed_compute()
+                .add_duration(start_time.elapsed());
 
-        Ok(())
+            Ok(())
+        })
     }
 }
 
@@ -883,7 +887,7 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
         Ok(())
     }
 
-    async fn shuffle_write(&mut self) -> Result<()> {
+    fn shuffle_write(&mut self) -> Result<()> {
         let start_time = Instant::now();
         let concatenated_batch = self.concat_buffered_batches()?;
 
@@ -1265,7 +1269,7 @@ mod test {
         assert!(repartitioner.partition_writers[0].spill_file.is_none());
         assert!(repartitioner.partition_writers[1].spill_file.is_none());
 
-        repartitioner.spill().await.unwrap();
+        repartitioner.spill().unwrap();
 
         // after spill, there should be spill files
         assert!(repartitioner.partition_writers[0].spill_file.is_some());
