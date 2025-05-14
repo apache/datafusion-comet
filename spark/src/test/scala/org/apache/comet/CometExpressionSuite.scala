@@ -149,12 +149,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndOperator(
           table
             .selectExpr(
-              s"bit_count(_2)",
-              s"bit_count(_3)",
-              s"bit_count(_4)",
-              s"bit_count(_5)",
-              s"bit_count(_10)",
-              s"bit_count(_11)"))
+              "bit_count(_2)",
+              "bit_count(_3)",
+              "bit_count(_4)",
+              "bit_count(_5)",
+              "bit_count(_10)",
+              "bit_count(_11)"))
       }
     }
   }
