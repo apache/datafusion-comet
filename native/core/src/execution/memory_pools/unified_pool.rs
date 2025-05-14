@@ -115,7 +115,7 @@ impl MemoryPool for CometMemoryPool {
                     self.reserved()
                 ));
             }
-            self.used.fetch_add(additional, Relaxed);
+            self.used.fetch_add(acquired as usize, Relaxed);
         }
         Ok(())
     }
