@@ -22,10 +22,12 @@ use std::sync::Arc;
 
 macro_rules! compute_op {
     ($OPERAND:expr, $DT:ident) => {{
-        let operand = $OPERAND
-            .as_any()
-            .downcast_ref::<$DT>()
-            .expect("compute_op failed to downcast array");
+        let operand = $OPERAND.as_any().downcast_ref::<$DT>().ok_or_else(|| {
+            DataFusionError::Execution(format!(
+                "compute_op failed to downcast array to: {:?}",
+                stringify!($DT)
+            ))
+        })?;
 
         let result: Int32Array = operand
             .iter()

@@ -114,7 +114,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("bitwise_count - random values") {
+  test("bitwise_count - random values (spark gen)") {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
       val filename = path.toString
@@ -137,6 +137,25 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         table.selectExpr("bit_count(c1)", "bit_count(c2)", "bit_count(c3)", "bit_count(c4)")
 
       checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("bitwise_count - random values (native parquet gen)") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled, 0, 10000, nullEnabled = false)
+        val table = spark.read.parquet(path.toString)
+        checkSparkAnswerAndOperator(
+          table
+            .selectExpr(
+              s"bit_count(_2)",
+              s"bit_count(_3)",
+              s"bit_count(_4)",
+              s"bit_count(_5)",
+              s"bit_count(_10)",
+              s"bit_count(_11)"))
+      }
     }
   }
 
