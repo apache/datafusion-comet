@@ -873,6 +873,84 @@ builds:
     finally:
       <<: *slack-no-notification
 
+  - &comet-python39
+    group: test-spark-python39
+    branchRules:
+      includePatterns:
+        - "main-apple"
+        - "branch-.*-apple"
+    version: 3.4_2.12
+    disabled: false
+    timeout: 300
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4-apple"
+    build: &comet-python39-build
+      template: freestyle:v4:build
+      steps:
+        - localedef -c -f UTF-8 -i en_US en_US.UTF-8
+        # Dynamically add the hostname to the http.nonProxyHosts list
+        - export PROXY_OPTS="-Dhttp.proxyHost=proxy.config.pcp.local -Dhttp.proxyPort=3128 -Dhttps.proxyHost=proxy.config.pcp.local -Dhttps.proxyPort=3128 -Dhttp.nonProxyHosts=\"localhost|127.0.0.1|10.100.0.0/16|*.internal|*.apple.com|internal|apple.com|${HOSTNAME}\""
+        - PROFILES="${PROFILES}" dev/install-comet-spark.sh
+        - source apache-spark/comet-parameters.sh
+        - cd apache-spark
+        - if [ "${RIO_ARCH}" == "arm64" ]; then sed -i -E "s|<leveldbjni.group>org.fusesource.leveldbjni|<leveldbjni.group>org.openlabtesting.leveldbjni|" pom.xml; fi
+        - yum install -q -y python39
+        - pip3.9 install numpy==1.22.3 scipy==1.8.0 pandas==1.4.1 pyarrow==7.0.0 openpyxl==3.0.10 "jinja2<3.0.0" markupsafe==2.0.1 grpcio==1.48.1 grpcio-status==1.48.1 protobuf==3.19.5 googleapis-common-protos==1.56.4
+        - build/sbt -Phadoop-3 -Phive test:package
+        - UCAUTHZ=false python/run-tests.py --python-executables python3.9 --parallelism 3
+    reports:
+      <<: *reports
+    finally:
+      <<: *slack-notification
+
+  - <<: *comet-python39
+    group: test-spark-python39
+    version: 3.4_2.12
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4-apple"
+    build:
+      <<: *comet-python39-build
+      template: freestyle:v4:prb
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-python39
+    group: test-spark-python39
+    version: 3.4_2.13
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
+    build:
+      <<: *comet-python39-build
+      template: freestyle:v4:prb
+    finally:
+      <<: *slack-no-notification
+
+  - <<: *comet-python39
+    group: test-spark-python39
+    version: 3.4_2.13
+    disabled: false
+    machine:
+      <<: *rio3-machine
+      env:
+        <<: *proxy_env
+        PROFILES: "-Pspark-3.4-apple,scala-2.13"
+    build:
+      <<: *comet-python39-build
+      template: freestyle:v4:build
+    finally:
+      <<: *slack-no-notification
+
   - &comet-iceberg
     group: test-iceberg
     branchRules:
