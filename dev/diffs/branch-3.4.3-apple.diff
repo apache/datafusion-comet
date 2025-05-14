@@ -116,3 +116,154 @@ index 36492fe936d..583d9225cca 100644
        withSQLConf(conf.sqlConfs: _*) {
          withTempPath{ path =>
            val df = spark.range(0, 10, 1, 1).toDF("id")
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
+index 9e598e7a344..cc5224af735 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
+@@ -669,8 +669,7 @@ abstract class DynamicPartitionPruningSuiteBase
+     }
+   }
+ 
+-  test("partition pruning in broadcast hash joins with aliases",
+-    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
++  test("partition pruning in broadcast hash joins with aliases") {
+     Given("alias with simple join condition, using attribute names only")
+     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+       val df = sql(
+@@ -761,7 +760,7 @@ abstract class DynamicPartitionPruningSuiteBase
+   }
+ 
+   test("partition pruning in broadcast hash joins",
+-    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
++    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #1737")) {
+     Given("disable broadcast pruning and disable subquery duplication")
+     withSQLConf(
+       SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
+@@ -996,8 +995,7 @@ abstract class DynamicPartitionPruningSuiteBase
+     }
+   }
+ 
+-  test("different broadcast subqueries with identical children",
+-    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
++  test("different broadcast subqueries with identical children") {
+     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+       withTable("fact", "dim") {
+         spark.range(100).select(
+@@ -1034,8 +1032,7 @@ abstract class DynamicPartitionPruningSuiteBase
+     }
+   }
+ 
+-  test("avoid reordering broadcast join keys to match input hash partitioning",
+-    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
++  test("avoid reordering broadcast join keys to match input hash partitioning") {
+     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
+       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+       withTable("large", "dimTwo", "dimThree") {
+@@ -1195,8 +1192,7 @@ abstract class DynamicPartitionPruningSuiteBase
+     }
+   }
+ 
+-  test("Make sure dynamic pruning works on uncorrelated queries",
+-    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
++  test("Make sure dynamic pruning works on uncorrelated queries") {
+     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+       val df = sql(
+         """
+@@ -1225,7 +1221,7 @@ abstract class DynamicPartitionPruningSuiteBase
+ 
+   test("SPARK-32509: Unused Dynamic Pruning filter shouldn't affect " +
+     "canonicalization and exchange reuse",
+-    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
++    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #1737")) {
+     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+       withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+         val df = sql(
+@@ -1248,8 +1244,7 @@ abstract class DynamicPartitionPruningSuiteBase
+     }
+   }
+ 
+-  test("Plan broadcast pruning only when the broadcast can be reused",
+-    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
++  test("Plan broadcast pruning only when the broadcast can be reused") {
+     Given("dynamic pruning filter on the build side")
+     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+       val df = sql(
+@@ -1290,8 +1285,7 @@ abstract class DynamicPartitionPruningSuiteBase
+     }
+   }
+ 
+-  test("SPARK-32659: Fix the data issue when pruning DPP on non-atomic type",
+-    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
++  test("SPARK-32659: Fix the data issue when pruning DPP on non-atomic type") {
+     Seq(NO_CODEGEN, CODEGEN_ONLY).foreach { mode =>
+       Seq(true, false).foreach { pruning =>
+         withSQLConf(
+@@ -1323,8 +1317,7 @@ abstract class DynamicPartitionPruningSuiteBase
+     }
+   }
+ 
+-  test("SPARK-32817: DPP throws error when the broadcast side is empty",
+-    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
++  test("SPARK-32817: DPP throws error when the broadcast side is empty") {
+     withSQLConf(
+       SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+       SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
+@@ -1436,8 +1429,7 @@ abstract class DynamicPartitionPruningSuiteBase
+     }
+   }
+ 
+-  test("SPARK-34637: DPP side broadcast query stage is created firstly",
+-    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
++  test("SPARK-34637: DPP side broadcast query stage is created firstly") {
+     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+       val df = sql(
+         """ WITH v as (
+@@ -1484,8 +1476,7 @@ abstract class DynamicPartitionPruningSuiteBase
+     checkAnswer(df, Row(3, 2) :: Row(3, 2) :: Row(3, 2) :: Row(3, 2) :: Nil)
+   }
+ 
+-  test("SPARK-36444: Remove OptimizeSubqueries from batch of PartitionPruning",
+-    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
++  test("SPARK-36444: Remove OptimizeSubqueries from batch of PartitionPruning") {
+     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
+       val df = sql(
+         """
+@@ -1500,7 +1491,7 @@ abstract class DynamicPartitionPruningSuiteBase
+   }
+ 
+   test("SPARK-38148: Do not add dynamic partition pruning if there exists static partition " +
+-    "pruning", IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
++    "pruning") {
+     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
+       Seq(
+         "f.store_id = 1" -> false,
+@@ -1572,8 +1563,7 @@ abstract class DynamicPartitionPruningSuiteBase
+     }
+   }
+ 
+-  test("SPARK-38674: Remove useless deduplicate in SubqueryBroadcastExec",
+-    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
++  test("SPARK-38674: Remove useless deduplicate in SubqueryBroadcastExec") {
+     withTable("duplicate_keys") {
+       withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
+         Seq[(Int, String)]((1, "NL"), (1, "NL"), (3, "US"), (3, "US"), (3, "US"))
+@@ -1604,8 +1594,7 @@ abstract class DynamicPartitionPruningSuiteBase
+     }
+   }
+ 
+-  test("SPARK-39338: Remove dynamic pruning subquery if pruningKey's references is empty",
+-    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
++  test("SPARK-39338: Remove dynamic pruning subquery if pruningKey's references is empty") {
+     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
+       val df = sql(
+         """
+@@ -1634,8 +1623,7 @@ abstract class DynamicPartitionPruningSuiteBase
+     }
+   }
+ 
+-  test("SPARK-39217: Makes DPP support the pruning side has Union",
+-    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
++  test("SPARK-39217: Makes DPP support the pruning side has Union") {
+     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
+       val df = sql(
+         """
