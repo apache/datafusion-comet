@@ -236,7 +236,6 @@ object CometNativeScanExec extends DataTypeSupport {
       dt: DataType,
       name: String,
       fallbackReasons: ListBuffer[String]): Boolean = {
-    // TODO we could consider adding checks here for deeply nested types, which are not fully supported yet
     dt match {
       case ByteType | ShortType if usingParquetExecWithIncompatTypes(SQLConf.get) =>
         fallbackReasons += s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false"
