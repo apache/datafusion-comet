@@ -19,10 +19,11 @@
 
 package org.apache.spark.sql.comet
 
+import org.apache.comet.CometSparkSessionExtensions.usingParquetExecWithIncompatTypes
+
 import scala.collection.mutable.{HashMap, ListBuffer}
 import scala.concurrent.duration.NANOSECONDS
 import scala.reflect.ClassTag
-
 import org.apache.hadoop.fs.Path
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
@@ -43,15 +44,15 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.collection._
-
 import org.apache.comet.{CometConf, DataTypeSupport, MetricsSupport}
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionReaderFactory}
+import org.apache.spark.sql.internal.SQLConf
 
 /**
  * Comet physical scan node for DataSource V1. Most of the code here follow Spark's
  * [[FileSourceScanExec]],
  */
-case class CometScanExec(
+case class 7CometScanExec(
     @transient relation: HadoopFsRelation,
     output: Seq[Attribute],
     requiredSchema: StructType,
@@ -528,6 +529,9 @@ object CometScanExec extends DataTypeSupport {
       name: String,
       fallbackReasons: ListBuffer[String]): Boolean = {
     dt match {
+      case ByteType | ShortType if usingParquetExecWithIncompatTypes(SQLConf.get) =>
+        fallbackReasons += s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false"
+        false
       case _: StructType | _: ArrayType | _: MapType
           if CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
         false
