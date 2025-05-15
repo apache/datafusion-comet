@@ -137,11 +137,11 @@ case class CometSparkToColumnarExec(child: SparkPlan)
 }
 
 object CometSparkToColumnarExec extends DataTypeSupport {
-  override def isAdditionallySupported(
+  override def isTypeSupported(
       dt: DataType,
       name: String,
       fallbackReasons: ListBuffer[String]): Boolean = dt match {
     case _: StructType => true
-    case _ => false
+    case _ => super.isTypeSupported(dt, name, fallbackReasons)
   }
 }

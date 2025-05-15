@@ -45,7 +45,6 @@ import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.collection._
 
 import org.apache.comet.{CometConf, DataTypeSupport, MetricsSupport}
-import org.apache.comet.DataTypeSupport.{ARRAY_ELEMENT, MAP_KEY, MAP_VALUE}
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionReaderFactory}
 
 /**
@@ -479,28 +478,6 @@ case class CometScanExec(
 
 object CometScanExec extends DataTypeSupport {
 
-  override def isAdditionallySupported(
-      dt: DataType,
-      name: String,
-      fallbackReasons: ListBuffer[String]): Boolean = {
-    if (CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
-      dt match {
-        case s: StructType =>
-          s.fields.forall(f => isTypeSupported(f.dataType, f.name, fallbackReasons))
-        case a: ArrayType =>
-          isTypeSupported(a.elementType, ARRAY_ELEMENT, fallbackReasons)
-        case m: MapType =>
-          isTypeSupported(m.keyType, MAP_KEY, fallbackReasons) && isTypeSupported(
-            m.valueType,
-            MAP_VALUE,
-            fallbackReasons)
-        case _ => false
-      }
-    } else {
-      false
-    }
-  }
-
   def apply(scanExec: FileSourceScanExec, session: SparkSession): CometScanExec = {
     // TreeNode.mapProductIterator is protected method.
     def mapProductIterator[B: ClassTag](product: Product, f: Any => B): Array[B] = {
@@ -544,5 +521,17 @@ object CometScanExec extends DataTypeSupport {
     // Only support Spark's built-in Parquet scans, not others such as Delta which use a subclass
     // of ParquetFileFormat.
     fileFormat.getClass().equals(classOf[ParquetFileFormat])
+  }
+
+  override def isTypeSupported(
+      dt: DataType,
+      name: String,
+      fallbackReasons: ListBuffer[String]): Boolean = {
+    dt match {
+      case _: StructType | _: ArrayType | _: MapType =>
+        false
+      case _ =>
+        super.isTypeSupported(dt, name, fallbackReasons)
+    }
   }
 }

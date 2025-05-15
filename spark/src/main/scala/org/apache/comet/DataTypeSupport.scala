@@ -24,46 +24,17 @@ import scala.collection.mutable.ListBuffer
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.DataTypeSupport.{usingParquetExecWithIncompatTypes, ARRAY_ELEMENT, MAP_KEY, MAP_VALUE}
+import org.apache.comet.DataTypeSupport.{ARRAY_ELEMENT, MAP_KEY, MAP_VALUE}
 
 trait DataTypeSupport {
 
   /**
-   * This can be overridden to provide support for specific data types that aren't universally
-   * supported. This will only be called for non-universally supported types.
+   * Checks if this schema is supported by checking if each field in the schema is supported.
    *
-   * @param dt
-   *   the data type to check
+   * @param schema
+   *   the schema to check the fields of
    * @return
-   *   true if the datatype is supported
-   */
-  def isAdditionallySupported(
-      dt: DataType,
-      name: String,
-      fallbackReasons: ListBuffer[String]): Boolean = false
-
-  private def isGloballySupported(dt: DataType, fallbackReasons: ListBuffer[String]): Boolean =
-    dt match {
-      case ByteType | ShortType if usingParquetExecWithIncompatTypes(SQLConf.get) =>
-        fallbackReasons += s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false"
-        false
-      case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-          BinaryType | StringType | _: DecimalType | DateType | TimestampType =>
-        true
-      case t: DataType if t.typeName == "timestamp_ntz" =>
-        true
-      case other =>
-        fallbackReasons += s"Unsupported type: $other"
-        false
-    }
-
-  /**
-   * Checks if this schema is supported by checking if each field in the struct is supported.
-   *
-   * @param struct
-   *   the struct to check the fields of
-   * @return
-   *   true if all fields in the struct are supported
+   *   true if all fields in the schema are supported
    */
   def isSchemaSupported(struct: StructType, fallbackReasons: ListBuffer[String]): Boolean = {
     struct.fields.forall(f => isTypeSupported(f.dataType, f.name, fallbackReasons))
@@ -73,27 +44,24 @@ trait DataTypeSupport {
       dt: DataType,
       name: String,
       fallbackReasons: ListBuffer[String]): Boolean = {
-    if (isGloballySupported(dt, fallbackReasons) || isAdditionallySupported(
-        dt,
-        name,
-        fallbackReasons)) {
-      // If complex types are supported, we additionally want to recurse into their children
-      dt match {
-        case StructType(fields) =>
-          fields.forall(f => isTypeSupported(f.dataType, f.name, fallbackReasons))
-        case ArrayType(elementType, _) =>
-          isTypeSupported(elementType, ARRAY_ELEMENT, fallbackReasons)
-        case MapType(keyType, valueType, _) =>
-          isTypeSupported(keyType, MAP_KEY, fallbackReasons) && isTypeSupported(
-            valueType,
-            MAP_VALUE,
-            fallbackReasons)
-        // Not a complex type
-        case _ => true
-      }
-    } else {
-      fallbackReasons += s"Unsupported ${name} of type ${dt}"
-      false
+
+    dt match {
+      case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
+          BinaryType | StringType | _: DecimalType | DateType | TimestampType |
+          TimestampNTZType =>
+        true
+      case StructType(fields) =>
+        fields.forall(f => isTypeSupported(f.dataType, f.name, fallbackReasons))
+      case ArrayType(elementType, _) =>
+        isTypeSupported(elementType, ARRAY_ELEMENT, fallbackReasons)
+      case MapType(keyType, valueType, _) =>
+        isTypeSupported(keyType, MAP_KEY, fallbackReasons) && isTypeSupported(
+          valueType,
+          MAP_VALUE,
+          fallbackReasons)
+      case _ =>
+        fallbackReasons += s"Unsupported ${name} of type ${dt}"
+        false
     }
   }
 }
