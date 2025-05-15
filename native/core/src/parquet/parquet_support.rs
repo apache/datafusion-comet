@@ -316,9 +316,6 @@ pub(crate) fn prepare_object_store(
 #[cfg(test)]
 mod tests {
     use crate::parquet::parquet_support::prepare_object_store;
-    use arrow::array::{Array, Int32Builder, ListBuilder, StringBuilder, StructBuilder};
-    use arrow::compute::{can_cast_types, cast_with_options, CastOptions};
-    use arrow::datatypes::{DataType, Field, Fields};
     use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::execution::runtime_env::RuntimeEnv;
     use object_store::path::Path;
@@ -390,73 +387,5 @@ mod tests {
         let res = res.unwrap();
         assert_eq!(res.0, expected.0);
         assert_eq!(res.1, expected.1);
-    }
-
-    #[test]
-    fn test_cast_array() {
-        let fields = Fields::from([
-            Arc::new(Field::new("a", DataType::Int32, true)),
-            Arc::new(Field::new("b", DataType::Utf8, true)),
-            Arc::new(Field::new("c", DataType::Utf8, true)),
-        ]);
-
-        let a_col_builder = Int32Builder::with_capacity(1);
-        let b_col_builder = StringBuilder::new();
-        let c_col_builder = StringBuilder::new();
-
-        let struct_builder = StructBuilder::new(
-            fields,
-            vec![
-                Box::new(a_col_builder),
-                Box::new(b_col_builder),
-                Box::new(c_col_builder),
-            ],
-        );
-
-        let mut list_builder = ListBuilder::new(struct_builder);
-
-        let values = list_builder.values();
-        values
-            .field_builder::<Int32Builder>(0)
-            .unwrap()
-            .append_values(&[1, 2], &[true, true]);
-
-        values
-            .field_builder::<StringBuilder>(1)
-            .unwrap()
-            .extend(vec![Some("n"), Some("m")]);
-
-        values
-            .field_builder::<StringBuilder>(2)
-            .unwrap()
-            .extend(vec![Some("x"), Some("y")]);
-
-        values.append(true);
-        values.append(true);
-        list_builder.append(true);
-
-        let array = Arc::new(list_builder.finish());
-
-        let to_type = DataType::List(
-            Field::new(
-                "element",
-                DataType::Struct(Fields::from(vec![
-                    Field::new("a", DataType::Int32, false),
-                    Field::new("c", DataType::Utf8, false),
-                ] as Vec<Field>)),
-                false,
-            )
-            .into(),
-        );
-
-        dbg!(&array);
-        /*
-        Cast [{a: 1, b: n, c: x}] -> [{a: 1, c: x}] -> [{a: 1, c: n}]
-         */
-        let res = cast_with_options(&array.as_ref(), &to_type, &CastOptions::default()).unwrap();
-
-        dbg!(can_cast_types(array.data_type(), &to_type));
-
-        dbg!(&res);
     }
 }

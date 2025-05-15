@@ -2513,10 +2513,11 @@ mod tests {
     use datafusion::datasource::listing::PartitionedFile;
     use datafusion::datasource::object_store::ObjectStoreUrl;
     use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
+    use datafusion::error::DataFusionError;
     use datafusion::logical_expr::ScalarUDF;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
-    use tokio::runtime::Runtime;
+    use tempfile::TempDir;
     use tokio::sync::mpsc;
 
     use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
@@ -3093,457 +3094,80 @@ mod tests {
         });
     }
 
-    // #[test]
-    // fn test_struct_field() {
-    //     let session_ctx = SessionContext::new();
-    //     let task_ctx = session_ctx.task_ctx();
-    //     let planner = PhysicalPlanner::new(Arc::from(session_ctx));
-    //
-    //     // Mock scan operator with 3 INT32 columns
-    //     let op_scan = Operator {
-    //         plan_id: 0,
-    //         children: vec![],
-    //         op_struct: Some(OpStruct::Scan(spark_operator::Scan {
-    //             fields: vec![
-    //                 spark_expression::DataType {
-    //                     type_id: 4, // Int32
-    //                     type_info: None,
-    //                 },
-    //                 spark_expression::DataType {
-    //                     type_id: 4, // Int32
-    //                     type_info: None,
-    //                 },
-    //                 spark_expression::DataType {
-    //                     type_id: 4, // Int32
-    //                     type_info: None,
-    //                 },
-    //             ],
-    //             source: "".to_string(),
-    //         })),
-    //     };
-    //
-    //     // Mock expression to read a INT32 column with position 0
-    //     let col_0 = spark_expression::Expr {
-    //         expr_struct: Some(Bound(spark_expression::BoundReference {
-    //             index: 0,
-    //             datatype: Some(spark_expression::DataType {
-    //                 type_id: 4,
-    //                 type_info: None,
-    //             }),
-    //         })),
-    //     };
-    //
-    //     // Mock expression to read a INT32 column with position 1
-    //     let col_1 = spark_expression::Expr {
-    //         expr_struct: Some(Bound(spark_expression::BoundReference {
-    //             index: 1,
-    //             datatype: Some(spark_expression::DataType {
-    //                 type_id: 4,
-    //                 type_info: None,
-    //             }),
-    //         })),
-    //     };
-    //
-    //     // create a list of structs - make_array(struct(col_0, col_1))
-    //     let array_of_struct = spark_expression::Expr {
-    //         expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
-    //             func: "make_array".to_string(),
-    //             args: vec![spark_expression::Expr {
-    //                 expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
-    //                     func: "struct".to_string(),
-    //                     args: vec![col_0, col_1],
-    //                     return_type: None,
-    //                 })),
-    //             }],
-    //             return_type: None,
-    //         })),
-    //     };
-    //
-    //     // get first array element, array[1] - in SQL index starts with 1
-    //     // let get_first_array_element = spark_expression::Expr {
-    //     //     expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
-    //     //         func: "array_element".to_string(),
-    //     //         args: vec![
-    //     //             array_of_struct,
-    //     //             spark_expression::Expr {
-    //     //                 expr_struct: Some(ExprStruct::Literal(spark_expression::Literal {
-    //     //                     value: Some(literal::Value::LongVal(1)),
-    //     //                     datatype: Some(spark_expression::DataType {
-    //     //                         type_id: 4,
-    //     //                         type_info: None,
-    //     //                     }),
-    //     //                     is_null: false,
-    //     //                 })),
-    //     //             },
-    //     //         ],
-    //     //         return_type: None,
-    //     //     })),
-    //     // };
-    //
-    //
-    //     let get_first_array_element = spark_expression::Expr {
-    //         expr_struct: Some(ExprStruct::ListExtract(
-    //             Box::from(spark_expression::ListExtract {
-    //                 child: Some(Box::from(array_of_struct)),
-    //                 ordinal: Some(Box::new(spark_expression::Expr {
-    //                     expr_struct: Some(ExprStruct::Literal(spark_expression::Literal {
-    //                         value: Some(literal::Value::IntVal(0)),
-    //                         datatype: Some(spark_expression::DataType {
-    //                             type_id: 3,
-    //                             type_info: None,
-    //                         }),
-    //                         is_null: false,
-    //                     }))
-    //                 })),
-    //                 default_value: None,
-    //                 one_based: false,
-    //                 fail_on_error: false,
-    //             })
-    //         )),
-    //     };
-    //
-    //     // Get the field c1 of struct struct.c1
-    //     // let get_field_of_struct = spark_expression::Expr {
-    //     //     expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
-    //     //         func: "get_field".to_string(),
-    //     //         args: vec![
-    //     //             get_first_array_element,
-    //     //             spark_expression::Expr {
-    //     //                 expr_struct: Some(ExprStruct::Literal(spark_expression::Literal {
-    //     //                     value: Some(literal::Value::StringVal("c1".to_string())),
-    //     //                     datatype: Some(spark_expression::DataType {
-    //     //                         type_id: 7,
-    //     //                         type_info: None,
-    //     //                     }),
-    //     //                     is_null: false,
-    //     //                 })),
-    //     //             },
-    //     //         ],
-    //     //         return_type: None,
-    //     //     })),
-    //     // };
-    //
-    //     let get_field_of_struct = spark_expression::Expr {
-    //         expr_struct: Some(ExprStruct::GetStructField(
-    //             Box::from(spark_expression::GetStructField {
-    //                 child: Some(Box::from(get_first_array_element)),
-    //                 ordinal: 0,
-    //             })
-    //         )),
-    //     };
-    //
-    //     // Make a projection operator
-    //     // select make_array(struct(col_0, col_1))[1][c1] is equivalent to
-    //     // select get_field(array_element(make_array(struct(col_0, col_1)), 1), 'c1')
-    //     let projection = Operator {
-    //         children: vec![op_scan],
-    //         plan_id: 0,
-    //         op_struct: Some(OpStruct::Projection(spark_operator::Projection {
-    //             project_list: vec![get_field_of_struct],
-    //         })),
-    //     };
-    //
-    //     // Create a physical plan
-    //     let (mut scans, datafusion_plan) =
-    //         planner.create_plan(&projection, &mut vec![], 1).unwrap();
-    //
-    //     // Start executing the plan in a separate thread
-    //     // The plan waits for incoming batches and emitting result as input comes
-    //     let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
-    //
-    //     let runtime = tokio::runtime::Runtime::new().unwrap();
-    //     // create async channel
-    //     let (tx, mut rx) = mpsc::channel(1);
-    //
-    //     // Send data as input to the plan being executed in a separate thread
-    //     runtime.spawn(async move {
-    //         // create data batch
-    //         // 0, 1, 2
-    //         // 3, 4, 5
-    //         // 6, null, null
-    //         let a = Int64Array::from(vec![Some(0), Some(3), Some(6)]);
-    //         let b = Int64Array::from(vec![Some(1), Some(4), None]);
-    //         let c = Int64Array::from(vec![Some(2), Some(5), None]);
-    //         let input_batch1 = InputBatch::Batch(vec![Arc::new(a), Arc::new(b), Arc::new(c)], 3);
-    //         let input_batch2 = InputBatch::EOF;
-    //
-    //         let batches = vec![input_batch1, input_batch2];
-    //
-    //         for batch in batches.into_iter() {
-    //             tx.send(batch).await.unwrap();
-    //         }
-    //     });
-    //
-    //     // Wait for the plan to finish executing and assert the result
-    //     runtime.block_on(async move {
-    //         loop {
-    //             let batch = rx.recv().await.unwrap();
-    //             scans[0].set_input_batch(batch);
-    //             match poll!(stream.next()) {
-    //                 Poll::Ready(Some(batch)) => {
-    //                     assert!(batch.is_ok(), "got error {}", batch.unwrap_err());
-    //                     let batch = batch.unwrap();
-    //                     let expected = [
-    //                         "+-------+",
-    //                         "| col_0 |",
-    //                         "+-------+",
-    //                         "| 1     |",
-    //                         "| 4     |",
-    //                         "|       |",
-    //                         "+-------+",
-    //                     ];
-    //                     assert_batches_eq!(expected, &[batch]);
-    //                 }
-    //                 Poll::Ready(None) => {
-    //                     break;
-    //                 }
-    //                 _ => {}
-    //             }
-    //         }
-    //     });
-    // }
-    //
-    // #[test]
-    // fn test_struct_field_1() {
-    //     use spark_expression::*;
-    //     use spark_expression::data_type::*;
-    //     use spark_expression::data_type::data_type_info::*;
-    //     use spark_operator::*;
-    //
-    //     let session_ctx = SessionContext::new();
-    //     let task_ctx = session_ctx.task_ctx();
-    //     let planner = PhysicalPlanner::new(Arc::from(session_ctx));
-    //
-    //     // Mock scan operator with 3 INT32 columns
-    //     let op_scan = Operator {
-    //         plan_id: 0,
-    //         children: vec![],
-    //         op_struct: Some(OpStruct::NativeScan(NativeScan {
-    //             fields: vec![DataType {
-    //                 type_id: i32::from(DataTypeId::List),
-    //                 type_info: Some(
-    //                     Box::from(DataTypeInfo {
-    //                         datatype_struct: Some(
-    //                             DatatypeStruct::List(
-    //                                 Box::from(ListInfo {
-    //                                     element_type: Some(
-    //                                         Box::from(DataType {
-    //                                             type_id: i32::from(DataTypeId::Struct),
-    //                                             type_info: Some(
-    //                                                 Box::from(DataTypeInfo {
-    //                                                     datatype_struct: Some(
-    //                                                         DatatypeStruct::Struct(
-    //                                                             StructInfo {
-    //                                                                 field_names: vec![
-    //                                                                     "a".to_string(),
-    //                                                                     "c".to_string(),
-    //                                                                 ],
-    //                                                                 field_datatypes: vec![
-    //                                                                     DataType {
-    //                                                                         type_id: i32::from(DataTypeId::Int32),
-    //                                                                         type_info: None,
-    //                                                                     },
-    //                                                                     DataType {
-    //                                                                         type_id: i32::from(DataTypeId::String),
-    //                                                                         type_info: None,
-    //                                                                     },
-    //                                                                 ],
-    //                                                                 field_nullable: vec![
-    //                                                                     true,
-    //                                                                     true,
-    //                                                                 ],
-    //                                                             },
-    //                                                         ),
-    //                                                     ),
-    //                                                 }),
-    //                                             ),
-    //                                         }),
-    //                                     ),
-    //                                     contains_null: true,
-    //                                 }),
-    //                             ),
-    //                         ),
-    //                     }),
-    //                 ),
-    //             },],
-    //             source: "CometScan parquet".to_string(),
-    //             required_schema: vec![
-    //                 SparkStructField {
-    //                     name: "c0".to_string(),
-    //                     data_type: Some(
-    //                         DataType {
-    //                             type_id: i32::from(DataTypeId::List),
-    //                             type_info: Some(
-    //                                 Box::from(DataTypeInfo {
-    //                                     datatype_struct: Some(
-    //                                         DatatypeStruct::List(
-    //                                             Box::from(ListInfo {
-    //                                                 element_type: Some(
-    //                                                     Box::from(DataType {
-    //                                                         type_id: i32::from(DataTypeId::Struct),
-    //                                                         type_info: Some(
-    //                                                             Box::from(DataTypeInfo {
-    //                                                                 datatype_struct: Some(
-    //                                                                     DatatypeStruct::Struct(
-    //                                                                         StructInfo {
-    //                                                                             field_names: vec![
-    //                                                                                 "a".to_string(),
-    //                                                                                 "c".to_string(),
-    //                                                                             ],
-    //                                                                             field_datatypes: vec![
-    //                                                                                 DataType {
-    //                                                                                     type_id: i32::from(DataTypeId::Int32),
-    //                                                                                     type_info: None,
-    //                                                                                 },
-    //                                                                                 DataType {
-    //                                                                                     type_id: i32::from(DataTypeId::String),
-    //                                                                                     type_info: None,
-    //                                                                                 },
-    //                                                                             ],
-    //                                                                             field_nullable: vec![
-    //                                                                                 true,
-    //                                                                                 true,
-    //                                                                             ],
-    //                                                                         },
-    //                                                                     ),
-    //                                                                 ),
-    //                                                             }),
-    //                                                         ),
-    //                                                     }),
-    //                                                 ),
-    //                                                 contains_null: true,
-    //                                             }),
-    //                                         ),
-    //                                     ),
-    //                                 }),
-    //                             ),
-    //                         },
-    //                     ),
-    //                     nullable: true,
-    //                 },
-    //             ],
-    //             data_schema: vec![],
-    //             partition_schema: vec![],
-    //             data_filters: vec![],
-    //             file_partitions: vec![
-    //                 SparkFilePartition {
-    //                     partitioned_file: vec![
-    //                         SparkPartitionedFile {
-    //                             file_path: "file:///tmp/test1/part-00000-45bd1152-e622-4056-bb59-4abd50cb92c1-c000.snappy.parquet".to_string(),
-    //                             start: 0,
-    //                             length: 1169,
-    //                             file_size: 1169,
-    //                             partition_values: vec![],
-    //                         },
-    //                     ],
-    //                 },
-    //             ],
-    //             projection_vector: vec![0],
-    //             session_timezone: "America/Los_Angeles".to_string(),
-    //         })),
-    //     };
-    //
-    //     // Create a physical plan
-    //     let (mut scans, datafusion_plan) =
-    //         planner.create_plan(&op_scan, &mut vec![], 1).unwrap();
-    //
-    //     // Start executing the plan in a separate thread
-    //     // The plan waits for incoming batches and emitting result as input comes
-    //     let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
-    //
-    //     let runtime = tokio::runtime::Runtime::new().unwrap();
-    //     // create async channel
-    //     let (tx, mut rx) = mpsc::channel(1);
-    //
-    //     // Send data as input to the plan being executed in a separate thread
-    //     runtime.spawn(async move {
-    //         // create data batch
-    //         // 0, 1, 2
-    //         // 3, 4, 5
-    //         // 6, null, null
-    //         let a = Int32Array::from(vec![Some(0), Some(3), Some(6)]);
-    //         let b = Int32Array::from(vec![Some(1), Some(4), None]);
-    //         let c = Int32Array::from(vec![Some(2), Some(5), None]);
-    //         let input_batch1 = InputBatch::Batch(vec![Arc::new(a), Arc::new(b), Arc::new(c)], 3);
-    //         let input_batch2 = InputBatch::EOF;
-    //
-    //         let batches = vec![input_batch1, input_batch2];
-    //
-    //         for batch in batches.into_iter() {
-    //             tx.send(batch).await.unwrap();
-    //         }
-    //     });
-    //
-    //     // Wait for the plan to finish executing and assert the result
-    //     runtime.block_on(async move {
-    //         loop {
-    //             let batch = rx.recv().await.unwrap();
-    //             scans[0].set_input_batch(batch);
-    //             match poll!(stream.next()) {
-    //                 Poll::Ready(Some(batch)) => {
-    //                     assert!(batch.is_ok(), "got error {}", batch.unwrap_err());
-    //                     let batch = batch.unwrap();
-    //                     let expected = [
-    //                         "+-------+",
-    //                         "| col_0 |",
-    //                         "+-------+",
-    //                         "| 1     |",
-    //                         "| 4     |",
-    //                         "|       |",
-    //                         "+-------+",
-    //                     ];
-    //                     assert_batches_eq!(expected, &[batch]);
-    //                 }
-    //                 Poll::Ready(None) => {
-    //                     break;
-    //                 }
-    //                 _ => {}
-    //             }
-    //         }
-    //     });
-    // }
+    /*
+    Testing a nested types scenario
 
-    #[test]
-    fn test_struct_field_2() {
+    select arr[0].a, arr[0].c from (
+        select array(named_struct('a', 1, 'b', 'n', 'c', 'x')) arr)
+     */
+    #[tokio::test]
+    async fn test_nested_types() -> Result<(), DataFusionError> {
         let session_ctx = SessionContext::new();
 
+        // generate test data in the temp folder
+        let test_data = "select make_array(named_struct('a', 1, 'b', 'n', 'c', 'x')) c0";
+        let tmp_dir = TempDir::new()?;
+        let test_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let plan = session_ctx
+            .sql(test_data)
+            .await?
+            .create_physical_plan()
+            .await?;
+
+        // Write parquet file into temp folder
+        session_ctx
+            .write_parquet(plan, test_path.clone(), None)
+            .await?;
+
+        // Define schema Comet reads with
         let required_schema = Schema::new(Fields::from(vec![Field::new(
             "c0",
             DataType::List(
                 Field::new(
                     "element",
                     DataType::Struct(Fields::from(vec![
-                        Field::new("a", DataType::Int32, false),
-                        Field::new("c", DataType::Utf8, false),
+                        Field::new("a", DataType::Int32, true),
+                        Field::new("c", DataType::Utf8, true),
                     ] as Vec<Field>)),
-                    false,
+                    true,
                 )
                 .into(),
             ),
-            false,
+            true,
         )]));
 
-        let object_store_url = ObjectStoreUrl::local_filesystem();
+        // Register all parquet with temp data as file groups
+        let mut file_groups: Vec<FileGroup> = vec![];
+        for entry in std::fs::read_dir(&test_path)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.extension().and_then(|ext| ext.to_str()) == Some("parquet") {
+                if let Some(path_str) = path.to_str() {
+                    file_groups.push(FileGroup::new(vec![PartitionedFile::from_path(
+                        path_str.into(),
+                    )?]));
+                }
+            }
+        }
+
         let source = Arc::new(
             ParquetSource::default().with_schema_adapter_factory(Arc::new(
                 SparkSchemaAdapterFactory::new(SparkParquetOptions::new(EvalMode::Ansi, "", false)),
             )),
         );
 
-        let file_groups: Vec<FileGroup> = vec![FileGroup::new(vec![PartitionedFile::new(
-            "/tmp/test1/part-00000-09e61881-4140-4f4a-bfd9-65db7b2bb0ae-c000.snappy.parquet",
-            1095,
-        )])];
-
+        let object_store_url = ObjectStoreUrl::local_filesystem();
         let file_scan_config =
             FileScanConfigBuilder::new(object_store_url, required_schema.into(), source)
                 .with_file_groups(file_groups)
                 .build();
-        let scan = Arc::new(DataSourceExec::new(Arc::new(file_scan_config.clone())));
 
-        let stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
-        let rt = Runtime::new().unwrap();
-        let result: Vec<_> = rt.block_on(stream.collect());
+        // Run native read
+        let scan = Arc::new(DataSourceExec::new(Arc::new(file_scan_config.clone())));
+        let stream = scan.execute(0, session_ctx.task_ctx())?;
+        let result: Vec<_> = stream.collect().await;
 
         let actual = result.first().unwrap().as_ref().unwrap();
 
@@ -3555,5 +3179,7 @@ mod tests {
             "+----------------+",
         ];
         assert_batches_eq!(expected, &[actual.clone()]);
+
+        Ok(())
     }
 }
