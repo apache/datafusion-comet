@@ -93,7 +93,8 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
         var scanImpl = COMET_NATIVE_SCAN_IMPL.get()
 
         // auto mode will use SCAN_NATIVE_DATAFUSION when possible
-        if (scanImpl == "auto" && COMET_EXEC_ENABLED.get()) {
+        if (scanImpl == CometConf.SCAN_AUTO && COMET_EXEC_ENABLED.get() &&
+          !scanExec.bucketedScan) {
           val ignore = new ListBuffer[String]()
           if (CometNativeScanExec.isSchemaSupported(scanExec.requiredSchema, ignore) &&
             CometNativeScanExec.isSchemaSupported(r.partitionSchema, ignore)) {
@@ -109,6 +110,11 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
               scanImpl = CometConf.SCAN_NATIVE_DATAFUSION
             }
           }
+        }
+
+        // fallback to SCAN_NATIVE_COMET
+        if (scanImpl == CometConf.SCAN_AUTO) {
+          scanImpl = CometConf.SCAN_NATIVE_COMET
         }
 
         if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && !COMET_EXEC_ENABLED.get()) {
