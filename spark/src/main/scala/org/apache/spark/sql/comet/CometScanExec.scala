@@ -62,7 +62,8 @@ case class CometScanExec(
     dataFilters: Seq[Expression],
     tableIdentifier: Option[TableIdentifier],
     disableBucketedScan: Boolean = false,
-    wrapped: FileSourceScanExec)
+    wrapped: FileSourceScanExec,
+    scanImpl: String)
     extends DataSourceScanExec
     with ShimCometScanExec
     with CometPlan {
@@ -473,7 +474,8 @@ case class CometScanExec(
       QueryPlan.normalizePredicates(dataFilters, output),
       None,
       disableBucketedScan,
-      null)
+      null,
+      scanImpl)
   }
 }
 
@@ -501,7 +503,10 @@ object CometScanExec extends DataTypeSupport {
     }
   }
 
-  def apply(scanExec: FileSourceScanExec, session: SparkSession): CometScanExec = {
+  def apply(
+      scanExec: FileSourceScanExec,
+      session: SparkSession,
+      scanImpl: String): CometScanExec = {
     // TreeNode.mapProductIterator is protected method.
     def mapProductIterator[B: ClassTag](product: Product, f: Any => B): Array[B] = {
       val arr = Array.ofDim[B](product.productArity)
@@ -535,7 +540,8 @@ object CometScanExec extends DataTypeSupport {
       wrapped.dataFilters,
       wrapped.tableIdentifier,
       wrapped.disableBucketedScan,
-      wrapped)
+      wrapped,
+      scanImpl)
     scanExec.logicalLink.foreach(batchScanExec.setLogicalLink)
     batchScanExec
   }

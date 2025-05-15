@@ -31,6 +31,7 @@ import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf._
@@ -89,7 +90,27 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
           return withInfos(scanExec, fallbackReasons.toSet)
         }
 
-        val scanImpl = COMET_NATIVE_SCAN_IMPL.get()
+        var scanImpl = COMET_NATIVE_SCAN_IMPL.get()
+
+        // auto mode will use SCAN_NATIVE_DATAFUSION when possible
+        if (scanImpl == "auto" && COMET_EXEC_ENABLED.get()) {
+          val ignore = new ListBuffer[String]()
+          if (CometNativeScanExec.isSchemaSupported(scanExec.requiredSchema, ignore) &&
+            CometNativeScanExec.isSchemaSupported(r.partitionSchema, ignore)) {
+
+            // we do not automatically enable SCAN_NATIVE_DATAFUSION for complex types yet
+            def isComplexType(dt: DataType) = dt match {
+              case _: StructType | _: ArrayType | _: MapType => true
+              case _ => false
+            }
+
+            if (!scanExec.requiredSchema.exists(field => isComplexType(field.dataType)) &&
+              !r.partitionSchema.exists(field => isComplexType(field.dataType))) {
+              scanImpl = CometConf.SCAN_NATIVE_DATAFUSION
+            }
+          }
+        }
+
         if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && !COMET_EXEC_ENABLED.get()) {
           fallbackReasons +=
             s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled"
@@ -122,7 +143,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
         }
 
         if (schemaSupported && partitionSchemaSupported) {
-          CometScanExec(scanExec, session)
+          CometScanExec(scanExec, session, scanImpl)
         } else {
           withInfos(scanExec, fallbackReasons.toSet)
         }
