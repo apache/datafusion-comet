@@ -35,10 +35,14 @@ trait DataTypeSupport {
    * @return
    *   true if all fields in the schema are supported
    */
-  def isSchemaSupported(struct: StructType, fallbackReasons: ListBuffer[String]): Boolean = {
-    struct.fields.forall(f => isTypeSupported(f.dataType, f.name, fallbackReasons))
+  def isSchemaSupported(schema: StructType, fallbackReasons: ListBuffer[String]): Boolean = {
+    schema.fields.forall(f => isTypeSupported(f.dataType, f.name, fallbackReasons))
   }
 
+  /**
+   * Determine if Comet supports a data type. This method can be overridden by specific operators
+   * as needed.
+   */
   def isTypeSupported(
       dt: DataType,
       name: String,
