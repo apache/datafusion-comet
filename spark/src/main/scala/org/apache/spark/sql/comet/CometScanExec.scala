@@ -52,7 +52,7 @@ import org.apache.spark.sql.internal.SQLConf
  * Comet physical scan node for DataSource V1. Most of the code here follow Spark's
  * [[FileSourceScanExec]],
  */
-case class 7CometScanExec(
+case class CometScanExec(
     @transient relation: HadoopFsRelation,
     output: Seq[Attribute],
     requiredSchema: StructType,
