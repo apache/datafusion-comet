@@ -141,7 +141,7 @@ object CometSparkToColumnarExec extends DataTypeSupport {
       dt: DataType,
       name: String,
       fallbackReasons: ListBuffer[String]): Boolean = dt match {
-    case _: StructType => true
+    case _: ArrayType | _: MapType => false
     case _ => super.isTypeSupported(dt, name, fallbackReasons)
   }
 }
