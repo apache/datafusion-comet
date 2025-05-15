@@ -16,6 +16,9 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
+use arrow::array::ListArray;
+use arrow::compute::can_cast_types;
+use arrow::datatypes::Field;
 use arrow::{
     array::{
         cast::AsArray, new_null_array, types::Int32Type, types::TimestampMicrosecondType, Array,
@@ -157,12 +160,19 @@ fn cast_array(
     let from_type = array.data_type();
 
     match (from_type, to_type) {
+        // If Arrow cast supports the cast, delegate the cast to Arrow
+        _ if can_cast_types(from_type, to_type) => {
+            Ok(cast_with_options(&array, to_type, &PARQUET_OPTIONS)?)
+        }
         (Struct(_), Struct(_)) => Ok(cast_struct_to_struct(
             array.as_struct(),
             from_type,
             to_type,
             parquet_options,
         )?),
+        (List(_), List(_)) => {
+            cast_list_to_list(array.as_list(), from_type, to_type, parquet_options)
+        }
         (Timestamp(TimeUnit::Microsecond, None), Timestamp(TimeUnit::Microsecond, Some(tz))) => {
             Ok(Arc::new(
                 array
@@ -171,7 +181,38 @@ fn cast_array(
                     .with_timezone(Arc::clone(tz)),
             ))
         }
-        _ => Ok(cast_with_options(&array, to_type, &PARQUET_OPTIONS)?),
+        _ => Ok(array),
+    }
+}
+
+fn cast_list_to_list(
+    array: &ListArray,
+    from_type: &DataType,
+    to_type: &DataType,
+    parquet_options: &SparkParquetOptions,
+) -> DataFusionResult<ArrayRef> {
+    match (from_type, to_type) {
+        (DataType::List(from_inner_type), DataType::List(to_inner_type)) => {
+            //dbg!(from_type);
+            //dbg!(to_type);
+            //dbg!(from_inner_type);
+            //dbg!(to_inner_type);
+
+            let cast_field = cast_array(
+                array.values().clone(),
+                to_inner_type.data_type(),
+                parquet_options,
+            )
+            .unwrap();
+
+            Ok(Arc::new(ListArray::new(
+                to_inner_type.clone(),
+                array.offsets().clone(),
+                cast_field,
+                array.nulls().cloned(),
+            )))
+        }
+        _ => unreachable!(),
     }
 }
 
@@ -277,6 +318,11 @@ pub(crate) fn prepare_object_store(
 #[cfg(test)]
 mod tests {
     use crate::parquet::parquet_support::prepare_object_store;
+    use arrow::array::{
+        Array, ArrayBuilder, Int32Builder, ListBuilder, StringBuilder, StructBuilder,
+    };
+    use arrow::compute::{can_cast_types, cast_with_options, CastOptions};
+    use arrow::datatypes::{DataType, Field, Fields};
     use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::execution::runtime_env::RuntimeEnv;
     use object_store::path::Path;
@@ -348,5 +394,75 @@ mod tests {
         let res = res.unwrap();
         assert_eq!(res.0, expected.0);
         assert_eq!(res.1, expected.1);
+    }
+
+    #[test]
+    fn test_cast_array() {
+        let fields = Fields::from([
+            Arc::new(Field::new("a", DataType::Int32, true)),
+            Arc::new(Field::new("b", DataType::Utf8, true)),
+            Arc::new(Field::new("c", DataType::Utf8, true)),
+        ]);
+
+        let struct_field = Field::new_list_field(DataType::Struct(fields.clone()), true);
+        let list_field = Field::new("list", DataType::List(Arc::new(struct_field)), true);
+        let a_col_builder = Int32Builder::with_capacity(1);
+        let b_col_builder = StringBuilder::new();
+        let c_col_builder = StringBuilder::new();
+
+        let struct_builder = StructBuilder::new(
+            fields,
+            vec![
+                Box::new(a_col_builder),
+                Box::new(b_col_builder),
+                Box::new(c_col_builder),
+            ],
+        );
+
+        let mut list_builder = ListBuilder::new(struct_builder);
+
+        let values = list_builder.values();
+        values
+            .field_builder::<Int32Builder>(0)
+            .unwrap()
+            .append_values(&[1, 2], &[true, true]);
+
+        values
+            .field_builder::<StringBuilder>(1)
+            .unwrap()
+            .extend(vec![Some("n"), Some("m")]);
+
+        values
+            .field_builder::<StringBuilder>(2)
+            .unwrap()
+            .extend(vec![Some("x"), Some("y")]);
+
+        values.append(true);
+        values.append(true);
+        list_builder.append(true);
+
+        let array = Arc::new(list_builder.finish());
+
+        let to_type = DataType::List(
+            Field::new(
+                "element",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("a", DataType::Int32, false).into(),
+                    Field::new("c", DataType::Utf8, false).into(),
+                ] as Vec<Field>)),
+                false,
+            )
+            .into(),
+        );
+
+        dbg!(&array);
+        /*
+        Cast [{a: 1, b: n, c: x}] -> [{a: 1, c: x}] -> [{a: 1, c: n}]
+         */
+        let res = cast_with_options(&array.as_ref(), &to_type, &CastOptions::default()).unwrap();
+
+        dbg!(can_cast_types(array.data_type(), &to_type));
+
+        dbg!(&res);
     }
 }

@@ -238,11 +238,18 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
   }
 
   test("native reader - read a STRUCT subfield - field from second") {
-    testSingleLineQuery(
-      """
-        |select array(named_struct('a', 1, 'b', 'n')) c0
-        |""".stripMargin,
-      "select c0[0].b from tbl")
+    withSQLConf(
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion") {
+      testSingleLineQuery(
+        """
+          |select 1 a, named_struct('a', 1, 'b', 'n') c0
+          |""".stripMargin,
+        "select c0.b from tbl")
+    }
   }
 
   test("native reader - read a STRUCT subfield from ARRAY of STRUCTS - field from first") {
@@ -284,7 +291,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       "select c0[0].a, c0[0].c from tbl")
   }
 
-  test("native reader - read a STRUCT subfield from ARRAY of STRUCTS - duplicate first") {
+  test("native reader - read a STRUCT subfield from ARRAY of STRUCTS - duplicate first field") {
     testSingleLineQuery(
       """
         | select array(str0, str1) c0 from
