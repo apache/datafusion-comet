@@ -19,11 +19,10 @@
 
 package org.apache.spark.sql.comet
 
-import org.apache.comet.CometSparkSessionExtensions.usingParquetExecWithIncompatTypes
-
 import scala.collection.mutable.{HashMap, ListBuffer}
 import scala.concurrent.duration.NANOSECONDS
 import scala.reflect.ClassTag
+
 import org.apache.hadoop.fs.Path
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
@@ -40,13 +39,15 @@ import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetOptions}
 import org.apache.spark.sql.execution.datasources.v2.DataSourceRDD
 import org.apache.spark.sql.execution.metric._
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.collection._
+
 import org.apache.comet.{CometConf, DataTypeSupport, MetricsSupport}
+import org.apache.comet.CometSparkSessionExtensions.usingParquetExecWithIncompatTypes
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionReaderFactory}
-import org.apache.spark.sql.internal.SQLConf
 
 /**
  * Comet physical scan node for DataSource V1. Most of the code here follow Spark's
