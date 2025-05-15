@@ -177,7 +177,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               |_16 * null,
               |cast(null as struct<_1:int>),
               |cast(null as map<int, int>),
-              |cast(null as list<int>),
+              |cast(null as array<int>)
               |FROM tbl""".stripMargin
           val df2 = sql(sqlString)
           val rows = df2.collect()
