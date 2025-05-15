@@ -18,7 +18,6 @@
 use crate::execution::operators::ExecutionError;
 use arrow::array::ListArray;
 use arrow::compute::can_cast_types;
-use arrow::datatypes::Field;
 use arrow::{
     array::{
         cast::AsArray, new_null_array, types::Int32Type, types::TimestampMicrosecondType, Array,
@@ -192,21 +191,20 @@ fn cast_list_to_list(
     parquet_options: &SparkParquetOptions,
 ) -> DataFusionResult<ArrayRef> {
     match (from_type, to_type) {
-        (DataType::List(from_inner_type), DataType::List(to_inner_type)) => {
+        (DataType::List(_), DataType::List(to_inner_type)) => {
             //dbg!(from_type);
             //dbg!(to_type);
             //dbg!(from_inner_type);
             //dbg!(to_inner_type);
 
             let cast_field = cast_array(
-                array.values().clone(),
+                Arc::clone(array.values()),
                 to_inner_type.data_type(),
                 parquet_options,
-            )
-            .unwrap();
+            )?;
 
             Ok(Arc::new(ListArray::new(
-                to_inner_type.clone(),
+                Arc::clone(to_inner_type),
                 array.offsets().clone(),
                 cast_field,
                 array.nulls().cloned(),
@@ -318,9 +316,7 @@ pub(crate) fn prepare_object_store(
 #[cfg(test)]
 mod tests {
     use crate::parquet::parquet_support::prepare_object_store;
-    use arrow::array::{
-        Array, ArrayBuilder, Int32Builder, ListBuilder, StringBuilder, StructBuilder,
-    };
+    use arrow::array::{Array, Int32Builder, ListBuilder, StringBuilder, StructBuilder};
     use arrow::compute::{can_cast_types, cast_with_options, CastOptions};
     use arrow::datatypes::{DataType, Field, Fields};
     use datafusion::execution::object_store::ObjectStoreUrl;
@@ -404,8 +400,6 @@ mod tests {
             Arc::new(Field::new("c", DataType::Utf8, true)),
         ]);
 
-        let struct_field = Field::new_list_field(DataType::Struct(fields.clone()), true);
-        let list_field = Field::new("list", DataType::List(Arc::new(struct_field)), true);
         let a_col_builder = Int32Builder::with_capacity(1);
         let b_col_builder = StringBuilder::new();
         let c_col_builder = StringBuilder::new();
@@ -447,8 +441,8 @@ mod tests {
             Field::new(
                 "element",
                 DataType::Struct(Fields::from(vec![
-                    Field::new("a", DataType::Int32, false).into(),
-                    Field::new("c", DataType::Utf8, false).into(),
+                    Field::new("a", DataType::Int32, false),
+                    Field::new("c", DataType::Utf8, false),
                 ] as Vec<Field>)),
                 false,
             )

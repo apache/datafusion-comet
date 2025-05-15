@@ -69,11 +69,11 @@ use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr}
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
-use crate::parquet::parquet_support::{prepare_object_store, SparkParquetOptions};
+use crate::parquet::parquet_support::prepare_object_store;
 use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
-    ExprSchema, JoinType as DFJoinType, ScalarValue,
+    JoinType as DFJoinType, ScalarValue,
 };
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
@@ -86,10 +86,6 @@ use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
-use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
-use datafusion::datasource::object_store::ObjectStoreUrl;
-use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
-use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
@@ -112,14 +108,12 @@ use datafusion_comet_spark_expr::{
     SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
     TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
-use futures::StreamExt;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
-use tokio::runtime::Runtime;
 use url::Url;
 
 // For clippy error on type_complexity.
@@ -3512,7 +3506,6 @@ mod tests {
     #[test]
     fn test_struct_field_2() {
         let session_ctx = SessionContext::new();
-        let task_ctx = session_ctx.task_ctx();
 
         let required_schema = Schema::new(Fields::from(vec![Field::new(
             "c0",
@@ -3520,14 +3513,13 @@ mod tests {
                 Field::new(
                     "element",
                     DataType::Struct(Fields::from(vec![
-                        Field::new("a", DataType::Int32, false).into(),
-                        Field::new("c", DataType::Utf8, false).into(),
+                        Field::new("a", DataType::Int32, false),
+                        Field::new("c", DataType::Utf8, false),
                     ] as Vec<Field>)),
                     false,
                 )
                 .into(),
-            )
-            .into(),
+            ),
             false,
         )]));
 
@@ -3553,7 +3545,7 @@ mod tests {
         let rt = Runtime::new().unwrap();
         let result: Vec<_> = rt.block_on(stream.collect());
 
-        let actual = result.get(0).unwrap().as_ref().unwrap();
+        let actual = result.first().unwrap().as_ref().unwrap();
 
         let expected = [
             "+----------------+",
