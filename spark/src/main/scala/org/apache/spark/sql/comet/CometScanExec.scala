@@ -46,7 +46,7 @@ import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.collection._
 
 import org.apache.comet.{CometConf, DataTypeSupport, MetricsSupport}
-import org.apache.comet.CometSparkSessionExtensions.usingParquetExecWithIncompatTypes
+import org.apache.comet.CometSparkSessionExtensions.usingDataSourceExecWithIncompatTypes
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionReaderFactory}
 
 /**
@@ -530,7 +530,7 @@ object CometScanExec extends DataTypeSupport {
       name: String,
       fallbackReasons: ListBuffer[String]): Boolean = {
     dt match {
-      case ByteType | ShortType if usingParquetExecWithIncompatTypes(SQLConf.get) =>
+      case ByteType | ShortType if usingDataSourceExecWithIncompatTypes(SQLConf.get) =>
         fallbackReasons += s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false"
         false
       case _: StructType | _: ArrayType | _: MapType

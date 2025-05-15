@@ -242,12 +242,12 @@ object CometSparkSessionExtensions extends Logging {
     org.apache.spark.SPARK_VERSION >= "4.0"
   }
 
-  def usingDataFusionParquetExec(conf: SQLConf): Boolean =
+  def usingDataSourceExec(conf: SQLConf): Boolean =
     Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION).contains(
       CometConf.COMET_NATIVE_SCAN_IMPL.get(conf))
 
-  def usingParquetExecWithIncompatTypes(conf: SQLConf): Boolean = {
-    usingDataFusionParquetExec(conf) &&
+  def usingDataSourceExecWithIncompatTypes(conf: SQLConf): Boolean = {
+    usingDataSourceExec(conf) &&
     !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get(conf)
   }
 

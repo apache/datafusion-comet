@@ -60,7 +60,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private val timestampPattern = "0123456789/:T" + whitespaceChars
 
   lazy val usingParquetExecWithIncompatTypes: Boolean =
-    CometSparkSessionExtensions.usingParquetExecWithIncompatTypes(conf)
+    CometSparkSessionExtensions.usingDataSourceExecWithIncompatTypes(conf)
 
   test("all valid cast combinations covered") {
     val names = testNames
