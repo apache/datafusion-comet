@@ -21,7 +21,6 @@ package org.apache.comet
 
 import scala.collection.mutable.ListBuffer
 
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.{ARRAY_ELEMENT, MAP_KEY, MAP_VALUE}
@@ -70,9 +69,4 @@ object DataTypeSupport {
   val ARRAY_ELEMENT = "array element"
   val MAP_KEY = "map key"
   val MAP_VALUE = "map value"
-
-  def usingParquetExecWithIncompatTypes(conf: SQLConf): Boolean = {
-    CometSparkSessionExtensions.usingDataFusionParquetExec(conf) &&
-    !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get(conf)
-  }
 }

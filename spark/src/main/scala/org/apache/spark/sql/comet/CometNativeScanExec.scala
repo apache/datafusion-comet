@@ -38,7 +38,7 @@ import org.apache.spark.util.collection._
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, DataTypeSupport}
-import org.apache.comet.DataTypeSupport.usingParquetExecWithIncompatTypes
+import org.apache.comet.CometSparkSessionExtensions.usingParquetExecWithIncompatTypes
 import org.apache.comet.parquet.CometParquetFileFormat
 import org.apache.comet.serde.OperatorOuterClass.Operator
 

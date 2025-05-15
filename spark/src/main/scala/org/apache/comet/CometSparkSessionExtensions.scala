@@ -246,6 +246,11 @@ object CometSparkSessionExtensions extends Logging {
     Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION).contains(
       CometConf.COMET_NATIVE_SCAN_IMPL.get(conf))
 
+  def usingParquetExecWithIncompatTypes(conf: SQLConf): Boolean = {
+    usingDataFusionParquetExec(conf) &&
+    !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get(conf)
+  }
+
   /**
    * Whether we should override Spark memory configuration for Comet. This only returns true when
    * Comet native execution is enabled and/or Comet shuffle is enabled and Comet doesn't use

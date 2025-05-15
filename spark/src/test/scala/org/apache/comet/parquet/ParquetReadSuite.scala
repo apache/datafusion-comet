@@ -47,7 +47,7 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import com.google.common.primitives.UnsignedLong
 
-import org.apache.comet.{CometConf, DataTypeSupport}
+import org.apache.comet.{CometConf, CometSparkSessionExtensions}
 import org.apache.comet.CometConf.SCAN_NATIVE_ICEBERG_COMPAT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, usingDataFusionParquetExec}
 
@@ -169,7 +169,7 @@ abstract class ParquetReadSuite extends CometTestBase {
             i.toDouble,
             DateTimeUtils.toJavaDate(i))
         }
-        if (!DataTypeSupport.usingParquetExecWithIncompatTypes(conf)) {
+        if (!CometSparkSessionExtensions.usingParquetExecWithIncompatTypes(conf)) {
           checkParquetScan(data)
         }
         checkParquetFile(data)
@@ -191,7 +191,7 @@ abstract class ParquetReadSuite extends CometTestBase {
             i.toDouble,
             DateTimeUtils.toJavaDate(i))
         }
-        if (!DataTypeSupport.usingParquetExecWithIncompatTypes(conf)) {
+        if (!CometSparkSessionExtensions.usingParquetExecWithIncompatTypes(conf)) {
           checkParquetScan(data)
         }
         checkParquetFile(data)
@@ -212,7 +212,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         DateTimeUtils.toJavaDate(i))
     }
     val filter = (row: Row) => row.getBoolean(0)
-    if (!DataTypeSupport.usingParquetExecWithIncompatTypes(conf)) {
+    if (!CometSparkSessionExtensions.usingParquetExecWithIncompatTypes(conf)) {
       checkParquetScan(data, filter)
     }
     checkParquetFile(data, filter)
