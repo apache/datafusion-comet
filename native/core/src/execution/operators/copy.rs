@@ -148,7 +148,7 @@ impl ExecutionPlan for CopyExec {
     }
 
     fn statistics(&self) -> DataFusionResult<Statistics> {
-        self.input.statistics()
+        self.input.partition_statistics(None)
     }
 
     fn properties(&self) -> &PlanProperties {

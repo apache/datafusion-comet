@@ -20,6 +20,7 @@
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
 use arrow::array::{new_null_array, RecordBatch, RecordBatchOptions};
 use arrow::datatypes::{Schema, SchemaRef};
+use datafusion::common::ColumnStatistics;
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
 use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
@@ -225,6 +226,13 @@ impl SchemaMapper for SchemaMapping {
         let schema = Arc::<Schema>::clone(&self.required_schema);
         let record_batch = RecordBatch::try_new_with_options(schema, cols, &options)?;
         Ok(record_batch)
+    }
+
+    fn map_column_statistics(
+        &self,
+        _file_col_statistics: &[ColumnStatistics],
+    ) -> datafusion::common::Result<Vec<ColumnStatistics>> {
+        Ok(vec![])
     }
 }
 
