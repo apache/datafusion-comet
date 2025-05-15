@@ -528,7 +528,8 @@ object CometScanExec extends DataTypeSupport {
       name: String,
       fallbackReasons: ListBuffer[String]): Boolean = {
     dt match {
-      case _: StructType | _: ArrayType | _: MapType =>
+      case _: StructType | _: ArrayType | _: MapType
+          if CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
         false
       case _ =>
         super.isTypeSupported(dt, name, fallbackReasons)
