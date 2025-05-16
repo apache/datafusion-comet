@@ -31,13 +31,14 @@ import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartit
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.util.collection._
 
 import com.google.common.base.Objects
 
-import org.apache.comet.DataTypeSupport
-import org.apache.comet.DataTypeSupport.{ARRAY_ELEMENT, MAP_KEY, MAP_VALUE}
+import org.apache.comet.{CometConf, DataTypeSupport}
+import org.apache.comet.CometSparkSessionExtensions.usingDataSourceExecWithIncompatTypes
 import org.apache.comet.parquet.CometParquetFileFormat
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
@@ -231,20 +232,16 @@ object CometNativeScanExec extends DataTypeSupport {
     batchScanExec
   }
 
-  override def isAdditionallySupported(
+  override def isTypeSupported(
       dt: DataType,
       name: String,
       fallbackReasons: ListBuffer[String]): Boolean = {
     dt match {
-      case s: StructType =>
-        s.fields.forall(f => isTypeSupported(f.dataType, f.name, fallbackReasons))
-      case a: ArrayType => isTypeSupported(a.elementType, ARRAY_ELEMENT, fallbackReasons)
-      case m: MapType =>
-        isTypeSupported(m.keyType, MAP_KEY, fallbackReasons) && isTypeSupported(
-          m.valueType,
-          MAP_VALUE,
-          fallbackReasons)
-      case _ => false
+      case ByteType | ShortType if usingDataSourceExecWithIncompatTypes(SQLConf.get) =>
+        fallbackReasons += s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false"
+        false
+      case _ =>
+        super.isTypeSupported(dt, name, fallbackReasons)
     }
   }
 }
