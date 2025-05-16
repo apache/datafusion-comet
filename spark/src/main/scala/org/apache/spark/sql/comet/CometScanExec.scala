@@ -39,14 +39,12 @@ import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetOptions}
 import org.apache.spark.sql.execution.datasources.v2.DataSourceRDD
 import org.apache.spark.sql.execution.metric._
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.collection._
 
 import org.apache.comet.{CometConf, DataTypeSupport, MetricsSupport}
-import org.apache.comet.CometSparkSessionExtensions.usingDataSourceExecWithIncompatTypes
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionReaderFactory}
 
 /**
@@ -530,8 +528,11 @@ object CometScanExec extends DataTypeSupport {
       name: String,
       fallbackReasons: ListBuffer[String]): Boolean = {
     dt match {
-      case ByteType | ShortType if usingDataSourceExecWithIncompatTypes(SQLConf.get) =>
-        fallbackReasons += s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false"
+      case ByteType | ShortType
+          if CometConf.COMET_NATIVE_SCAN_IMPL
+            .get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT && CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE
+            .get() =>
+        fallbackReasons += s"${CometConf.SCAN_NATIVE_ICEBERG_COMPAT} scan cannot read $dt when ${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false. ${CometConf.COMPAT_GUIDE}."
         false
       case _: StructType | _: ArrayType | _: MapType
           if CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
