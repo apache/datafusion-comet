@@ -313,8 +313,6 @@ pub(crate) fn prepare_object_store(
 #[cfg(test)]
 mod tests {
     use crate::parquet::parquet_support::prepare_object_store;
-    use arrow::compute::can_cast_types;
-    use arrow::datatypes::DataType;
     use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::execution::runtime_env::RuntimeEnv;
     use object_store::path::Path;
