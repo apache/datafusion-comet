@@ -141,14 +141,12 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("shuffle") {
+  test("shuffle supports all types") {
     val df = spark.read.parquet(filename)
     val df2 = df.repartition(8, df.col("c0")).sort("c1")
     df2.collect()
     if (CometConf.isExperimentalNativeScan) {
-      val cometShuffles = collect(df2.queryExecution.executedPlan) {
-        case exec: CometShuffleExchangeExec => exec
-      }
+      val cometShuffles = collectCometShuffleExchanges(df2.queryExecution.executedPlan)
       assert(1 == cometShuffles.length)
     }
   }
