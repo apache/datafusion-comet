@@ -117,7 +117,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     df.createOrReplaceTempView("t1")
     val columns = df.schema.fields.filter(f => isComplexType(f.dataType)).map(_.name)
     for (col <- columns) {
-      // DISTRIBUTE BY is equivalent to df.repartition($col)
+      // DISTRIBUTE BY is equivalent to df.repartition($col) and uses
       val sql = s"SELECT $col FROM t1 DISTRIBUTE BY $col"
       val df = spark.sql(sql)
       df.collect()
@@ -296,8 +296,8 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   private def collectCometShuffleExchanges(plan: SparkPlan): Seq[SparkPlan] = {
-    collect(plan) {
-      case exchange: CometShuffleExchangeExec => exchange
+    collect(plan) { case exchange: CometShuffleExchangeExec =>
+      exchange
     }
   }
 
