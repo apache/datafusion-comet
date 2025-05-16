@@ -13,7 +13,6 @@ machine:
   env: &base_env
     LOCAL_REPO: ".dist/local-repo"
     ENABLE_COMET: true
-    COMET_VERSION: 0.9.0.0-apple-SNAPSHOT
     RUST_BACKTRACE: full
     LANG: "en_US.UTF-8"
     LC_ALL: "en_US.UTF-8"
@@ -971,6 +970,7 @@ builds:
     build: &comet-iceberg-build
       template: freestyle:v4:build
       steps:
+        - COMET_VERSION=$(./mvnw -nsu -q $PROFILES help:evaluate -Dexpression=project.version -DforceStdout 2>/dev/null | sed -e "s/-SNAPSHOT/-pr${BUILD_PARAM_PR_NUMBER}-SNAPSHOT/")
         - export NEXT_VERSION="$COMET_VERSION-iceberg"
         - ./mvnw versions:set -DnewVersion="$NEXT_VERSION"
         - PROFILES="${PROFILES}" make clean release
