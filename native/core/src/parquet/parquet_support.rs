@@ -167,8 +167,20 @@ fn cast_array(
             to_type,
             parquet_options,
         )?),
-        (List(_), List(_)) => {
-            cast_list_to_list(array.as_list(), from_type, to_type, parquet_options)
+        (List(_), List(to_inner_type)) => {
+            let list_arr: &ListArray = array.as_list();
+            let cast_field = cast_array(
+                Arc::clone(list_arr.values()),
+                to_inner_type.data_type(),
+                parquet_options,
+            )?;
+
+            Ok(Arc::new(ListArray::new(
+                Arc::clone(to_inner_type),
+                list_arr.offsets().clone(),
+                cast_field,
+                list_arr.nulls().cloned(),
+            )))
         }
         (Timestamp(TimeUnit::Microsecond, None), Timestamp(TimeUnit::Microsecond, Some(tz))) => {
             Ok(Arc::new(
@@ -183,31 +195,6 @@ fn cast_array(
             Ok(cast_with_options(&array, to_type, &PARQUET_OPTIONS)?)
         }
         _ => Ok(array),
-    }
-}
-
-fn cast_list_to_list(
-    array: &ListArray,
-    from_type: &DataType,
-    to_type: &DataType,
-    parquet_options: &SparkParquetOptions,
-) -> DataFusionResult<ArrayRef> {
-    match (from_type, to_type) {
-        (DataType::List(_), DataType::List(to_inner_type)) => {
-            let cast_field = cast_array(
-                Arc::clone(array.values()),
-                to_inner_type.data_type(),
-                parquet_options,
-            )?;
-
-            Ok(Arc::new(ListArray::new(
-                Arc::clone(to_inner_type),
-                array.offsets().clone(),
-                cast_field,
-                array.nulls().cloned(),
-            )))
-        }
-        _ => unreachable!(),
     }
 }
 
