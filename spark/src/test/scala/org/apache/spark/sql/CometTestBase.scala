@@ -432,7 +432,7 @@ abstract class CometTestBase
   }
 
   def getPrimitiveTypesParquetSchema: String = {
-    if (CometSparkSessionExtensions.usingDataSourceExecWithIncompatTypes(conf)) {
+    if (usingDataSourceExecWithIncompatTypes(conf)) {
       // Comet complex type reader has different behavior for uint_8, uint_16 types.
       // The issue stems from undefined behavior in the parquet spec and is tracked
       // here: https://github.com/apache/parquet-java/issues/3142
@@ -978,4 +978,14 @@ abstract class CometTestBase
 
     writer.close()
   }
+
+  def usingDataSourceExec(conf: SQLConf): Boolean =
+    Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION).contains(
+      CometConf.COMET_NATIVE_SCAN_IMPL.get(conf))
+
+  def usingDataSourceExecWithIncompatTypes(conf: SQLConf): Boolean = {
+    usingDataSourceExec(conf) &&
+      !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get(conf)
+  }
+
 }

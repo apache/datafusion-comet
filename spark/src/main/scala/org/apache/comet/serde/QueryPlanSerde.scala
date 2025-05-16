@@ -49,7 +49,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.{CometConf, DataTypeSupport}
-import org.apache.comet.CometSparkSessionExtensions.{isCometScan, usingDataSourceExec, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo, withInfos}
 import org.apache.comet.expressions._
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType._
@@ -2760,27 +2760,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
         None
 
       case op if isCometSink(op) =>
-        val supportedTypes = op match {
-          case x: DataTypeSupport =>
-            val fallbackReasons = new ListBuffer[String]()
-            val supported =
-              op.output.forall(a => x.isTypeSupported(a.dataType, a.name, fallbackReasons))
-            if (!supported) {
-              withInfos(x, fallbackReasons.toSet)
-            }
-            supported
 
-          case _ =>
-            op.output.forall(a =>
-              supportedDataType(
-                a.dataType,
-                // Complex type supported if
-                // - Native datafusion reader enabled (experimental) OR
-                // - conversion from Parquet/JSON enabled
-                allowComplex =
-                  usingDataSourceExec(conf) || CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED
-                    .get(conf) || CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf)))
-        }
+        val supportedTypes = op.output.forall(a =>
+            supportedDataType(
+              a.dataType,
+              allowComplex = true))
 
         if (!supportedTypes) {
           return None
