@@ -2518,6 +2518,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
           return None
         }
 
+        if (groupingExpressions.exists {
+            case _: StructType | _: ArrayType | _: MapType => true
+            case _ => false
+          }) {
+          withInfo(op, "Grouping on complex types is not supported")
+          return None
+        }
+
         val groupingExprs = groupingExpressions.map(exprToProto(_, child.output))
         if (groupingExprs.exists(_.isEmpty)) {
           withInfo(op, "Not all grouping expressions are supported")
