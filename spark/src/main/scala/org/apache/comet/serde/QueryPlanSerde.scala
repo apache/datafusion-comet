@@ -22,7 +22,6 @@ package org.apache.comet.serde
 import java.util.Locale
 
 import scala.collection.JavaConverters._
-import scala.collection.mutable.ListBuffer
 import scala.math.min
 
 import org.apache.spark.internal.Logging
@@ -48,8 +47,8 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
-import org.apache.comet.{CometConf, DataTypeSupport}
-import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo, withInfos}
+import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
 import org.apache.comet.expressions._
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType._
@@ -2760,11 +2759,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
         None
 
       case op if isCometSink(op) =>
-
-        val supportedTypes = op.output.forall(a =>
-            supportedDataType(
-              a.dataType,
-              allowComplex = true))
+        val supportedTypes =
+          op.output.forall(a => supportedDataType(a.dataType, allowComplex = true))
 
         if (!supportedTypes) {
           return None

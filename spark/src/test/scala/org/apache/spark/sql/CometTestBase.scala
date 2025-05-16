@@ -985,7 +985,7 @@ abstract class CometTestBase
 
   def usingDataSourceExecWithIncompatTypes(conf: SQLConf): Boolean = {
     usingDataSourceExec(conf) &&
-      !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get(conf)
+    !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get(conf)
   }
 
 }

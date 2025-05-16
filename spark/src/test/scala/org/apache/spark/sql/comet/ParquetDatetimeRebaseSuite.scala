@@ -26,8 +26,8 @@ import org.apache.spark.SparkException
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.{CometConf, CometSparkSessionExtensions}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus}
+import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 // This test checks if Comet reads ancient dates & timestamps that are before 1582, as if they are
 // read according to the `LegacyBehaviorPolicy.CORRECTED` mode (i.e., no rebase) in Spark.

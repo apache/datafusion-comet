@@ -47,9 +47,9 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import com.google.common.primitives.UnsignedLong
 
-import org.apache.comet.{CometConf, CometSparkSessionExtensions}
+import org.apache.comet.CometConf
 import org.apache.comet.CometConf.SCAN_NATIVE_ICEBERG_COMPAT
-import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 abstract class ParquetReadSuite extends CometTestBase {
   import testImplicits._
