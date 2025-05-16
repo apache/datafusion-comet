@@ -32,7 +32,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
 import org.apache.spark.sql.types._
@@ -162,14 +162,41 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("shuffle") {
+  test("distribute by single column (complex types)") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    val columns = df.schema.fields.filter(f => isComplexType(f.dataType)).map(_.name)
+    for (col <- columns) {
+      // DISTRIBUTE BY is equivalent to df.repartition($col) and uses
+      val sql = s"SELECT $col FROM t1 DISTRIBUTE BY $col"
+      val df = spark.sql(sql)
+      df.collect()
+      // check for Comet shuffle
+      val plan = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec].executedPlan
+      val cometShuffleExchanges = collectCometShuffleExchanges(plan)
+      val expectedNumCometShuffles = CometConf.COMET_NATIVE_SCAN_IMPL.get() match {
+        case CometConf.SCAN_NATIVE_COMET =>
+          // native_comet does not support reading complex types
+          0
+        case CometConf.SCAN_NATIVE_ICEBERG_COMPAT | CometConf.SCAN_NATIVE_DATAFUSION =>
+          CometConf.COMET_SHUFFLE_MODE.get() match {
+            case "jvm" =>
+              1
+            case "native" =>
+              // native shuffle does not support complex types as partitioning keys
+              0
+          }
+      }
+      assert(cometShuffleExchanges.length == expectedNumCometShuffles)
+    }
+  }
+
+  test("shuffle supports all types") {
     val df = spark.read.parquet(filename)
     val df2 = df.repartition(8, df.col("c0")).sort("c1")
     df2.collect()
     if (CometConf.isExperimentalNativeScan) {
-      val cometShuffles = collect(df2.queryExecution.executedPlan) {
-        case exec: CometShuffleExchangeExec => exec
-      }
+      val cometShuffles = collectCometShuffleExchanges(df2.queryExecution.executedPlan)
       assert(1 == cometShuffles.length)
     }
   }
@@ -313,6 +340,12 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     collect(plan) {
       case scan: CometScanExec => scan
       case scan: CometNativeScanExec => scan
+    }
+  }
+
+  private def collectCometShuffleExchanges(plan: SparkPlan): Seq[SparkPlan] = {
+    collect(plan) { case exchange: CometShuffleExchangeExec =>
+      exchange
     }
   }
 
