@@ -112,6 +112,56 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("count distinct") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    for (col <- df.columns) {
+      val sql = s"SELECT count(distinct $col) FROM t1"
+      val (_, cometPlan) = checkSparkAnswer(sql)
+      if (CometConf.isExperimentalNativeScan) {
+        assert(1 == collectNativeScans(cometPlan).length)
+      }
+    }
+  }
+
+  test("order by multiple columns") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    val allCols = df.columns.mkString(",")
+    val sql = s"SELECT $allCols FROM t1 ORDER BY $allCols"
+    // cannot run fully natively due to range partitioning and sort
+    val (_, cometPlan) = checkSparkAnswer(sql)
+    if (CometConf.isExperimentalNativeScan) {
+      assert(1 == collectNativeScans(cometPlan).length)
+    }
+  }
+
+  test("aggregate group by single column") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    for (col <- df.columns) {
+      // cannot run fully natively due to range partitioning and sort
+      val sql = s"SELECT $col, count(*) FROM t1 GROUP BY $col ORDER BY $col"
+      val (_, cometPlan) = checkSparkAnswer(sql)
+      if (CometConf.isExperimentalNativeScan) {
+        assert(1 == collectNativeScans(cometPlan).length)
+      }
+    }
+  }
+
+  test("min/max aggregate") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    for (col <- df.columns) {
+      // cannot run fully native due to HashAggregate
+      val sql = s"SELECT min($col), max($col) FROM t1"
+      val (_, cometPlan) = checkSparkAnswer(sql)
+      if (CometConf.isExperimentalNativeScan) {
+        assert(1 == collectNativeScans(cometPlan).length)
+      }
+    }
+  }
+
   test("distribute by single column (complex types)") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
