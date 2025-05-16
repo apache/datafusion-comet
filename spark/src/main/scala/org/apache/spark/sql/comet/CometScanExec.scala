@@ -52,6 +52,7 @@ import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionRe
  * [[FileSourceScanExec]],
  */
 case class CometScanExec(
+    isNative: Boolean,
     @transient relation: HadoopFsRelation,
     output: Seq[Attribute],
     requiredSchema: StructType,
@@ -414,6 +415,9 @@ case class CometScanExec(
       readFile: (PartitionedFile) => Iterator[InternalRow],
       partitions: Seq[FilePartition]): RDD[InternalRow] = {
     val hadoopConf = relation.sparkSession.sessionState.newHadoopConfWithOptions(relation.options)
+
+    // TODO how do we determine if this particular scan is native without relying on
+    // a global config setting?
     val usingDataFusionReader: Boolean = {
       hadoopConf.getBoolean(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key,
@@ -461,6 +465,7 @@ case class CometScanExec(
 
   override def doCanonicalize(): CometScanExec = {
     CometScanExec(
+      isNative,
       relation,
       output.map(QueryPlan.normalizeExpressions(_, output)),
       requiredSchema,
@@ -478,7 +483,10 @@ case class CometScanExec(
 
 object CometScanExec extends DataTypeSupport {
 
-  def apply(scanExec: FileSourceScanExec, session: SparkSession): CometScanExec = {
+  def apply(
+      scanExec: FileSourceScanExec,
+      session: SparkSession,
+      isNative: Boolean): CometScanExec = {
     // TreeNode.mapProductIterator is protected method.
     def mapProductIterator[B: ClassTag](product: Product, f: Any => B): Array[B] = {
       val arr = Array.ofDim[B](product.productArity)
@@ -503,6 +511,7 @@ object CometScanExec extends DataTypeSupport {
     val newArgs = mapProductIterator(scanExec, transform(_))
     val wrapped = scanExec.makeCopy(newArgs).asInstanceOf[FileSourceScanExec]
     val batchScanExec = CometScanExec(
+      isNative,
       wrapped.relation,
       wrapped.output,
       wrapped.requiredSchema,

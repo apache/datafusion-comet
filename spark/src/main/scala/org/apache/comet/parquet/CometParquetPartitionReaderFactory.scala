@@ -71,6 +71,8 @@ case class CometParquetPartitionReaderFactory(
   // Comet specific configurations
   private val batchSize = CometConf.COMET_BATCH_SIZE.get(sqlConf)
 
+  // TODO how do we determine if this particular scan is native without relying on
+  // a global config setting?
   @transient private lazy val usingDataFusionReader: Boolean = {
     val conf = broadcastedConf.value.value
     conf.getBoolean(

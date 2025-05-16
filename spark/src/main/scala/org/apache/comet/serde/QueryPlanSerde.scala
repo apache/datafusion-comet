@@ -2282,8 +2282,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     op match {
 
       // Fully native scan for V1
-      case scan: CometScanExec
-          if CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_DATAFUSION =>
+      case scan: CometScanExec if scan.isNative =>
         val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
         nativeScanBuilder.setSource(op.simpleStringWithNodeId())
 
@@ -2376,12 +2375,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val cond = exprToProto(condition, child.output)
 
         if (cond.isDefined && childOp.nonEmpty) {
+          // TODO should recurse into plan to find out if the scan is native or not
+          val isNativeScan =
+            CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_DATAFUSION ||
+              CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT
           val filterBuilder = OperatorOuterClass.Filter
             .newBuilder()
             .setPredicate(cond.get)
-            .setUseDatafusionFilter(
-              CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_DATAFUSION ||
-                CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
+            .setUseDatafusionFilter(isNativeScan)
           Some(result.setFilter(filterBuilder).build())
         } else {
           withInfo(op, condition, child)

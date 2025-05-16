@@ -125,7 +125,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
         }
 
         if (schemaSupported && partitionSchemaSupported) {
-          CometScanExec(scanExec, session)
+          CometScanExec(scanExec, session, scanImpl == CometConf.SCAN_NATIVE_DATAFUSION)
         } else {
           withInfos(scanExec, fallbackReasons.toSet)
         }
