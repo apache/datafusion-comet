@@ -898,12 +898,15 @@ builds:
         - if [ "${RIO_ARCH}" == "arm64" ]; then sed -i -E "s|<leveldbjni.group>org.fusesource.leveldbjni|<leveldbjni.group>org.openlabtesting.leveldbjni|" pom.xml; fi
         - yum install -q -y python39
         - pip3.9 install numpy==1.22.3 scipy==1.8.0 pandas==1.4.1 pyarrow==7.0.0 openpyxl==3.0.10 "jinja2<3.0.0" markupsafe==2.0.1 grpcio==1.48.1 grpcio-status==1.48.1 protobuf==3.19.5 googleapis-common-protos==1.56.4
-        - build/sbt -Phadoop-3 -Phive test:package
+        - build/sbt -Phadoop-3 -Phive -Dsbt.gigahorse=false ${PROXY_OPTS} -Dscala.version=$SCALA_VERSION -Pscala-$SCALA_BINARY_VERSION test:package
         - UCAUTHZ=false python/run-tests.py --python-executables python3.9 --parallelism 3
     reports:
-      <<: *reports
+      logs:
+        paths:
+          - "**/target/**/*-output.txt"
+          - "python/unit-tests.log"
     finally:
-      <<: *slack-notification
+      <<: *slack-no-notification
 
   - <<: *comet-python39
     group: test-spark-python39
@@ -917,8 +920,6 @@ builds:
     build:
       <<: *comet-python39-build
       template: freestyle:v4:prb
-    finally:
-      <<: *slack-no-notification
 
   - <<: *comet-python39
     group: test-spark-python39
@@ -932,8 +933,6 @@ builds:
     build:
       <<: *comet-python39-build
       template: freestyle:v4:prb
-    finally:
-      <<: *slack-no-notification
 
   - <<: *comet-python39
     group: test-spark-python39
@@ -947,8 +946,6 @@ builds:
     build:
       <<: *comet-python39-build
       template: freestyle:v4:build
-    finally:
-      <<: *slack-no-notification
 
   - &comet-iceberg
     group: test-iceberg
