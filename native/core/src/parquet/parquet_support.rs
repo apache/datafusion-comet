@@ -158,11 +158,9 @@ fn cast_array(
     };
     let from_type = array.data_type();
 
+    // Try Comet specific handlers first, then arrow-rs cast if supported,
+    // return uncasted data otherwise
     match (from_type, to_type) {
-        // If Arrow cast supports the cast, delegate the cast to Arrow
-        _ if can_cast_types(from_type, to_type) => {
-            Ok(cast_with_options(&array, to_type, &PARQUET_OPTIONS)?)
-        }
         (Struct(_), Struct(_)) => Ok(cast_struct_to_struct(
             array.as_struct(),
             from_type,
@@ -180,6 +178,10 @@ fn cast_array(
                     .with_timezone(Arc::clone(tz)),
             ))
         }
+        // If Arrow cast supports the cast, delegate the cast to Arrow
+        _ if can_cast_types(from_type, to_type) => {
+            Ok(cast_with_options(&array, to_type, &PARQUET_OPTIONS)?)
+        }
         _ => Ok(array),
     }
 }
@@ -192,11 +194,6 @@ fn cast_list_to_list(
 ) -> DataFusionResult<ArrayRef> {
     match (from_type, to_type) {
         (DataType::List(_), DataType::List(to_inner_type)) => {
-            //dbg!(from_type);
-            //dbg!(to_type);
-            //dbg!(from_inner_type);
-            //dbg!(to_inner_type);
-
             let cast_field = cast_array(
                 Arc::clone(array.values()),
                 to_inner_type.data_type(),
@@ -316,6 +313,8 @@ pub(crate) fn prepare_object_store(
 #[cfg(test)]
 mod tests {
     use crate::parquet::parquet_support::prepare_object_store;
+    use arrow::compute::can_cast_types;
+    use arrow::datatypes::DataType;
     use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::execution::runtime_env::RuntimeEnv;
     use object_store::path::Path;

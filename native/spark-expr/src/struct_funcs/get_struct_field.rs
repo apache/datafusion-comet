@@ -81,8 +81,6 @@ impl PhysicalExpr for GetStructField {
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
         let child_value = self.child.evaluate(batch)?;
-        //dbg!(&batch);
-        //dbg!(&child_value);
 
         match child_value {
             ColumnarValue::Array(array) => {

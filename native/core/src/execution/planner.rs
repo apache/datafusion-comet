@@ -328,7 +328,6 @@ impl PhysicalPlanner {
                     )));
                 }
                 let field = input_schema.field(idx);
-                //dbg!(field);
                 Ok(Arc::new(Column::new(field.name().as_str(), idx)))
             }
             ExprStruct::Unbound(unbound) => {
@@ -1092,8 +1091,6 @@ impl PhysicalPlanner {
                 let data_schema = convert_spark_types_to_arrow_schema(scan.data_schema.as_slice());
                 let required_schema: SchemaRef =
                     convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
-                // dbg!(&data_schema);
-                // dbg!(&required_schema);
                 let partition_schema: SchemaRef =
                     convert_spark_types_to_arrow_schema(scan.partition_schema.as_slice());
                 let projection_vector: Vec<usize> = scan

@@ -1962,11 +1962,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val childExpr = exprToProtoInternal(child, inputs, binding)
         val ordinalExpr = exprToProtoInternal(ordinal, inputs, binding)
 
-//        val childExpr = exprToProtoInternal(child, inputs, binding)
-//        val ordinalExpr =
-//          exprToProtoInternal(Add(Cast(ordinal, LongType), Literal(1L)), inputs, binding)
-//        scalarFunctionExprToProto("array_element", childExpr, ordinalExpr)
-
         if (childExpr.isDefined && ordinalExpr.isDefined) {
           val listExtractBuilder = ExprOuterClass.ListExtract
             .newBuilder()
