@@ -2518,10 +2518,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
           return None
         }
 
-        if (groupingExpressions.exists(expr => expr.dataType match {
-            case _: StructType | _: ArrayType | _: MapType => true
-            case _ => false
-          })) {
+        if (groupingExpressions.exists(expr =>
+            expr.dataType match {
+              case _: StructType | _: ArrayType | _: MapType => true
+              case _ => false
+            })) {
           withInfo(op, "Grouping on complex types is not supported")
           return None
         }
