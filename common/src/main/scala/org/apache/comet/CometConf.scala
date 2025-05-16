@@ -294,13 +294,6 @@ object CometConf extends ShimCometConf {
     .checkValues(Set("native", "jvm", "auto"))
     .createWithDefault("auto")
 
-  val COMET_SHUFFLE_FALLBACK_TO_COLUMNAR: ConfigEntry[Boolean] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.fallbackToColumnar")
-      .doc("Whether to try falling back to columnar shuffle when native shuffle is not supported")
-      .internal()
-      .booleanConf
-      .createWithDefault(false)
-
   val COMET_EXEC_BROADCAST_FORCE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.broadcast.enabled")
       .doc(

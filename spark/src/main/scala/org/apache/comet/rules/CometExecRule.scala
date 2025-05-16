@@ -35,7 +35,7 @@ import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
-import org.apache.comet.CometConf.{COMET_ANSI_MODE_ENABLED, COMET_NATIVE_SCAN_IMPL, COMET_SHUFFLE_FALLBACK_TO_COLUMNAR}
+import org.apache.comet.CometConf.{COMET_ANSI_MODE_ENABLED, COMET_NATIVE_SCAN_IMPL}
 import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometLoaded, isCometNativeShuffleMode, isCometScan, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
@@ -486,16 +486,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             None
           }
 
-        // this is a temporary workaround because some Spark SQL tests fail
-        // when we enable COMET_SHUFFLE_FALLBACK_TO_COLUMNAR due to valid bugs
-        // that we had not previously seen
-        val tryColumnarNext =
-          !nativePrecondition || (nativePrecondition && nativeShuffle.isEmpty &&
-            COMET_SHUFFLE_FALLBACK_TO_COLUMNAR.get(conf))
-
         val nativeOrColumnarShuffle = if (nativeShuffle.isDefined) {
           nativeShuffle
-        } else if (tryColumnarNext) {
+        } else {
           // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
           // (if configured).
           // If the child of ShuffleExchangeExec is also a ShuffleExchangeExec, we should not
@@ -521,8 +514,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           } else {
             None
           }
-        } else {
-          None
         }
 
         if (nativeOrColumnarShuffle.isDefined) {
