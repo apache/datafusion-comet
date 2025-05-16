@@ -532,7 +532,8 @@ object CometScanExec extends DataTypeSupport {
           if CometConf.COMET_NATIVE_SCAN_IMPL
             .get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT && CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE
             .get() =>
-        fallbackReasons += s"${CometConf.SCAN_NATIVE_ICEBERG_COMPAT} scan cannot read $dt when ${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false. ${CometConf.COMPAT_GUIDE}."
+        fallbackReasons += s"${CometConf.SCAN_NATIVE_ICEBERG_COMPAT} scan cannot read $dt when " +
+          s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false. ${CometConf.COMPAT_GUIDE}."
         false
       case _: StructType | _: ArrayType | _: MapType
           if CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>

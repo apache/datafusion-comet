@@ -236,7 +236,8 @@ object CometNativeScanExec extends DataTypeSupport {
       fallbackReasons: ListBuffer[String]): Boolean = {
     dt match {
       case ByteType | ShortType if !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get() =>
-        fallbackReasons += s"${CometConf.SCAN_NATIVE_DATAFUSION} scan cannot read $dt when ${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false. ${CometConf.COMPAT_GUIDE}."
+        fallbackReasons += s"${CometConf.SCAN_NATIVE_DATAFUSION} scan cannot read $dt when " +
+          s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false. ${CometConf.COMPAT_GUIDE}."
         false
       case _ =>
         super.isTypeSupported(dt, name, fallbackReasons)
