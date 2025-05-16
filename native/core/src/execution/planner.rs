@@ -378,6 +378,8 @@ impl PhysicalPlanner {
                         DataType::Binary => ScalarValue::Binary(None),
                         DataType::Decimal128(p, s) => ScalarValue::Decimal128(None, p, s),
                         DataType::Struct(fields) => ScalarStructBuilder::new_null(fields),
+                        DataType::Map(f, s) => DataType::Map(f, s).try_into()?,
+                        DataType::List(f) => DataType::List(f).try_into()?,
                         DataType::Null => ScalarValue::Null,
                         dt => {
                             return Err(GeneralError(format!("{:?} is not supported in Comet", dt)))

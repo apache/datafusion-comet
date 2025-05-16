@@ -171,11 +171,18 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, batchSize)
         withParquetTable(path.toString, "tbl") {
           val sqlString =
-            "SELECT _4 + null, _15 - null, _16 * null, cast(null as struct<_1:int>) FROM tbl"
+            """SELECT
+              |_4 + null,
+              |_15 - null,
+              |_16 * null,
+              |cast(null as struct<_1:int>),
+              |cast(null as map<int, int>),
+              |cast(null as array<int>)
+              |FROM tbl""".stripMargin
           val df2 = sql(sqlString)
           val rows = df2.collect()
           assert(rows.length == batchSize)
-          assert(rows.forall(_ == Row(null, null, null, null)))
+          assert(rows.forall(_ == Row(null, null, null, null, null, null)))
 
           checkSparkAnswerAndOperator(sqlString)
         }
