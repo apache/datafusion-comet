@@ -89,8 +89,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     // for native iceberg compat, CometScanExec supports some types that native_comet does not.
     // note that native_datafusion does not use CometScanExec so we need not include that in
     // the check
-    val usingNativeIcebergCompat =
-      CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT
+    val isDataFusionScan = usingDataSourceExec(conf)
     Seq(
       NullType -> false,
       BooleanType -> true,
@@ -104,24 +103,24 @@ abstract class ParquetReadSuite extends CometTestBase {
       StringType -> true,
       // Timestamp here arbitrary for picking a concrete data type to from ArrayType
       // Any other type works
-      ArrayType(TimestampType) -> usingNativeIcebergCompat,
+      ArrayType(TimestampType) -> isDataFusionScan,
       StructType(
         Seq(
           StructField("f1", DecimalType.SYSTEM_DEFAULT),
-          StructField("f2", StringType))) -> usingNativeIcebergCompat,
-      MapType(keyType = LongType, valueType = DateType) -> usingNativeIcebergCompat,
+          StructField("f2", StringType))) -> isDataFusionScan,
+      MapType(keyType = LongType, valueType = DateType) -> isDataFusionScan,
       StructType(
         Seq(
           StructField("f1", ByteType),
-          StructField("f2", StringType))) -> usingNativeIcebergCompat,
-      MapType(keyType = IntegerType, valueType = BinaryType) -> usingNativeIcebergCompat)
+          StructField("f2", StringType))) -> isDataFusionScan,
+      MapType(keyType = IntegerType, valueType = BinaryType) -> isDataFusionScan)
       .foreach { case (dt, expected) =>
         val fallbackReasons = new ListBuffer[String]()
         assert(
           CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
             .isTypeSupported(dt, "", fallbackReasons) == expected)
         // usingDataFusionParquetExec does not support CometBatchScanExec yet
-        if (!usingDataSourceExec(conf)) {
+        if (!isDataFusionScan) {
           assert(CometBatchScanExec.isTypeSupported(dt, "", fallbackReasons) == expected)
         }
       }
