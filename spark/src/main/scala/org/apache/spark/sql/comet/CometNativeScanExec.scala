@@ -19,7 +19,6 @@
 
 package org.apache.spark.sql.comet
 
-import scala.collection.mutable.ListBuffer
 import scala.reflect.ClassTag
 
 import org.apache.spark.rdd.RDD
@@ -36,7 +35,6 @@ import org.apache.spark.util.collection._
 
 import com.google.common.base.Objects
 
-import org.apache.comet.{CometConf, DataTypeSupport}
 import org.apache.comet.parquet.CometParquetFileFormat
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
@@ -184,7 +182,7 @@ case class CometNativeScanExec(
   override def inputRDDs(): Seq[RDD[InternalRow]] = originalPlan.inputRDDs()
 }
 
-object CometNativeScanExec extends DataTypeSupport {
+object CometNativeScanExec {
   def apply(
       nativeOp: Operator,
       scanExec: FileSourceScanExec,
@@ -228,19 +226,5 @@ object CometNativeScanExec extends DataTypeSupport {
       SerializedPlan(None))
     scanExec.logicalLink.foreach(batchScanExec.setLogicalLink)
     batchScanExec
-  }
-
-  override def isTypeSupported(
-      dt: DataType,
-      name: String,
-      fallbackReasons: ListBuffer[String]): Boolean = {
-    dt match {
-      case ByteType | ShortType if !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get() =>
-        fallbackReasons += s"${CometConf.SCAN_NATIVE_DATAFUSION} scan cannot read $dt when " +
-          s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false. ${CometConf.COMPAT_GUIDE}."
-        false
-      case _ =>
-        super.isTypeSupported(dt, name, fallbackReasons)
-    }
   }
 }

@@ -100,6 +100,8 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
 
     // Comet specific configurations
     val capacity = CometConf.COMET_BATCH_SIZE.get(sqlConf)
+
+    // TODO how to avoid using config here?
     val nativeIcebergCompat =
       CometConf.COMET_NATIVE_SCAN_IMPL.get(sqlConf).equals(CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
 

@@ -19,7 +19,7 @@
 
 package org.apache.spark.sql.comet
 
-import scala.collection.mutable.{HashMap, ListBuffer}
+import scala.collection.mutable.HashMap
 import scala.concurrent.duration.NANOSECONDS
 import scala.reflect.ClassTag
 
@@ -44,7 +44,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.collection._
 
-import org.apache.comet.{CometConf, DataTypeSupport, MetricsSupport}
+import org.apache.comet.{CometConf, MetricsSupport}
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionReaderFactory}
 
 /**
@@ -435,6 +435,7 @@ case class CometScanExec(
       val broadcastedConf =
         fsRelation.sparkSession.sparkContext.broadcast(new SerializableConfiguration(hadoopConf))
       val partitionReaderFactory = CometParquetPartitionReaderFactory(
+        scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
         sqlConf,
         broadcastedConf,
         requiredSchema,
@@ -477,7 +478,7 @@ case class CometScanExec(
   }
 }
 
-object CometScanExec extends DataTypeSupport {
+object CometScanExec {
 
   def apply(
       scanExec: FileSourceScanExec,
@@ -528,22 +529,4 @@ object CometScanExec extends DataTypeSupport {
     fileFormat.getClass().equals(classOf[ParquetFileFormat])
   }
 
-  override def isTypeSupported(
-      dt: DataType,
-      name: String,
-      fallbackReasons: ListBuffer[String]): Boolean = {
-    dt match {
-      case ByteType | ShortType
-          if CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT &&
-            !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get() =>
-        fallbackReasons += s"${CometConf.SCAN_NATIVE_ICEBERG_COMPAT} scan cannot read $dt when " +
-          s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false. ${CometConf.COMPAT_GUIDE}."
-        false
-      case _: StructType | _: ArrayType | _: MapType
-          if CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
-        false
-      case _ =>
-        super.isTypeSupported(dt, name, fallbackReasons)
-    }
-  }
 }
