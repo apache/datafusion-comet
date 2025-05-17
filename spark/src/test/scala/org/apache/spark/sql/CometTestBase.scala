@@ -19,15 +19,14 @@
 
 package org.apache.spark.sql
 
-import java.util.concurrent.atomic.AtomicInteger
+import org.apache.comet.CometConf.{COMET_NATIVE_SCAN_IMPL, SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT}
 
+import java.util.concurrent.atomic.AtomicInteger
 import scala.concurrent.duration._
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 import scala.util.Try
-
 import org.scalatest.BeforeAndAfterEach
-
 import org.apache.commons.lang3.StringUtils
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.column.ParquetProperties
@@ -45,7 +44,6 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal._
 import org.apache.spark.sql.test._
 import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, MapType, StructType}
-
 import org.apache.comet._
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
@@ -977,6 +975,11 @@ abstract class CometTestBase
     }
 
     writer.close()
+  }
+
+  def isExperimentalNativeScan: Boolean = COMET_NATIVE_SCAN_IMPL.get() match {
+    case SCAN_NATIVE_DATAFUSION | SCAN_NATIVE_ICEBERG_COMPAT => true
+    case SCAN_NATIVE_COMET => false
   }
 
   def usingDataSourceExec(conf: SQLConf): Boolean =

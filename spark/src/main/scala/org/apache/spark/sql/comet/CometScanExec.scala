@@ -501,7 +501,7 @@ object CometScanExec {
     // https://github.com/apache/arrow-datafusion-comet/issues/190
     def transform(arg: Any): AnyRef = arg match {
       case _: HadoopFsRelation =>
-        scanExec.relation.copy(fileFormat = new CometParquetFileFormat)(session)
+        scanExec.relation.copy(fileFormat = new CometParquetFileFormat(scanImpl))(session)
       case other: AnyRef => other
       case null => null
     }

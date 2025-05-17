@@ -20,7 +20,6 @@
 package org.apache.spark.sql.comet
 
 import scala.reflect.ClassTag
-
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst._
@@ -32,9 +31,8 @@ import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types._
 import org.apache.spark.util.collection._
-
 import com.google.common.base.Objects
-
+import org.apache.comet.CometConf
 import org.apache.comet.parquet.CometParquetFileFormat
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
@@ -204,7 +202,7 @@ object CometNativeScanExec {
     // https://github.com/apache/arrow-datafusion-comet/issues/190
     def transform(arg: Any): AnyRef = arg match {
       case _: HadoopFsRelation =>
-        scanExec.relation.copy(fileFormat = new CometParquetFileFormat)(session)
+        scanExec.relation.copy(fileFormat = new CometParquetFileFormat(CometConf.SCAN_NATIVE_DATAFUSION))(session)
       case other: AnyRef => other
       case null => null
     }

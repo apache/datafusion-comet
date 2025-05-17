@@ -56,7 +56,7 @@ import org.apache.comet.vector.CometVector
  *     in [[org.apache.comet.CometSparkSessionExtensions]]
  *   - `buildReaderWithPartitionValues`, so Spark calls Comet's Parquet reader to read values.
  */
-class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with ShimSQLConf {
+class CometParquetFileFormat(scanImpl: String) extends ParquetFileFormat with MetricsSupport with ShimSQLConf {
   override def shortName(): String = "parquet"
   override def toString: String = "CometParquet"
   override def hashCode(): Int = getClass.hashCode()
@@ -101,9 +101,7 @@ class CometParquetFileFormat extends ParquetFileFormat with MetricsSupport with 
     // Comet specific configurations
     val capacity = CometConf.COMET_BATCH_SIZE.get(sqlConf)
 
-    // TODO how to avoid using config here?
-    val nativeIcebergCompat =
-      CometConf.COMET_NATIVE_SCAN_IMPL.get(sqlConf).equals(CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
+    val nativeIcebergCompat = scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT
 
     (file: PartitionedFile) => {
       val sharedConf = broadcastedHadoopConf.value.value
