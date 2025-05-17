@@ -2384,6 +2384,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
           //  certain operators such as join or aggregate which will copy batches
           def containsNativeCometScan(plan: SparkPlan): Boolean = {
             plan match {
+              case w: CometScanWrapper => containsNativeCometScan(w.originalPlan)
               case scan: CometScanExec => scan.scanImpl == CometConf.SCAN_NATIVE_COMET
               case _: CometNativeScanExec => false
               case _ => plan.children.exists(containsNativeCometScan)
