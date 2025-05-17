@@ -1092,8 +1092,8 @@ index 260c992f1ae..b9d8e22337c 100644
                _.asInstanceOf[FileScanRDD].filePartitions.forall(
                  _.files.forall(_.urlEncodedPath.contains("p=0"))))
 +        case WholeStageCodegenExec(ColumnarToRowExec(InputAdapter(
-+        fs @ CometScanExec(_, _, _, partitionFilters, _, _, _, _, _, _)))) =>
-+          partitionFilters.exists(ExecSubqueryExpression.hasSubquery) &&
++        fs: CometScanExec =>
++          fs.partitionFilters.exists(ExecSubqueryExpression.hasSubquery) &&
 +            fs.inputRDDs().forall(
 +              _.asInstanceOf[FileScanRDD].filePartitions.forall(
 +                _.files.forall(_.urlEncodedPath.contains("p=0"))))
