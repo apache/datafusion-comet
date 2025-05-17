@@ -46,6 +46,7 @@ import org.apache.comet.{CometConf, CometRuntimeException}
 import org.apache.comet.shims.ShimSQLConf
 
 case class CometParquetPartitionReaderFactory(
+    usingDataFusionReader: Boolean,
     @transient sqlConf: SQLConf,
     broadcastedConf: Broadcast[SerializableConfiguration],
     readDataSchema: StructType,
@@ -71,17 +72,6 @@ case class CometParquetPartitionReaderFactory(
   // Comet specific configurations
   private val batchSize = CometConf.COMET_BATCH_SIZE.get(sqlConf)
 
-  @transient private lazy val usingDataFusionReader: Boolean = {
-    val conf = broadcastedConf.value.value
-    conf.getBoolean(
-      CometConf.COMET_NATIVE_SCAN_ENABLED.key,
-      CometConf.COMET_NATIVE_SCAN_ENABLED.defaultValue.get) &&
-    conf
-      .get(
-        CometConf.COMET_NATIVE_SCAN_IMPL.key,
-        CometConf.COMET_NATIVE_SCAN_IMPL.defaultValueString)
-      .equalsIgnoreCase(CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
-  }
   // This is only called at executor on a Broadcast variable, so we don't want it to be
   // materialized at driver.
   @transient private lazy val preFetchEnabled = {
