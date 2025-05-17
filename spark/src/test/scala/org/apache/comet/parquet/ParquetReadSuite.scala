@@ -110,9 +110,7 @@ abstract class ParquetReadSuite extends CometTestBase {
           StructField("f2", StringType))) -> isDataFusionScan,
       MapType(keyType = LongType, valueType = DateType) -> isDataFusionScan,
       StructType(
-        Seq(
-          StructField("f1", ByteType),
-          StructField("f2", StringType))) -> isDataFusionScan,
+        Seq(StructField("f1", ByteType), StructField("f2", StringType))) -> isDataFusionScan,
       MapType(keyType = IntegerType, valueType = BinaryType) -> isDataFusionScan)
       .foreach { case (dt, expected) =>
         val fallbackReasons = new ListBuffer[String]()
@@ -133,8 +131,7 @@ abstract class ParquetReadSuite extends CometTestBase {
 
     // Arrays support for iceberg compat native and for Parquet V1
     val cometScanExecSupported =
-      if (sys.env.get("COMET_PARQUET_SCAN_IMPL").contains(SCAN_NATIVE_ICEBERG_COMPAT) && this
-          .isInstanceOf[ParquetReadV1Suite])
+      if (usingDataSourceExec(conf) && this.isInstanceOf[ParquetReadV1Suite])
         Seq(true, true, true)
       else Seq(true, false, false)
 
