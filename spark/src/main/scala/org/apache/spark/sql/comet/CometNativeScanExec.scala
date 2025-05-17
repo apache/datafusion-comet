@@ -41,7 +41,7 @@ import org.apache.comet.parquet.CometParquetFileFormat
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 /**
- * Comet fully native scan node for DataSource V1.
+ * Comet fully native scan node for DataSource V1 that delegates to DataFusion's DataSourceExec.
  */
 case class CometNativeScanExec(
     override val nativeOp: Operator,

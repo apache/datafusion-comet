@@ -154,7 +154,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
     plan.transformUp {
       // Fully native scan for V1
-      case scan: CometScanExec if scan.isNative =>
+      case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
         val nativeOp = QueryPlanSerde.operator2Proto(scan).get
         CometNativeScanExec(nativeOp, scan.wrapped, scan.session)
 

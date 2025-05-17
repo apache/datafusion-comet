@@ -945,6 +945,7 @@ impl PhysicalPlanner {
             OpStruct::Filter(filter) => {
                 assert!(children.len() == 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
+
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
