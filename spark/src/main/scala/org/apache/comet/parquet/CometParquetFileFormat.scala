@@ -56,7 +56,10 @@ import org.apache.comet.vector.CometVector
  *     in [[org.apache.comet.CometSparkSessionExtensions]]
  *   - `buildReaderWithPartitionValues`, so Spark calls Comet's Parquet reader to read values.
  */
-class CometParquetFileFormat(scanImpl: String) extends ParquetFileFormat with MetricsSupport with ShimSQLConf {
+class CometParquetFileFormat(scanImpl: String)
+    extends ParquetFileFormat
+    with MetricsSupport
+    with ShimSQLConf {
   override def shortName(): String = "parquet"
   override def toString: String = "CometParquet"
   override def hashCode(): Int = getClass.hashCode()

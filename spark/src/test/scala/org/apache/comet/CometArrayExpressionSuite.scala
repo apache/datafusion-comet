@@ -235,7 +235,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
 
   test("array_intersect") {
     // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!isExperimentalNativeScan)
+    assume(!usingDataSourceExec)
     withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
 
       Seq(true, false).foreach { dictionaryEnabled =>
