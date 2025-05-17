@@ -140,7 +140,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 Byte.MaxValue)
               withParquetTable(path.toString, "tbl") {
                 val qry = "select _9 from tbl order by _11"
-                if (CometSparkSessionExtensions.usingDataSourceExec(conf)) {
+                if (usingDataSourceExec(conf)) {
                   if (!allowIncompatible) {
                     checkSparkAnswer(qry)
                   } else {
@@ -1266,7 +1266,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("round") {
     // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(!usingDataSourceExec)
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -1496,7 +1496,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("hex") {
     // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(!usingDataSourceExec)
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "hex.parquet")
@@ -2669,7 +2669,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("test integral divide") {
     // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(!usingDataSourceExec)
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path1 = new Path(dir.toURI.toString, "test1.parquet")

@@ -47,11 +47,9 @@ import org.apache.comet.rules.{CometExecRule, CometScanRule, EliminateRedundantT
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
- * The entry point of Comet extension to Spark. This class is responsible for injecting Comet
- * rules and extensions into Spark.
+ * CometDriverPlugin will register an instance of this class with Spark.
  *
- * CometScanRule: A rule to transform a Spark scan plan into a Comet scan plan. CometExecRule: A
- * rule to transform a Spark execution plan into a Comet execution plan.
+ * This class is responsible for injecting Comet rules and extensions into Spark.
  */
 class CometSparkSessionExtensions
     extends (SparkSessionExtensions => Unit)
@@ -240,15 +238,6 @@ object CometSparkSessionExtensions extends Logging {
 
   def isSpark40Plus: Boolean = {
     org.apache.spark.SPARK_VERSION >= "4.0"
-  }
-
-  def usingDataSourceExec(conf: SQLConf): Boolean =
-    Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION).contains(
-      CometConf.COMET_NATIVE_SCAN_IMPL.get(conf))
-
-  def usingDataSourceExecWithIncompatTypes(conf: SQLConf): Boolean = {
-    usingDataSourceExec(conf) &&
-    !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get(conf)
   }
 
   /**

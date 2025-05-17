@@ -47,9 +47,10 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import com.google.common.primitives.UnsignedLong
 
-import org.apache.comet.{CometConf, CometSparkSessionExtensions}
+import org.apache.comet.CometConf
 import org.apache.comet.CometConf.SCAN_NATIVE_ICEBERG_COMPAT
-import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, usingDataSourceExec}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.rules.CometScanTypeChecker
 
 abstract class ParquetReadSuite extends CometTestBase {
   import testImplicits._
@@ -116,7 +117,9 @@ abstract class ParquetReadSuite extends CometTestBase {
       MapType(keyType = IntegerType, valueType = BinaryType) -> usingNativeIcebergCompat)
       .foreach { case (dt, expected) =>
         val fallbackReasons = new ListBuffer[String]()
-        assert(CometScanExec.isTypeSupported(dt, "", fallbackReasons) == expected)
+        assert(
+          CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
+            .isTypeSupported(dt, "", fallbackReasons) == expected)
         // usingDataFusionParquetExec does not support CometBatchScanExec yet
         if (!usingDataSourceExec(conf)) {
           assert(CometBatchScanExec.isTypeSupported(dt, "", fallbackReasons) == expected)
@@ -140,7 +143,9 @@ abstract class ParquetReadSuite extends CometTestBase {
     val fallbackReasons = new ListBuffer[String]()
 
     schemaDDLs.zip(cometScanExecSupported).foreach { case (schema, expected) =>
-      assert(CometScanExec.isSchemaSupported(StructType(schema), fallbackReasons) == expected)
+      assert(
+        CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
+          .isSchemaSupported(StructType(schema), fallbackReasons) == expected)
     }
 
     schemaDDLs.zip(cometBatchScanExecSupported).foreach { case (schema, expected) =>
@@ -169,7 +174,7 @@ abstract class ParquetReadSuite extends CometTestBase {
             i.toDouble,
             DateTimeUtils.toJavaDate(i))
         }
-        if (!CometSparkSessionExtensions.usingDataSourceExecWithIncompatTypes(conf)) {
+        if (!usingDataSourceExecWithIncompatTypes(conf)) {
           checkParquetScan(data)
         }
         checkParquetFile(data)
@@ -191,7 +196,7 @@ abstract class ParquetReadSuite extends CometTestBase {
             i.toDouble,
             DateTimeUtils.toJavaDate(i))
         }
-        if (!CometSparkSessionExtensions.usingDataSourceExecWithIncompatTypes(conf)) {
+        if (!usingDataSourceExecWithIncompatTypes(conf)) {
           checkParquetScan(data)
         }
         checkParquetFile(data)
@@ -212,7 +217,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         DateTimeUtils.toJavaDate(i))
     }
     val filter = (row: Row) => row.getBoolean(0)
-    if (!CometSparkSessionExtensions.usingDataSourceExecWithIncompatTypes(conf)) {
+    if (!usingDataSourceExecWithIncompatTypes(conf)) {
       checkParquetScan(data, filter)
     }
     checkParquetFile(data, filter)
@@ -354,7 +359,7 @@ abstract class ParquetReadSuite extends CometTestBase {
 
   test("test multiple pages with different sizes and nulls") {
     // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(!usingDataSourceExec)
     def makeRawParquetFile(
         path: Path,
         dictionaryEnabled: Boolean,
