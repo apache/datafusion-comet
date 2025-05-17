@@ -212,8 +212,8 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport {
         fallbackReasons += s"$scanImpl scan cannot read $dt when " +
           s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false. ${CometConf.COMPAT_GUIDE}."
         false
-      case _: StructType | _: ArrayType | _: MapType =>
-          scanImpl != CometConf.SCAN_NATIVE_COMET
+      case _: StructType | _: ArrayType | _: MapType if scanImpl == CometConf.SCAN_NATIVE_COMET =>
+        false
       case _ =>
         super.isTypeSupported(dt, name, fallbackReasons)
     }
