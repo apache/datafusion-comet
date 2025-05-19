@@ -57,6 +57,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("parquet default values") {
+    withTable("t1") {
+      sql("create table t1(col1 boolean) using parquet")
+      sql("insert into t1 values(true)")
+      sql("alter table t1 add column col2 string default 'hello'")
+      checkSparkAnswerAndOperator("select * from t1")
+    }
+  }
+
   test("coalesce should return correct datatype") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>

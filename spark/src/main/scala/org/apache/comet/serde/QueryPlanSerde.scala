@@ -32,6 +32,7 @@ import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, Normalize
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
+import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.{existenceDefaultValues, hasExistenceDefaultValues}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution
@@ -2303,6 +2304,20 @@ object QueryPlanSerde extends Logging with CometExprShim {
             nativeScanBuilder.addAllDataFilters(dataFilters.asJava)
           }
 
+          if (hasExistenceDefaultValues(scan.requiredSchema)) {
+            val (defaultValues, indexes) =
+              existenceDefaultValues(scan.requiredSchema).zipWithIndex
+                .filter { case (expr, _) => expr != null }
+                .map { case (expr, index) =>
+                  (Literal(expr), index.toLong.asInstanceOf[java.lang.Long])
+                }
+                .unzip
+
+            nativeScanBuilder.addAllDefaultValues(
+              defaultValues.flatMap(exprToProto(_, scan.output)).toIterable.asJava)
+            nativeScanBuilder.addAllDefaultValuesIndexes(indexes.toIterable.asJava)
+          }
+
           // TODO: modify CometNativeScan to generate the file partitions without instantiating RDD.
           scan.inputRDD match {
             case rdd: DataSourceRDD =>
@@ -2327,18 +2342,18 @@ object QueryPlanSerde extends Logging with CometExprShim {
           val requiredSchema = schema2Proto(scan.requiredSchema.fields)
           val dataSchema = schema2Proto(scan.relation.dataSchema.fields)
 
-          val data_schema_idxs = scan.requiredSchema.fields.map(field => {
+          val dataSchemaIndexes = scan.requiredSchema.fields.map(field => {
             scan.relation.dataSchema.fieldIndex(field.name)
           })
-          val partition_schema_idxs = Array
+          val partitionSchemaIndexes = Array
             .range(
               scan.relation.dataSchema.fields.length,
               scan.relation.dataSchema.length + scan.relation.partitionSchema.fields.length)
 
-          val projection_vector = (data_schema_idxs ++ partition_schema_idxs).map(idx =>
+          val projectionVector = (dataSchemaIndexes ++ partitionSchemaIndexes).map(idx =>
             idx.toLong.asInstanceOf[java.lang.Long])
 
-          nativeScanBuilder.addAllProjectionVector(projection_vector.toIterable.asJava)
+          nativeScanBuilder.addAllProjectionVector(projectionVector.toIterable.asJava)
 
           // In `CometScanRule`, we ensure partitionSchema is supported.
           assert(partitionSchema.length == scan.relation.partitionSchema.fields.length)
