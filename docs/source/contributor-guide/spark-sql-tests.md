@@ -66,7 +66,7 @@ ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.Extende
 ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"
 ```
 #### Steps to run individual test suites
-1. Open SBT with comet enabled
+1. Open SBT with Comet enabled
 ```sbt
 ENABLE_COMET=true sbt -Dspark.test.includeSlowTests=true 
 ```
