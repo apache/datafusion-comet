@@ -48,7 +48,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isCometScan, usingDataSourceExec, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
 import org.apache.comet.expressions._
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType._
@@ -2518,6 +2518,15 @@ object QueryPlanSerde extends Logging with CometExprShim {
           return None
         }
 
+        if (groupingExpressions.exists(expr =>
+            expr.dataType match {
+              case _: MapType => true
+              case _ => false
+            })) {
+          withInfo(op, "Grouping on map types is not supported")
+          return None
+        }
+
         val groupingExprs = groupingExpressions.map(exprToProto(_, child.output))
         if (groupingExprs.exists(_.isEmpty)) {
           withInfo(op, "Not all grouping expressions are supported")
@@ -2758,16 +2767,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
         withInfo(join, "SortMergeJoin is not enabled")
         None
 
-      case op
-          if isCometSink(op) && op.output.forall(a =>
-            supportedDataType(
-              a.dataType,
-              // Complex type supported if
-              // - Native datafusion reader enabled (experimental) OR
-              // - conversion from Parquet/JSON enabled
-              allowComplex =
-                usingDataSourceExec(conf) || CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED
-                  .get(conf) || CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf))) =>
+      case op if isCometSink(op) =>
+        val supportedTypes =
+          op.output.forall(a => supportedDataType(a.dataType, allowComplex = true))
+
+        if (!supportedTypes) {
+          return None
+        }
+
         // These operators are source of Comet native execution chain
         val scanBuilder = OperatorOuterClass.Scan.newBuilder()
         val source = op.simpleStringWithNodeId()
