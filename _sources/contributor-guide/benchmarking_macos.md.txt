@@ -89,7 +89,6 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.memory.offHeap.size=16g \
     --conf spark.eventLog.enabled=true \
     /path/to/datafusion-benchmarks/runners/datafusion-comet/tpcbench.py \
-    --name spark \
     --benchmark tpch \
     --data /Users/rusty/Data/tpch/sf100 \
     --queries /path/to/datafusion-benchmarks/tpch/queries \
@@ -136,7 +135,6 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.comet.exec.replaceSortMergeJoin=true \
     --conf spark.comet.cast.allowIncompatible=true \
     /path/to/datafusion-benchmarks/runners/datafusion-comet/tpcbench.py \
-    --name comet \
     --benchmark tpch \
     --data /path/to/tpch-data/ \
     --queries /path/to/datafusion-benchmarks//tpch/queries \
