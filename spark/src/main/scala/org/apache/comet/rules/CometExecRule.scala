@@ -40,6 +40,9 @@ import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroa
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
 
+/**
+ * Spark physical optimizer rule for replacing Spark operators with Comet operators.
+ */
 case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   private def applyCometShuffle(plan: SparkPlan): SparkPlan = {
     plan.transformUp {

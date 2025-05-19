@@ -31,14 +31,12 @@ import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartit
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.util.collection._
 
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, DataTypeSupport}
-import org.apache.comet.CometSparkSessionExtensions.usingDataSourceExecWithIncompatTypes
 import org.apache.comet.parquet.CometParquetFileFormat
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
@@ -237,8 +235,9 @@ object CometNativeScanExec extends DataTypeSupport {
       name: String,
       fallbackReasons: ListBuffer[String]): Boolean = {
     dt match {
-      case ByteType | ShortType if usingDataSourceExecWithIncompatTypes(SQLConf.get) =>
-        fallbackReasons += s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false"
+      case ByteType | ShortType if !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get() =>
+        fallbackReasons += s"${CometConf.SCAN_NATIVE_DATAFUSION} scan cannot read $dt when " +
+          s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false. ${CometConf.COMPAT_GUIDE}."
         false
       case _ =>
         super.isTypeSupported(dt, name, fallbackReasons)

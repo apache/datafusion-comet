@@ -35,7 +35,7 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, CometSparkSessionExtensions}
+import org.apache.comet.CometConf
 
 abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   protected val adaptiveExecutionEnabled: Boolean
@@ -758,7 +758,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
         // TODO: revisit this when we have resolution of https://github.com/apache/arrow-rs/issues/7040
         // and https://github.com/apache/arrow-rs/issues/7097
         val fieldsToTest =
-          if (CometSparkSessionExtensions.usingDataSourceExec(conf)) {
+          if (usingDataSourceExec(conf)) {
             Seq(
               $"_1",
               $"_4",
