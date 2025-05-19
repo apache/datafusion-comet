@@ -275,9 +275,6 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
         requestedSchema =
             CometParquetReadSupport.clipParquetSchema(
                 requestedSchema, sparkSchema, isCaseSensitive, useFieldId, ignoreMissingIds);
-        //        requestedSchema =
-        //            ParquetReadSupport.clipParquetSchema(
-        //                requestedSchema, sparkSchema, isCaseSensitive, useFieldId);
         if (requestedSchema.getFieldCount() != sparkSchema.size()) {
           throw new IllegalArgumentException(
               String.format(
@@ -446,8 +443,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
 
   /**
    * Checks whether the given 'path' exists in 'parquetType'. The difference between this and {@link
-   * MessageType#containsPath(String[])} is that the latter only support paths to leaf /** From
-   * Spark: VectorizedParquetRecordReader Check whether a column from requested schema is missing
+   * MessageType#containsPath(String[])} is that the latter only support paths to leaf
+   * From Spark: VectorizedParquetRecordReader
+   * Check whether a column from requested schema is missing
    * from the file schema, or whether it conforms to the type of the file schema.
    */
   private void checkColumn(ParquetColumn column) throws IOException {
@@ -470,7 +468,6 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
         throw new IOException(
             "Required column is missing in data file. Col: " + Arrays.toString(path));
       }
-      //      missingColumns.add(column);
     }
   }
 
