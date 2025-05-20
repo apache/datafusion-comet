@@ -42,35 +42,40 @@ import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
  */
 case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
   override def apply(plan: SparkPlan): SparkPlan = {
-    if (!isCometLoaded(conf) || !isCometScanEnabled(conf)) {
-      if (!isCometLoaded(conf)) {
-        withInfo(plan, "Comet is not enabled")
-      } else if (!isCometScanEnabled(conf)) {
-        withInfo(plan, "Comet Scan is not enabled")
-      }
-      plan
-    } else {
+    if (!isCometLoaded(conf)) {
+      withInfo(plan, "Comet is not enabled")
+      return plan
+    }
 
-      def hasMetadataCol(plan: SparkPlan): Boolean = {
-        plan.expressions.exists(_.exists {
-          case a: Attribute =>
-            a.isMetadataCol
-          case _ => false
-        })
-      }
+    if (!isCometScanEnabled(conf)) {
+      withInfo(plan, "Comet Scan is not enabled")
+      return plan
+    }
 
-      plan.transform {
-        case scan if hasMetadataCol(scan) =>
-          withInfo(scan, "Metadata column is not supported")
+    if (SQLConf.get.getConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED)) {
+      withInfo(plan, "Comet does not support PARQUET_FIELD_ID_READ_ENABLED")
+      return plan
+    }
 
-        // data source V1
-        case scanExec: FileSourceScanExec =>
-          transformV1Scan(scanExec)
+    def hasMetadataCol(plan: SparkPlan): Boolean = {
+      plan.expressions.exists(_.exists {
+        case a: Attribute =>
+          a.isMetadataCol
+        case _ => false
+      })
+    }
 
-        // data source V2
-        case scanExec: BatchScanExec =>
-          transformV2Scan(scanExec)
-      }
+    plan.transform {
+      case scan if hasMetadataCol(scan) =>
+        withInfo(scan, "Metadata column is not supported")
+
+      // data source V1
+      case scanExec: FileSourceScanExec =>
+        transformV1Scan(scanExec)
+
+      // data source V2
+      case scanExec: BatchScanExec =>
+        transformV2Scan(scanExec)
     }
   }
 
