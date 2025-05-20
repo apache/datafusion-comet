@@ -219,6 +219,8 @@ impl SchemaMapper for SchemaMapping {
                                 return cv.into_array(batch_rows);
                             }
                         }
+                        // Construct an entire column of nulls. We use the Scalar representation
+                        // for better performance.
                         let cv = ColumnarValue::Scalar(ScalarValue::try_from(field.data_type())?);
                         cv.into_array(batch_rows)
                     },
