@@ -58,6 +58,7 @@ trait CometParquetScan extends FileScan with MetricsSupport {
     val broadcastedConf =
       sparkSession.sparkContext.broadcast(new SerializableConfiguration(hadoopConf))
     CometParquetPartitionReaderFactory(
+      usingDataFusionReader = false, // this value is not used since this is v2 scan
       sqlConf,
       broadcastedConf,
       readDataSchema,

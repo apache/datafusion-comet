@@ -104,11 +104,6 @@ object CometConf extends ShimCometConf {
       .getOrElse("COMET_PARQUET_SCAN_IMPL", SCAN_NATIVE_COMET)
       .toLowerCase(Locale.ROOT))
 
-  def isExperimentalNativeScan: Boolean = COMET_NATIVE_SCAN_IMPL.get() match {
-    case SCAN_NATIVE_DATAFUSION | SCAN_NATIVE_ICEBERG_COMPAT => true
-    case SCAN_NATIVE_COMET => false
-  }
-
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.parallel.io.enabled")
       .doc(

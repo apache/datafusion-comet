@@ -78,7 +78,7 @@ use datafusion::common::{
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{
-    AggregateUDF, ReturnTypeArgs, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    AggregateUDF, ReturnFieldArgs, WindowFrame, WindowFrameBound, WindowFrameUnits,
     WindowFunctionDefinition,
 };
 use datafusion::physical_expr::expressions::{Literal, StatsType};
@@ -886,7 +886,7 @@ impl PhysicalPlanner {
                     func_name,
                     fun_expr,
                     vec![left, right],
-                    data_type,
+                    Field::new(func_name, data_type, true),
                 )))
             }
             _ => Ok(Arc::new(BinaryExpr::new(left, op, right))),
@@ -2230,6 +2230,12 @@ impl PhysicalPlanner {
                         .coerce_types(&input_expr_types)
                         .unwrap_or_else(|_| input_expr_types.clone());
 
+                    let arg_fields = coerced_types
+                        .iter()
+                        .enumerate()
+                        .map(|(i, dt)| Field::new(format!("arg{i}"), dt.clone(), true))
+                        .collect::<Vec<_>>();
+
                     // TODO this should try and find scalar
                     let arguments = args
                         .iter()
@@ -2241,18 +2247,16 @@ impl PhysicalPlanner {
                         })
                         .collect::<Vec<_>>();
 
-                    let nullables = arguments.iter().map(|_| true).collect::<Vec<_>>();
-
-                    let args = ReturnTypeArgs {
-                        arg_types: &coerced_types,
+                    let args = ReturnFieldArgs {
+                        arg_fields: &arg_fields,
                         scalar_arguments: &arguments,
-                        nullables: &nullables,
                     };
 
                     let data_type = func
                         .inner()
-                        .return_type_from_args(args)?
-                        .return_type()
+                        .return_field_from_args(args)?
+                        .clone()
+                        .data_type()
                         .clone();
 
                     (data_type, coerced_types)
@@ -2285,7 +2289,7 @@ impl PhysicalPlanner {
             fun_name,
             fun_expr,
             args.to_vec(),
-            data_type,
+            Field::new(fun_name, data_type, true),
         ));
 
         Ok(scalar_expr)

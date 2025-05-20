@@ -82,8 +82,8 @@ pub(crate) fn init_datasource_exec(
             ))
         });
 
-        if let (Some(filter), Some(data_schema)) = (cnf_data_filters, &data_schema) {
-            parquet_source = parquet_source.with_predicate(Arc::clone(data_schema), filter);
+        if let Some(filter) = cnf_data_filters {
+            parquet_source = parquet_source.with_predicate(filter);
         }
     }
 
