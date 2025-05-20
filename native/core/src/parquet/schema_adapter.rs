@@ -18,7 +18,7 @@
 //! Custom schema adapter that uses Spark-compatible conversions
 
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
-use arrow::array::{new_null_array, RecordBatch, RecordBatchOptions};
+use arrow::array::{RecordBatch, RecordBatchOptions};
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
 use datafusion::physical_plan::ColumnarValue;
@@ -212,12 +212,15 @@ impl SchemaMapper for SchemaMapping {
                             if let Some(value) =
                                 self.default_values.as_ref().unwrap().get(&field_idx)
                             {
+                                assert_eq!(field.data_type(), &value.data_type());
+                                // TODO: Would there ever be a mismatch in types here? If so, could
+                                // cast first to be safe.
                                 let cv = ColumnarValue::Scalar(value.clone());
-                                let array = cv.into_array(batch_rows);
-                                return array;
+                                return cv.into_array(batch_rows);
                             }
                         }
-                        Ok(new_null_array(field.data_type(), batch_rows))
+                        let cv = ColumnarValue::Scalar(ScalarValue::try_from(field.data_type())?);
+                        cv.into_array(batch_rows)
                     },
                     // However, if it does exist in both, then try to cast it to the correct output
                     // type
