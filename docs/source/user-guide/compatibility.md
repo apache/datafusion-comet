@@ -29,12 +29,6 @@ Comet aims to provide consistent results with the version of Apache Spark that i
 
 This guide offers information about areas of functionality where there are known differences.
 
-# Compatibility Guide
-
-Comet aims to provide consistent results with the version of Apache Spark that is being used.
-
-This guide offers information about areas of functionality where there are known differences.
-
 ## Parquet Scans
 
 Comet currently has three distinct implementations of the Parquet scan operator. The configuration property
@@ -56,6 +50,8 @@ implementation:
 
 The new scans currently have the following limitations:
 
+Issues common to both `native_datafusion` and `native_iceberg_compat`:
+
 - When reading Parquet files written by systems other than Spark that contain columns with the logical types `UINT_8`
 or `UINT_16`, Comet will produce different results than Spark because Spark does not preserve or understand these
 logical types. Arrow-based readers, such as DataFusion and Comet do respect these types and read the data as unsigned
@@ -65,10 +61,19 @@ types (regardless of the logical type). This behavior can be disabled by setting
 - Reading legacy INT96 timestamps contained within complex types can produce different results to Spark
 - There is a known performance issue when pushing filters down to Parquet. See the [Comet Tuning Guide] for more
 information.
+- Reading maps containing complex types can result in errors or incorrect results [#1754]
+- `PARQUET_FIELD_ID_READ_ENABLED` is not respected [#1758]
 - There are failures in the Spark SQL test suite when enabling these new scans (tracking issues: [#1542] and [#1545]).
+
+Issues specific to `native_datafusion`:
+
+- Bucketed scans are not supported
+- No support for row indexes
 
 [#1545]: https://github.com/apache/datafusion-comet/issues/1545
 [#1542]: https://github.com/apache/datafusion-comet/issues/1542
+[#1754]: https://github.com/apache/datafusion-comet/issues/1754
+[#1758]: https://github.com/apache/datafusion-comet/issues/1758
 [Comet Tuning Guide]: tuning.md
 
 ## ANSI mode
