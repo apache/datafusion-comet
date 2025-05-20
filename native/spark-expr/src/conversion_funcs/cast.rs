@@ -38,7 +38,7 @@ use arrow::{
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
-use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
+use chrono::{DateTime, NaiveDate, TimeZone, Timelike};
 use datafusion::common::{
     cast::as_generic_string_array, internal_err, Result as DataFusionResult, ScalarValue,
 };
@@ -2107,9 +2107,8 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
         date_segments[2] as u32,
     ) {
         Some(date) => {
-            #[allow(deprecated)] // TODO fix this
             let duration_since_epoch = date
-                .signed_duration_since(NaiveDateTime::UNIX_EPOCH.date())
+                .signed_duration_since(DateTime::UNIX_EPOCH.naive_utc().date())
                 .num_days();
             Ok(Some(duration_since_epoch.to_i32().unwrap()))
         }
