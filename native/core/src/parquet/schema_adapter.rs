@@ -21,9 +21,8 @@ use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions
 use arrow::array::{new_null_array, RecordBatch, RecordBatchOptions};
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
-use datafusion::physical_expr::expressions::Literal;
-use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
+use datafusion::scalar::ScalarValue;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -33,13 +32,13 @@ use std::sync::Arc;
 pub struct SparkSchemaAdapterFactory {
     /// Spark cast options
     parquet_options: SparkParquetOptions,
-    default_values: Option<HashMap<usize, Arc<dyn PhysicalExpr>>>,
+    default_values: Option<HashMap<usize, ScalarValue>>,
 }
 
 impl SparkSchemaAdapterFactory {
     pub fn new(
         options: SparkParquetOptions,
-        default_values: Option<HashMap<usize, Arc<dyn PhysicalExpr>>>,
+        default_values: Option<HashMap<usize, ScalarValue>>,
     ) -> Self {
         Self {
             parquet_options: options,
@@ -77,7 +76,7 @@ pub struct SparkSchemaAdapter {
     required_schema: SchemaRef,
     /// Spark cast options
     parquet_options: SparkParquetOptions,
-    default_values: Option<HashMap<usize, Arc<dyn PhysicalExpr>>>,
+    default_values: Option<HashMap<usize, ScalarValue>>,
 }
 
 impl SchemaAdapter for SparkSchemaAdapter {
@@ -182,7 +181,7 @@ pub struct SchemaMapping {
     field_mappings: Vec<Option<usize>>,
     /// Spark cast options
     parquet_options: SparkParquetOptions,
-    default_values: Option<HashMap<usize, Arc<dyn PhysicalExpr>>>,
+    default_values: Option<HashMap<usize, ScalarValue>>,
 }
 
 impl SchemaMapper for SchemaMapping {
@@ -213,14 +212,7 @@ impl SchemaMapper for SchemaMapping {
                             if let Some(value) =
                                 self.default_values.as_ref().unwrap().get(&field_idx)
                             {
-                                let cv = ColumnarValue::Scalar(
-                                    value
-                                        .as_any()
-                                        .downcast_ref::<Literal>()
-                                        .unwrap()
-                                        .value()
-                                        .clone(),
-                                );
+                                let cv = ColumnarValue::Scalar(value.clone());
                                 let array = cv.into_array(batch_rows);
                                 return array;
                             }

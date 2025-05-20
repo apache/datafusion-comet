@@ -1108,30 +1108,41 @@ impl PhysicalPlanner {
                     .map(|expr| self.create_expr(expr, Arc::clone(&required_schema)))
                     .collect();
 
-                let default_values: Option<HashMap<usize, Arc<dyn PhysicalExpr>>> =
-                    if !scan.default_values.is_empty() {
-                        let default_values: Vec<Arc<dyn PhysicalExpr>> = scan
-                            .default_values
-                            .iter()
-                            .map(|expr| {
-                                self.create_expr(expr, Arc::clone(&required_schema))
-                                    .unwrap()
-                            })
-                            .collect();
-                        let default_values_indexes: Vec<usize> = scan
-                            .default_values_indexes
-                            .iter()
-                            .map(|offset| *offset as usize)
-                            .collect();
-                        Some(
-                            default_values_indexes
-                                .into_iter()
-                                .zip(default_values.into_iter())
-                                .collect(),
-                        )
-                    } else {
-                        None
-                    };
+                let default_values: Option<HashMap<usize, ScalarValue>> = if !scan
+                    .default_values
+                    .is_empty()
+                {
+                    let default_values: Vec<ScalarValue> = scan
+                        .default_values
+                        .iter()
+                        .map(|expr| {
+                            let literal = self
+                                .create_expr(expr, Arc::clone(&required_schema))
+                                .unwrap();
+                            literal
+                                .as_any()
+                                .downcast_ref::<DataFusionLiteral>()
+                                .ok_or_else(|| {
+                                    GeneralError("Expected literal of default value.".to_string())
+                                })
+                                .map(|literal| literal.value().clone())
+                                .unwrap()
+                        })
+                        .collect::<Vec<ScalarValue>>();
+                    let default_values_indexes: Vec<usize> = scan
+                        .default_values_indexes
+                        .iter()
+                        .map(|offset| *offset as usize)
+                        .collect();
+                    Some(
+                        default_values_indexes
+                            .into_iter()
+                            .zip(default_values)
+                            .collect(),
+                    )
+                } else {
+                    None
+                };
 
                 // Get one file from the list of files
                 let one_file = scan

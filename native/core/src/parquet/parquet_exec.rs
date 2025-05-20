@@ -28,6 +28,7 @@ use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::physical_expr::expressions::BinaryExpr;
 use datafusion::physical_expr::PhysicalExpr;
+use datafusion::scalar::ScalarValue;
 use datafusion_comet_spark_expr::EvalMode;
 use itertools::Itertools;
 use std::collections::HashMap;
@@ -62,7 +63,7 @@ pub(crate) fn init_datasource_exec(
     file_groups: Vec<Vec<PartitionedFile>>,
     projection_vector: Option<Vec<usize>>,
     data_filters: Option<Vec<Arc<dyn PhysicalExpr>>>,
-    default_values: Option<HashMap<usize, Arc<dyn PhysicalExpr>>>,
+    default_values: Option<HashMap<usize, ScalarValue>>,
     session_timezone: &str,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
     let (table_parquet_options, spark_parquet_options) = get_options(session_timezone);
