@@ -884,7 +884,7 @@ impl PhysicalPlanner {
                     func_name,
                     fun_expr,
                     vec![left, right],
-                    Field::new("foo", data_type, true),
+                    Field::new(func_name, data_type, true),
                 )))
             }
             _ => Ok(Arc::new(BinaryExpr::new(left, op, right))),
@@ -2247,7 +2247,7 @@ impl PhysicalPlanner {
             fun_name,
             fun_expr,
             args.to_vec(),
-            Field::new("foo", data_type, true),
+            Field::new(fun_name, data_type, true),
         ));
 
         Ok(scalar_expr)
