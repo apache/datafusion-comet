@@ -304,6 +304,18 @@ under the License.
   <a class="reference internal nav-link" href="#run-spark-sql-tests">
    3. Run Spark SQL Tests
   </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#use-the-following-commands-to-run-the-spark-sql-test-suite-locally">
+     Use the following commands to run the Spark SQL test suite locally.
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#steps-to-run-individual-test-suites">
+     Steps to run individual test suites
+    </a>
+   </li>
+  </ul>
  </li>
  <li class="toc-h2 nav-item toc-entry">
   <a class="reference internal nav-link" href="#creating-a-diff-file-for-a-new-spark-version">
@@ -398,7 +410,8 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 </section>
 <section id="run-spark-sql-tests">
 <h2>3. Run Spark SQL Tests<a class="headerlink" href="#run-spark-sql-tests" title="Link to this heading">¶</a></h2>
-<p>Use the following commands to run the SQL tests locally.</p>
+<section id="use-the-following-commands-to-run-the-spark-sql-test-suite-locally">
+<h3>Use the following commands to run the Spark SQL test suite locally.<a class="headerlink" href="#use-the-following-commands-to-run-the-spark-sql-test-suite-locally" title="Link to this heading">¶</a></h3>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span>catalyst/test
 <span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">&quot;sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest&quot;</span>
 <span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">&quot;sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest&quot;</span>
@@ -408,6 +421,22 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 <span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">&quot;hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest&quot;</span>
 </pre></div>
 </div>
+</section>
+<section id="steps-to-run-individual-test-suites">
+<h3>Steps to run individual test suites<a class="headerlink" href="#steps-to-run-individual-test-suites" title="Link to this heading">¶</a></h3>
+<ol class="arabic simple">
+<li><p>Open SBT with Comet enabled</p></li>
+</ol>
+<div class="highlight-sbt notranslate"><div class="highlight"><pre><span></span>ENABLE_COMET=true sbt -Dspark.test.includeSlowTests=true 
+</pre></div>
+</div>
+<ol class="arabic simple" start="2">
+<li><p>Run individual tests (Below code runs test named <code class="docutils literal notranslate"><span class="pre">SPARK-35568</span></code> in the <code class="docutils literal notranslate"><span class="pre">spark-sql</span></code> module)</p></li>
+</ol>
+<div class="highlight-sbt notranslate"><div class="highlight"><pre><span></span> sql/testOnly  org.apache.spark.sql.DynamicPartitionPruningV1SuiteAEOn -- -z &quot;SPARK-35568&quot;
+</pre></div>
+</div>
+</section>
 </section>
 <section id="creating-a-diff-file-for-a-new-spark-version">
 <h2>Creating a diff file for a new Spark version<a class="headerlink" href="#creating-a-diff-file-for-a-new-spark-version" title="Link to this heading">¶</a></h2>
