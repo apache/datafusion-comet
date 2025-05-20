@@ -96,14 +96,14 @@ object CometConf extends ShimCometConf {
         "parquet file reader and native column decoding. Supports simple types only " +
         s"'$SCAN_NATIVE_DATAFUSION' is a fully native implementation of scan based on DataFusion" +
         s"'$SCAN_NATIVE_ICEBERG_COMPAT' is a native implementation that exposes apis to read " +
-        "parquet columns natively.")
+        s"parquet columns natively. $SCAN_AUTO chooses the best scan.")
     .internal()
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
     .checkValues(
       Set(SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT, SCAN_AUTO))
     .createWithDefault(sys.env
-      .getOrElse("COMET_PARQUET_SCAN_IMPL", SCAN_NATIVE_COMET)
+      .getOrElse("COMET_PARQUET_SCAN_IMPL", SCAN_AUTO)
       .toLowerCase(Locale.ROOT))
 
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =

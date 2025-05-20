@@ -97,21 +97,42 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
 
         // if scan is auto then pick best available scan
         if (scanImpl == SCAN_AUTO) {
-          val typeChecker = CometScanTypeChecker(SCAN_NATIVE_DATAFUSION)
+          // TODO these checks are not yet exhaustive. For example, native_datafusion does
+          //  not support reading from object stores such as S3 yet
+
+          val typeChecker = CometScanTypeChecker(SCAN_NATIVE_ICEBERG_COMPAT)
           val schemaSupported =
             typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
           val partitionSchemaSupported =
             typeChecker.isSchemaSupported(r.partitionSchema, fallbackReasons)
 
-          // TODO these checks are not yet exhaustive. For example, native_datafusion does
-          //  not support reading from object stores such as S3 yet
+          // additional checks for known issues
+          def isComplexType(dt: DataType): Boolean = dt match {
+            case _: StructType | _: ArrayType | _: MapType => true
+            case _ => false
+          }
+
+          def hasKnownIssues(dataType: DataType): Boolean = {
+            dataType match {
+              case s: StructType => s.exists(field => hasKnownIssues(field.dataType))
+              case a: ArrayType => hasKnownIssues(a.elementType)
+              case m: MapType => isComplexType(m.keyType) || isComplexType(m.valueType)
+              case _ => false
+            }
+          }
+
+          val knownIssues =
+            scanExec.requiredSchema.exists(field => hasKnownIssues(field.dataType)) ||
+              r.partitionSchema.exists(field => hasKnownIssues(field.dataType))
 
           if (COMET_EXEC_ENABLED
-              .get() && schemaSupported && partitionSchemaSupported && !scanExec.bucketedScan) {
-            scanImpl = SCAN_NATIVE_DATAFUSION
-          } else {
-            scanImpl = SCAN_NATIVE_COMET
+              .get() && schemaSupported && partitionSchemaSupported && !scanExec.bucketedScan && !knownIssues) {
+            scanImpl = SCAN_NATIVE_ICEBERG_COMPAT
           }
+        }
+
+        if (scanImpl == SCAN_AUTO) {
+          scanImpl = SCAN_NATIVE_COMET
         }
 
         if (scanImpl == SCAN_NATIVE_DATAFUSION && !COMET_EXEC_ENABLED.get()) {
