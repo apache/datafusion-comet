@@ -48,8 +48,8 @@ import org.apache.spark.unsafe.types.UTF8String
 import com.google.common.primitives.UnsignedLong
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometConf.SCAN_NATIVE_ICEBERG_COMPAT
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.rules.CometScanTypeChecker
 
 abstract class ParquetReadSuite extends CometTestBase {
   import testImplicits._
@@ -88,8 +88,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     // for native iceberg compat, CometScanExec supports some types that native_comet does not.
     // note that native_datafusion does not use CometScanExec so we need not include that in
     // the check
-    val usingNativeIcebergCompat =
-      CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT
+    val isDataFusionScan = usingDataSourceExec(conf)
     Seq(
       NullType -> false,
       BooleanType -> true,
@@ -103,22 +102,22 @@ abstract class ParquetReadSuite extends CometTestBase {
       StringType -> true,
       // Timestamp here arbitrary for picking a concrete data type to from ArrayType
       // Any other type works
-      ArrayType(TimestampType) -> usingNativeIcebergCompat,
+      ArrayType(TimestampType) -> isDataFusionScan,
       StructType(
         Seq(
           StructField("f1", DecimalType.SYSTEM_DEFAULT),
-          StructField("f2", StringType))) -> usingNativeIcebergCompat,
-      MapType(keyType = LongType, valueType = DateType) -> usingNativeIcebergCompat,
+          StructField("f2", StringType))) -> isDataFusionScan,
+      MapType(keyType = LongType, valueType = DateType) -> isDataFusionScan,
       StructType(
-        Seq(
-          StructField("f1", ByteType),
-          StructField("f2", StringType))) -> usingNativeIcebergCompat,
-      MapType(keyType = IntegerType, valueType = BinaryType) -> usingNativeIcebergCompat)
+        Seq(StructField("f1", ByteType), StructField("f2", StringType))) -> isDataFusionScan,
+      MapType(keyType = IntegerType, valueType = BinaryType) -> isDataFusionScan)
       .foreach { case (dt, expected) =>
         val fallbackReasons = new ListBuffer[String]()
-        assert(CometScanExec.isTypeSupported(dt, "", fallbackReasons) == expected)
+        assert(
+          CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
+            .isTypeSupported(dt, "", fallbackReasons) == expected)
         // usingDataFusionParquetExec does not support CometBatchScanExec yet
-        if (!usingDataSourceExec(conf)) {
+        if (!isDataFusionScan) {
           assert(CometBatchScanExec.isTypeSupported(dt, "", fallbackReasons) == expected)
         }
       }
@@ -131,8 +130,7 @@ abstract class ParquetReadSuite extends CometTestBase {
 
     // Arrays support for iceberg compat native and for Parquet V1
     val cometScanExecSupported =
-      if (sys.env.get("COMET_PARQUET_SCAN_IMPL").contains(SCAN_NATIVE_ICEBERG_COMPAT) && this
-          .isInstanceOf[ParquetReadV1Suite])
+      if (usingDataSourceExec(conf) && this.isInstanceOf[ParquetReadV1Suite])
         Seq(true, true, true)
       else Seq(true, false, false)
 
@@ -140,7 +138,9 @@ abstract class ParquetReadSuite extends CometTestBase {
     val fallbackReasons = new ListBuffer[String]()
 
     schemaDDLs.zip(cometScanExecSupported).foreach { case (schema, expected) =>
-      assert(CometScanExec.isSchemaSupported(StructType(schema), fallbackReasons) == expected)
+      assert(
+        CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
+          .isSchemaSupported(StructType(schema), fallbackReasons) == expected)
     }
 
     schemaDDLs.zip(cometBatchScanExecSupported).foreach { case (schema, expected) =>
@@ -354,7 +354,7 @@ abstract class ParquetReadSuite extends CometTestBase {
 
   test("test multiple pages with different sizes and nulls") {
     // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(!usingDataSourceExec)
     def makeRawParquetFile(
         path: Path,
         dictionaryEnabled: Boolean,

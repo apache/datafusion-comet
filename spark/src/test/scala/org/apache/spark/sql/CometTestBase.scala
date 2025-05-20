@@ -979,6 +979,8 @@ abstract class CometTestBase
     writer.close()
   }
 
+  def usingDataSourceExec: Boolean = usingDataSourceExec(SQLConf.get)
+
   def usingDataSourceExec(conf: SQLConf): Boolean =
     Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION).contains(
       CometConf.COMET_NATIVE_SCAN_IMPL.get(conf))
