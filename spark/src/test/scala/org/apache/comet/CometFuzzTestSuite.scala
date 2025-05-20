@@ -111,23 +111,23 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       for (col <- df.columns
           .slice(1, 14)) { // All the primitive columns based on ParquetGenerator.makeParquetFile.
         // Select the first non-null value from our target column type.
-        val default_value_row =
+        val defaultValueRow =
           spark.sql(s"SELECT $col FROM t1 WHERE $col IS NOT NULL LIMIT 1").collect()(0)
-        val default_value_type = default_value_row.schema.fields(0).dataType.sql
+        val defaultValueType = defaultValueRow.schema.fields(0).dataType.sql
         // Construct the string for the default value based on the column type.
-        val default_value_string = default_value_type match {
-          case "DATE" | "STRING" => s"'${default_value_row.get(0)}'"
-          case "TIMESTAMP" | "TIMESTAMP_NTZ" => s"TIMESTAMP '${default_value_row.get(0)}'"
+        val defaultValueString = defaultValueType match {
+          case "DATE" | "STRING" => s"'${defaultValueRow.get(0)}'"
+          case "TIMESTAMP" | "TIMESTAMP_NTZ" => s"TIMESTAMP '${defaultValueRow.get(0)}'"
           case "BINARY" =>
-            s"X'${Hex.encodeHexString(default_value_row.get(0).asInstanceOf[Array[Byte]])}'"
-          case _ => default_value_row.get(0).toString
+            s"X'${Hex.encodeHexString(defaultValueRow.get(0).asInstanceOf[Array[Byte]])}'"
+          case _ => defaultValueRow.get(0).toString
         }
         // Create table t2 and then add the second column with our desired type and default value.
         withTable("t2") {
           spark.sql("create table t2(col1 boolean) using parquet")
           spark.sql("insert into t2 values(true)")
           spark.sql(
-            s"alter table t2 add column col2 $default_value_type default $default_value_string")
+            s"alter table t2 add column col2 $defaultValueType default $defaultValueString")
           // Verify that our default value matches Spark's answer
           val sql = "select col2 from t2"
           if (CometConf.isExperimentalNativeScan) {
@@ -136,14 +136,14 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             checkSparkAnswer(sql)
           }
           // Verify that our default value matches what we originally selected out of t1.
-          if (default_value_type == "BINARY") {
+          if (defaultValueType == "BINARY") {
             assert(
-              default_value_row
+              defaultValueRow
                 .get(0)
                 .asInstanceOf[Array[Byte]]
                 .sameElements(spark.sql(sql).collect()(0).get(0).asInstanceOf[Array[Byte]]))
           } else {
-            assert(default_value_row.get(0) == spark.sql(sql).collect()(0).get(0))
+            assert(defaultValueRow.get(0) == spark.sql(sql).collect()(0).get(0))
           }
         }
       }
