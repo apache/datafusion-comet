@@ -102,6 +102,10 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
             typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
           val partitionSchemaSupported =
             typeChecker.isSchemaSupported(r.partitionSchema, fallbackReasons)
+
+          // TODO these checks are not yet exhaustive. For example, native_datafusion does
+          //  not support reading from object stores such as S3 yet
+
           if (COMET_EXEC_ENABLED
               .get() && schemaSupported && partitionSchemaSupported && !scanExec.bucketedScan) {
             scanImpl = SCAN_NATIVE_DATAFUSION
