@@ -346,7 +346,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
         } else if (optFileField.isPresent()) {
           // The column we are reading may be a complex type in which case we check if each field in
           // the requested type is in the file type (and the same data type)
-          // This makes the same check as Spark's VectorzedParquetReader
+          // This makes the same check as Spark's VectorizedParquetReader
           checkColumn(parquetFields[i]);
           missingColumns[i] = false;
         } else {
