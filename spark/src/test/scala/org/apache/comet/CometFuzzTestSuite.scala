@@ -130,7 +130,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             s"alter table t2 add column col2 $defaultValueType default $defaultValueString")
           // Verify that our default value matches Spark's answer
           val sql = "select col2 from t2"
-          if (CometConf.isExperimentalNativeScan) {
+          if (usingDataSourceExec) {
             checkSparkAnswerAndOperator(sql)
           } else {
             checkSparkAnswer(sql)
