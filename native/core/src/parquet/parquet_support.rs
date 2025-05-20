@@ -16,6 +16,8 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
+use arrow::array::ListArray;
+use arrow::compute::can_cast_types;
 use arrow::{
     array::{
         cast::AsArray, new_null_array, types::Int32Type, types::TimestampMicrosecondType, Array,
@@ -156,6 +158,8 @@ fn cast_array(
     };
     let from_type = array.data_type();
 
+    // Try Comet specific handlers first, then arrow-rs cast if supported,
+    // return uncasted data otherwise
     match (from_type, to_type) {
         (Struct(_), Struct(_)) => Ok(cast_struct_to_struct(
             array.as_struct(),
@@ -163,6 +167,21 @@ fn cast_array(
             to_type,
             parquet_options,
         )?),
+        (List(_), List(to_inner_type)) => {
+            let list_arr: &ListArray = array.as_list();
+            let cast_field = cast_array(
+                Arc::clone(list_arr.values()),
+                to_inner_type.data_type(),
+                parquet_options,
+            )?;
+
+            Ok(Arc::new(ListArray::new(
+                Arc::clone(to_inner_type),
+                list_arr.offsets().clone(),
+                cast_field,
+                list_arr.nulls().cloned(),
+            )))
+        }
         (Timestamp(TimeUnit::Microsecond, None), Timestamp(TimeUnit::Microsecond, Some(tz))) => {
             Ok(Arc::new(
                 array
@@ -171,7 +190,11 @@ fn cast_array(
                     .with_timezone(Arc::clone(tz)),
             ))
         }
-        _ => Ok(cast_with_options(&array, to_type, &PARQUET_OPTIONS)?),
+        // If Arrow cast supports the cast, delegate the cast to Arrow
+        _ if can_cast_types(from_type, to_type) => {
+            Ok(cast_with_options(&array, to_type, &PARQUET_OPTIONS)?)
+        }
+        _ => Ok(array),
     }
 }
 

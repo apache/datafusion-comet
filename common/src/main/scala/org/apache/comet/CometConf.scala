@@ -51,6 +51,9 @@ object CometConf extends ShimCometConf {
   private val TUNING_GUIDE = "For more information, refer to the Comet Tuning " +
     "Guide (https://datafusion.apache.org/comet/user-guide/tuning.html)"
 
+  private val TRACING_GUIDE = "For more information, refer to the Comet Tracing " +
+    "Guide (https://datafusion.apache.org/comet/user-guide/tracing.html)"
+
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
 
@@ -100,11 +103,6 @@ object CometConf extends ShimCometConf {
     .createWithDefault(sys.env
       .getOrElse("COMET_PARQUET_SCAN_IMPL", SCAN_NATIVE_COMET)
       .toLowerCase(Locale.ROOT))
-
-  def isExperimentalNativeScan: Boolean = COMET_NATIVE_SCAN_IMPL.get() match {
-    case SCAN_NATIVE_DATAFUSION | SCAN_NATIVE_ICEBERG_COMPAT => true
-    case SCAN_NATIVE_COMET => false
-  }
 
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.parallel.io.enabled")
@@ -233,8 +231,8 @@ object CometConf extends ShimCometConf {
       defaultValue = true,
       notes = Some("stddev is slower than Spark's implementation"))
 
-  val COMET_MEMORY_PROFILING: ConfigEntry[Boolean] = conf("spark.comet.memory.profiling")
-    .doc("Enable logging of JVM and native memory statistics.")
+  val COMET_TRACING_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.tracing.enabled")
+    .doc(s"Enable fine-grained tracing of events and memory usage. $TRACING_GUIDE.")
     .internal()
     .booleanConf
     .createWithDefault(false)

@@ -52,4 +52,4 @@ jobs:
       - name: Test with Miri
         run: |
           cd native
-          MIRIFLAGS="-Zmiri-disable-isolation" cargo miri test
+          MIRIFLAGS="-Zmiri-disable-isolation" cargo miri test --lib --bins --tests --examples

@@ -48,7 +48,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isCometScan, usingDataFusionParquetExec, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
 import org.apache.comet.expressions._
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType._
@@ -2282,8 +2282,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     op match {
 
       // Fully native scan for V1
-      case scan: CometScanExec
-          if CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_DATAFUSION =>
+      case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
         val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
         nativeScanBuilder.setSource(op.simpleStringWithNodeId())
 
@@ -2376,12 +2375,26 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val cond = exprToProto(condition, child.output)
 
         if (cond.isDefined && childOp.nonEmpty) {
+          // We need to determine whether to use DataFusion's FilterExec or Comet's
+          // FilterExec. The difference is that DataFusion's implementation will sometimes pass
+          // batches through whereas the Comet implementation guarantees that a copy is always
+          // made, which is critical when using `native_comet` scans due to buffer re-use
+
+          // TODO this could be optimized more to stop walking the tree on hitting
+          //  certain operators such as join or aggregate which will copy batches
+          def containsNativeCometScan(plan: SparkPlan): Boolean = {
+            plan match {
+              case w: CometScanWrapper => containsNativeCometScan(w.originalPlan)
+              case scan: CometScanExec => scan.scanImpl == CometConf.SCAN_NATIVE_COMET
+              case _: CometNativeScanExec => false
+              case _ => plan.children.exists(containsNativeCometScan)
+            }
+          }
+
           val filterBuilder = OperatorOuterClass.Filter
             .newBuilder()
             .setPredicate(cond.get)
-            .setUseDatafusionFilter(
-              CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_DATAFUSION ||
-                CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
+            .setUseDatafusionFilter(!containsNativeCometScan(op))
           Some(result.setFilter(filterBuilder).build())
         } else {
           withInfo(op, condition, child)
@@ -2515,6 +2528,15 @@ object QueryPlanSerde extends Logging with CometExprShim {
         // Aggregate expressions with filter are not supported yet.
         if (aggregateExpressions.exists(_.filter.isDefined)) {
           withInfo(op, "Aggregate expression with filter is not supported")
+          return None
+        }
+
+        if (groupingExpressions.exists(expr =>
+            expr.dataType match {
+              case _: MapType => true
+              case _ => false
+            })) {
+          withInfo(op, "Grouping on map types is not supported")
           return None
         }
 
@@ -2758,16 +2780,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
         withInfo(join, "SortMergeJoin is not enabled")
         None
 
-      case op
-          if isCometSink(op) && op.output.forall(a =>
-            supportedDataType(
-              a.dataType,
-              // Complex type supported if
-              // - Native datafusion reader enabled (experimental) OR
-              // - conversion from Parquet/JSON enabled
-              allowComplex =
-                usingDataFusionParquetExec(conf) || CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED
-                  .get(conf) || CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf))) =>
+      case op if isCometSink(op) =>
+        val supportedTypes =
+          op.output.forall(a => supportedDataType(a.dataType, allowComplex = true))
+
+        if (!supportedTypes) {
+          return None
+        }
+
         // These operators are source of Comet native execution chain
         val scanBuilder = OperatorOuterClass.Scan.newBuilder()
         val source = op.simpleStringWithNodeId()
