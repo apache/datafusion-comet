@@ -443,10 +443,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
 
   /**
    * Checks whether the given 'path' exists in 'parquetType'. The difference between this and {@link
-   * MessageType#containsPath(String[])} is that the latter only support paths to leaf
-   * From Spark: VectorizedParquetRecordReader
-   * Check whether a column from requested schema is missing
-   * from the file schema, or whether it conforms to the type of the file schema.
+   * MessageType#containsPath(String[])} is that the latter only support paths to leaf From Spark:
+   * VectorizedParquetRecordReader Check whether a column from requested schema is missing from the
+   * file schema, or whether it conforms to the type of the file schema.
    */
   private void checkColumn(ParquetColumn column) throws IOException {
     String[] path = JavaConverters.seqAsJavaList(column.path()).toArray(new String[0]);
