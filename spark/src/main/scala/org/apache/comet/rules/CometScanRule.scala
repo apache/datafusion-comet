@@ -41,6 +41,8 @@ import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
  * Spark physical optimizer rule for replacing Spark scans with Comet scans.
  */
 case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
+  private val scanImpl: String = COMET_NATIVE_SCAN_IMPL.get()
+
   override def apply(plan: SparkPlan): SparkPlan = {
     if (!isCometLoaded(conf)) {
       withInfo(plan, "Comet is not enabled")
@@ -52,8 +54,9 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
       return plan
     }
 
-    if (SQLConf.get.getConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED)) {
-      withInfo(plan, "Comet does not support PARQUET_FIELD_ID_READ_ENABLED")
+    if (SQLConf.get.getConf(
+        SQLConf.PARQUET_FIELD_ID_READ_ENABLED) && scanImpl != CometConf.SCAN_NATIVE_COMET) {
+      withInfo(plan, s"Comet $scanImpl scan does not support PARQUET_FIELD_ID_READ_ENABLED")
       return plan
     }
 
@@ -97,7 +100,6 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
           return withInfos(scanExec, fallbackReasons.toSet)
         }
 
-        val scanImpl = COMET_NATIVE_SCAN_IMPL.get()
         if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && !COMET_EXEC_ENABLED.get()) {
           fallbackReasons +=
             s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled"
