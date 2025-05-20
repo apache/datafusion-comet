@@ -1112,6 +1112,8 @@ impl PhysicalPlanner {
                     .default_values
                     .is_empty()
                 {
+                    // We have default values. Extract the two lists (same length) of values and
+                    // indexes in the schema, and then create a HashMap to use in the SchemaMapper.
                     let default_values: Vec<ScalarValue> = scan
                         .default_values
                         .iter()
