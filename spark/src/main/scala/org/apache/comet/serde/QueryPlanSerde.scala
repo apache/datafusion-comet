@@ -32,7 +32,7 @@ import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, Normalize
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
-import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.{existenceDefaultValues, hasExistenceDefaultValues}
+import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution
@@ -2304,19 +2304,19 @@ object QueryPlanSerde extends Logging with CometExprShim {
             nativeScanBuilder.addAllDataFilters(dataFilters.asJava)
           }
 
-          if (hasExistenceDefaultValues(scan.requiredSchema)) {
+          val possibleDefaultValues = getExistenceDefaultValues(scan.requiredSchema)
+          if (possibleDefaultValues.exists(_ != null)) {
             // Our schema has default values. Serialize two lists, one with the default values
             // and another with the indexes in the schema so the native side can map missing
             // columns to these default values.
-            val (defaultValues, indexes) =
-              existenceDefaultValues(scan.requiredSchema).zipWithIndex
-                .filter { case (expr, _) => expr != null }
-                .map { case (expr, index) =>
-                  // ResolveDefaultColumnsUtil.getExistenceDefaultValues has evaluated these
-                  // expressions and they should now just be literals.
-                  (Literal(expr), index.toLong.asInstanceOf[java.lang.Long])
-                }
-                .unzip
+            val (defaultValues, indexes) = possibleDefaultValues.zipWithIndex
+              .filter { case (expr, _) => expr != null }
+              .map { case (expr, index) =>
+                // ResolveDefaultColumnsUtil.getExistenceDefaultValues has evaluated these
+                // expressions and they should now just be literals.
+                (Literal(expr), index.toLong.asInstanceOf[java.lang.Long])
+              }
+              .unzip
             nativeScanBuilder.addAllDefaultValues(
               defaultValues.flatMap(exprToProto(_, scan.output)).toIterable.asJava)
             nativeScanBuilder.addAllDefaultValuesIndexes(indexes.toIterable.asJava)
