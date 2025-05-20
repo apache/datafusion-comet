@@ -205,23 +205,34 @@ impl SchemaMapper for SchemaMapping {
             // and for each one...
             .map(|((field_idx, field), file_idx)| {
                 file_idx.map_or_else(
-                    // If this field only exists in the table, and not in the file, then we know
-                    // that it's null, so just return that.
+                    // If this field only exists in the table, and not in the file, then we need to
+                    // populate a default value for it.
                     || {
                         if self.default_values.is_some() {
+                            // We have a map of default values, see if this field is in there.
                             if let Some(value) =
                                 self.default_values.as_ref().unwrap().get(&field_idx)
+                            // Default value exists, construct a column from it.
                             {
-                                assert_eq!(field.data_type(), &value.data_type());
-                                // TODO: Would there ever be a mismatch in types here? If so, could
-                                // cast first to be safe.
-                                let cv = ColumnarValue::Scalar(value.clone());
+                                let cv = if field.data_type() == &value.data_type() {
+                                    ColumnarValue::Scalar(value.clone())
+                                } else {
+                                    // Data types don't match. This can happen when default values
+                                    // are stored by Spark in a format different than the column's
+                                    // type (e.g., INT32 when the column is DATE32)
+                                    spark_parquet_convert(
+                                        ColumnarValue::Scalar(value.clone()),
+                                        field.data_type(),
+                                        &self.parquet_options,
+                                    )?
+                                };
                                 return cv.into_array(batch_rows);
                             }
                         }
                         // Construct an entire column of nulls. We use the Scalar representation
                         // for better performance.
-                        let cv = ColumnarValue::Scalar(ScalarValue::try_from(field.data_type())?);
+                        let cv =
+                            ColumnarValue::Scalar(ScalarValue::try_new_null(field.data_type())?);
                         cv.into_array(batch_rows)
                     },
                     // However, if it does exist in both, then try to cast it to the correct output
