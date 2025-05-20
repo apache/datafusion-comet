@@ -69,7 +69,6 @@ use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr}
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
-use crate::parquet::parquet_exec::init_datasource_exec;
 use crate::parquet::parquet_support::prepare_object_store;
 use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{
@@ -86,6 +85,7 @@ use datafusion::physical_expr::expressions::{Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
+use crate::parquet::parquet_exec::init_datasource_exec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
@@ -378,6 +378,8 @@ impl PhysicalPlanner {
                         DataType::Binary => ScalarValue::Binary(None),
                         DataType::Decimal128(p, s) => ScalarValue::Decimal128(None, p, s),
                         DataType::Struct(fields) => ScalarStructBuilder::new_null(fields),
+                        DataType::Map(f, s) => DataType::Map(f, s).try_into()?,
+                        DataType::List(f) => DataType::List(f).try_into()?,
                         DataType::Null => ScalarValue::Null,
                         dt => {
                             return Err(GeneralError(format!("{:?} is not supported in Comet", dt)))
@@ -884,7 +886,7 @@ impl PhysicalPlanner {
                     func_name,
                     fun_expr,
                     vec![left, right],
-                    Field::new("foo", data_type, true),
+                    Field::new(func_name, data_type, true),
                 )))
             }
             _ => Ok(Arc::new(BinaryExpr::new(left, op, right))),
@@ -1202,6 +1204,7 @@ impl PhysicalPlanner {
                     codec,
                     writer.output_data_file.clone(),
                     writer.output_index_file.clone(),
+                    writer.tracing_enabled,
                 )?);
 
                 Ok((
@@ -2247,7 +2250,7 @@ impl PhysicalPlanner {
             fun_name,
             fun_expr,
             args.to_vec(),
-            Field::new("foo", data_type, true),
+            Field::new(fun_name, data_type, true),
         ));
 
         Ok(scalar_expr)
@@ -2504,19 +2507,27 @@ fn create_case_expr(
 
 #[cfg(test)]
 mod tests {
+    use futures::{poll, StreamExt};
     use std::{sync::Arc, task::Poll};
 
-    use futures::{poll, StreamExt};
-
     use arrow::array::{Array, DictionaryArray, Int32Array, StringArray};
-    use arrow::datatypes::DataType;
+    use arrow::datatypes::{DataType, Field, Fields, Schema};
+    use datafusion::catalog::memory::DataSourceExec;
+    use datafusion::datasource::listing::PartitionedFile;
+    use datafusion::datasource::object_store::ObjectStoreUrl;
+    use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
+    use datafusion::error::DataFusionError;
     use datafusion::logical_expr::ScalarUDF;
+    use datafusion::physical_plan::ExecutionPlan;
     use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
+    use tempfile::TempDir;
     use tokio::sync::mpsc;
 
     use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
 
     use crate::execution::operators::ExecutionError;
+    use crate::parquet::parquet_support::SparkParquetOptions;
+    use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
     use datafusion_comet_proto::spark_expression::expr::ExprStruct;
     use datafusion_comet_proto::{
         spark_expression::expr::ExprStruct::*,
@@ -2525,6 +2536,7 @@ mod tests {
         spark_operator,
         spark_operator::{operator::OpStruct, Operator},
     };
+    use datafusion_comet_spark_expr::EvalMode;
 
     #[test]
     fn test_unpack_dictionary_primitive() {
@@ -3083,5 +3095,94 @@ mod tests {
                 }
             }
         });
+    }
+
+    /*
+    Testing a nested types scenario
+
+    select arr[0].a, arr[0].c from (
+        select array(named_struct('a', 1, 'b', 'n', 'c', 'x')) arr)
+     */
+    #[tokio::test]
+    async fn test_nested_types() -> Result<(), DataFusionError> {
+        let session_ctx = SessionContext::new();
+
+        // generate test data in the temp folder
+        let test_data = "select make_array(named_struct('a', 1, 'b', 'n', 'c', 'x')) c0";
+        let tmp_dir = TempDir::new()?;
+        let test_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let plan = session_ctx
+            .sql(test_data)
+            .await?
+            .create_physical_plan()
+            .await?;
+
+        // Write parquet file into temp folder
+        session_ctx
+            .write_parquet(plan, test_path.clone(), None)
+            .await?;
+
+        // Define schema Comet reads with
+        let required_schema = Schema::new(Fields::from(vec![Field::new(
+            "c0",
+            DataType::List(
+                Field::new(
+                    "element",
+                    DataType::Struct(Fields::from(vec![
+                        Field::new("a", DataType::Int32, true),
+                        Field::new("c", DataType::Utf8, true),
+                    ] as Vec<Field>)),
+                    true,
+                )
+                .into(),
+            ),
+            true,
+        )]));
+
+        // Register all parquet with temp data as file groups
+        let mut file_groups: Vec<FileGroup> = vec![];
+        for entry in std::fs::read_dir(&test_path)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.extension().and_then(|ext| ext.to_str()) == Some("parquet") {
+                if let Some(path_str) = path.to_str() {
+                    file_groups.push(FileGroup::new(vec![PartitionedFile::from_path(
+                        path_str.into(),
+                    )?]));
+                }
+            }
+        }
+
+        let source = Arc::new(
+            ParquetSource::default().with_schema_adapter_factory(Arc::new(
+                SparkSchemaAdapterFactory::new(SparkParquetOptions::new(EvalMode::Ansi, "", false)),
+            )),
+        );
+
+        let object_store_url = ObjectStoreUrl::local_filesystem();
+        let file_scan_config =
+            FileScanConfigBuilder::new(object_store_url, required_schema.into(), source)
+                .with_file_groups(file_groups)
+                .build();
+
+        // Run native read
+        let scan = Arc::new(DataSourceExec::new(Arc::new(file_scan_config.clone())));
+        let stream = scan.execute(0, session_ctx.task_ctx())?;
+        let result: Vec<_> = stream.collect().await;
+
+        let actual = result.first().unwrap().as_ref().unwrap();
+
+        let expected = [
+            "+----------------+",
+            "| c0             |",
+            "+----------------+",
+            "| [{a: 1, c: x}] |",
+            "+----------------+",
+        ];
+        assert_batches_eq!(expected, &[actual.clone()]);
+
+        Ok(())
     }
 }
