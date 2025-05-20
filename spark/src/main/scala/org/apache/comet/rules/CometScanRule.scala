@@ -126,7 +126,8 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
               r.partitionSchema.exists(field => hasKnownIssues(field.dataType))
 
           if (COMET_EXEC_ENABLED
-              .get() && schemaSupported && partitionSchemaSupported && !scanExec.bucketedScan && !knownIssues) {
+              .get() && schemaSupported && partitionSchemaSupported &&
+            !scanExec.bucketedScan && !knownIssues) {
             scanImpl = SCAN_NATIVE_ICEBERG_COMPAT
           }
         }
