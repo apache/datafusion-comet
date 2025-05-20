@@ -1114,23 +1114,21 @@ impl PhysicalPlanner {
                 {
                     // We have default values. Extract the two lists (same length) of values and
                     // indexes in the schema, and then create a HashMap to use in the SchemaMapper.
-                    let default_values: Vec<ScalarValue> = scan
+                    let default_values: Result<Vec<ScalarValue>, DataFusionError> = scan
                         .default_values
                         .iter()
                         .map(|expr| {
-                            let literal = self
-                                .create_expr(expr, Arc::clone(&required_schema))
-                                .unwrap();
-                            literal
+                            let literal = self.create_expr(expr, Arc::clone(&required_schema))?;
+                            let df_literal = literal
                                 .as_any()
                                 .downcast_ref::<DataFusionLiteral>()
                                 .ok_or_else(|| {
-                                    GeneralError("Expected literal of default value.".to_string())
-                                })
-                                .map(|literal| literal.value().clone())
-                                .unwrap()
+                                GeneralError("Expected literal of default value.".to_string())
+                            })?;
+                            Ok(df_literal.value().clone())
                         })
-                        .collect::<Vec<ScalarValue>>();
+                        .collect();
+                    let default_values = default_values?;
                     let default_values_indexes: Vec<usize> = scan
                         .default_values_indexes
                         .iter()
