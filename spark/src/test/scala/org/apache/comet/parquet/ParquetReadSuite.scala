@@ -1256,15 +1256,13 @@ abstract class ParquetReadSuite extends CometTestBase {
         val inputDFs = Seq(
           "byte" -> values.map(_.toByte).toDF("col1"),
           "short" -> values.map(_.toShort).toDF("col1"),
-          "int" -> values.map(_.toInt).toDF("col1")
-        )
+          "int" -> values.map(_.toInt).toDF("col1"))
 
         // Target Spark read schemas for widening
         val widenTargets = Seq(
           "short" -> values.map(_.toShort).toDF("col1"),
           "int" -> values.map(_.toInt).toDF("col1"),
-          "long" -> values.map(_.toLong).toDF("col1")
-        )
+          "long" -> values.map(_.toLong).toDF("col1"))
 
         for ((inputType, inputDF) <- inputDFs) {
           val writePath = s"$path/$inputType"
