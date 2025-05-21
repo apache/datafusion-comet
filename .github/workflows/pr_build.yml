@@ -52,7 +52,9 @@ jobs:
         scala-version: ['2.12', '2.13']
         is_push_event:
           - ${{ github.event_name == 'push' }}
-        exclude: # exclude java 11 for pull_request event
+        exclude: # exclude java 8 and 11 for pull_request event
+          - java_version: 8
+            is_push_event: false
           - java_version: 11
             is_push_event: false
       fail-fast: false
@@ -209,6 +211,13 @@ jobs:
         test-target: [rust, java]
         spark-version: ['3.4', '3.5']
         scala-version: ['2.12', '2.13']
+        is_push_event:
+          - ${{ github.event_name == 'push' }}
+        exclude: # exclude java 8 and 11 for pull_request event
+          - java_version: 8
+            is_push_event: false
+          - java_version: 11
+            is_push_event: false
       fail-fast: false
     if: github.event_name == 'push'
     name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}/${{ matrix.test-target }}
@@ -238,7 +247,9 @@ jobs:
         scala-version: ['2.12', '2.13']
         is_push_event:
           - ${{ github.event_name == 'push' }}
-        exclude: # exclude java 11 for pull_request event
+        exclude: # exclude java 8 and 11 for pull_request event
+          - java_version: 8
+            is_push_event: false
           - java_version: 11
             is_push_event: false
       fail-fast: false
@@ -292,11 +303,6 @@ jobs:
         java_version: [17]
         test-target: [java]
         spark-version: ['4.0']
-        is_push_event:
-          - ${{ github.event_name == 'push' }}
-        exclude: # exclude java 11 for pull_request event
-          - java_version: 11
-            is_push_event: false
       fail-fast: false
     name: macos-14(Silicon)/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}/${{ matrix.test-target }}
     runs-on: macos-14
@@ -324,6 +330,11 @@ jobs:
         scala-version: ['2.12', '2.13']
         exclude:
           - java_version: 8
+      is_push_event:
+        - ${{ github.event_name == 'push' }}
+      exclude: # exclude java 8 for pull_request event
+        - java_version: 8
+          is_push_event: false
       fail-fast: false
     name: macos-14(Silicon)/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}/${{ matrix.test-target }}
     runs-on: macos-14
