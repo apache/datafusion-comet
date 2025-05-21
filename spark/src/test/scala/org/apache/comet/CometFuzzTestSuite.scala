@@ -247,12 +247,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("Parquet temporal types written as INT96") {
-    // int96 coercion in DF does not work with nested types yet
-    // https://github.com/apache/datafusion/issues/15763
-    testParquetTemporalTypes(
-      ParquetOutputTimestampType.INT96,
-      generateArray = false,
-      generateStruct = false)
+    testParquetTemporalTypes(ParquetOutputTimestampType.INT96)
   }
 
   test("Parquet temporal types written as TIMESTAMP_MICROS") {
