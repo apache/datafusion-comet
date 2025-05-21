@@ -16,8 +16,9 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
-use arrow::array::ListArray;
+use arrow::array::{ListArray, MapArray};
 use arrow::compute::can_cast_types;
+use arrow::datatypes::{FieldRef, Fields};
 use arrow::{
     array::{
         cast::AsArray, new_null_array, types::Int32Type, types::TimestampMicrosecondType, Array,
@@ -28,6 +29,7 @@ use arrow::{
     util::display::FormatOptions,
 };
 use datafusion::common::{Result as DataFusionResult, ScalarValue};
+use datafusion::error::DataFusionError;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ColumnarValue;
@@ -190,6 +192,9 @@ fn cast_array(
                     .with_timezone(Arc::clone(tz)),
             ))
         }
+        (Map(_, ordered_from), Map(_, ordered_to)) if ordered_from == ordered_to =>
+            cast_map_values(array.as_map(), to_type, parquet_options, *ordered_to)
+            ,
         // If Arrow cast supports the cast, delegate the cast to Arrow
         _ if can_cast_types(from_type, to_type) => {
             Ok(cast_with_options(&array, to_type, &PARQUET_OPTIONS)?)
@@ -238,6 +243,71 @@ fn cast_struct_to_struct(
             )))
         }
         _ => unreachable!(),
+    }
+}
+
+/// Cast a map type to another map type. The same as arrow-cast except we recursively call our own
+/// cast_array
+pub(crate) fn cast_map_values(
+    from: &MapArray,
+    to_data_type: &DataType,
+    parquet_options: &SparkParquetOptions,
+    to_ordered: bool,
+) -> Result<ArrayRef, DataFusionError> {
+    let entries_field = if let DataType::Map(entries_field, _) = to_data_type {
+        entries_field
+    } else {
+        return Err(DataFusionError::Internal(
+            "Internal Error: to_data_type is not a map type.".to_string(),
+        ));
+    };
+
+    let key_field = key_field(entries_field).ok_or(DataFusionError::Internal(
+        "map is missing key field".to_string(),
+    ))?;
+    let value_field = value_field(entries_field).ok_or(DataFusionError::Internal(
+        "map is missing value field".to_string(),
+    ))?;
+
+    let key_array = cast_array(
+        Arc::<dyn Array>::clone(from.keys()),
+        key_field.data_type(),
+        parquet_options,
+    )?;
+    let value_array = cast_array(
+        Arc::<dyn Array>::clone(from.values()),
+        value_field.data_type(),
+        parquet_options,
+    )?;
+
+    Ok(Arc::new(MapArray::new(
+        Arc::<arrow::datatypes::Field>::clone(entries_field),
+        from.offsets().clone(),
+        StructArray::new(
+            Fields::from(vec![key_field, value_field]),
+            vec![key_array, value_array],
+            from.entries().nulls().cloned(),
+        ),
+        from.nulls().cloned(),
+        to_ordered,
+    )))
+}
+
+/// Gets the key field from the entries of a map.  For all other types returns None.
+pub(crate) fn key_field(entries_field: &FieldRef) -> Option<FieldRef> {
+    if let DataType::Struct(fields) = entries_field.data_type() {
+        fields.first().cloned()
+    } else {
+        None
+    }
+}
+
+/// Gets the value field from the entries of a map.  For all other types returns None.
+pub(crate) fn value_field(entries_field: &FieldRef) -> Option<FieldRef> {
+    if let DataType::Struct(fields) = entries_field.data_type() {
+        fields.get(1).cloned()
+    } else {
+        None
     }
 }
 
