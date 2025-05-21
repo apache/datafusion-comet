@@ -1245,6 +1245,55 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("type widening: byte → short/int/long, short → int/long, int → long") {
+    withSQLConf(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        val values = 1 to 10
+        val options: Map[String, String] = Map.empty[String, String]
+
+        // Input types and corresponding DataFrames
+        val inputDFs = Seq(
+          "byte" -> values.map(_.toByte).toDF("col1"),
+          "short" -> values.map(_.toShort).toDF("col1"),
+          "int" -> values.map(_.toInt).toDF("col1")
+        )
+
+        // Target Spark read schemas for widening
+        val widenTargets = Seq(
+          "short" -> values.map(_.toShort).toDF("col1"),
+          "int" -> values.map(_.toInt).toDF("col1"),
+          "long" -> values.map(_.toLong).toDF("col1")
+        )
+
+        for ((inputType, inputDF) <- inputDFs) {
+          val writePath = s"$path/$inputType"
+          inputDF.write.format("parquet").options(options).save(writePath)
+
+          for ((targetType, targetDF) <- widenTargets) {
+            // Only test valid widenings (e.g., don't test int → short)
+            val wideningValid = (inputType, targetType) match {
+              case ("byte", "short" | "int" | "long") => true
+              case ("short", "int" | "long") => true
+              case ("int", "long") => true
+              case _ => false
+            }
+
+            if (wideningValid) {
+              val reader = spark.read
+                .schema(s"col1 $targetType")
+                .format("parquet")
+                .options(options)
+                .load(writePath)
+
+              checkAnswer(reader, targetDF)
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("scan metrics") {
     // https://github.com/apache/datafusion-comet/issues/1441
     assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
