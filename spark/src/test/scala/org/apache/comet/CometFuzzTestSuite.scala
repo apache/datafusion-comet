@@ -116,7 +116,11 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val defaultValueType = defaultValueRow.schema.fields(0).dataType.sql
         // Construct the string for the default value based on the column type.
         val defaultValueString = defaultValueType match {
-          case "DATE" | "STRING" => s"'${defaultValueRow.get(0)}'"
+          // These explicit type definitions for TINYINT, SMALLINT, FLOAT, DOUBLE, and DATE are only needed for 3.4.
+          case "TINYINT" | "SMALLINT" | "FLOAT" | "DOUBLE" =>
+            s"$defaultValueType(${defaultValueRow.get(0)})"
+          case "DATE" => s"$defaultValueType('${defaultValueRow.get(0)}')"
+          case "STRING" => s"'${defaultValueRow.get(0)}'"
           case "TIMESTAMP" | "TIMESTAMP_NTZ" => s"TIMESTAMP '${defaultValueRow.get(0)}'"
           case "BINARY" =>
             s"X'${Hex.encodeHexString(defaultValueRow.get(0).asInstanceOf[Array[Byte]])}'"
