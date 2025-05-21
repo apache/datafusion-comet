@@ -1292,6 +1292,41 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("read byte, int, short, long together") {
+    withSQLConf(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+
+        val byteDF = (Byte.MaxValue - 2 to Byte.MaxValue).map(_.toByte).toDF("col1")
+        val shortDF = (Short.MaxValue - 2 to Short.MaxValue).map(_.toShort).toDF("col1")
+        val intDF = (Int.MaxValue - 2 to Int.MaxValue).toDF("col1")
+        val longDF = (Long.MaxValue - 2 to Long.MaxValue).toDF("col1")
+        val unionDF = byteDF.union(shortDF).union(intDF).union(longDF)
+
+        val byteDir = s"$path${File.separator}part=byte"
+        val shortDir = s"$path${File.separator}part=short"
+        val intDir = s"$path${File.separator}part=int"
+        val longDir = s"$path${File.separator}part=long"
+
+        val options: Map[String, String] = Map.empty[String, String]
+
+        byteDF.write.format("parquet").options(options).save(byteDir)
+        shortDF.write.format("parquet").options(options).save(shortDir)
+        intDF.write.format("parquet").options(options).save(intDir)
+        longDF.write.format("parquet").options(options).save(longDir)
+
+        val df = spark.read
+          .schema(unionDF.schema)
+          .format("parquet")
+          .options(options)
+          .load(path)
+          .select("col1")
+
+        checkAnswer(df, unionDF)
+      }
+    }
+  }
+
   test("scan metrics") {
     // https://github.com/apache/datafusion-comet/issues/1441
     assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
