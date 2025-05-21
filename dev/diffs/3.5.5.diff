@@ -487,10 +487,10 @@ index 93275487f29..d18ab7b20c0 100644
          }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
 new file mode 100644
-index 00000000000..4b31bea33de
+index 00000000000..5691536c114
 --- /dev/null
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,45 @@
 +/*
 + * Licensed to the Apache Software Foundation (ASF) under one or more
 + * contributor license agreements.  See the NOTICE file distributed with
@@ -519,6 +519,9 @@ index 00000000000..4b31bea33de
 + * Tests with this tag will be ignored when Comet is enabled (e.g., via `ENABLE_COMET`).
 + */
 +case class IgnoreComet(reason: String) extends Tag("DisableComet")
++case class IgnoreCometNativeIcebergCompat(reason: String) extends Tag("DisableComet")
++case class IgnoreCometNativeDataFusion(reason: String) extends Tag("DisableComet")
++case class IgnoreCometNativeScan(reason: String) extends Tag("DisableComet")
 +
 +/**
 + * Helper trait that disables Comet for all tests regardless of default config values.
