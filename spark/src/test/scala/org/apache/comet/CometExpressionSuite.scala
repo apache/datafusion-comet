@@ -1313,6 +1313,25 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  // based on Spark SQL ParquetFilterSuite test "filter pushdown - StringPredicate"
+  test("string predicate filter") {
+    Seq(false, true).foreach { pushdown =>
+      withSQLConf(
+        SQLConf.PARQUET_FILTER_PUSHDOWN_STRING_PREDICATE_ENABLED.key -> pushdown.toString) {
+        val table = "names"
+        withTable(table) {
+          sql(s"create table $table(name varchar(20)) using parquet")
+          for (ch <- Range('a', 'z')) {
+            sql(s"insert into $table values('$ch$ch$ch')")
+          }
+          checkSparkAnswerAndOperator(s"SELECT * FROM $table WHERE name LIKE 'a%'")
+          checkSparkAnswerAndOperator(s"SELECT * FROM $table WHERE name LIKE '%a'")
+          checkSparkAnswerAndOperator(s"SELECT * FROM $table WHERE name LIKE '%a%'")
+        }
+      }
+    }
+  }
+
   test("Upper and Lower") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf(
