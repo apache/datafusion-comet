@@ -75,8 +75,8 @@ The new scans currently have the following limitations:
 Comet supports Structs, Maps, and Arrays, with some limitations.
 
 - Reading complex types from Parquet is only supported when using the `native_datafusion` or `native_iceberg_compat` 
-  scans (se previous section).
-- Comet does not currently maps that contain structs in either the key or value field
+  scans (see previous section).
+- Comet does not currently support maps that contain structs.
 
 ## ANSI mode
 
