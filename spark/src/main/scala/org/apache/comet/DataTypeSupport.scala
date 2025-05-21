@@ -57,7 +57,8 @@ trait DataTypeSupport {
         fields.forall(f => isTypeSupported(f.dataType, f.name, fallbackReasons))
       case ArrayType(elementType, _) =>
         isTypeSupported(elementType, ARRAY_ELEMENT, fallbackReasons)
-      case MapType(keyType, valueType, _) if isComplexType(keyType) || isComplexType(valueType) =>
+      case MapType(keyType, valueType, _)
+          if containsStruct(keyType) || containsStruct(valueType) =>
         // https://github.com/apache/datafusion-comet/issues/1754
         false
       case MapType(keyType, valueType, _) =>
@@ -71,8 +72,10 @@ trait DataTypeSupport {
     }
   }
 
-  def isComplexType(dt: DataType): Boolean = dt match {
-    case _: StructType | _: ArrayType | _: MapType => true
+  def containsStruct(dt: DataType): Boolean = dt match {
+    case _: StructType => true
+    case map: MapType => containsStruct(map.keyType) || containsStruct(map.valueType)
+    case arr: ArrayType => containsStruct(arr.elementType)
     case _ => false
   }
 }

@@ -153,7 +153,8 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       "select c0 from tbl")
   }
 
-  test("native reader - read MAP of value STRUCT fields") {
+  // https://github.com/apache/datafusion-comet/issues/1754
+  ignore("native reader - read MAP of value STRUCT fields") {
     testSingleLineQuery(
       """
         |select map('a', named_struct('f0', 0, 'f1', 'foo'), 'b', named_struct('f0', 1, 'f1', 'bar')) as c0 union all
@@ -198,7 +199,8 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       "select c0 from tbl")
   }
 
-  test("native reader - read STRUCT of MAP of STRUCT value fields") {
+  // https://github.com/apache/datafusion-comet/issues/1754
+  ignore("native reader - read STRUCT of MAP of STRUCT value fields") {
     testSingleLineQuery(
       """
         |select named_struct('m0', map('a', named_struct('f0', 1)), 'm1', map('b', named_struct('f1', 1))) as c0 union all
@@ -216,7 +218,8 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       "select c0 from tbl")
   }
 
-  test("native reader - read MAP of STRUCT of MAP fields") {
+  // https://github.com/apache/datafusion-comet/issues/1754
+  ignore("native reader - read MAP of STRUCT of MAP fields") {
     testSingleLineQuery(
       """
         |select map('a', named_struct('f0', map(1, 'b')), 'b', named_struct('f0', map(1, 'b'))) as c0 union all
@@ -224,6 +227,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         |""".stripMargin,
       "select c0 from tbl")
   }
+
   test("native reader - read a STRUCT subfield from ARRAY of STRUCTS - second field") {
     testSingleLineQuery(
       """

@@ -70,6 +70,14 @@ The new scans currently have the following limitations:
 [#1542]: https://github.com/apache/datafusion-comet/issues/1542
 [Comet Tuning Guide]: tuning.md
 
+## Complex Type Support
+
+Comet supports Structs, Maps, and Arrays, with some limitations.
+
+- Reading complex types from Parquet is only supported when using the `native_datafusion` or `native_iceberg_compat` 
+  scans (se previous section).
+- Comet does not currently maps that contain structs in either the key or value field
+
 ## ANSI mode
 
 Comet currently ignores ANSI mode in most cases, and therefore can produce different results than Spark. By default,
