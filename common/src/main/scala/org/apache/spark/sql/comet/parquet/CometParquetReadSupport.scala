@@ -363,7 +363,7 @@ object CometParquetReadSupport {
   /**
    * Whether the parquet schema contains any field IDs.
    */
-  def containsFieldIds(schema: Type): Boolean = schema match {
+  private def containsFieldIds(schema: Type): Boolean = schema match {
     case p: PrimitiveType => p.getId != null
     // We don't require all fields to have IDs, so we use `exists` here.
     case g: GroupType => g.getId != null || g.getFields.asScala.exists(containsFieldIds)
