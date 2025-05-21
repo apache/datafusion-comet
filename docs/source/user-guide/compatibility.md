@@ -62,6 +62,7 @@ logical types. Arrow-based readers, such as DataFusion and Comet do respect thes
 rather than signed. By default, Comet will fall back to Spark when scanning Parquet files containing `byte` or `short`
 types (regardless of the logical type). This behavior can be disabled by setting
 `spark.comet.scan.allowIncompatible=true`.
+- Reading legacy INT96 timestamps contained within complex types can produce different results to Spark
 - There is a known performance issue when pushing filters down to Parquet. See the [Comet Tuning Guide] for more
 information.
 - There are failures in the Spark SQL test suite when enabling these new scans (tracking issues: [#1542] and [#1545]).
