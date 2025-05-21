@@ -267,3 +267,16 @@ index 9e598e7a344..cc5224af735 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
        val df = sql(
          """
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
+index c95932efee5..24118a767f9 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
+@@ -1545,7 +1545,7 @@ class SubquerySuite extends QueryTest
+               _.asInstanceOf[FileScanRDD].filePartitions.forall(
+                 _.files.forall(_.urlEncodedPath.contains("p=0"))))
+         case WholeStageCodegenExec(ColumnarToRowExec(InputAdapter(
+-            fs @ CometScanExec(_, _, _, partitionFilters, _, _, _, _, _, _)))) =>
++            fs @ CometScanExec(_, _, _, _, partitionFilters, _, _, _, _, _, _)))) =>
+           partitionFilters.exists(ExecSubqueryExpression.hasSubquery) &&
+             fs.inputRDDs().forall(
+               _.asInstanceOf[FileScanRDD].filePartitions.forall(
