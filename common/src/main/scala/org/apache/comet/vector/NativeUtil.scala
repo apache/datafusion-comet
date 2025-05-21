@@ -166,6 +166,8 @@ class NativeUtil {
           val fileNotFoundPattern: Regex =
             ("""^External: Object at location (.+?) not found: No such file or directory """ +
               """\(os error \d+\)$""").r
+          val corruptFile: Regex =
+            """^Parquet error: Invalid Parquet file\. Corrupt footer$""".r
           e.getMessage match {
             case fileNotFoundPattern(filePath) =>
               // See org.apache.spark.sql.errors.QueryExecutionErrors.readCurrentFileNotFoundError
@@ -173,9 +175,16 @@ class NativeUtil {
                 errorClass = "_LEGACY_ERROR_TEMP_2055",
                 messageParameters = Map("message" -> e.getMessage),
                 cause = new FileNotFoundException(filePath)
-              ) // Can't use SparkFileNotFoundException
+              ) // Can't use SparkFileNotFoundException because it's private.
+            case corruptFile() =>
+              // See org.apache.spark.sql.errors.QueryExecutionErrors.failedToReadDataError
+              throw new SparkException(
+                errorClass = "_LEGACY_ERROR_TEMP_2254",
+                messageParameters = Map("message" -> e.getMessage),
+                cause = e)
           }
-        case e: Throwable => throw e
+        case e: Throwable =>
+          throw e
       }
 
     result match {
