@@ -125,7 +125,6 @@ impl ColumnReader {
             PhysicalType::BOOLEAN => typed_reader!(BoolColumnReader, Boolean),
             PhysicalType::INT32 => {
                 if let Some(ref logical_type) = desc.logical_type() {
-
                     match logical_type {
                         lt @ LogicalType::Integer {
                             bit_width,
@@ -156,14 +155,15 @@ impl ColumnReader {
                                     }
                                 }
                                 // promote byte to short
-                                PhysicalType::INT32 if promotion_info.bit_width == 16 =>
-                                    typed_reader!(Int16ColumnReader, Int16),
+                                PhysicalType::INT32 if promotion_info.bit_width == 16 => {
+                                    typed_reader!(Int16ColumnReader, Int16)
+                                }
                                 // promote byte to int
-                                PhysicalType::INT32 if promotion_info.bit_width == 32 =>
-                                    typed_reader!(Int32ColumnReader, Int32),
+                                PhysicalType::INT32 if promotion_info.bit_width == 32 => {
+                                    typed_reader!(Int32ColumnReader, Int32)
+                                }
                                 // promote byte to long
-                                PhysicalType::INT64 =>
-                                    typed_reader!(Int32To64ColumnReader, Int64),
+                                PhysicalType::INT64 => typed_reader!(Int32To64ColumnReader, Int64),
                                 _ => typed_reader!(Int8ColumnReader, Int8),
                             },
                             (8, false) => typed_reader!(UInt8ColumnReader, Int16),
