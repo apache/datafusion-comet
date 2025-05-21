@@ -311,8 +311,13 @@ under the License.
     </a>
    </li>
    <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#steps-to-run-individual-test-suites">
-     Steps to run individual test suites
+    <a class="reference internal nav-link" href="#steps-to-run-individual-test-suites-through-sbt">
+     Steps to run individual test suites through SBT
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#steps-to-run-individual-test-suites-in-intellij-ide">
+     Steps to run individual test suites in IntelliJ IDE
     </a>
    </li>
   </ul>
@@ -422,8 +427,8 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 </pre></div>
 </div>
 </section>
-<section id="steps-to-run-individual-test-suites">
-<h3>Steps to run individual test suites<a class="headerlink" href="#steps-to-run-individual-test-suites" title="Link to this heading">¶</a></h3>
+<section id="steps-to-run-individual-test-suites-through-sbt">
+<h3>Steps to run individual test suites through SBT<a class="headerlink" href="#steps-to-run-individual-test-suites-through-sbt" title="Link to this heading">¶</a></h3>
 <ol class="arabic simple">
 <li><p>Open SBT with Comet enabled</p></li>
 </ol>
@@ -436,6 +441,20 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 <div class="highlight-sbt notranslate"><div class="highlight"><pre><span></span> sql/testOnly  org.apache.spark.sql.DynamicPartitionPruningV1SuiteAEOn -- -z &quot;SPARK-35568&quot;
 </pre></div>
 </div>
+</section>
+<section id="steps-to-run-individual-test-suites-in-intellij-ide">
+<h3>Steps to run individual test suites in IntelliJ IDE<a class="headerlink" href="#steps-to-run-individual-test-suites-in-intellij-ide" title="Link to this heading">¶</a></h3>
+<ol class="arabic simple">
+<li><p>Add below configuration in VM Options for your test case (apache-spark repository)</p></li>
+</ol>
+<div class="highlight-sbt notranslate"><div class="highlight"><pre><span></span>-Dspark.comet.enabled=true -Dspark.comet.debug.enabled=true -Dspark.plugins=org.apache.spark.CometPlugin -DXmx4096m -Dspark.executor.heartbeatInterval=20000 -Dspark.network.timeout=10000 --add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED
+</pre></div>
+</div>
+<ol class="arabic simple" start="2">
+<li><p>Set <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET=true</span></code> in environment variables
+<img alt="img.png" src="../_images/img.png" /></p></li>
+<li><p>After the above tests are configured, spark tests can be run with debugging enabled on spark/comet code. Note that Comet is added as a dependency and the classes are readonly while debugging from Spark. Any new changes to Comet are to be built and deployed locally through the command (<code class="docutils literal notranslate"><span class="pre">PROFILES=&quot;-Pspark-3.4&quot;</span> <span class="pre">make</span> <span class="pre">release</span></code>)</p></li>
+</ol>
 </section>
 </section>
 <section id="creating-a-diff-file-for-a-new-spark-version">
