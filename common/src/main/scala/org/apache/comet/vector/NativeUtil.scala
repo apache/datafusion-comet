@@ -19,20 +19,16 @@
 
 package org.apache.comet.vector
 
-import java.io.FileNotFoundException
-
 import scala.collection.mutable
-import scala.util.matching.Regex
 
-import org.apache.arrow.c._
+import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider, Data}
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.spark.SparkException
-import org.apache.spark.internal.Logging
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.{CometArrowAllocator, CometNativeException}
+import org.apache.comet.CometArrowAllocator
 
 /**
  * Provides functionality for importing Arrow vectors from native code and wrapping them as
@@ -45,8 +41,7 @@ import org.apache.comet.{CometArrowAllocator, CometNativeException}
  *
  * NativeUtil must be closed after use to release resources in the dictionary provider.
  */
-class NativeUtil extends Logging {
-
+class NativeUtil {
   import Utils._
 
   /** Use the global allocator */
@@ -159,35 +154,7 @@ class NativeUtil extends Logging {
     val arrayAddrs = arrays.map(_.memoryAddress())
     val schemaAddrs = schemas.map(_.memoryAddress())
 
-    val result: Long =
-      try {
-        func(arrayAddrs, schemaAddrs)
-      } catch {
-        case e: CometNativeException =>
-          val fileNotFoundPattern: Regex =
-            ("""^External: Object at location (.+?) not found: No such file or directory """ +
-              """\(os error \d+\)$""").r
-          val parquetError: Regex =
-            """^Parquet error: (?:.*)$""".r
-          e.getMessage match {
-            case fileNotFoundPattern(filePath) =>
-              // See org.apache.spark.sql.errors.QueryExecutionErrors.readCurrentFileNotFoundError
-              throw new SparkException(
-                errorClass = "_LEGACY_ERROR_TEMP_2055",
-                messageParameters = Map("message" -> e.getMessage),
-                cause = new FileNotFoundException(filePath)
-              ) // Can't use SparkFileNotFoundException because it's private.
-            case parquetError() =>
-              // See org.apache.spark.sql.errors.QueryExecutionErrors.failedToReadDataError
-              // See org.apache.parquet.hadoop.ParquetFileReader for error message.
-              throw new SparkException(
-                errorClass = "_LEGACY_ERROR_TEMP_2254",
-                messageParameters = Map("message" -> e.getMessage),
-                cause = new SparkException("File is not a Parquet file.", e))
-          }
-        case e: Throwable =>
-          throw e
-      }
+    val result = func(arrayAddrs, schemaAddrs)
 
     result match {
       case -1 =>
