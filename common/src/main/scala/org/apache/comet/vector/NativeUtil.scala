@@ -28,7 +28,9 @@ import org.apache.arrow.c._
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.spark.SparkException
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.comet.util.Utils
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.{CometArrowAllocator, CometNativeException}
@@ -44,7 +46,7 @@ import org.apache.comet.{CometArrowAllocator, CometNativeException}
  *
  * NativeUtil must be closed after use to release resources in the dictionary provider.
  */
-class NativeUtil {
+class NativeUtil extends Logging {
 
   import Utils._
 
@@ -166,22 +168,39 @@ class NativeUtil {
           val fileNotFoundPattern: Regex =
             ("""^External: Object at location (.+?) not found: No such file or directory """ +
               """\(os error \d+\)$""").r
-          val corruptFile: Regex =
-            """^Parquet error: Invalid Parquet file\. Corrupt footer$""".r
+          val parquetError: Regex =
+            """^Parquet error: (?:.*)$""".r
           e.getMessage match {
             case fileNotFoundPattern(filePath) =>
-              // See org.apache.spark.sql.errors.QueryExecutionErrors.readCurrentFileNotFoundError
-              throw new SparkException(
-                errorClass = "_LEGACY_ERROR_TEMP_2055",
-                messageParameters = Map("message" -> e.getMessage),
-                cause = new FileNotFoundException(filePath)
-              ) // Can't use SparkFileNotFoundException because it's private.
-            case corruptFile() =>
-              // See org.apache.spark.sql.errors.QueryExecutionErrors.failedToReadDataError
-              throw new SparkException(
-                errorClass = "_LEGACY_ERROR_TEMP_2254",
-                messageParameters = Map("message" -> e.getMessage),
-                cause = e)
+              if (SQLConf.get.ignoreMissingFiles) {
+                // See org.apache.spark.sql.execution.datasources.FileScanRDD
+                logWarning(s"Skipped missing file: $filePath", e)
+                // Treat this as EOF.
+                -1
+              } else {
+                // See org.apache.spark.sql.errors.QueryExecutionErrors.readCurrentFileNotFoundError
+                throw new SparkException(
+                  errorClass = "_LEGACY_ERROR_TEMP_2055",
+                  messageParameters = Map("message" -> e.getMessage),
+                  cause = new FileNotFoundException(filePath)
+                ) // Can't use SparkFileNotFoundException because it's private.
+              }
+            case parquetError() =>
+              if (SQLConf.get.ignoreCorruptFiles) {
+                // See org.apache.spark.sql.execution.datasources.FileScanRDD
+                logWarning("Skipped the rest of the content in the corrupted file.", e)
+                // Treat this as EOF.
+                -1
+              } else {
+                // See org.apache.spark.sql.errors.QueryExecutionErrors.failedToReadDataError
+                // See org.apache.parquet.hadoop.ParquetFileReader for error message.
+                throw new SparkException(
+                  errorClass = "_LEGACY_ERROR_TEMP_2254",
+                  messageParameters = Map(
+                    "message" -> ("File is not a Parquet file. " +
+                      e.getMessage)),
+                  cause = e)
+              }
           }
         case e: Throwable =>
           throw e
