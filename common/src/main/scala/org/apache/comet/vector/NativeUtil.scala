@@ -30,7 +30,6 @@ import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.spark.SparkException
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.{CometArrowAllocator, CometNativeException}
@@ -172,35 +171,19 @@ class NativeUtil extends Logging {
             """^Parquet error: (?:.*)$""".r
           e.getMessage match {
             case fileNotFoundPattern(filePath) =>
-              if (SQLConf.get.ignoreMissingFiles) {
-                // See org.apache.spark.sql.execution.datasources.FileScanRDD
-                logWarning(s"Skipped missing file: $filePath", e)
-                // Treat this as EOF.
-                -1
-              } else {
-                // See org.apache.spark.sql.errors.QueryExecutionErrors.readCurrentFileNotFoundError
-                throw new SparkException(
-                  errorClass = "_LEGACY_ERROR_TEMP_2055",
-                  messageParameters = Map("message" -> e.getMessage),
-                  cause = new FileNotFoundException(filePath)
-                ) // Can't use SparkFileNotFoundException because it's private.
-              }
+              // See org.apache.spark.sql.errors.QueryExecutionErrors.readCurrentFileNotFoundError
+              throw new SparkException(
+                errorClass = "_LEGACY_ERROR_TEMP_2055",
+                messageParameters = Map("message" -> e.getMessage),
+                cause = new FileNotFoundException(filePath)
+              ) // Can't use SparkFileNotFoundException because it's private.
             case parquetError() =>
-              if (SQLConf.get.ignoreCorruptFiles) {
-                // See org.apache.spark.sql.execution.datasources.FileScanRDD
-                logWarning("Skipped the rest of the content in the corrupted file.", e)
-                // Treat this as EOF.
-                -1
-              } else {
-                // See org.apache.spark.sql.errors.QueryExecutionErrors.failedToReadDataError
-                // See org.apache.parquet.hadoop.ParquetFileReader for error message.
-                throw new SparkException(
-                  errorClass = "_LEGACY_ERROR_TEMP_2254",
-                  messageParameters = Map(
-                    "message" -> ("File is not a Parquet file. " +
-                      e.getMessage)),
-                  cause = e)
-              }
+              // See org.apache.spark.sql.errors.QueryExecutionErrors.failedToReadDataError
+              // See org.apache.parquet.hadoop.ParquetFileReader for error message.
+              throw new SparkException(
+                errorClass = "_LEGACY_ERROR_TEMP_2254",
+                messageParameters = Map("message" -> e.getMessage),
+                cause = new SparkException("File is not a Parquet file.", e))
           }
         case e: Throwable =>
           throw e

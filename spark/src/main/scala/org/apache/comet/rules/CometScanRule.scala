@@ -31,7 +31,7 @@ import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, ByteType, DataType, MapType, ShortType, StructType}
+import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, DataTypeSupport}
 import org.apache.comet.CometConf._
@@ -100,6 +100,24 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
           return withInfos(scanExec, fallbackReasons.toSet)
         }
 
+        if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && (SQLConf.get.ignoreCorruptFiles ||
+            scanExec.relation.options
+              .get("ignorecorruptfiles") // Spark sets this to lowercase.
+              .contains("true"))) {
+          fallbackReasons +=
+            s"Full native scan disabled because ignoreCorruptFiles enabled"
+          return withInfos(scanExec, fallbackReasons.toSet)
+        }
+
+        if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && (SQLConf.get.ignoreMissingFiles ||
+            scanExec.relation.options
+              .get("ignoremissingfiles") // Spark sets this to lowercase.
+              .contains("true"))) {
+          fallbackReasons +=
+            s"Full native scan disabled because ignoreMissingFiles enabled"
+          return withInfos(scanExec, fallbackReasons.toSet)
+        }
+
         if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && scanExec.bucketedScan) {
           // https://github.com/apache/datafusion-comet/issues/1719
           fallbackReasons +=
@@ -107,7 +125,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
           return withInfos(scanExec, fallbackReasons.toSet)
         }
 
-        val typeChecker = new CometScanTypeChecker(scanImpl)
+        val typeChecker = CometScanTypeChecker(scanImpl)
         val schemaSupported =
           typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
         val partitionSchemaSupported =
