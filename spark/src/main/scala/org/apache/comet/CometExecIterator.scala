@@ -133,7 +133,7 @@ class CometExecIterator(
     }
   }
 
-  def getNextBatch(): Option[ColumnarBatch] = {
+  private def getNextBatch: Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
 
     if (tracingEnabled) {
@@ -167,7 +167,7 @@ class CometExecIterator(
       prevBatch = null
     }
 
-    nextBatch = getNextBatch()
+    nextBatch = getNextBatch
 
     if (nextBatch.isEmpty) {
       close()
