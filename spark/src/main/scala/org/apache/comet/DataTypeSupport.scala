@@ -57,6 +57,9 @@ trait DataTypeSupport {
         fields.forall(f => isTypeSupported(f.dataType, f.name, fallbackReasons))
       case ArrayType(elementType, _) =>
         isTypeSupported(elementType, ARRAY_ELEMENT, fallbackReasons)
+      case MapType(keyType, valueType, _) if isComplexType(keyType) || isComplexType(valueType) =>
+        // https://github.com/apache/datafusion-comet/issues/1754
+        false
       case MapType(keyType, valueType, _) =>
         isTypeSupported(keyType, MAP_KEY, fallbackReasons) && isTypeSupported(
           valueType,
@@ -66,6 +69,11 @@ trait DataTypeSupport {
         fallbackReasons += s"Unsupported ${name} of type ${dt}"
         false
     }
+  }
+
+  def isComplexType(dt: DataType): Boolean = dt match {
+    case _: StructType | _: ArrayType | _: MapType => true
+    case _ => false
   }
 }
 
