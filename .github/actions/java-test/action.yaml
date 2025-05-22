@@ -61,6 +61,12 @@ runs:
       with:
         name: crash-logs
         path: hs_err_pid*.log
+    - name: Upload unit-tests.log
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: crash-logs
+        path: target/unit-tests.log
     - name: Upload test results
       if: ${{ inputs.upload-test-reports == 'true' }}
       uses: actions/upload-artifact@v4
