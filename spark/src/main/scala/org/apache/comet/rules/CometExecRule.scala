@@ -45,7 +45,7 @@ import org.apache.comet.serde.QueryPlanSerde
  */
 case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
-  private val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
+  private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
 
   private def applyCometShuffle(plan: SparkPlan): SparkPlan = {
     plan.transformUp {
@@ -624,7 +624,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   override def apply(plan: SparkPlan): SparkPlan = {
     val newPlan = _apply(plan)
     if (showTransformations) {
-      logDebug(s"CometExecRule:\nINPUT: $plan\nOUTPUT: $newPlan")
+      logInfo(s"\nINPUT: $plan\nOUTPUT: $newPlan")
     }
     newPlan
   }

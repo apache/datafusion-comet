@@ -51,12 +51,12 @@ import org.apache.comet.CometConf
 // be removed.
 case class EliminateRedundantTransitions(session: SparkSession) extends Rule[SparkPlan] {
 
-  private val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
+  private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
 
   override def apply(plan: SparkPlan): SparkPlan = {
     val newPlan = _apply(plan)
     if (showTransformations) {
-      logDebug(s"EliminateRedundantTransitions:\nINPUT: $plan\nOUTPUT: $newPlan")
+      logInfo(s"\nINPUT: $plan\nOUTPUT: $newPlan")
     }
     newPlan
   }
