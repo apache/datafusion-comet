@@ -487,10 +487,10 @@ index 93275487f29..d18ab7b20c0 100644
          }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
 new file mode 100644
-index 00000000000..4b31bea33de
+index 00000000000..5691536c114
 --- /dev/null
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,45 @@
 +/*
 + * Licensed to the Apache Software Foundation (ASF) under one or more
 + * contributor license agreements.  See the NOTICE file distributed with
@@ -519,6 +519,9 @@ index 00000000000..4b31bea33de
 + * Tests with this tag will be ignored when Comet is enabled (e.g., via `ENABLE_COMET`).
 + */
 +case class IgnoreComet(reason: String) extends Tag("DisableComet")
++case class IgnoreCometNativeIcebergCompat(reason: String) extends Tag("DisableComet")
++case class IgnoreCometNativeDataFusion(reason: String) extends Tag("DisableComet")
++case class IgnoreCometNativeScan(reason: String) extends Tag("DisableComet")
 +
 +/**
 + * Helper trait that disables Comet for all tests regardless of default config values.
@@ -942,7 +945,7 @@ index fa1a64460fc..1d2e215d6a3 100644
  
    test("non-matching optional group") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 04702201f82..6cc2b01b7f3 100644
+index 04702201f82..5ee11f83ecf 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 @@ -22,10 +22,11 @@ import scala.collection.mutable.ArrayBuffer
@@ -2770,10 +2773,18 @@ index abe606ad9c1..2d930b64cca 100644
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-index e937173a590..c2e00c53cc3 100644
+index e937173a590..18c0232014b 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-@@ -41,6 +41,7 @@ import org.apache.spark.sql.catalyst.plans.PlanTest
+@@ -27,6 +27,7 @@ import scala.concurrent.duration._
+ import scala.language.implicitConversions
+ import scala.util.control.NonFatal
+ 
++import org.apache.comet.CometConf
+ import org.apache.hadoop.fs.Path
+ import org.scalactic.source.Position
+ import org.scalatest.{BeforeAndAfterAll, Suite, Tag}
+@@ -41,6 +42,7 @@ import org.apache.spark.sql.catalyst.plans.PlanTest
  import org.apache.spark.sql.catalyst.plans.PlanTestBase
  import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
  import org.apache.spark.sql.catalyst.util._
@@ -2781,7 +2792,7 @@ index e937173a590..c2e00c53cc3 100644
  import org.apache.spark.sql.execution.FilterExec
  import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecution
  import org.apache.spark.sql.execution.datasources.DataSourceUtils
-@@ -126,7 +127,11 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
+@@ -126,7 +128,26 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
          }
        }
      } else {
@@ -2789,12 +2800,27 @@ index e937173a590..c2e00c53cc3 100644
 +      if (isCometEnabled && testTags.exists(_.isInstanceOf[IgnoreComet])) {
 +        ignore(testName + " (disabled when Comet is on)", testTags: _*)(testFun)
 +      } else {
-+        super.test(testName, testTags: _*)(testFun)
++        val cometScanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get(conf)
++        val isNativeIcebergCompat = cometScanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT
++        val isNativeDataFusion = cometScanImpl == CometConf.SCAN_NATIVE_DATAFUSION
++        if (isCometEnabled && isNativeIcebergCompat &&
++          testTags.exists(_.isInstanceOf[IgnoreCometNativeIcebergCompat])) {
++          ignore(testName + " (disabled for NATIVE_ICEBERG_COMPAT)", testTags: _*)(testFun)
++        } else if (isCometEnabled && isNativeDataFusion &&
++          testTags.exists(_.isInstanceOf[IgnoreCometNativeDataFusion])) {
++          ignore(testName + " (disabled for NATIVE_DATAFUSION)", testTags: _*)(testFun)
++        } else if (isCometEnabled && (isNativeDataFusion || isNativeIcebergCompat) &&
++          testTags.exists(_.isInstanceOf[IgnoreCometNativeScan])) {
++          ignore(testName + " (disabled for NATIVE_DATAFUSION and NATIVE_ICEBERG_COMPAT)",
++            testTags: _*)(testFun)
++        } else {
++          super.test(testName, testTags: _*)(testFun)
++        }
 +      }
      }
    }
  
-@@ -242,6 +247,29 @@ private[sql] trait SQLTestUtilsBase
+@@ -242,6 +263,29 @@ private[sql] trait SQLTestUtilsBase
      protected override def _sqlContext: SQLContext = self.spark.sqlContext
    }
  
@@ -2824,7 +2850,7 @@ index e937173a590..c2e00c53cc3 100644
    protected override def withSQLConf(pairs: (String, String)*)(f: => Unit): Unit = {
      SparkSession.setActiveSession(spark)
      super.withSQLConf(pairs: _*)(f)
-@@ -435,6 +463,8 @@ private[sql] trait SQLTestUtilsBase
+@@ -435,6 +479,8 @@ private[sql] trait SQLTestUtilsBase
      val schema = df.schema
      val withoutFilters = df.queryExecution.executedPlan.transform {
        case FilterExec(_, child) => child
@@ -2904,6 +2930,49 @@ index 52abd248f3a..7a199931a08 100644
        case h: HiveTableScanExec => h.partitionPruningPred.collect {
          case d: DynamicPruningExpression => d.child
        }
+diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/ParquetEncryptionSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/ParquetEncryptionSuite.scala
+index 549431ef4f4..e48f1730da6 100644
+--- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/ParquetEncryptionSuite.scala
++++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/ParquetEncryptionSuite.scala
+@@ -22,7 +22,7 @@ import java.io.RandomAccessFile
+ import java.nio.charset.StandardCharsets
+ import java.util.Base64
+ 
+-import org.apache.spark.sql.QueryTest
++import org.apache.spark.sql.{IgnoreCometNativeScan, QueryTest}
+ import org.apache.spark.sql.hive.test.TestHiveSingleton
+ 
+ /**
+@@ -37,7 +37,8 @@ class ParquetEncryptionSuite extends QueryTest with TestHiveSingleton {
+   private val key1 = encoder.encodeToString("1234567890123450".getBytes(StandardCharsets.UTF_8))
+   private val key2 = encoder.encodeToString("1234567890123451".getBytes(StandardCharsets.UTF_8))
+ 
+-  test("SPARK-34990: Write and read an encrypted parquet") {
++  test("SPARK-34990: Write and read an encrypted parquet",
++    IgnoreCometNativeScan("no encryption support yet")) {
+     withTempDir { dir =>
+       withSQLConf(
+         "parquet.crypto.factory.class" ->
+@@ -64,7 +65,8 @@ class ParquetEncryptionSuite extends QueryTest with TestHiveSingleton {
+     }
+   }
+ 
+-  test("SPARK-37117: Can't read files in Parquet encryption external key material mode") {
++  test("SPARK-37117: Can't read files in Parquet encryption external key material mode",
++    IgnoreCometNativeScan("no encryption support yet")) {
+     withTempDir { dir =>
+       withSQLConf(
+         "parquet.crypto.factory.class" ->
+@@ -91,7 +93,8 @@ class ParquetEncryptionSuite extends QueryTest with TestHiveSingleton {
+     }
+   }
+ 
+-  test("SPARK-42114: Test of uniform parquet encryption") {
++  test("SPARK-42114: Test of uniform parquet encryption",
++    IgnoreCometNativeScan("no encryption support yet")) {
+     withTempDir { dir =>
+       withSQLConf(
+         "parquet.crypto.factory.class" ->
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/AggregationQuerySuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/AggregationQuerySuite.scala
 index dc8b184fcee..dd69a989d40 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/AggregationQuerySuite.scala
