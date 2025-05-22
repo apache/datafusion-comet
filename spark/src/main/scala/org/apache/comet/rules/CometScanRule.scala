@@ -42,7 +42,18 @@ import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
  * Spark physical optimizer rule for replacing Spark scans with Comet scans.
  */
 case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
+
+  private val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
+
   override def apply(plan: SparkPlan): SparkPlan = {
+    val newPlan = _apply(plan)
+    if (showTransformations) {
+      logDebug(s"CometScanRule:\nINPUT: $plan\nOUTPUT: $newPlan")
+    }
+    newPlan
+  }
+
+  private def _apply(plan: SparkPlan): SparkPlan = {
     if (!isCometLoaded(conf) || !isCometScanEnabled(conf)) {
       if (!isCometLoaded(conf)) {
         withInfo(plan, "Comet is not enabled")
