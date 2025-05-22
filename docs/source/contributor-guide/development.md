@@ -30,7 +30,7 @@ under the License.
 
 ## Development Setup
 
-1. Make sure `JAVA_HOME` is set and point to JDK 8/11/17 installation.
+1. Make sure `JAVA_HOME` is set and point to JDK 11/17 installation.
 2. Install Rust toolchain. The easiest way is to use
    [rustup](https://rustup.rs).
 
