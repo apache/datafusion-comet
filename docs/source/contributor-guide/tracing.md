@@ -19,17 +19,19 @@ under the License.
 
 # Tracing
 
-Tracing can be enabled by setting `spark.comet.tracing.enabled=true`. Additionally, enabling the `jemalloc` 
-feature will enable tracing of native memory allocations.
+Tracing can be enabled by setting `spark.comet.tracing.enabled=true`.
+
+With this feature enabled, each Spark executor will write a JSON event log file in
+Chrome's [Trace Event Format]. The file will be written to the executor's current working
+directory with the filename `comet-event-trace.json`.
+
+[Trace Event Format]: https://docs.google.com/document/d/1CvAClvFfyA5R-PhYUmn5OOQtYMH4h6I0nSsKchNAySU/preview?tab=t.0#heading=h.yr4qxyxotyw
+
+Additionally, enabling the `jemalloc` feature will enable tracing of native memory allocations.
 
 ```shell
 make release COMET_FEATURES="jemalloc"
 ```
-
-With this feature enabled, each Spark executor will write a JSON event log file in 
-Chrome's [Trace Event Format].
-
-[Trace Event Format]: https://docs.google.com/document/d/1CvAClvFfyA5R-PhYUmn5OOQtYMH4h6I0nSsKchNAySU/preview?tab=t.0#heading=h.yr4qxyxotyw
 
 Example output:
 

@@ -439,7 +439,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         update_metrics(&mut env, exec_context)?;
                         exec_context.metrics_last_update_time = now;
                     }
-                    return Ok(-1);
                 }
 
                 match poll_output {
