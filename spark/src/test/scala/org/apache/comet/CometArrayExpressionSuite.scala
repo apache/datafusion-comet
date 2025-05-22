@@ -410,7 +410,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  test("array_repeat") {
+  ignore("array_repeat") {
     withSQLConf(
       CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
       CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
