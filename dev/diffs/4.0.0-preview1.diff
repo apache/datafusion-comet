@@ -473,18 +473,35 @@ index b2aaaceb26a..625522f36ae 100644
  
    test("SPARK-35884: Explain Formatted") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
-index 49a33d1c925..9a540abd0c2 100644
+index 49a33d1c925..197c93d62b3 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
-@@ -33,6 +33,7 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, GreaterTha
+@@ -23,6 +23,7 @@ import java.nio.file.{Files, StandardOpenOption}
+ 
+ import scala.collection.mutable
+ 
++import org.apache.comet.CometConf
+ import org.apache.hadoop.conf.Configuration
+ import org.apache.hadoop.fs.{LocalFileSystem, Path}
+ 
+@@ -33,6 +34,7 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, GreaterTha
  import org.apache.spark.sql.catalyst.expressions.IntegralLiteralTestUtils.{negativeInt, positiveInt}
  import org.apache.spark.sql.catalyst.plans.logical.Filter
  import org.apache.spark.sql.catalyst.types.DataTypeUtils
-+import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec, CometSortMergeJoinExec}
++import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometScanExec, CometSortMergeJoinExec}
  import org.apache.spark.sql.execution.{ExplainMode, FileSourceScanLike, SimpleMode}
  import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
  import org.apache.spark.sql.execution.datasources.FilePartition
-@@ -951,6 +952,7 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -246,6 +248,8 @@ class FileBasedDataSourceSuite extends QueryTest
+           if (ignore.toBoolean) {
+             testIgnoreMissingFiles(options)
+           } else {
++            // native_datafusion Parquet scan throws a different error message for 3.x compat
++            assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
+             checkErrorMatchPVals(
+               exception = intercept[SparkException] {
+                 testIgnoreMissingFiles(options)
+@@ -951,6 +955,7 @@ class FileBasedDataSourceSuite extends QueryTest
              assert(bJoinExec.isEmpty)
              val smJoinExec = collect(joinedDF.queryExecution.executedPlan) {
                case smJoin: SortMergeJoinExec => smJoin
@@ -492,7 +509,7 @@ index 49a33d1c925..9a540abd0c2 100644
              }
              assert(smJoinExec.nonEmpty)
            }
-@@ -1011,6 +1013,7 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -1011,6 +1016,7 @@ class FileBasedDataSourceSuite extends QueryTest
  
            val fileScan = df.queryExecution.executedPlan collectFirst {
              case BatchScanExec(_, f: FileScan, _, _, _, _) => f
@@ -500,7 +517,7 @@ index 49a33d1c925..9a540abd0c2 100644
            }
            assert(fileScan.nonEmpty)
            assert(fileScan.get.partitionFilters.nonEmpty)
-@@ -1052,6 +1055,7 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -1052,6 +1058,7 @@ class FileBasedDataSourceSuite extends QueryTest
  
            val fileScan = df.queryExecution.executedPlan collectFirst {
              case BatchScanExec(_, f: FileScan, _, _, _, _) => f
@@ -508,11 +525,12 @@ index 49a33d1c925..9a540abd0c2 100644
            }
            assert(fileScan.nonEmpty)
            assert(fileScan.get.partitionFilters.isEmpty)
-@@ -1236,6 +1240,8 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -1236,6 +1243,9 @@ class FileBasedDataSourceSuite extends QueryTest
            val filters = df.queryExecution.executedPlan.collect {
              case f: FileSourceScanLike => f.dataFilters
              case b: BatchScanExec => b.scan.asInstanceOf[FileScan].dataFilters
 +            case b: CometScanExec => b.dataFilters
++            case b: CometNativeScanExec => b.dataFilters
 +            case b: CometBatchScanExec => b.scan.asInstanceOf[FileScan].dataFilters
            }.flatten
            assert(filters.contains(GreaterThan(scan.logicalPlan.output.head, Literal(5L))))
@@ -1014,7 +1032,7 @@ index 3fc0b572d80..0d87150d446 100644
  
    test("non-matching optional group") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 68f14f13bbd..174636cefb5 100644
+index 68f14f13bbd..5cb3166f875 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 @@ -22,10 +22,11 @@ import scala.collection.mutable.ArrayBuffer
