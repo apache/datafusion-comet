@@ -1146,6 +1146,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("expm1") {
+    val testValues = Seq(
+      -1,
+      0,
+      +1,
+      Double.MinValue,
+      Double.MaxValue,
+      Double.NaN,
+      Double.MinPositiveValue,
+      Double.PositiveInfinity,
+      Double.NegativeInfinity)
+    val testValuesRepeated = testValues.flatMap(v => Seq.fill(1000)(v))
+    withParquetTable(testValuesRepeated.map(n => (n, n)), "tbl") {
+      checkSparkAnswerWithTol("SELECT expm1(_1) FROM tbl")
+    }
+  }
+
   // https://github.com/apache/datafusion-comet/issues/666
   ignore("abs") {
     Seq(true, false).foreach { dictionaryEnabled =>
@@ -2559,7 +2576,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   // repro for https://github.com/apache/datafusion-comet/issues/1754
-  ignore("read map[struct, struct] from parquet") {
+  test("read map[struct, struct] from parquet") {
     assume(usingDataSourceExec(conf))
 
     withTempPath { dir =>
