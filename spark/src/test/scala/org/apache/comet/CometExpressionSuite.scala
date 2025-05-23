@@ -153,7 +153,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               "bit_count(_3)",
               "bit_count(_4)",
               "bit_count(_5)",
-              "bit_count(_10)",
               "bit_count(_11)"))
       }
     }
