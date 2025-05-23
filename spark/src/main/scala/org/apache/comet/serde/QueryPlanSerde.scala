@@ -2290,7 +2290,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
         val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
         nativeScanBuilder.setSource(op.simpleStringWithNodeId())
-        nativeScanBuilder.setCaseSensitive(conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
 
         val scanTypes = op.output.flatten { attr =>
           serializeDataType(attr.dataType)
@@ -2352,6 +2351,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
           nativeScanBuilder.addAllRequiredSchema(requiredSchema.toIterable.asJava)
           nativeScanBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
           nativeScanBuilder.setSessionTimezone(conf.getConfString("spark.sql.session.timeZone"))
+          nativeScanBuilder.setCaseSensitive(conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
 
           Some(result.setNativeScan(nativeScanBuilder).build())
 
