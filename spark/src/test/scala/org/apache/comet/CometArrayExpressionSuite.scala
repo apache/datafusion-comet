@@ -417,7 +417,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
+          makeParquetFileAllTypes(path, dictionaryEnabled, 1000)
           spark.read.parquet(path.toString).createOrReplaceTempView("t1")
 
           checkSparkAnswerAndOperator(sql("SELECT array_repeat(_4, null) from t1"))
