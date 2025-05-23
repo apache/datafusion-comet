@@ -91,6 +91,7 @@ message NativeScan {
   repeated SparkFilePartition file_partitions = 7;
   repeated int64 projection_vector = 8;
   string session_timezone = 9;
+  bool case_sensitive = 10;
 }
 
 message Projection {

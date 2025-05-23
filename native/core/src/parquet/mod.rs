@@ -60,7 +60,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::{poll, StreamExt};
 use jni::objects::{JBooleanArray, JByteArray, JLongArray, JPrimitiveArray, JString, ReleaseMode};
-use jni::sys::jstring;
+use jni::sys::{jstring, JNI_FALSE};
 use object_store::path::Path;
 use read::ColumnReader;
 use util::jni::{convert_column_descriptor, convert_encoding, deserialize_schema};
@@ -657,6 +657,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     data_schema: jbyteArray,
     session_timezone: jstring,
     batch_size: jint,
+    case_sensitive: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| unsafe {
         let session_config = SessionConfig::new().with_batch_size(batch_size as usize);
@@ -716,6 +717,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             None,
             data_filters,
             session_timezone.as_str(),
+            case_sensitive != JNI_FALSE,
         )?;
 
         let partition_index: usize = 0;

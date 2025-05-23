@@ -1153,6 +1153,7 @@ impl PhysicalPlanner {
                     Some(projection_vector),
                     Some(data_filters?),
                     scan.session_timezone.as_str(),
+                    scan.case_sensitive,
                 )?;
                 Ok((
                     vec![],

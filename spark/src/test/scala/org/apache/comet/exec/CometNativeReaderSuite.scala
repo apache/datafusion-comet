@@ -21,12 +21,11 @@ package org.apache.comet.exec
 
 import org.scalactic.source.Position
 import org.scalatest.Tag
-
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
-
 import org.apache.comet.CometConf
+import org.apache.spark.SparkException
 
 class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
@@ -42,6 +41,20 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
           testFun
         }
       })
+  }
+
+  test("native reader case sensitivity") {
+    withTempPath { path =>
+      spark.range(10).toDF("a").write.parquet(path.toString)
+      Seq(true, false).foreach { caseSensitive =>
+        withSQLConf(SQLConf.CASE_SENSITIVE.key -> caseSensitive.toString) {
+          val tbl = s"case_sensitivity_${caseSensitive}_${System.currentTimeMillis()}"
+          sql(s"create table $tbl (A long) using parquet options (path '" + path + "')")
+          val df = sql(s"select A from $tbl")
+          checkSparkAnswer(df)
+        }
+      }
+    }
   }
 
   test("native reader - read simple STRUCT fields") {
