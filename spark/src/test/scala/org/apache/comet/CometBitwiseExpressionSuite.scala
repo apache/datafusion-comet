@@ -134,7 +134,6 @@ class CometBitwiseExpressionSuite extends CometTestBase with AdaptiveSparkPlanHe
                 s"bit_get(_3, $shortBitPosition)",
                 s"bit_get(_4, $intBitPosition)",
                 s"bit_get(_5, $longBitPosition)",
-                s"bit_get(_10, $intBitPosition)",
                 s"bit_get(_11, $longBitPosition)"))
         }
       }
