@@ -21,11 +21,12 @@ package org.apache.comet.exec
 
 import org.scalactic.source.Position
 import org.scalatest.Tag
+
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
+
 import org.apache.comet.CometConf
-import org.apache.spark.SparkException
 
 class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
