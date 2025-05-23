@@ -132,6 +132,16 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
           return withInfos(scanExec, fallbackReasons.toSet)
         }
 
+        val encryptionEnabled: Boolean =
+          conf.getConfString("parquet.crypto.factory.class", "").nonEmpty &&
+            conf.getConfString("parquet.encryption.kms.client.class", "").nonEmpty
+
+        if (scanImpl != CometConf.SCAN_NATIVE_COMET && encryptionEnabled) {
+          fallbackReasons +=
+            "Full native scan disabled because encryption is not supported"
+          return withInfos(scanExec, fallbackReasons.toSet)
+        }
+
         val typeChecker = CometScanTypeChecker(scanImpl)
         val schemaSupported =
           typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
