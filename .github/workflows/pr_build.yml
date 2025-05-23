@@ -184,6 +184,13 @@ jobs:
         test-target: [java]
         spark-version: ['3.4']
         scala-version: ['2.12', '2.13']
+        is_push_event:
+          - ${{ github.event_name == 'push' }}
+        exclude: # exclude java 11 and  for pull_request event
+          - java_version: 11
+            is_push_event: false
+          - scala-version: '2.12'
+            is_push_event: false
       fail-fast: false
     name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}/${{ matrix.test-target }}
     runs-on: ${{ matrix.os }}
@@ -207,8 +214,48 @@ jobs:
         os: [macos-13]
         java_version: [11, 17]
         test-target: [rust, java]
-        spark-version: ['3.4', '3.5']
+        spark-version: ['3.5']
         scala-version: ['2.12', '2.13']
+        is_push_event:
+          - ${{ github.event_name == 'push' }}
+        exclude: # exclude java 11 for pull_request event
+          - java_version: 11
+            is_push_event: false
+      fail-fast: false
+    if: github.event_name == 'push'
+    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}/${{ matrix.test-target }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-macos-builder
+        with:
+          rust-version: ${{env.RUST_VERSION}}
+          jdk-version: ${{ matrix.java_version }}
+      - if: matrix.test-target == 'rust'
+        name: Rust test steps
+        uses: ./.github/actions/rust-test
+      - if: matrix.test-target == 'java'
+        name: Java test steps
+        uses: ./.github/actions/java-test
+        with:
+          maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
+
+  macos-test-old-spark:
+    strategy:
+      matrix:
+        os: [macos-13]
+        java_version: [11, 17]
+        test-target: [rust, java]
+        spark-version: ['3.4']
+        scala-version: ['2.12', '2.13']
+        is_push_event:
+          - ${{ github.event_name == 'push' }}
+        exclude: # exclude java 11 and scala 2.12 for pull_request event
+          - java_version: 11
+            is_push_event: false
+          - scala-version: '2.12'
+            is_push_event: false
       fail-fast: false
     if: github.event_name == 'push'
     name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}/${{ matrix.test-target }}
@@ -234,7 +281,7 @@ jobs:
       matrix:
         java_version: [11, 17]
         test-target: [rust, java]
-        spark-version: ['3.4', '3.5']
+        spark-version: [''3.5']
         scala-version: ['2.12', '2.13']
         is_push_event:
           - ${{ github.event_name == 'push' }}
@@ -256,6 +303,36 @@ jobs:
       - if: matrix.test-target == 'rust'
         name: Rust test steps
         uses: ./.github/actions/rust-test
+      - if: matrix.test-target == 'java'
+        name: Java test steps
+        uses: ./.github/actions/java-test
+        with:
+          maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
+
+  macos-aarch64-test-with-old-spark:
+    strategy:
+      matrix:
+        java_version: [11, 17]
+        test-target: [java]
+        spark-version: ['3.4']
+        scala-version: ['2.12', '2.13']
+        exclude: # exclude java 11 and scala 2.12 for pull_request event
+          - java_version: 11
+            is_push_event: false
+          - scala-version: '2.12'
+            is_push_event: false
+      fail-fast: false
+    name: macos-14(Silicon)/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}/${{ matrix.test-target }}
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-macos-builder
+        with:
+          rust-version: ${{env.RUST_VERSION}}
+          jdk-version: ${{ matrix.java_version }}
+          jdk-architecture: aarch64
+          protoc-architecture: aarch_64
       - if: matrix.test-target == 'java'
         name: Java test steps
         uses: ./.github/actions/java-test
@@ -314,31 +391,4 @@ jobs:
         with:
           maven_opts: -Pspark-${{ matrix.spark-version }}
           upload-test-reports: true
-
-  macos-aarch64-test-with-old-spark:
-    strategy:
-      matrix:
-        java_version: [17]
-        test-target: [java]
-        spark-version: ['3.4']
-        scala-version: ['2.12', '2.13']
-        exclude:
-          - java_version: 8
-      fail-fast: false
-    name: macos-14(Silicon)/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}/${{ matrix.test-target }}
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-macos-builder
-        with:
-          rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{ matrix.java_version }}
-          jdk-architecture: aarch64
-          protoc-architecture: aarch_64
-      - if: matrix.test-target == 'java'
-        name: Java test steps
-        uses: ./.github/actions/java-test
-        with:
-          maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
 
