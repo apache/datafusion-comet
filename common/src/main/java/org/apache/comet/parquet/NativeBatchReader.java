@@ -65,6 +65,7 @@ import org.apache.spark.sql.execution.datasources.PartitionedFile;
 import org.apache.spark.sql.execution.datasources.parquet.ParquetColumn;
 import org.apache.spark.sql.execution.datasources.parquet.ParquetToSparkSchemaConverter;
 import org.apache.spark.sql.execution.metric.SQLMetric;
+import org.apache.spark.sql.internal.SQLConf;
 import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
@@ -405,6 +406,10 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
           conf.getInt(
               CometConf.COMET_BATCH_SIZE().key(),
               (Integer) CometConf.COMET_BATCH_SIZE().defaultValue().get());
+      boolean caseSensitive =
+          conf.getBoolean(
+              SQLConf.CASE_SENSITIVE().key(),
+              (boolean) SQLConf.CASE_SENSITIVE().defaultValue().get());
       this.handle =
           Native.initRecordBatchReader(
               filePath,
@@ -415,7 +420,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
               serializedRequestedArrowSchema,
               serializedDataArrowSchema,
               timeZoneId,
-              batchSize);
+              batchSize,
+              caseSensitive);
     }
     isInitialized = true;
   }
