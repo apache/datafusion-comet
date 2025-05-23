@@ -105,7 +105,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
               .get("ignorecorruptfiles") // Spark sets this to lowercase.
               .contains("true"))) {
           fallbackReasons +=
-            s"Full native scan disabled because ignoreCorruptFiles enabled"
+            "Full native scan disabled because ignoreCorruptFiles enabled"
           return withInfos(scanExec, fallbackReasons.toSet)
         }
 
@@ -114,7 +114,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
               .get("ignoremissingfiles") // Spark sets this to lowercase.
               .contains("true"))) {
           fallbackReasons +=
-            s"Full native scan disabled because ignoreMissingFiles enabled"
+            "Full native scan disabled because ignoreMissingFiles enabled"
           return withInfos(scanExec, fallbackReasons.toSet)
         }
 
