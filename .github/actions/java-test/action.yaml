@@ -60,13 +60,21 @@ runs:
       uses: actions/upload-artifact@v4
       with:
         name: crash-logs-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
-        path: hs_err_pid*.log
+        path: "**/hs_err_pid*.log"
+    - name: Debug listing
+      if: failure()
+      shell: bash
+      run: |  
+        echo "CWD: $(pwd)"
+        ls -lah .
+        ls -lah target
+        find . -name 'unit-tests.log'
     - name: Upload unit-tests.log
       if: failure()
       uses: actions/upload-artifact@v4
       with:
         name: unit-tests-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
-        path: ${{ github.workspace }}/target/unit-tests.log
+        path: "**/target/unit-tests.log"
     - name: Upload test results
       if: ${{ inputs.upload-test-reports == 'true' }}
       uses: actions/upload-artifact@v4
