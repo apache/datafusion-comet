@@ -2557,7 +2557,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   // repro for https://github.com/apache/datafusion-comet/issues/1754
-  ignore("read map[struct, struct] from parquet") {
+  test("read map[struct, struct] from parquet") {
     assume(usingDataSourceExec(conf))
 
     withTempPath { dir =>
