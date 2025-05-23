@@ -59,14 +59,14 @@ runs:
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: crash-logs
+        name: crash-logs-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
         path: hs_err_pid*.log
     - name: Upload unit-tests.log
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: crash-logs
-        path: target/unit-tests.log
+        name: unit-tests-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+        path: ${{ github.workspace }}/target/unit-tests.log
     - name: Upload test results
       if: ${{ inputs.upload-test-reports == 'true' }}
       uses: actions/upload-artifact@v4
