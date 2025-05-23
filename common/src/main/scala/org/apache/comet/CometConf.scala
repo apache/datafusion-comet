@@ -457,7 +457,7 @@ object CometConf extends ShimCometConf {
   val COMET_EXPLAIN_TRANSFORMATIONS: ConfigEntry[Boolean] =
     conf("spark.comet.explain.rules")
       .doc("When this setting is enabled, Comet will log all plan transformations performed " +
-        "in physical optimizer rules ")
+        "in physical optimizer rules. Default: false")
       .internal()
       .booleanConf
       .createWithDefault(false)
