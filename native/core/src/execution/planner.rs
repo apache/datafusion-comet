@@ -1115,6 +1115,42 @@ impl PhysicalPlanner {
                     .map(|expr| self.create_expr(expr, Arc::clone(&required_schema)))
                     .collect();
 
+                let default_values: Option<HashMap<usize, ScalarValue>> = if !scan
+                    .default_values
+                    .is_empty()
+                {
+                    // We have default values. Extract the two lists (same length) of values and
+                    // indexes in the schema, and then create a HashMap to use in the SchemaMapper.
+                    let default_values: Result<Vec<ScalarValue>, DataFusionError> = scan
+                        .default_values
+                        .iter()
+                        .map(|expr| {
+                            let literal = self.create_expr(expr, Arc::clone(&required_schema))?;
+                            let df_literal = literal
+                                .as_any()
+                                .downcast_ref::<DataFusionLiteral>()
+                                .ok_or_else(|| {
+                                GeneralError("Expected literal of default value.".to_string())
+                            })?;
+                            Ok(df_literal.value().clone())
+                        })
+                        .collect();
+                    let default_values = default_values?;
+                    let default_values_indexes: Vec<usize> = scan
+                        .default_values_indexes
+                        .iter()
+                        .map(|offset| *offset as usize)
+                        .collect();
+                    Some(
+                        default_values_indexes
+                            .into_iter()
+                            .zip(default_values)
+                            .collect(),
+                    )
+                } else {
+                    None
+                };
+
                 // Get one file from the list of files
                 let one_file = scan
                     .file_partitions
@@ -1152,6 +1188,7 @@ impl PhysicalPlanner {
                     file_groups,
                     Some(projection_vector),
                     Some(data_filters?),
+                    default_values,
                     scan.session_timezone.as_str(),
                 )?;
                 Ok((
@@ -3164,7 +3201,10 @@ mod tests {
 
         let source = Arc::new(
             ParquetSource::default().with_schema_adapter_factory(Arc::new(
-                SparkSchemaAdapterFactory::new(SparkParquetOptions::new(EvalMode::Ansi, "", false)),
+                SparkSchemaAdapterFactory::new(
+                    SparkParquetOptions::new(EvalMode::Ansi, "", false),
+                    None,
+                ),
             )),
         );
 
