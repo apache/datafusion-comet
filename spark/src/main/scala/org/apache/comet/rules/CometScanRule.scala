@@ -93,21 +93,63 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
           return withInfos(scanExec, fallbackReasons.toSet)
         }
 
-        val scanImpl = COMET_NATIVE_SCAN_IMPL.get()
-        if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && !COMET_EXEC_ENABLED.get()) {
+        var scanImpl = COMET_NATIVE_SCAN_IMPL.get()
+
+        // if scan is auto then pick best available scan
+        if (scanImpl == SCAN_AUTO) {
+          // TODO these checks are not yet exhaustive. For example, native_datafusion does
+          //  not support reading from object stores such as S3 yet
+
+          val typeChecker = CometScanTypeChecker(SCAN_NATIVE_ICEBERG_COMPAT)
+          val schemaSupported =
+            typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
+          val partitionSchemaSupported =
+            typeChecker.isSchemaSupported(r.partitionSchema, fallbackReasons)
+
+          // additional checks for known issues
+          def isComplexType(dt: DataType): Boolean = dt match {
+            case _: StructType | _: ArrayType | _: MapType => true
+            case _ => false
+          }
+
+          def hasKnownIssues(dataType: DataType): Boolean = {
+            dataType match {
+              case s: StructType => s.exists(field => hasKnownIssues(field.dataType))
+              case a: ArrayType => hasKnownIssues(a.elementType)
+              case m: MapType => isComplexType(m.keyType) || isComplexType(m.valueType)
+              case _ => false
+            }
+          }
+
+          val knownIssues =
+            scanExec.requiredSchema.exists(field => hasKnownIssues(field.dataType)) ||
+              r.partitionSchema.exists(field => hasKnownIssues(field.dataType))
+
+          if (COMET_EXEC_ENABLED
+              .get() && schemaSupported && partitionSchemaSupported &&
+            !scanExec.bucketedScan && !knownIssues) {
+            scanImpl = SCAN_NATIVE_ICEBERG_COMPAT
+          }
+        }
+
+        if (scanImpl == SCAN_AUTO) {
+          scanImpl = SCAN_NATIVE_COMET
+        }
+
+        if (scanImpl == SCAN_NATIVE_DATAFUSION && !COMET_EXEC_ENABLED.get()) {
           fallbackReasons +=
             s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled"
           return withInfos(scanExec, fallbackReasons.toSet)
         }
 
-        if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && scanExec.bucketedScan) {
+        if (scanImpl == SCAN_NATIVE_DATAFUSION && scanExec.bucketedScan) {
           // https://github.com/apache/datafusion-comet/issues/1719
           fallbackReasons +=
             "Full native scan disabled because bucketed scan is not supported"
           return withInfos(scanExec, fallbackReasons.toSet)
         }
 
-        val typeChecker = new CometScanTypeChecker(scanImpl)
+        val typeChecker = CometScanTypeChecker(scanImpl)
         val schemaSupported =
           typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
         val partitionSchemaSupported =

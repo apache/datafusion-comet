@@ -20,7 +20,6 @@ use crate::{
     spark_array_repeat, spark_ceil, spark_date_add, spark_date_sub, spark_decimal_div,
     spark_decimal_integral_div, spark_floor, spark_hex, spark_isnan, spark_make_decimal,
     spark_read_side_padding, spark_round, spark_rpad, spark_unhex, spark_unscaled_value,
-    SparkChrFunc,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -112,7 +111,6 @@ pub fn create_comet_physical_fun(
             let func = Arc::new(spark_xxhash64);
             make_comet_scalar_udf!("xxhash64", func, without data_type)
         }
-        "chr" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkChrFunc::default()))),
         "isnan" => {
             let func = Arc::new(spark_isnan);
             make_comet_scalar_udf!("isnan", func, without data_type)
