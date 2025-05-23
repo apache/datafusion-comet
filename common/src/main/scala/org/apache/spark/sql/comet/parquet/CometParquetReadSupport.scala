@@ -194,8 +194,6 @@ object CometParquetReadSupport {
           .addField(clipParquetType(repeatedGroup, elementType, caseSensitive, useFieldId))
           .named(parquetList.getName)
       } else {
-        // Otherwise, the repeated field's type is the element type with the repeated field's
-        // repetition.
         val newRepeatedGroup = Types
           .repeatedGroup()
           .addField(
@@ -208,15 +206,11 @@ object CometParquetReadSupport {
           newRepeatedGroup
         }
 
+        // Otherwise, the repeated field's type is the element type with the repeated field's
+        // repetition.
         Types
           .buildGroup(parquetList.getRepetition)
           .as(LogicalTypeAnnotation.listType())
-          .addField(
-            Types
-              .repeatedGroup()
-              .addField(
-                clipParquetType(repeatedGroup.getType(0), elementType, caseSensitive, useFieldId))
-              .named(repeatedGroup.getName))
           .addField(newElementType)
           .named(parquetList.getName)
       }
