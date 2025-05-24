@@ -60,8 +60,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private val timestampPattern = "0123456789/:T" + whitespaceChars
 
   lazy val usingParquetExecWithIncompatTypes: Boolean =
-    CometSparkSessionExtensions.usingDataFusionParquetExec(conf) &&
-      !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get(conf)
+    usingDataSourceExecWithIncompatTypes(conf)
 
   test("all valid cast combinations covered") {
     val names = testNames
@@ -933,7 +932,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast StructType to StringType") {
     // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(!usingDataSourceExec)
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")

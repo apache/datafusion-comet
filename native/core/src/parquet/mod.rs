@@ -715,6 +715,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             file_groups,
             None,
             data_filters,
+            None,
             session_timezone.as_str(),
         )?;
 

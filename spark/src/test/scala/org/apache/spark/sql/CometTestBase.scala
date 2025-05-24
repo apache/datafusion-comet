@@ -44,7 +44,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal._
 import org.apache.spark.sql.test._
-import org.apache.spark.sql.types.{DecimalType, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, MapType, StructType}
 
 import org.apache.comet._
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
@@ -119,7 +119,9 @@ abstract class CometTestBase
 
     actualAnswer.toSeq.zip(expectedAnswer.toSeq).foreach {
       case (actual: Double, expected: Double) =>
-        if (!actual.isNaN && !expected.isNaN) {
+        if (actual.isInfinity || expected.isInfinity) {
+          assert(actual.isInfinity == expected.isInfinity, s"actual answer $actual != $expected")
+        } else if (!actual.isNaN && !expected.isNaN) {
           assert(
             math.abs(actual - expected) < absTol,
             s"actual answer $actual not within $absTol of correct answer $expected")
@@ -432,8 +434,7 @@ abstract class CometTestBase
   }
 
   def getPrimitiveTypesParquetSchema: String = {
-    if (CometSparkSessionExtensions.usingDataFusionParquetExec(conf) &&
-      !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get(conf)) {
+    if (usingDataSourceExecWithIncompatTypes(conf)) {
       // Comet complex type reader has different behavior for uint_8, uint_16 types.
       // The issue stems from undefined behavior in the parquet spec and is tracked
       // here: https://github.com/apache/parquet-java/issues/3142
@@ -978,5 +979,21 @@ abstract class CometTestBase
     }
 
     writer.close()
+  }
+
+  def usingDataSourceExec: Boolean = usingDataSourceExec(SQLConf.get)
+
+  def usingDataSourceExec(conf: SQLConf): Boolean =
+    Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION).contains(
+      CometConf.COMET_NATIVE_SCAN_IMPL.get(conf))
+
+  def usingDataSourceExecWithIncompatTypes(conf: SQLConf): Boolean = {
+    usingDataSourceExec(conf) &&
+    !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get(conf)
+  }
+
+  def isComplexType(dt: DataType): Boolean = dt match {
+    case _: StructType | _: ArrayType | _: MapType => true
+    case _ => false
   }
 }

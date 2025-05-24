@@ -50,6 +50,9 @@ import org.apache.spark.shuffle.api.ShuffleMapOutputWriter;
 import org.apache.spark.shuffle.api.ShufflePartitionWriter;
 import org.apache.spark.shuffle.api.WritableByteChannelWrapper;
 import org.apache.spark.shuffle.comet.CometShuffleChecksumSupport;
+import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator;
+import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocatorTrait;
+import org.apache.spark.shuffle.sort.CometShuffleExternalSorter;
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.storage.BlockManager;
@@ -60,6 +63,7 @@ import org.apache.spark.util.Utils;
 import com.google.common.io.Closeables;
 
 import org.apache.comet.CometConf$;
+import org.apache.comet.Native;
 
 /**
  * This is based on Spark `BypassMergeSortShuffleWriter`. Instead of `DiskBlockObjectWriter`, this
@@ -77,6 +81,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
   private final int numPartitions;
   private final BlockManager blockManager;
   private final TaskMemoryManager memoryManager;
+  private CometShuffleMemoryAllocatorTrait allocator;
   private final TaskContext taskContext;
   private final SerializerInstance serializer;
 
@@ -113,6 +118,8 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
 
   private final SparkConf conf;
 
+  private boolean tracingEnabled;
+
   CometBypassMergeSortShuffleWriter(
       BlockManager blockManager,
       TaskMemoryManager memoryManager,
@@ -142,6 +149,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
 
     this.isAsync = (boolean) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED().get();
     this.asyncThreadNum = (int) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_ASYNC_THREAD_NUM().get();
+    this.tracingEnabled = (boolean) CometConf$.MODULE$.COMET_TRACING_ENABLED().get();
 
     if (isAsync) {
       logger.info("Async shuffle writer enabled");
@@ -173,6 +181,14 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
 
       final String checksumAlgorithm = getChecksumAlgorithm(conf);
 
+      allocator =
+          CometShuffleMemoryAllocator.getInstance(
+              conf,
+              memoryManager,
+              Math.min(
+                  CometShuffleExternalSorter.MAXIMUM_PAGE_SIZE_BYTES,
+                  memoryManager.pageSizeBytes()));
+
       // Allocate the disk writers, and open the files that we'll be writing to
       for (int i = 0; i < numPartitions; i++) {
         final Tuple2<TempShuffleBlockId, File> tempShuffleBlockIdPlusFile =
@@ -181,7 +197,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
         CometDiskBlockWriter writer =
             new CometDiskBlockWriter(
                 file,
-                memoryManager,
+                allocator,
                 taskContext,
                 serializer,
                 schema,
@@ -189,7 +205,8 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
                 conf,
                 isAsync,
                 asyncThreadNum,
-                threadPool);
+                threadPool,
+                tracingEnabled);
         if (partitionChecksums.length > 0) {
           writer.setChecksum(partitionChecksums[i]);
           writer.setChecksumAlgo(checksumAlgorithm);
@@ -215,6 +232,11 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
             (UnsafeRow) record._2(), partition_id);
       }
 
+      Native _native = new Native();
+      if (tracingEnabled) {
+        _native.logMemoryUsage("comet_shuffle_", allocator.getUsed());
+      }
+
       long spillRecords = 0;
 
       for (int i = 0; i < numPartitions; i++) {
@@ -222,6 +244,10 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
         partitionWriterSegments[i] = writer.close();
 
         spillRecords += writer.getOutputRecords();
+      }
+
+      if (tracingEnabled) {
+        _native.logMemoryUsage("comet_shuffle_", allocator.getUsed());
       }
 
       if (outputRows != spillRecords) {

@@ -26,6 +26,8 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, Comet
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 
+import org.apache.comet.CometConf
+
 // This rule is responsible for eliminating redundant transitions between row-based and
 // columnar-based operators for Comet. Currently, three potential redundant transitions are:
 // 1. `ColumnarToRowExec` on top of an ending `CometCollectLimitExec` operator, which is
@@ -48,7 +50,18 @@ import org.apache.spark.sql.execution.adaptive.QueryStageExec
 // another `ColumnarToRowExec` on top of `CometSparkToColumnarExec`. In this case, the pair could
 // be removed.
 case class EliminateRedundantTransitions(session: SparkSession) extends Rule[SparkPlan] {
+
+  private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
+
   override def apply(plan: SparkPlan): SparkPlan = {
+    val newPlan = _apply(plan)
+    if (showTransformations) {
+      logInfo(s"\nINPUT: $plan\nOUTPUT: $newPlan")
+    }
+    newPlan
+  }
+
+  private def _apply(plan: SparkPlan): SparkPlan = {
     val eliminatedPlan = plan transformUp {
       case ColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
         if (sparkToColumnar.child.supportsColumnar) {
