@@ -77,7 +77,7 @@ under the License.
     <parquet.version>1.13.1</parquet.version>
     <parquet.maven.scope>provided</parquet.maven.scope>
     <hadoop.version>3.3.4</hadoop.version>
-    <arrow.version>16.0.0</arrow.version>
+    <arrow.version>18.3.0</arrow.version>
     <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
     <spotless.version>2.43.0</spotless.version>
     <jacoco.version>0.8.11</jacoco.version>
