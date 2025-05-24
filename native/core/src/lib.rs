@@ -18,6 +18,7 @@
 #![allow(incomplete_features)]
 #![allow(non_camel_case_types)]
 #![allow(clippy::upper_case_acronyms)]
+#![allow(clippy::result_large_err)]
 // For prost generated struct
 #![allow(clippy::derive_partial_eq_without_eq)]
 // The clippy throws an error if the reference clone not wrapped into `Arc::clone`

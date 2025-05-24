@@ -19,6 +19,8 @@
 
 package org.apache.comet
 
+import java.lang.management.ManagementFactory
+
 import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
@@ -26,6 +28,7 @@ import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
 
 import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_POOL_TYPE, COMET_EXPLAIN_NATIVE_ENABLED, COMET_METRICS_UPDATE_INTERVAL}
+import org.apache.comet.Tracing.withTrace
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -57,8 +60,11 @@ class CometExecIterator(
     extends Iterator[ColumnarBatch]
     with Logging {
 
+  private val tracingEnabled = CometConf.COMET_TRACING_ENABLED.get()
+  private val memoryMXBean = ManagementFactory.getMemoryMXBean
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
+  private val cometTaskMemoryManager = new CometTaskMemoryManager(id)
   private val cometBatchIterators = inputs.map { iterator =>
     new CometBatchIterator(iterator, nativeUtil)
   }.toArray
@@ -75,7 +81,6 @@ class CometExecIterator(
       // and `memory_fraction` below.
       CometSparkSessionExtensions.getCometMemoryOverhead(conf)
     }
-
     nativeLib.createPlan(
       id,
       cometBatchIterators,
@@ -83,7 +88,7 @@ class CometExecIterator(
       numParts,
       nativeMetrics,
       metricsUpdateInterval = COMET_METRICS_UPDATE_INTERVAL.get(),
-      new CometTaskMemoryManager(id),
+      cometTaskMemoryManager,
       localDiskDirs,
       batchSize = COMET_BATCH_SIZE.get(),
       offHeapMode,
@@ -92,7 +97,8 @@ class CometExecIterator(
       memoryLimitPerTask = getMemoryLimitPerTask(conf),
       taskAttemptId = TaskContext.get().taskAttemptId,
       debug = COMET_DEBUG_ENABLED.get(),
-      explain = COMET_EXPLAIN_NATIVE_ENABLED.get())
+      explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
+      tracingEnabled)
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
@@ -130,11 +136,19 @@ class CometExecIterator(
   def getNextBatch(): Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
 
-    nativeUtil.getNextBatch(
-      numOutputCols,
-      (arrayAddrs, schemaAddrs) => {
-        val ctx = TaskContext.get()
-        nativeLib.executePlan(ctx.stageId(), partitionIndex, plan, arrayAddrs, schemaAddrs)
+    if (tracingEnabled) {
+      traceMemoryUsage()
+    }
+
+    val ctx = TaskContext.get()
+    withTrace(
+      s"getNextBatch[JVM] stage=${ctx.stageId()}",
+      tracingEnabled, {
+        nativeUtil.getNextBatch(
+          numOutputCols,
+          (arrayAddrs, schemaAddrs) => {
+            nativeLib.executePlan(ctx.stageId(), partitionIndex, plan, arrayAddrs, schemaAddrs)
+          })
       })
   }
 
@@ -189,6 +203,10 @@ class CometExecIterator(
       nativeUtil.close()
       nativeLib.releasePlan(plan)
 
+      if (tracingEnabled) {
+        traceMemoryUsage()
+      }
+
       // The allocator thoughts the exported ArrowArray and ArrowSchema structs are not released,
       // so it will report:
       // Caused by: java.lang.IllegalStateException: Memory was leaked by query.
@@ -210,5 +228,15 @@ class CometExecIterator(
       // allocator.close()
       closed = true
     }
+  }
+
+  private def traceMemoryUsage(): Unit = {
+    nativeLib.logMemoryUsage("jvm_heapUsed", memoryMXBean.getHeapMemoryUsage.getUsed)
+    val totalTaskMemory = cometTaskMemoryManager.internal.getMemoryConsumptionForThisTask
+    val cometTaskMemory = cometTaskMemoryManager.getUsed
+    val sparkTaskMemory = totalTaskMemory - cometTaskMemory
+    val threadId = Thread.currentThread().getId
+    nativeLib.logMemoryUsage(s"task_memory_comet_$threadId", cometTaskMemory)
+    nativeLib.logMemoryUsage(s"task_memory_spark_$threadId", sparkTaskMemory)
   }
 }

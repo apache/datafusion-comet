@@ -47,12 +47,8 @@ fn criterion_benchmark(c: &mut Criterion) {
             group.bench_function(name, |b| {
                 let mut buffer = vec![];
                 let ipc_time = Time::default();
-                let w = ShuffleBlockWriter::try_new(
-                    &batch.schema(),
-                    enable_fast_encoding,
-                    compression_codec.clone(),
-                )
-                .unwrap();
+                let w = ShuffleBlockWriter::try_new(&batch.schema(), compression_codec.clone())
+                    .unwrap();
                 b.iter(|| {
                     buffer.clear();
                     let mut cursor = Cursor::new(&mut buffer);
@@ -97,7 +93,7 @@ fn create_shuffle_writer_exec(compression_codec: CompressionCodec) -> ShuffleWri
         compression_codec,
         "/tmp/data.out".to_string(),
         "/tmp/index.out".to_string(),
-        true,
+        false,
     )
     .unwrap()
 }

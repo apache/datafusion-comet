@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index 8dc47f391f9..94cd1cee609 100644
+index 8dc47f391f9..73feb7e07d2 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -152,6 +152,8 @@
@@ -1003,6 +1003,73 @@ index 8b4ac474f87..3f79f20822f 100644
        .withExtensions { extensions =>
          extensions.injectColumnar(session =>
            MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())) }
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
+index fa1a64460fc..1d2e215d6a3 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
+@@ -17,6 +17,8 @@
+ 
+ package org.apache.spark.sql
+ 
++import org.apache.comet.CometConf
++
+ import org.apache.spark.{SPARK_DOC_ROOT, SparkIllegalArgumentException, SparkRuntimeException}
+ import org.apache.spark.sql.catalyst.expressions.Cast._
+ import org.apache.spark.sql.execution.FormattedMode
+@@ -178,29 +180,31 @@ class StringFunctionsSuite extends QueryTest with SharedSparkSession {
+   }
+ 
+   test("string regex_replace / regex_extract") {
+-    val df = Seq(
+-      ("100-200", "(\\d+)-(\\d+)", "300"),
+-      ("100-200", "(\\d+)-(\\d+)", "400"),
+-      ("100-200", "(\\d+)", "400")).toDF("a", "b", "c")
++    withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
++      val df = Seq(
++        ("100-200", "(\\d+)-(\\d+)", "300"),
++        ("100-200", "(\\d+)-(\\d+)", "400"),
++        ("100-200", "(\\d+)", "400")).toDF("a", "b", "c")
+ 
+-    checkAnswer(
+-      df.select(
+-        regexp_replace($"a", "(\\d+)", "num"),
+-        regexp_replace($"a", $"b", $"c"),
+-        regexp_extract($"a", "(\\d+)-(\\d+)", 1)),
+-      Row("num-num", "300", "100") :: Row("num-num", "400", "100") ::
+-        Row("num-num", "400-400", "100") :: Nil)
+-
+-    // for testing the mutable state of the expression in code gen.
+-    // This is a hack way to enable the codegen, thus the codegen is enable by default,
+-    // it will still use the interpretProjection if projection followed by a LocalRelation,
+-    // hence we add a filter operator.
+-    // See the optimizer rule `ConvertToLocalRelation`
+-    checkAnswer(
+-      df.filter("isnotnull(a)").selectExpr(
+-        "regexp_replace(a, b, c)",
+-        "regexp_extract(a, b, 1)"),
+-      Row("300", "100") :: Row("400", "100") :: Row("400-400", "100") :: Nil)
++      checkAnswer(
++        df.select(
++          regexp_replace($"a", "(\\d+)", "num"),
++          regexp_replace($"a", $"b", $"c"),
++          regexp_extract($"a", "(\\d+)-(\\d+)", 1)),
++        Row("num-num", "300", "100") :: Row("num-num", "400", "100") ::
++          Row("num-num", "400-400", "100") :: Nil)
++
++      // for testing the mutable state of the expression in code gen.
++      // This is a hack way to enable the codegen, thus the codegen is enable by default,
++      // it will still use the interpretProjection if projection followed by a LocalRelation,
++      // hence we add a filter operator.
++      // See the optimizer rule `ConvertToLocalRelation`
++      checkAnswer(
++        df.filter("isnotnull(a)").selectExpr(
++          "regexp_replace(a, b, c)",
++          "regexp_extract(a, b, 1)"),
++        Row("300", "100") :: Row("400", "100") :: Row("400-400", "100") :: Nil)
++    }
+   }
+ 
+   test("non-matching optional group") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 index 260c992f1ae..b9d8e22337c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
@@ -1025,7 +1092,7 @@ index 260c992f1ae..b9d8e22337c 100644
                _.asInstanceOf[FileScanRDD].filePartitions.forall(
                  _.files.forall(_.urlEncodedPath.contains("p=0"))))
 +        case WholeStageCodegenExec(ColumnarToRowExec(InputAdapter(
-+        fs @ CometScanExec(_, _, _, partitionFilters, _, _, _, _, _, _)))) =>
++        fs @ CometScanExec(_, _, _, _, partitionFilters, _, _, _, _, _, _)))) =>
 +          partitionFilters.exists(ExecSubqueryExpression.hasSubquery) &&
 +            fs.inputRDDs().forall(
 +              _.asInstanceOf[FileScanRDD].filePartitions.forall(
@@ -2181,10 +2248,17 @@ index 4f906411345..6cc69f7e915 100644
  
    import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
-index 27c2a2148fd..1d93d0eb8bc 100644
+index 27c2a2148fd..df04a15fb1f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
-@@ -26,6 +26,7 @@ import org.apache.parquet.hadoop.{ParquetFileReader, ParquetOutputFormat}
+@@ -20,12 +20,14 @@ import java.io.File
+ 
+ import scala.collection.JavaConverters._
+ 
++import org.apache.comet.CometConf
+ import org.apache.hadoop.fs.Path
+ import org.apache.parquet.column.ParquetProperties._
+ import org.apache.parquet.hadoop.{ParquetFileReader, ParquetOutputFormat}
  import org.apache.parquet.hadoop.ParquetWriter.DEFAULT_BLOCK_SIZE
  
  import org.apache.spark.sql.QueryTest
@@ -2192,7 +2266,16 @@ index 27c2a2148fd..1d93d0eb8bc 100644
  import org.apache.spark.sql.execution.FileSourceScanExec
  import org.apache.spark.sql.execution.datasources.FileFormat
  import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
-@@ -243,6 +244,12 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
+@@ -172,6 +174,8 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
+ 
+   private def testRowIndexGeneration(label: String, conf: RowIndexTestConf): Unit = {
+     test (s"$label - ${conf.desc}") {
++      // native_datafusion Parquet scan does not support row index generation.
++      assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
+       withSQLConf(conf.sqlConfs: _*) {
+         withTempPath { path =>
+           // Read row index using _metadata.row_index if that is supported by the file format.
+@@ -243,6 +247,12 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
              case f: FileSourceScanExec =>
                numPartitions += f.inputRDD.partitions.length
                numOutputRows += f.metrics("numOutputRows").value
@@ -2205,6 +2288,15 @@ index 27c2a2148fd..1d93d0eb8bc 100644
              case _ =>
            }
            assert(numPartitions > 0)
+@@ -301,6 +311,8 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
+     val conf = RowIndexTestConf(useDataSourceV2 = useDataSourceV2)
+ 
+     test(s"invalid row index column type - ${conf.desc}") {
++      // native_datafusion Parquet scan does not support row index generation.
++      assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
+       withSQLConf(conf.sqlConfs: _*) {
+         withTempPath{ path =>
+           val df = spark.range(0, 10, 1, 1).toDF("id")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaPruningSuite.scala
 index 5c0b7def039..151184bc98c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaPruningSuite.scala

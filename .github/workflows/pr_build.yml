@@ -46,7 +46,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        java_version: [8, 11, 17]
+        java_version: [11, 17]
         test-target: [rust, java]
         spark-version: ['3.5']
         scala-version: ['2.12', '2.13']
@@ -180,7 +180,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        java_version: [8, 11, 17]
+        java_version: [11, 17]
         test-target: [java]
         spark-version: ['3.4']
         scala-version: ['2.12', '2.13']
@@ -205,7 +205,7 @@ jobs:
     strategy:
       matrix:
         os: [macos-13]
-        java_version: [8, 11, 17]
+        java_version: [11, 17]
         test-target: [rust, java]
         spark-version: ['3.4', '3.5']
         scala-version: ['2.12', '2.13']
@@ -232,7 +232,7 @@ jobs:
   macos-aarch64-test:
     strategy:
       matrix:
-        java_version: [8, 11, 17]
+        java_version: [11, 17]
         test-target: [rust, java]
         spark-version: ['3.4', '3.5']
         scala-version: ['2.12', '2.13']
@@ -318,7 +318,7 @@ jobs:
   macos-aarch64-test-with-old-spark:
     strategy:
       matrix:
-        java_version: [8, 17]
+        java_version: [17]
         test-target: [java]
         spark-version: ['3.4']
         scala-version: ['2.12', '2.13']

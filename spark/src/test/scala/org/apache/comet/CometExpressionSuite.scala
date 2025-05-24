@@ -57,6 +57,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("parquet default values") {
+    withTable("t1") {
+      sql("create table t1(col1 boolean) using parquet")
+      sql("insert into t1 values(true)")
+      sql("alter table t1 add column col2 string default 'hello'")
+      checkSparkAnswerAndOperator("select * from t1")
+    }
+  }
+
   test("coalesce should return correct datatype") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
@@ -120,7 +129,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 Byte.MaxValue)
               withParquetTable(path.toString, "tbl") {
                 val qry = "select _9 from tbl order by _11"
-                if (CometSparkSessionExtensions.usingDataFusionParquetExec(conf)) {
+                if (usingDataSourceExec(conf)) {
                   if (!allowIncompatible) {
                     checkSparkAnswer(qry)
                   } else {
@@ -151,11 +160,18 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, batchSize)
         withParquetTable(path.toString, "tbl") {
           val sqlString =
-            "SELECT _4 + null, _15 - null, _16 * null, cast(null as struct<_1:int>) FROM tbl"
+            """SELECT
+              |_4 + null,
+              |_15 - null,
+              |_16 * null,
+              |cast(null as struct<_1:int>),
+              |cast(null as map<int, int>),
+              |cast(null as array<int>)
+              |FROM tbl""".stripMargin
           val df2 = sql(sqlString)
           val rows = df2.collect()
           assert(rows.length == batchSize)
-          assert(rows.forall(_ == Row(null, null, null, null)))
+          assert(rows.forall(_ == Row(null, null, null, null, null, null)))
 
           checkSparkAnswerAndOperator(sqlString)
         }
@@ -1119,6 +1135,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("expm1") {
+    val testValues = Seq(
+      -1,
+      0,
+      +1,
+      Double.MinValue,
+      Double.MaxValue,
+      Double.NaN,
+      Double.MinPositiveValue,
+      Double.PositiveInfinity,
+      Double.NegativeInfinity)
+    val testValuesRepeated = testValues.flatMap(v => Seq.fill(1000)(v))
+    withParquetTable(testValuesRepeated.map(n => (n, n)), "tbl") {
+      checkSparkAnswerWithTol("SELECT expm1(_1) FROM tbl")
+    }
+  }
+
   // https://github.com/apache/datafusion-comet/issues/666
   ignore("abs") {
     Seq(true, false).foreach { dictionaryEnabled =>
@@ -1239,7 +1272,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("round") {
     // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(!usingDataSourceExec)
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -1469,7 +1502,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("hex") {
     // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(!usingDataSourceExec)
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "hex.parquet")
@@ -2413,17 +2446,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val df = spark.read.parquet(dir.toString())
 
         checkSparkAnswerAndOperator(df.select("nested1.id"))
-
         checkSparkAnswerAndOperator(df.select("nested1.id", "nested1.nested2.id"))
-
-        // unsupported cast from Int64 to Struct([Field { name: "id", data_type: Int64, ...
-        // checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
+        checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
       }
     }
   }
 
-  // TODO this is not using DataFusion's ParquetExec for some reason
-  ignore("get_struct_field with DataFusion ParquetExec - read entire struct") {
+  test("get_struct_field with DataFusion ParquetExec - read entire struct") {
+    assume(usingDataSourceExec(conf))
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2449,13 +2479,19 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
 
           val df = spark.read.parquet(dir.toString())
-          checkSparkAnswerAndOperator(df.select("nested1"))
+          if (v1List.isEmpty) {
+            checkSparkAnswer(df.select("nested1"))
+          } else {
+            checkSparkAnswerAndOperator(df.select("nested1"))
+          }
         }
       }
     }
   }
 
-  ignore("read map[int, int] from parquet") {
+  test("read map[int, int] from parquet") {
+    assume(usingDataSourceExec(conf))
+
     withTempPath { dir =>
 // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2471,15 +2507,63 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Seq("", "parquet").foreach { v1List =>
         withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
           val df = spark.read.parquet(dir.toString())
-          checkSparkAnswerAndOperator(df.select("map1"))
-          checkSparkAnswerAndOperator(df.select(map_keys(col("map1"))))
-          checkSparkAnswerAndOperator(df.select(map_values(col("map1"))))
+          if (v1List.isEmpty) {
+            checkSparkAnswer(df.select("map1"))
+          } else {
+            checkSparkAnswerAndOperator(df.select("map1"))
+          }
+          // we fall back to Spark for map_keys and map_values
+          checkSparkAnswer(df.select(map_keys(col("map1"))))
+          checkSparkAnswer(df.select(map_values(col("map1"))))
         }
       }
     }
   }
 
-  ignore("read array[int] from parquet") {
+  // repro for https://github.com/apache/datafusion-comet/issues/1754
+  test("read map[struct, struct] from parquet") {
+    assume(usingDataSourceExec(conf))
+
+    withTempPath { dir =>
+      // create input file with Comet disabled
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(5)
+          .withColumn("id2", col("id"))
+          .withColumn("id3", col("id"))
+          // Spark does not allow null as a key but does allow null as a
+          // value, and the entire map be null
+          .select(
+            when(
+              col("id") > 1,
+              map(
+                struct(col("id"), col("id2"), col("id3")),
+                when(col("id") > 2, struct(col("id"), col("id2"), col("id3"))))).alias("map1"))
+        df.write.parquet(dir.toString())
+      }
+
+      Seq("", "parquet").foreach { v1List =>
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
+          val df = spark.read.parquet(dir.toString())
+          df.createOrReplaceTempView("tbl")
+          if (v1List.isEmpty) {
+            checkSparkAnswer(df.select("map1"))
+          } else {
+            checkSparkAnswerAndOperator(df.select("map1"))
+          }
+          // we fall back to Spark for map_keys and map_values
+          checkSparkAnswer(df.select(map_keys(col("map1"))))
+          checkSparkAnswer(df.select(map_values(col("map1"))))
+          checkSparkAnswer(spark.sql("SELECT map_keys(map1).id2 FROM tbl"))
+          checkSparkAnswer(spark.sql("SELECT map_values(map1).id2 FROM tbl"))
+        }
+      }
+    }
+  }
+
+  test("read array[int] from parquet") {
+    assume(usingDataSourceExec(conf))
+
     withTempPath { dir =>
 // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2494,8 +2578,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Seq("", "parquet").foreach { v1List =>
         withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
           val df = spark.read.parquet(dir.toString())
-          checkSparkAnswerAndOperator(df.select("array1"))
-          checkSparkAnswerAndOperator(df.select(element_at(col("array1"), lit(1))))
+          if (v1List.isEmpty) {
+            checkSparkAnswer(df.select("array1"))
+            checkSparkAnswer(df.select(element_at(col("array1"), lit(1))))
+          } else {
+            checkSparkAnswerAndOperator(df.select("array1"))
+            checkSparkAnswerAndOperator(df.select(element_at(col("array1"), lit(1))))
+          }
         }
       }
     }
@@ -2617,7 +2706,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("test integral divide") {
     // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!CometConf.isExperimentalNativeScan)
+    assume(!usingDataSourceExec)
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path1 = new Path(dir.toURI.toString, "test1.parquet")

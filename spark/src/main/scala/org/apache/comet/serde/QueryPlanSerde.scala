@@ -19,6 +19,8 @@
 
 package org.apache.comet.serde
 
+import java.util.Locale
+
 import scala.collection.JavaConverters._
 import scala.math.min
 
@@ -30,6 +32,7 @@ import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, Normalize
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
+import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution
@@ -46,7 +49,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isCometScan, usingDataFusionParquetExec, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
 import org.apache.comet.expressions._
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType._
@@ -1430,6 +1433,60 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val optExpr = scalarFunctionExprToProto("ascii", childExpr)
         optExprWithInfo(optExpr, expr, castExpr)
 
+      case Expm1(child) =>
+        val childExpr = exprToProtoInternal(child, inputs, binding)
+        val optExpr = scalarFunctionExprToProto("expm1", childExpr)
+        optExprWithInfo(optExpr, expr, child)
+
+      case s: StringDecode =>
+        // Right child is the encoding expression.
+        s.right match {
+          case Literal(str, DataTypes.StringType)
+              if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
+            // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
+            // for invalid strings.
+            // Left child is the binary expression.
+            castToProto(
+              expr,
+              None,
+              DataTypes.StringType,
+              exprToProtoInternal(s.left, inputs, binding).get,
+              CometEvalMode.TRY)
+          case _ =>
+            withInfo(expr, "Comet only supports decoding with 'utf-8'.")
+            None
+        }
+
+      case RegExpReplace(subject, pattern, replacement, startPosition) =>
+        if (!RegExp.isSupportedPattern(pattern.toString) &&
+          !CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
+          withInfo(
+            expr,
+            s"Regexp pattern $pattern is not compatible with Spark. " +
+              s"Set ${CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key}=true " +
+              "to allow it anyway.")
+          return None
+        }
+        startPosition match {
+          case Literal(value, DataTypes.IntegerType) if value == 1 =>
+            val subjectExpr = exprToProtoInternal(subject, inputs, binding)
+            val patternExpr = exprToProtoInternal(pattern, inputs, binding)
+            val replacementExpr = exprToProtoInternal(replacement, inputs, binding)
+            // DataFusion's regexp_replace stops at the first match. We need to add the 'g' flag
+            // to apply the regex globally to match Spark behavior.
+            val flagsExpr = exprToProtoInternal(Literal("g"), inputs, binding)
+            val optExpr = scalarFunctionExprToProto(
+              "regexp_replace",
+              subjectExpr,
+              patternExpr,
+              replacementExpr,
+              flagsExpr)
+            optExprWithInfo(optExpr, expr, subject, pattern, replacement, startPosition)
+          case _ =>
+            withInfo(expr, "Comet only supports regexp_replace with an offset of 1 (no offset).")
+            None
+        }
+
       case BitLength(child) =>
         val castExpr = Cast(child, StringType)
         val childExpr = exprToProtoInternal(castExpr, inputs, binding)
@@ -2184,8 +2241,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     op match {
 
       // Fully native scan for V1
-      case scan: CometScanExec
-          if CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_DATAFUSION =>
+      case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
         val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
         nativeScanBuilder.setSource(op.simpleStringWithNodeId())
 
@@ -2203,6 +2259,24 @@ object QueryPlanSerde extends Logging with CometExprShim {
             // TODO remove flatMap and add error handling for unsupported data filters
             val dataFilters = scan.dataFilters.flatMap(exprToProto(_, scan.output))
             nativeScanBuilder.addAllDataFilters(dataFilters.asJava)
+          }
+
+          val possibleDefaultValues = getExistenceDefaultValues(scan.requiredSchema)
+          if (possibleDefaultValues.exists(_ != null)) {
+            // Our schema has default values. Serialize two lists, one with the default values
+            // and another with the indexes in the schema so the native side can map missing
+            // columns to these default values.
+            val (defaultValues, indexes) = possibleDefaultValues.zipWithIndex
+              .filter { case (expr, _) => expr != null }
+              .map { case (expr, index) =>
+                // ResolveDefaultColumnsUtil.getExistenceDefaultValues has evaluated these
+                // expressions and they should now just be literals.
+                (Literal(expr), index.toLong.asInstanceOf[java.lang.Long])
+              }
+              .unzip
+            nativeScanBuilder.addAllDefaultValues(
+              defaultValues.flatMap(exprToProto(_, scan.output)).toIterable.asJava)
+            nativeScanBuilder.addAllDefaultValuesIndexes(indexes.toIterable.asJava)
           }
 
           // TODO: modify CometNativeScan to generate the file partitions without instantiating RDD.
@@ -2229,18 +2303,18 @@ object QueryPlanSerde extends Logging with CometExprShim {
           val requiredSchema = schema2Proto(scan.requiredSchema.fields)
           val dataSchema = schema2Proto(scan.relation.dataSchema.fields)
 
-          val data_schema_idxs = scan.requiredSchema.fields.map(field => {
+          val dataSchemaIndexes = scan.requiredSchema.fields.map(field => {
             scan.relation.dataSchema.fieldIndex(field.name)
           })
-          val partition_schema_idxs = Array
+          val partitionSchemaIndexes = Array
             .range(
               scan.relation.dataSchema.fields.length,
               scan.relation.dataSchema.length + scan.relation.partitionSchema.fields.length)
 
-          val projection_vector = (data_schema_idxs ++ partition_schema_idxs).map(idx =>
+          val projectionVector = (dataSchemaIndexes ++ partitionSchemaIndexes).map(idx =>
             idx.toLong.asInstanceOf[java.lang.Long])
 
-          nativeScanBuilder.addAllProjectionVector(projection_vector.toIterable.asJava)
+          nativeScanBuilder.addAllProjectionVector(projectionVector.toIterable.asJava)
 
           // In `CometScanRule`, we ensure partitionSchema is supported.
           assert(partitionSchema.length == scan.relation.partitionSchema.fields.length)
@@ -2278,12 +2352,26 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val cond = exprToProto(condition, child.output)
 
         if (cond.isDefined && childOp.nonEmpty) {
+          // We need to determine whether to use DataFusion's FilterExec or Comet's
+          // FilterExec. The difference is that DataFusion's implementation will sometimes pass
+          // batches through whereas the Comet implementation guarantees that a copy is always
+          // made, which is critical when using `native_comet` scans due to buffer re-use
+
+          // TODO this could be optimized more to stop walking the tree on hitting
+          //  certain operators such as join or aggregate which will copy batches
+          def containsNativeCometScan(plan: SparkPlan): Boolean = {
+            plan match {
+              case w: CometScanWrapper => containsNativeCometScan(w.originalPlan)
+              case scan: CometScanExec => scan.scanImpl == CometConf.SCAN_NATIVE_COMET
+              case _: CometNativeScanExec => false
+              case _ => plan.children.exists(containsNativeCometScan)
+            }
+          }
+
           val filterBuilder = OperatorOuterClass.Filter
             .newBuilder()
             .setPredicate(cond.get)
-            .setUseDatafusionFilter(
-              CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_DATAFUSION ||
-                CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
+            .setUseDatafusionFilter(!containsNativeCometScan(op))
           Some(result.setFilter(filterBuilder).build())
         } else {
           withInfo(op, condition, child)
@@ -2417,6 +2505,15 @@ object QueryPlanSerde extends Logging with CometExprShim {
         // Aggregate expressions with filter are not supported yet.
         if (aggregateExpressions.exists(_.filter.isDefined)) {
           withInfo(op, "Aggregate expression with filter is not supported")
+          return None
+        }
+
+        if (groupingExpressions.exists(expr =>
+            expr.dataType match {
+              case _: MapType => true
+              case _ => false
+            })) {
+          withInfo(op, "Grouping on map types is not supported")
           return None
         }
 
@@ -2660,16 +2757,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
         withInfo(join, "SortMergeJoin is not enabled")
         None
 
-      case op
-          if isCometSink(op) && op.output.forall(a =>
-            supportedDataType(
-              a.dataType,
-              // Complex type supported if
-              // - Native datafusion reader enabled (experimental) OR
-              // - conversion from Parquet/JSON enabled
-              allowComplex =
-                usingDataFusionParquetExec(conf) || CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED
-                  .get(conf) || CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf))) =>
+      case op if isCometSink(op) =>
+        val supportedTypes =
+          op.output.forall(a => supportedDataType(a.dataType, allowComplex = true))
+
+        if (!supportedTypes) {
+          return None
+        }
+
         // These operators are source of Comet native execution chain
         val scanBuilder = OperatorOuterClass.Scan.newBuilder()
         val source = op.simpleStringWithNodeId()

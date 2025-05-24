@@ -19,8 +19,8 @@ under the License.
 
 # Running Spark SQL Tests
 
-Running Apache Spark's SQL tests with Comet enabled is a good way to ensure that Comet produces the same 
-results as that version of Spark. To enable this, we apply some changes to the Apache Spark source code so that 
+Running Apache Spark's SQL tests with Comet enabled is a good way to ensure that Comet produces the same
+results as that version of Spark. To enable this, we apply some changes to the Apache Spark source code so that
 Comet is enabled when we run the tests.
 
 Here is an overview of the changes that we need to make to Spark:
@@ -45,6 +45,7 @@ PROFILES="-Pspark-3.4" make release
 Clone Apache Spark locally and apply the diff file from Comet.
 
 Note: this is a shallow clone of a tagged Spark commit and is not suitable for general Spark development.
+
 ```shell
 git clone -b 'v3.4.3' --single-branch --depth 1 git@github.com:apache/spark.git apache-spark
 cd apache-spark
@@ -53,7 +54,7 @@ git apply ../datafusion-comet/dev/diffs/3.4.3.diff
 
 ## 3. Run Spark SQL Tests
 
-Use the following commands to run the SQL tests locally.
+#### Use the following commands to run the Spark SQL test suite locally.
 
 ```shell
 ENABLE_COMET=true build/sbt catalyst/test
@@ -64,14 +65,31 @@ ENABLE_COMET=true build/sbt "hive/testOnly * -- -l org.apache.spark.tags.Extende
 ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"
 ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"
 ```
+#### Steps to run individual test suites through SBT
+1. Open SBT with Comet enabled
+```sbt
+ENABLE_COMET=true sbt -Dspark.test.includeSlowTests=true 
+```
+2. Run individual tests (Below code runs test named `SPARK-35568` in the `spark-sql` module)
+```sbt
+ sql/testOnly  org.apache.spark.sql.DynamicPartitionPruningV1SuiteAEOn -- -z "SPARK-35568"
+```
+#### Steps to run individual test suites in IntelliJ IDE
+1. Add below configuration in VM Options for your test case (apache-spark repository)
+```sbt
+-Dspark.comet.enabled=true -Dspark.comet.debug.enabled=true -Dspark.plugins=org.apache.spark.CometPlugin -DXmx4096m -Dspark.executor.heartbeatInterval=20000 -Dspark.network.timeout=10000 --add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED
+```
+2. Set `ENABLE_COMET=true` in environment variables
+![img.png](img.png)
+3. After the above tests are configured, spark tests can be run with debugging enabled on spark/comet code. Note that Comet is added as a dependency and the classes are readonly while debugging from Spark. Any new changes to Comet are to be built and deployed locally through the command (`PROFILES="-Pspark-3.4" make release`)
 
 ## Creating a diff file for a new Spark version
 
-Once Comet has support for a new Spark version, we need to create a diff file that can be applied to that version 
-of Apache Spark to enable Comet when running tests. This is a highly manual process and the process can 
+Once Comet has support for a new Spark version, we need to create a diff file that can be applied to that version
+of Apache Spark to enable Comet when running tests. This is a highly manual process and the process can
 vary depending on the changes in the new version of Spark, but here is a general guide to the process.
 
-We typically start by applying a patch from a previous version of Spark. For example, when enabling the tests 
+We typically start by applying a patch from a previous version of Spark. For example, when enabling the tests
 for Spark version 3.5.5 we may start by applying the existing diff for 3.4.3 first.
 
 ```shell
@@ -80,7 +98,7 @@ git checkout v3.5.5
 git apply --reject --whitespace=fix ../datafusion-comet/dev/diffs/3.4.3.diff
 ```
 
-Any changes that cannot be cleanly applied will instead be written out to reject files. For example, the above 
+Any changes that cannot be cleanly applied will instead be written out to reject files. For example, the above
 command generated the following files.
 
 ```shell
@@ -117,12 +135,16 @@ wiggle --replace ./sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.sc
 
 ## Generating The Diff File
 
+The diff file can be generated using the `git diff` command. It may be necessary to set the `core.abbrev`
+configuration setting to use 11 digits hashes for consistency with existing diff files.
+
 ```shell
+git config core.abbrev 11;
 git diff v3.5.5 > ../datafusion-comet/dev/diffs/3.5.5.diff
 ```
 
-## Running Tests in CI 
+## Running Tests in CI
 
-The easiest way to run the tests is to create a PR against Comet and let CI run the tests. When working with a 
-new Spark version, the `spark_sql_test.yaml` and `spark_sql_test_ansi.yaml` files will need updating with the 
+The easiest way to run the tests is to create a PR against Comet and let CI run the tests. When working with a
+new Spark version, the `spark_sql_test.yaml` and `spark_sql_test_ansi.yaml` files will need updating with the
 new version.

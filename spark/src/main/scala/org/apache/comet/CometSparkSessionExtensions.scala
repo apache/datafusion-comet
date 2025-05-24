@@ -21,6 +21,8 @@ package org.apache.comet
 
 import java.nio.ByteOrder
 
+import scala.collection.mutable.ListBuffer
+
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
@@ -45,11 +47,9 @@ import org.apache.comet.rules.{CometExecRule, CometScanRule, EliminateRedundantT
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
- * The entry point of Comet extension to Spark. This class is responsible for injecting Comet
- * rules and extensions into Spark.
+ * CometDriverPlugin will register an instance of this class with Spark.
  *
- * CometScanRule: A rule to transform a Spark scan plan into a Comet scan plan. CometExecRule: A
- * rule to transform a Spark execution plan into a Comet execution plan.
+ * This class is responsible for injecting Comet rules and extensions into Spark.
  */
 class CometSparkSessionExtensions
     extends (SparkSessionExtensions => Unit)
@@ -193,7 +193,8 @@ object CometSparkSessionExtensions extends Logging {
     // operators can have a chance to be converted to columnar. Leaf operators that output
     // columnar batches, such as Spark's vectorized readers, will also be converted to native
     // comet batches.
-    if (CometSparkToColumnarExec.isSchemaSupported(op.schema)) {
+    val fallbackReasons = new ListBuffer[String]()
+    if (CometSparkToColumnarExec.isSchemaSupported(op.schema, fallbackReasons)) {
       op match {
         // Convert Spark DS v1 scan to Arrow format
         case scan: FileSourceScanExec =>
@@ -238,10 +239,6 @@ object CometSparkSessionExtensions extends Logging {
   def isSpark40Plus: Boolean = {
     org.apache.spark.SPARK_VERSION >= "4.0"
   }
-
-  def usingDataFusionParquetExec(conf: SQLConf): Boolean =
-    Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION).contains(
-      CometConf.COMET_NATIVE_SCAN_IMPL.get(conf))
 
   /**
    * Whether we should override Spark memory configuration for Comet. This only returns true when

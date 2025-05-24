@@ -18,10 +18,13 @@
 //! Custom schema adapter that uses Spark-compatible conversions
 
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
-use arrow::array::{new_null_array, RecordBatch, RecordBatchOptions};
+use arrow::array::{RecordBatch, RecordBatchOptions};
 use arrow::datatypes::{Schema, SchemaRef};
+use datafusion::common::ColumnStatistics;
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
 use datafusion::physical_plan::ColumnarValue;
+use datafusion::scalar::ScalarValue;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// An implementation of DataFusion's `SchemaAdapterFactory` that uses a Spark-compatible
@@ -30,12 +33,17 @@ use std::sync::Arc;
 pub struct SparkSchemaAdapterFactory {
     /// Spark cast options
     parquet_options: SparkParquetOptions,
+    default_values: Option<HashMap<usize, ScalarValue>>,
 }
 
 impl SparkSchemaAdapterFactory {
-    pub fn new(options: SparkParquetOptions) -> Self {
+    pub fn new(
+        options: SparkParquetOptions,
+        default_values: Option<HashMap<usize, ScalarValue>>,
+    ) -> Self {
         Self {
             parquet_options: options,
+            default_values,
         }
     }
 }
@@ -55,6 +63,7 @@ impl SchemaAdapterFactory for SparkSchemaAdapterFactory {
         Box::new(SparkSchemaAdapter {
             required_schema,
             parquet_options: self.parquet_options.clone(),
+            default_values: self.default_values.clone(),
         })
     }
 }
@@ -68,6 +77,7 @@ pub struct SparkSchemaAdapter {
     required_schema: SchemaRef,
     /// Spark cast options
     parquet_options: SparkParquetOptions,
+    default_values: Option<HashMap<usize, ScalarValue>>,
 }
 
 impl SchemaAdapter for SparkSchemaAdapter {
@@ -133,6 +143,7 @@ impl SchemaAdapter for SparkSchemaAdapter {
                 required_schema: Arc::<Schema>::clone(&self.required_schema),
                 field_mappings,
                 parquet_options: self.parquet_options.clone(),
+                default_values: self.default_values.clone(),
             }),
             projection,
         ))
@@ -157,16 +168,7 @@ impl SchemaAdapter for SparkSchemaAdapter {
 /// out of the execution of this query. Thus `map_batch` uses
 /// `projected_table_schema` as it can only operate on the projected fields.
 ///
-/// [`map_partial_batch`]  is used to create a RecordBatch with a schema that
-/// can be used for Parquet predicate pushdown, meaning that it may contain
-/// fields which are not in the projected schema (as the fields that parquet
-/// pushdown filters operate can be completely distinct from the fields that are
-/// projected (output) out of the ParquetExec). `map_partial_batch` thus uses
-/// `table_schema` to create the resulting RecordBatch (as it could be operating
-/// on any fields in the schema).
-///
 /// [`map_batch`]: Self::map_batch
-/// [`map_partial_batch`]: Self::map_partial_batch
 #[derive(Debug)]
 pub struct SchemaMapping {
     /// The schema of the table. This is the expected schema after conversion
@@ -180,6 +182,7 @@ pub struct SchemaMapping {
     field_mappings: Vec<Option<usize>>,
     /// Spark cast options
     parquet_options: SparkParquetOptions,
+    default_values: Option<HashMap<usize, ScalarValue>>,
 }
 
 impl SchemaMapper for SchemaMapping {
@@ -196,15 +199,43 @@ impl SchemaMapper for SchemaMapping {
             // go through each field in the projected schema
             .fields()
             .iter()
+            .enumerate()
             // and zip it with the index that maps fields from the projected table schema to the
             // projected file schema in `batch`
             .zip(&self.field_mappings)
             // and for each one...
-            .map(|(field, file_idx)| {
+            .map(|((field_idx, field), file_idx)| {
                 file_idx.map_or_else(
-                    // If this field only exists in the table, and not in the file, then we know
-                    // that it's null, so just return that.
-                    || Ok(new_null_array(field.data_type(), batch_rows)),
+                    // If this field only exists in the table, and not in the file, then we need to
+                    // populate a default value for it.
+                    || {
+                        if self.default_values.is_some() {
+                            // We have a map of default values, see if this field is in there.
+                            if let Some(value) =
+                                self.default_values.as_ref().unwrap().get(&field_idx)
+                            // Default value exists, construct a column from it.
+                            {
+                                let cv = if field.data_type() == &value.data_type() {
+                                    ColumnarValue::Scalar(value.clone())
+                                } else {
+                                    // Data types don't match. This can happen when default values
+                                    // are stored by Spark in a format different than the column's
+                                    // type (e.g., INT32 when the column is DATE32)
+                                    spark_parquet_convert(
+                                        ColumnarValue::Scalar(value.clone()),
+                                        field.data_type(),
+                                        &self.parquet_options,
+                                    )?
+                                };
+                                return cv.into_array(batch_rows);
+                            }
+                        }
+                        // Construct an entire column of nulls. We use the Scalar representation
+                        // for better performance.
+                        let cv =
+                            ColumnarValue::Scalar(ScalarValue::try_new_null(field.data_type())?);
+                        cv.into_array(batch_rows)
+                    },
                     // However, if it does exist in both, then try to cast it to the correct output
                     // type
                     |batch_idx| {
@@ -225,6 +256,13 @@ impl SchemaMapper for SchemaMapping {
         let schema = Arc::<Schema>::clone(&self.required_schema);
         let record_batch = RecordBatch::try_new_with_options(schema, cols, &options)?;
         Ok(record_batch)
+    }
+
+    fn map_column_statistics(
+        &self,
+        _file_col_statistics: &[ColumnStatistics],
+    ) -> datafusion::common::Result<Vec<ColumnStatistics>> {
+        Ok(vec![])
     }
 }
 
@@ -308,7 +346,7 @@ mod test {
 
         let parquet_source = Arc::new(
             ParquetSource::new(TableParquetOptions::new()).with_schema_adapter_factory(Arc::new(
-                SparkSchemaAdapterFactory::new(spark_parquet_options),
+                SparkSchemaAdapterFactory::new(spark_parquet_options, None),
             )),
         );
 

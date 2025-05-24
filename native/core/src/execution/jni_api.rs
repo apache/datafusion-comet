@@ -66,8 +66,14 @@ use crate::execution::memory_pools::{
 use crate::execution::operators::ScanExec;
 use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
+
+use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end, with_trace};
+
+use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::info;
 use once_cell::sync::Lazy;
+#[cfg(feature = "jemalloc")]
+use tikv_jemalloc_ctl::{epoch, stats};
 
 static TOKIO_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
@@ -126,6 +132,8 @@ struct ExecutionContext {
     pub explain_native: bool,
     /// Memory pool config
     pub memory_pool_config: MemoryPoolConfig,
+    /// Whether to log memory usage on each call to execute_plan
+    pub tracing_enabled: bool,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -151,89 +159,93 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     task_attempt_id: jlong,
     debug_native: jboolean,
     explain_native: jboolean,
+    tracing_enabled: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
-        // Init JVM classes
-        JVMClasses::init(&mut env);
+        with_trace("createPlan", tracing_enabled != JNI_FALSE, || {
+            // Init JVM classes
+            JVMClasses::init(&mut env);
 
-        let start = Instant::now();
+            let start = Instant::now();
 
-        let array = unsafe { JPrimitiveArray::from_raw(serialized_query) };
-        let bytes = env.convert_byte_array(array)?;
+            let array = unsafe { JPrimitiveArray::from_raw(serialized_query) };
+            let bytes = env.convert_byte_array(array)?;
 
-        // Deserialize query plan
-        let spark_plan = serde::deserialize_op(bytes.as_slice())?;
+            // Deserialize query plan
+            let spark_plan = serde::deserialize_op(bytes.as_slice())?;
 
-        let metrics = Arc::new(jni_new_global_ref!(env, metrics_node)?);
+            let metrics = Arc::new(jni_new_global_ref!(env, metrics_node)?);
 
-        // Get the global references of input sources
-        let mut input_sources = vec![];
-        let iter_array = JObjectArray::from_raw(iterators);
-        let num_inputs = env.get_array_length(&iter_array)?;
-        for i in 0..num_inputs {
-            let input_source = env.get_object_array_element(&iter_array, i)?;
-            let input_source = Arc::new(jni_new_global_ref!(env, input_source)?);
-            input_sources.push(input_source);
-        }
+            // Get the global references of input sources
+            let mut input_sources = vec![];
+            let iter_array = JObjectArray::from_raw(iterators);
+            let num_inputs = env.get_array_length(&iter_array)?;
+            for i in 0..num_inputs {
+                let input_source = env.get_object_array_element(&iter_array, i)?;
+                let input_source = Arc::new(jni_new_global_ref!(env, input_source)?);
+                input_sources.push(input_source);
+            }
 
-        // Create DataFusion memory pool
-        let task_memory_manager =
-            Arc::new(jni_new_global_ref!(env, comet_task_memory_manager_obj)?);
+            // Create DataFusion memory pool
+            let task_memory_manager =
+                Arc::new(jni_new_global_ref!(env, comet_task_memory_manager_obj)?);
 
-        let memory_pool_type = env.get_string(&JString::from_raw(memory_pool_type))?.into();
-        let memory_pool_config = parse_memory_pool_config(
-            off_heap_mode != JNI_FALSE,
-            memory_pool_type,
-            memory_limit,
-            memory_limit_per_task,
-        )?;
-        let memory_pool =
-            create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
+            let memory_pool_type = env.get_string(&JString::from_raw(memory_pool_type))?.into();
+            let memory_pool_config = parse_memory_pool_config(
+                off_heap_mode != JNI_FALSE,
+                memory_pool_type,
+                memory_limit,
+                memory_limit_per_task,
+            )?;
+            let memory_pool =
+                create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
 
-        // Get local directories for storing spill files
-        let local_dirs_array = JObjectArray::from_raw(local_dirs);
-        let num_local_dirs = env.get_array_length(&local_dirs_array)?;
-        let mut local_dirs = vec![];
-        for i in 0..num_local_dirs {
-            let local_dir: JString = env.get_object_array_element(&local_dirs_array, i)?.into();
-            let local_dir = env.get_string(&local_dir)?;
-            local_dirs.push(local_dir.into());
-        }
+            // Get local directories for storing spill files
+            let local_dirs_array = JObjectArray::from_raw(local_dirs);
+            let num_local_dirs = env.get_array_length(&local_dirs_array)?;
+            let mut local_dirs = vec![];
+            for i in 0..num_local_dirs {
+                let local_dir: JString = env.get_object_array_element(&local_dirs_array, i)?.into();
+                let local_dir = env.get_string(&local_dir)?;
+                local_dirs.push(local_dir.into());
+            }
 
-        // We need to keep the session context alive. Some session state like temporary
-        // dictionaries are stored in session context. If it is dropped, the temporary
-        // dictionaries will be dropped as well.
-        let session =
-            prepare_datafusion_session_context(batch_size as usize, memory_pool, local_dirs)?;
+            // We need to keep the session context alive. Some session state like temporary
+            // dictionaries are stored in session context. If it is dropped, the temporary
+            // dictionaries will be dropped as well.
+            let session =
+                prepare_datafusion_session_context(batch_size as usize, memory_pool, local_dirs)?;
 
-        let plan_creation_time = start.elapsed();
+            let plan_creation_time = start.elapsed();
 
-        let metrics_update_interval = if metrics_update_interval > 0 {
-            Some(Duration::from_millis(metrics_update_interval as u64))
-        } else {
-            None
-        };
+            let metrics_update_interval = if metrics_update_interval > 0 {
+                Some(Duration::from_millis(metrics_update_interval as u64))
+            } else {
+                None
+            };
 
-        let exec_context = Box::new(ExecutionContext {
-            id,
-            task_attempt_id,
-            spark_plan,
-            partition_count: partition_count as usize,
-            root_op: None,
-            scans: vec![],
-            input_sources,
-            stream: None,
-            metrics,
-            metrics_update_interval,
-            metrics_last_update_time: Instant::now(),
-            plan_creation_time,
-            session_ctx: Arc::new(session),
-            debug_native: debug_native == 1,
-            explain_native: explain_native == 1,
-            memory_pool_config,
-        });
+            let exec_context = Box::new(ExecutionContext {
+                id,
+                task_attempt_id,
+                spark_plan,
+                partition_count: partition_count as usize,
+                root_op: None,
+                scans: vec![],
+                input_sources,
+                stream: None,
+                metrics,
+                metrics_update_interval,
+                metrics_last_update_time: Instant::now(),
+                plan_creation_time,
+                session_ctx: Arc::new(session),
+                debug_native: debug_native == 1,
+                explain_native: explain_native == 1,
+                memory_pool_config,
+                tracing_enabled: tracing_enabled != JNI_FALSE,
+            });
 
-        Ok(Box::into_raw(exec_context) as i64)
+            Ok(Box::into_raw(exec_context) as i64)
+        })
     })
 }
 
@@ -359,99 +371,117 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         // Retrieve the query
         let exec_context = get_execution_context(exec_context);
 
-        let exec_context_id = exec_context.id;
+        let tracing_event_name = match &exec_context.spark_plan.op_struct {
+            Some(OpStruct::ShuffleWriter(_)) => "executePlan(ShuffleWriter)",
+            _ => "executePlan",
+        };
 
-        // Initialize the execution stream.
-        // Because we don't know if input arrays are dictionary-encoded when we create
-        // query plan, we need to defer stream initialization to first time execution.
-        if exec_context.root_op.is_none() {
-            let start = Instant::now();
-            let planner = PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx))
-                .with_exec_id(exec_context_id);
-            let (scans, root_op) = planner.create_plan(
-                &exec_context.spark_plan,
-                &mut exec_context.input_sources.clone(),
-                exec_context.partition_count,
-            )?;
-            let physical_plan_time = start.elapsed();
-
-            exec_context.plan_creation_time += physical_plan_time;
-            exec_context.root_op = Some(Arc::clone(&root_op));
-            exec_context.scans = scans;
-
-            if exec_context.explain_native {
-                let formatted_plan_str =
-                    DisplayableExecutionPlan::new(root_op.native_plan.as_ref()).indent(true);
-                info!("Comet native query plan:\n{formatted_plan_str:}");
+        if exec_context.tracing_enabled {
+            #[cfg(feature = "jemalloc")]
+            {
+                let e = epoch::mib().unwrap();
+                let allocated = stats::allocated::mib().unwrap();
+                e.advance().unwrap();
+                use crate::execution::tracing::log_memory_usage;
+                log_memory_usage("jemalloc_allocated", allocated.read().unwrap() as u64);
             }
-
-            let task_ctx = exec_context.session_ctx.task_ctx();
-            let stream = exec_context
-                .root_op
-                .as_ref()
-                .unwrap()
-                .native_plan
-                .execute(partition as usize, task_ctx)?;
-            exec_context.stream = Some(stream);
-        } else {
-            // Pull input batches
-            pull_input_batches(exec_context)?;
         }
 
-        loop {
-            // Polling the stream.
-            let next_item = exec_context.stream.as_mut().unwrap().next();
-            let poll_output = get_runtime().block_on(async { poll!(next_item) });
+        with_trace(tracing_event_name, exec_context.tracing_enabled, || {
+            let exec_context_id = exec_context.id;
 
-            // update metrics at interval
-            if let Some(interval) = exec_context.metrics_update_interval {
-                let now = Instant::now();
-                if now - exec_context.metrics_last_update_time >= interval {
-                    update_metrics(&mut env, exec_context)?;
-                    exec_context.metrics_last_update_time = now;
+            // Initialize the execution stream.
+            // Because we don't know if input arrays are dictionary-encoded when we create
+            // query plan, we need to defer stream initialization to first time execution.
+            if exec_context.root_op.is_none() {
+                let start = Instant::now();
+                let planner = PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx))
+                    .with_exec_id(exec_context_id);
+                let (scans, root_op) = planner.create_plan(
+                    &exec_context.spark_plan,
+                    &mut exec_context.input_sources.clone(),
+                    exec_context.partition_count,
+                )?;
+                let physical_plan_time = start.elapsed();
+
+                exec_context.plan_creation_time += physical_plan_time;
+                exec_context.root_op = Some(Arc::clone(&root_op));
+                exec_context.scans = scans;
+
+                if exec_context.explain_native {
+                    let formatted_plan_str =
+                        DisplayableExecutionPlan::new(root_op.native_plan.as_ref()).indent(true);
+                    info!("Comet native query plan:\n{formatted_plan_str:}");
                 }
+
+                let task_ctx = exec_context.session_ctx.task_ctx();
+                let stream = exec_context
+                    .root_op
+                    .as_ref()
+                    .unwrap()
+                    .native_plan
+                    .execute(partition as usize, task_ctx)?;
+                exec_context.stream = Some(stream);
+            } else {
+                // Pull input batches
+                pull_input_batches(exec_context)?;
             }
 
-            match poll_output {
-                Poll::Ready(Some(output)) => {
-                    // prepare output for FFI transfer
-                    return prepare_output(
-                        &mut env,
-                        array_addrs,
-                        schema_addrs,
-                        output?,
-                        exec_context.debug_native,
-                    );
-                }
-                Poll::Ready(None) => {
-                    // Reaches EOF of output.
-                    if exec_context.explain_native {
-                        if let Some(plan) = &exec_context.root_op {
-                            let formatted_plan_str =
-                                DisplayableExecutionPlan::with_metrics(plan.native_plan.as_ref())
-                                    .indent(true);
-                            info!(
-                                "Comet native query plan with metrics (Plan #{} Stage {} Partition {}):\
-                            \n plan creation (including CometScans fetching first batches) took {:?}:\
-                            \n{formatted_plan_str:}",
-                                plan.plan_id, stage_id, partition, exec_context.plan_creation_time
-                            );
-                        }
+            loop {
+                // Polling the stream.
+                let next_item = exec_context.stream.as_mut().unwrap().next();
+                let poll_output = get_runtime().block_on(async { poll!(next_item) });
+
+                // update metrics at interval
+                if let Some(interval) = exec_context.metrics_update_interval {
+                    let now = Instant::now();
+                    if now - exec_context.metrics_last_update_time >= interval {
+                        update_metrics(&mut env, exec_context)?;
+                        exec_context.metrics_last_update_time = now;
                     }
-
-                    return Ok(-1);
                 }
-                // A poll pending means there are more than one blocking operators,
-                // we don't need go back-forth between JVM/Native. Just keeping polling.
-                Poll::Pending => {
-                    // Pull input batches
-                    pull_input_batches(exec_context)?;
 
-                    // Output not ready yet
-                    continue;
+                match poll_output {
+                    Poll::Ready(Some(output)) => {
+                        // prepare output for FFI transfer
+                        return prepare_output(
+                            &mut env,
+                            array_addrs,
+                            schema_addrs,
+                            output?,
+                            exec_context.debug_native,
+                        );
+                    }
+                    Poll::Ready(None) => {
+                        // Reaches EOF of output.
+                        if exec_context.explain_native {
+                            if let Some(plan) = &exec_context.root_op {
+                                let formatted_plan_str = DisplayableExecutionPlan::with_metrics(
+                                    plan.native_plan.as_ref(),
+                                )
+                                .indent(true);
+                                info!(
+                                    "Comet native query plan with metrics (Plan #{} Stage {} Partition {}):\
+                                \n plan creation (including CometScans fetching first batches) took {:?}:\
+                                \n{formatted_plan_str:}",
+                                    plan.plan_id, stage_id, partition, exec_context.plan_creation_time
+                                );
+                            }
+                        }
+                        return Ok(-1);
+                    }
+                    // A poll pending means there are more than one blocking operators,
+                    // we don't need go back-forth between JVM/Native. Just keeping polling.
+                    Poll::Pending => {
+                        // Pull input batches
+                        pull_input_batches(exec_context)?;
+
+                        // Output not ready yet
+                        continue;
+                    }
                 }
             }
-        }
+        })
     })
 }
 
@@ -537,73 +567,79 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
     current_checksum: jlong,
     compression_codec: jstring,
     compression_level: jint,
-    enable_fast_encoding: jboolean,
+    tracing_enabled: jboolean,
 ) -> jlongArray {
     try_unwrap_or_throw(&e, |mut env| unsafe {
-        let data_types = convert_datatype_arrays(&mut env, serialized_datatypes)?;
+        with_trace(
+            "writeSortedFileNative",
+            tracing_enabled != JNI_FALSE,
+            || {
+                let data_types = convert_datatype_arrays(&mut env, serialized_datatypes)?;
 
-        let row_address_array = JLongArray::from_raw(row_addresses);
-        let row_num = env.get_array_length(&row_address_array)? as usize;
-        let row_addresses = env.get_array_elements(&row_address_array, ReleaseMode::NoCopyBack)?;
+                let row_address_array = JLongArray::from_raw(row_addresses);
+                let row_num = env.get_array_length(&row_address_array)? as usize;
+                let row_addresses =
+                    env.get_array_elements(&row_address_array, ReleaseMode::NoCopyBack)?;
 
-        let row_size_array = JIntArray::from_raw(row_sizes);
-        let row_sizes = env.get_array_elements(&row_size_array, ReleaseMode::NoCopyBack)?;
+                let row_size_array = JIntArray::from_raw(row_sizes);
+                let row_sizes = env.get_array_elements(&row_size_array, ReleaseMode::NoCopyBack)?;
 
-        let row_addresses_ptr = row_addresses.as_ptr();
-        let row_sizes_ptr = row_sizes.as_ptr();
+                let row_addresses_ptr = row_addresses.as_ptr();
+                let row_sizes_ptr = row_sizes.as_ptr();
 
-        let output_path: String = env
-            .get_string(&JString::from_raw(file_path))
-            .unwrap()
-            .into();
+                let output_path: String = env
+                    .get_string(&JString::from_raw(file_path))
+                    .unwrap()
+                    .into();
 
-        let checksum_enabled = checksum_enabled == 1;
-        let current_checksum = if current_checksum == i64::MIN {
-            // Initial checksum is not available.
-            None
-        } else {
-            Some(current_checksum as u32)
-        };
+                let checksum_enabled = checksum_enabled == 1;
+                let current_checksum = if current_checksum == i64::MIN {
+                    // Initial checksum is not available.
+                    None
+                } else {
+                    Some(current_checksum as u32)
+                };
 
-        let compression_codec: String = env
-            .get_string(&JString::from_raw(compression_codec))
-            .unwrap()
-            .into();
+                let compression_codec: String = env
+                    .get_string(&JString::from_raw(compression_codec))
+                    .unwrap()
+                    .into();
 
-        let compression_codec = match compression_codec.as_str() {
-            "zstd" => CompressionCodec::Zstd(compression_level),
-            "lz4" => CompressionCodec::Lz4Frame,
-            "snappy" => CompressionCodec::Snappy,
-            _ => CompressionCodec::Lz4Frame,
-        };
+                let compression_codec = match compression_codec.as_str() {
+                    "zstd" => CompressionCodec::Zstd(compression_level),
+                    "lz4" => CompressionCodec::Lz4Frame,
+                    "snappy" => CompressionCodec::Snappy,
+                    _ => CompressionCodec::Lz4Frame,
+                };
 
-        let (written_bytes, checksum) = process_sorted_row_partition(
-            row_num,
-            batch_size as usize,
-            row_addresses_ptr,
-            row_sizes_ptr,
-            &data_types,
-            output_path,
-            prefer_dictionary_ratio,
-            checksum_enabled,
-            checksum_algo,
-            current_checksum,
-            &compression_codec,
-            enable_fast_encoding != JNI_FALSE,
-        )?;
+                let (written_bytes, checksum) = process_sorted_row_partition(
+                    row_num,
+                    batch_size as usize,
+                    row_addresses_ptr,
+                    row_sizes_ptr,
+                    &data_types,
+                    output_path,
+                    prefer_dictionary_ratio,
+                    checksum_enabled,
+                    checksum_algo,
+                    current_checksum,
+                    &compression_codec,
+                )?;
 
-        let checksum = if let Some(checksum) = checksum {
-            checksum as i64
-        } else {
-            // Spark checksums (CRC32 or Adler32) are both u32, so we use i64::MIN to indicate
-            // checksum is not available.
-            i64::MIN
-        };
+                let checksum = if let Some(checksum) = checksum {
+                    checksum as i64
+                } else {
+                    // Spark checksums (CRC32 or Adler32) are both u32, so we use i64::MIN to indicate
+                    // checksum is not available.
+                    i64::MIN
+                };
 
-        let long_array = env.new_long_array(2)?;
-        env.set_long_array_region(&long_array, 0, &[written_bytes, checksum])?;
+                let long_array = env.new_long_array(2)?;
+                env.set_long_array_region(&long_array, 0, &[written_bytes, checksum])?;
 
-        Ok(long_array.into_raw())
+                Ok(long_array.into_raw())
+            },
+        )
     })
 }
 
@@ -614,13 +650,20 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
     _class: JClass,
     address: jlong,
     size: jlong,
+    tracing_enabled: jboolean,
 ) {
     try_unwrap_or_throw(&e, |_| {
-        // SAFETY: JVM unsafe memory allocation is aligned with long.
-        let array = unsafe { std::slice::from_raw_parts_mut(address as *mut i64, size as usize) };
-        array.rdxsort();
-
-        Ok(())
+        with_trace(
+            "sortRowPartitionsNative",
+            tracing_enabled != JNI_FALSE,
+            || {
+                // SAFETY: JVM unsafe memory allocation is aligned with long.
+                let array =
+                    unsafe { std::slice::from_raw_parts_mut(address as *mut i64, size as usize) };
+                array.rdxsort();
+                Ok(())
+            },
+        )
     })
 }
 
@@ -635,12 +678,61 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
     length: jint,
     array_addrs: jlongArray,
     schema_addrs: jlongArray,
+    tracing_enabled: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
-        let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
-        let length = length as usize;
-        let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
-        let batch = read_ipc_compressed(slice)?;
-        prepare_output(&mut env, array_addrs, schema_addrs, batch, false)
+        with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
+            let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
+            let length = length as usize;
+            let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
+            let batch = read_ipc_compressed(slice)?;
+            prepare_output(&mut env, array_addrs, schema_addrs, batch, false)
+        })
+    })
+}
+
+#[no_mangle]
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_traceBegin(
+    e: JNIEnv,
+    _class: JClass,
+    event: jstring,
+) {
+    try_unwrap_or_throw(&e, |mut env| {
+        let name: String = env.get_string(&JString::from_raw(event)).unwrap().into();
+        trace_begin(&name);
+        Ok(())
+    })
+}
+
+#[no_mangle]
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
+    e: JNIEnv,
+    _class: JClass,
+    event: jstring,
+) {
+    try_unwrap_or_throw(&e, |mut env| {
+        let name: String = env.get_string(&JString::from_raw(event)).unwrap().into();
+        trace_end(&name);
+        Ok(())
+    })
+}
+
+#[no_mangle]
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_logMemoryUsage(
+    e: JNIEnv,
+    _class: JClass,
+    name: jstring,
+    value: jlong,
+) {
+    try_unwrap_or_throw(&e, |mut env| {
+        let name: String = env.get_string(&JString::from_raw(name)).unwrap().into();
+        log_memory_usage(&name, value as u64);
+        Ok(())
     })
 }
