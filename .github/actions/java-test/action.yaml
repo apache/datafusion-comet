@@ -68,6 +68,7 @@ runs:
         echo "CWD: $(pwd)"
         ls -lah .
         ls -lah target
+        ls -lah spark/target
         find . -name 'unit-tests.log'
     - name: Upload unit-tests.log
       if: failure()

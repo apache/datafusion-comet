@@ -764,6 +764,7 @@ under the License.
           <artifactId>scalatest-maven-plugin</artifactId>
           <version>${scalatest-maven-plugin.version}</version>
           <configuration>
+            <argLine>-Xms2G -Xmx4G</argLine>
             <reportsDirectory>${project.build.directory}/surefire-reports</reportsDirectory>
             <junitxml>.</junitxml>
             <filereports>SparkTestSuite.txt</filereports>
