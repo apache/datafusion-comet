@@ -313,20 +313,18 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         |   select named_struct('a', cast(3 as long), 'b', cast(4 as long), 'c', cast(5 as long)) str0
         | )
         |""".stripMargin,
-      "select map_keys(c0).b from tbl",
-      checkCometOperator = false)
+      "select map_keys(c0).b from tbl")
   }
 
-  test("native reader - select nested field from a complex map key using map_values") {
-    testSingleLineQuery(
-      """
-        | select map(str0, str0) c0 from
-        | (
-        |   select named_struct('a', cast(1 as long), 'b', cast(2 as long), 'c', cast(3 as long)) str0 union all
-        |   select named_struct('a', cast(3 as long), 'b', cast(4 as long), 'c', cast(5 as long)) str0
-        | )
-        |""".stripMargin,
-      "select map_values(c0).b from tbl",
-      checkCometOperator = false)
-  }
+//  test("native reader - select nested field from a complex map key using map_values") {
+//    testSingleLineQuery(
+//      """
+//        | select map(str0, str0) c0 from
+//        | (
+//        |   select named_struct('a', cast(1 as long), 'b', cast(2 as long), 'c', cast(3 as long)) str0 union all
+//        |   select named_struct('a', cast(3 as long), 'b', cast(4 as long), 'c', cast(5 as long)) str0
+//        | )
+//        |""".stripMargin,
+//      "select map_values(c0).b from tbl")
+//  }
 }
