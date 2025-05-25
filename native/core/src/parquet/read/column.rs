@@ -154,12 +154,26 @@ impl ColumnReader {
                                         )
                                     }
                                 }
+                                // promote byte to short
+                                PhysicalType::INT32 if promotion_info.bit_width == 16 => {
+                                    typed_reader!(Int16ColumnReader, Int16)
+                                }
+                                // promote byte to int
+                                PhysicalType::INT32 if promotion_info.bit_width == 32 => {
+                                    typed_reader!(Int32ColumnReader, Int32)
+                                }
+                                // promote byte to long
+                                PhysicalType::INT64 => typed_reader!(Int32To64ColumnReader, Int64),
                                 _ => typed_reader!(Int8ColumnReader, Int8),
                             },
                             (8, false) => typed_reader!(UInt8ColumnReader, Int16),
                             (16, true) => match promotion_info.physical_type {
                                 PhysicalType::DOUBLE => {
                                     typed_reader!(Int16ToDoubleColumnReader, Float64)
+                                }
+                                // promote short to long
+                                PhysicalType::INT64 => {
+                                    typed_reader!(Int32To64ColumnReader, Int64)
                                 }
                                 PhysicalType::INT32 if promotion_info.bit_width == 32 => {
                                     typed_reader!(Int32ColumnReader, Int32)
