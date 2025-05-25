@@ -61,14 +61,12 @@ runs:
       with:
         name: crash-logs-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
         path: "**/hs_err_pid*.log"
-    - name: Debug listing
+    - name: Upload heap dumps
       if: failure()
-      shell: bash
-      run: |  
-        echo "CWD: $(pwd)"
-        ls -lah .
-        ls -lah target
-        find . -name 'unit-tests.log'
+      uses: actions/upload-artifact@v4
+      with:
+        name: heap-dumps-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+        path: "**/*.hprof"
     - name: Upload unit-tests.log
       if: failure()
       uses: actions/upload-artifact@v4
