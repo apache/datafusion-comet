@@ -151,8 +151,6 @@ jobs:
 #
   linux-test-with-spark4_0:
     runs-on: ubuntu-latest
-    container:
-      image: amd64/rust
     steps:
       - uses: actions/checkout@v4
 
