@@ -1975,9 +1975,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case mk: MapKeys =>
         val childExpr = exprToProtoInternal(mk.child, inputs, binding)
         scalarFunctionExprToProto("map_keys", childExpr)
-      case mv: MapValues =>
-        val childExpr = exprToProtoInternal(mv.child, inputs, binding)
-        scalarFunctionExprToProto("map_values", childExpr)
+//      case mv: MapValues =>
+//        val childExpr = exprToProtoInternal(mv.child, inputs, binding)
+//        scalarFunctionExprToProto("map_values", childExpr)
       case _ =>
         withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
         None
