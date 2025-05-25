@@ -166,7 +166,7 @@ jobs:
           tags: comet-build:latest
 
       - name: Java test steps
-        run: docker run comet-build:latest make test PROFILES="-Pspark-4.0"
+        run: docker run comet-build:latest make test PROFILES="-Pspark-4.0 --batch-mode"
 
 #
 #  linux-test-with-old-spark:
