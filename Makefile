@@ -30,13 +30,13 @@ core:
 	cd native && cargo build
 test-rust:
 	# We need to compile CometException so that the cargo test can pass
-	./mvnw compile -pl common -DskipTests $(PROFILES)
+	./mvnw compile -pl common -DskipTests $(PROFILES) -Dmaven.gitcommitid.skip=true
 	cd native && cargo build && \
 	RUST_BACKTRACE=1 cargo test
 jvm:
 	./mvnw clean package -DskipTests $(PROFILES)
 test-jvm: core
-	SPARK_HOME=`pwd` COMET_CONF_DIR=$(shell pwd)/conf RUST_BACKTRACE=1 ./mvnw verify $(PROFILES)
+	SPARK_HOME=`pwd` COMET_CONF_DIR=$(shell pwd)/conf RUST_BACKTRACE=1 ./mvnw verify $(PROFILES) -Dmaven.gitcommitid.skip=true
 test: test-rust test-jvm
 clean:
 	cd native && cargo clean
