@@ -1427,11 +1427,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val optExpr = scalarFunctionExprToProto("tan", childExpr)
         optExprWithInfo(optExpr, expr, child)
 
-      case Ascii(child) =>
-        val castExpr = Cast(child, StringType)
-        val childExpr = exprToProtoInternal(castExpr, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("ascii", childExpr)
-        optExprWithInfo(optExpr, expr, castExpr)
+      case _: Ascii =>
+        CometAscii.convert(expr, inputs, binding)
 
       case Expm1(child) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
@@ -1487,11 +1484,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
             None
         }
 
-      case BitLength(child) =>
-        val castExpr = Cast(child, StringType)
-        val childExpr = exprToProtoInternal(castExpr, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("bit_length", childExpr)
-        optExprWithInfo(optExpr, expr, castExpr)
+      case _: BitLength =>
+        CometBitLength.convert(expr, inputs, binding)
 
       case If(predicate, trueValue, falseValue) =>
         val predicateExpr = exprToProtoInternal(predicate, inputs, binding)
@@ -1546,41 +1540,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(expr, allBranches: _*)
           None
         }
-      case ConcatWs(children) =>
-        var childExprs: Seq[Expression] = Seq()
-        val exprs = children.map(e => {
-          val castExpr = Cast(e, StringType)
-          childExprs = childExprs :+ castExpr
-          exprToProtoInternal(castExpr, inputs, binding)
-        })
-        val optExpr = scalarFunctionExprToProto("concat_ws", exprs: _*)
-        optExprWithInfo(optExpr, expr, childExprs: _*)
+      case _: ConcatWs =>
+        CometConcatWs.convert(expr, inputs, binding)
 
-      case Chr(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("chr", childExpr)
-        optExprWithInfo(optExpr, expr, child)
+      case _: Chr =>
+        CometChr.convert(expr, inputs, binding)
 
-      case InitCap(child) =>
-        if (CometConf.COMET_EXEC_INITCAP_ENABLED.get()) {
-          val castExpr = Cast(child, StringType)
-          val childExpr = exprToProtoInternal(castExpr, inputs, binding)
-          val optExpr = scalarFunctionExprToProto("initcap", childExpr)
-          optExprWithInfo(optExpr, expr, castExpr)
-        } else {
-          withInfo(
-            expr,
-            "Comet initCap is not compatible with Spark yet. " +
-              "See https://github.com/apache/datafusion-comet/issues/1052 ." +
-              s"Set ${CometConf.COMET_EXEC_INITCAP_ENABLED.key}=true to enable it anyway.")
-          None
-        }
+      case _: InitCap =>
+        CometInitCap.convert(expr, inputs, binding)
 
-      case Length(child) =>
-        val castExpr = Cast(child, StringType)
-        val childExpr = exprToProtoInternal(castExpr, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("length", childExpr)
-        optExprWithInfo(optExpr, expr, castExpr)
+      case _: Length =>
+        CometLength.convert(expr, inputs, binding)
 
       case Md5(child) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
@@ -1599,83 +1569,35 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val optExpr = scalarFunctionExprToProto("reverse", childExpr)
         optExprWithInfo(optExpr, expr, castExpr)
 
-      case StringInstr(str, substr) =>
-        val leftCast = Cast(str, StringType)
-        val rightCast = Cast(substr, StringType)
-        val leftExpr = exprToProtoInternal(leftCast, inputs, binding)
-        val rightExpr = exprToProtoInternal(rightCast, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("strpos", leftExpr, rightExpr)
-        optExprWithInfo(optExpr, expr, leftCast, rightCast)
+      case _: StringInstr =>
+        CometStringInstr.convert(expr, inputs, binding)
 
-      case StringRepeat(str, times) =>
-        val leftCast = Cast(str, StringType)
-        val rightCast = Cast(times, LongType)
-        val leftExpr = exprToProtoInternal(leftCast, inputs, binding)
-        val rightExpr = exprToProtoInternal(rightCast, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("repeat", leftExpr, rightExpr)
-        optExprWithInfo(optExpr, expr, leftCast, rightCast)
+      case _: StringRepeat =>
+        CometStringRepeat.convert(expr, inputs, binding)
 
-      case StringReplace(src, search, replace) =>
-        val srcCast = Cast(src, StringType)
-        val searchCast = Cast(search, StringType)
-        val replaceCast = Cast(replace, StringType)
-        val srcExpr = exprToProtoInternal(srcCast, inputs, binding)
-        val searchExpr = exprToProtoInternal(searchCast, inputs, binding)
-        val replaceExpr = exprToProtoInternal(replaceCast, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("replace", srcExpr, searchExpr, replaceExpr)
-        optExprWithInfo(optExpr, expr, srcCast, searchCast, replaceCast)
+      case _: StringReplace =>
+        CometStringReplace.convert(expr, inputs, binding)
 
-      case StringTranslate(src, matching, replace) =>
-        val srcCast = Cast(src, StringType)
-        val matchingCast = Cast(matching, StringType)
-        val replaceCast = Cast(replace, StringType)
-        val srcExpr = exprToProtoInternal(srcCast, inputs, binding)
-        val matchingExpr = exprToProtoInternal(matchingCast, inputs, binding)
-        val replaceExpr = exprToProtoInternal(replaceCast, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("translate", srcExpr, matchingExpr, replaceExpr)
-        optExprWithInfo(optExpr, expr, srcCast, matchingCast, replaceCast)
+      case _: StringTranslate =>
+        CometStringTranslate.convert(expr, inputs, binding)
 
-      case StringTrim(srcStr, trimStr) =>
-        trim(expr, srcStr, trimStr, inputs, binding, "trim")
+      case _: StringTrim =>
+        CometTrim.convert(expr, inputs, binding)
 
-      case StringTrimLeft(srcStr, trimStr) =>
-        trim(expr, srcStr, trimStr, inputs, binding, "ltrim")
+      case _: StringTrimLeft =>
+        CometStringTrimLeft.convert(expr, inputs, binding)
 
-      case StringTrimRight(srcStr, trimStr) =>
-        trim(expr, srcStr, trimStr, inputs, binding, "rtrim")
+      case _: StringTrimRight =>
+        CometStringTrimRight.convert(expr, inputs, binding)
 
-      case StringTrimBoth(srcStr, trimStr, _) =>
-        trim(expr, srcStr, trimStr, inputs, binding, "btrim")
+      case _: StringTrimBoth =>
+        CometStringTrimBoth.convert(expr, inputs, binding)
 
-      case Upper(child) =>
-        if (CometConf.COMET_CASE_CONVERSION_ENABLED.get()) {
-          val castExpr = Cast(child, StringType)
-          val childExpr = exprToProtoInternal(castExpr, inputs, binding)
-          val optExpr = scalarFunctionExprToProto("upper", childExpr)
-          optExprWithInfo(optExpr, expr, castExpr)
-        } else {
-          withInfo(
-            expr,
-            "Comet is not compatible with Spark for case conversion in " +
-              s"locale-specific cases. Set ${CometConf.COMET_CASE_CONVERSION_ENABLED.key}=true " +
-              "to enable it anyway.")
-          None
-        }
+      case _: Upper =>
+        CometUpper.convert(expr, inputs, binding)
 
-      case Lower(child) =>
-        if (CometConf.COMET_CASE_CONVERSION_ENABLED.get()) {
-          val castExpr = Cast(child, StringType)
-          val childExpr = exprToProtoInternal(castExpr, inputs, binding)
-          val optExpr = scalarFunctionExprToProto("lower", childExpr)
-          optExprWithInfo(optExpr, expr, castExpr)
-        } else {
-          withInfo(
-            expr,
-            "Comet is not compatible with Spark for case conversion in " +
-              s"locale-specific cases. Set ${CometConf.COMET_CASE_CONVERSION_ENABLED.key}=true " +
-              "to enable it anyway.")
-          None
-        }
+      case _: Lower =>
+        CometLower.convert(expr, inputs, binding)
 
       case BitwiseAnd(left, right) =>
         createBinaryExpr(
@@ -2155,26 +2077,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     } else {
       withInfo(expr, left, right)
       None
-    }
-  }
-
-  def trim(
-      expr: Expression, // parent expression
-      srcStr: Expression,
-      trimStr: Option[Expression],
-      inputs: Seq[Attribute],
-      binding: Boolean,
-      trimType: String): Option[Expr] = {
-    val srcCast = Cast(srcStr, StringType)
-    val srcExpr = exprToProtoInternal(srcCast, inputs, binding)
-    if (trimStr.isDefined) {
-      val trimCast = Cast(trimStr.get, StringType)
-      val trimExpr = exprToProtoInternal(trimCast, inputs, binding)
-      val optExpr = scalarFunctionExprToProto(trimType, srcExpr, trimExpr)
-      optExprWithInfo(optExpr, expr, srcCast, trimCast)
-    } else {
-      val optExpr = scalarFunctionExprToProto(trimType, srcExpr)
-      optExprWithInfo(optExpr, expr, srcCast)
     }
   }
 
