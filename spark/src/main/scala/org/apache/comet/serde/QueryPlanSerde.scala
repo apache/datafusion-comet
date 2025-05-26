@@ -1433,11 +1433,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val optExpr = scalarFunctionExprToProto("ascii", childExpr)
         optExprWithInfo(optExpr, expr, castExpr)
 
-      case Expm1(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("expm1", childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
       case s: StringDecode =>
         // Right child is the encoding expression.
         s.right match {

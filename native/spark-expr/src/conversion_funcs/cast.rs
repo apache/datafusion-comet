@@ -2107,6 +2107,7 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
         date_segments[2] as u32,
     ) {
         Some(date) => {
+            #[allow(deprecated)]
             let duration_since_epoch = date
                 .signed_duration_since(NaiveDateTime::UNIX_EPOCH.date())
                 .num_days();
