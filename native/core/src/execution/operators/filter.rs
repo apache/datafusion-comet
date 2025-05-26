@@ -166,7 +166,7 @@ impl FilterExec {
         predicate: &Arc<dyn PhysicalExpr>,
         default_selectivity: u8,
     ) -> Result<Statistics> {
-        let input_stats = input.partition_statistics(None)?;
+        let input_stats = input.statistics()?;
         let schema = input.schema();
         if !check_support(predicate, &schema) {
             let selectivity = default_selectivity as f64 / 100.0;

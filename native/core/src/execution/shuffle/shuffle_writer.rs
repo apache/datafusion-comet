@@ -141,7 +141,7 @@ impl ExecutionPlan for ShuffleWriterExec {
     }
 
     fn statistics(&self) -> Result<Statistics> {
-        self.input.partition_statistics(None)
+        self.input.statistics()
     }
 
     fn properties(&self) -> &PlanProperties {

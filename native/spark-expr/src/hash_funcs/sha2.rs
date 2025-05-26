@@ -17,7 +17,7 @@
 
 use crate::math_funcs::hex::hex_strings;
 use arrow::array::{Array, StringArray};
-use arrow::datatypes::{DataType, Field};
+use arrow::datatypes::DataType;
 use datafusion::common::cast::as_binary_array;
 use datafusion::common::{exec_err, DataFusionError, ScalarValue};
 use datafusion::functions::crypto::{sha224, sha256, sha384, sha512};
@@ -55,12 +55,10 @@ fn wrap_digest_result_as_hex_string(
         ColumnarValue::Array(array) => array.len(),
         ColumnarValue::Scalar(_) => 1,
     };
-    let return_field = Field::new("foo", DataType::Utf8, false);
     let value = digest.invoke_with_args(ScalarFunctionArgs {
         args: args.into(),
-        arg_fields: vec![],
         number_rows: row_count,
-        return_field: &return_field,
+        return_type: &DataType::Utf8,
     })?;
     match value {
         ColumnarValue::Array(array) => {

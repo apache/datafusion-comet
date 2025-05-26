@@ -893,7 +893,7 @@ impl PhysicalPlanner {
                     func_name,
                     fun_expr,
                     vec![left, right],
-                    Field::new(func_name, data_type, true),
+                    data_type,
                 )))
             }
             _ => Ok(Arc::new(BinaryExpr::new(left, op, right))),
@@ -2235,12 +2235,6 @@ impl PhysicalPlanner {
                         .coerce_types(&input_expr_types)
                         .unwrap_or_else(|_| input_expr_types.clone());
 
-                    let arg_fields = coerced_types
-                        .iter()
-                        .enumerate()
-                        .map(|(i, dt)| Field::new(format!("arg{i}"), dt.clone(), true))
-                        .collect::<Vec<_>>();
-
                     // TODO this should try and find scalar
                     let arguments = args
                         .iter()
@@ -2252,16 +2246,18 @@ impl PhysicalPlanner {
                         })
                         .collect::<Vec<_>>();
 
-                    let args = ReturnFieldArgs {
-                        arg_fields: &arg_fields,
+                    let nullables = arguments.iter().map(|_| true).collect::<Vec<_>>();
+
+                    let args = ReturnTypeArgs {
+                        arg_types: &coerced_types,
                         scalar_arguments: &arguments,
+                        nullables: &nullables,
                     };
 
                     let data_type = func
                         .inner()
-                        .return_field_from_args(args)?
-                        .clone()
-                        .data_type()
+                        .return_type_from_args(args)?
+                        .return_type()
                         .clone();
 
                     (data_type, coerced_types)
@@ -2294,7 +2290,7 @@ impl PhysicalPlanner {
             fun_name,
             fun_expr,
             args.to_vec(),
-            Field::new(fun_name, data_type, true),
+            data_type,
         ));
 
         Ok(scalar_expr)
