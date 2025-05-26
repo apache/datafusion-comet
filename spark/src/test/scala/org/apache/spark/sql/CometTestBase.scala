@@ -19,14 +19,18 @@
 
 package org.apache.spark.sql
 
+import java.lang.management.ManagementFactory
 import java.nio.file.{Files, Paths}
 import java.util.concurrent.atomic.AtomicInteger
+
 import scala.concurrent.duration._
 import scala.jdk.CollectionConverters._
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 import scala.util.Try
+
 import org.scalatest.BeforeAndAfterEach
+
 import org.apache.commons.lang3.StringUtils
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.column.ParquetProperties
@@ -44,10 +48,9 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal._
 import org.apache.spark.sql.test._
 import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, MapType, StructType}
+
 import org.apache.comet._
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
-
-import java.lang.management.ManagementFactory
 
 /**
  * Base class for testing. This exists in `org.apache.spark.sql` since [[SQLTestUtils]] is
@@ -330,12 +333,13 @@ abstract class CometTestBase
     val heap = memoryBean.getHeapMemoryUsage
 
     val usedMB = heap.getUsed / (1024 * 1024)
-    val maxMB  = heap.getMax  / (1024 * 1024)
+    val maxMB = heap.getMax / (1024 * 1024)
 
     // scalastyle:off println
-    System.err.println(s"Heap used: $usedMB MB. " +
-      s"Heap max:  $maxMB MB. " +
-      s"Tokio threads in use: $count")
+    System.err.println(
+      s"Heap used: $usedMB MB. " +
+        s"Heap max:  $maxMB MB. " +
+        s"Tokio threads in use: $count")
 
   }
 
