@@ -57,6 +57,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("parquet default values") {
+    withTable("t1") {
+      sql("create table t1(col1 boolean) using parquet")
+      sql("insert into t1 values(true)")
+      sql("alter table t1 add column col2 string default 'hello'")
+      checkSparkAnswerAndOperator("select * from t1")
+    }
+  }
+
   test("coalesce should return correct datatype") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
@@ -1143,6 +1152,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkSparkAnswerWithTol("SELECT tan(_1) FROM tbl")
         }
       }
+    }
+  }
+
+  test("expm1") {
+    val testValues = Seq(
+      -1,
+      0,
+      +1,
+      Double.MinValue,
+      Double.MaxValue,
+      Double.NaN,
+      Double.MinPositiveValue,
+      Double.PositiveInfinity,
+      Double.NegativeInfinity)
+    val testValuesRepeated = testValues.flatMap(v => Seq.fill(1000)(v))
+    withParquetTable(testValuesRepeated.map(n => (n, n)), "tbl") {
+      checkSparkAnswerWithTol("SELECT expm1(_1) FROM tbl")
     }
   }
 
@@ -2540,7 +2566,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   // repro for https://github.com/apache/datafusion-comet/issues/1754
-  ignore("read map[struct, struct] from parquet") {
+  test("read map[struct, struct] from parquet") {
     assume(usingDataSourceExec(conf))
 
     withTempPath { dir =>

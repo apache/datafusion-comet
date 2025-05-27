@@ -1233,7 +1233,8 @@ abstract class ParquetReadSuite extends CometTestBase {
 
             withParquetDataFrame(data, schema = Some(readSchema)) { df =>
               // TODO: validate with Spark 3.x and 'usingDataFusionParquetExec=true'
-              if (enableSchemaEvolution || usingDataSourceExec(conf)) {
+              if (enableSchemaEvolution || CometConf.COMET_NATIVE_SCAN_IMPL
+                  .get(conf) == CometConf.SCAN_NATIVE_DATAFUSION) {
                 checkAnswer(df, data.map(Row.fromTuple))
               } else {
                 assertThrows[SparkException](df.collect())

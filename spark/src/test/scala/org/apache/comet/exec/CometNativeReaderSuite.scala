@@ -44,6 +44,20 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       })
   }
 
+  test("native reader case sensitivity") {
+    withTempPath { path =>
+      spark.range(10).toDF("a").write.parquet(path.toString)
+      Seq(true, false).foreach { caseSensitive =>
+        withSQLConf(SQLConf.CASE_SENSITIVE.key -> caseSensitive.toString) {
+          val tbl = s"case_sensitivity_${caseSensitive}_${System.currentTimeMillis()}"
+          sql(s"create table $tbl (A long) using parquet options (path '" + path + "')")
+          val df = sql(s"select A from $tbl")
+          checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+
   test("native reader - read simple STRUCT fields") {
     testSingleLineQuery(
       """

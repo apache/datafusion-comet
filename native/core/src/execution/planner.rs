@@ -78,7 +78,7 @@ use datafusion::common::{
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{
-    AggregateUDF, ReturnFieldArgs, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    AggregateUDF, ReturnFieldArgs, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
     WindowFunctionDefinition,
 };
 use datafusion::physical_expr::expressions::{Literal, StatsType};
@@ -108,6 +108,7 @@ use datafusion_comet_spark_expr::{
     SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
     TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
+use datafusion_spark::function::math::expm1::SparkExpm1;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
@@ -146,6 +147,10 @@ pub struct PhysicalPlanner {
 impl Default for PhysicalPlanner {
     fn default() -> Self {
         let session_ctx = Arc::new(SessionContext::new());
+
+        // register UDFs from datafusion-spark crate
+        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
+
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,
@@ -155,6 +160,8 @@ impl Default for PhysicalPlanner {
 
 impl PhysicalPlanner {
     pub fn new(session_ctx: Arc<SessionContext>) -> Self {
+        // register UDFs from datafusion-spark crate
+        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,
@@ -1108,6 +1115,42 @@ impl PhysicalPlanner {
                     .map(|expr| self.create_expr(expr, Arc::clone(&required_schema)))
                     .collect();
 
+                let default_values: Option<HashMap<usize, ScalarValue>> = if !scan
+                    .default_values
+                    .is_empty()
+                {
+                    // We have default values. Extract the two lists (same length) of values and
+                    // indexes in the schema, and then create a HashMap to use in the SchemaMapper.
+                    let default_values: Result<Vec<ScalarValue>, DataFusionError> = scan
+                        .default_values
+                        .iter()
+                        .map(|expr| {
+                            let literal = self.create_expr(expr, Arc::clone(&required_schema))?;
+                            let df_literal = literal
+                                .as_any()
+                                .downcast_ref::<DataFusionLiteral>()
+                                .ok_or_else(|| {
+                                GeneralError("Expected literal of default value.".to_string())
+                            })?;
+                            Ok(df_literal.value().clone())
+                        })
+                        .collect();
+                    let default_values = default_values?;
+                    let default_values_indexes: Vec<usize> = scan
+                        .default_values_indexes
+                        .iter()
+                        .map(|offset| *offset as usize)
+                        .collect();
+                    Some(
+                        default_values_indexes
+                            .into_iter()
+                            .zip(default_values)
+                            .collect(),
+                    )
+                } else {
+                    None
+                };
+
                 // Get one file from the list of files
                 let one_file = scan
                     .file_partitions
@@ -1145,7 +1188,9 @@ impl PhysicalPlanner {
                     file_groups,
                     Some(projection_vector),
                     Some(data_filters?),
+                    default_values,
                     scan.session_timezone.as_str(),
+                    scan.case_sensitive,
                 )?;
                 Ok((
                     vec![],
@@ -3157,7 +3202,10 @@ mod tests {
 
         let source = Arc::new(
             ParquetSource::default().with_schema_adapter_factory(Arc::new(
-                SparkSchemaAdapterFactory::new(SparkParquetOptions::new(EvalMode::Ansi, "", false)),
+                SparkSchemaAdapterFactory::new(
+                    SparkParquetOptions::new(EvalMode::Ansi, "", false),
+                    None,
+                ),
             )),
         );
 
