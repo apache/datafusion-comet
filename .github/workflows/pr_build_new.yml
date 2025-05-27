@@ -88,7 +88,7 @@ jobs:
               org.apache.spark.sql.CometTPCHQuerySuite
               org.apache.spark.sql.comet.CometPlanStabilitySuite
               org.apache.spark.sql.comet.CometTaskMetricsSuite
-    fail-fast: false
+      fail-fast: false
     name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}/${{ matrix.test-target }} [${{ matrix.suites.name }}]
     runs-on: ${{ matrix.os }}
     container:
