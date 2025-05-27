@@ -18,6 +18,9 @@
 name: "Java Test"
 description: "Run Java tests"
 inputs:
+  suites:
+    description: 'suites'
+    default: ''
   maven_opts:
     description: 'Maven options passed to the mvn command'
     required: false
