@@ -120,7 +120,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
         }
 
         val possibleDefaultValues = getExistenceDefaultValues(scanExec.requiredSchema)
-        if (possibleDefaultValues.exists(_ != null && !isInstanceOf[Literal])) {
+        if (possibleDefaultValues.exists(d != null && !d.isInstanceOf[Literal])) {
           // Our schema has default values that are not just literals. They could be
           // ArrayBasedMapData, GenericInternalRow, or GenericArrayData for maps, structs,
           // or arrays, respectively. We don't have a way to serialize these to the native side
