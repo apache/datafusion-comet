@@ -32,7 +32,6 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.TestSparkSession
 
 import org.apache.comet.CometConf
-import org.apache.comet.shims.ShimCometTPCHQuerySuite
 
 /**
  * End-to-end tests to check TPCH query results.
@@ -49,7 +48,7 @@ import org.apache.comet.shims.ShimCometTPCHQuerySuite
  *     ./mvnw -Dsuites=org.apache.spark.sql.CometTPCHQuerySuite test
  * }}}
  */
-class CometTPCHQuerySuite extends QueryTest with TPCBase with ShimCometTPCHQuerySuite {
+class CometTPCHQuerySuite extends QueryTest with TPCBase with SQLQueryTestHelper {
 
   private val tpchDataPath = sys.env.get("SPARK_TPCH_DATA")
 
