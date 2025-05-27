@@ -32,7 +32,7 @@ Java and Rust must be installed locally.
 ## Data Generation
 
 ```shell
-cargo install tpchgen-rs
+cargo install tpchgen-cli
 tpchgen-cli -s 100 --format=parquet
 ```
 
