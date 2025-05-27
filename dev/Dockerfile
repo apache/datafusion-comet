@@ -67,6 +67,9 @@ COPY ./mvnw /comet
 COPY ./scalafmt.conf /comet
 COPY ./.scalafix.conf /comet
 
+# run make to download and cache dependencies and build Rust code
+RUN make
+
 # Shallow clone of Apache Spark and apply diffs
 #RUN git clone -b 'v3.5.5' --single-branch --depth 1 https://github.com/apache/spark.git apache-spark \
 #    && cd apache-spark \
