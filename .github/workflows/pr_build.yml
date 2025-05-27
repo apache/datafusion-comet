@@ -156,14 +156,15 @@ jobs:
         java_version: [17]
         test-target: [java]
         spark-version: ['4.0']
-        suites: ['org.apache.comet.CometFuzzTestSuite',
-                 'org.apache.comet.exec.CometShuffleSuite,org.apache.comet.exec.CometAsyncShuffleSuite,org.apache.comet.exec.DisableAQECometShuffleSuite,org.apache.comet.exec.DisableAQECometAsyncShuffleSuite',
-                 'org.apache.comet.parquet.ParquetReadV1Suite,org.apache.comet.parquet.ParquetReadV2Suite',
-                 'org.apache.comet.exec.CometExecSuite,org.apache.comet.CometExpressionSuite']
+        suites:
+          - { name: "fuzz", value: "org.apache.comet.CometFuzzTestSuite" }
+          - { name: "shuffle", value: "org.apache.comet.exec.CometShuffleSuite,org.apache.comet.exec.CometAsyncShuffleSuite,org.apache.comet.exec.DisableAQECometShuffleSuite,org.apache.comet.exec.DisableAQECometAsyncShuffleSuite" }
+          - { name: "parquet", value: "org.apache.comet.parquet.ParquetReadV1Suite,org.apache.comet.parquet.ParquetReadV2Suite" }
+          - { name: "exec", value: "org.apache.comet.exec.CometExecSuite,org.apache.comet.CometExpressionSuite" }
         is_push_event:
           - ${{ github.event_name == 'push' }}
       fail-fast: false
-    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}/${{ matrix.test-target }}
+    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}/${{ matrix.test-target }} [${{ matrix.suites.name }}]
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -177,7 +178,7 @@ jobs:
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          maven_opts: "-Pspark-${{ matrix.spark-version }} -DwildcardSuites=${{ matrix.suites }}"
+          maven_opts: "-Pspark-${{ matrix.spark-version }} -DwildcardSuites=${{ matrix.suites.value }}"
           upload-test-reports: true
 
 #  linux-test-with-old-spark:
