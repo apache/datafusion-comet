@@ -2406,19 +2406,19 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
           // TODO this could be optimized more to stop walking the tree on hitting
           //  certain operators such as join or aggregate which will copy batches
-          def containsNativeCometScan(plan: SparkPlan): Boolean = {
+          def containsNonDataFusionScan(plan: SparkPlan): Boolean = {
             plan match {
-              case w: CometScanWrapper => containsNativeCometScan(w.originalPlan)
-              case scan: CometScanExec => scan.scanImpl == CometConf.SCAN_NATIVE_COMET
+              case _: CometScanWrapper => true
+              case scan: CometScanExec => scan.scanImpl != CometConf.SCAN_NATIVE_DATAFUSION
               case _: CometNativeScanExec => false
-              case _ => plan.children.exists(containsNativeCometScan)
+              case _ => plan.children.isEmpty || plan.children.exists(containsNonDataFusionScan)
             }
           }
 
           val filterBuilder = OperatorOuterClass.Filter
             .newBuilder()
             .setPredicate(cond.get)
-            .setUseDatafusionFilter(!containsNativeCometScan(op))
+            .setUseDatafusionFilter(!containsNonDataFusionScan(op))
           Some(result.setFilter(filterBuilder).build())
         } else {
           withInfo(op, condition, child)
