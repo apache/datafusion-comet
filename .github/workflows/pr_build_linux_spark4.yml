@@ -1,0 +1,72 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: PR Build (Linux + Spark 4)
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+
+# temporarily disabled on PRs due to https://github.com/apache/datafusion-comet/issues/1786
+#  push:
+#    paths-ignore:
+#      - "doc/**"
+#      - "docs/**"
+#      - "**.md"
+#  pull_request:
+#    paths-ignore:
+#      - "doc/**"
+#      - "docs/**"
+#      - "**.md"
+  # manual trigger
+  # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
+  workflow_dispatch:
+
+env:
+  RUST_VERSION: stable
+
+jobs:
+
+  linux-test-with-spark4_0:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        java_version: [17]
+        test-target: [java]
+        spark-version: ['4.0']
+        is_push_event:
+          - ${{ github.event_name == 'push' }}
+      fail-fast: false
+    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}/${{ matrix.test-target }}
+    runs-on: ${{ matrix.os }}
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{env.RUST_VERSION}}
+          jdk-version: ${{ matrix.java_version }}
+      - name: Java test steps
+        uses: ./.github/actions/java-test
+        with:
+          maven_opts: -Pspark-${{ matrix.spark-version }}
+          upload-test-reports: true
+
