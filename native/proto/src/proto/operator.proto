@@ -93,6 +93,7 @@ message NativeScan {
   string session_timezone = 9;
   repeated spark.spark_expression.Expr default_values = 10;
   repeated int64 default_values_indexes = 11;
+  bool case_sensitive = 12;
 }
 
 message Projection {
