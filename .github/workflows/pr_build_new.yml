@@ -48,47 +48,46 @@ jobs:
         java_version: [17]
         test-target: [java]
         spark-version: ['4.0']
-    suites:
-      - name: "fuzz"
-        value: |
-          org.apache.comet.CometFuzzTestSuite
-          org.apache.comet.DataGeneratorSuite
-      - name: "shuffle"
-        value: |
-          org.apache.comet.exec.CometShuffleSuite
-          org.apache.comet.exec.CometShuffle4_0Suite
-          org.apache.comet.exec.CometNativeShuffleSuite
-          org.apache.comet.exec.CometShuffleEncryptionSuite
-          org.apache.comet.exec.CometShuffleManagerSuite
-          org.apache.comet.exec.CometAsyncShuffleSuite
-          org.apache.comet.exec.DisableAQECometShuffleSuite
-          org.apache.comet.exec.DisableAQECometAsyncShuffleSuite
-      - name: "parquet"
-        value: |
-          org.apache.comet.parquet.ParquetReadV1Suite
-          org.apache.comet.parquet.ParquetReadV2Suite
-          org.apache.spark.sql.comet.ParquetDatetimeRebaseV1Suite
-          org.apache.spark.sql.comet.ParquetDatetimeRebaseV2Suite
-          org.apache.spark.sql.comet.ParquetEncryptionITCase
-          org.apache.comet.exec.CometNativeReaderSuite
-      - name: "exec"
-        value: |
-          org.apache.comet.exec.CometExecSuite
-          org.apache.comet.exec.CometExec3_4PlusSuite
-          org.apache.comet.exec.CometJoinSuite
-          org.apache.comet.exec.CometAggregateSuite
-          org.apache.comet.CometArrayExpressionSuite
-          org.apache.comet.CometCastSuite
-          org.apache.comet.CometExpressionSuite
-          org.apache.comet.CometExpressionCoverageSuite
-          org.apache.comet.CometNativeSuite
-          org.apache.comet.CometSparkSessionExtensionsSuite
-          org.apache.spark.CometPluginsSuite
-          org.apache.spark.sql.CometTPCDSQuerySuite
-          org.apache.spark.sql.CometTPCHQuerySuite
-          org.apache.spark.sql.comet.CometPlanStabilitySuite
-          org.apache.spark.sql.comet.CometTaskMetricsSuite
-
+        suites:
+          - name: "fuzz"
+            value: |
+              org.apache.comet.CometFuzzTestSuite
+              org.apache.comet.DataGeneratorSuite
+          - name: "shuffle"
+            value: |
+              org.apache.comet.exec.CometShuffleSuite
+              org.apache.comet.exec.CometShuffle4_0Suite
+              org.apache.comet.exec.CometNativeShuffleSuite
+              org.apache.comet.exec.CometShuffleEncryptionSuite
+              org.apache.comet.exec.CometShuffleManagerSuite
+              org.apache.comet.exec.CometAsyncShuffleSuite
+              org.apache.comet.exec.DisableAQECometShuffleSuite
+              org.apache.comet.exec.DisableAQECometAsyncShuffleSuite
+          - name: "parquet"
+            value: |
+              org.apache.comet.parquet.ParquetReadV1Suite
+              org.apache.comet.parquet.ParquetReadV2Suite
+              org.apache.spark.sql.comet.ParquetDatetimeRebaseV1Suite
+              org.apache.spark.sql.comet.ParquetDatetimeRebaseV2Suite
+              org.apache.spark.sql.comet.ParquetEncryptionITCase
+              org.apache.comet.exec.CometNativeReaderSuite
+          - name: "exec"
+            value: |
+              org.apache.comet.exec.CometExecSuite
+              org.apache.comet.exec.CometExec3_4PlusSuite
+              org.apache.comet.exec.CometJoinSuite
+              org.apache.comet.exec.CometAggregateSuite
+              org.apache.comet.CometArrayExpressionSuite
+              org.apache.comet.CometCastSuite
+              org.apache.comet.CometExpressionSuite
+              org.apache.comet.CometExpressionCoverageSuite
+              org.apache.comet.CometNativeSuite
+              org.apache.comet.CometSparkSessionExtensionsSuite
+              org.apache.spark.CometPluginsSuite
+              org.apache.spark.sql.CometTPCDSQuerySuite
+              org.apache.spark.sql.CometTPCHQuerySuite
+              org.apache.spark.sql.comet.CometPlanStabilitySuite
+              org.apache.spark.sql.comet.CometTaskMetricsSuite
     fail-fast: false
     name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}/${{ matrix.test-target }} [${{ matrix.suites.name }}]
     runs-on: ${{ matrix.os }}
