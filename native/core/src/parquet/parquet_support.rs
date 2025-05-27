@@ -37,8 +37,11 @@ use datafusion_comet_spark_expr::EvalMode;
 use object_store::path::Path;
 use object_store::{parse_url, ObjectStore};
 use std::collections::HashMap;
+use std::time::Duration;
 use std::{fmt::Debug, hash::Hash, sync::Arc};
 use url::Url;
+
+use super::objectstore;
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
@@ -344,6 +347,15 @@ pub(crate) fn prepare_object_store(
     runtime_env: Arc<RuntimeEnv>,
     url: String,
 ) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
+    prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
+}
+
+/// Parses the url, registers the object store with configurations, and returns a tuple of the object store url and object store path
+pub(crate) fn prepare_object_store_with_configs(
+    runtime_env: Arc<RuntimeEnv>,
+    url: String,
+    object_store_configs: &HashMap<String, String>,
+) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
     let mut url = Url::parse(url.as_str())
         .map_err(|e| ExecutionError::GeneralError(format!("Error parsing URL {url}: {e}")))?;
     let mut scheme = url.scheme();
@@ -361,6 +373,8 @@ pub(crate) fn prepare_object_store(
 
     let (object_store, object_store_path): (Box<dyn ObjectStore>, Path) = if scheme == "hdfs" {
         parse_hdfs_url(&url)
+    } else if scheme == "s3" {
+        objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
     } else {
         parse_url(&url)
     }

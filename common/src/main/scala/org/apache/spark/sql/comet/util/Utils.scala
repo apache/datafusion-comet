@@ -284,4 +284,11 @@ object Utils {
         throw new SparkException(s"Unsupported Arrow Vector for $reason: ${valueVector.getClass}")
     }
   }
+
+  def classForName[C](
+      className: String,
+      initialize: Boolean = true,
+      noSparkClassLoader: Boolean = false): Class[C] = {
+    org.apache.spark.util.Utils.classForName(className, initialize, noSparkClassLoader)
+  }
 }
