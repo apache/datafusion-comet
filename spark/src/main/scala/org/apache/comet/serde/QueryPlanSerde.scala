@@ -1982,6 +1982,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case mk: MapKeys =>
         val childExpr = exprToProtoInternal(mk.child, inputs, binding)
         scalarFunctionExprToProto("map_keys", childExpr)
+//  commented out because of correctness issue https://github.com/apache/datafusion-comet/issues/1789
 //      case mv: MapValues =>
 //        val childExpr = exprToProtoInternal(mv.child, inputs, binding)
 //        scalarFunctionExprToProto("map_values", childExpr)
