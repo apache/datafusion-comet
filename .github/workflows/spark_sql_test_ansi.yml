@@ -22,14 +22,14 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  push:
-    paths-ignore:
-      - "docs/**"
-      - "**.md"
-  pull_request:
-    paths-ignore:
-      - "docs/**"
-      - "**.md"
+#  push:
+#    paths-ignore:
+#      - "docs/**"
+#      - "**.md"
+#  pull_request:
+#    paths-ignore:
+#      - "docs/**"
+#      - "**.md"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
