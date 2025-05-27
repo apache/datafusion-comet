@@ -3082,9 +3082,6 @@ mod tests {
         let (mut scans, datafusion_plan) =
             planner.create_plan(&projection, &mut vec![], 1).unwrap();
 
-        // Feed the data into plan
-        //scans[0].set_input_batch(input_batch);
-
         // Start executing the plan in a separate thread
         // The plan waits for incoming batches and emitting result as input comes
         let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
@@ -3240,11 +3237,11 @@ mod tests {
         select map(named_struct('a', 1, 'b', 'n', 'c', 'x'), named_struct('a', 1, 'b', 'n', 'c', 'x')) m
      */
     #[tokio::test]
-    async fn test_nested_types_map_keys_by_index() -> Result<(), DataFusionError> {
+    async fn test_nested_types_map_keys() -> Result<(), DataFusionError> {
         let session_ctx = SessionContext::new();
 
         // generate test data in the temp folder
-        let test_data = "select map([named_struct('a', 1, 'b', 'n', 'c', 'x')], [named_struct('a', 1, 'b', 'n', 'c', 'x')]) c0";
+        let test_data = "select map([named_struct('a', 1, 'b', 'n', 'c', 'x')], [named_struct('a', 2, 'b', 'm', 'c', 'y')]) c0";
         let tmp_dir = TempDir::new()?;
         let test_path = tmp_dir.path().to_str().unwrap().to_string();
 
@@ -3254,7 +3251,7 @@ mod tests {
             .create_physical_plan()
             .await?;
 
-        // Write parquet file into temp folder
+        // Write a parquet file into temp folder
         session_ctx
             .write_parquet(plan, test_path.clone(), None)
             .await?;
@@ -3334,7 +3331,7 @@ mod tests {
             "+------------------------------+",
             "| c0                           |",
             "+------------------------------+",
-            "| {{b: n}: {a: 1, b: n, c: x}} |",
+            "| {{b: n}: {a: 2, b: m, c: y}} |",
             "+------------------------------+",
         ];
         assert_batches_eq!(expected, &[actual.clone()]);
