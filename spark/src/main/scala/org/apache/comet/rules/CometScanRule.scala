@@ -22,16 +22,17 @@ package org.apache.comet.rules
 import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, PlanExpression}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal, PlanExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.MetadataColumnHelper
+import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, ByteType, DataType, MapType, ShortType, StructType}
+import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, DataTypeSupport}
 import org.apache.comet.CometConf._
@@ -118,7 +119,18 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
           return withInfos(scanExec, fallbackReasons.toSet)
         }
 
-        val typeChecker = new CometScanTypeChecker(scanImpl)
+        val possibleDefaultValues = getExistenceDefaultValues(scanExec.requiredSchema)
+        if (possibleDefaultValues.exists(_ != null && !isInstanceOf[Literal])) {
+          // Our schema has default values that are not just literals. They could be
+          // ArrayBasedMapData, GenericInternalRow, or GenericArrayData for maps, structs,
+          // or arrays, respectively. We don't have a way to serialize these to the native side
+          // yet like Literals, so fall back to Spark scan.
+          fallbackReasons +=
+            "Full native scan disabled because nested types for default values are not supported"
+          return withInfos(scanExec, fallbackReasons.toSet)
+        }
+
+        val typeChecker = CometScanTypeChecker(scanImpl)
         val schemaSupported =
           typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
         val partitionSchemaSupported =
