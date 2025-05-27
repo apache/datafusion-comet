@@ -22,9 +22,9 @@ package org.apache.comet.rules
 import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal, PlanExpression}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, PlanExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.catalyst.util.MetadataColumnHelper
+import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
@@ -120,11 +120,10 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
         }
 
         val possibleDefaultValues = getExistenceDefaultValues(scanExec.requiredSchema)
-        if (possibleDefaultValues.exists(d => { d != null && !d.isInstanceOf[Literal] })) {
-          // Our schema has default values that are not just literals. They could be
-          // ArrayBasedMapData, GenericInternalRow, or GenericArrayData for maps, structs,
-          // or arrays, respectively. We don't have a way to serialize these to the native side
-          // yet like Literals, so fall back to Spark scan.
+        if (possibleDefaultValues.exists(d => {
+            d != null && (d.isInstanceOf[ArrayBasedMapData] || d
+              .isInstanceOf[GenericInternalRow] || d.isInstanceOf[GenericArrayData])
+          })) {
           fallbackReasons +=
             "Full native scan disabled because nested types for default values are not supported"
           return withInfos(scanExec, fallbackReasons.toSet)
