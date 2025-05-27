@@ -283,6 +283,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
                   sparkSchema.size(), requestedSchema.getFieldCount()));
         }
       }
+      // Convert clipped schema back to a Spark schema
+      sparkSchema = converter.convert(requestedSchema);
       this.parquetColumn =
           converter.convertParquetColumn(requestedSchema, Option.apply(this.sparkSchema));
 
