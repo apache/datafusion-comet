@@ -65,8 +65,10 @@ pub(crate) fn init_datasource_exec(
     data_filters: Option<Vec<Arc<dyn PhysicalExpr>>>,
     default_values: Option<HashMap<usize, ScalarValue>>,
     session_timezone: &str,
+    case_sensitive: bool,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
-    let (table_parquet_options, spark_parquet_options) = get_options(session_timezone);
+    let (table_parquet_options, spark_parquet_options) =
+        get_options(session_timezone, case_sensitive);
     let mut parquet_source =
         ParquetSource::new(table_parquet_options).with_schema_adapter_factory(Arc::new(
             SparkSchemaAdapterFactory::new(spark_parquet_options, default_values),
@@ -118,7 +120,10 @@ pub(crate) fn init_datasource_exec(
     Ok(Arc::new(DataSourceExec::new(Arc::new(file_scan_config))))
 }
 
-fn get_options(session_timezone: &str) -> (TableParquetOptions, SparkParquetOptions) {
+fn get_options(
+    session_timezone: &str,
+    case_sensitive: bool,
+) -> (TableParquetOptions, SparkParquetOptions) {
     let mut table_parquet_options = TableParquetOptions::new();
     table_parquet_options.global.pushdown_filters = true;
     table_parquet_options.global.reorder_filters = true;
@@ -126,7 +131,7 @@ fn get_options(session_timezone: &str) -> (TableParquetOptions, SparkParquetOpti
     let mut spark_parquet_options =
         SparkParquetOptions::new(EvalMode::Legacy, session_timezone, false);
     spark_parquet_options.allow_cast_unsigned_ints = true;
-    spark_parquet_options.case_sensitive = false;
+    spark_parquet_options.case_sensitive = case_sensitive;
     (table_parquet_options, spark_parquet_options)
 }
 
