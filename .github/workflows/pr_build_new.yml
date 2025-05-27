@@ -104,5 +104,5 @@ jobs:
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          maven_opts: "-Pspark-${{ matrix.spark-version }} -DwildcardSuites=${{ matrix.suites.value }}"
+          maven_opts: "-Pspark-${{ matrix.spark-version }} -DwildcardSuites=$(echo "${{ matrix.suites.value }}" | paste -sd, -)"
           upload-test-reports: true
