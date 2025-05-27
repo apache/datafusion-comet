@@ -3083,9 +3083,6 @@ mod tests {
         let (mut scans, datafusion_plan) =
             planner.create_plan(&projection, &mut vec![], 1).unwrap();
 
-        // Feed the data into plan
-        //scans[0].set_input_batch(input_batch);
-
         // Start executing the plan in a separate thread
         // The plan waits for incoming batches and emitting result as input comes
         let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
@@ -3149,7 +3146,7 @@ mod tests {
         select array(named_struct('a', 1, 'b', 'n', 'c', 'x')) arr)
      */
     #[tokio::test]
-    async fn test_nested_types() -> Result<(), DataFusionError> {
+    async fn test_nested_types_list_of_struct_by_index() -> Result<(), DataFusionError> {
         let session_ctx = SessionContext::new();
 
         // generate test data in the temp folder
@@ -3228,6 +3225,115 @@ mod tests {
             "+----------------+",
             "| [{a: 1, c: x}] |",
             "+----------------+",
+        ];
+        assert_batches_eq!(expected, &[actual.clone()]);
+
+        Ok(())
+    }
+
+    /*
+    Testing a nested types scenario map[struct, struct]
+
+    select map_keys(m).b from (
+        select map(named_struct('a', 1, 'b', 'n', 'c', 'x'), named_struct('a', 1, 'b', 'n', 'c', 'x')) m
+     */
+    #[tokio::test]
+    async fn test_nested_types_map_keys() -> Result<(), DataFusionError> {
+        let session_ctx = SessionContext::new();
+
+        // generate test data in the temp folder
+        let test_data = "select map([named_struct('a', 1, 'b', 'n', 'c', 'x')], [named_struct('a', 2, 'b', 'm', 'c', 'y')]) c0";
+        let tmp_dir = TempDir::new()?;
+        let test_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let plan = session_ctx
+            .sql(test_data)
+            .await?
+            .create_physical_plan()
+            .await?;
+
+        // Write a parquet file into temp folder
+        session_ctx
+            .write_parquet(plan, test_path.clone(), None)
+            .await?;
+
+        // Register all parquet with temp data as file groups
+        let mut file_groups: Vec<FileGroup> = vec![];
+        for entry in std::fs::read_dir(&test_path)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.extension().and_then(|ext| ext.to_str()) == Some("parquet") {
+                if let Some(path_str) = path.to_str() {
+                    file_groups.push(FileGroup::new(vec![PartitionedFile::from_path(
+                        path_str.into(),
+                    )?]));
+                }
+            }
+        }
+
+        let source = Arc::new(
+            ParquetSource::default().with_schema_adapter_factory(Arc::new(
+                SparkSchemaAdapterFactory::new(
+                    SparkParquetOptions::new(EvalMode::Ansi, "", false),
+                    None,
+                ),
+            )),
+        );
+
+        // Define schema Comet reads with
+        let required_schema = Schema::new(Fields::from(vec![Field::new(
+            "c0",
+            DataType::Map(
+                Field::new(
+                    "entries",
+                    DataType::Struct(Fields::from(vec![
+                        Field::new(
+                            "key",
+                            DataType::Struct(Fields::from(vec![Field::new(
+                                "b",
+                                DataType::Utf8,
+                                true,
+                            )])),
+                            false,
+                        ),
+                        Field::new(
+                            "value",
+                            DataType::Struct(Fields::from(vec![
+                                Field::new("a", DataType::Int64, true),
+                                Field::new("b", DataType::Utf8, true),
+                                Field::new("c", DataType::Utf8, true),
+                            ])),
+                            true,
+                        ),
+                    ] as Vec<Field>)),
+                    false,
+                )
+                .into(),
+                false,
+            ),
+            true,
+        )]));
+
+        let object_store_url = ObjectStoreUrl::local_filesystem();
+        let file_scan_config =
+            FileScanConfigBuilder::new(object_store_url, required_schema.into(), source)
+                .with_file_groups(file_groups)
+                .build();
+
+        // Run native read
+        let scan = Arc::new(DataSourceExec::new(Arc::new(file_scan_config.clone())));
+        let stream = scan.execute(0, session_ctx.task_ctx())?;
+        let result: Vec<_> = stream.collect().await;
+
+        let actual = result.first().unwrap().as_ref().unwrap();
+
+        let expected = [
+            "+------------------------------+",
+            "| c0                           |",
+            "+------------------------------+",
+            "| {{b: n}: {a: 2, b: m, c: y}} |",
+            "+------------------------------+",
         ];
         assert_batches_eq!(expected, &[actual.clone()]);
 
