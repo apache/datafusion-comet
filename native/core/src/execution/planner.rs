@@ -956,6 +956,11 @@ impl PhysicalPlanner {
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
                 let filter: Arc<dyn ExecutionPlan> = if filter.use_datafusion_filter {
+                    assert_eq!(
+                        scans.len(),
+                        0,
+                        "Must not use ScanExec as it may requires a copy"
+                    );
                     Arc::new(DataFusionFilterExec::try_new(
                         predicate,
                         Arc::clone(&child.native_plan),
