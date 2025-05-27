@@ -1190,6 +1190,7 @@ impl PhysicalPlanner {
                     Some(data_filters?),
                     default_values,
                     scan.session_timezone.as_str(),
+                    scan.case_sensitive,
                 )?;
                 Ok((
                     vec![],
