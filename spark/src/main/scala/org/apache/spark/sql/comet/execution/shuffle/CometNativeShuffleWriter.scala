@@ -145,6 +145,9 @@ class CometNativeShuffleWriter[K, V](
       serializeDataType(attr.dataType)
     }
 
+    // TODO only set this if input is native_comet scan
+    scanBuilder.setHasBufferReuse(true)
+
     if (scanTypes.length == outputAttributes.length) {
       scanBuilder.addAllFields(scanTypes.asJava)
 
