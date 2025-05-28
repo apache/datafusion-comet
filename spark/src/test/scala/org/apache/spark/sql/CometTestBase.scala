@@ -862,7 +862,8 @@ abstract class CometTestBase
       testName: String = "test",
       tableName: String = "tbl",
       sqlConf: Seq[(String, String)] = Seq.empty,
-      debugCometDF: DataFrame => Unit = _ => ()): Unit = {
+      debugCometDF: DataFrame => Unit = _ => (),
+      checkCometOperator: Boolean = true): Unit = {
 
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, testName).toUri.toString
@@ -881,7 +882,8 @@ abstract class CometTestBase
       withSQLConf(sqlConf: _*) {
         val cometDF = sql(testQuery)
         debugCometDF(cometDF)
-        checkSparkAnswerAndOperator(cometDF)
+        if (checkCometOperator) checkSparkAnswerAndOperator(cometDF)
+        else checkSparkAnswer(cometDF)
       }
     }
   }
