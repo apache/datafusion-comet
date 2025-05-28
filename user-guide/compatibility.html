@@ -456,6 +456,7 @@ types (regardless of the logical type). This behavior can be disabled by setting
 <li><p>There is a known performance issue when pushing filters down to Parquet. See the <a class="reference internal" href="tuning.html"><span class="std std-doc">Comet Tuning Guide</span></a> for more
 information.</p></li>
 <li><p>There are failures in the Spark SQL test suite when enabling these new scans (tracking issues: <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1542">#1542</a> and <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1545">#1545</a>).</p></li>
+<li><p>No support for default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.</p></li>
 </ul>
 </section>
 <section id="ansi-mode">
