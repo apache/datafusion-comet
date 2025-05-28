@@ -124,6 +124,9 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
             d != null && (d.isInstanceOf[ArrayBasedMapData] || d
               .isInstanceOf[GenericInternalRow] || d.isInstanceOf[GenericArrayData])
           })) {
+          // Spark already converted these to Java-native types, so we can't check SQL types.
+          // ArrayBasedMapData, GenericInternalRow, GenericArrayData correspond to maps, structs,
+          // and arrays respectively.
           fallbackReasons +=
             "Full native scan disabled because nested types for default values are not supported"
           return withInfos(scanExec, fallbackReasons.toSet)
