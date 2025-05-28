@@ -66,10 +66,31 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest]
+        # the goal with these profiles is to get coverage of all Java, Scala, and Spark
+        # versions without testing all possible combinations, which would be overkill
         profile:
-          - name: "Spark 3.5, JDK 17, Scala 2.12"
+          - name: "Spark 3.4, JDK 11, Scala 2.12"
+            java_version: "11"
+            maven_opts: "-Pspark-3.4 -Pscala-2.12"
+
+          - name: "Spark 3.5, JDK 11, Scala 2.12"
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Pscala-2.12"
+
+          - name: "Spark 3.5, JDK 17, Scala 2.13"
+            java_version: "17"
+            maven_opts: "-Pspark-3.5 -Pscala-2.13"
+
+          - name: "Spark 3.5, JDK 17, Scala 2.12 native_datafusion"
+            java_version: "17"
+            maven_opts: "-Pspark-3.5 -Pscala-2.12"
+            scan_impl: "native_datafusion"
+
+          - name: "Spark 3.5, JDK 17, Scala 2.12 native_iceberg_compat"
+            java_version: "17"
+            maven_opts: "-Pspark-3.5 -Pscala-2.12"
+            scan_impl: "native_iceberg_compat"
+
           - name: "Spark 4.0, JDK 17"
             java_version: "17"
             maven_opts: "-Pspark-4.0"
@@ -108,6 +129,7 @@ jobs:
               org.apache.comet.CometExpressionCoverageSuite
               org.apache.comet.CometNativeSuite
               org.apache.comet.CometSparkSessionExtensionsSuite
+              org.apache.comet.CometStringExpressionSuite
               org.apache.spark.CometPluginsSuite
               org.apache.spark.CometPluginsDefaultSuite
               org.apache.spark.CometPluginsNonOverrideSuite
@@ -119,7 +141,7 @@ jobs:
               org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite
               org.apache.spark.sql.comet.CometTaskMetricsSuite
       fail-fast: false
-    name: ${{ matrix.os }}/java ${{ matrix.profile.name }} [${{ matrix.suite.name }}]
+    name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -135,67 +157,5 @@ jobs:
         with:
           suites: ${{ matrix.suite.value }}
           maven_opts: ${{ matrix.profile.maven_opts }}
+          scan_impl: ${{ matrix.profile.scan_impl }}
           upload-test-reports: true
-
-
-# TODO
-
-  # run Comet tests for older 3.5.x releases with one java and scala versions
-#  linux-test-35-minor-versions:
-#    strategy:
-#      matrix:
-#        os: [ubuntu-latest]
-#        java_version: [17]
-#        spark-version: ['3.5']
-#        spark-patch-version: ['3.5.2', '3.5.3', '3.5.4']
-#        scala-version: ['2.12']
-#        is_push_event:
-#          - ${{ github.event_name == 'push' }}
-#      fail-fast: false
-#    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-patch-version}}-scala-${{matrix.scala-version}}
-#    runs-on: ${{ matrix.os }}
-#    container:
-#      image: amd64/rust
-#    steps:
-#      - uses: actions/checkout@v4
-#      - name: Setup Rust & Java toolchain
-#        uses: ./.github/actions/setup-builder
-#        with:
-#          rust-version: ${{env.RUST_VERSION}}
-#          jdk-version: ${{ matrix.java_version }}
-#      - name: Java test steps
-#        uses: ./.github/actions/java-test
-#        with:
-#          maven_opts: "-Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }} -Dspark.version=${{ matrix.spark-patch-version }}"
-#          # upload test reports only for java 17
-#          upload-test-reports: ${{ matrix.java_version == '17' }}
-#          
-#  linux-test-native-datafusion-scan:
-#    strategy:
-#      matrix:
-#        os: [ubuntu-latest]
-#        scan_impl: ['native_datafusion', 'native_iceberg_compat']
-#        java_version: [17]
-#        spark-version: ['3.5']
-#        scala-version: ['2.12']
-#      fail-fast: false
-#    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}-${{ matrix.scan_impl }}
-#    runs-on: ${{ matrix.os }}
-#    env:
-#      COMET_PARQUET_SCAN_IMPL: ${{ matrix.scan_impl }}
-#    container:
-#      image: amd64/rust
-#    steps:
-#      - uses: actions/checkout@v4
-#      - name: Setup Rust & Java toolchain
-#        uses: ./.github/actions/setup-builder
-#        with:
-#          rust-version: ${{env.RUST_VERSION}}
-#          jdk-version: ${{ matrix.java_version }}
-#      - name: Java test steps
-#        uses: ./.github/actions/java-test
-#        with:
-#          maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
-#          # upload test reports only for java 17
-#          upload-test-reports: ${{ matrix.java_version == '17' }}
-#
