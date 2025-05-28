@@ -41,34 +41,6 @@ env:
 
 jobs:
 
-  # test a single Spark version on Intel, and not on PRs
-  macos-x86-test:
-    strategy:
-      matrix:
-        os: [macos-13]
-        java_version: [11]
-        spark-version: ['3.5']
-        scala-version: ['2.12']
-      fail-fast: false
-    if: github.event_name == 'push'
-    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-macos-builder
-        with:
-          rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{ matrix.java_version }}
-      - if: matrix.test-target == 'rust'
-        name: Rust test steps
-        uses: ./.github/actions/rust-test
-      - if: matrix.test-target == 'java'
-        name: Java test steps
-        uses: ./.github/actions/java-test
-        with:
-          maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
-
   macos-aarch64-test:
     strategy:
       matrix:
