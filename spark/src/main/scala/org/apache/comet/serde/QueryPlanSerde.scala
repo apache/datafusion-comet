@@ -2830,6 +2830,12 @@ object QueryPlanSerde extends Logging with CometExprShim {
           scanBuilder.setSource(source)
         }
 
+        op match {
+          case scan: CometScanExec =>
+            scanBuilder.setHasBufferReuse(scan.scanImpl == CometConf.SCAN_NATIVE_COMET)
+          case _ =>
+        }
+
         val scanTypes = op.output.flatten { attr =>
           serializeDataType(attr.dataType)
         }

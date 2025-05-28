@@ -80,6 +80,8 @@ pub struct ScanExec {
     jvm_fetch_time: Time,
     /// Time spent in FFI
     arrow_ffi_time: Time,
+    /// Does the source of this scan re-use buffers?
+    pub has_buffer_reuse: bool,
 }
 
 impl ScanExec {
@@ -88,6 +90,7 @@ impl ScanExec {
         input_source: Option<Arc<GlobalRef>>,
         input_source_description: &str,
         data_types: Vec<DataType>,
+        has_buffer_reuse: bool,
     ) -> Result<Self, CometError> {
         let metrics_set = ExecutionPlanMetricsSet::default();
         let baseline_metrics = BaselineMetrics::new(&metrics_set, 0);
@@ -138,6 +141,7 @@ impl ScanExec {
             jvm_fetch_time,
             arrow_ffi_time,
             schema,
+            has_buffer_reuse,
         })
     }
 

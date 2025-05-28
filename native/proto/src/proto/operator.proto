@@ -76,6 +76,8 @@ message Scan {
   // is purely for informational purposes when viewing native query plans in
   // debug mode.
   string source = 2;
+  // Specifies whether the source of the scan reuses buffers
+  bool has_buffer_reuse = 3;
 }
 
 message NativeScan {
