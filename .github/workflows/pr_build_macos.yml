@@ -75,13 +75,53 @@ jobs:
         java_version: [17]
         spark-version: ['3.4', '3.5', '4.0']
         scala-version: ['2.13']
-        is_push_event:
-          - ${{ github.event_name == 'push' }}
-        exclude:
-          - java_version: 11
-            is_push_event: false
+        suite:
+          - name: "fuzz"
+            value: |
+              org.apache.comet.CometFuzzTestSuite
+              org.apache.comet.DataGeneratorSuite
+          - name: "shuffle"
+            value: |
+              org.apache.comet.exec.CometShuffleSuite
+              org.apache.comet.exec.CometShuffle4_0Suite
+              org.apache.comet.exec.CometNativeShuffleSuite
+              org.apache.comet.exec.CometShuffleEncryptionSuite
+              org.apache.comet.exec.CometShuffleManagerSuite
+              org.apache.comet.exec.CometAsyncShuffleSuite
+              org.apache.comet.exec.DisableAQECometShuffleSuite
+              org.apache.comet.exec.DisableAQECometAsyncShuffleSuite
+          - name: "parquet"
+            value: |
+              org.apache.comet.parquet.ParquetReadV1Suite
+              org.apache.comet.parquet.ParquetReadV2Suite
+              org.apache.spark.sql.comet.ParquetDatetimeRebaseV1Suite
+              org.apache.spark.sql.comet.ParquetDatetimeRebaseV2Suite
+              org.apache.spark.sql.comet.ParquetEncryptionITCase
+              org.apache.comet.exec.CometNativeReaderSuite
+          - name: "exec"
+            value: |
+              org.apache.comet.exec.CometAggregateSuite
+              org.apache.comet.exec.CometExec3_4PlusSuite
+              org.apache.comet.exec.CometExecSuite
+              org.apache.comet.exec.CometJoinSuite
+              org.apache.comet.CometArrayExpressionSuite
+              org.apache.comet.CometCastSuite
+              org.apache.comet.CometExpressionSuite
+              org.apache.comet.CometExpressionCoverageSuite
+              org.apache.comet.CometNativeSuite
+              org.apache.comet.CometSparkSessionExtensionsSuite
+              org.apache.spark.CometPluginsSuite
+              org.apache.spark.CometPluginsDefaultSuite
+              org.apache.spark.CometPluginsNonOverrideSuite
+              org.apache.spark.CometPluginsUnifiedModeOverrideSuite
+              org.apache.spark.sql.CometTPCDSQuerySuite
+              org.apache.spark.sql.CometTPCDSQueryTestSuite
+              org.apache.spark.sql.CometTPCHQuerySuite
+              org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite
+              org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite
+              org.apache.spark.sql.comet.CometTaskMetricsSuite
       fail-fast: false
-    name: macos-14(Silicon)/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}
+    name: macos-14(Silicon)/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}} [${{matrix.suite.name}}]
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -95,4 +135,5 @@ jobs:
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
+          suites: ${{ matrix.suite.value }}
           maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
