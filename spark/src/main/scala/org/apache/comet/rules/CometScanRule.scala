@@ -22,9 +22,10 @@ package org.apache.comet.rules
 import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, PlanExpression}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, PlanExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.catalyst.util.MetadataColumnHelper
+import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
+import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
@@ -133,6 +134,19 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
           // https://github.com/apache/datafusion-comet/issues/1719
           fallbackReasons +=
             "Full native scan disabled because bucketed scan is not supported"
+          return withInfos(scanExec, fallbackReasons.toSet)
+        }
+
+        val possibleDefaultValues = getExistenceDefaultValues(scanExec.requiredSchema)
+        if (possibleDefaultValues.exists(d => {
+            d != null && (d.isInstanceOf[ArrayBasedMapData] || d
+              .isInstanceOf[GenericInternalRow] || d.isInstanceOf[GenericArrayData])
+          })) {
+          // Spark already converted these to Java-native types, so we can't check SQL types.
+          // ArrayBasedMapData, GenericInternalRow, GenericArrayData correspond to maps, structs,
+          // and arrays respectively.
+          fallbackReasons +=
+            "Full native scan disabled because nested types for default values are not supported"
           return withInfos(scanExec, fallbackReasons.toSet)
         }
 

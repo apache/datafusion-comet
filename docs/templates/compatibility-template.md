@@ -65,6 +65,7 @@ The new scans currently have the following limitations:
 - There is a known performance issue when pushing filters down to Parquet. See the [Comet Tuning Guide] for more
   information.
 - There are failures in the Spark SQL test suite when enabling these new scans (tracking issues: [#1542] and [#1545]).
+- No support for default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
 
 [#1545]: https://github.com/apache/datafusion-comet/issues/1545
 [#1542]: https://github.com/apache/datafusion-comet/issues/1542

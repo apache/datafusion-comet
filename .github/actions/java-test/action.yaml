@@ -18,6 +18,10 @@
 name: "Java Test"
 description: "Run Java tests"
 inputs:
+  suites:
+    description: 'Which test suites to run'
+    required: false
+    default: ''
   maven_opts:
     description: 'Maven options passed to the mvn command'
     required: false
@@ -51,10 +55,18 @@ runs:
       run: |
         ./mvnw -B compile test-compile scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ inputs.maven_opts }}
 
-    - name: Run tests
+    - name: Run all tests
       shell: bash
+      if: ${{ inputs.suites == '' }}
       run: |
         MAVEN_OPTS="-XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B clean install ${{ inputs.maven_opts }}
+    - name: Run specified tests
+      shell: bash
+      if: ${{ inputs.suites != '' }}
+      run: |
+        MAVEN_SUITES="$(echo "${{ inputs.suites }}" | paste -sd, -)"
+        echo "Running with MAVEN_SUITES=$MAVEN_SUITES"
+        MAVEN_OPTS="-DwildcardSuites=$MAVEN_SUITES -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B clean install ${{ inputs.maven_opts }}
     - name: Upload crash logs
       if: failure()
       uses: actions/upload-artifact@v4

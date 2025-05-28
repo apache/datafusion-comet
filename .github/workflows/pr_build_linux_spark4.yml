@@ -23,17 +23,16 @@ concurrency:
 
 on:
 
-# temporarily disabled on PRs due to https://github.com/apache/datafusion-comet/issues/1786
-#  push:
-#    paths-ignore:
-#      - "doc/**"
-#      - "docs/**"
-#      - "**.md"
-#  pull_request:
-#    paths-ignore:
-#      - "doc/**"
-#      - "docs/**"
-#      - "**.md"
+  push:
+    paths-ignore:
+      - "doc/**"
+      - "docs/**"
+      - "**.md"
+  pull_request:
+    paths-ignore:
+      - "doc/**"
+      - "docs/**"
+      - "**.md"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
@@ -50,10 +49,53 @@ jobs:
         java_version: [17]
         test-target: [java]
         spark-version: ['4.0']
-        is_push_event:
-          - ${{ github.event_name == 'push' }}
+        suites:
+          - name: "fuzz"
+            value: |
+              org.apache.comet.CometFuzzTestSuite
+              org.apache.comet.DataGeneratorSuite
+          - name: "shuffle"
+            value: |
+              org.apache.comet.exec.CometShuffleSuite
+              org.apache.comet.exec.CometShuffle4_0Suite
+              org.apache.comet.exec.CometNativeShuffleSuite
+              org.apache.comet.exec.CometShuffleEncryptionSuite
+              org.apache.comet.exec.CometShuffleManagerSuite
+              org.apache.comet.exec.CometAsyncShuffleSuite
+              org.apache.comet.exec.DisableAQECometShuffleSuite
+              org.apache.comet.exec.DisableAQECometAsyncShuffleSuite
+          - name: "parquet"
+            value: |
+              org.apache.comet.parquet.ParquetReadV1Suite
+              org.apache.comet.parquet.ParquetReadV2Suite
+              org.apache.spark.sql.comet.ParquetDatetimeRebaseV1Suite
+              org.apache.spark.sql.comet.ParquetDatetimeRebaseV2Suite
+              org.apache.spark.sql.comet.ParquetEncryptionITCase
+              org.apache.comet.exec.CometNativeReaderSuite
+          - name: "exec"
+            value: |
+              org.apache.comet.exec.CometAggregateSuite
+              org.apache.comet.exec.CometExec3_4PlusSuite
+              org.apache.comet.exec.CometExecSuite
+              org.apache.comet.exec.CometJoinSuite
+              org.apache.comet.CometArrayExpressionSuite
+              org.apache.comet.CometCastSuite
+              org.apache.comet.CometExpressionSuite
+              org.apache.comet.CometExpressionCoverageSuite
+              org.apache.comet.CometNativeSuite
+              org.apache.comet.CometSparkSessionExtensionsSuite
+              org.apache.spark.CometPluginsSuite
+              org.apache.spark.CometPluginsDefaultSuite
+              org.apache.spark.CometPluginsNonOverrideSuite
+              org.apache.spark.CometPluginsUnifiedModeOverrideSuite
+              org.apache.spark.sql.CometTPCDSQuerySuite
+              org.apache.spark.sql.CometTPCDSQueryTestSuite
+              org.apache.spark.sql.CometTPCHQuerySuite
+              org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite
+              org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite
+              org.apache.spark.sql.comet.CometTaskMetricsSuite
       fail-fast: false
-    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}/${{ matrix.test-target }}
+    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}/${{ matrix.test-target }} [${{ matrix.suites.name }}]
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -67,6 +109,6 @@ jobs:
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          maven_opts: -Pspark-${{ matrix.spark-version }}
+          suites: ${{ matrix.suites.value }}
+          maven_opts: "-Pspark-${{ matrix.spark-version }}"
           upload-test-reports: true
-
