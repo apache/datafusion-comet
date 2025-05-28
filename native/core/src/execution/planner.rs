@@ -2604,6 +2604,7 @@ mod tests {
                     type_info: None,
                 }],
                 source: "".to_string(),
+                has_buffer_reuse: false,
             })),
         };
 
@@ -2677,6 +2678,7 @@ mod tests {
                     type_info: None,
                 }],
                 source: "".to_string(),
+                has_buffer_reuse: false,
             })),
         };
 
@@ -2887,6 +2889,7 @@ mod tests {
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![create_proto_datatype()],
                 source: "".to_string(),
+                has_buffer_reuse: false,
             })),
         }
     }
@@ -2929,6 +2932,7 @@ mod tests {
                     },
                 ],
                 source: "".to_string(),
+                has_buffer_reuse: false,
             })),
         };
 
@@ -3049,6 +3053,7 @@ mod tests {
                     },
                 ],
                 source: "".to_string(),
+                has_buffer_reuse: false,
             })),
         };
 
