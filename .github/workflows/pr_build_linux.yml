@@ -68,10 +68,10 @@ jobs:
         os: [ubuntu-latest]
         profile:
           - name: "Spark 3.5, JDK 17, Scala 2.12"
-            java-version: "17"
+            java_version: "17"
             maven_opts: "-Pspark-3.5 -Pscala-2.12"
           - name: "Spark 4.0, JDK 17"
-            java-version: "17"
+            java_version: "17"
             maven_opts: "-Pspark-4.0"
         suite:
           - name: "fuzz"
