@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-name: PR Build
+name: PR Build (Linux)
 
 concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
@@ -134,7 +134,7 @@ jobs:
         uses: ./.github/actions/java-test
         with:
           suite: ${{ matrix.suite.value }}
-          maven_opts: ${{ profile.maven_opts }}
+          maven_opts: ${{ matrix.profile.maven_opts }}
           upload-test-reports: true
 
 
