@@ -15,14 +15,13 @@
 # specific language governing permissions and limitations
 # under the License.
 
-name: PR Build (Linux + Spark 4)
+name: PR Build
 
 concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
   cancel-in-progress: true
 
 on:
-
   push:
     paths-ignore:
       - "doc/**"
@@ -41,15 +40,40 @@ env:
   RUST_VERSION: stable
 
 jobs:
-
-  linux-test-with-spark4_0:
+  
+  # Run Rust tests once per JDK version
+  linux-test-rust:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        java_version: [17]
-        test-target: [java]
-        spark-version: ['4.0']
-        suites:
+        java_version: [11, 17]
+      fail-fast: false
+    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-rust
+    runs-on: ${{ matrix.os }}
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{env.RUST_VERSION}}
+          jdk-version: ${{ matrix.java_version }}
+      - name: Rust test steps
+        uses: ./.github/actions/rust-test
+  
+  linux-test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        profile:
+          - name: "Spark 3.5, JDK 17, Scala 2.12"
+            java-version: "17"
+            maven_opts: "-Pspark-3.5 -Pscala-2.12"
+          - name: "Spark 4.0, JDK 17"
+            java-version: "17"
+            maven_opts: "-Pspark-4.0"
+        suite:
           - name: "fuzz"
             value: |
               org.apache.comet.CometFuzzTestSuite
@@ -95,7 +119,7 @@ jobs:
               org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite
               org.apache.spark.sql.comet.CometTaskMetricsSuite
       fail-fast: false
-    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}/${{ matrix.test-target }} [${{ matrix.suites.name }}]
+    name: ${{ matrix.os }}/java ${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -105,10 +129,73 @@ jobs:
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{ matrix.java_version }}
+          jdk-version: ${{ matrix.profile.java_version }}
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          suites: ${{ matrix.suites.value }}
-          maven_opts: "-Pspark-${{ matrix.spark-version }}"
+          suite: ${{ matrix.suite.value }}
+          maven_opts: ${{ profile.maven_opts }}
           upload-test-reports: true
+
+
+# TODO
+
+  # run Comet tests for older 3.5.x releases with one java and scala versions
+#  linux-test-35-minor-versions:
+#    strategy:
+#      matrix:
+#        os: [ubuntu-latest]
+#        java_version: [17]
+#        spark-version: ['3.5']
+#        spark-patch-version: ['3.5.2', '3.5.3', '3.5.4']
+#        scala-version: ['2.12']
+#        is_push_event:
+#          - ${{ github.event_name == 'push' }}
+#      fail-fast: false
+#    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-patch-version}}-scala-${{matrix.scala-version}}
+#    runs-on: ${{ matrix.os }}
+#    container:
+#      image: amd64/rust
+#    steps:
+#      - uses: actions/checkout@v4
+#      - name: Setup Rust & Java toolchain
+#        uses: ./.github/actions/setup-builder
+#        with:
+#          rust-version: ${{env.RUST_VERSION}}
+#          jdk-version: ${{ matrix.java_version }}
+#      - name: Java test steps
+#        uses: ./.github/actions/java-test
+#        with:
+#          maven_opts: "-Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }} -Dspark.version=${{ matrix.spark-patch-version }}"
+#          # upload test reports only for java 17
+#          upload-test-reports: ${{ matrix.java_version == '17' }}
+#          
+#  linux-test-native-datafusion-scan:
+#    strategy:
+#      matrix:
+#        os: [ubuntu-latest]
+#        scan_impl: ['native_datafusion', 'native_iceberg_compat']
+#        java_version: [17]
+#        spark-version: ['3.5']
+#        scala-version: ['2.12']
+#      fail-fast: false
+#    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}}-${{ matrix.scan_impl }}
+#    runs-on: ${{ matrix.os }}
+#    env:
+#      COMET_PARQUET_SCAN_IMPL: ${{ matrix.scan_impl }}
+#    container:
+#      image: amd64/rust
+#    steps:
+#      - uses: actions/checkout@v4
+#      - name: Setup Rust & Java toolchain
+#        uses: ./.github/actions/setup-builder
+#        with:
+#          rust-version: ${{env.RUST_VERSION}}
+#          jdk-version: ${{ matrix.java_version }}
+#      - name: Java test steps
+#        uses: ./.github/actions/java-test
+#        with:
+#          maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
+#          # upload test reports only for java 17
+#          upload-test-reports: ${{ matrix.java_version == '17' }}
+#
