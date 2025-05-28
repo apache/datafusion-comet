@@ -69,7 +69,6 @@ jobs:
         with:
           maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
 
-
   macos-aarch64-test:
     strategy:
       matrix:

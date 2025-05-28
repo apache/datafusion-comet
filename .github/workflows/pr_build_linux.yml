@@ -133,7 +133,7 @@ jobs:
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          suite: ${{ matrix.suite.value }}
+          suites: ${{ matrix.suite.value }}
           maven_opts: ${{ matrix.profile.maven_opts }}
           upload-test-reports: true
 
