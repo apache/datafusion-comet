@@ -94,7 +94,7 @@ jobs:
               org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite
               org.apache.spark.sql.comet.CometTaskMetricsSuite
       fail-fast: false
-    name: macos-14(Silicon)/java ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}} [${{matrix.suite.name}}]
+    name: macos-14(Silicon)/ ${{ matrix.java_version }}-spark-${{matrix.spark-version}}-scala-${{matrix.scala-version}} [${{matrix.suite.name}}]
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
