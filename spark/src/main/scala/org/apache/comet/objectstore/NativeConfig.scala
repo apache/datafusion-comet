@@ -23,8 +23,6 @@ import java.net.URI
 import java.util.Locale
 
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.comet.util.Utils
 
 object NativeConfig {
 
@@ -54,10 +52,7 @@ object NativeConfig {
    * The configurations are passed to the native code which uses object_store's parse_url_opts for
    * consistent and standardized cloud storage support across all providers.
    */
-  def extractObjectStoreOptions(
-      hadoopConf: Configuration,
-      uri: URI,
-      fileSystemOverride: Option[org.apache.hadoop.fs.FileSystem] = None): Map[String, String] = {
+  def extractObjectStoreOptions(hadoopConf: Configuration, uri: URI): Map[String, String] = {
     val scheme = uri.getScheme.toLowerCase(Locale.ROOT)
 
     // Get prefixes for this scheme, return early if none found
@@ -79,51 +74,6 @@ object NativeConfig {
       }
     }
 
-    // Add extracted S3 region if available and not already configured. Rust's object_store
-    // cannot automatically figure out the region of S3 buckets, and requires region to be correctly
-    // configured to work. We extract the region in JVM and pass it to the native code.
-    if (Seq("s3", "s3a").contains(scheme)) {
-      val bucketName = uri.getHost
-      if (!options.contains(s"fs.s3a.bucket.$bucketName.endpoint.region") && !options.contains(
-          "fs.s3a.endpoint.region")) {
-        getS3BucketRegion(uri, hadoopConf, fileSystemOverride).foreach { region =>
-          options(s"fs.s3a.bucket.$bucketName.endpoint.region") = region
-        }
-      }
-    }
-
     options.toMap
-  }
-
-  /**
-   * Test-friendly version that allows injecting a FileSystem for mocking.
-   */
-  private[objectstore] def getS3BucketRegion(
-      uri: URI,
-      hadoopConf: Configuration,
-      fileSystemOverride: Option[org.apache.hadoop.fs.FileSystem] = None): Option[String] = {
-    val fs = fileSystemOverride.getOrElse {
-      val path = new Path(uri)
-      path.getFileSystem(hadoopConf)
-    }
-
-    // Use reflection to access S3AFileSystem's getBucketLocation method
-    val s3aClass = Utils.classForName("org.apache.hadoop.fs.s3a.S3AFileSystem")
-    if (s3aClass.isInstance(fs)) {
-      try {
-        val getBucketLocationMethod = s3aClass.getDeclaredMethod("getBucketLocation")
-        getBucketLocationMethod.setAccessible(true)
-        val region = getBucketLocationMethod.invoke(fs).asInstanceOf[String]
-        if (region != null && region.nonEmpty && region.trim.nonEmpty) {
-          return Some(region)
-        }
-      } catch {
-        case _: Exception =>
-        // If reflection fails or method doesn't exist, return None
-        // This handles cases where S3AFileSystem API changes or is not available
-      }
-    }
-
-    None
   }
 }

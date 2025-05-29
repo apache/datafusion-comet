@@ -36,9 +36,9 @@ use aws_credential_types::{
     Credentials,
 };
 use object_store::{
-    aws::{AmazonS3Builder, AmazonS3ConfigKey, AwsCredential},
+    aws::{resolve_bucket_region, AmazonS3Builder, AmazonS3ConfigKey, AwsCredential},
     path::Path,
-    CredentialProvider, ObjectStore, ObjectStoreScheme,
+    ClientOptions, CredentialProvider, ObjectStore, ObjectStoreScheme,
 };
 
 /// Creates an S3 object store using options specified as Hadoop S3A configurations.
@@ -47,7 +47,7 @@ use object_store::{
 ///
 /// * `url` - The URL of the S3 object to access.
 /// * `configs` - The Hadoop S3A configurations to use for building the object store.
-/// * `credential_refresh_buffer` - Time buffer before credential expiry when refresh should be triggered.
+/// * `min_ttl` - Time buffer before credential expiry when refresh should be triggered.
 ///
 /// # Returns
 ///
@@ -56,7 +56,7 @@ use object_store::{
 pub fn create_store(
     url: &Url,
     configs: &HashMap<String, String>,
-    credential_refresh_buffer: Duration,
+    min_ttl: Duration,
 ) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
     let (scheme, path) = ObjectStoreScheme::parse(url)?;
     if scheme != ObjectStoreScheme::AmazonS3 {
@@ -75,17 +75,28 @@ pub fn create_store(
         source: "Missing bucket name in S3 URL".into(),
     })?;
 
-    let credential_provider = get_runtime().block_on(build_credential_provider(
-        configs,
-        bucket,
-        credential_refresh_buffer,
-    ))?;
+    let credential_provider =
+        get_runtime().block_on(build_credential_provider(configs, bucket, min_ttl))?;
     builder = match credential_provider {
         Some(provider) => builder.with_credentials(Arc::new(provider)),
         None => builder.with_skip_signature(true),
     };
 
     let s3_configs = extract_s3_config_options(configs, bucket);
+    println!("s3 url: {:?}, configs: {:?}", url, s3_configs);
+
+    // When using the default AWS S3 endpoint (no custom endpoint configured), a valid region
+    // is required. If no region is explicitly configured, attempt to auto-resolve it by
+    // making a HeadBucket request to determine the bucket's region.
+    if !s3_configs.contains_key(&AmazonS3ConfigKey::Endpoint)
+        && !s3_configs.contains_key(&AmazonS3ConfigKey::Region)
+    {
+        let region =
+            get_runtime().block_on(resolve_bucket_region(bucket, &ClientOptions::new()))?;
+        println!("resolved region: {:?}", region);
+        builder = builder.with_config(AmazonS3ConfigKey::Region, region.to_string());
+    }
+
     for (key, value) in s3_configs {
         builder = builder.with_config(key, value);
     }
@@ -96,7 +107,7 @@ pub fn create_store(
 }
 
 /// Extracts S3 configuration options from Hadoop S3A configurations and returns them
-/// as a Vec of (AmazonS3ConfigKey, String) pairs that can be applied to an AmazonS3Builder.
+/// as a HashMap of (AmazonS3ConfigKey, String) pairs that can be applied to an AmazonS3Builder.
 ///
 /// # Arguments
 ///
@@ -105,56 +116,81 @@ pub fn create_store(
 ///
 /// # Returns
 ///
-/// * `Vec<(AmazonS3ConfigKey, String)>` - The extracted S3 configuration options.
+/// * `HashMap<AmazonS3ConfigKey, String>` - The extracted S3 configuration options.
 ///
 fn extract_s3_config_options(
     configs: &HashMap<String, String>,
     bucket: &str,
-) -> Vec<(AmazonS3ConfigKey, String)> {
-    let mut s3_configs = Vec::new();
+) -> HashMap<AmazonS3ConfigKey, String> {
+    let mut s3_configs = HashMap::new();
 
     // Extract region configuration
     if let Some(region) = get_config_trimmed(configs, bucket, "endpoint.region") {
-        s3_configs.push((AmazonS3ConfigKey::Region, region.to_string()));
+        s3_configs.insert(AmazonS3ConfigKey::Region, region.to_string());
     }
 
     // Extract and handle path style access (virtual hosted style)
     let mut virtual_hosted_style_request = false;
     if let Some(path_style) = get_config_trimmed(configs, bucket, "path.style.access") {
         virtual_hosted_style_request = path_style.to_lowercase() == "true";
-        s3_configs.push((
+        s3_configs.insert(
             AmazonS3ConfigKey::VirtualHostedStyleRequest,
             virtual_hosted_style_request.to_string(),
-        ));
+        );
     }
 
     // Extract endpoint configuration and modify if virtual hosted style is enabled
     if let Some(endpoint) = get_config_trimmed(configs, bucket, "endpoint") {
-        let final_endpoint = if virtual_hosted_style_request {
-            // if `virtual_hosted_style_request` is set to true then `endpoint` should have the
-            // bucket name included. This is required by the object_store crate and is a bit
-            // different from the behavior of Hadoop S3A.
-            if endpoint.ends_with("/") {
-                format!("{}{}", endpoint, bucket)
-            } else {
-                format!("{}/{}", endpoint, bucket)
-            }
-        } else {
-            endpoint.to_string()
-        };
-        s3_configs.push((AmazonS3ConfigKey::Endpoint, final_endpoint));
+        let normalized_endpoint =
+            normalize_endpoint(endpoint, bucket, virtual_hosted_style_request);
+        if let Some(endpoint) = normalized_endpoint {
+            s3_configs.insert(AmazonS3ConfigKey::Endpoint, endpoint);
+        }
     }
 
     // Extract request payer configuration
     if let Some(requester_pays) = get_config_trimmed(configs, bucket, "requester.pays.enabled") {
         let requester_pays_enabled = requester_pays.to_lowercase() == "true";
-        s3_configs.push((
+        s3_configs.insert(
             AmazonS3ConfigKey::RequestPayer,
             requester_pays_enabled.to_string(),
-        ));
+        );
     }
 
     s3_configs
+}
+
+fn normalize_endpoint(
+    endpoint: &str,
+    bucket: &str,
+    virtual_hosted_style_request: bool,
+) -> Option<String> {
+    if endpoint.is_empty() {
+        return None;
+    }
+
+    // This is the default Hadoop S3A configuration. Explicitly specifying this endpoint will lead to HTTP
+    // request failures when using object_store crate, so we ignore it and let object_store crate
+    // use the default endpoint.
+    if endpoint == "s3.amazonaws.com" {
+        return None;
+    }
+
+    let endpoint = if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
+        format!("https://{}", endpoint)
+    } else {
+        endpoint.to_string()
+    };
+
+    if virtual_hosted_style_request {
+        if endpoint.ends_with("/") {
+            Some(format!("{}{}", endpoint, bucket))
+        } else {
+            Some(format!("{}/{}", endpoint, bucket))
+        }
+    } else {
+        Some(endpoint) // Avoid extra to_string() call since endpoint is already a String
+    }
 }
 
 fn get_config<'a>(
@@ -210,7 +246,7 @@ const AWS_ANONYMOUS_V1: &str = "com.amazonaws.auth.AnonymousAWSCredentials";
 ///
 /// * `configs` - The Hadoop S3A configurations to use for building the credential provider.
 /// * `bucket` - The bucket to build the credential provider for.
-/// * `refresh_buffer` - Time buffer before credential expiry when refresh should be triggered.
+/// * `min_ttl` - Time buffer before credential expiry when refresh should be triggered.
 ///
 /// # Returns
 ///
@@ -220,7 +256,7 @@ const AWS_ANONYMOUS_V1: &str = "com.amazonaws.auth.AnonymousAWSCredentials";
 async fn build_credential_provider(
     configs: &HashMap<String, String>,
     bucket: &str,
-    refresh_buffer: Duration,
+    min_ttl: Duration,
 ) -> Result<Option<CachedAwsCredentialProvider>, object_store::Error> {
     let aws_credential_provider_names =
         get_config_trimmed(configs, bucket, "aws.credentials.provider");
@@ -245,11 +281,12 @@ async fn build_credential_provider(
         configs,
         bucket,
     )?;
+    println!("provider_metadata: {:?}", provider_metadata);
     let provider = provider_metadata.create_credential_provider().await?;
     Ok(Some(CachedAwsCredentialProvider::new(
         provider,
         provider_metadata,
-        refresh_buffer,
+        min_ttl,
     )))
 }
 
@@ -271,7 +308,10 @@ fn build_chained_aws_credential_provider_metadata(
     bucket: &str,
 ) -> Result<CredentialProviderMetadata, object_store::Error> {
     if credential_provider_names.is_empty() {
-        // Use the default credential provider chain
+        // Use the default credential provider chain. This is actually more permissive than
+        // the default Hadoop S3A FileSystem behavior, which only uses
+        // TemporaryAWSCredentialsProvider, SimpleAWSCredentialsProvider,
+        // EnvironmentVariableCredentialsProvider and IAMInstanceCredentialsProvider
         return Ok(CredentialProviderMetadata::Default);
     }
 
@@ -332,7 +372,11 @@ fn build_static_credential_provider_metadata(
 ) -> Result<CredentialProviderMetadata, object_store::Error> {
     let access_key_id = get_config_trimmed(configs, bucket, "access.key");
     let secret_access_key = get_config_trimmed(configs, bucket, "secret.key");
-    let session_token = get_config_trimmed(configs, bucket, "session.token");
+    let session_token = if credential_provider_name == HADOOP_TEMPORARY {
+        get_config_trimmed(configs, bucket, "session.token")
+    } else {
+        None
+    };
 
     // Allow static credential provider creation even when access/secret keys are missing.
     // This maintains compatibility with Hadoop S3A FileSystem, whose default credential chain
@@ -414,7 +458,7 @@ struct CachedAwsCredentialProvider {
     /// For example, if set to 5 minutes, credentials will be refreshed when they have
     /// 5 minutes or less remaining before expiration. This prevents credential expiry
     /// during active operations.
-    refresh_buffer: Duration,
+    min_ttl: Duration,
 
     /// The metadata of the credential provider. Only present when running tests. This field is used
     /// to assert on the structure of the credential provider.
@@ -427,12 +471,12 @@ impl CachedAwsCredentialProvider {
     fn new(
         credential_provider: Arc<dyn ProvideCredentials>,
         metadata: CredentialProviderMetadata,
-        refresh_buffer: Duration,
+        min_ttl: Duration,
     ) -> Self {
         Self {
             provider: credential_provider,
             cached: Arc::new(RwLock::new(None)),
-            refresh_buffer,
+            min_ttl,
             #[cfg(test)]
             metadata,
         }
@@ -447,7 +491,7 @@ impl CachedAwsCredentialProvider {
         let locked = self.cached.read().unwrap();
         locked.as_ref().and_then(|cred| match cred.expiry() {
             Some(expiry) => {
-                if expiry < SystemTime::now() + self.refresh_buffer {
+                if expiry < SystemTime::now() + self.min_ttl {
                     None
                 } else {
                     Some(cred.clone())
@@ -676,6 +720,12 @@ mod tests {
             Self::default()
         }
 
+        fn with_region(mut self, region: &str) -> Self {
+            self.configs
+                .insert("fs.s3a.endpoint.region".to_string(), region.to_string());
+            self
+        }
+
         fn with_credential_provider(mut self, provider: &str) -> Self {
             self.configs.insert(
                 "fs.s3a.aws.credentials.provider".to_string(),
@@ -766,6 +816,7 @@ mod tests {
         let url = Url::parse("s3://test-bucket/test-object").unwrap();
         let configs = TestConfigBuilder::new()
             .with_credential_provider(HADOOP_ANONYMOUS)
+            .with_region("us-east-1")
             .build();
         let (_object_store, path) = create_store(&url, &configs, Duration::from_secs(300)).unwrap();
         assert_eq!(path.to_string(), "test-object");
@@ -908,6 +959,7 @@ mod tests {
             .with_credential_provider(HADOOP_SIMPLE)
             .with_access_key("test_access_key")
             .with_secret_key("test_secret_key")
+            .with_session_token("test_session_token")
             .build();
 
         let result = build_credential_provider(&configs, "test-bucket", Duration::from_secs(300))
@@ -1631,7 +1683,7 @@ mod tests {
         where
             Self: 'a,
         {
-            let cnt = self.counter.fetch_add(1, Ordering::Relaxed);
+            let cnt = self.counter.fetch_add(1, Ordering::SeqCst);
             let cred = Credentials::builder()
                 .access_key_id(format!("test_access_key_{}", cnt))
                 .secret_access_key(format!("test_secret_key_{}", cnt))
@@ -1692,9 +1744,6 @@ mod tests {
             "true".to_string(),
         );
         let s3_configs = extract_s3_config_options(&configs, "test-bucket");
-        let s3_configs = s3_configs
-            .into_iter()
-            .collect::<HashMap<AmazonS3ConfigKey, String>>();
         assert_eq!(
             s3_configs.get(&AmazonS3ConfigKey::Region),
             Some(&"ap-northeast-1".to_string())
@@ -1707,74 +1756,73 @@ mod tests {
 
     #[test]
     fn test_extract_s3_config_custom_endpoint() {
-        // Test endpoint configuration without virtual hosted style
+        let cases = vec![
+            ("custom.endpoint.com", "https://custom.endpoint.com"),
+            ("https://custom.endpoint.com", "https://custom.endpoint.com"),
+            (
+                "https://custom.endpoint.com/path/to/resource",
+                "https://custom.endpoint.com/path/to/resource",
+            ),
+        ];
+        for (endpoint, configured_endpoint) in cases {
+            let mut configs = HashMap::new();
+            configs.insert("fs.s3a.endpoint".to_string(), endpoint.to_string());
+            let s3_configs = extract_s3_config_options(&configs, "test-bucket");
+            assert_eq!(
+                s3_configs.get(&AmazonS3ConfigKey::Endpoint),
+                Some(&configured_endpoint.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn test_extract_s3_config_custom_endpoint_with_virtual_hosted_style() {
+        let cases = vec![
+            (
+                "custom.endpoint.com",
+                "https://custom.endpoint.com/test-bucket",
+            ),
+            (
+                "https://custom.endpoint.com",
+                "https://custom.endpoint.com/test-bucket",
+            ),
+            (
+                "https://custom.endpoint.com/",
+                "https://custom.endpoint.com/test-bucket",
+            ),
+            (
+                "https://custom.endpoint.com/path/to/resource",
+                "https://custom.endpoint.com/path/to/resource/test-bucket",
+            ),
+            (
+                "https://custom.endpoint.com/path/to/resource/",
+                "https://custom.endpoint.com/path/to/resource/test-bucket",
+            ),
+        ];
+        for (endpoint, configured_endpoint) in cases {
+            let mut configs = HashMap::new();
+            configs.insert("fs.s3a.endpoint".to_string(), endpoint.to_string());
+            configs.insert("fs.s3a.path.style.access".to_string(), "true".to_string());
+            let s3_configs = extract_s3_config_options(&configs, "test-bucket");
+            assert_eq!(
+                s3_configs.get(&AmazonS3ConfigKey::Endpoint),
+                Some(&configured_endpoint.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn test_extract_s3_config_ignore_default_endpoint() {
         let mut configs = HashMap::new();
         configs.insert(
             "fs.s3a.endpoint".to_string(),
-            "https://custom.endpoint.com".to_string(),
+            "s3.amazonaws.com".to_string(),
         );
         let s3_configs = extract_s3_config_options(&configs, "test-bucket");
-        let s3_configs = s3_configs
-            .into_iter()
-            .collect::<HashMap<AmazonS3ConfigKey, String>>();
-        assert_eq!(
-            s3_configs.get(&AmazonS3ConfigKey::Endpoint),
-            Some(&"https://custom.endpoint.com".to_string())
-        );
+        assert!(s3_configs.is_empty());
 
-        // Test endpoint configuration with virtual hosted style
-        let mut configs = HashMap::new();
-        configs.insert(
-            "fs.s3a.endpoint".to_string(),
-            "https://custom.endpoint.com".to_string(),
-        );
-        configs.insert("fs.s3a.path.style.access".to_string(), "true".to_string());
+        configs.insert("fs.s3a.endpoint".to_string(), "".to_string());
         let s3_configs = extract_s3_config_options(&configs, "test-bucket");
-        let s3_configs = s3_configs
-            .into_iter()
-            .collect::<HashMap<AmazonS3ConfigKey, String>>();
-        assert_eq!(
-            s3_configs.get(&AmazonS3ConfigKey::Endpoint),
-            Some(&"https://custom.endpoint.com/test-bucket".to_string())
-        );
-
-        configs.insert(
-            "fs.s3a.endpoint".to_string(),
-            "https://custom.endpoint.com/".to_string(),
-        );
-        let s3_configs = extract_s3_config_options(&configs, "test-bucket");
-        let s3_configs = s3_configs
-            .into_iter()
-            .collect::<HashMap<AmazonS3ConfigKey, String>>();
-        assert_eq!(
-            s3_configs.get(&AmazonS3ConfigKey::Endpoint),
-            Some(&"https://custom.endpoint.com/test-bucket".to_string())
-        );
-
-        configs.insert(
-            "fs.s3a.endpoint".to_string(),
-            "https://custom.endpoint.com/path/to/resource".to_string(),
-        );
-        let s3_configs = extract_s3_config_options(&configs, "test-bucket");
-        let s3_configs = s3_configs
-            .into_iter()
-            .collect::<HashMap<AmazonS3ConfigKey, String>>();
-        assert_eq!(
-            s3_configs.get(&AmazonS3ConfigKey::Endpoint),
-            Some(&"https://custom.endpoint.com/path/to/resource/test-bucket".to_string())
-        );
-
-        configs.insert(
-            "fs.s3a.endpoint".to_string(),
-            "https://custom.endpoint.com/path/to/resource/".to_string(),
-        );
-        let s3_configs = extract_s3_config_options(&configs, "test-bucket");
-        let s3_configs = s3_configs
-            .into_iter()
-            .collect::<HashMap<AmazonS3ConfigKey, String>>();
-        assert_eq!(
-            s3_configs.get(&AmazonS3ConfigKey::Endpoint),
-            Some(&"https://custom.endpoint.com/path/to/resource/test-bucket".to_string())
-        );
+        assert!(s3_configs.is_empty());
     }
 }
