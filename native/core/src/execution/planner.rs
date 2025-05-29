@@ -893,7 +893,7 @@ impl PhysicalPlanner {
                     func_name,
                     fun_expr,
                     vec![left, right],
-                    Field::new(func_name, data_type, true),
+                    Arc::new(Field::new(func_name, data_type, true)),
                 )))
             }
             _ => Ok(Arc::new(BinaryExpr::new(left, op, right))),
@@ -2239,7 +2239,7 @@ impl PhysicalPlanner {
                     let arg_fields = coerced_types
                         .iter()
                         .enumerate()
-                        .map(|(i, dt)| Field::new(format!("arg{i}"), dt.clone(), true))
+                        .map(|(i, dt)| Arc::new(Field::new(format!("arg{i}"), dt.clone(), true)))
                         .collect::<Vec<_>>();
 
                     // TODO this should try and find scalar
@@ -2295,7 +2295,7 @@ impl PhysicalPlanner {
             fun_name,
             fun_expr,
             args.to_vec(),
-            Field::new(fun_name, data_type, true),
+            Arc::new(Field::new(fun_name, data_type, true)),
         ));
 
         Ok(scalar_expr)

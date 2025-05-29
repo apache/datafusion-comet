@@ -21,7 +21,7 @@ use arrow::array::{
     types::{Decimal128Type, Int64Type},
     Array, ArrayRef, Decimal128Array, Int64Array, PrimitiveArray,
 };
-use arrow::datatypes::{DataType, Field};
+use arrow::datatypes::{DataType, Field, FieldRef};
 use arrow::{array::BooleanBufferBuilder, buffer::NullBuffer, compute::sum};
 use datafusion::common::{not_impl_err, Result, ScalarValue};
 use datafusion::logical_expr::{
@@ -82,18 +82,18 @@ impl AggregateUDFImpl for AvgDecimal {
         }
     }
 
-    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<Field>> {
+    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
         Ok(vec![
-            Field::new(
+            Arc::new(Field::new(
                 format_state_name(self.name(), "sum"),
                 self.sum_data_type.clone(),
                 true,
-            ),
-            Field::new(
+            )),
+            Arc::new(Field::new(
                 format_state_name(self.name(), "count"),
                 DataType::Int64,
                 true,
-            ),
+            )),
         ])
     }
 

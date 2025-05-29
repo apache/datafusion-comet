@@ -17,8 +17,7 @@
  * under the License.
  */
 
-use std::any::Any;
-
+use arrow::datatypes::FieldRef;
 use arrow::{
     array::{ArrayRef, Float64Array},
     compute::cast,
@@ -32,6 +31,8 @@ use datafusion::logical_expr::type_coercion::aggregates::NUMERICS;
 use datafusion::logical_expr::{Accumulator, AggregateUDFImpl, Signature, Volatility};
 use datafusion::physical_expr::expressions::format_state_name;
 use datafusion::physical_expr::expressions::StatsType;
+use std::any::Any;
+use std::sync::Arc;
 
 /// COVAR_SAMP and COVAR_POP aggregate expression
 /// The implementation mostly is the same as the DataFusion's implementation. The reason
@@ -92,28 +93,28 @@ impl AggregateUDFImpl for Covariance {
         )?))
     }
 
-    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<Field>> {
+    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
         Ok(vec![
-            Field::new(
+            Arc::new(Field::new(
                 format_state_name(&self.name, "count"),
                 DataType::Float64,
                 true,
-            ),
-            Field::new(
+            )),
+            Arc::new(Field::new(
                 format_state_name(&self.name, "mean1"),
                 DataType::Float64,
                 true,
-            ),
-            Field::new(
+            )),
+            Arc::new(Field::new(
                 format_state_name(&self.name, "mean2"),
                 DataType::Float64,
                 true,
-            ),
-            Field::new(
+            )),
+            Arc::new(Field::new(
                 format_state_name(&self.name, "algo_const"),
                 DataType::Float64,
                 true,
-            ),
+            )),
         ])
     }
 }

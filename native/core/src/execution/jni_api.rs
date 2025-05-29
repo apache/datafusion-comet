@@ -22,7 +22,7 @@ use arrow::array::RecordBatch;
 use arrow::datatypes::DataType as ArrowDataType;
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::{
-    execution::{disk_manager::DiskManagerConfig, runtime_env::RuntimeEnv},
+    execution::{disk_manager::DiskManagerBuilder, runtime_env::RuntimeEnv},
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
@@ -49,6 +49,7 @@ use crate::{
     jvm_bridge::{jni_new_global_ref, JVMClasses},
 };
 use datafusion::common::ScalarValue;
+use datafusion::execution::disk_manager::DiskManagerMode;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion_comet_proto::spark_operator::Operator;
 use futures::stream::StreamExt;
@@ -255,9 +256,9 @@ fn prepare_datafusion_session_context(
     memory_pool: Arc<dyn MemoryPool>,
     local_dirs: Vec<String>,
 ) -> CometResult<SessionContext> {
-    let disk_manager_config =
-        DiskManagerConfig::NewSpecified(local_dirs.into_iter().map(PathBuf::from).collect());
-    let mut rt_config = RuntimeEnvBuilder::new().with_disk_manager(disk_manager_config);
+    let paths = local_dirs.into_iter().map(PathBuf::from).collect();
+    let disk_manager = DiskManagerBuilder::default().with_mode(DiskManagerMode::Directories(paths));
+    let mut rt_config = RuntimeEnvBuilder::new().with_disk_manager_builder(disk_manager);
     rt_config = rt_config.with_memory_pool(memory_pool);
 
     // Get Datafusion configuration from Spark Execution context
