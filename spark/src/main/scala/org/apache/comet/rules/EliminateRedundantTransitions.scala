@@ -19,8 +19,6 @@
 
 package org.apache.comet.rules
 
-import scala.util.{Failure, Success, Try}
-
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
@@ -86,10 +84,9 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
           c.logicalLink.foreach(op.setLogicalLink)
         }
         op
-
-      case CometColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) => sparkToColumnar.child
-      case CometSparkToColumnarExec(child: CometSparkToColumnarExec) =>
-        child
+      case CometColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
+        sparkToColumnar.child
+      case CometSparkToColumnarExec(child: CometSparkToColumnarExec) => child
       // Spark adds `RowToColumnar` under Comet columnar shuffle. But it's redundant as the
       // shuffle takes row-based input.
       case s @ CometShuffleExchangeExec(
