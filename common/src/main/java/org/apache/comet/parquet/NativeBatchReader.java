@@ -321,8 +321,6 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       }
       long[] starts = new long[blocks.size()];
       long[] lengths = new long[blocks.size()];
-      starts = new long[blocks.size()];
-      lengths = new long[blocks.size()];
       int blockIndex = 0;
       for (BlockMetaData block : blocks) {
         long blockStart = block.getStartingPos();
@@ -613,7 +611,10 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
 
   @SuppressWarnings("deprecation")
   private int loadNextBatch() throws Throwable {
-    long startNs = System.nanoTime();
+
+    for (ParquetColumn childColumn : JavaConverters.seqAsJavaList(parquetColumn.children())) {
+      checkParquetType(childColumn);
+    }
 
     int batchSize = Native.readNextRecordBatch(this.handle);
     if (batchSize == 0) {
@@ -621,10 +622,6 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     }
     if (importer != null) importer.close();
     importer = new CometSchemaImporter(ALLOCATOR);
-
-    for (ParquetColumn childColumn : JavaConverters.seqAsJavaList(parquetColumn.children())) {
-      checkParquetType(childColumn);
-    }
 
     List<Type> fields = requestedSchema.getFields();
     for (int i = 0; i < fields.size(); i++) {
