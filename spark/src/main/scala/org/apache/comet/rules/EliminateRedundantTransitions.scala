@@ -64,7 +64,7 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
   private def _apply(plan: SparkPlan): SparkPlan = {
     val eliminatedPlan = plan transformUp {
       case ColumnarToRowExec(shuffleExchangeExec: CometShuffleExchangeExec)
-          if (conf.adaptiveExecutionEnabled) =>
+          if (plan.conf.adaptiveExecutionEnabled) =>
         shuffleExchangeExec
       case ColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
         if (sparkToColumnar.child.supportsColumnar) {
