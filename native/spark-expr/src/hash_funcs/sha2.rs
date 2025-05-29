@@ -60,7 +60,7 @@ fn wrap_digest_result_as_hex_string(
         args: args.into(),
         arg_fields: vec![],
         number_rows: row_count,
-        return_field: return_field,
+        return_field,
     })?;
     match value {
         ColumnarValue::Array(array) => {
