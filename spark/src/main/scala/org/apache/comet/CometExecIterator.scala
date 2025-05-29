@@ -19,7 +19,10 @@
 
 package org.apache.comet
 
+import java.io.FileNotFoundException
 import java.lang.management.ManagementFactory
+
+import scala.util.matching.Regex
 
 import org.apache.spark._
 import org.apache.spark.internal.Logging
@@ -133,7 +136,7 @@ class CometExecIterator(
     }
   }
 
-  def getNextBatch(): Option[ColumnarBatch] = {
+  private def getNextBatch: Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
 
     if (tracingEnabled) {
@@ -141,15 +144,45 @@ class CometExecIterator(
     }
 
     val ctx = TaskContext.get()
-    withTrace(
-      s"getNextBatch[JVM] stage=${ctx.stageId()}",
-      tracingEnabled, {
-        nativeUtil.getNextBatch(
-          numOutputCols,
-          (arrayAddrs, schemaAddrs) => {
-            nativeLib.executePlan(ctx.stageId(), partitionIndex, plan, arrayAddrs, schemaAddrs)
-          })
-      })
+
+    try {
+      withTrace(
+        s"getNextBatch[JVM] stage=${ctx.stageId()}",
+        tracingEnabled, {
+          nativeUtil.getNextBatch(
+            numOutputCols,
+            (arrayAddrs, schemaAddrs) => {
+              nativeLib.executePlan(ctx.stageId(), partitionIndex, plan, arrayAddrs, schemaAddrs)
+            })
+        })
+    } catch {
+      case e: CometNativeException =>
+        val fileNotFoundPattern: Regex =
+          ("""^External: Object at location (.+?) not found: No such file or directory """ +
+            """\(os error \d+\)$""").r
+        val parquetError: Regex =
+          """^Parquet error: (?:.*)$""".r
+        e.getMessage match {
+          case fileNotFoundPattern(filePath) =>
+            // See org.apache.spark.sql.errors.QueryExecutionErrors.readCurrentFileNotFoundError
+            throw new SparkException(
+              errorClass = "_LEGACY_ERROR_TEMP_2055",
+              messageParameters = Map("message" -> e.getMessage),
+              cause = new FileNotFoundException(filePath)
+            ) // Can't use SparkFileNotFoundException because it's private.
+          case parquetError() =>
+            // See org.apache.spark.sql.errors.QueryExecutionErrors.failedToReadDataError
+            // See org.apache.parquet.hadoop.ParquetFileReader for error message.
+            throw new SparkException(
+              errorClass = "_LEGACY_ERROR_TEMP_2254",
+              messageParameters = Map("message" -> e.getMessage),
+              cause = new SparkException("File is not a Parquet file.", e))
+          case _ =>
+            throw e
+        }
+      case e: Throwable =>
+        throw e
+    }
   }
 
   override def hasNext: Boolean = {
@@ -167,7 +200,7 @@ class CometExecIterator(
       prevBatch = null
     }
 
-    nextBatch = getNextBatch()
+    nextBatch = getNextBatch
 
     if (nextBatch.isEmpty) {
       close()

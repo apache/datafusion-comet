@@ -119,7 +119,9 @@ abstract class CometTestBase
 
     actualAnswer.toSeq.zip(expectedAnswer.toSeq).foreach {
       case (actual: Double, expected: Double) =>
-        if (!actual.isNaN && !expected.isNaN) {
+        if (actual.isInfinity || expected.isInfinity) {
+          assert(actual.isInfinity == expected.isInfinity, s"actual answer $actual != $expected")
+        } else if (!actual.isNaN && !expected.isNaN) {
           assert(
             math.abs(actual - expected) < absTol,
             s"actual answer $actual not within $absTol of correct answer $expected")
@@ -860,7 +862,8 @@ abstract class CometTestBase
       testName: String = "test",
       tableName: String = "tbl",
       sqlConf: Seq[(String, String)] = Seq.empty,
-      debugCometDF: DataFrame => Unit = _ => ()): Unit = {
+      debugCometDF: DataFrame => Unit = _ => (),
+      checkCometOperator: Boolean = true): Unit = {
 
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, testName).toUri.toString
@@ -879,7 +882,8 @@ abstract class CometTestBase
       withSQLConf(sqlConf: _*) {
         val cometDF = sql(testQuery)
         debugCometDF(cometDF)
-        checkSparkAnswerAndOperator(cometDF)
+        if (checkCometOperator) checkSparkAnswerAndOperator(cometDF)
+        else checkSparkAnswer(cometDF)
       }
     }
   }
