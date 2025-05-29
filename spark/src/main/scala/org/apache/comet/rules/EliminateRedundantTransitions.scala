@@ -87,8 +87,7 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
         }
         op
 
-      case CometColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
-        sparkToColumnar.child
+      case CometColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) => sparkToColumnar.child
       case CometSparkToColumnarExec(child: CometSparkToColumnarExec) =>
         child
       // Spark adds `RowToColumnar` under Comet columnar shuffle. But it's redundant as the
