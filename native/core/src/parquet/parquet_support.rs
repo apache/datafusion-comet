@@ -62,9 +62,6 @@ pub struct SparkParquetOptions {
     pub allow_incompat: bool,
     /// Support casting unsigned ints to signed ints (used by Parquet SchemaAdapter)
     pub allow_cast_unsigned_ints: bool,
-    /// We also use the cast logic for adapting Parquet schemas, so this flag is used
-    /// for that use case
-    pub is_adapting_schema: bool,
     /// Whether to always represent decimals using 128 bits. If false, the native reader may represent decimals using 32 or 64 bits, depending on the precision.
     pub use_decimal_128: bool,
     /// Whether to read dates/timestamps that were written in the legacy hybrid Julian + Gregorian calendar as it is. If false, throw exceptions instead. If the spark type is TimestampNTZ, this should be true.
@@ -80,7 +77,6 @@ impl SparkParquetOptions {
             timezone: timezone.to_string(),
             allow_incompat,
             allow_cast_unsigned_ints: false,
-            is_adapting_schema: false,
             use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
@@ -93,7 +89,6 @@ impl SparkParquetOptions {
             timezone: "".to_string(),
             allow_incompat,
             allow_cast_unsigned_ints: false,
-            is_adapting_schema: false,
             use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
@@ -216,7 +211,11 @@ fn cast_struct_to_struct(
             // TODO some of this logic may be specific to converting Parquet to Spark
             let mut field_name_to_index_map = HashMap::new();
             for (i, field) in from_fields.iter().enumerate() {
-                field_name_to_index_map.insert(field.name(), i);
+                if parquet_options.case_sensitive {
+                    field_name_to_index_map.insert(field.name().clone(), i);
+                } else {
+                    field_name_to_index_map.insert(field.name().to_lowercase(), i);
+                }
             }
             assert_eq!(field_name_to_index_map.len(), from_fields.len());
             let mut cast_fields: Vec<ArrayRef> = Vec::with_capacity(to_fields.len());
@@ -224,8 +223,13 @@ fn cast_struct_to_struct(
                 // Fields in the to_type schema may not exist in the from_type schema
                 // i.e. the required schema may have fields that the file does not
                 // have
-                if field_name_to_index_map.contains_key(to_fields[i].name()) {
-                    let from_index = field_name_to_index_map[to_fields[i].name()];
+                let key = if parquet_options.case_sensitive {
+                    to_fields[i].name().clone()
+                } else {
+                    to_fields[i].name().to_lowercase()
+                };
+                if field_name_to_index_map.contains_key(&key) {
+                    let from_index = field_name_to_index_map[&key];
                     let cast_field = cast_array(
                         Arc::clone(array.column(from_index)),
                         to_fields[i].data_type(),
