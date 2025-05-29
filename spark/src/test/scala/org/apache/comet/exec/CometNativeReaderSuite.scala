@@ -334,7 +334,8 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
 
 // Note: commented out for comet native result because of correctness issue https://github.com/apache/datafusion-comet/issues/1789
 // But now we fall back to Spark for this query in https://github.com/apache/datafusion-comet/pull/1799 , so it is not an issue currently.
-  test("native reader - select nested field from a complex map[struct, struct] using map_values") {
+  test(
+    "native reader - select nested field from a complex map[struct, struct] using map_values") {
     testSingleLineQuery(
       """
         | select map(str0, str1) c0 from
