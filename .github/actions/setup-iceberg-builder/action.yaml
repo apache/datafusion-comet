@@ -1,0 +1,63 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Setup Iceberg Builder
+description: 'Setup Apache Iceberg to run Spark SQL tests'
+inputs:
+  iceberg-short-version:
+    description: 'The Apache Iceberg short version (e.g., 1.8) to build'
+    required: true
+  iceberg-version:
+    description: 'The Apache Iceberg version (e.g., 1.8.1) to build'
+    required: true
+  scala-version:
+    description: 'The Scala short version (e.g., 2.13) to build'
+    required: true
+  spark-short-version:
+    description: 'The Apache Spark short version (e.g., 3.5) to build'
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - name: Clone Iceberg repo
+      uses: actions/checkout@v4
+      with:
+        repository: apache/iceberg
+        path: apache-iceberg
+        ref: apache-iceberg-${{inputs.iceberg-version}}
+        fetch-depth: 1
+
+    - name: Setup Iceberg for Comet
+      shell: bash
+      run: |
+        cd apache-iceberg
+        git apply ../dev/diffs/iceberg/${{inputs.iceberg-version}}.diff
+
+    - name: Cache Maven dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.m2/repository
+          /root/.m2/repository
+        key: ${{ runner.os }}-iceberg-spark-sql-${{ hashFiles('spark/**/pom.xml', 'common/**/pom.xml') }}
+        restore-keys: |
+          ${{ runner.os }}-iceberg-spark-sql-
+
+    - name: Build Comet
+      shell: bash
+      run: |
+        PROFILES="-Pspark-${{inputs.spark-short-version}} -Pscala-${{inputs.scala-version}}" make release
