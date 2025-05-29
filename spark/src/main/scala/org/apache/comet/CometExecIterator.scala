@@ -177,6 +177,8 @@ class CometExecIterator(
               errorClass = "_LEGACY_ERROR_TEMP_2254",
               messageParameters = Map("message" -> e.getMessage),
               cause = new SparkException("File is not a Parquet file.", e))
+          case _ =>
+            throw e
         }
       case e: Throwable =>
         throw e
