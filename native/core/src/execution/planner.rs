@@ -2258,10 +2258,7 @@ impl PhysicalPlanner {
                         scalar_arguments: &arguments,
                     };
 
-                    let data_type = func
-                        .inner()
-                        .return_field_from_args(args)?
-                        .clone()
+                    let data_type = Arc::clone(&func.inner().return_field_from_args(args)?)
                         .data_type()
                         .clone();
 
