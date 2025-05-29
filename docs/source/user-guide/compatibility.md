@@ -66,6 +66,7 @@ types (regardless of the logical type). This behavior can be disabled by setting
 information.
 - There are failures in the Spark SQL test suite when enabling these new scans (tracking issues: [#1542] and [#1545]).
 - No support for default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
+- Setting Spark configs `ignoreMissingFiles` or `ignoreCorruptFiles` to `true` is not compatible with `native_datafusion` scan.
 
 [#1545]: https://github.com/apache/datafusion-comet/issues/1545
 [#1542]: https://github.com/apache/datafusion-comet/issues/1542
