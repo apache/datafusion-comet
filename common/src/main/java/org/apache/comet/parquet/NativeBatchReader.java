@@ -236,7 +236,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   public void init() throws Throwable {
 
     conf.set("spark.sql.parquet.binaryAsString", "false");
-    conf.set("spark.sql.parquet.int96AsTimestamp", "false");
+    conf.set("spark.sql.parquet.int96AsTimestamp", "true");
     conf.set("spark.sql.caseSensitive", "false");
     conf.set("spark.sql.parquet.inferTimestampNTZ.enabled", "true");
     conf.set("spark.sql.legacy.parquet.nanosAsLong", "false");
@@ -283,6 +283,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
                   sparkSchema.size(), requestedSchema.getFieldCount()));
         }
       }
+      // Convert clipped schema back to a Spark schema
+      sparkSchema = converter.convert(requestedSchema);
       this.parquetColumn =
           converter.convertParquetColumn(requestedSchema, Option.apply(this.sparkSchema));
 
