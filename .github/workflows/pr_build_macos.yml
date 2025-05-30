@@ -44,9 +44,21 @@ jobs:
   macos-aarch64-test:
     strategy:
       matrix:
-        java_version: [17]
-        spark-version: ['3.4', '3.5', '4.0']
-        scala-version: ['2.13']
+        # the goal with these profiles is to get coverage of all Java, Scala, and Spark
+        # versions without testing all possible combinations, which would be overkill
+        profile:
+          - name: "Spark 3.4, JDK 11, Scala 2.12"
+            java_version: "11"
+            maven_opts: "-Pspark-3.4 -Pscala-2.12"
+
+          - name: "Spark 3.5, JDK 17, Scala 2.13"
+            java_version: "17"
+            maven_opts: "-Pspark-3.5 -Pscala-2.13"
+
+          - name: "Spark 4.0, JDK 17, Scala 2.13"
+            java_version: "17"
+            maven_opts: "-Pspark-4.0 -Pscala-2.13"
+
         suite:
           - name: "fuzz"
             value: |
@@ -108,6 +120,6 @@ jobs:
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          artifact_name: ${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}-${{ matrix.suite.name }}-${{ matrix.profile.maven_opts }}
+          artifact_name: ${{ matrix.profile.name }}-${{ matrix.suite.name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
           suites: ${{ matrix.suite.value }}
-          maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
+          maven_opts: ${{ matrix.profile.maven_opts }}
