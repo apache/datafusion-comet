@@ -114,7 +114,7 @@ jobs:
         uses: ./.github/actions/setup-macos-builder
         with:
           rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{ matrix.java_version }}
+          jdk-version: ${{ matrix.profile.java_version }}
           jdk-architecture: aarch64
           protoc-architecture: aarch_64
       - name: Java test steps
