@@ -1634,6 +1634,12 @@ object QueryPlanSerde extends Logging with CometExprShim {
           binding,
           (builder, binaryExpr) => builder.setBitwiseXor(binaryExpr))
 
+      case BitwiseCount(child) =>
+        val childProto = exprToProto(child, inputs, binding)
+        val bitCountScalarExpr =
+          scalarFunctionExprToProtoWithReturnType("bit_count", IntegerType, childProto)
+        optExprWithInfo(bitCountScalarExpr, expr, expr.children: _*)
+
       case ShiftRight(left, right) =>
         // DataFusion bitwise shift right expression requires
         // same data type between left and right side
