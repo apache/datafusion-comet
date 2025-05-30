@@ -159,7 +159,7 @@ jobs:
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          artifact_name: Linux-${{ matrix.profile.name }}-${{ matrix.suite.name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+          artifact_name: ${{ matrix.os }}-${{ matrix.profile.name }}-${{ matrix.suite.name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
           suites: ${{ matrix.suite.value }}
           maven_opts: ${{ matrix.profile.maven_opts }}
           scan_impl: ${{ matrix.profile.scan_impl }}
