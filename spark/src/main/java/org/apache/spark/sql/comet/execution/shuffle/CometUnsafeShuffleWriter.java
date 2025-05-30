@@ -213,13 +213,13 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     if (tracingEnabled) {
       nativeLib.traceBegin("CometUnsafeShuffleWriter");
     }
-    String offheapMemKey = "offheap_shuffle_" + Thread.currentThread().getId();
+    String offheapMemKey = "comet_shuffle_" + Thread.currentThread().getId();
     try {
       while (records.hasNext()) {
         insertRecordIntoSorter(records.next());
       }
       if (tracingEnabled) {
-        nativeLib.logCounter(offheapMemKey, this.allocator.getUsed());
+        nativeLib.logMemoryUsage(offheapMemKey, this.allocator.getUsed());
       }
       closeAndWriteOutput();
       success = true;
@@ -242,7 +242,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
         }
       }
       if (tracingEnabled) {
-        nativeLib.logCounter(offheapMemKey, this.allocator.getUsed());
+        nativeLib.logMemoryUsage(offheapMemKey, this.allocator.getUsed());
       }
     }
   }

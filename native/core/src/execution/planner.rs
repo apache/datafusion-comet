@@ -69,7 +69,6 @@ use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr}
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
-use crate::parquet::parquet_exec::init_datasource_exec;
 use crate::parquet::parquet_support::prepare_object_store;
 use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{
@@ -79,13 +78,14 @@ use datafusion::common::{
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{
-    AggregateUDF, ReturnTypeArgs, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    AggregateUDF, ReturnFieldArgs, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
     WindowFunctionDefinition,
 };
 use datafusion::physical_expr::expressions::{Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
+use crate::parquet::parquet_exec::init_datasource_exec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
@@ -108,6 +108,7 @@ use datafusion_comet_spark_expr::{
     SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
     TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
+use datafusion_spark::function::math::expm1::SparkExpm1;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
@@ -146,6 +147,10 @@ pub struct PhysicalPlanner {
 impl Default for PhysicalPlanner {
     fn default() -> Self {
         let session_ctx = Arc::new(SessionContext::new());
+
+        // register UDFs from datafusion-spark crate
+        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
+
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,
@@ -155,6 +160,8 @@ impl Default for PhysicalPlanner {
 
 impl PhysicalPlanner {
     pub fn new(session_ctx: Arc<SessionContext>) -> Self {
+        // register UDFs from datafusion-spark crate
+        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,
@@ -378,6 +385,8 @@ impl PhysicalPlanner {
                         DataType::Binary => ScalarValue::Binary(None),
                         DataType::Decimal128(p, s) => ScalarValue::Decimal128(None, p, s),
                         DataType::Struct(fields) => ScalarStructBuilder::new_null(fields),
+                        DataType::Map(f, s) => DataType::Map(f, s).try_into()?,
+                        DataType::List(f) => DataType::List(f).try_into()?,
                         DataType::Null => ScalarValue::Null,
                         dt => {
                             return Err(GeneralError(format!("{:?} is not supported in Comet", dt)))
@@ -884,7 +893,7 @@ impl PhysicalPlanner {
                     func_name,
                     fun_expr,
                     vec![left, right],
-                    data_type,
+                    Arc::new(Field::new(func_name, data_type, true)),
                 )))
             }
             _ => Ok(Arc::new(BinaryExpr::new(left, op, right))),
@@ -1106,6 +1115,42 @@ impl PhysicalPlanner {
                     .map(|expr| self.create_expr(expr, Arc::clone(&required_schema)))
                     .collect();
 
+                let default_values: Option<HashMap<usize, ScalarValue>> = if !scan
+                    .default_values
+                    .is_empty()
+                {
+                    // We have default values. Extract the two lists (same length) of values and
+                    // indexes in the schema, and then create a HashMap to use in the SchemaMapper.
+                    let default_values: Result<Vec<ScalarValue>, DataFusionError> = scan
+                        .default_values
+                        .iter()
+                        .map(|expr| {
+                            let literal = self.create_expr(expr, Arc::clone(&required_schema))?;
+                            let df_literal = literal
+                                .as_any()
+                                .downcast_ref::<DataFusionLiteral>()
+                                .ok_or_else(|| {
+                                GeneralError("Expected literal of default value.".to_string())
+                            })?;
+                            Ok(df_literal.value().clone())
+                        })
+                        .collect();
+                    let default_values = default_values?;
+                    let default_values_indexes: Vec<usize> = scan
+                        .default_values_indexes
+                        .iter()
+                        .map(|offset| *offset as usize)
+                        .collect();
+                    Some(
+                        default_values_indexes
+                            .into_iter()
+                            .zip(default_values)
+                            .collect(),
+                    )
+                } else {
+                    None
+                };
+
                 // Get one file from the list of files
                 let one_file = scan
                     .file_partitions
@@ -1143,7 +1188,9 @@ impl PhysicalPlanner {
                     file_groups,
                     Some(projection_vector),
                     Some(data_filters?),
+                    default_values,
                     scan.session_timezone.as_str(),
+                    scan.case_sensitive,
                 )?;
                 Ok((
                     vec![],
@@ -2189,6 +2236,12 @@ impl PhysicalPlanner {
                         .coerce_types(&input_expr_types)
                         .unwrap_or_else(|_| input_expr_types.clone());
 
+                    let arg_fields = coerced_types
+                        .iter()
+                        .enumerate()
+                        .map(|(i, dt)| Arc::new(Field::new(format!("arg{i}"), dt.clone(), true)))
+                        .collect::<Vec<_>>();
+
                     // TODO this should try and find scalar
                     let arguments = args
                         .iter()
@@ -2200,18 +2253,13 @@ impl PhysicalPlanner {
                         })
                         .collect::<Vec<_>>();
 
-                    let nullables = arguments.iter().map(|_| true).collect::<Vec<_>>();
-
-                    let args = ReturnTypeArgs {
-                        arg_types: &coerced_types,
+                    let args = ReturnFieldArgs {
+                        arg_fields: &arg_fields,
                         scalar_arguments: &arguments,
-                        nullables: &nullables,
                     };
 
-                    let data_type = func
-                        .inner()
-                        .return_type_from_args(args)?
-                        .return_type()
+                    let data_type = Arc::clone(&func.inner().return_field_from_args(args)?)
+                        .data_type()
                         .clone();
 
                     (data_type, coerced_types)
@@ -2244,7 +2292,7 @@ impl PhysicalPlanner {
             fun_name,
             fun_expr,
             args.to_vec(),
-            data_type,
+            Arc::new(Field::new(fun_name, data_type, true)),
         ));
 
         Ok(scalar_expr)
@@ -2501,19 +2549,27 @@ fn create_case_expr(
 
 #[cfg(test)]
 mod tests {
+    use futures::{poll, StreamExt};
     use std::{sync::Arc, task::Poll};
 
-    use futures::{poll, StreamExt};
-
     use arrow::array::{Array, DictionaryArray, Int32Array, StringArray};
-    use arrow::datatypes::DataType;
+    use arrow::datatypes::{DataType, Field, Fields, Schema};
+    use datafusion::catalog::memory::DataSourceExec;
+    use datafusion::datasource::listing::PartitionedFile;
+    use datafusion::datasource::object_store::ObjectStoreUrl;
+    use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
+    use datafusion::error::DataFusionError;
     use datafusion::logical_expr::ScalarUDF;
+    use datafusion::physical_plan::ExecutionPlan;
     use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
+    use tempfile::TempDir;
     use tokio::sync::mpsc;
 
     use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
 
     use crate::execution::operators::ExecutionError;
+    use crate::parquet::parquet_support::SparkParquetOptions;
+    use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
     use datafusion_comet_proto::spark_expression::expr::ExprStruct;
     use datafusion_comet_proto::{
         spark_expression::expr::ExprStruct::*,
@@ -2522,6 +2578,7 @@ mod tests {
         spark_operator,
         spark_operator::{operator::OpStruct, Operator},
     };
+    use datafusion_comet_spark_expr::EvalMode;
 
     #[test]
     fn test_unpack_dictionary_primitive() {
@@ -3023,9 +3080,6 @@ mod tests {
         let (mut scans, datafusion_plan) =
             planner.create_plan(&projection, &mut vec![], 1).unwrap();
 
-        // Feed the data into plan
-        //scans[0].set_input_batch(input_batch);
-
         // Start executing the plan in a separate thread
         // The plan waits for incoming batches and emitting result as input comes
         let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
@@ -3080,5 +3134,206 @@ mod tests {
                 }
             }
         });
+    }
+
+    /*
+    Testing a nested types scenario
+
+    select arr[0].a, arr[0].c from (
+        select array(named_struct('a', 1, 'b', 'n', 'c', 'x')) arr)
+     */
+    #[tokio::test]
+    async fn test_nested_types_list_of_struct_by_index() -> Result<(), DataFusionError> {
+        let session_ctx = SessionContext::new();
+
+        // generate test data in the temp folder
+        let test_data = "select make_array(named_struct('a', 1, 'b', 'n', 'c', 'x')) c0";
+        let tmp_dir = TempDir::new()?;
+        let test_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let plan = session_ctx
+            .sql(test_data)
+            .await?
+            .create_physical_plan()
+            .await?;
+
+        // Write parquet file into temp folder
+        session_ctx
+            .write_parquet(plan, test_path.clone(), None)
+            .await?;
+
+        // Define schema Comet reads with
+        let required_schema = Schema::new(Fields::from(vec![Field::new(
+            "c0",
+            DataType::List(
+                Field::new(
+                    "element",
+                    DataType::Struct(Fields::from(vec![
+                        Field::new("a", DataType::Int32, true),
+                        Field::new("c", DataType::Utf8, true),
+                    ] as Vec<Field>)),
+                    true,
+                )
+                .into(),
+            ),
+            true,
+        )]));
+
+        // Register all parquet with temp data as file groups
+        let mut file_groups: Vec<FileGroup> = vec![];
+        for entry in std::fs::read_dir(&test_path)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.extension().and_then(|ext| ext.to_str()) == Some("parquet") {
+                if let Some(path_str) = path.to_str() {
+                    file_groups.push(FileGroup::new(vec![PartitionedFile::from_path(
+                        path_str.into(),
+                    )?]));
+                }
+            }
+        }
+
+        let source = Arc::new(
+            ParquetSource::default().with_schema_adapter_factory(Arc::new(
+                SparkSchemaAdapterFactory::new(
+                    SparkParquetOptions::new(EvalMode::Ansi, "", false),
+                    None,
+                ),
+            )),
+        );
+
+        let object_store_url = ObjectStoreUrl::local_filesystem();
+        let file_scan_config =
+            FileScanConfigBuilder::new(object_store_url, required_schema.into(), source)
+                .with_file_groups(file_groups)
+                .build();
+
+        // Run native read
+        let scan = Arc::new(DataSourceExec::new(Arc::new(file_scan_config.clone())));
+        let stream = scan.execute(0, session_ctx.task_ctx())?;
+        let result: Vec<_> = stream.collect().await;
+
+        let actual = result.first().unwrap().as_ref().unwrap();
+
+        let expected = [
+            "+----------------+",
+            "| c0             |",
+            "+----------------+",
+            "| [{a: 1, c: x}] |",
+            "+----------------+",
+        ];
+        assert_batches_eq!(expected, &[actual.clone()]);
+
+        Ok(())
+    }
+
+    /*
+    Testing a nested types scenario map[struct, struct]
+
+    select map_keys(m).b from (
+        select map(named_struct('a', 1, 'b', 'n', 'c', 'x'), named_struct('a', 1, 'b', 'n', 'c', 'x')) m
+     */
+    #[tokio::test]
+    async fn test_nested_types_map_keys() -> Result<(), DataFusionError> {
+        let session_ctx = SessionContext::new();
+
+        // generate test data in the temp folder
+        let test_data = "select map([named_struct('a', 1, 'b', 'n', 'c', 'x')], [named_struct('a', 2, 'b', 'm', 'c', 'y')]) c0";
+        let tmp_dir = TempDir::new()?;
+        let test_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let plan = session_ctx
+            .sql(test_data)
+            .await?
+            .create_physical_plan()
+            .await?;
+
+        // Write a parquet file into temp folder
+        session_ctx
+            .write_parquet(plan, test_path.clone(), None)
+            .await?;
+
+        // Register all parquet with temp data as file groups
+        let mut file_groups: Vec<FileGroup> = vec![];
+        for entry in std::fs::read_dir(&test_path)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.extension().and_then(|ext| ext.to_str()) == Some("parquet") {
+                if let Some(path_str) = path.to_str() {
+                    file_groups.push(FileGroup::new(vec![PartitionedFile::from_path(
+                        path_str.into(),
+                    )?]));
+                }
+            }
+        }
+
+        let source = Arc::new(
+            ParquetSource::default().with_schema_adapter_factory(Arc::new(
+                SparkSchemaAdapterFactory::new(
+                    SparkParquetOptions::new(EvalMode::Ansi, "", false),
+                    None,
+                ),
+            )),
+        );
+
+        // Define schema Comet reads with
+        let required_schema = Schema::new(Fields::from(vec![Field::new(
+            "c0",
+            DataType::Map(
+                Field::new(
+                    "entries",
+                    DataType::Struct(Fields::from(vec![
+                        Field::new(
+                            "key",
+                            DataType::Struct(Fields::from(vec![Field::new(
+                                "b",
+                                DataType::Utf8,
+                                true,
+                            )])),
+                            false,
+                        ),
+                        Field::new(
+                            "value",
+                            DataType::Struct(Fields::from(vec![
+                                Field::new("a", DataType::Int64, true),
+                                Field::new("b", DataType::Utf8, true),
+                                Field::new("c", DataType::Utf8, true),
+                            ])),
+                            true,
+                        ),
+                    ] as Vec<Field>)),
+                    false,
+                )
+                .into(),
+                false,
+            ),
+            true,
+        )]));
+
+        let object_store_url = ObjectStoreUrl::local_filesystem();
+        let file_scan_config =
+            FileScanConfigBuilder::new(object_store_url, required_schema.into(), source)
+                .with_file_groups(file_groups)
+                .build();
+
+        // Run native read
+        let scan = Arc::new(DataSourceExec::new(Arc::new(file_scan_config.clone())));
+        let stream = scan.execute(0, session_ctx.task_ctx())?;
+        let result: Vec<_> = stream.collect().await;
+
+        let actual = result.first().unwrap().as_ref().unwrap();
+
+        let expected = [
+            "+------------------------------+",
+            "| c0                           |",
+            "+------------------------------+",
+            "| {{b: n}: {a: 2, b: m, c: y}} |",
+            "+------------------------------+",
+        ];
+        assert_batches_eq!(expected, &[actual.clone()]);
+
+        Ok(())
     }
 }

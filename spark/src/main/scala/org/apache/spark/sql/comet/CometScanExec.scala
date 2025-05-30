@@ -19,7 +19,7 @@
 
 package org.apache.spark.sql.comet
 
-import scala.collection.mutable.{HashMap, ListBuffer}
+import scala.collection.mutable.HashMap
 import scala.concurrent.duration.NANOSECONDS
 import scala.reflect.ClassTag
 
@@ -44,15 +44,22 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.collection._
 
-import org.apache.comet.{CometConf, DataTypeSupport, MetricsSupport}
-import org.apache.comet.DataTypeSupport.{ARRAY_ELEMENT, MAP_KEY, MAP_VALUE}
+import org.apache.comet.{CometConf, MetricsSupport}
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionReaderFactory}
 
 /**
  * Comet physical scan node for DataSource V1. Most of the code here follow Spark's
- * [[FileSourceScanExec]],
+ * [[FileSourceScanExec]].
+ *
+ * This is a hybrid scan where the native plan will contain a `ScanExec` that reads batches of
+ * data from the JVM via JNI. The ultimate source of data may be a JVM implementation such as
+ * Spark readers, or could be the `native_comet` or `native_iceberg_compat` native scans.
+ *
+ * Note that scanImpl can only be `native_datafusion` after CometScanRule runs and before
+ * CometExecRule runs. It will never be set to `native_datafusion` at execution time
  */
 case class CometScanExec(
+    scanImpl: String,
     @transient relation: HadoopFsRelation,
     output: Seq[Attribute],
     requiredSchema: StructType,
@@ -415,16 +422,8 @@ case class CometScanExec(
       readFile: (PartitionedFile) => Iterator[InternalRow],
       partitions: Seq[FilePartition]): RDD[InternalRow] = {
     val hadoopConf = relation.sparkSession.sessionState.newHadoopConfWithOptions(relation.options)
-    val usingDataFusionReader: Boolean = {
-      hadoopConf.getBoolean(
-        CometConf.COMET_NATIVE_SCAN_ENABLED.key,
-        CometConf.COMET_NATIVE_SCAN_ENABLED.defaultValue.get) &&
-      hadoopConf
-        .get(
-          CometConf.COMET_NATIVE_SCAN_IMPL.key,
-          CometConf.COMET_NATIVE_SCAN_IMPL.defaultValueString)
-        .equalsIgnoreCase(CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
-    }
+    val usingDataFusionReader: Boolean = scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT
+
     val prefetchEnabled = hadoopConf.getBoolean(
       CometConf.COMET_SCAN_PREFETCH_ENABLED.key,
       CometConf.COMET_SCAN_PREFETCH_ENABLED.defaultValue.get) &&
@@ -436,6 +435,7 @@ case class CometScanExec(
       val broadcastedConf =
         fsRelation.sparkSession.sparkContext.broadcast(new SerializableConfiguration(hadoopConf))
       val partitionReaderFactory = CometParquetPartitionReaderFactory(
+        scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
         sqlConf,
         broadcastedConf,
         requiredSchema,
@@ -462,6 +462,7 @@ case class CometScanExec(
 
   override def doCanonicalize(): CometScanExec = {
     CometScanExec(
+      scanImpl,
       relation,
       output.map(QueryPlan.normalizeExpressions(_, output)),
       requiredSchema,
@@ -477,31 +478,12 @@ case class CometScanExec(
   }
 }
 
-object CometScanExec extends DataTypeSupport {
+object CometScanExec {
 
-  override def isAdditionallySupported(
-      dt: DataType,
-      name: String,
-      fallbackReasons: ListBuffer[String]): Boolean = {
-    if (CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
-      dt match {
-        case s: StructType =>
-          s.fields.forall(f => isTypeSupported(f.dataType, f.name, fallbackReasons))
-        case a: ArrayType =>
-          isTypeSupported(a.elementType, ARRAY_ELEMENT, fallbackReasons)
-        case m: MapType =>
-          isTypeSupported(m.keyType, MAP_KEY, fallbackReasons) && isTypeSupported(
-            m.valueType,
-            MAP_VALUE,
-            fallbackReasons)
-        case _ => false
-      }
-    } else {
-      false
-    }
-  }
-
-  def apply(scanExec: FileSourceScanExec, session: SparkSession): CometScanExec = {
+  def apply(
+      scanExec: FileSourceScanExec,
+      session: SparkSession,
+      scanImpl: String): CometScanExec = {
     // TreeNode.mapProductIterator is protected method.
     def mapProductIterator[B: ClassTag](product: Product, f: Any => B): Array[B] = {
       val arr = Array.ofDim[B](product.productArity)
@@ -519,13 +501,14 @@ object CometScanExec extends DataTypeSupport {
     // https://github.com/apache/arrow-datafusion-comet/issues/190
     def transform(arg: Any): AnyRef = arg match {
       case _: HadoopFsRelation =>
-        scanExec.relation.copy(fileFormat = new CometParquetFileFormat)(session)
+        scanExec.relation.copy(fileFormat = new CometParquetFileFormat(scanImpl))(session)
       case other: AnyRef => other
       case null => null
     }
-    val newArgs = mapProductIterator(scanExec, transform(_))
+    val newArgs = mapProductIterator(scanExec, transform)
     val wrapped = scanExec.makeCopy(newArgs).asInstanceOf[FileSourceScanExec]
     val batchScanExec = CometScanExec(
+      scanImpl,
       wrapped.relation,
       wrapped.output,
       wrapped.requiredSchema,
@@ -545,4 +528,5 @@ object CometScanExec extends DataTypeSupport {
     // of ParquetFileFormat.
     fileFormat.getClass().equals(classOf[ParquetFileFormat])
   }
+
 }

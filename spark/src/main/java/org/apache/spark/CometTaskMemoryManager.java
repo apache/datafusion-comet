@@ -40,7 +40,7 @@ public class CometTaskMemoryManager {
   /** The id uniquely identifies the native plan this memory manager is associated to */
   private final long id;
 
-  private final TaskMemoryManager internal;
+  public final TaskMemoryManager internal;
   private final NativeMemoryConsumer nativeMemoryConsumer;
   private final AtomicLong used = new AtomicLong();
 

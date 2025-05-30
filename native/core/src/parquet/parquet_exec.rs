@@ -28,8 +28,10 @@ use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::physical_expr::expressions::BinaryExpr;
 use datafusion::physical_expr::PhysicalExpr;
+use datafusion::scalar::ScalarValue;
 use datafusion_comet_spark_expr::EvalMode;
 use itertools::Itertools;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Initializes a DataSourceExec plan with a ParquetSource. This may be used by either the
@@ -61,12 +63,16 @@ pub(crate) fn init_datasource_exec(
     file_groups: Vec<Vec<PartitionedFile>>,
     projection_vector: Option<Vec<usize>>,
     data_filters: Option<Vec<Arc<dyn PhysicalExpr>>>,
+    default_values: Option<HashMap<usize, ScalarValue>>,
     session_timezone: &str,
+    case_sensitive: bool,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
-    let (table_parquet_options, spark_parquet_options) = get_options(session_timezone);
-    let mut parquet_source = ParquetSource::new(table_parquet_options).with_schema_adapter_factory(
-        Arc::new(SparkSchemaAdapterFactory::new(spark_parquet_options)),
-    );
+    let (table_parquet_options, spark_parquet_options) =
+        get_options(session_timezone, case_sensitive);
+    let mut parquet_source =
+        ParquetSource::new(table_parquet_options).with_schema_adapter_factory(Arc::new(
+            SparkSchemaAdapterFactory::new(spark_parquet_options, default_values),
+        ));
     // Create a conjunctive form of the vector because ParquetExecBuilder takes
     // a single expression
     if let Some(data_filters) = data_filters {
@@ -78,8 +84,8 @@ pub(crate) fn init_datasource_exec(
             ))
         });
 
-        if let (Some(filter), Some(data_schema)) = (cnf_data_filters, &data_schema) {
-            parquet_source = parquet_source.with_predicate(Arc::clone(data_schema), filter);
+        if let Some(filter) = cnf_data_filters {
+            parquet_source = parquet_source.with_predicate(filter);
         }
     }
 
@@ -114,7 +120,10 @@ pub(crate) fn init_datasource_exec(
     Ok(Arc::new(DataSourceExec::new(Arc::new(file_scan_config))))
 }
 
-fn get_options(session_timezone: &str) -> (TableParquetOptions, SparkParquetOptions) {
+fn get_options(
+    session_timezone: &str,
+    case_sensitive: bool,
+) -> (TableParquetOptions, SparkParquetOptions) {
     let mut table_parquet_options = TableParquetOptions::new();
     table_parquet_options.global.pushdown_filters = true;
     table_parquet_options.global.reorder_filters = true;
@@ -122,7 +131,7 @@ fn get_options(session_timezone: &str) -> (TableParquetOptions, SparkParquetOpti
     let mut spark_parquet_options =
         SparkParquetOptions::new(EvalMode::Legacy, session_timezone, false);
     spark_parquet_options.allow_cast_unsigned_ints = true;
-    spark_parquet_options.case_sensitive = false;
+    spark_parquet_options.case_sensitive = case_sensitive;
     (table_parquet_options, spark_parquet_options)
 }
 

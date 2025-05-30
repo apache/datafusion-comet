@@ -104,11 +104,6 @@ object CometConf extends ShimCometConf {
       .getOrElse("COMET_PARQUET_SCAN_IMPL", SCAN_NATIVE_COMET)
       .toLowerCase(Locale.ROOT))
 
-  def isExperimentalNativeScan: Boolean = COMET_NATIVE_SCAN_IMPL.get() match {
-    case SCAN_NATIVE_DATAFUSION | SCAN_NATIVE_ICEBERG_COMPAT => true
-    case SCAN_NATIVE_COMET => false
-  }
-
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.parallel.io.enabled")
       .doc(
@@ -449,6 +444,14 @@ object CometConf extends ShimCometConf {
         "When this setting is enabled, Comet will provide a tree representation of " +
           "the native query plan before execution and again after execution, with " +
           "metrics.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXPLAIN_TRANSFORMATIONS: ConfigEntry[Boolean] =
+    conf("spark.comet.explain.rules")
+      .doc("When this setting is enabled, Comet will log all plan transformations performed " +
+        "in physical optimizer rules. Default: false")
+      .internal()
       .booleanConf
       .createWithDefault(false)
 

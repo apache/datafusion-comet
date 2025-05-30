@@ -19,7 +19,7 @@ use crate::utils::{is_valid_decimal_precision, unlikely};
 use arrow::array::{
     cast::AsArray, types::Decimal128Type, Array, ArrayRef, BooleanArray, Decimal128Array,
 };
-use arrow::datatypes::{DataType, Field};
+use arrow::datatypes::{DataType, Field, FieldRef};
 use arrow::{
     array::BooleanBufferBuilder,
     buffer::{BooleanBuffer, NullBuffer},
@@ -77,10 +77,14 @@ impl AggregateUDFImpl for SumDecimal {
         )))
     }
 
-    fn state_fields(&self, _args: StateFieldsArgs) -> DFResult<Vec<Field>> {
+    fn state_fields(&self, _args: StateFieldsArgs) -> DFResult<Vec<FieldRef>> {
         let fields = vec![
-            Field::new(self.name(), self.result_type.clone(), self.is_nullable()),
-            Field::new("is_empty", DataType::Boolean, false),
+            Arc::new(Field::new(
+                self.name(),
+                self.result_type.clone(),
+                self.is_nullable(),
+            )),
+            Arc::new(Field::new("is_empty", DataType::Boolean, false)),
         ];
         Ok(fields)
     }

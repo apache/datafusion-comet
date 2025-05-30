@@ -19,7 +19,10 @@
 
 package org.apache.comet
 
+import java.io.FileNotFoundException
 import java.lang.management.ManagementFactory
+
+import scala.util.matching.Regex
 
 import org.apache.spark._
 import org.apache.spark.internal.Logging
@@ -28,6 +31,7 @@ import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
 
 import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_POOL_TYPE, COMET_EXPLAIN_NATIVE_ENABLED, COMET_METRICS_UPDATE_INTERVAL}
+import org.apache.comet.Tracing.withTrace
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -60,6 +64,7 @@ class CometExecIterator(
     with Logging {
 
   private val tracingEnabled = CometConf.COMET_TRACING_ENABLED.get()
+  private val memoryMXBean = ManagementFactory.getMemoryMXBean
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
   private val cometTaskMemoryManager = new CometTaskMemoryManager(id)
@@ -131,35 +136,52 @@ class CometExecIterator(
     }
   }
 
-  def getNextBatch(): Option[ColumnarBatch] = {
+  private def getNextBatch: Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
 
-    // TODO introduce withTracing method to avoid the try/finish pattern here
-    try {
-      if (tracingEnabled) {
-        nativeLib.traceBegin("CometExecIterator_getNextBatch")
-        val memoryMXBean = ManagementFactory.getMemoryMXBean
-        val heap = memoryMXBean.getHeapMemoryUsage
-        nativeLib.logCounter("jvm_heapUsed", heap.getUsed)
-      }
+    if (tracingEnabled) {
+      traceMemoryUsage()
+    }
 
-      nativeUtil.getNextBatch(
-        numOutputCols,
-        (arrayAddrs, schemaAddrs) => {
-          val ctx = TaskContext.get()
-          nativeLib.executePlan(
-            ctx.stageId(),
-            partitionIndex,
-            plan,
-            arrayAddrs,
-            schemaAddrs,
-            tracingEnabled)
+    val ctx = TaskContext.get()
+
+    try {
+      withTrace(
+        s"getNextBatch[JVM] stage=${ctx.stageId()}",
+        tracingEnabled, {
+          nativeUtil.getNextBatch(
+            numOutputCols,
+            (arrayAddrs, schemaAddrs) => {
+              nativeLib.executePlan(ctx.stageId(), partitionIndex, plan, arrayAddrs, schemaAddrs)
+            })
         })
-    } finally {
-      if (tracingEnabled) {
-        nativeLib.traceEnd("CometExecIterator_getNextBatch")
-        nativeLib.logCounter("CometTaskMemoryManager", cometTaskMemoryManager.getUsed)
-      }
+    } catch {
+      case e: CometNativeException =>
+        val fileNotFoundPattern: Regex =
+          ("""^External: Object at location (.+?) not found: No such file or directory """ +
+            """\(os error \d+\)$""").r
+        val parquetError: Regex =
+          """^Parquet error: (?:.*)$""".r
+        e.getMessage match {
+          case fileNotFoundPattern(filePath) =>
+            // See org.apache.spark.sql.errors.QueryExecutionErrors.readCurrentFileNotFoundError
+            throw new SparkException(
+              errorClass = "_LEGACY_ERROR_TEMP_2055",
+              messageParameters = Map("message" -> e.getMessage),
+              cause = new FileNotFoundException(filePath)
+            ) // Can't use SparkFileNotFoundException because it's private.
+          case parquetError() =>
+            // See org.apache.spark.sql.errors.QueryExecutionErrors.failedToReadDataError
+            // See org.apache.parquet.hadoop.ParquetFileReader for error message.
+            throw new SparkException(
+              errorClass = "_LEGACY_ERROR_TEMP_2254",
+              messageParameters = Map("message" -> e.getMessage),
+              cause = new SparkException("File is not a Parquet file.", e))
+          case _ =>
+            throw e
+        }
+      case e: Throwable =>
+        throw e
     }
   }
 
@@ -178,7 +200,7 @@ class CometExecIterator(
       prevBatch = null
     }
 
-    nextBatch = getNextBatch()
+    nextBatch = getNextBatch
 
     if (nextBatch.isEmpty) {
       close()
@@ -213,8 +235,9 @@ class CometExecIterator(
       }
       nativeUtil.close()
       nativeLib.releasePlan(plan)
+
       if (tracingEnabled) {
-        nativeLib.logCounter("CometTaskMemoryManager", cometTaskMemoryManager.getUsed)
+        traceMemoryUsage()
       }
 
       // The allocator thoughts the exported ArrowArray and ArrowSchema structs are not released,
@@ -238,5 +261,15 @@ class CometExecIterator(
       // allocator.close()
       closed = true
     }
+  }
+
+  private def traceMemoryUsage(): Unit = {
+    nativeLib.logMemoryUsage("jvm_heapUsed", memoryMXBean.getHeapMemoryUsage.getUsed)
+    val totalTaskMemory = cometTaskMemoryManager.internal.getMemoryConsumptionForThisTask
+    val cometTaskMemory = cometTaskMemoryManager.getUsed
+    val sparkTaskMemory = totalTaskMemory - cometTaskMemory
+    val threadId = Thread.currentThread().getId
+    nativeLib.logMemoryUsage(s"task_memory_comet_$threadId", cometTaskMemory)
+    nativeLib.logMemoryUsage(s"task_memory_spark_$threadId", sparkTaskMemory)
   }
 }

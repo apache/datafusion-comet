@@ -376,7 +376,7 @@ index daef11ae4d6..9f3cc9181f2 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
-index f33432ddb6f..9e598e7a344 100644
+index f33432ddb6f..cc5224af735 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 @@ -22,6 +22,7 @@ import org.scalatest.GivenWhenThen
@@ -397,156 +397,27 @@ index f33432ddb6f..9e598e7a344 100644
        case _ => Nil
      }
    }
-@@ -665,7 +669,8 @@ abstract class DynamicPartitionPruningSuiteBase
-     }
-   }
- 
--  test("partition pruning in broadcast hash joins with aliases") {
-+  test("partition pruning in broadcast hash joins with aliases",
-+    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
-     Given("alias with simple join condition, using attribute names only")
-     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
-       val df = sql(
-@@ -755,7 +760,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -755,7 +759,8 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
 -  test("partition pruning in broadcast hash joins") {
 +  test("partition pruning in broadcast hash joins",
-+    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
++    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #1737")) {
      Given("disable broadcast pruning and disable subquery duplication")
      withSQLConf(
        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
-@@ -990,7 +996,8 @@ abstract class DynamicPartitionPruningSuiteBase
-     }
-   }
- 
--  test("different broadcast subqueries with identical children") {
-+  test("different broadcast subqueries with identical children",
-+    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
-     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
-       withTable("fact", "dim") {
-         spark.range(100).select(
-@@ -1027,7 +1034,8 @@ abstract class DynamicPartitionPruningSuiteBase
-     }
-   }
- 
--  test("avoid reordering broadcast join keys to match input hash partitioning") {
-+  test("avoid reordering broadcast join keys to match input hash partitioning",
-+    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
-     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
-       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
-       withTable("large", "dimTwo", "dimThree") {
-@@ -1187,7 +1195,8 @@ abstract class DynamicPartitionPruningSuiteBase
-     }
-   }
- 
--  test("Make sure dynamic pruning works on uncorrelated queries") {
-+  test("Make sure dynamic pruning works on uncorrelated queries",
-+    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
-     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
-       val df = sql(
-         """
-@@ -1215,7 +1224,8 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1215,7 +1220,8 @@ abstract class DynamicPartitionPruningSuiteBase
    }
  
    test("SPARK-32509: Unused Dynamic Pruning filter shouldn't affect " +
 -    "canonicalization and exchange reuse") {
 +    "canonicalization and exchange reuse",
-+    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
++    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #1737")) {
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
          val df = sql(
-@@ -1238,7 +1248,8 @@ abstract class DynamicPartitionPruningSuiteBase
-     }
-   }
- 
--  test("Plan broadcast pruning only when the broadcast can be reused") {
-+  test("Plan broadcast pruning only when the broadcast can be reused",
-+    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
-     Given("dynamic pruning filter on the build side")
-     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
-       val df = sql(
-@@ -1279,7 +1290,8 @@ abstract class DynamicPartitionPruningSuiteBase
-     }
-   }
- 
--  test("SPARK-32659: Fix the data issue when pruning DPP on non-atomic type") {
-+  test("SPARK-32659: Fix the data issue when pruning DPP on non-atomic type",
-+    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
-     Seq(NO_CODEGEN, CODEGEN_ONLY).foreach { mode =>
-       Seq(true, false).foreach { pruning =>
-         withSQLConf(
-@@ -1311,7 +1323,8 @@ abstract class DynamicPartitionPruningSuiteBase
-     }
-   }
- 
--  test("SPARK-32817: DPP throws error when the broadcast side is empty") {
-+  test("SPARK-32817: DPP throws error when the broadcast side is empty",
-+    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
-     withSQLConf(
-       SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
-       SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
-@@ -1423,7 +1436,8 @@ abstract class DynamicPartitionPruningSuiteBase
-     }
-   }
- 
--  test("SPARK-34637: DPP side broadcast query stage is created firstly") {
-+  test("SPARK-34637: DPP side broadcast query stage is created firstly",
-+    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
-     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
-       val df = sql(
-         """ WITH v as (
-@@ -1470,7 +1484,8 @@ abstract class DynamicPartitionPruningSuiteBase
-     checkAnswer(df, Row(3, 2) :: Row(3, 2) :: Row(3, 2) :: Row(3, 2) :: Nil)
-   }
- 
--  test("SPARK-36444: Remove OptimizeSubqueries from batch of PartitionPruning") {
-+  test("SPARK-36444: Remove OptimizeSubqueries from batch of PartitionPruning",
-+    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
-     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
-       val df = sql(
-         """
-@@ -1485,7 +1500,7 @@ abstract class DynamicPartitionPruningSuiteBase
-   }
- 
-   test("SPARK-38148: Do not add dynamic partition pruning if there exists static partition " +
--    "pruning") {
-+    "pruning", IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
-     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
-       Seq(
-         "f.store_id = 1" -> false,
-@@ -1557,7 +1572,8 @@ abstract class DynamicPartitionPruningSuiteBase
-     }
-   }
- 
--  test("SPARK-38674: Remove useless deduplicate in SubqueryBroadcastExec") {
-+  test("SPARK-38674: Remove useless deduplicate in SubqueryBroadcastExec",
-+    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
-     withTable("duplicate_keys") {
-       withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
-         Seq[(Int, String)]((1, "NL"), (1, "NL"), (3, "US"), (3, "US"), (3, "US"))
-@@ -1588,7 +1604,8 @@ abstract class DynamicPartitionPruningSuiteBase
-     }
-   }
- 
--  test("SPARK-39338: Remove dynamic pruning subquery if pruningKey's references is empty") {
-+  test("SPARK-39338: Remove dynamic pruning subquery if pruningKey's references is empty",
-+    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
-     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
-       val df = sql(
-         """
-@@ -1617,7 +1634,8 @@ abstract class DynamicPartitionPruningSuiteBase
-     }
-   }
- 
--  test("SPARK-39217: Makes DPP support the pruning side has Union") {
-+  test("SPARK-39217: Makes DPP support the pruning side has Union",
-+    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
-     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
-       val df = sql(
-         """
-@@ -1729,6 +1747,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
+@@ -1729,6 +1735,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
                case s: BatchScanExec =>
                  // we use f1 col for v2 tables due to schema pruning
                  s.output.exists(_.exists(_.argString(maxFields = 100).contains("f1")))
@@ -581,14 +452,14 @@ index a6b295578d6..91acca4306f 100644
  
    test("SPARK-35884: Explain Formatted") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
-index 2796b1cf154..be7078b38f4 100644
+index 2796b1cf154..4816349d690 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 @@ -33,6 +33,7 @@ import org.apache.spark.sql.TestingUDT.{IntervalUDT, NullData, NullUDT}
  import org.apache.spark.sql.catalyst.expressions.{AttributeReference, GreaterThan, Literal}
  import org.apache.spark.sql.catalyst.expressions.IntegralLiteralTestUtils.{negativeInt, positiveInt}
  import org.apache.spark.sql.catalyst.plans.logical.Filter
-+import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec, CometSortMergeJoinExec}
++import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometScanExec, CometSortMergeJoinExec}
  import org.apache.spark.sql.execution.{FileSourceScanLike, SimpleMode}
  import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
  import org.apache.spark.sql.execution.datasources.FilePartition
@@ -616,11 +487,12 @@ index 2796b1cf154..be7078b38f4 100644
            }
            assert(fileScan.nonEmpty)
            assert(fileScan.get.partitionFilters.isEmpty)
-@@ -1100,6 +1104,8 @@ class FileBasedDataSourceSuite extends QueryTest
+@@ -1100,6 +1104,9 @@ class FileBasedDataSourceSuite extends QueryTest
            val filters = df.queryExecution.executedPlan.collect {
              case f: FileSourceScanLike => f.dataFilters
              case b: BatchScanExec => b.scan.asInstanceOf[FileScan].dataFilters
 +            case b: CometScanExec => b.dataFilters
++            case b: CometNativeScanExec => b.dataFilters
 +            case b: CometBatchScanExec => b.scan.asInstanceOf[FileScan].dataFilters
            }.flatten
            assert(filters.contains(GreaterThan(scan.logicalPlan.output.head, Literal(5L))))
@@ -1069,7 +941,7 @@ index 18123a4d6ec..fbe4c766eee 100644
  
    test("non-matching optional group") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 75eabcb96f2..36e3318ad7e 100644
+index 75eabcb96f2..7c0bbd71551 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 @@ -21,10 +21,11 @@ import scala.collection.mutable.ArrayBuffer
@@ -1090,7 +962,7 @@ index 75eabcb96f2..36e3318ad7e 100644
                _.asInstanceOf[FileScanRDD].filePartitions.forall(
                  _.files.forall(_.urlEncodedPath.contains("p=0"))))
 +        case WholeStageCodegenExec(ColumnarToRowExec(InputAdapter(
-+        fs @ CometScanExec(_, _, _, partitionFilters, _, _, _, _, _, _)))) =>
++        fs @ CometScanExec(_, _, _, _, partitionFilters, _, _, _, _, _, _)))) =>
 +          partitionFilters.exists(ExecSubqueryExpression.hasSubquery) &&
 +            fs.inputRDDs().forall(
 +              _.asInstanceOf[FileScanRDD].filePartitions.forall(

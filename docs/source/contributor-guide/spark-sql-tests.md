@@ -54,7 +54,7 @@ git apply ../datafusion-comet/dev/diffs/3.4.3.diff
 
 ## 3. Run Spark SQL Tests
 
-Use the following commands to run the SQL tests locally.
+#### Use the following commands to run the Spark SQL test suite locally.
 
 ```shell
 ENABLE_COMET=true build/sbt catalyst/test
@@ -65,6 +65,23 @@ ENABLE_COMET=true build/sbt "hive/testOnly * -- -l org.apache.spark.tags.Extende
 ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"
 ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"
 ```
+#### Steps to run individual test suites through SBT
+1. Open SBT with Comet enabled
+```sbt
+ENABLE_COMET=true sbt -Dspark.test.includeSlowTests=true 
+```
+2. Run individual tests (Below code runs test named `SPARK-35568` in the `spark-sql` module)
+```sbt
+ sql/testOnly  org.apache.spark.sql.DynamicPartitionPruningV1SuiteAEOn -- -z "SPARK-35568"
+```
+#### Steps to run individual test suites in IntelliJ IDE
+1. Add below configuration in VM Options for your test case (apache-spark repository)
+```sbt
+-Dspark.comet.enabled=true -Dspark.comet.debug.enabled=true -Dspark.plugins=org.apache.spark.CometPlugin -DXmx4096m -Dspark.executor.heartbeatInterval=20000 -Dspark.network.timeout=10000 --add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED
+```
+2. Set `ENABLE_COMET=true` in environment variables
+![img.png](img.png)
+3. After the above tests are configured, spark tests can be run with debugging enabled on spark/comet code. Note that Comet is added as a dependency and the classes are readonly while debugging from Spark. Any new changes to Comet are to be built and deployed locally through the command (`PROFILES="-Pspark-3.4" make release`)
 
 ## Creating a diff file for a new Spark version
 
