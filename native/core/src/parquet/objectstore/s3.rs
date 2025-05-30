@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use log::{debug, error};
 use std::collections::HashMap;
 use url::Url;
 
@@ -28,8 +29,8 @@ use async_trait::async_trait;
 use aws_config::{
     ecs::EcsCredentialsProvider, environment::EnvironmentVariableCredentialsProvider,
     imds::credentials::ImdsCredentialsProvider, meta::credentials::CredentialsProviderChain,
-    sts::AssumeRoleProvider, web_identity_token::WebIdentityTokenCredentialsProvider,
-    BehaviorVersion,
+    provider_config::ProviderConfig, sts::AssumeRoleProvider,
+    web_identity_token::WebIdentityTokenCredentialsProvider, BehaviorVersion,
 };
 use aws_credential_types::{
     provider::{error::CredentialsError, ProvideCredentials},
@@ -83,7 +84,7 @@ pub fn create_store(
     };
 
     let s3_configs = extract_s3_config_options(configs, bucket);
-    println!("s3 url: {:?}, configs: {:?}", url, s3_configs);
+    debug!("S3 configs for bucket {}: {:?}", bucket, s3_configs);
 
     // When using the default AWS S3 endpoint (no custom endpoint configured), a valid region
     // is required. If no region is explicitly configured, attempt to auto-resolve it by
@@ -93,7 +94,7 @@ pub fn create_store(
     {
         let region =
             get_runtime().block_on(resolve_bucket_region(bucket, &ClientOptions::new()))?;
-        println!("resolved region: {:?}", region);
+        debug!("resolved region: {:?}", region);
         builder = builder.with_config(AmazonS3ConfigKey::Region, region.to_string());
     }
 
@@ -281,7 +282,11 @@ async fn build_credential_provider(
         configs,
         bucket,
     )?;
-    println!("provider_metadata: {:?}", provider_metadata);
+    debug!(
+        "Credential providers for S3 bucket {}: {}",
+        bucket,
+        provider_metadata.simple_string()
+    );
     let provider = provider_metadata.create_credential_provider().await?;
     Ok(Some(CachedAwsCredentialProvider::new(
         provider,
@@ -503,6 +508,7 @@ impl CachedAwsCredentialProvider {
 
     async fn refresh_credential(&self) -> object_store::Result<aws_credential_types::Credentials> {
         let credentials = self.provider.provide_credentials().await.map_err(|e| {
+            error!("Failed to retrieve credentials: {:?}", e);
             object_store::Error::Generic {
                 store: "S3",
                 source: Box::new(e),
@@ -614,6 +620,38 @@ impl CredentialProviderMetadata {
             CredentialProviderMetadata::Chain(..) => "Chain",
         }
     }
+
+    /// Return a simple name for the credential provider. Security sensitive informations are not included.
+    /// This is useful for logging and debugging.
+    fn simple_string(&self) -> String {
+        match self {
+            CredentialProviderMetadata::Default => "Default".to_string(),
+            CredentialProviderMetadata::Ecs => "Ecs".to_string(),
+            CredentialProviderMetadata::Imds => "Imds".to_string(),
+            CredentialProviderMetadata::Environment => "Environment".to_string(),
+            CredentialProviderMetadata::WebIdentity => "WebIdentity".to_string(),
+            CredentialProviderMetadata::Static { is_valid, .. } => {
+                format!("Static(valid: {})", is_valid)
+            }
+            CredentialProviderMetadata::AssumeRole {
+                role_arn,
+                session_name,
+                base_provider_metadata,
+            } => {
+                format!(
+                    "AssumeRole(role: {}, session: {}, base: {})",
+                    role_arn,
+                    session_name,
+                    base_provider_metadata.simple_string()
+                )
+            }
+            CredentialProviderMetadata::Chain(providers) => {
+                let provider_strings: Vec<String> =
+                    providers.iter().map(|p| p.simple_string()).collect();
+                format!("Chain({})", provider_strings.join(" -> "))
+            }
+        }
+    }
 }
 
 impl CredentialProviderMetadata {
@@ -649,7 +687,9 @@ impl CredentialProviderMetadata {
                 Ok(Arc::new(credential_provider))
             }
             CredentialProviderMetadata::WebIdentity => {
-                let credential_provider = WebIdentityTokenCredentialsProvider::builder().build();
+                let credential_provider = WebIdentityTokenCredentialsProvider::builder()
+                    .configure(&ProviderConfig::with_default_region().await)
+                    .build();
                 Ok(Arc::new(credential_provider))
             }
             CredentialProviderMetadata::Static {
@@ -812,14 +852,19 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers and object_store call foreign functions
     fn test_create_store() {
-        let url = Url::parse("s3://test-bucket/test-object").unwrap();
+        let url = Url::parse("s3a://test_bucket/comet/spark-warehouse/part-00000.snappy.parquet")
+            .unwrap();
         let configs = TestConfigBuilder::new()
             .with_credential_provider(HADOOP_ANONYMOUS)
             .with_region("us-east-1")
             .build();
         let (_object_store, path) = create_store(&url, &configs, Duration::from_secs(300)).unwrap();
-        assert_eq!(path.to_string(), "test-object");
+        assert_eq!(
+            path,
+            Path::from("/comet/spark-warehouse/part-00000.snappy.parquet")
+        );
     }
 
     #[test]
@@ -893,6 +938,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_default_credential_provider() {
         let configs0 = TestConfigBuilder::new().build();
         let configs1 = TestConfigBuilder::new()
@@ -919,6 +965,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_anonymous_credential_provider() {
         for provider_name in [HADOOP_ANONYMOUS, AWS_ANONYMOUS, AWS_ANONYMOUS_V1] {
             let configs = TestConfigBuilder::new()
@@ -934,6 +981,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_mixed_anonymous_and_other_providers_error() {
         let configs = TestConfigBuilder::new()
             .with_credential_provider(&format!("{},{}", HADOOP_ANONYMOUS, AWS_ENVIRONMENT))
@@ -954,6 +1002,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_simple_credential_provider() {
         let configs = TestConfigBuilder::new()
             .with_credential_provider(HADOOP_SIMPLE)
@@ -982,6 +1031,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_temporary_credential_provider() {
         let configs = TestConfigBuilder::new()
             .with_credential_provider(HADOOP_TEMPORARY)
@@ -1010,6 +1060,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_missing_access_key() {
         let configs = TestConfigBuilder::new()
             .with_credential_provider(HADOOP_SIMPLE)
@@ -1035,6 +1086,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_missing_secret_key() {
         let configs = TestConfigBuilder::new()
             .with_credential_provider(HADOOP_SIMPLE)
@@ -1060,6 +1112,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_missing_session_token_for_temporary() {
         let configs = TestConfigBuilder::new()
             .with_credential_provider(HADOOP_TEMPORARY)
@@ -1086,6 +1139,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_bucket_specific_configuration() {
         let configs = TestConfigBuilder::new()
             .with_bucket_credential_provider("specific-bucket", HADOOP_SIMPLE)
@@ -1171,6 +1225,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_assume_role_credential_provider() {
         let configs = TestConfigBuilder::new()
             .with_credential_provider(HADOOP_ASSUMED_ROLE)
@@ -1206,6 +1261,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_assume_role_missing_arn_error() {
         let configs = TestConfigBuilder::new()
             .with_credential_provider(HADOOP_ASSUMED_ROLE)
@@ -1222,6 +1278,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_unsupported_credential_provider_error() {
         let configs = TestConfigBuilder::new()
             .with_credential_provider("unsupported.provider.Class")
@@ -1240,6 +1297,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_environment_credential_provider() {
         for provider_name in [AWS_ENVIRONMENT, AWS_ENVIRONMENT_V1] {
             let configs = TestConfigBuilder::new()
@@ -1258,6 +1316,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_ecs_credential_provider() {
         for provider_name in [
             AWS_CONTAINER_CREDENTIALS,
@@ -1280,6 +1339,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_imds_credential_provider() {
         for provider_name in [AWS_INSTANCE_PROFILE, AWS_INSTANCE_PROFILE_V1] {
             let configs = TestConfigBuilder::new()
@@ -1298,6 +1358,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_web_identity_credential_provider() {
         for provider_name in [AWS_WEB_IDENTITY, AWS_WEB_IDENTITY_V1] {
             let configs = TestConfigBuilder::new()
@@ -1316,6 +1377,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_hadoop_iam_instance_credential_provider() {
         let configs = TestConfigBuilder::new()
             .with_credential_provider(HADOOP_IAM_INSTANCE)
@@ -1337,6 +1399,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_chained_credential_providers() {
         // Test three providers in chain: Environment -> IMDS -> ECS
         let configs = TestConfigBuilder::new()
@@ -1365,6 +1428,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_static_environment_web_identity_chain() {
         // Test chaining static credentials -> environment -> web identity
         let configs = TestConfigBuilder::new()
@@ -1400,6 +1464,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_assume_role_with_static_base_provider() {
         let configs = TestConfigBuilder::new()
             .with_credential_provider(HADOOP_ASSUMED_ROLE)
@@ -1435,6 +1500,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_assume_role_with_web_identity_base_provider() {
         let configs = TestConfigBuilder::new()
             .with_credential_provider(HADOOP_ASSUMED_ROLE)
@@ -1462,6 +1528,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_assume_role_with_chained_base_providers() {
         // Test assume role with multiple base providers: Static -> Environment -> IMDS
         let configs = TestConfigBuilder::new()
@@ -1504,6 +1571,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_assume_role_chained_with_other_providers() {
         // Test assume role as first provider in a chain, followed by environment and IMDS
         let configs = TestConfigBuilder::new()
@@ -1553,6 +1621,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_assume_role_with_anonymous_base_provider_error() {
         // Test that assume role with anonymous base provider fails
         let configs = TestConfigBuilder::new()
@@ -1577,6 +1646,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_get_credential_from_static_credential_provider() {
         let configs = TestConfigBuilder::new()
             .with_credential_provider(HADOOP_SIMPLE)
@@ -1614,6 +1684,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_get_credential_from_invalid_static_credential_provider() {
         let configs = TestConfigBuilder::new()
             .with_credential_provider(HADOOP_SIMPLE)
@@ -1631,6 +1702,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_invalid_static_credential_provider_should_not_prevent_other_providers_from_working(
     ) {
         let configs = TestConfigBuilder::new()
@@ -1695,6 +1767,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_cached_credential_provider_refresh_credential() {
         let provider = Arc::new(MockAwsCredentialProvider {
             counter: AtomicI32::new(0),
@@ -1714,6 +1787,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_cached_credential_provider_cache_credential() {
         let provider = Arc::new(MockAwsCredentialProvider {
             counter: AtomicI32::new(0),
@@ -1824,5 +1898,55 @@ mod tests {
         configs.insert("fs.s3a.endpoint".to_string(), "".to_string());
         let s3_configs = extract_s3_config_options(&configs, "test-bucket");
         assert!(s3_configs.is_empty());
+    }
+
+    #[test]
+    fn test_credential_provider_metadata_simple_string() {
+        // Test Static provider
+        let static_metadata = CredentialProviderMetadata::Static {
+            is_valid: true,
+            access_key: "sensitive_key".to_string(),
+            secret_key: "sensitive_secret".to_string(),
+            session_token: Some("sensitive_token".to_string()),
+        };
+        assert_eq!(static_metadata.simple_string(), "Static(valid: true)");
+
+        // Test AssumeRole provider
+        let assume_role_metadata = CredentialProviderMetadata::AssumeRole {
+            role_arn: "arn:aws:iam::123456789012:role/test-role".to_string(),
+            session_name: "test-session".to_string(),
+            base_provider_metadata: Box::new(CredentialProviderMetadata::Environment),
+        };
+        assert_eq!(
+            assume_role_metadata.simple_string(),
+            "AssumeRole(role: arn:aws:iam::123456789012:role/test-role, session: test-session, base: Environment)"
+        );
+
+        // Test Chain provider
+        let chain_metadata = CredentialProviderMetadata::Chain(vec![
+            CredentialProviderMetadata::Static {
+                is_valid: false,
+                access_key: "key1".to_string(),
+                secret_key: "secret1".to_string(),
+                session_token: None,
+            },
+            CredentialProviderMetadata::Environment,
+            CredentialProviderMetadata::Imds,
+        ]);
+        assert_eq!(
+            chain_metadata.simple_string(),
+            "Chain(Static(valid: false) -> Environment -> Imds)"
+        );
+
+        // Test nested AssumeRole with Chain base
+        let nested_metadata = CredentialProviderMetadata::AssumeRole {
+            role_arn: "arn:aws:iam::123456789012:role/nested-role".to_string(),
+            session_name: "nested-session".to_string(),
+            base_provider_metadata: Box::new(chain_metadata),
+        };
+        assert_eq!(
+            nested_metadata.simple_string(),
+            "AssumeRole(role: arn:aws:iam::123456789012:role/nested-role, session: nested-session, base: Chain(Static(valid: false) -> Environment -> Imds))"
+        );
     }
 }
