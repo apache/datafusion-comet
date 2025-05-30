@@ -84,6 +84,8 @@ under the License.
     <semanticdb.version>4.8.8</semanticdb.version>
     <slf4j.version>2.0.7</slf4j.version>
     <guava.version>33.2.1-jre</guava.version>
+    <testcontainers.version>1.21.0</testcontainers.version>
+    <amazon-awssdk-v2.version>2.31.51</amazon-awssdk-v2.version>
     <jni.dir>${project.basedir}/../native/target/debug</jni.dir>
     <platform>darwin</platform>
     <arch>x86_64</arch>
@@ -451,6 +453,20 @@ under the License.
             <artifactId>*</artifactId>
           </exclusion>
         </exclusions>
+      </dependency>
+
+      <!-- TestContainers for testing reading Parquet on S3 -->
+      <dependency>
+        <groupId>org.testcontainers</groupId>
+        <artifactId>minio</artifactId>
+        <version>${testcontainers.version}</version>
+        <scope>test</scope>
+      </dependency>
+      <dependency>
+        <groupId>software.amazon.awssdk</groupId>
+        <artifactId>s3</artifactId>
+        <version>${amazon-awssdk-v2.version}</version>
+        <scope>test</scope>
       </dependency>
 
       <dependency>

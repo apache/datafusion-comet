@@ -26,6 +26,8 @@ pub mod parquet_support;
 pub mod read;
 pub mod schema_adapter;
 
+mod objectstore;
+
 use std::task::Poll;
 use std::{boxed::Box, ptr::NonNull, sync::Arc};
 
