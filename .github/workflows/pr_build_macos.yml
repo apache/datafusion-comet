@@ -44,6 +44,8 @@ jobs:
   macos-aarch64-test:
     strategy:
       matrix:
+        os: [macos-14]
+
         # the goal with these profiles is to get coverage of all Java, Scala, and Spark
         # versions without testing all possible combinations, which would be overkill
         profile:
@@ -107,7 +109,7 @@ jobs:
               org.apache.spark.sql.comet.CometTaskMetricsSuite
       fail-fast: false
     name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
-    runs-on: macos-14
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Rust & Java toolchain
