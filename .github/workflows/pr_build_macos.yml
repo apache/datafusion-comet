@@ -108,6 +108,6 @@ jobs:
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
-          artifact_name: ${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}-${{ matrix.suite.name }}
+          artifact_name: ${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}-${{ matrix.suite.name }}-${{ matrix.profile.maven_opts }}
           suites: ${{ matrix.suite.value }}
           maven_opts: -Pspark-${{ matrix.spark-version }},scala-${{ matrix.scala-version }}
