@@ -22,7 +22,7 @@ use arrow::array::{
     Array, ArrayRef, ArrowNumericType, Int64Array, PrimitiveArray,
 };
 use arrow::compute::sum;
-use arrow::datatypes::{DataType, Field};
+use arrow::datatypes::{DataType, Field, FieldRef};
 use datafusion::common::{not_impl_err, Result, ScalarValue};
 use datafusion::logical_expr::{
     type_coercion::aggregates::avg_return_type, Accumulator, AggregateUDFImpl, EmitTo,
@@ -78,18 +78,18 @@ impl AggregateUDFImpl for Avg {
         }
     }
 
-    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<Field>> {
+    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
         Ok(vec![
-            Field::new(
+            Arc::new(Field::new(
                 format_state_name(&self.name, "sum"),
                 self.input_data_type.clone(),
                 true,
-            ),
-            Field::new(
+            )),
+            Arc::new(Field::new(
                 format_state_name(&self.name, "count"),
                 DataType::Int64,
                 true,
-            ),
+            )),
         ])
     }
 

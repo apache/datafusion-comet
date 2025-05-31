@@ -15,8 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod bitwise_count;
 mod bitwise_get;
 mod bitwise_not;
 
+pub use bitwise_count::spark_bit_count;
 pub use bitwise_get::spark_bit_get;
 pub use bitwise_not::{bitwise_not, BitwiseNotExpr};

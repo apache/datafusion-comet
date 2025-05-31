@@ -18,6 +18,7 @@
 use std::{any::Any, sync::Arc};
 
 use crate::agg_funcs::variance::VarianceAccumulator;
+use arrow::datatypes::FieldRef;
 use arrow::{
     array::ArrayRef,
     datatypes::{DataType, Field},
@@ -102,19 +103,23 @@ impl AggregateUDFImpl for Stddev {
         )?))
     }
 
-    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<Field>> {
+    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
         Ok(vec![
-            Field::new(
+            Arc::new(Field::new(
                 format_state_name(&self.name, "count"),
                 DataType::Float64,
                 true,
-            ),
-            Field::new(
+            )),
+            Arc::new(Field::new(
                 format_state_name(&self.name, "mean"),
                 DataType::Float64,
                 true,
-            ),
-            Field::new(format_state_name(&self.name, "m2"), DataType::Float64, true),
+            )),
+            Arc::new(Field::new(
+                format_state_name(&self.name, "m2"),
+                DataType::Float64,
+                true,
+            )),
         ])
     }
 
