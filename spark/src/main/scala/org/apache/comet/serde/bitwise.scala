@@ -19,8 +19,8 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, BitwiseAnd, BitwiseGet, BitwiseNot, BitwiseOr, BitwiseXor, Cast, Expression, ShiftLeft, ShiftRight}
-import org.apache.spark.sql.types.{ByteType, LongType}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, BitwiseAnd, BitwiseCount, BitwiseGet, BitwiseNot, BitwiseOr, BitwiseXor, Cast, Expression, ShiftLeft, ShiftRight}
+import org.apache.spark.sql.types.{ByteType, IntegerType, LongType}
 
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, createUnaryExpr, exprToProto, optExprWithInfo, scalarFunctionExprToProtoWithReturnType}
 
@@ -146,5 +146,18 @@ object CometBitwiseGet extends CometExpressionSerde {
     val bitGetScalarExpr =
       scalarFunctionExprToProtoWithReturnType("bit_get", ByteType, argProto, posProto)
     optExprWithInfo(bitGetScalarExpr, expr, expr.children: _*)
+  }
+}
+
+object CometBitwiseCount extends CometExpressionSerde {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val bitwiseCountExpr = expr.asInstanceOf[BitwiseCount]
+    val childProto = exprToProto(bitwiseCountExpr.child, inputs, binding)
+    val bitCountScalarExpr =
+      scalarFunctionExprToProtoWithReturnType("bit_count", IntegerType, childProto)
+    optExprWithInfo(bitCountScalarExpr, expr, expr.children: _*)
   }
 }

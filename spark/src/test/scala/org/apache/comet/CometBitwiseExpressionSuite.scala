@@ -139,4 +139,71 @@ class CometBitwiseExpressionSuite extends CometTestBase with AdaptiveSparkPlanHe
       }
     }
   }
+
+  test("bitwise_count - min/max values") {
+    Seq(false, true).foreach { dictionary =>
+      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+        val table = "bitwise_count_test"
+        withTable(table) {
+          sql(s"create table $table(col1 long, col2 int, col3 short, col4 byte) using parquet")
+          sql(s"insert into $table values(1111, 2222, 17, 7)")
+          sql(
+            s"insert into $table values(${Long.MaxValue}, ${Int.MaxValue}, ${Short.MaxValue}, ${Byte.MaxValue})")
+          sql(
+            s"insert into $table values(${Long.MinValue}, ${Int.MinValue}, ${Short.MinValue}, ${Byte.MinValue})")
+
+          checkSparkAnswerAndOperator(sql(s"SELECT bit_count(col1) FROM $table"))
+          checkSparkAnswerAndOperator(sql(s"SELECT bit_count(col2) FROM $table"))
+          checkSparkAnswerAndOperator(sql(s"SELECT bit_count(col3) FROM $table"))
+          checkSparkAnswerAndOperator(sql(s"SELECT bit_count(col4) FROM $table"))
+          checkSparkAnswerAndOperator(sql(s"SELECT bit_count(true) FROM $table"))
+          checkSparkAnswerAndOperator(sql(s"SELECT bit_count(false) FROM $table"))
+        }
+      }
+    }
+  }
+
+  test("bitwise_count - random values (spark gen)") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          10,
+          DataGenOptions(
+            allowNull = true,
+            generateNegativeZero = true,
+            generateArray = false,
+            generateStruct = false,
+            generateMap = false))
+      }
+      val table = spark.read.parquet(filename)
+      val df =
+        table.selectExpr("bit_count(c1)", "bit_count(c2)", "bit_count(c3)", "bit_count(c4)")
+
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("bitwise_count - random values (native parquet gen)") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled, 0, 10000, nullEnabled = false)
+        val table = spark.read.parquet(path.toString)
+        checkSparkAnswerAndOperator(
+          table
+            .selectExpr(
+              "bit_count(_2)",
+              "bit_count(_3)",
+              "bit_count(_4)",
+              "bit_count(_5)",
+              "bit_count(_11)"))
+      }
+    }
+  }
 }
