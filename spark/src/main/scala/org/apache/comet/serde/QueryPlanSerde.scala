@@ -1609,12 +1609,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
           (builder, binaryExpr) => builder.setBitwiseAnd(binaryExpr))
 
       case BitwiseNot(child) =>
-        createUnaryExpr(
-          expr,
-          child,
-          inputs,
-          binding,
-          (builder, unaryExpr) => builder.setBitwiseNot(unaryExpr))
+        val childProto = exprToProto(child, inputs, binding)
+        val bitNotScalarExpr =
+          scalarFunctionExprToProto("bit_not", childProto)
+        optExprWithInfo(bitNotScalarExpr, expr, expr.children: _*)
 
       case BitwiseOr(left, right) =>
         createBinaryExpr(

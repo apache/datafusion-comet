@@ -72,18 +72,17 @@ message Expr {
     NormalizeNaNAndZero normalize_nan_and_zero = 45;
     TruncDate truncDate = 46;
     TruncTimestamp truncTimestamp = 47;
-    UnaryExpr bitwiseNot = 48;
-    Abs abs = 49;
-    Subquery subquery = 50;
-    UnboundReference unbound = 51;
-    BloomFilterMightContain bloom_filter_might_contain = 52;
-    CreateNamedStruct create_named_struct = 53;
-    GetStructField get_struct_field = 54;
-    ToJson to_json = 55;
-    ListExtract list_extract = 56;
-    GetArrayStructFields get_array_struct_fields = 57;
-    ArrayInsert array_insert = 58;
-    MathExpr integral_divide = 59;
+    Abs abs = 48;
+    Subquery subquery = 49;
+    UnboundReference unbound = 50;
+    BloomFilterMightContain bloom_filter_might_contain = 51;
+    CreateNamedStruct create_named_struct = 52;
+    GetStructField get_struct_field = 53;
+    ToJson to_json = 54;
+    ListExtract list_extract = 55;
+    GetArrayStructFields get_array_struct_fields = 56;
+    ArrayInsert array_insert = 57;
+    MathExpr integral_divide = 58;
   }
 }
 
