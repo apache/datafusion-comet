@@ -16,9 +16,62 @@
 // under the License.
 
 use arrow::{array::*, datatypes::DataType};
-use datafusion::common::Result;
+use datafusion::common::{exec_err, internal_datafusion_err, internal_err, Result};
+use datafusion::logical_expr::{ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
 use datafusion::{error::DataFusionError, logical_expr::ColumnarValue};
+use std::any::Any;
 use std::sync::Arc;
+
+#[derive(Debug)]
+pub struct SparkBitwiseCount {
+    signature: Signature,
+    aliases: Vec<String>,
+}
+
+impl Default for SparkBitwiseCount {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SparkBitwiseCount {
+    pub fn new() -> Self {
+        Self {
+            signature: Signature::user_defined(Volatility::Immutable),
+            aliases: vec![],
+        }
+    }
+}
+
+impl ScalarUDFImpl for SparkBitwiseCount {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "bit_count"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _: &[DataType]) -> Result<DataType> {
+        Ok(DataType::Int32)
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        let args: [ColumnarValue; 1] = args
+            .args
+            .try_into()
+            .map_err(|_| internal_datafusion_err!("bit_count expects exactly one argument"))?;
+        spark_bit_count(args)
+    }
+
+    fn aliases(&self) -> &[String] {
+        &self.aliases
+    }
+}
 
 macro_rules! compute_op {
     ($OPERAND:expr, $DT:ident) => {{
@@ -38,29 +91,19 @@ macro_rules! compute_op {
     }};
 }
 
-pub fn spark_bit_count(args: &[ColumnarValue]) -> Result<ColumnarValue> {
-    if args.len() != 1 {
-        return Err(DataFusionError::Internal(
-            "bit_count expects exactly one argument".to_string(),
-        ));
-    }
-    match &args[0] {
-        ColumnarValue::Array(array) => {
+pub fn spark_bit_count(args: [ColumnarValue; 1]) -> Result<ColumnarValue> {
+    match args {
+        [ColumnarValue::Array(array)] => {
             let result: Result<ArrayRef> = match array.data_type() {
                 DataType::Int8 | DataType::Boolean => compute_op!(array, Int8Array),
                 DataType::Int16 => compute_op!(array, Int16Array),
                 DataType::Int32 => compute_op!(array, Int32Array),
                 DataType::Int64 => compute_op!(array, Int64Array),
-                _ => Err(DataFusionError::Execution(format!(
-                    "Can't be evaluated because the expression's type is {:?}, not signed int",
-                    array.data_type(),
-                ))),
+                _ => exec_err!("bit_count can't be evaluated because the expression's type is {:?}, not signed int", array.data_type()),
             };
             result.map(ColumnarValue::Array)
         }
-        ColumnarValue::Scalar(_) => Err(DataFusionError::Internal(
-            "shouldn't go to bit_count scalar path".to_string(),
-        )),
+        [ColumnarValue::Scalar(_)] => internal_err!("shouldn't go to bitwise count scalar path"),
     }
 }
 
@@ -84,16 +127,16 @@ mod tests {
 
     #[test]
     fn bitwise_count_op() -> Result<()> {
-        let args = vec![ColumnarValue::Array(Arc::new(Int32Array::from(vec![
+        let args = ColumnarValue::Array(Arc::new(Int32Array::from(vec![
             Some(1),
             None,
             Some(12345),
             Some(89),
             Some(-3456),
-        ])))];
+        ])));
         let expected = &Int32Array::from(vec![Some(1), None, Some(6), Some(4), Some(54)]);
 
-        let ColumnarValue::Array(result) = spark_bit_count(&args)? else {
+        let ColumnarValue::Array(result) = spark_bit_count([args])? else {
             unreachable!()
         };
 
