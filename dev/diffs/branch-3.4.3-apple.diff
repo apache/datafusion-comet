@@ -280,3 +280,24 @@ index c95932efee5..24118a767f9 100644
            partitionFilters.exists(ExecSubqueryExpression.hasSubquery) &&
              fs.inputRDDs().forall(
                _.asInstanceOf[FileScanRDD].filePartitions.forall(
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
+index 23d6587943e..140ed7ccea0 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
+@@ -33,7 +33,7 @@ import org.apache.spark.sql.TestingUDT.{IntervalUDT, NullData, NullUDT}
+ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, GreaterThan, Literal}
+ import org.apache.spark.sql.catalyst.expressions.IntegralLiteralTestUtils.{negativeInt, positiveInt}
+ import org.apache.spark.sql.catalyst.plans.logical.Filter
+-import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec, CometSortMergeJoinExec}
++import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometScanExec, CometSortMergeJoinExec}
+ import org.apache.spark.sql.execution.{FileSourceScanLike, SimpleMode}
+ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+ import org.apache.spark.sql.execution.datasources.FilePartition
+@@ -1105,6 +1105,7 @@ class FileBasedDataSourceSuite extends QueryTest
+             case f: FileSourceScanLike => f.dataFilters
+             case b: BatchScanExec => b.scan.asInstanceOf[FileScan].dataFilters
+             case b: CometScanExec => b.dataFilters
++            case b: CometNativeScanExec => b.dataFilters
+             case b: CometBatchScanExec => b.scan.asInstanceOf[FileScan].dataFilters
+           }.flatten
+           assert(filters.contains(GreaterThan(scan.logicalPlan.output.head, Literal(5L))))
