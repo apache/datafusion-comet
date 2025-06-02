@@ -68,6 +68,11 @@ case class CometNativeScanExec(
 
   override lazy val outputOrdering: Seq[SortOrder] = originalPlan.outputOrdering
 
+  // TODO add shim because this method is new in Spark 4.0.0
+  def getStream: Option[org.apache.spark.sql.connector.read.streaming.SparkDataStream] = {
+    None
+  }
+
   override def doCanonicalize(): CometNativeScanExec = {
     CometNativeScanExec(
       nativeOp,

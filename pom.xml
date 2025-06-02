@@ -600,13 +600,14 @@ under the License.
         <!-- Use Scala 2.13 by default -->
         <scala.version>2.13.14</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
-        <spark.version>4.0.0-preview1</spark.version>
+        <spark.version>4.0.0</spark.version>
         <spark.version.short>4.0</spark.version.short>
         <parquet.version>1.13.1</parquet.version>
         <semanticdb.version>4.9.5</semanticdb.version>
         <slf4j.version>2.0.13</slf4j.version>
         <shims.majorVerSrc>spark-4.0</shims.majorVerSrc>
         <shims.minorVerSrc>not-needed-yet</shims.minorVerSrc>
+        <guava.version>33.4.0-jre</guava.version>
         <!-- Use jdk17 by default -->
         <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
@@ -1041,6 +1042,15 @@ under the License.
                         <!-- we explicitly include a duplicate to allow older versions of Spark -->
                         <!-- this can be removed once we no longer support spark 3.x  -->
                         <ignoreClass>org.apache.spark.sql.ExtendedExplainGenerator</ignoreClass>
+                      </ignoreClasses>
+                    </dependency>
+                    <dependency>
+                      <groupId>org.apache.spark</groupId>
+                      <artifactId>spark-network-common_${scala.binary.version}</artifactId>
+                      <ignoreClasses>
+                        <ignoreClass>com.google.thirdparty.publicsuffix.TrieParser</ignoreClass>
+                        <ignoreClass>com.google.thirdparty.publicsuffix.PublicSuffixPatterns</ignoreClass>
+                        <ignoreClass>com.google.thirdparty.publicsuffix.PublicSuffixType</ignoreClass>
                       </ignoreClasses>
                     </dependency>
                     <dependency>

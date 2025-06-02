@@ -56,7 +56,7 @@ trait ShimCometScanExec {
   protected def isNeededForSchema(sparkSchema: StructType): Boolean = false
 
   protected def getPartitionedFile(f: FileStatusWithMetadata, p: PartitionDirectory): PartitionedFile =
-    PartitionedFileUtil.getPartitionedFile(f, p.values, 0, f.getLen)
+    PartitionedFileUtil.getPartitionedFile(f, f.getPath, p.values, 0, f.getLen)
 
   protected def splitFiles(sparkSession: SparkSession,
                            file: FileStatusWithMetadata,
@@ -64,8 +64,7 @@ trait ShimCometScanExec {
                            isSplitable: Boolean,
                            maxSplitBytes: Long,
                            partitionValues: InternalRow): Seq[PartitionedFile] =
-    PartitionedFileUtil.splitFiles(file, isSplitable, maxSplitBytes, partitionValues)
-
+    PartitionedFileUtil.splitFiles(file, filePath, isSplitable, maxSplitBytes, partitionValues)
   protected def getPushedDownFilters(relation: HadoopFsRelation , dataFilters: Seq[Expression]):  Seq[Filter] = {
     translateToV1Filters(relation, dataFilters, _.toLiteral)
   }
@@ -89,6 +88,10 @@ trait ShimCometScanExec {
       case FileSourceConstantMetadataAttribute(_) => true
       case _ => false
     }).flatMap(DataSourceStrategy.translateFilter(_, supportNestedPredicatePushdown))
+  }
+
+  def getStream: Option[org.apache.spark.sql.connector.read.streaming.SparkDataStream] = {
+    None
   }
 
 }
