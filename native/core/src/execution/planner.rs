@@ -65,7 +65,7 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{
-    create_comet_physical_fun, create_negate_expr, SparkBitwiseCount,
+    create_comet_physical_fun, create_negate_expr, SparkBitwiseCount, SparkBitwiseNot,
 };
 
 use crate::execution::operators::ExecutionError::GeneralError;
