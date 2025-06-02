@@ -104,9 +104,9 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, BitwiseNotExpr, Cast, CheckOverflow, Contains, Correlation,
-    Covariance, CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields, GetStructField,
-    HourExpr, IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike, SecondExpr,
+    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Contains, Correlation, Covariance,
+    CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields, GetStructField, HourExpr,
+    IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike, SecondExpr,
     SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
     TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
@@ -152,6 +152,7 @@ impl Default for PhysicalPlanner {
 
         // register UDFs from datafusion-spark crate
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
+        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseCount::default()));
 
         Self {
@@ -165,6 +166,7 @@ impl PhysicalPlanner {
     pub fn new(session_ctx: Arc<SessionContext>) -> Self {
         // register UDFs from datafusion-spark crate
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
+        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseCount::default()));
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
@@ -589,10 +591,6 @@ impl PhysicalPlanner {
                 let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
                 let op = DataFusionOperator::BitwiseAnd;
                 Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::BitwiseNot(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(BitwiseNotExpr::new(child)))
             }
             ExprStruct::BitwiseOr(expr) => {
                 let left =

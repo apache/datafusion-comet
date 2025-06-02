@@ -19,4 +19,4 @@ mod bitwise_count;
 mod bitwise_not;
 
 pub use bitwise_count::SparkBitwiseCount;
-pub use bitwise_not::{bitwise_not, BitwiseNotExpr};
+pub use bitwise_not::SparkBitwiseNot;
