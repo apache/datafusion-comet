@@ -72,7 +72,6 @@ message Expr {
     NormalizeNaNAndZero normalize_nan_and_zero = 45;
     TruncDate truncDate = 46;
     TruncTimestamp truncTimestamp = 47;
-    UnaryExpr bitwiseNot = 48;
     Abs abs = 49;
     Subquery subquery = 50;
     UnboundReference unbound = 51;
