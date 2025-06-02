@@ -19,11 +19,23 @@
 
 package org.apache.spark.sql.comet.shims
 
-import org.apache.spark.executor.TaskMetrics
-import org.apache.spark.util.AccumulatorV2
+import org.apache.spark.sql.catalyst.catalog.HiveTableRelation
+import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
+import org.apache.spark.sql.catalyst.plans.logical.SubqueryAlias
+import org.apache.spark.sql.execution.datasources.LogicalRelation
 
-object ShimTaskMetrics {
-
-  def getTaskAccumulator(taskMetrics: TaskMetrics): Option[AccumulatorV2[_, _]] =
-    taskMetrics._externalAccums.lastOption
+object ShimCometTPCDSMicroBenchmark {
+  def collectQueryRelations(plan: LogicalPlan): Set[String] = {
+    val queryRelations = scala.collection.mutable.HashSet[String]()
+    plan.foreach {
+      case SubqueryAlias(alias, _: LogicalRelation) =>
+        queryRelations.add(alias.name)
+      case LogicalRelation(_, _, Some(catalogTable), _) =>
+        queryRelations.add(catalogTable.identifier.table)
+      case HiveTableRelation(tableMeta, _, _, _, _) =>
+        queryRelations.add(tableMeta.identifier.table)
+      case _ =>
+    }
+    queryRelations.toSet
+  }
 }

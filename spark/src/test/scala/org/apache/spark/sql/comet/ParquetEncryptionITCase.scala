@@ -138,13 +138,8 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
     conf
   }
 
-  protected override def createSparkSession: SparkSession = {
-    SparkSession
-      .builder()
-      .config(sparkConf)
-      .master("local[1]")
-      .withExtensions(new CometSparkSessionExtensions)
-      .getOrCreate()
+  protected override def createSparkSession: SparkSessionType = {
+    createSparkSessionWithExtensions(sparkConf)
   }
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
@@ -166,8 +161,8 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
     super.beforeAll()
   }
 
-  private var _spark: SparkSession = _
-  protected implicit override def spark: SparkSession = _spark
+  private var _spark: SparkSessionType = _
+  protected implicit override def spark: SparkSessionType = _spark
   protected implicit override def sqlContext: SQLContext = _spark.sqlContext
 
   /**

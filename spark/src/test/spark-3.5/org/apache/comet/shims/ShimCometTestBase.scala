@@ -17,13 +17,22 @@
  * under the License.
  */
 
-package org.apache.spark.sql.comet.shims
+package org.apache.comet.shims
 
-import org.apache.spark.executor.TaskMetrics
-import org.apache.spark.util.AccumulatorV2
+import org.apache.spark.SparkConf
+import org.apache.spark.sql.SparkSession
 
-object ShimTaskMetrics {
+trait ShimCometTestBase {
+  type SparkSessionType = SparkSession
 
-  def getTaskAccumulator(taskMetrics: TaskMetrics): Option[AccumulatorV2[_, _]] =
-    taskMetrics._externalAccums.lastOption
+  def createSparkSessionWithExtensions(conf: SparkConf): SparkSessionType = {
+    SparkSession
+      .builder()
+      .config(conf)
+      .master("local[1]")
+      .withExtensions(new org.apache.comet.CometSparkSessionExtensions)
+      .getOrCreate()
+  }
+
+  def getSQLContext(spark: SparkSessionType) = spark.sqlContext
 }

@@ -19,11 +19,17 @@
 
 package org.apache.spark.sql.comet.shims
 
-import org.apache.spark.executor.TaskMetrics
-import org.apache.spark.util.AccumulatorV2
+import org.apache.spark.sql.catalyst.plans.logical._
+import org.apache.spark.sql.execution.command.{DescribeColumnCommand, DescribeCommandBase}
 
-object ShimTaskMetrics {
-
-  def getTaskAccumulator(taskMetrics: TaskMetrics): Option[AccumulatorV2[_, _]] =
-    taskMetrics._externalAccums.lastOption
+object ShimCometUtil {
+  def isSorted(plan: LogicalPlan): Boolean = plan match {
+    case _: Join | _: Aggregate | _: Generate | _: Sample | _: Distinct => false
+    case _: DescribeCommandBase | _: DescribeColumnCommand | _: DescribeRelation |
+         _: DescribeColumn => true
+    case Sort(_, true, _) => true
+    case _ => plan.children.iterator.exists(isSorted)
+  }
 }
+
+

@@ -87,7 +87,8 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
               + allocatedMemory
               + " bytes and max memory is "
               + totalMemory
-              + " bytes");
+              + " bytes",
+          java.util.Collections.emptyMap());
     }
     long allocationSize = Math.min(size, totalMemory - allocatedMemory);
     allocatedMemory += allocationSize;
@@ -132,7 +133,8 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
               + " bytes of memory, got "
               + got
               + " bytes. Available: "
-              + (totalMemory - allocatedMemory));
+              + (totalMemory - allocatedMemory),
+          java.util.Collections.emptyMap());
     }
 
     int pageNumber = allocatedPages.nextClearBit(0);

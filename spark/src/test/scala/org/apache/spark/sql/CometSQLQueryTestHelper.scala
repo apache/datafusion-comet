@@ -22,11 +22,9 @@ package org.apache.spark.sql
 import scala.util.control.NonFatal
 
 import org.apache.spark.{SparkException, SparkThrowable}
-import org.apache.spark.sql.catalyst.planning.PhysicalOperation
-import org.apache.spark.sql.catalyst.plans.logical._
+import org.apache.spark.sql.comet.shims.ShimCometUtil
 import org.apache.spark.sql.execution.HiveResult.hiveResultString
 import org.apache.spark.sql.execution.SQLExecution
-import org.apache.spark.sql.execution.command.{DescribeColumnCommand, DescribeCommandBase}
 import org.apache.spark.sql.types.StructType
 
 trait CometSQLQueryTestHelper {
@@ -51,15 +49,6 @@ trait CometSQLQueryTestHelper {
   /** Executes a query and returns the result as (schema of the output, normalized output). */
   protected def getNormalizedResult(session: SparkSession, sql: String): (String, Seq[String]) = {
     // Returns true if the plan is supposed to be sorted.
-    def isSorted(plan: LogicalPlan): Boolean = plan match {
-      case _: Join | _: Aggregate | _: Generate | _: Sample | _: Distinct => false
-      case _: DescribeCommandBase | _: DescribeColumnCommand | _: DescribeRelation |
-          _: DescribeColumn =>
-        true
-      case PhysicalOperation(_, _, Sort(_, true, _)) => true
-      case _ => plan.children.iterator.exists(isSorted)
-    }
-
     val df = session.sql(sql)
     val schema = df.schema.catalogString
     // Get answer, but also get rid of the #1234 expression ids that show up in explain plans
@@ -68,7 +57,8 @@ trait CometSQLQueryTestHelper {
     }
 
     // If the output is not pre-sorted, sort it.
-    if (isSorted(df.queryExecution.analyzed)) (schema, answer) else (schema, answer.sorted)
+    val sorted = ShimCometUtil.isSorted(df.queryExecution.analyzed)
+    if (sorted) (schema, answer) else (schema, answer.sorted)
   }
 
   /**

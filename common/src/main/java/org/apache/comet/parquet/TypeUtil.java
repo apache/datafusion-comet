@@ -74,7 +74,7 @@ public class TypeUtil {
       builder = Types.primitive(PrimitiveType.PrimitiveTypeName.INT64, repetition);
     } else if (type == DataTypes.BinaryType) {
       builder = Types.primitive(PrimitiveType.PrimitiveTypeName.BINARY, repetition);
-    } else if (type == DataTypes.StringType) {
+    } else if (type == DataTypes.StringType || type.sameType(DataTypes.StringType)) {
       builder =
           Types.primitive(PrimitiveType.PrimitiveTypeName.BINARY, repetition)
               .as(LogicalTypeAnnotation.stringType());
@@ -198,6 +198,13 @@ public class TypeUtil {
             || sparkType == DataTypes.BinaryType
             || canReadAsBinaryDecimal(descriptor, sparkType)) {
           return;
+        }
+
+        if (sparkType instanceof StringType && isSpark40Plus()) {
+          LogicalTypeAnnotation lta = descriptor.getPrimitiveType().getLogicalTypeAnnotation();
+          if (lta instanceof LogicalTypeAnnotation.StringLogicalTypeAnnotation) {
+            return;
+          }
         }
         break;
       case FIXED_LEN_BYTE_ARRAY:
