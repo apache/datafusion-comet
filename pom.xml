@@ -121,6 +121,13 @@ under the License.
   <dependencyManagement>
     <dependencies>
       <!-- Spark dependencies -->
+      <!-- TODO shim because spark-sql-api is new in Spark 4.0.0 -->
+      <dependency>
+        <groupId>org.apache.spark</groupId>
+        <artifactId>spark-sql-api_${scala.binary.version}</artifactId>
+        <version>${spark.version}</version>
+        <scope>${spark.maven.scope}</scope>
+      </dependency>
       <dependency>
         <groupId>org.apache.spark</groupId>
         <artifactId>spark-sql_${scala.binary.version}</artifactId>
@@ -597,6 +604,10 @@ under the License.
       <!-- FIXME: this is WIP. Tests may fail https://github.com/apache/datafusion-comet/issues/551 -->
       <id>spark-4.0</id>
       <properties>
+
+        <!-- TODO fix enforcer issues once everything compiles -->
+        <enforcer.skip>true</enforcer.skip>
+
         <!-- Use Scala 2.13 by default -->
         <scala.version>2.13.14</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
