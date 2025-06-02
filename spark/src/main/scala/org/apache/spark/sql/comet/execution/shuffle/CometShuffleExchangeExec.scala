@@ -164,8 +164,7 @@ case class CometShuffleExchangeExec(
     }
 
   protected override def doExecute(): RDD[InternalRow] = {
-    throw new UnsupportedOperationException(
-      "CometShuffleExchangeExec.doExecute should not be executed.")
+    ColumnarToRowExec(this).doExecute()
   }
 
   /**

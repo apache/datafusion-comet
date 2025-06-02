@@ -1609,12 +1609,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
           (builder, binaryExpr) => builder.setBitwiseAnd(binaryExpr))
 
       case BitwiseNot(child) =>
-        createUnaryExpr(
-          expr,
-          child,
-          inputs,
-          binding,
-          (builder, unaryExpr) => builder.setBitwiseNot(unaryExpr))
+        val childProto = exprToProto(child, inputs, binding)
+        val bitNotScalarExpr =
+          scalarFunctionExprToProto("bit_not", childProto)
+        optExprWithInfo(bitNotScalarExpr, expr, expr.children: _*)
 
       case BitwiseOr(left, right) =>
         createBinaryExpr(
@@ -1633,6 +1631,12 @@ object QueryPlanSerde extends Logging with CometExprShim {
           inputs,
           binding,
           (builder, binaryExpr) => builder.setBitwiseXor(binaryExpr))
+
+      case BitwiseCount(child) =>
+        val childProto = exprToProto(child, inputs, binding)
+        val bitCountScalarExpr =
+          scalarFunctionExprToProtoWithReturnType("bit_count", IntegerType, childProto)
+        optExprWithInfo(bitCountScalarExpr, expr, expr.children: _*)
 
       case ShiftRight(left, right) =>
         // DataFusion bitwise shift right expression requires
