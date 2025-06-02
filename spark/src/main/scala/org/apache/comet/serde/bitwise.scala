@@ -19,10 +19,10 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, BitwiseAnd, BitwiseCount, BitwiseGet, BitwiseNot, BitwiseOr, BitwiseXor, Cast, Expression, ShiftLeft, ShiftRight}
+import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.types.{ByteType, IntegerType, LongType}
 
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, createUnaryExpr, exprToProto, optExprWithInfo, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde._
 
 object CometBitwiseAdd extends CometExpressionSerde {
   override def convert(
@@ -46,12 +46,10 @@ object CometBitwiseNot extends CometExpressionSerde {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val bitwiseNotExpr = expr.asInstanceOf[BitwiseNot]
-    createUnaryExpr(
-      expr,
-      bitwiseNotExpr.child,
-      inputs,
-      binding,
-      (builder, unaryExpr) => builder.setBitwiseNot(unaryExpr))
+    val childProto = exprToProto(bitwiseNotExpr.child, inputs, binding)
+    val bitNotScalarExpr =
+      scalarFunctionExprToProto("bit_not", childProto)
+    optExprWithInfo(bitNotScalarExpr, expr, expr.children: _*)
   }
 }
 
