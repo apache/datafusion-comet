@@ -17,9 +17,10 @@
 
 use crate::hash_funcs::*;
 use crate::{
-    spark_array_repeat, spark_ceil, spark_date_add, spark_date_sub, spark_decimal_div,
-    spark_decimal_integral_div, spark_floor, spark_hex, spark_isnan, spark_make_decimal,
-    spark_read_side_padding, spark_round, spark_rpad, spark_unhex, spark_unscaled_value,
+    spark_array_repeat, spark_bit_count, spark_ceil, spark_date_add, spark_date_sub,
+    spark_decimal_div, spark_decimal_integral_div, spark_floor, spark_hex, spark_isnan,
+    spark_make_decimal, spark_read_side_padding, spark_round, spark_rpad, spark_unhex,
+    spark_unscaled_value,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -142,6 +143,10 @@ pub fn create_comet_physical_fun(
         "array_repeat" => {
             let func = Arc::new(spark_array_repeat);
             make_comet_scalar_udf!("array_repeat", func, without data_type)
+        }
+        "bit_count" => {
+            let func = Arc::new(spark_bit_count);
+            make_comet_scalar_udf!("bit_count", func, without data_type)
         }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(

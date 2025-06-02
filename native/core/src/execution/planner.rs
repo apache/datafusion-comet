@@ -64,7 +64,7 @@ use datafusion::{
     },
     prelude::SessionContext,
 };
-use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr};
+use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr, SparkBitwiseNot};
 
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::CompressionCodec;
@@ -102,9 +102,9 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, BitwiseNotExpr, Cast, CheckOverflow, Contains, Correlation,
-    Covariance, CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields, GetStructField,
-    HourExpr, IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike, SecondExpr,
+    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Contains, Correlation, Covariance,
+    CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields, GetStructField, HourExpr,
+    IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike, SecondExpr,
     SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
     TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
@@ -150,6 +150,7 @@ impl Default for PhysicalPlanner {
 
         // register UDFs from datafusion-spark crate
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
+        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
 
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
@@ -162,6 +163,7 @@ impl PhysicalPlanner {
     pub fn new(session_ctx: Arc<SessionContext>) -> Self {
         // register UDFs from datafusion-spark crate
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
+        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,
@@ -586,10 +588,6 @@ impl PhysicalPlanner {
                 let op = DataFusionOperator::BitwiseAnd;
                 Ok(Arc::new(BinaryExpr::new(left, op, right)))
             }
-            ExprStruct::BitwiseNot(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(BitwiseNotExpr::new(child)))
-            }
             ExprStruct::BitwiseOr(expr) => {
                 let left =
                     self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
@@ -893,7 +891,7 @@ impl PhysicalPlanner {
                     func_name,
                     fun_expr,
                     vec![left, right],
-                    Field::new(func_name, data_type, true),
+                    Arc::new(Field::new(func_name, data_type, true)),
                 )))
             }
             _ => Ok(Arc::new(BinaryExpr::new(left, op, right))),
@@ -2239,7 +2237,7 @@ impl PhysicalPlanner {
                     let arg_fields = coerced_types
                         .iter()
                         .enumerate()
-                        .map(|(i, dt)| Field::new(format!("arg{i}"), dt.clone(), true))
+                        .map(|(i, dt)| Arc::new(Field::new(format!("arg{i}"), dt.clone(), true)))
                         .collect::<Vec<_>>();
 
                     // TODO this should try and find scalar
@@ -2258,10 +2256,7 @@ impl PhysicalPlanner {
                         scalar_arguments: &arguments,
                     };
 
-                    let data_type = func
-                        .inner()
-                        .return_field_from_args(args)?
-                        .clone()
+                    let data_type = Arc::clone(&func.inner().return_field_from_args(args)?)
                         .data_type()
                         .clone();
 
@@ -2295,7 +2290,7 @@ impl PhysicalPlanner {
             fun_name,
             fun_expr,
             args.to_vec(),
-            Field::new(fun_name, data_type, true),
+            Arc::new(Field::new(fun_name, data_type, true)),
         ));
 
         Ok(scalar_expr)
