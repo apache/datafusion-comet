@@ -334,7 +334,6 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
 
   test(
     "native reader - select nested field from a complex map[struct, struct] using map_values") {
-    // ArrayBasedMapData
     testSingleLineQuery(
       """
         | select map(str0, str1) c0 from
