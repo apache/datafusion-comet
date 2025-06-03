@@ -141,7 +141,8 @@ class CometExecSuite extends CometTestBase {
 
   // repro for https://github.com/apache/datafusion-comet/issues/1251
   ignore("subquery/exists-subquery/exists-orderby-limit.sql") {
-    withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+    withSQLConf(
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
       CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "true") {
       val table = "src"
       withTable(table) {
@@ -149,8 +150,7 @@ class CometExecSuite extends CometTestBase {
         sql(s"INSERT INTO $table VALUES(238, 'val_238')")
 
         // this query works correctly if the GROUP BY is removed
-        checkSparkAnswerAndOperator(
-          s"""SELECT * FROM $table
+        checkSparkAnswerAndOperator(s"""SELECT * FROM $table
              |WHERE EXISTS (SELECT MAX(key)
              |FROM $table
              |GROUP BY value
