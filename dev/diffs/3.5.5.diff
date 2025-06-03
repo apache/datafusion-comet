@@ -524,30 +524,6 @@ index 00000000000..5691536c114
 +    }
 +  }
 +}
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala
-index fedfd9ff587..c5bfc8f16e4 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/InjectRuntimeFilterSuite.scala
-@@ -505,7 +505,8 @@ class InjectRuntimeFilterSuite extends QueryTest with SQLTestUtils with SharedSp
-   }
- 
-   test("Runtime bloom filter join: do not add bloom filter if dpp filter exists " +
--    "on the same column") {
-+    "on the same column",
-+    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
-     withSQLConf(SQLConf.RUNTIME_BLOOM_FILTER_APPLICATION_SIDE_SCAN_SIZE_THRESHOLD.key -> "3000",
-       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "2000") {
-       assertDidNotRewriteWithBloomFilter("select * from bf5part join bf2 on " +
-@@ -514,7 +515,8 @@ class InjectRuntimeFilterSuite extends QueryTest with SQLTestUtils with SharedSp
-   }
- 
-   test("Runtime bloom filter join: add bloom filter if dpp filter exists on " +
--    "a different column") {
-+    "a different column",
-+    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
-     withSQLConf(SQLConf.RUNTIME_BLOOM_FILTER_APPLICATION_SIDE_SCAN_SIZE_THRESHOLD.key -> "3000",
-       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "2000") {
-       assertRewroteWithBloomFilter("select * from bf5part join bf2 on " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala
 index 7af826583bd..3c3def1eb67 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala
@@ -1860,15 +1836,11 @@ index bf496d6db21..9bb57a9b4c6 100644
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/V1WriteCommandSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/V1WriteCommandSuite.scala
-index ce43edb79c1..8436cb727c6 100644
+index ce43edb79c1..4dbb5942bc3 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/V1WriteCommandSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/V1WriteCommandSuite.scala
-@@ -17,9 +17,10 @@
- 
- package org.apache.spark.sql.execution.datasources
- 
--import org.apache.spark.sql.{QueryTest, Row}
-+import org.apache.spark.sql.{IgnoreComet, QueryTest, Row}
+@@ -20,6 +20,7 @@ package org.apache.spark.sql.execution.datasources
+ import org.apache.spark.sql.{QueryTest, Row}
  import org.apache.spark.sql.catalyst.expressions.{Ascending, AttributeReference, NullsFirst, SortOrder}
  import org.apache.spark.sql.catalyst.plans.logical.{LogicalPlan, Sort}
 +import org.apache.spark.sql.comet.CometSortExec
@@ -1891,16 +1863,6 @@ index ce43edb79c1..8436cb727c6 100644
          }.exists {
            case SortExec(Seq(
              SortOrder(AttributeReference("value", StringType, _, _), Ascending, NullsFirst, _),
-@@ -305,7 +308,8 @@ class V1WriteCommandSuite extends QueryTest with SharedSparkSession with V1Write
-     }
-   }
- 
--  test("v1 write with AQE changing SMJ to BHJ") {
-+  test("v1 write with AQE changing SMJ to BHJ",
-+      IgnoreComet("TODO: Comet SMJ to BHJ by AQE")) {
-     withPlannedWrite { enabled =>
-       withTable("t") {
-         sql(
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/binaryfile/BinaryFileFormatSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/binaryfile/BinaryFileFormatSuite.scala
 index 0b6fdef4f74..5b18c55da4b 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/binaryfile/BinaryFileFormatSuite.scala
@@ -2970,20 +2932,6 @@ index 549431ef4f4..e48f1730da6 100644
      withTempDir { dir =>
        withSQLConf(
          "parquet.crypto.factory.class" ->
-diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/AggregationQuerySuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/AggregationQuerySuite.scala
-index dc8b184fcee..dd69a989d40 100644
---- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/AggregationQuerySuite.scala
-+++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/AggregationQuerySuite.scala
-@@ -660,7 +660,8 @@ abstract class AggregationQuerySuite extends QueryTest with SQLTestUtils with Te
-         Row(3, 4, 4, 3, null) :: Nil)
-   }
- 
--  test("single distinct multiple columns set") {
-+  test("single distinct multiple columns set",
-+    IgnoreComet("TODO: fix Comet for this test")) {
-     checkAnswer(
-       spark.sql(
-         """
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 index 1d646f40b3e..7f2cdb8f061 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
