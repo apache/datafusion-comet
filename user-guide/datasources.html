@@ -351,6 +351,57 @@ under the License.
   <a class="reference internal nav-link" href="#s3">
    S3
   </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#native-comet">
+     <code class="docutils literal notranslate">
+      <span class="pre">
+       native_comet
+      </span>
+     </code>
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#native-datafusion">
+     <code class="docutils literal notranslate">
+      <span class="pre">
+       native_datafusion
+      </span>
+     </code>
+    </a>
+    <ul class="nav section-nav flex-column">
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#supported-credential-providers">
+       Supported Credential Providers
+      </a>
+     </li>
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#additional-s3-configuration-options">
+       Additional S3 Configuration Options
+      </a>
+     </li>
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#examples">
+       Examples
+      </a>
+     </li>
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#limitations">
+       Limitations
+      </a>
+     </li>
+    </ul>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#native-iceberg-compat">
+     <code class="docutils literal notranslate">
+      <span class="pre">
+       native_iceberg_compat
+      </span>
+     </code>
+    </a>
+   </li>
+  </ul>
  </li>
 </ul>
 
@@ -534,7 +585,131 @@ Input<span class="w"> </span><span class="o">[</span><span class="m">3</span><sp
 </section>
 <section id="s3">
 <h2>S3<a class="headerlink" href="#s3" title="Link to this heading">¶</a></h2>
-<p>In progress</p>
+<p>DataFusion Comet has <a class="reference internal" href="compatibility.html#parquet-scans"><span class="std std-ref">multiple Parquet scan implementations</span></a> that use different approaches to read data from S3.</p>
+<section id="native-comet">
+<h3><code class="docutils literal notranslate"><span class="pre">native_comet</span></code><a class="headerlink" href="#native-comet" title="Link to this heading">¶</a></h3>
+<p>The default <code class="docutils literal notranslate"><span class="pre">native_comet</span></code> Parquet scan implementation reads data from S3 using the <a class="reference external" href="https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html">Hadoop-AWS module</a>, which is identical to the approach commonly used with vanilla Spark. AWS credential configuration and other Hadoop S3A configurations works the same way as in vanilla Spark.</p>
+</section>
+<section id="native-datafusion">
+<h3><code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code><a class="headerlink" href="#native-datafusion" title="Link to this heading">¶</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> Parquet scan implementation completely offloads data loading to native code. It uses the <a class="reference external" href="https://crates.io/crates/object_store"><code class="docutils literal notranslate"><span class="pre">object_store</span></code> crate</a> to read data from S3 and supports configuring S3 access using standard <a class="reference external" href="https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html#General_S3A_Client_configuration">Hadoop S3A configurations</a> by translating them to the <code class="docutils literal notranslate"><span class="pre">object_store</span></code> crate’s format.</p>
+<p>This implementation maintains compatibility with existing Hadoop S3A configurations, so existing code will continue to work as long as the configurations are supported and can be translated without loss of functionality.</p>
+<section id="supported-credential-providers">
+<h4>Supported Credential Providers<a class="headerlink" href="#supported-credential-providers" title="Link to this heading">¶</a></h4>
+<p>AWS credential providers can be configured using the <code class="docutils literal notranslate"><span class="pre">fs.s3a.aws.credentials.provider</span></code> configuration. The following table shows the supported credential providers and their configuration options:</p>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Credential provider</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Supported Options</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider</span></code></p></td>
+<td><p>Access S3 using access key and secret key</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fs.s3a.access.key</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.s3a.secret.key</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">org.apache.hadoop.fs.s3a.TemporaryAWSCredentialsProvider</span></code></p></td>
+<td><p>Access S3 using temporary credentials</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fs.s3a.access.key</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.s3a.secret.key</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.s3a.session.token</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">org.apache.hadoop.fs.s3a.auth.AssumedRoleCredentialProvider</span></code></p></td>
+<td><p>Access S3 using AWS STS assume role</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fs.s3a.assumed.role.arn</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.s3a.assumed.role.session.name</span></code> (optional), <code class="docutils literal notranslate"><span class="pre">fs.s3a.assumed.role.credentials.provider</span></code> (optional)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">org.apache.hadoop.fs.s3a.auth.IAMInstanceCredentialsProvider</span></code></p></td>
+<td><p>Access S3 using EC2 instance profile or ECS task credentials (tries ECS first, then IMDS)</p></td>
+<td><p>None (auto-detected)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider</span></code><br/><code class="docutils literal notranslate"><span class="pre">com.amazonaws.auth.AnonymousAWSCredentials</span></code><br/><code class="docutils literal notranslate"><span class="pre">software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider</span></code></p></td>
+<td><p>Access S3 without authentication (public buckets only)</p></td>
+<td><p>None</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">com.amazonaws.auth.EnvironmentVariableCredentialsProvider</span></code><br/><code class="docutils literal notranslate"><span class="pre">software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider</span></code></p></td>
+<td><p>Load credentials from environment variables (<code class="docutils literal notranslate"><span class="pre">AWS_ACCESS_KEY_ID</span></code>, <code class="docutils literal notranslate"><span class="pre">AWS_SECRET_ACCESS_KEY</span></code>, <code class="docutils literal notranslate"><span class="pre">AWS_SESSION_TOKEN</span></code>)</p></td>
+<td><p>None</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">com.amazonaws.auth.InstanceProfileCredentialsProvider</span></code><br/><code class="docutils literal notranslate"><span class="pre">software.amazon.awssdk.auth.credentials.InstanceProfileCredentialsProvider</span></code></p></td>
+<td><p>Access S3 using EC2 instance metadata service (IMDS)</p></td>
+<td><p>None</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">com.amazonaws.auth.ContainerCredentialsProvider</span></code><br/><code class="docutils literal notranslate"><span class="pre">software.amazon.awssdk.auth.credentials.ContainerCredentialsProvider</span></code><br/><code class="docutils literal notranslate"><span class="pre">com.amazonaws.auth.EC2ContainerCredentialsProviderWrapper</span></code></p></td>
+<td><p>Access S3 using ECS task credentials</p></td>
+<td><p>None</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">com.amazonaws.auth.WebIdentityTokenCredentialsProvider</span></code><br/><code class="docutils literal notranslate"><span class="pre">software.amazon.awssdk.auth.credentials.WebIdentityTokenFileCredentialsProvider</span></code></p></td>
+<td><p>Authenticate using web identity token file</p></td>
+<td><p>None</p></td>
+</tr>
+</tbody>
+</table>
+<p>Multiple credential providers can be specified in a comma-separated list using the <code class="docutils literal notranslate"><span class="pre">fs.s3a.aws.credentials.provider</span></code> configuration, just as Hadoop AWS supports. If <code class="docutils literal notranslate"><span class="pre">fs.s3a.aws.credentials.provider</span></code> is not configured, Hadoop S3A’s default credential provider chain will be used. All configuration options also support bucket-specific overrides using the pattern <code class="docutils literal notranslate"><span class="pre">fs.s3a.bucket.{bucket-name}.{option}</span></code>.</p>
+</section>
+<section id="additional-s3-configuration-options">
+<h4>Additional S3 Configuration Options<a class="headerlink" href="#additional-s3-configuration-options" title="Link to this heading">¶</a></h4>
+<p>Beyond credential providers, the <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> implementation supports additional S3 configuration options:</p>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Option</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">fs.s3a.endpoint</span></code></p></td>
+<td><p>The endpoint of the S3 service</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">fs.s3a.endpoint.region</span></code></p></td>
+<td><p>The AWS region for the S3 service. If not specified, the region will be auto-detected.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">fs.s3a.path.style.access</span></code></p></td>
+<td><p>Whether to use path style access for the S3 service (true/false, defaults to virtual hosted style)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">fs.s3a.requester.pays.enabled</span></code></p></td>
+<td><p>Whether to enable requester pays for S3 requests (true/false)</p></td>
+</tr>
+</tbody>
+</table>
+<p>All configuration options support bucket-specific overrides using the pattern <code class="docutils literal notranslate"><span class="pre">fs.s3a.bucket.{bucket-name}.{option}</span></code>.</p>
+</section>
+<section id="examples">
+<h4>Examples<a class="headerlink" href="#examples" title="Link to this heading">¶</a></h4>
+<p>The following examples demonstrate how to configure S3 access with the <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> Parquet scan implementation using different authentication methods.</p>
+<p><strong>Example 1: Simple Credentials</strong></p>
+<p>This example shows how to access a private S3 bucket using an access key and secret key. The <code class="docutils literal notranslate"><span class="pre">fs.s3a.aws.credentials.provider</span></code> configuration can be omitted since <code class="docutils literal notranslate"><span class="pre">org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider</span></code> is included in Hadoop S3A’s default credential provider chain.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
+...
+--conf<span class="w"> </span>spark.comet.scan.impl<span class="o">=</span>native_datafusion<span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>spark.hadoop.fs.s3a.access.key<span class="o">=</span>my-access-key<span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>spark.hadoop.fs.s3a.secret.key<span class="o">=</span>my-secret-key
+...
+</pre></div>
+</div>
+<p><strong>Example 2: Assume Role with Web Identity Token</strong></p>
+<p>This example demonstrates using an assumed role credential to access a private S3 bucket, where the base credential for assuming the role is provided by a web identity token credentials provider.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
+...
+--conf<span class="w"> </span>spark.comet.scan.impl<span class="o">=</span>native_datafusion<span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>spark.hadoop.fs.s3a.aws.credentials.provider<span class="o">=</span>org.apache.hadoop.fs.s3a.auth.AssumedRoleCredentialProvider<span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>spark.hadoop.fs.s3a.assumed.role.arn<span class="o">=</span>arn:aws:iam::123456789012:role/my-role<span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>spark.hadoop.fs.s3a.assumed.role.session.name<span class="o">=</span>my-session<span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>spark.hadoop.fs.s3a.assumed.role.credentials.provider<span class="o">=</span>com.amazonaws.auth.WebIdentityTokenCredentialsProvider
+...
+</pre></div>
+</div>
+</section>
+<section id="limitations">
+<h4>Limitations<a class="headerlink" href="#limitations" title="Link to this heading">¶</a></h4>
+<p>The S3 support of <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> has the following limitations:</p>
+<ol class="arabic simple">
+<li><p><strong>Partial Hadoop S3A configuration support</strong>: Not all Hadoop S3A configurations are currently supported. Only the configurations listed in the tables above are translated and applied to the underlying <code class="docutils literal notranslate"><span class="pre">object_store</span></code> crate.</p></li>
+<li><p><strong>Custom credential providers</strong>: Custom implementations of AWS credential providers are not supported. The implementation only supports the standard credential providers listed in the table above. We are planning to add support for custom credential providers through a JNI-based adapter that will allow calling Java credential providers from native code. See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1829">issue #1829</a> for more details.</p></li>
+</ol>
+</section>
+</section>
+<section id="native-iceberg-compat">
+<h3><code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code><a class="headerlink" href="#native-iceberg-compat" title="Link to this heading">¶</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> Parquet scan implementation does not support reading data from S3 yet, but we are working on it.</p>
+</section>
 </section>
 </section>
 
