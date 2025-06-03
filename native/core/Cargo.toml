@@ -69,6 +69,8 @@ datafusion-comet-spark-expr = { workspace = true }
 datafusion-comet-proto = { workspace = true }
 object_store = { workspace = true }
 url = { workspace = true }
+aws-config = { workspace = true }
+aws-credential-types = { workspace = true }
 parking_lot = "0.12.3"
 datafusion-comet-objectstore-hdfs = { path = "../hdfs", optional = true, default-features = false, features = ["hdfs"] }
 
