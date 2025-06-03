@@ -307,8 +307,6 @@ fn prepare_output(
         unsafe { env.get_array_elements(&schema_address_array, ReleaseMode::NoCopyBack)? };
     let schema_addrs = &*schema_addrs;
 
-    println!("output_batch={output_batch:?}");
-
     let results = output_batch.columns();
     let num_rows = output_batch.num_rows();
 
