@@ -332,18 +332,19 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       "select map_keys(c0).b from tbl")
   }
 
-//  commented out because of correctness issue https://github.com/apache/datafusion-comet/issues/1789
-//  test("native reader - select nested field from a complex map[struct, struct] using map_values") {
-//    testSingleLineQuery(
-//      """
-//        | select map(str0, str1) c0 from
-//        | (
-//        |   select named_struct('a', cast(1 as long), 'b', cast(2 as long), 'c', cast(3 as long)) str0,
-//        |          named_struct('x', cast(8 as long), 'y', cast(9 as long), 'z', cast(0 as long)) str1 union all
-//        |   select named_struct('a', cast(3 as long), 'b', cast(4 as long), 'c', cast(5 as long)) str0,
-//        |          named_struct('x', cast(6 as long), 'y', cast(7 as long), 'z', cast(8 as long)) str1
-//        | )
-//        |""".stripMargin,
-//      "select map_values(c0).b from tbl")
-//  }
+  test(
+    "native reader - select nested field from a complex map[struct, struct] using map_values") {
+    testSingleLineQuery(
+      """
+        | select map(str0, str1) c0 from
+        | (
+        |   select named_struct('a', cast(1 as long), 'b', cast(2 as long), 'c', cast(3 as long)) str0,
+        |          named_struct('x', cast(8 as long), 'y', cast(9 as long), 'z', cast(0 as long)) str1 union all
+        |   select named_struct('a', cast(3 as long), 'b', cast(4 as long), 'c', cast(5 as long)) str0,
+        |          named_struct('x', cast(6 as long), 'y', cast(7 as long), 'z', cast(8 as long)) str1 union all
+        |   select named_struct('a', cast(31 as long), 'b', cast(41 as long), 'c', cast(51 as long)), null
+        | )
+        |""".stripMargin,
+      "select map_values(c0).y from tbl")
+  }
 }
