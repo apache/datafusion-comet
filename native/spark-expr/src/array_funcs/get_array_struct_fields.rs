@@ -158,9 +158,9 @@ fn get_array_struct_fields<O: OffsetSizeTrait>(
         Arc::clone(column)
     } else {
         // In some cases the column obtained from struct by ordinal doesn't
-        // represent all nulls which imposed by parent values
-        // which maybe caused by a low level reader bug and needs more investigation.
-        // For this specific case patch the null buffer for column taking them
+        // represent all nulls which imposed by parent values.
+        // This maybe caused by a low level reader bug and needs more investigation.
+        // For this specific case we patch the null buffer for column taking them
         // from parent values
         make_array(
             column
