@@ -154,5 +154,92 @@ JAVA_HOME="/opt/homebrew/opt/openjdk@11" make release PROFILES="-Pspark-3.5" COM
   }
 ```
 Or use `spark-shell` with HDFS support as described [above](#using-experimental-native-datafusion-reader)
+
 ## S3
-In progress 
+
+DataFusion Comet has [multiple Parquet scan implementations](./compatibility.md#parquet-scans) that use different approaches to read data from S3.
+
+### `native_comet`
+
+The default `native_comet` Parquet scan implementation reads data from S3 using the [Hadoop-AWS module](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html), which is identical to the approach commonly used with vanilla Spark. AWS credential configuration and other Hadoop S3A configurations works the same way as in vanilla Spark.
+
+### `native_datafusion`
+
+The `native_datafusion` Parquet scan implementation completely offloads data loading to native code. It uses the [`object_store` crate](https://crates.io/crates/object_store) to read data from S3 and supports configuring S3 access using standard [Hadoop S3A configurations](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html#General_S3A_Client_configuration) by translating them to the `object_store` crate's format.
+
+This implementation maintains compatibility with existing Hadoop S3A configurations, so existing code will continue to work as long as the configurations are supported and can be translated without loss of functionality.
+
+#### Supported Credential Providers
+
+AWS credential providers can be configured using the `fs.s3a.aws.credentials.provider` configuration. The following table shows the supported credential providers and their configuration options:
+
+| Credential provider | Description | Supported Options |
+|---------------------|-------------|-------------------|
+| `org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider` | Access S3 using access key and secret key | `fs.s3a.access.key`, `fs.s3a.secret.key` |
+| `org.apache.hadoop.fs.s3a.TemporaryAWSCredentialsProvider` | Access S3 using temporary credentials | `fs.s3a.access.key`, `fs.s3a.secret.key`, `fs.s3a.session.token` |
+| `org.apache.hadoop.fs.s3a.auth.AssumedRoleCredentialProvider` | Access S3 using AWS STS assume role | `fs.s3a.assumed.role.arn`, `fs.s3a.assumed.role.session.name` (optional), `fs.s3a.assumed.role.credentials.provider` (optional) |
+| `org.apache.hadoop.fs.s3a.auth.IAMInstanceCredentialsProvider` | Access S3 using EC2 instance profile or ECS task credentials (tries ECS first, then IMDS) | None (auto-detected) |
+| `org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider`<br/>`com.amazonaws.auth.AnonymousAWSCredentials`<br/>`software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider` | Access S3 without authentication (public buckets only) | None |
+| `com.amazonaws.auth.EnvironmentVariableCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider` | Load credentials from environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`) | None |
+| `com.amazonaws.auth.InstanceProfileCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.InstanceProfileCredentialsProvider` | Access S3 using EC2 instance metadata service (IMDS) | None |
+| `com.amazonaws.auth.ContainerCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.ContainerCredentialsProvider`<br/>`com.amazonaws.auth.EC2ContainerCredentialsProviderWrapper` | Access S3 using ECS task credentials | None |
+| `com.amazonaws.auth.WebIdentityTokenCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.WebIdentityTokenFileCredentialsProvider` | Authenticate using web identity token file | None |
+
+Multiple credential providers can be specified in a comma-separated list using the `fs.s3a.aws.credentials.provider` configuration, just as Hadoop AWS supports. If `fs.s3a.aws.credentials.provider` is not configured, Hadoop S3A's default credential provider chain will be used. All configuration options also support bucket-specific overrides using the pattern `fs.s3a.bucket.{bucket-name}.{option}`.
+
+#### Additional S3 Configuration Options
+
+Beyond credential providers, the `native_datafusion` implementation supports additional S3 configuration options:
+
+| Option | Description |
+|--------|-------------|
+| `fs.s3a.endpoint` | The endpoint of the S3 service |
+| `fs.s3a.endpoint.region` | The AWS region for the S3 service. If not specified, the region will be auto-detected. |
+| `fs.s3a.path.style.access` | Whether to use path style access for the S3 service (true/false, defaults to virtual hosted style) |
+| `fs.s3a.requester.pays.enabled` | Whether to enable requester pays for S3 requests (true/false) |
+
+All configuration options support bucket-specific overrides using the pattern `fs.s3a.bucket.{bucket-name}.{option}`.
+
+#### Examples
+
+The following examples demonstrate how to configure S3 access with the `native_datafusion` Parquet scan implementation using different authentication methods.
+
+**Example 1: Simple Credentials**
+
+This example shows how to access a private S3 bucket using an access key and secret key. The `fs.s3a.aws.credentials.provider` configuration can be omitted since `org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider` is included in Hadoop S3A's default credential provider chain.
+
+```shell
+$SPARK_HOME/bin/spark-shell \
+...
+--conf spark.comet.scan.impl=native_datafusion \
+--conf spark.hadoop.fs.s3a.access.key=my-access-key \
+--conf spark.hadoop.fs.s3a.secret.key=my-secret-key
+...
+```
+
+**Example 2: Assume Role with Web Identity Token**
+
+This example demonstrates using an assumed role credential to access a private S3 bucket, where the base credential for assuming the role is provided by a web identity token credentials provider.
+
+```shell
+$SPARK_HOME/bin/spark-shell \
+...
+--conf spark.comet.scan.impl=native_datafusion \
+--conf spark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.auth.AssumedRoleCredentialProvider \
+--conf spark.hadoop.fs.s3a.assumed.role.arn=arn:aws:iam::123456789012:role/my-role \
+--conf spark.hadoop.fs.s3a.assumed.role.session.name=my-session \
+--conf spark.hadoop.fs.s3a.assumed.role.credentials.provider=com.amazonaws.auth.WebIdentityTokenCredentialsProvider
+...
+```
+
+#### Limitations
+
+The S3 support of `native_datafusion` has the following limitations:
+
+1. **Partial Hadoop S3A configuration support**: Not all Hadoop S3A configurations are currently supported. Only the configurations listed in the tables above are translated and applied to the underlying `object_store` crate.
+
+2. **Custom credential providers**: Custom implementations of AWS credential providers are not supported. The implementation only supports the standard credential providers listed in the table above. We are planning to add support for custom credential providers through a JNI-based adapter that will allow calling Java credential providers from native code. See [issue #1829](https://github.com/apache/datafusion-comet/issues/1829) for more details.
+
+### `native_iceberg_compat`
+
+The `native_iceberg_compat` Parquet scan implementation does not support reading data from S3 yet, but we are working on it.

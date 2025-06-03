@@ -64,12 +64,14 @@ use datafusion::{
     },
     prelude::SessionContext,
 };
-use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr, SparkBitwiseNot};
+use datafusion_comet_spark_expr::{
+    create_comet_physical_fun, create_negate_expr, SparkBitwiseCount, SparkBitwiseNot,
+};
 
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
-use crate::parquet::parquet_support::prepare_object_store;
+use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
@@ -146,16 +148,7 @@ pub struct PhysicalPlanner {
 
 impl Default for PhysicalPlanner {
     fn default() -> Self {
-        let session_ctx = Arc::new(SessionContext::new());
-
-        // register UDFs from datafusion-spark crate
-        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
-        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
-
-        Self {
-            exec_context_id: TEST_EXEC_CONTEXT_ID,
-            session_ctx,
-        }
+        Self::new(Arc::new(SessionContext::new()))
     }
 }
 
@@ -164,6 +157,7 @@ impl PhysicalPlanner {
         // register UDFs from datafusion-spark crate
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
+        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseCount::default()));
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,
@@ -1156,8 +1150,17 @@ impl PhysicalPlanner {
                     .and_then(|f| f.partitioned_file.first())
                     .map(|f| f.file_path.clone())
                     .ok_or(GeneralError("Failed to locate file".to_string()))?;
-                let (object_store_url, _) =
-                    prepare_object_store(self.session_ctx.runtime_env(), one_file)?;
+
+                let object_store_options: HashMap<String, String> = scan
+                    .object_store_options
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                let (object_store_url, _) = prepare_object_store_with_configs(
+                    self.session_ctx.runtime_env(),
+                    one_file,
+                    &object_store_options,
+                )?;
 
                 // Generate file groups
                 let mut file_groups: Vec<Vec<PartitionedFile>> =

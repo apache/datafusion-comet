@@ -18,8 +18,11 @@
 name: "Java Test"
 description: "Run Java tests"
 inputs:
+  artifact_name:
+    description: "Unique name for uploaded artifacts for this run"
+    required: true
   suites:
-    description: 'Which test suites to run'
+    description: 'Which Scalatest test suites to run'
     required: false
     default: ''
   maven_opts:
@@ -79,7 +82,7 @@ runs:
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: crash-logs-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+        name: crash-logs-${{ inputs.artifact_name }}
         path: "**/hs_err_pid*.log"
     - name: Debug listing
       if: failure()
@@ -93,13 +96,13 @@ runs:
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: unit-tests-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+        name: unit-tests-${{ inputs.artifact_name }}
         path: "**/target/unit-tests.log"
     - name: Upload test results
       if: ${{ inputs.upload-test-reports == 'true' }}
       uses: actions/upload-artifact@v4
       with:
-         name: java-test-reports-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+         name: java-test-reports-${{ inputs.artifact_name }}
          path: "**/target/surefire-reports/*.txt"
          retention-days: 7 # 1 week for test reports
          overwrite: true
