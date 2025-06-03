@@ -40,6 +40,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD}
+import org.apache.spark.sql.execution.datasources.PartitionedFile
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -51,6 +52,7 @@ import org.apache.spark.unsafe.types.UTF8String
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
 import org.apache.comet.expressions._
+import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType._
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
@@ -2193,12 +2195,16 @@ object QueryPlanSerde extends Logging with CometExprShim {
           }
 
           // TODO: modify CometNativeScan to generate the file partitions without instantiating RDD.
+          var firstPartition: Option[PartitionedFile] = None
           scan.inputRDD match {
             case rdd: DataSourceRDD =>
               val partitions = rdd.partitions
               partitions.foreach(p => {
                 val inputPartitions = p.asInstanceOf[DataSourceRDDPartition].inputPartitions
                 inputPartitions.foreach(partition => {
+                  if (firstPartition.isEmpty) {
+                    firstPartition = partition.asInstanceOf[FilePartition].files.headOption
+                  }
                   partition2Proto(
                     partition.asInstanceOf[FilePartition],
                     nativeScanBuilder,
@@ -2207,6 +2213,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
               })
             case rdd: FileScanRDD =>
               rdd.filePartitions.foreach(partition => {
+                if (firstPartition.isEmpty) {
+                  firstPartition = partition.files.headOption
+                }
                 partition2Proto(partition, nativeScanBuilder, scan.relation.partitionSchema)
               })
             case _ =>
@@ -2237,6 +2246,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
           nativeScanBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
           nativeScanBuilder.setSessionTimezone(conf.getConfString("spark.sql.session.timeZone"))
           nativeScanBuilder.setCaseSensitive(conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
+
+          // Collect S3/cloud storage configurations
+          val hadoopConf = scan.relation.sparkSession.sessionState
+            .newHadoopConfWithOptions(scan.relation.options)
+          firstPartition.foreach { partitionFile =>
+            val objectStoreOptions =
+              NativeConfig.extractObjectStoreOptions(hadoopConf, partitionFile.pathUri)
+            objectStoreOptions.foreach { case (key, value) =>
+              nativeScanBuilder.putObjectStoreOptions(key, value)
+            }
+          }
 
           Some(result.setNativeScan(nativeScanBuilder).build())
 
