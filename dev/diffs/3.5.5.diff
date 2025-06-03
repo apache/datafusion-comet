@@ -332,6 +332,44 @@ index 7ee18df3756..64f01a68048 100644
      withTable("tbl") {
        sql(
          """
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
+index 47a311c71d5..342e71cfdd4 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
+@@ -24,8 +24,9 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression
+ import org.apache.spark.sql.catalyst.optimizer.TransposeWindow
+ import org.apache.spark.sql.catalyst.plans.logical.{Window => LogicalWindow}
+ import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
++import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+-import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, Exchange, ShuffleExchangeExec}
++import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, Exchange, ShuffleExchangeExec, ShuffleExchangeLike}
+ import org.apache.spark.sql.execution.window.WindowExec
+ import org.apache.spark.sql.expressions.{Aggregator, MutableAggregationBuffer, UserDefinedAggregateFunction, Window}
+ import org.apache.spark.sql.functions._
+@@ -1187,10 +1188,12 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+     }
+ 
+     def isShuffleExecByRequirement(
+-        plan: ShuffleExchangeExec,
++        plan: ShuffleExchangeLike,
+         desiredClusterColumns: Seq[String]): Boolean = plan match {
+       case ShuffleExchangeExec(op: HashPartitioning, _, ENSURE_REQUIREMENTS, _) =>
+         partitionExpressionsColumns(op.expressions) === desiredClusterColumns
++      case CometShuffleExchangeExec(op: HashPartitioning, _, _, ENSURE_REQUIREMENTS, _, _) =>
++        partitionExpressionsColumns(op.expressions) === desiredClusterColumns
+       case _ => false
+     }
+ 
+@@ -1213,7 +1216,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+       val shuffleByRequirement = windowed.queryExecution.executedPlan.exists {
+         case w: WindowExec =>
+           w.child.exists {
+-            case s: ShuffleExchangeExec => isShuffleExecByRequirement(s, Seq("key1", "key2"))
++            case s: ShuffleExchangeLike => isShuffleExecByRequirement(s, Seq("key1", "key2"))
+             case _ => false
+           }
+         case _ => false
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DatasetSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DatasetSuite.scala
 index f32b32ffc5a..447d7c6416e 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DatasetSuite.scala
