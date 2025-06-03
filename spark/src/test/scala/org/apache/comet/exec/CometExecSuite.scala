@@ -139,6 +139,24 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  // repro for https://github.com/apache/datafusion-comet/issues/1251
+  test("subquery/exists-subquery/exists-orderby-limit.sql") {
+    withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+      val table = "src"
+      withTable(table) {
+        sql(s"CREATE TABLE $table (key INT, value STRING) USING PARQUET")
+        sql(s"INSERT INTO $table VALUES(238, 'val_238')")
+
+        checkSparkAnswerAndOperator(s"""SELECT * FROM $table
+             |WHERE EXISTS (SELECT MAX(key)
+             |FROM $table
+             |GROUP BY value
+             |LIMIT 1
+             |OFFSET 2)""".stripMargin)
+      }
+    }
+  }
+
   test("Sort on single struct should fallback to Spark") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
