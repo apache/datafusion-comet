@@ -16,6 +16,7 @@
 // under the License.
 
 use arrow::array::{make_array, Array, GenericListArray, OffsetSizeTrait, StructArray};
+use arrow::buffer::NullBuffer;
 use arrow::datatypes::{DataType, FieldRef, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::{
@@ -148,27 +149,28 @@ fn get_array_struct_fields<O: OffsetSizeTrait>(
         .values()
         .as_any()
         .downcast_ref::<StructArray>()
-        .expect("A struct is expected");
+        .expect("A StructType is expected");
 
     let field = Arc::clone(&values.fields()[ordinal]);
     // Get struct column by ordinal
-    let column = values.column(ordinal);
+    let extracted_column = values.column(ordinal);
 
-    let data = if values.null_count() > column.null_count() {
+    let data = if values.null_count() == extracted_column.null_count() {
+        Arc::clone(extracted_column)
+    } else {
         // In some cases the column obtained from struct by ordinal doesn't
-        // represent all nulls which imposed by parent values.
+        // represent all nulls that imposed by parent values.
         // This maybe caused by a low level reader bug and needs more investigation.
-        // For this specific case we patch the null buffer for column taking them
-        // from parent values
+        // For this specific case we patch the null buffer for the column by merging nulls buffers
+        // from parent and column
+        let merged_nulls = NullBuffer::union(values.nulls(), extracted_column.nulls());
         make_array(
-            column
+            extracted_column
                 .into_data()
                 .into_builder()
-                .nulls(values.nulls().cloned())
+                .nulls(merged_nulls)
                 .build()?,
         )
-    } else {
-        Arc::clone(column)
     };
 
     let array = GenericListArray::new(
