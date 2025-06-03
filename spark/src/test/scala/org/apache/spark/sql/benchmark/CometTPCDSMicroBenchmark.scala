@@ -24,7 +24,6 @@ import scala.io.Source
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.catalyst.catalog.HiveTableRelation
 import org.apache.spark.sql.catalyst.plans.logical.SubqueryAlias
-import org.apache.spark.sql.comet.shims.ShimCometTPCDSMicroBenchmark
 import org.apache.spark.sql.execution.benchmark.TPCDSQueryBenchmark.tables
 import org.apache.spark.sql.execution.benchmark.TPCDSQueryBenchmarkArguments
 import org.apache.spark.sql.execution.datasources.LogicalRelation
@@ -94,8 +93,16 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
 
       // This is an indirect hack to estimate the size of each query's input by traversing the
       // logical plan and adding up the sizes of all tables that appear in the plan.
-      val queryRelations = ShimCometTPCDSMicroBenchmark.collectQueryRelations(
-        cometSpark.sql(queryString).queryExecution.analyzed)
+      val queryRelations = scala.collection.mutable.HashSet[String]()
+      cometSpark.sql(queryString).queryExecution.analyzed.foreach {
+        case SubqueryAlias(alias, _: LogicalRelation) =>
+          queryRelations.add(alias.name)
+        case rel: LogicalRelation if rel.catalogTable.isDefined =>
+          queryRelations.add(rel.catalogTable.get.identifier.table)
+        case HiveTableRelation(tableMeta, _, _, _, _) =>
+          queryRelations.add(tableMeta.identifier.table)
+        case _ =>
+      }
       val numRows = queryRelations.map(tableSizes.getOrElse(_, 0L)).sum
       val benchmark = new Benchmark(benchmarkName, numRows, 2, output = output)
       benchmark.addCase(s"$name$nameSuffix") { _ =>
