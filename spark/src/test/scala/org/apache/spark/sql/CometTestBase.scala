@@ -878,10 +878,6 @@ abstract class CometTestBase
       spark.createDataFrame(data, schema).repartition(1).write.parquet(path)
       readParquetFile(path, Some(schema)) { df => df.createOrReplaceTempView(tableName) }
 
-      spark.table(tableName).show(false)
-      spark.table(tableName).printSchema()
-      spark.table(tableName).explain("extended")
-
       withSQLConf(sqlConf: _*) {
         val cometDF = sql(testQuery)
         debugCometDF(cometDF)
