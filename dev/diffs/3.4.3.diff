@@ -499,7 +499,7 @@ index 2796b1cf154..4816349d690 100644
          }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
 new file mode 100644
-index 00000000000..5db1532cf9f
+index 00000000000..5691536c114
 --- /dev/null
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
 @@ -0,0 +1,45 @@
@@ -540,7 +540,7 @@ index 00000000000..5db1532cf9f
 + */
 +trait IgnoreCometSuite extends SQLTestUtils {
 +  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)
-+                             (implicit pos: Position): Unit = {
++    (implicit pos: Position): Unit = {
 +    if (isCometEnabled) {
 +      ignore(testName + " (disabled when Comet is on)", testTags: _*)(testFun)
 +    } else {
