@@ -154,9 +154,7 @@ fn get_array_struct_fields<O: OffsetSizeTrait>(
     // Get struct column by ordinal
     let column = values.column(ordinal);
 
-    let data = if values.null_count() == column.null_count() {
-        Arc::clone(column)
-    } else {
+    let data = if values.null_count() > column.null_count() {
         // In some cases the column obtained from struct by ordinal doesn't
         // represent all nulls which imposed by parent values.
         // This maybe caused by a low level reader bug and needs more investigation.
@@ -169,6 +167,8 @@ fn get_array_struct_fields<O: OffsetSizeTrait>(
                 .nulls(values.nulls().cloned())
                 .build()?,
         )
+    } else {
+        Arc::clone(column)
     };
 
     let array = GenericListArray::new(
