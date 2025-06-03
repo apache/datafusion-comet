@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, GenericListArray, OffsetSizeTrait, StructArray};
+use arrow::array::{make_array, Array, GenericListArray, OffsetSizeTrait, StructArray};
 use arrow::datatypes::{DataType, FieldRef, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::{
@@ -80,10 +80,6 @@ impl PhysicalExpr for GetArrayStructFields {
         self
     }
 
-    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
-        unimplemented!()
-    }
-
     fn data_type(&self, input_schema: &Schema) -> DataFusionResult<DataType> {
         let struct_field = self.child_field(input_schema)?;
         match self.child.data_type(input_schema)? {
@@ -138,6 +134,10 @@ impl PhysicalExpr for GetArrayStructFields {
             _ => internal_err!("GetArrayStructFields should have exactly one child"),
         }
     }
+
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
+    }
 }
 
 fn get_array_struct_fields<O: OffsetSizeTrait>(
@@ -150,11 +150,23 @@ fn get_array_struct_fields<O: OffsetSizeTrait>(
         .downcast_ref::<StructArray>()
         .expect("A struct is expected");
 
-    let column = Arc::clone(values.column(ordinal));
     let field = Arc::clone(&values.fields()[ordinal]);
 
-    let offsets = list_array.offsets();
-    let array = GenericListArray::new(field, offsets.clone(), column, list_array.nulls().cloned());
+    // Get struct column by ordinal and attach null buffer from original values
+    // In some cases, nulls in parent struct is not reflected in struct column.
+    let data = values
+        .column(ordinal)
+        .into_data()
+        .into_builder()
+        .nulls(values.nulls().cloned())
+        .build()?;
+
+    let array = GenericListArray::new(
+        field,
+        list_array.offsets().clone(),
+        make_array(data),
+        list_array.nulls().cloned(),
+    );
 
     Ok(ColumnarValue::Array(Arc::new(array)))
 }

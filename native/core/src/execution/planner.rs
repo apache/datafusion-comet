@@ -2960,14 +2960,8 @@ mod tests {
             })),
         };
 
-        let a = Int32Array::from(vec![0, 3]);
-        let b = Int32Array::from(vec![1, 4]);
-        let c = Int32Array::from(vec![2, 5]);
-        let input_batch = InputBatch::Batch(vec![Arc::new(a), Arc::new(b), Arc::new(c)], 2);
-
         let (mut scans, datafusion_plan) =
             planner.create_plan(&projection, &mut vec![], 1).unwrap();
-        scans[0].set_input_batch(input_batch);
 
         let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
 
