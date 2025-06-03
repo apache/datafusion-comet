@@ -64,7 +64,9 @@ use datafusion::{
     },
     prelude::SessionContext,
 };
-use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr, SparkBitwiseNot};
+use datafusion_comet_spark_expr::{
+    create_comet_physical_fun, create_negate_expr, SparkBitwiseCount, SparkBitwiseNot,
+};
 
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::CompressionCodec;
@@ -155,6 +157,7 @@ impl PhysicalPlanner {
         // register UDFs from datafusion-spark crate
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
+        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseCount::default()));
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,

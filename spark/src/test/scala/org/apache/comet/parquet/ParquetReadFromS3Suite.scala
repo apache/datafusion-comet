@@ -104,23 +104,23 @@ class ParquetReadFromS3Suite extends CometTestBase with AdaptiveSparkPlanHelper 
     df.write.format("parquet").mode(SaveMode.Overwrite).save(filePath)
   }
 
-  // native_iceberg_compat mode does not have comprehensive S3 support, so we don't run tests
-  // under this mode.
-  if (sys.env.getOrElse("COMET_PARQUET_SCAN_IMPL", "") != SCAN_NATIVE_ICEBERG_COMPAT) {
-    test("read parquet file from MinIO") {
-      val testFilePath = s"s3a://$testBucketName/data/test-file.parquet"
-      writeTestParquetFile(testFilePath)
+  test("read parquet file from MinIO") {
+    // native_iceberg_compat mode does not have comprehensive S3 support, so we don't run tests
+    // under this mode.
+    assume(sys.env.getOrElse("COMET_PARQUET_SCAN_IMPL", "") != SCAN_NATIVE_ICEBERG_COMPAT)
 
-      val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
-      val scans = collect(df.queryExecution.executedPlan) {
-        case p: CometScanExec =>
-          p
-        case p: CometNativeScanExec =>
-          p
-      }
-      assert(scans.size == 1)
+    val testFilePath = s"s3a://$testBucketName/data/test-file.parquet"
+    writeTestParquetFile(testFilePath)
 
-      assert(df.first().getLong(0) == 499500)
+    val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
+    val scans = collect(df.queryExecution.executedPlan) {
+      case p: CometScanExec =>
+        p
+      case p: CometNativeScanExec =>
+        p
     }
+    assert(scans.size == 1)
+
+    assert(df.first().getLong(0) == 499500)
   }
 }
