@@ -16,9 +16,62 @@
 // under the License.
 
 use arrow::{array::*, datatypes::DataType};
-use datafusion::common::{Result, ScalarValue};
-use datafusion::{error::DataFusionError, logical_expr::ColumnarValue};
+use datafusion::common::{exec_err, internal_datafusion_err, Result, ScalarValue};
+use datafusion::logical_expr::ColumnarValue;
+use datafusion::logical_expr::{ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
+use std::any::Any;
 use std::sync::Arc;
+
+#[derive(Debug)]
+pub struct SparkBitwiseGet {
+    signature: Signature,
+    aliases: Vec<String>,
+}
+
+impl Default for SparkBitwiseGet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SparkBitwiseGet {
+    pub fn new() -> Self {
+        Self {
+            signature: Signature::user_defined(Volatility::Immutable),
+            aliases: vec![],
+        }
+    }
+}
+
+impl ScalarUDFImpl for SparkBitwiseGet {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "bit_get"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn aliases(&self) -> &[String] {
+        &self.aliases
+    }
+
+    fn return_type(&self, _: &[DataType]) -> Result<DataType> {
+        Ok(DataType::Int8)
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        let args: [ColumnarValue; 2] = args
+            .args
+            .try_into()
+            .map_err(|_| internal_datafusion_err!("bit_get expects exactly two arguments"))?;
+        spark_bit_get(&args)
+    }
+}
 
 macro_rules! bit_get_scalar_position {
     ($args:expr, $array_type:ty, $pos:expr, $bit_size:expr) => {{
@@ -65,64 +118,49 @@ macro_rules! bit_get_array_positions {
     }};
 }
 
-pub fn spark_bit_get(args: &[ColumnarValue]) -> Result<ColumnarValue> {
-    if args.len() != 2 {
-        return Err(DataFusionError::Internal(
-            "bit_get expects exactly two arguments".to_string(),
-        ));
-    }
-    match (&args[0], &args[1]) {
-        (ColumnarValue::Array(args), ColumnarValue::Array(positions)) => {
+pub fn spark_bit_get(args: &[ColumnarValue; 2]) -> Result<ColumnarValue> {
+    match args {
+        [ColumnarValue::Array(args), ColumnarValue::Scalar(ScalarValue::Int32(pos))] => {
+            let result: Result<ArrayRef> = match args.data_type() {
+                DataType::Int8 => bit_get_scalar_position!(args, Int8Array, pos, i8::BITS),
+                DataType::Int16 => bit_get_scalar_position!(args, Int16Array, pos, i16::BITS),
+                DataType::Int32 => bit_get_scalar_position!(args, Int32Array, pos, i32::BITS),
+                DataType::Int64 => bit_get_scalar_position!(args, Int64Array, pos, i64::BITS),
+                _ => exec_err!(
+                    "Can't be evaluated because the expression's type is {:?}, not signed int",
+                    args.data_type()
+                ),
+            };
+            result.map(ColumnarValue::Array)
+        },
+        [ColumnarValue::Array(args), ColumnarValue::Array(positions)] => {
             if args.len() != positions.len() {
-                return Err(DataFusionError::Execution(format!(
+                return exec_err!(
                     "Input arrays must have equal length. Positions array has {} elements, but arguments array has {} elements",
                     positions.len(), args.len()
-                )));
+                );
             }
             if !matches!(positions.data_type(), DataType::Int32) {
-                return Err(DataFusionError::Execution(format!(
+                return exec_err!(
                     "Invalid data type for positions array: expected `Int32`, found `{}`",
                     positions.data_type()
-                )));
+                );
             }
             let result: Result<ArrayRef> = match args.data_type() {
                 DataType::Int8 => bit_get_array_positions!(args, Int8Array, positions, i8::BITS),
                 DataType::Int16 => bit_get_array_positions!(args, Int16Array, positions, i16::BITS),
                 DataType::Int32 => bit_get_array_positions!(args, Int32Array, positions, i32::BITS),
                 DataType::Int64 => bit_get_array_positions!(args, Int64Array, positions, i64::BITS),
-                _ => Err(DataFusionError::Execution(format!(
+                _ => exec_err!(
                     "Can't be evaluated because the expression's type is {:?}, not signed int",
-                    args.data_type(),
-                ))),
+                    args.data_type()
+                ),
             };
             result.map(ColumnarValue::Array)
         }
-        (ColumnarValue::Array(args), ColumnarValue::Scalar(ScalarValue::Int32(pos))) => {
-            let result: Result<ArrayRef> = match args.data_type() {
-                DataType::Int8 => {
-                    bit_get_scalar_position!(args, Int8Array, pos, i8::BITS)
-                }
-                DataType::Int16 => {
-                    bit_get_scalar_position!(args, Int16Array, pos, i16::BITS)
-                }
-                DataType::Int32 => {
-                    bit_get_scalar_position!(args, Int32Array, pos, i32::BITS)
-                }
-                DataType::Int64 => {
-                    bit_get_scalar_position!(args, Int64Array, pos, i64::BITS)
-                }
-                _ => Err(DataFusionError::Execution(format!(
-                    "Can't be evaluated because the expression's type is {:?}, not signed int",
-                    args.data_type(),
-                ))),
-            };
-            result.map(ColumnarValue::Array)
-        }
-        _ => Err(DataFusionError::Execution(
-            "Invalid input to function bit_get. Expected (IntegralType array, Int32Scalar) or \
-                    (IntegralType array, Int32Array)"
-                .to_string(),
-        )),
+        _ => exec_err!(
+            "Invalid input to function bit_get. Expected (IntegralType array, Int32Scalar) or (IntegralType array, Int32Array)"
+        ),
     }
 }
 
@@ -132,16 +170,14 @@ fn bit_get(arg: i64, pos: i32) -> i8 {
 
 fn check_position(pos: i32, bit_size: i32) -> Result<()> {
     if pos < 0 {
-        return Err(DataFusionError::Execution(format!(
-            "Invalid bit position: {:?} is less than zero",
-            pos
-        )));
+        return exec_err!("Invalid bit position: {:?} is less than zero", pos);
     }
     if bit_size <= pos {
-        return Err(DataFusionError::Execution(format!(
+        return exec_err!(
             "Invalid bit position: {:?} exceeds the bit upper limit: {:?}",
-            pos, bit_size
-        )));
+            pos,
+            bit_size
+        );
     }
     Ok(())
 }
@@ -153,7 +189,7 @@ mod tests {
 
     #[test]
     fn bitwise_get_scalar_position() -> Result<()> {
-        let args = vec![
+        let args = [
             ColumnarValue::Array(Arc::new(Int32Array::from(vec![
                 Some(1),
                 None,
@@ -177,7 +213,7 @@ mod tests {
 
     #[test]
     fn bitwise_get_scalar_negative_position() -> Result<()> {
-        let args = vec![
+        let args = [
             ColumnarValue::Array(Arc::new(Int32Array::from(vec![
                 Some(1),
                 None,
@@ -196,7 +232,7 @@ mod tests {
 
     #[test]
     fn bitwise_get_scalar_overflow_position() -> Result<()> {
-        let args = vec![
+        let args = [
             ColumnarValue::Array(Arc::new(Int32Array::from(vec![
                 Some(1),
                 None,
@@ -217,7 +253,7 @@ mod tests {
 
     #[test]
     fn bitwise_get_array_positions() -> Result<()> {
-        let args = vec![
+        let args = [
             ColumnarValue::Array(Arc::new(Int32Array::from(vec![
                 Some(1),
                 None,
@@ -241,7 +277,7 @@ mod tests {
 
     #[test]
     fn bitwise_get_array_positions_contains_negative() -> Result<()> {
-        let args = vec![
+        let args = [
             ColumnarValue::Array(Arc::new(Int32Array::from(vec![
                 Some(1),
                 None,
@@ -260,7 +296,7 @@ mod tests {
 
     #[test]
     fn bitwise_get_array_positions_contains_overflow() -> Result<()> {
-        let args = vec![
+        let args = [
             ColumnarValue::Array(Arc::new(Int32Array::from(vec![
                 Some(1),
                 None,
