@@ -84,7 +84,7 @@ functions of arrow-rs used by DataFusion do not normalize NaN and zero (e.g., [a
 So Comet will add additional normalization expression of NaN and zero for comparison.
 
 There is a known bug with using count(distinct) within aggregate queries, where each NaN value will be counted
-separately (#1824)[https://github.com/apache/datafusion-comet/issues/1824].
+separately [#1824](https://github.com/apache/datafusion-comet/issues/1824).
 
 ## Incompatible Expressions
 
