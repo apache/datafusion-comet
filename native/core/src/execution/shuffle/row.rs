@@ -3319,6 +3319,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Unaligned memory access in SparkUnsafeRow
     fn test_append_null_struct_field_to_struct_builder() {
         let data_type = DataType::Struct(Fields::from(vec![
             Field::new("a", DataType::Boolean, true),
