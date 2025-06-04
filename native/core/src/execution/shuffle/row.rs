@@ -444,25 +444,18 @@ pub(crate) fn append_field(
             // Appending value into struct field builder of Arrow struct builder.
             let field_builder = struct_builder.field_builder::<StructBuilder>(idx).unwrap();
 
-            if row.is_null_row() {
-                // The row is null.
+            let nested_row = if row.is_null_row() || row.is_null_at(idx) {
+                // The row is null, or the field in the row is null, i.e., a null nested row.
+                // Append a null value to the row builder.
                 field_builder.append_null();
+                SparkUnsafeRow::default()
             } else {
-                let is_null = row.is_null_at(idx);
+                field_builder.append(true);
+                row.get_struct(idx, fields.len())
+            };
 
-                let nested_row = if is_null {
-                    // The field in the row is null, i.e., a null nested row.
-                    // Append a null value to the row builder.
-                    field_builder.append_null();
-                    SparkUnsafeRow::default()
-                } else {
-                    field_builder.append(true);
-                    row.get_struct(idx, fields.len())
-                };
-
-                for (field_idx, field) in fields.into_iter().enumerate() {
-                    append_field(field.data_type(), field_builder, &nested_row, field_idx)?;
-                }
+            for (field_idx, field) in fields.into_iter().enumerate() {
+                append_field(field.data_type(), field_builder, &nested_row, field_idx)?;
             }
         }
         DataType::Map(field, _) => {
@@ -3301,4 +3294,45 @@ fn make_batch(arrays: Vec<ArrayRef>, row_count: usize) -> Result<RecordBatch, Ar
     let schema = Arc::new(Schema::new(fields));
     let options = RecordBatchOptions::new().with_row_count(Option::from(row_count));
     RecordBatch::try_new_with_options(schema, arrays, &options)
+}
+
+#[cfg(test)]
+mod test {
+    use arrow::datatypes::Fields;
+
+    use super::*;
+
+    #[test]
+    fn test_append_null_row_to_struct_builder() {
+        let data_type = DataType::Struct(Fields::from(vec![
+            Field::new("a", DataType::Boolean, true),
+            Field::new("b", DataType::Boolean, true),
+        ]));
+        let fields = Fields::from(vec![Field::new("st", data_type.clone(), true)]);
+        let mut struct_builder = StructBuilder::from_fields(fields, 1);
+        let row = SparkUnsafeRow::default();
+        append_field(&data_type, &mut struct_builder, &row, 0).expect("append field");
+        struct_builder.append_null();
+        let struct_array = struct_builder.finish();
+        assert_eq!(struct_array.len(), 1);
+        assert!(struct_array.is_null(0));
+    }
+
+    #[test]
+    fn test_append_null_struct_field_to_struct_builder() {
+        let data_type = DataType::Struct(Fields::from(vec![
+            Field::new("a", DataType::Boolean, true),
+            Field::new("b", DataType::Boolean, true),
+        ]));
+        let fields = Fields::from(vec![Field::new("st", data_type.clone(), true)]);
+        let mut struct_builder = StructBuilder::from_fields(fields, 1);
+        let mut row = SparkUnsafeRow::new_with_num_fields(1);
+        let data = [0; 8];
+        row.point_to_slice(&data);
+        append_field(&data_type, &mut struct_builder, &row, 0).expect("append field");
+        struct_builder.append_null();
+        let struct_array = struct_builder.finish();
+        assert_eq!(struct_array.len(), 1);
+        assert!(struct_array.is_null(0));
+    }
 }
