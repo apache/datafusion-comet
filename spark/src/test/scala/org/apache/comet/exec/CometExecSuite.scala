@@ -154,6 +154,13 @@ class CometExecSuite extends CometTestBase {
              |GROUP BY value
              |LIMIT 1
              |OFFSET 2)""".stripMargin)
+
+        checkSparkAnswerAndOperator(s"""SELECT * FROM $table
+             |WHERE NOT EXISTS (SELECT MAX(key)
+             |FROM $table
+             |GROUP BY value
+             |LIMIT 1
+             |OFFSET 2)""".stripMargin)
       }
     }
   }

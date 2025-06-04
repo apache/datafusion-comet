@@ -310,31 +310,35 @@ fn prepare_output(
     let results = output_batch.columns();
     let num_rows = output_batch.num_rows();
 
-    if results.len() != num_cols {
-        return Err(CometError::Internal(format!(
-            "Output column count mismatch: expected {num_cols}, got {}",
-            results.len()
-        )));
-    }
-
-    if validate {
-        // Validate the output arrays.
-        for array in results.iter() {
-            let array_data = array.to_data();
-            array_data
-                .validate_full()
-                .expect("Invalid output array data");
+    // there are edge cases where num_cols can be zero due to Spark optimizations
+    // when the results of a query are not used
+    if num_cols > 0 {
+        if results.len() != num_cols {
+            return Err(CometError::Internal(format!(
+                "Output column count mismatch: expected {num_cols}, got {}",
+                results.len()
+            )));
         }
-    }
 
-    let mut i = 0;
-    while i < results.len() {
-        let array_ref = results.get(i).ok_or(CometError::IndexOutOfBounds(i))?;
-        array_ref
-            .to_data()
-            .move_to_spark(array_addrs[i], schema_addrs[i])?;
+        if validate {
+            // Validate the output arrays.
+            for array in results.iter() {
+                let array_data = array.to_data();
+                array_data
+                    .validate_full()
+                    .expect("Invalid output array data");
+            }
+        }
 
-        i += 1;
+        let mut i = 0;
+        while i < results.len() {
+            let array_ref = results.get(i).ok_or(CometError::IndexOutOfBounds(i))?;
+            array_ref
+                .to_data()
+                .move_to_spark(array_addrs[i], schema_addrs[i])?;
+
+            i += 1;
+        }
     }
 
     Ok(num_rows as jlong)

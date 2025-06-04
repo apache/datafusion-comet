@@ -225,7 +225,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case op: BaseAggregateExec
           if (op.isInstanceOf[HashAggregateExec] ||
             op.isInstanceOf[ObjectHashAggregateExec]) &&
-            op.output.nonEmpty &&
             isCometShuffleEnabled(conf) =>
         val modes = op.aggregateExpressions.map(_.mode).distinct
         // In distinct aggregates there can be a combination of modes
