@@ -278,6 +278,7 @@ mod test {
     use datafusion::common::config::TableParquetOptions;
     use datafusion::common::DataFusionError;
     use datafusion::datasource::listing::PartitionedFile;
+    use datafusion::datasource::physical_plan::FileSource;
     use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::object_store::ObjectStoreUrl;
