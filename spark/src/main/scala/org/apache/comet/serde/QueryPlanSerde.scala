@@ -261,7 +261,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
               .newBuilder()
               .setCurrentRow(OperatorOuterClass.CurrentRow.newBuilder().build())
               .build()
-          case e =>
+          case e if frameType == RowFrame =>
             val offset = e.eval() match {
               case i: Integer => i.toLong
               case l: Long => l
@@ -275,6 +275,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
                   .setOffset(offset)
                   .build())
               .build()
+          case _ =>
+            // TODO add support for numeric and temporal range offsets
+            // see https://github.com/apache/datafusion-comet/issues/1246
+            return None
         }
 
         val uBoundProto = uBound match {
@@ -288,9 +292,22 @@ object QueryPlanSerde extends Logging with CometExprShim {
               .newBuilder()
               .setCurrentRow(OperatorOuterClass.CurrentRow.newBuilder().build())
               .build()
-
+          case e if frameType == RowFrame =>
+            val offset = e.eval() match {
+              case i: Integer => i.toLong
+              case l: Long => l
+              case _ => return None
+            }
+            OperatorOuterClass.UpperWindowFrameBound
+              .newBuilder()
+              .setFollowing(
+                OperatorOuterClass.Following
+                  .newBuilder()
+                  .setOffset(offset)
+                  .build())
+              .build()
           case _ =>
-            // TODO add support for numeric and temporal offsets
+            // TODO add support for numeric and temporal range offsets
             // see https://github.com/apache/datafusion-comet/issues/1246
             return None
         }
