@@ -20,6 +20,7 @@
 package org.apache.spark.sql
 
 import org.apache.spark.SparkConf
+import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 
 trait ShimCometTestBase {
@@ -36,5 +37,13 @@ trait ShimCometTestBase {
 
   def datasetOfRows(spark: SparkSession, plan: LogicalPlan): DataFrame = {
     Dataset.ofRows(spark, plan)
+  }
+
+  def getColumnFromExpression(expr: Expression): Column = {
+    new Column(expr)
+  }
+
+  def extractLogicalPlan(df: DataFrame): LogicalPlan = {
+    df.logicalPlan
   }
 }

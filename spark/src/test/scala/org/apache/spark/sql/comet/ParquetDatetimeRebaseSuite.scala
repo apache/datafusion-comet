@@ -24,7 +24,6 @@ import org.scalatest.Tag
 
 import org.apache.spark.SparkException
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -114,11 +113,6 @@ abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
     }
   }
 
-  private def fromLogicalPlan(plan: LogicalPlan): DataFrame = {
-    val method = spark.getClass.getMethod("executionQuery", classOf[LogicalPlan])
-    method.invoke(spark, plan).asInstanceOf[DataFrame]
-  }
-
   private def checkSparkNoRebaseAnswer(df: => DataFrame): Unit = {
     var expected: Array[Row] = Array.empty
 
@@ -127,7 +121,7 @@ abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
       val previousPropertyValue = Option.apply(System.getProperty(SPARK_TESTING))
       System.setProperty(SPARK_TESTING, "true")
 
-      val dfSpark = fromLogicalPlan(df.queryExecution.logical)
+      val dfSpark = datasetOfRows(spark, extractLogicalPlan(df))
       expected = dfSpark.collect()
 
       previousPropertyValue match {
@@ -136,7 +130,7 @@ abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
       }
     }
 
-    val dfComet = fromLogicalPlan(df.queryExecution.logical)
+    val dfComet = datasetOfRows(spark, extractLogicalPlan(df))
     checkAnswer(dfComet, expected)
   }
 }

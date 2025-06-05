@@ -26,11 +26,10 @@ import scala.util.Random
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
-import org.apache.spark.sql.{CometTestBase, DataFrame}
+import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.FunctionIdentifier
-import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
-import org.apache.spark.sql.catalyst.expressions.{Alias, BloomFilterMightContain, Expression, ExpressionInfo, Literal}
-import org.apache.spark.sql.catalyst.plans.logical.{LogicalPlan, Project}
+import org.apache.spark.sql.catalyst.expressions.{BloomFilterMightContain, Expression, ExpressionInfo}
+import org.apache.spark.sql.functions.{col, lit}
 import org.apache.spark.util.sketch.BloomFilter
 
 import org.apache.comet.CometConf
@@ -168,13 +167,8 @@ class CometExec3_4PlusSuite extends CometTestBase {
         .toDF("col1", "col2")
         .write
         .insertInto(table)
-      val bfExpr: Expression =
-        BloomFilterMightContain(Literal(bfBytes), UnresolvedAttribute("col1"))
-      val aliasExpr = Alias(bfExpr, "might_contain")()
-      val plan = spark.table(table).toDF().queryExecution.analyzed
-      val newPlan = Project(Seq(aliasExpr), plan)
-
-      val df = fromLogicalPlan(newPlan)
+      val expr = BloomFilterMightContain(lit(bfBytes).expr, col("col1").expr)
+      val df = spark.table(table).select(getColumnFromExpression(expr))
       checkSparkAnswerAndOperator(df)
       // check with scalar subquery
       checkSparkAnswerAndOperator(s"""
@@ -192,10 +186,5 @@ class CometExec3_4PlusSuite extends CometTestBase {
     val os = new ByteArrayOutputStream()
     bf.writeTo(os)
     (longs, os.toByteArray)
-  }
-
-  private def fromLogicalPlan(plan: LogicalPlan): DataFrame = {
-    val method = spark.getClass.getMethod("executionQuery", classOf[LogicalPlan])
-    method.invoke(spark, plan).asInstanceOf[DataFrame]
   }
 }

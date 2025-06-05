@@ -20,8 +20,9 @@
 package org.apache.spark.sql
 
 import org.apache.spark.SparkConf
+import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
-import org.apache.spark.sql.classic.{Dataset, SparkSession}
+import org.apache.spark.sql.classic.{Dataset, ExpressionColumnNode, SparkSession}
 
 trait ShimCometTestBase {
   type SparkSessionType = SparkSession
@@ -39,4 +40,11 @@ trait ShimCometTestBase {
     Dataset.ofRows(spark, plan)
   }
 
+  def getColumnFromExpression(expr: Expression): Column = {
+    new Column(ExpressionColumnNode.apply(expr))
+  }
+
+  def extractLogicalPlan(df: DataFrame): LogicalPlan = {
+    df.queryExecution.analyzed
+  }
 }
