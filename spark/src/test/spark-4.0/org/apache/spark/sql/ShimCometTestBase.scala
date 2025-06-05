@@ -17,10 +17,11 @@
  * under the License.
  */
 
-package org.apache.comet.shims
+package org.apache.spark.sql
 
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.classic.SparkSession
+import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
+import org.apache.spark.sql.classic.{Dataset, SparkSession}
 
 trait ShimCometTestBase {
   type SparkSessionType = SparkSession
@@ -34,5 +35,8 @@ trait ShimCometTestBase {
       .getOrCreate()
   }
 
-  def getSQLContext(spark: SparkSessionType) = spark.sqlContext
+  def datasetOfRows(spark: SparkSession, plan: LogicalPlan): DataFrame = {
+    Dataset.ofRows(spark, plan)
+  }
+
 }

@@ -74,7 +74,8 @@ public class TypeUtil {
       builder = Types.primitive(PrimitiveType.PrimitiveTypeName.INT64, repetition);
     } else if (type == DataTypes.BinaryType) {
       builder = Types.primitive(PrimitiveType.PrimitiveTypeName.BINARY, repetition);
-    } else if (type == DataTypes.StringType || type.sameType(DataTypes.StringType)) {
+    } else if (type == DataTypes.StringType
+        || (type.sameType(DataTypes.StringType) && isSpark40Plus())) {
       builder =
           Types.primitive(PrimitiveType.PrimitiveTypeName.BINARY, repetition)
               .as(LogicalTypeAnnotation.stringType());
@@ -200,7 +201,7 @@ public class TypeUtil {
           return;
         }
 
-        if (sparkType instanceof StringType && isSpark40Plus()) {
+        if (sparkType.sameType(DataTypes.StringType) && isSpark40Plus()) {
           LogicalTypeAnnotation lta = descriptor.getPrimitiveType().getLogicalTypeAnnotation();
           if (lta instanceof LogicalTypeAnnotation.StringLogicalTypeAnnotation) {
             return;

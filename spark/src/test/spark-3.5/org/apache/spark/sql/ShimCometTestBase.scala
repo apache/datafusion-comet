@@ -17,18 +17,24 @@
  * under the License.
  */
 
-package org.apache.spark.sql.comet.shims
+package org.apache.spark.sql
 
-import org.apache.spark.sql.catalyst.plans.logical._
-import org.apache.spark.sql.execution.command.{DescribeColumnCommand, DescribeCommandBase}
+import org.apache.spark.SparkConf
+import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 
-object ShimCometUtil {
-  def isSorted(plan: LogicalPlan): Boolean = plan match {
-    case _: Join | _: Aggregate | _: Generate | _: Sample | _: Distinct => false
-    case _: DescribeCommandBase | _: DescribeColumnCommand | _: DescribeRelation |
-         _: DescribeColumn => true
-    case Sort(_, true, _, _) => true
-    case _ => plan.children.iterator.exists(isSorted)
+trait ShimCometTestBase {
+  type SparkSessionType = SparkSession
+
+  def createSparkSessionWithExtensions(conf: SparkConf): SparkSessionType = {
+    SparkSession
+      .builder()
+      .config(conf)
+      .master("local[1]")
+      .withExtensions(new org.apache.comet.CometSparkSessionExtensions)
+      .getOrCreate()
+  }
+
+  def datasetOfRows(spark: SparkSession, plan: LogicalPlan): DataFrame = {
+    Dataset.ofRows(spark, plan)
   }
 }
-

@@ -30,11 +30,11 @@ import org.scalatest.Tag
 import org.scalatestplus.junit.JUnitRunner
 
 import org.apache.spark.{DebugFilesystem, SparkConf}
-import org.apache.spark.sql.{CometTestBase, SparkSession, SQLContext}
+import org.apache.spark.sql.{CometTestBase, SQLContext}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SQLTestUtils
 
-import org.apache.comet.{CometConf, CometSparkSessionExtensions, IntegrationTestSuite}
+import org.apache.comet.{CometConf, IntegrationTestSuite}
 
 /**
  * A integration test suite that tests parquet modular encryption usage.

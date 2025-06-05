@@ -26,13 +26,11 @@ import scala.util.Random
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
-import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Dataset, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.catalyst.FunctionIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
-import org.apache.spark.sql.catalyst.encoders.AgnosticEncoders.RowEncoder
 import org.apache.spark.sql.catalyst.expressions.{Alias, BloomFilterMightContain, Expression, ExpressionInfo, Literal}
 import org.apache.spark.sql.catalyst.plans.logical.{LogicalPlan, Project}
-import org.apache.spark.sql.functions.{col, lit}
 import org.apache.spark.util.sketch.BloomFilter
 
 import org.apache.comet.CometConf

@@ -38,7 +38,6 @@ import org.apache.parquet.hadoop.example.{ExampleParquetWriter, GroupWriteSuppor
 import org.apache.parquet.schema.{MessageType, MessageTypeParser}
 import org.apache.spark._
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE, SHUFFLE_MANAGER}
-import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution._
@@ -48,7 +47,7 @@ import org.apache.spark.sql.test._
 import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, MapType, StructType}
 
 import org.apache.comet._
-import org.apache.comet.shims.{ShimCometSparkSessionExtensions, ShimCometTestBase}
+import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
  * Base class for testing. This exists in `org.apache.spark.sql` since [[SQLTestUtils]] is
@@ -141,11 +140,6 @@ abstract class CometTestBase
     checkSparkAnswer(sql(query))
   }
 
-  private def fromLogicalPlan(plan: LogicalPlan): DataFrame = {
-    val method = spark.getClass.getMethod("executionQuery", classOf[LogicalPlan])
-    method.invoke(spark, plan).asInstanceOf[DataFrame]
-  }
-
   /**
    * Check the answer of a Comet SQL query with Spark result.
    * @param df
@@ -157,11 +151,11 @@ abstract class CometTestBase
     var expected: Array[Row] = Array.empty
     var sparkPlan = null.asInstanceOf[SparkPlan]
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      val dfSpark = fromLogicalPlan(df.logicalPlan)
+      val dfSpark = datasetOfRows(spark, df.logicalPlan)
       expected = dfSpark.collect()
       sparkPlan = dfSpark.queryExecution.executedPlan
     }
-    val dfComet = fromLogicalPlan(df.logicalPlan)
+    val dfComet = datasetOfRows(spark, df.logicalPlan)
     checkAnswer(dfComet, expected)
     (sparkPlan, dfComet.queryExecution.executedPlan)
   }
@@ -237,10 +231,10 @@ abstract class CometTestBase
   protected def checkSparkAnswerWithTol(df: => DataFrame, absTol: Double): DataFrame = {
     var expected: Array[Row] = Array.empty
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      val dfSpark = fromLogicalPlan(df.logicalPlan)
+      val dfSpark = datasetOfRows(spark, df.logicalPlan)
       expected = dfSpark.collect()
     }
-    val dfComet = fromLogicalPlan(df.logicalPlan)
+    val dfComet = datasetOfRows(spark, df.logicalPlan)
     checkAnswerWithTol(dfComet, expected, absTol: Double)
     dfComet
   }
@@ -249,9 +243,9 @@ abstract class CometTestBase
       df: => DataFrame): (Option[Throwable], Option[Throwable]) = {
     var expected: Option[Throwable] = None
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      expected = Try(fromLogicalPlan(df.logicalPlan).collect()).failed.toOption
+      expected = Try(datasetOfRows(spark, df.logicalPlan).collect()).failed.toOption
     }
-    val actual = Try(fromLogicalPlan(df.logicalPlan).collect()).failed.toOption
+    val actual = Try(datasetOfRows(spark, df.logicalPlan).collect()).failed.toOption
     (expected, actual)
   }
 
@@ -262,10 +256,10 @@ abstract class CometTestBase
     var expected: Array[Row] = Array.empty
     var dfSpark: Dataset[Row] = null
     withSQLConf(CometConf.COMET_ENABLED.key -> "false", EXTENDED_EXPLAIN_PROVIDERS_KEY -> "") {
-      dfSpark = fromLogicalPlan(df.logicalPlan)
+      dfSpark = datasetOfRows(spark, df.logicalPlan)
       expected = dfSpark.collect()
     }
-    val dfComet = fromLogicalPlan(df.logicalPlan)
+    val dfComet = datasetOfRows(spark, df.logicalPlan)
     checkAnswer(dfComet, expected)
     if (checkExplainString) {
       val diff = StringUtils.difference(
