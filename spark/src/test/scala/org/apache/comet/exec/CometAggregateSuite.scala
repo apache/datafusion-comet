@@ -271,7 +271,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val path = new Path(dir.toURI.toString, "test")
           makeParquetFile(path, 10000, 10, dictionaryEnabled)
           withParquetTable(path.toUri.toString, "tbl") {
-            checkSparkAnswerAndOperator(sql("SELECT * FROM tbl").sort("_g1").groupBy("_g1").agg(sum("_8")))
+            checkSparkAnswerAndOperator(
+              sql("SELECT * FROM tbl").sort("_g1").groupBy("_g1").agg(sum("_8")))
           }
         }
       }
@@ -605,9 +606,12 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "test")
         makeParquetFile(path, 1000, 10, dictionaryEnabled)
         withParquetTable(path.toUri.toString, "tbl") {
-          checkSparkAnswerAndOperator("SELECT _g1, COUNT(_10), MIN(_10), MAX(_10) FROM tbl GROUP BY _g1")
-          checkSparkAnswerAndOperator("SELECT _g1, COUNT(_11), MIN(_11), MAX(_11) FROM tbl GROUP BY _g1")
-          checkSparkAnswerAndOperator("SELECT _g1, COUNT(_12), MIN(_12), MAX(_12) FROM tbl GROUP BY _g1")
+          checkSparkAnswerAndOperator(
+            "SELECT _g1, COUNT(_10), MIN(_10), MAX(_10) FROM tbl GROUP BY _g1")
+          checkSparkAnswerAndOperator(
+            "SELECT _g1, COUNT(_11), MIN(_11), MAX(_11) FROM tbl GROUP BY _g1")
+          checkSparkAnswerAndOperator(
+            "SELECT _g1, COUNT(_12), MIN(_12), MAX(_12) FROM tbl GROUP BY _g1")
         }
       }
     }
@@ -799,8 +803,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   withView("v") {
                     sql(s"CREATE TEMP VIEW v AS SELECT _g$gCol, _1, _2, _3, _4 " +
                       "FROM tbl ORDER BY _1, _2, _3, _4")
-                    checkSparkAnswerAndOperator(s"SELECT _g$gCol, FIRST(_1), FIRST(_2), FIRST(_3), " +
-                      s"FIRST(_4), LAST(_1), LAST(_2), LAST(_3), LAST(_4) FROM v GROUP BY _g$gCol ORDER BY _g$gCol")
+                    checkSparkAnswerAndOperator(
+                      s"SELECT _g$gCol, FIRST(_1), FIRST(_2), FIRST(_3), " +
+                        s"FIRST(_4), LAST(_1), LAST(_2), LAST(_3), LAST(_4) FROM v GROUP BY _g$gCol ORDER BY _g$gCol")
                   }
                 }
               }
