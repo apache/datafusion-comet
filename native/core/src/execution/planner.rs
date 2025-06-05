@@ -1217,8 +1217,13 @@ impl PhysicalPlanner {
                     };
 
                 // The `ScanExec` operator will take actual arrays from Spark during execution
-                let scan =
-                    ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?;
+                let scan = ScanExec::new(
+                    self.exec_context_id,
+                    input_source,
+                    &scan.source,
+                    data_types,
+                    scan.has_buffer_reuse,
+                )?;
                 Ok((
                     vec![scan.clone()],
                     Arc::new(SparkPlan::new(spark_plan.plan_id, Arc::new(scan), vec![])),
@@ -2339,8 +2344,13 @@ impl From<ExpressionError> for DataFusionError {
 fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
     if op.as_any().is::<ProjectionExec>() || op.as_any().is::<LocalLimitExec>() {
         can_reuse_input_batch(op.children()[0])
+    } else if op.as_any().is::<ScanExec>() {
+        op.as_any()
+            .downcast_ref::<ScanExec>()
+            .unwrap()
+            .has_buffer_reuse
     } else {
-        op.as_any().is::<ScanExec>()
+        false
     }
 }
 
@@ -2592,6 +2602,7 @@ mod tests {
                     type_info: None,
                 }],
                 source: "".to_string(),
+                has_buffer_reuse: false,
             })),
         };
 
@@ -2665,6 +2676,7 @@ mod tests {
                     type_info: None,
                 }],
                 source: "".to_string(),
+                has_buffer_reuse: false,
             })),
         };
 
@@ -2875,6 +2887,7 @@ mod tests {
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![create_proto_datatype()],
                 source: "".to_string(),
+                has_buffer_reuse: false,
             })),
         }
     }
@@ -2917,6 +2930,7 @@ mod tests {
                     },
                 ],
                 source: "".to_string(),
+                has_buffer_reuse: false,
             })),
         };
 
@@ -3031,6 +3045,7 @@ mod tests {
                     },
                 ],
                 source: "".to_string(),
+                has_buffer_reuse: false,
             })),
         };
 
