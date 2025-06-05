@@ -551,57 +551,6 @@ index 93275487f29..01e5c601763 100644
            }.flatten
            assert(filters.contains(GreaterThan(scan.logicalPlan.output.head, Literal(5L))))
          }
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
-new file mode 100644
-index 00000000000..5691536c114
---- /dev/null
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
-@@ -0,0 +1,45 @@
-+/*
-+ * Licensed to the Apache Software Foundation (ASF) under one or more
-+ * contributor license agreements.  See the NOTICE file distributed with
-+ * this work for additional information regarding copyright ownership.
-+ * The ASF licenses this file to You under the Apache License, Version 2.0
-+ * (the "License"); you may not use this file except in compliance with
-+ * the License.  You may obtain a copy of the License at
-+ *
-+ *    http://www.apache.org/licenses/LICENSE-2.0
-+ *
-+ * Unless required by applicable law or agreed to in writing, software
-+ * distributed under the License is distributed on an "AS IS" BASIS,
-+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-+ * See the License for the specific language governing permissions and
-+ * limitations under the License.
-+ */
-+
-+package org.apache.spark.sql
-+
-+import org.scalactic.source.Position
-+import org.scalatest.Tag
-+
-+import org.apache.spark.sql.test.SQLTestUtils
-+
-+/**
-+ * Tests with this tag will be ignored when Comet is enabled (e.g., via `ENABLE_COMET`).
-+ */
-+case class IgnoreComet(reason: String) extends Tag("DisableComet")
-+case class IgnoreCometNativeIcebergCompat(reason: String) extends Tag("DisableComet")
-+case class IgnoreCometNativeDataFusion(reason: String) extends Tag("DisableComet")
-+case class IgnoreCometNativeScan(reason: String) extends Tag("DisableComet")
-+
-+/**
-+ * Helper trait that disables Comet for all tests regardless of default config values.
-+ */
-+trait IgnoreCometSuite extends SQLTestUtils {
-+  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)
-+    (implicit pos: Position): Unit = {
-+    if (isCometEnabled) {
-+      ignore(testName + " (disabled when Comet is on)", testTags: _*)(testFun)
-+    } else {
-+      super.test(testName, testTags: _*)(testFun)
-+    }
-+  }
-+}
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala
 index 7af826583bd..3c3def1eb67 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala
@@ -631,7 +580,7 @@ index 7af826583bd..3c3def1eb67 100644
      assert(shuffleMergeJoins.size == 1)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
-index 4d256154c85..ded702bd8a9 100644
+index 4d256154c85..67bfab06bed 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
 @@ -31,7 +31,8 @@ import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
@@ -757,7 +706,12 @@ index 4d256154c85..ded702bd8a9 100644
            }.size === 1)
            // Same result between shuffled hash join and sort merge join
            checkAnswer(shjDF, smjResult)
-@@ -1432,13 +1446,19 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1429,16 +1443,25 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+       // Test shuffled hash join
+       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+         val shjCodegenDF = df1.join(df2.hint("SHUFFLE_HASH"), $"k1" === $"k2", joinType)
++        // scalastyle:off println
++        println(shjCodegenDF.queryExecution.executedPlan)
          assert(shjCodegenDF.queryExecution.executedPlan.collect {
            case WholeStageCodegenExec(_ : ShuffledHashJoinExec) => true
            case WholeStageCodegenExec(ProjectExec(_, _ : ShuffledHashJoinExec)) => true
@@ -765,6 +719,7 @@ index 4d256154c85..ded702bd8a9 100644
 +            true
 +          case WholeStageCodegenExec(ColumnarToRowExec(
 +            InputAdapter(CometProjectExec(_, _, _, _, _: CometHashJoinExec, _)))) => true
++          case _: CometHashJoinExec => true
          }.size === 1)
          checkAnswer(shjCodegenDF, Seq.empty)
  
@@ -778,7 +733,7 @@ index 4d256154c85..ded702bd8a9 100644
            checkAnswer(shjNonCodegenDF, Seq.empty)
          }
        }
-@@ -1486,7 +1506,8 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1486,7 +1509,8 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
            val plan = sql(getAggQuery(selectExpr, joinType)).queryExecution.executedPlan
            assert(collect(plan) { case _: BroadcastNestedLoopJoinExec => true }.size === 1)
            // Have shuffle before aggregation
@@ -788,7 +743,7 @@ index 4d256154c85..ded702bd8a9 100644
        }
  
        def getJoinQuery(selectExpr: String, joinType: String): String = {
-@@ -1515,9 +1536,12 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1515,9 +1539,12 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
            }
            val plan = sql(getJoinQuery(selectExpr, joinType)).queryExecution.executedPlan
            assert(collect(plan) { case _: BroadcastNestedLoopJoinExec => true }.size === 1)
@@ -803,7 +758,7 @@ index 4d256154c85..ded702bd8a9 100644
        }
  
        // Test output ordering is not preserved
-@@ -1526,9 +1550,12 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1526,9 +1553,12 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
            val selectExpr = "/*+ BROADCAST(left_t) */ k1 as k0"
            val plan = sql(getJoinQuery(selectExpr, joinType)).queryExecution.executedPlan
            assert(collect(plan) { case _: BroadcastNestedLoopJoinExec => true }.size === 1)
@@ -818,7 +773,7 @@ index 4d256154c85..ded702bd8a9 100644
        }
  
        // Test singe partition
-@@ -1538,7 +1565,8 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1538,7 +1568,8 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
             |FROM range(0, 10, 1, 1) t1 FULL OUTER JOIN range(0, 10, 1, 1) t2
             |""".stripMargin)
        val plan = fullJoinDF.queryExecution.executedPlan
@@ -828,7 +783,7 @@ index 4d256154c85..ded702bd8a9 100644
        checkAnswer(fullJoinDF, Row(100))
      }
    }
-@@ -1583,6 +1611,9 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1583,6 +1614,9 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
            Seq(semiJoinDF, antiJoinDF).foreach { df =>
              assert(collect(df.queryExecution.executedPlan) {
                case j: ShuffledHashJoinExec if j.ignoreDuplicatedKey == ignoreDuplicatedKey => true
@@ -838,7 +793,7 @@ index 4d256154c85..ded702bd8a9 100644
              }.size == 1)
            }
        }
-@@ -1627,14 +1658,20 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1627,14 +1661,20 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
  
    test("SPARK-43113: Full outer join with duplicate stream-side references in condition (SMJ)") {
      def check(plan: SparkPlan): Unit = {
@@ -861,7 +816,7 @@ index 4d256154c85..ded702bd8a9 100644
      }
      dupStreamSideColTest("SHUFFLE_HASH", check)
    }
-@@ -1770,7 +1807,8 @@ class ThreadLeakInSortMergeJoinSuite
+@@ -1770,7 +1810,8 @@ class ThreadLeakInSortMergeJoinSuite
        sparkConf.set(SHUFFLE_SPILL_NUM_ELEMENTS_FORCE_SPILL_THRESHOLD, 20))
    }
  
