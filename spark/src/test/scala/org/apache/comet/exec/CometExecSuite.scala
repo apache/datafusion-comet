@@ -1981,9 +1981,9 @@ class CometExecSuite extends CometTestBase {
             queries.foreach { query =>
               if (query.contains("rows between 1 preceding and 1 following")) {
                 // https://github.com/apache/datafusion-comet/issues/1246
-                checkSparkAnswerAndOperator(query)
-              } else {
                 checkSparkAnswer(query)
+              } else {
+                checkSparkAnswerAndOperator(query)
               }
             }
           }
