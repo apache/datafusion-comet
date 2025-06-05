@@ -21,10 +21,11 @@ package org.apache.comet.rules
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometCollectLimitExec, CometColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
+
 import org.apache.comet.CometConf
 
 // This rule is responsible for eliminating redundant transitions between row-based and
@@ -55,8 +56,7 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
   override def apply(plan: SparkPlan): SparkPlan = {
     val newPlan = _apply(plan)
     if (showTransformations) {
-      // scalastyle:off println
-      System.err.println(s"EliminateRedundantTransitions:\nINPUT: $plan\nOUTPUT: $newPlan")
+      logInfo(s"\nINPUT: $plan\nOUTPUT: $newPlan")
     }
     newPlan
   }
@@ -64,11 +64,8 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
   private def _apply(plan: SparkPlan): SparkPlan = {
     val eliminatedPlan = plan transformUp {
       case ColumnarToRowExec(shuffleExchangeExec: CometShuffleExchangeExec)
-          if plan.conf.adaptiveExecutionEnabled =>
+          if (plan.conf.adaptiveExecutionEnabled) =>
         shuffleExchangeExec
-      case ColumnarToRowExec(broadcastExchangeExec: CometBroadcastExchangeExec)
-          if plan.conf.adaptiveExecutionEnabled =>
-        broadcastExchangeExec
       case ColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
         if (sparkToColumnar.child.supportsColumnar) {
           // For Spark Columnar to Comet Columnar, we should keep the ColumnarToRowExec
