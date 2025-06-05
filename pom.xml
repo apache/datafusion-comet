@@ -1074,9 +1074,19 @@ under the License.
                         <ignoreClass>javax.annotation.meta.TypeQualifierNickname</ignoreClass>
                       </ignoreClasses>
                     </dependency>
+                    <dependency>
+                      <groupId>com.google.guava</groupId>
+                      <artifactId>guava</artifactId>
+                      <ignoreClasses>
+                        <ignoreClass>com.google.thirdparty.publicsuffix.TrieParser</ignoreClass>
+                        <ignoreClass>com.google.thirdparty.publicsuffix.PublicSuffixPatterns</ignoreClass>
+                        <ignoreClass>com.google.thirdparty.publicsuffix.PublicSuffixType</ignoreClass>
+                      </ignoreClasses>
+                    </dependency>
                   </dependencies>
                   <findAllDuplicates>true</findAllDuplicates>
                   <ignoreWhenIdentical>true</ignoreWhenIdentical>
+
                 </banDuplicateClasses>
               </rules>
             </configuration>
