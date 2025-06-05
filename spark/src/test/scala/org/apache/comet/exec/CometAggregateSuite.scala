@@ -70,7 +70,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val data: Seq[(Float, Int)] = Seq((Float.PositiveInfinity, 1))
           withParquetTable(data, "tbl", false) {
             val df = sql("SELECT stddev_pop(_1), stddev_pop(_2) FROM tbl")
-            checkSparkAnswer(df)
+            checkSparkAnswerAndOperator(df)
           }
         }
       }
@@ -199,7 +199,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         makeParquetFile(path, 10000, 10, false)
         withParquetTable(path.toUri.toString, "tbl") {
           val df = sql("SELECT _g5 FROM tbl GROUP BY _g1, _g2, _g3, _g4, _g5")
-          checkSparkAnswer(df)
+          checkSparkAnswerAndOperator(df)
         }
       }
     }
@@ -216,7 +216,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           makeParquetFile(path, 10000, 10, dictionaryEnabled)
           withParquetTable(path.toUri.toString, "tbl") {
             val df = sql("SELECT * FROM tbl").groupBy("_g1").agg(sum($"_3" + $"_g3"))
-            checkSparkAnswer(df)
+            checkSparkAnswerAndOperator(df)
           }
         }
       }
@@ -271,7 +271,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val path = new Path(dir.toURI.toString, "test")
           makeParquetFile(path, 10000, 10, dictionaryEnabled)
           withParquetTable(path.toUri.toString, "tbl") {
-            checkSparkAnswer(sql("SELECT * FROM tbl").sort("_g1").groupBy("_g1").agg(sum("_8")))
+            checkSparkAnswerAndOperator(sql("SELECT * FROM tbl").sort("_g1").groupBy("_g1").agg(sum("_8")))
           }
         }
       }
@@ -323,7 +323,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val df3 = sql("SELECT COUNT(_1), COUNT(_2) FROM tbl")
         checkAnswer(df3, Row(5, 5) :: Nil)
 
-        checkSparkAnswer("SELECT _2, MIN(_1), MAX(_1) FROM tbl GROUP BY _2")
+        checkSparkAnswerAndOperator("SELECT _2, MIN(_1), MAX(_1) FROM tbl GROUP BY _2")
       }
     }
   }
@@ -335,8 +335,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "tbl",
         dictionaryEnabled) {
 
-        checkSparkAnswer("SELECT _2, AVG(_1) FROM tbl GROUP BY _2")
-        checkSparkAnswer("SELECT AVG(_2) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT _2, AVG(_1) FROM tbl GROUP BY _2")
+        checkSparkAnswerAndOperator("SELECT AVG(_2) FROM tbl")
       }
     }
   }
@@ -348,10 +348,10 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withTable(table) {
           sql(s"create table $table(col1 int, col2 int) using parquet")
           sql(s"insert into $table values(1, 1), (2, 1), (3, 2), (null, 2), (null, 1)")
-          checkSparkAnswer(s"SELECT COUNT(col1) FROM $table")
-          checkSparkAnswer(s"SELECT col2, COUNT(col1) FROM $table GROUP BY col2")
-          checkSparkAnswer(s"SELECT avg(col1) FROM $table")
-          checkSparkAnswer(s"SELECT col2, avg(col1) FROM $table GROUP BY col2")
+          checkSparkAnswerAndOperator(s"SELECT COUNT(col1) FROM $table")
+          checkSparkAnswerAndOperator(s"SELECT col2, COUNT(col1) FROM $table GROUP BY col2")
+          checkSparkAnswerAndOperator(s"SELECT avg(col1) FROM $table")
+          checkSparkAnswerAndOperator(s"SELECT col2, avg(col1) FROM $table GROUP BY col2")
         }
       }
     }
@@ -360,8 +360,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("SUM/AVG non-decimal overflow") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(Seq((0, 100.toLong), (0, Long.MaxValue)), "tbl", dictionaryEnabled) {
-        checkSparkAnswer("SELECT SUM(_2) FROM tbl GROUP BY _1")
-        checkSparkAnswer("SELECT AVG(_2) FROM tbl GROUP BY _1")
+        checkSparkAnswerAndOperator("SELECT SUM(_2) FROM tbl GROUP BY _1")
+        checkSparkAnswerAndOperator("SELECT AVG(_2) FROM tbl GROUP BY _1")
       }
     }
   }
@@ -373,8 +373,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkAnswer(df1, Row(0, 6) :: Row(1, 4) :: Nil)
         val df2 = sql("SELECT _2, COUNT(_1) FROM tbl GROUP BY _2")
         checkAnswer(df2, Row(0, 3) :: Row(1, 2) :: Nil)
-        checkSparkAnswer("SELECT _2, MIN(_1), MAX(_1) FROM tbl GROUP BY _2")
-        checkSparkAnswer("SELECT _2, AVG(_1) FROM tbl GROUP BY _2")
+        checkSparkAnswerAndOperator("SELECT _2, MIN(_1), MAX(_1) FROM tbl GROUP BY _2")
+        checkSparkAnswerAndOperator("SELECT _2, AVG(_1) FROM tbl GROUP BY _2")
       }
     }
   }
@@ -417,7 +417,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         val df3 = sql("SELECT _2, MIN(_1), MAX(_1) FROM tbl GROUP BY _2")
         checkAnswer(df3, Row(null.asInstanceOf[Int], 0, 9) :: Row(1, 1, 7) :: Row(2, 2, 8) :: Nil)
-        checkSparkAnswer(sql("SELECT _2, AVG(_1) FROM tbl GROUP BY _2"))
+        checkSparkAnswerAndOperator(sql("SELECT _2, AVG(_1) FROM tbl GROUP BY _2"))
       }
     }
   }
@@ -441,7 +441,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val df3 = sql("SELECT _2, MIN(_1), MAX(_1) FROM tbl GROUP BY _2")
         checkAnswer(df3, Row(null.asInstanceOf[Int], 0, 9) :: Row(1, 0, 7) :: Row(2, 0, 5) :: Nil)
 
-        checkSparkAnswer(sql("SELECT _2, AVG(_1) FROM tbl GROUP BY _2"))
+        checkSparkAnswerAndOperator(sql("SELECT _2, AVG(_1) FROM tbl GROUP BY _2"))
       }
     }
   }
@@ -469,7 +469,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             Row(null.asInstanceOf[Int], null.asInstanceOf[Int], null.asInstanceOf[Int]),
             Row(1, null.asInstanceOf[Int], null.asInstanceOf[Int]),
             Row(2, null.asInstanceOf[Int], null.asInstanceOf[Int])))
-        checkSparkAnswer(sql("SELECT _2, SUM(_1) FROM tbl GROUP BY _2"))
+        checkSparkAnswerAndOperator(sql("SELECT _2, SUM(_1) FROM tbl GROUP BY _2"))
       }
     }
   }
@@ -480,9 +480,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "test")
         makeParquetFile(path, 1000, 10, dictionaryEnabled)
         withParquetTable(path.toUri.toString, "tbl") {
-          checkSparkAnswer(
+          checkSparkAnswerAndOperator(
             "SELECT _g5, SUM(_5), COUNT(_5), MIN(_5), MAX(_5), AVG(_5) FROM tbl GROUP BY _g5")
-          checkSparkAnswer(
+          checkSparkAnswerAndOperator(
             "SELECT _g6, SUM(_6), COUNT(_6), MIN(_6), MAX(_6), AVG(_6) FROM tbl GROUP BY _g6")
         }
       }
@@ -548,13 +548,13 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         makeParquetFile(path, 1000, 10, dictionaryEnabled)
         withParquetTable(path.toUri.toString, "tbl") {
           Seq("SUM", "AVG").foreach { FN =>
-            checkSparkAnswer(
+            checkSparkAnswerAndOperator(
               s"SELECT _g1, $FN(_8 + CAST(1 AS DECIMAL(20, 10))) FROM tbl GROUP BY _g1")
-            checkSparkAnswer(
+            checkSparkAnswerAndOperator(
               s"SELECT _g1, $FN(_8 - CAST(-1 AS DECIMAL(10, 3))) FROM tbl GROUP BY _g1")
-            checkSparkAnswer(
+            checkSparkAnswerAndOperator(
               s"SELECT _g1, $FN(_9 * CAST(3.14 AS DECIMAL(4, 3))) FROM tbl GROUP BY _g1")
-            checkSparkAnswer(
+            checkSparkAnswerAndOperator(
               s"SELECT _g1, $FN(_9 / CAST(1.2345 AS DECIMAL(35, 10))) FROM tbl GROUP BY _g1")
           }
         }
@@ -605,9 +605,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "test")
         makeParquetFile(path, 1000, 10, dictionaryEnabled)
         withParquetTable(path.toUri.toString, "tbl") {
-          checkSparkAnswer("SELECT _g1, COUNT(_10), MIN(_10), MAX(_10) FROM tbl GROUP BY _g1")
-          checkSparkAnswer("SELECT _g1, COUNT(_11), MIN(_11), MAX(_11) FROM tbl GROUP BY _g1")
-          checkSparkAnswer("SELECT _g1, COUNT(_12), MIN(_12), MAX(_12) FROM tbl GROUP BY _g1")
+          checkSparkAnswerAndOperator("SELECT _g1, COUNT(_10), MIN(_10), MAX(_10) FROM tbl GROUP BY _g1")
+          checkSparkAnswerAndOperator("SELECT _g1, COUNT(_11), MIN(_11), MAX(_11) FROM tbl GROUP BY _g1")
+          checkSparkAnswerAndOperator("SELECT _g1, COUNT(_12), MIN(_12), MAX(_12) FROM tbl GROUP BY _g1")
         }
       }
     }
@@ -629,7 +629,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               dictionaryEnabled) {
               withView("v") {
                 sql("CREATE TEMP VIEW v AS SELECT _1, _2 FROM tbl ORDER BY _1")
-                checkSparkAnswer(
+                checkSparkAnswerAndOperator(
                   "SELECT _2, SUM(_1), SUM(DISTINCT _1), MIN(_1), MAX(_1), COUNT(_1)," +
                     " COUNT(DISTINCT _1), AVG(_1), FIRST(_1), LAST(_1) FROM v GROUP BY _2")
               }
@@ -656,13 +656,13 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               withParquetTable(path.toUri.toString, "tbl") {
                 withView("v") {
                   sql("CREATE TEMP VIEW v AS SELECT _g1, _g2, _3 FROM tbl ORDER BY _3")
-                  checkSparkAnswer(
+                  checkSparkAnswerAndOperator(
                     "SELECT _g1, _g2, FIRST(_3) FROM v GROUP BY _g1, _g2 ORDER BY _g1, _g2")
-                  checkSparkAnswer(
+                  checkSparkAnswerAndOperator(
                     "SELECT _g1, _g2, LAST(_3) FROM v GROUP BY _g1, _g2 ORDER BY _g1, _g2")
-                  checkSparkAnswer(
+                  checkSparkAnswerAndOperator(
                     "SELECT _g1, _g2, FIRST(_3) IGNORE NULLS FROM v GROUP BY _g1, _g2 ORDER BY _g1, _g2")
-                  checkSparkAnswer(
+                  checkSparkAnswerAndOperator(
                     "SELECT _g1, _g2, LAST(_3) IGNORE NULLS FROM v GROUP BY _g1, _g2 ORDER BY _g1, _g2")
                 }
               }
@@ -732,9 +732,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               withParquetTable(path.toUri.toString, "tbl") {
                 withView("v") {
                   sql("CREATE TEMP VIEW v AS SELECT _g3, _g4, _3, _4 FROM tbl ORDER BY _3, _4")
-                  checkSparkAnswer(
+                  checkSparkAnswerAndOperator(
                     "SELECT _g3, _g4, FIRST(_3), FIRST(_4) FROM v GROUP BY _g3, _g4 ORDER BY _g3, _g4")
-                  checkSparkAnswer(
+                  checkSparkAnswerAndOperator(
                     "SELECT _g3, _g4, LAST(_3), LAST(_4) FROM v GROUP BY _g3, _g4 ORDER BY _g3, _g4")
                 }
               }
@@ -799,7 +799,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   withView("v") {
                     sql(s"CREATE TEMP VIEW v AS SELECT _g$gCol, _1, _2, _3, _4 " +
                       "FROM tbl ORDER BY _1, _2, _3, _4")
-                    checkSparkAnswer(s"SELECT _g$gCol, FIRST(_1), FIRST(_2), FIRST(_3), " +
+                    checkSparkAnswerAndOperator(s"SELECT _g$gCol, FIRST(_1), FIRST(_2), FIRST(_3), " +
                       s"FIRST(_4), LAST(_1), LAST(_2), LAST(_3), LAST(_4) FROM v GROUP BY _g$gCol ORDER BY _g$gCol")
                   }
                 }
@@ -1021,7 +1021,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         sql(s"insert into $table values(2, null)")
 
         val query = sql(s"select a, AVG(b) from $table GROUP BY a")
-        checkSparkAnswer(query)
+        checkSparkAnswerAndOperator(query)
       }
     }
   }
