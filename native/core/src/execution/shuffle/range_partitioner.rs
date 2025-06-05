@@ -8,9 +8,11 @@ impl RangePartitioner {
     fn sketch(input: RecordBatch, sample_size_per_partition: i32) {}
 
     // Adapted from org.apache.spark.RangePartitioner.determineBounds
-    fn determine_bounds(mut candidates: Vec<(f64, f64)>, partitions: i32) -> Vec<f64> {
+    fn determine_bounds<T>(mut candidates: Vec<(T, f64)>, partitions: i32) -> Vec<T>
+    where
+        T: PartialOrd + Copy,
+    {
         candidates.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-        println!("{:?}", candidates);
         let num_candidates = candidates.len();
         let sum_weights = candidates
             .iter()
@@ -22,17 +24,17 @@ impl RangePartitioner {
         let mut bounds = Vec::with_capacity((partitions - 1) as usize);
         let mut i = 0;
         let mut j = 0;
-        let mut previous_bound: Option<f64> = None;
+        let mut previous_bound: Option<T> = None;
         while (i < num_candidates) && (j < partitions - 1) {
-            let (key, weight) = candidates[i];
+            let (key, weight) = &candidates[i];
             cumulative_weights += weight;
             if cumulative_weights >= target {
                 // Skip duplicate values.
-                if previous_bound.is_none() || key > previous_bound.unwrap() {
-                    bounds.push(key);
+                if previous_bound.is_none() || *key > previous_bound.unwrap() {
+                    bounds.push(*key);
                     target += step;
                     j += 1;
-                    previous_bound = Some(key)
+                    previous_bound = Some(*key)
                 }
             }
             i += 1
