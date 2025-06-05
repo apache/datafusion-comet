@@ -288,21 +288,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
               .newBuilder()
               .setCurrentRow(OperatorOuterClass.CurrentRow.newBuilder().build())
               .build()
-          case e =>
-            val offset = e.eval() match {
-              case i: Integer => i.toLong
-              case l: Long => l
-              case _ => return None
-            }
 
-            OperatorOuterClass.UpperWindowFrameBound
-              .newBuilder()
-              .setFollowing(
-                OperatorOuterClass.Following
-                  .newBuilder()
-                  .setOffset(offset)
-                  .build())
-              .build()
+          case _ =>
+            // TODO add support for numeric and temporal offsets
+            // see https://github.com/apache/datafusion-comet/issues/1246
+            return None
         }
 
         (frameProto, lBoundProto, uBoundProto)
