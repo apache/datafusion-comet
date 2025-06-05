@@ -1979,7 +1979,12 @@ class CometExecSuite extends CometTestBase {
               s"SELECT $function OVER(order by _2 rows between current row and 1 following) FROM t1")
 
             queries.foreach { query =>
-              checkSparkAnswerAndOperator(query)
+              if (query.contains("rows between 1 preceding and 1 following")) {
+                // https://github.com/apache/datafusion-comet/issues/1246
+                checkSparkAnswerAndOperator(query)
+              } else {
+                checkSparkAnswer(query)
+              }
             }
           }
         }
