@@ -1,11 +1,56 @@
-use arrow::array::RecordBatch;
+use arrow::array::{ArrayRef, UInt64Array};
+use arrow::compute::{take, TakeOptions};
 use num::ToPrimitive;
+use rand::Rng;
+use std::sync::Arc;
 
-struct RangePartitioner {}
+struct RangePartitioner;
 
 impl RangePartitioner {
-    // Adapted from org.apache.spark.RangePartitioner.sketch
-    fn sketch(input: RecordBatch, sample_size_per_partition: i32) {}
+    // Adapted from https://en.wikipedia.org/wiki/Reservoir_sampling#Optimal:_Algorithm_L
+    // We use sample_size instead of k and input_length instead of n.
+    // We use indices in the reservoir instead of actual values since we'll do one take() on the
+    // input array at the end.
+    fn reservoir_sample(input: ArrayRef, sample_size: usize) -> ArrayRef {
+        let input_length = input.len();
+
+        if input_length <= sample_size {
+            // Just return the original input since we can't create a bigger sample.
+            return Arc::clone(&input);
+        }
+
+        // Initialize our reservoir with indices of the first |sample_size| elements.
+        let mut reservoir: Vec<u64> = (0..sample_size as u64).collect();
+
+        let mut rng = rand::rng();
+        let mut w = (rng.random::<f64>().ln() / sample_size as f64).exp();
+        let mut i = sample_size;
+
+        while i < input_length {
+            i += (rng.random::<f64>().ln() / (1.0 - w).ln()).floor() as usize;
+
+            if i < input_length {
+                // Replace a random item in the reservoir with i
+                let random_index = rng.random_range(0..sample_size);
+                reservoir[random_index] = i as u64;
+                w *= (rng.random::<f64>().ln() / sample_size as f64).exp();
+            }
+        }
+
+        // Build our indices array and then take the values from the input.
+        let indices = UInt64Array::from(reservoir);
+
+        ArrayRef::from(
+            take(
+                &*input,
+                &indices,
+                Some(TakeOptions {
+                    check_bounds: false,
+                }),
+            )
+            .unwrap(),
+        )
+    }
 
     // Adapted from org.apache.spark.RangePartitioner.determineBounds
     fn determine_bounds<T>(mut candidates: Vec<(T, f64)>, partitions: i32) -> Vec<T>
@@ -46,23 +91,44 @@ impl RangePartitioner {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow::array::Int32Array;
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::array::{AsArray, Float64Array, Int32Array, RecordBatch};
+    use arrow::datatypes::{DataType, Field, Int32Type, Schema};
     use std::sync::Arc;
 
     #[test]
-    // org.apache.spark.PartitioningSuite
-    // "RangPartitioner.sketch"
-    fn sketch_test() {
-        let batch = create_batch(30);
-        println!("{:?}", batch);
-        RangePartitioner::sketch(batch, 30);
+    // org.apache.spark.util.random.SamplingUtilsSuite
+    // "reservoirSampleAndCount"
+    fn reservoir_sample() {
+        let batch = create_random_batch(100);
+        let column = batch.column(0).clone();
+        let sample1 = RangePartitioner::reservoir_sample(column.clone(), 150);
+        assert_eq!(column, sample1.into());
+        let sample2 = RangePartitioner::reservoir_sample(column.clone(), 100);
+        assert_eq!(column, sample2.into());
+        let sample3 = RangePartitioner::reservoir_sample(column.clone(), 10);
+        assert_eq!(sample3.len(), 10);
+    }
+
+    #[test]
+    // org.apache.spark.util.random.SamplingUtilsSuite
+    // "SPARK-18678 reservoirSampleAndCount with tiny input"
+    fn reservoir_sample_and_count_with_tiny_input() {
+        let column = vec![0, 1];
+        let array = Arc::new(Int32Array::from(column));
+        let mut counts: Vec<i32> = vec![0; array.len()];
+        for _i in 0..500 {
+            let result = RangePartitioner::reservoir_sample(array.clone(), 1);
+            assert_eq!(result.len(), 1);
+            counts[result.as_primitive::<Int32Type>().value(0) as usize] += 1;
+        }
+        // If correct, should be true with prob ~ 0.99999707 according to original Spark test.
+        assert!((counts[0] - counts[1]).abs() <= 100)
     }
 
     #[test]
     // org.apache.spark.PartitioningSuite
     // "RangePartitioner.determineBounds"
-    fn determine_bounds_test() {
+    fn determine_bounds() {
         let candidates = vec![
             (0.7, 2.0),
             (0.1, 1.0),
@@ -76,10 +142,11 @@ mod test {
         assert_eq!(vec![0.4, 0.7], result);
     }
 
-    fn create_batch(batch_size: i32) -> RecordBatch {
-        let column: Vec<i32> = (0..batch_size).collect();
-        let array = Int32Array::from(column);
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+    fn create_random_batch(batch_size: i32) -> RecordBatch {
+        let mut rng = rand::rng();
+        let column: Vec<f64> = (0..batch_size).map(|_| rng.random::<f64>()).collect();
+        let array = Float64Array::from(column);
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Float64, true)]));
         RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).unwrap()
     }
 }
