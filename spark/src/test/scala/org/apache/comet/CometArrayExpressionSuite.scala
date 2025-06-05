@@ -399,12 +399,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           sql(s"SELECT array($fieldName, $fieldName) as a, array($fieldName) as b FROM t1")
             .createOrReplaceTempView("t2")
           val df = sql("SELECT array_except(a, b) FROM t2")
-          field.dataType match {
-            case _: StructType =>
-            // skip due to https://github.com/apache/datafusion-comet/issues/1314
-            case _ =>
-              checkSparkAnswer(df)
-          }
+          checkSparkAnswer(df)
         }
       }
     }
