@@ -29,7 +29,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec, CometWindowExec}
 import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.expressions.Window
@@ -2719,7 +2719,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       sum($"value").over(window.rangeBetween(Window.unboundedPreceding, 1L)),
       sum($"value").over(window.rangeBetween(1L, Window.unboundedFollowing)))
 
-    checkSparkAnswer(df2)
+    // Comet does not support RANGE BETWEEN
+    // https://github.com/apache/datafusion-comet/issues/1246
+    val (_, cometPlan) = checkSparkAnswer(df2)
+    val cometWindowExecs = collect(cometPlan) { case w: CometWindowExec =>
+      w
+    }
+    assert(cometWindowExecs.isEmpty)
   }
 
 }
