@@ -2707,7 +2707,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
   }
 
-  test("type coercion with window range") {
+  test("window query with rangeBetween") {
 
     // values are int
     val df = Seq(1, 2, 4, 3, 2, 1).toDF("value")

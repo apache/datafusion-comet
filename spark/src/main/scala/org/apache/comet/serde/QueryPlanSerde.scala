@@ -276,7 +276,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
                   .build())
               .build()
           case _ =>
-            // TODO add support for numeric and temporal range offsets
+            // TODO add support for numeric and temporal RANGE BETWEEN expressions
             // see https://github.com/apache/datafusion-comet/issues/1246
             return None
         }
@@ -307,7 +307,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
                   .build())
               .build()
           case _ =>
-            // TODO add support for numeric and temporal range offsets
+            // TODO add support for numeric and temporal RANGE BETWEEN expressions
             // see https://github.com/apache/datafusion-comet/issues/1246
             return None
         }
