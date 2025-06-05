@@ -403,7 +403,7 @@ index f32b32ffc5a..447d7c6416e 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
-index f33432ddb6f..fe9f74ff8f1 100644
+index f33432ddb6f..e0bc502eda0 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 @@ -22,6 +22,7 @@ import org.scalatest.GivenWhenThen
@@ -424,7 +424,17 @@ index f33432ddb6f..fe9f74ff8f1 100644
        case _ => Nil
      }
    }
-@@ -1729,6 +1733,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
+@@ -1423,7 +1427,8 @@ abstract class DynamicPartitionPruningSuiteBase
+     }
+   }
+ 
+-  test("SPARK-34637: DPP side broadcast query stage is created firstly") {
++  test("SPARK-34637: DPP side broadcast query stage is created firstly",
++    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/1839")) {
+     withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+       val df = sql(
+         """ WITH v as (
+@@ -1729,6 +1734,8 @@ abstract class DynamicPartitionPruningV1Suite extends DynamicPartitionPruningDat
                case s: BatchScanExec =>
                  // we use f1 col for v2 tables due to schema pruning
                  s.output.exists(_.exists(_.argString(maxFields = 100).contains("f1")))
