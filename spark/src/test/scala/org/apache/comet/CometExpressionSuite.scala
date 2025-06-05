@@ -219,7 +219,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 val qry = "select _9 from tbl order by _11"
                 if (usingDataSourceExec(conf)) {
                   if (!allowIncompatible) {
-                    checkSparkAnswer(qry)
+                    checkSparkAnswerAndOperator(qry)
                   } else {
                     // need to convert the values to unsigned values
                     val expected = (Byte.MinValue to Byte.MaxValue)
@@ -1394,10 +1394,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   checkSparkAnswerAndOperator(
                     s"select round(cast(${n} as decimal(20, 0)), ${s}) FROM tbl")
                 }
-                // checkSparkAnswer(s"select round(double('infinity'), ${s}) FROM tbl")
-                // checkSparkAnswer(s"select round(double('-infinity'), ${s}) FROM tbl")
-                // checkSparkAnswer(s"select round(double('NaN'), ${s}) FROM tbl")
-                // checkSparkAnswer(
+                // checkSparkAnswerAndOperator(s"select round(double('infinity'), ${s}) FROM tbl")
+                // checkSparkAnswerAndOperator(s"select round(double('-infinity'), ${s}) FROM tbl")
+                // checkSparkAnswerAndOperator(s"select round(double('NaN'), ${s}) FROM tbl")
+                // checkSparkAnswerAndOperator(
                 //   s"select round(double('0.000000000000000000000000000000000001'), ${s}) FROM tbl")
               }
             }
@@ -2412,7 +2412,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
           val df = spark.read.parquet(dir.toString())
           if (v1List.isEmpty) {
-            checkSparkAnswer(df.select("nested1"))
+            checkSparkAnswerAndOperator(df.select("nested1"))
           } else {
             checkSparkAnswerAndOperator(df.select("nested1"))
           }
@@ -2440,13 +2440,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
           val df = spark.read.parquet(dir.toString())
           if (v1List.isEmpty) {
-            checkSparkAnswer(df.select("map1"))
+            checkSparkAnswerAndOperator(df.select("map1"))
           } else {
             checkSparkAnswerAndOperator(df.select("map1"))
           }
           // we fall back to Spark for map_keys and map_values
-          checkSparkAnswer(df.select(map_keys(col("map1"))))
-          checkSparkAnswer(df.select(map_values(col("map1"))))
+          checkSparkAnswerAndOperator(df.select(map_keys(col("map1"))))
+          checkSparkAnswerAndOperator(df.select(map_values(col("map1"))))
         }
       }
     }
@@ -2479,15 +2479,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val df = spark.read.parquet(dir.toString())
           df.createOrReplaceTempView("tbl")
           if (v1List.isEmpty) {
-            checkSparkAnswer(df.select("map1"))
+            checkSparkAnswerAndOperator(df.select("map1"))
           } else {
             checkSparkAnswerAndOperator(df.select("map1"))
           }
           // we fall back to Spark for map_keys and map_values
-          checkSparkAnswer(df.select(map_keys(col("map1"))))
-          checkSparkAnswer(df.select(map_values(col("map1"))))
-          checkSparkAnswer(spark.sql("SELECT map_keys(map1).id2 FROM tbl"))
-          checkSparkAnswer(spark.sql("SELECT map_values(map1).id2 FROM tbl"))
+          checkSparkAnswerAndOperator(df.select(map_keys(col("map1"))))
+          checkSparkAnswerAndOperator(df.select(map_values(col("map1"))))
+          checkSparkAnswerAndOperator(spark.sql("SELECT map_keys(map1).id2 FROM tbl"))
+          checkSparkAnswerAndOperator(spark.sql("SELECT map_values(map1).id2 FROM tbl"))
         }
       }
     }
@@ -2511,8 +2511,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
           val df = spark.read.parquet(dir.toString())
           if (v1List.isEmpty) {
-            checkSparkAnswer(df.select("array1"))
-            checkSparkAnswer(df.select(element_at(col("array1"), lit(1))))
+            checkSparkAnswerAndOperator(df.select("array1"))
+            checkSparkAnswerAndOperator(df.select(element_at(col("array1"), lit(1))))
           } else {
             checkSparkAnswerAndOperator(df.select("array1"))
             checkSparkAnswerAndOperator(df.select(element_at(col("array1"), lit(1))))
