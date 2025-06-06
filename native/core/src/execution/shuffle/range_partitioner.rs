@@ -1,5 +1,8 @@
-use arrow::array::{ArrayRef, UInt64Array};
+use arrow::array::{RecordBatch, UInt64Array};
 use arrow::compute::{take, TakeOptions};
+use datafusion::physical_expr::expressions::col;
+use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+use datafusion::physical_plan::sorts::sort::sort_batch;
 use num::ToPrimitive;
 use rand::Rng;
 use std::sync::Arc;
@@ -11,12 +14,12 @@ impl RangePartitioner {
     // We use sample_size instead of k and input_length instead of n.
     // We use indices in the reservoir instead of actual values since we'll do one take() on the
     // input array at the end.
-    fn reservoir_sample(input: ArrayRef, sample_size: usize) -> ArrayRef {
-        let input_length = input.len();
+    fn reservoir_sample(input: RecordBatch, sample_size: usize) -> RecordBatch {
+        let input_length = input.num_rows();
 
         if input_length <= sample_size {
             // Just return the original input since we can't create a bigger sample.
-            return Arc::clone(&input);
+            return input.clone();
         }
 
         // Initialize our reservoir with indices of the first |sample_size| elements.
@@ -40,16 +43,24 @@ impl RangePartitioner {
         // Build our indices array and then take the values from the input.
         let indices = UInt64Array::from(reservoir);
 
-        ArrayRef::from(
-            take(
-                &*input,
-                &indices,
-                Some(TakeOptions {
-                    check_bounds: false,
-                }),
-            )
-            .unwrap(),
-        )
+        // let result = take_record_batch(&input, &indices).unwrap();
+
+        // We don't use take_record_batch because it needlessly bounds checks
+        let columns = input
+            .columns()
+            .iter()
+            .map(|c| {
+                take(
+                    c,
+                    &indices,
+                    Some(TakeOptions {
+                        check_bounds: false,
+                    }),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        RecordBatch::try_new(input.schema(), columns).unwrap()
     }
 
     // Adapted from org.apache.spark.RangePartitioner.determineBounds
@@ -93,20 +104,35 @@ mod test {
     use super::*;
     use arrow::array::{AsArray, Float64Array, Int32Array, RecordBatch};
     use arrow::datatypes::{DataType, Field, Int32Type, Schema};
+    use datafusion::physical_expr::expressions::col;
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+    use datafusion::physical_plan::sorts::sort::sort_batch;
     use std::sync::Arc;
+
+    #[test]
+    fn test_sort_record_batch() {
+        let batch = create_random_batch(10000);
+        let sample_size = 10;
+        let lex_ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(
+            col("a", batch.schema().as_ref()).unwrap(),
+        )]);
+        let batch = sort_batch(&batch, &lex_ordering, None).unwrap();
+        let sample = RangePartitioner::reservoir_sample(batch, sample_size);
+        let sorted_sample = sort_batch(&sample, &lex_ordering, None).unwrap();
+        println!("sorted_sample: {:?}", sorted_sample);
+    }
 
     #[test]
     // org.apache.spark.util.random.SamplingUtilsSuite
     // "reservoirSampleAndCount"
     fn reservoir_sample() {
         let batch = create_random_batch(100);
-        let column = batch.column(0).clone();
-        let sample1 = RangePartitioner::reservoir_sample(column.clone(), 150);
-        assert_eq!(column, sample1.into());
-        let sample2 = RangePartitioner::reservoir_sample(column.clone(), 100);
-        assert_eq!(column, sample2.into());
-        let sample3 = RangePartitioner::reservoir_sample(column.clone(), 10);
-        assert_eq!(sample3.len(), 10);
+        let sample1 = RangePartitioner::reservoir_sample(batch.clone(), 150);
+        assert_eq!(batch, sample1.into());
+        let sample2 = RangePartitioner::reservoir_sample(batch.clone(), 100);
+        assert_eq!(batch, sample2.into());
+        let sample3 = RangePartitioner::reservoir_sample(batch.clone(), 10);
+        assert_eq!(sample3.num_rows(), 10);
     }
 
     #[test]
@@ -115,11 +141,13 @@ mod test {
     fn reservoir_sample_and_count_with_tiny_input() {
         let column = vec![0, 1];
         let array = Arc::new(Int32Array::from(column));
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![array.clone()]).unwrap();
         let mut counts: Vec<i32> = vec![0; array.len()];
         for _i in 0..500 {
-            let result = RangePartitioner::reservoir_sample(array.clone(), 1);
-            assert_eq!(result.len(), 1);
-            counts[result.as_primitive::<Int32Type>().value(0) as usize] += 1;
+            let result = RangePartitioner::reservoir_sample(batch.clone(), 1);
+            assert_eq!(result.num_rows(), 1);
+            counts[result.column(0).as_primitive::<Int32Type>().value(0) as usize] += 1;
         }
         // If correct, should be true with prob ~ 0.99999707 according to original Spark test.
         assert!((counts[0] - counts[1]).abs() <= 100)
