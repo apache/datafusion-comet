@@ -15,13 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{ArrayRef, PrimitiveArray, RecordBatch, UInt64Array};
+use arrow::array::{ArrayRef, AsArray, PrimitiveArray, RecordBatch, UInt64Array};
 use arrow::compute::{take, take_record_batch, TakeOptions};
-use arrow::row::{RowConverter, SortField};
+use arrow::row::{Row, RowConverter, Rows, SortField};
 use datafusion::common::HashSet;
 use datafusion::physical_expr::expressions::col;
 use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
 use datafusion::physical_plan::sorts::sort::sort_batch;
+use itertools::Itertools;
 use num::ToPrimitive;
 use rand::Rng;
 use std::sync::Arc;
@@ -117,6 +118,60 @@ impl RangePartitioner {
             i += 1
         }
         bounds
+    }
+
+    // Adapted from org.apache.spark.RangePartitioner.determineBounds
+    pub fn determine_bounds_for_rows(
+        sort_fields: Vec<SortField>,
+        sampled_columns: Vec<ArrayRef>,
+        partitions: i32,
+    ) {
+        // println!("{:?}", partitions);
+        let converter = RowConverter::new(sort_fields).unwrap();
+        let rows = converter
+            .convert_columns(sampled_columns.as_slice())
+            .unwrap();
+        // println!("rows: {:?}", rows);
+        let mut thing: Vec<_> = rows.iter().enumerate().collect();
+        thing.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
+        // println!("rows.sorted(): {:?}", thing);
+
+        let num_candidates = rows.num_rows();
+        let step = 1.0 / partitions as f64;
+        let mut cumulative_weights = 0.0;
+        let mut target = step;
+        let mut bounds_indices = Vec::with_capacity((partitions - 1) as usize);
+        let mut i = 0;
+        let mut j = 0;
+        let mut previous_bound = None;
+        let sample_weight = 1.0 / num_candidates as f64;
+        while (i < num_candidates) && (j < partitions - 1) {
+            let key = thing[i];
+            cumulative_weights += sample_weight;
+            if cumulative_weights >= target {
+                // Skip duplicate values.
+                if previous_bound.is_none() || key.1 > previous_bound.unwrap() {
+                    // bounds.push(key.1);
+                    bounds_indices.push(key.0);
+                    target += step;
+                    println!("{}", i);
+                    j += 1;
+                    previous_bound = Some(key.1)
+                }
+            }
+            i += 1
+        }
+        
+        println!("bounds_indices.len(): {:?}", bounds_indices.len());
+
+        let selection: Vec<Row> = bounds_indices.iter().map(|&idx| rows.row(idx)).collect();
+
+        // let selection = [rows.row(0), rows2.row(1), rows.row(2), rows2.row(0)];
+        let converted = converter.convert_rows(selection).unwrap();
+
+        println!("{:?}", converted);
+
+        todo!()
     }
 }
 
