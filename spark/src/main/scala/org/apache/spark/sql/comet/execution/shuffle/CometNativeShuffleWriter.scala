@@ -28,7 +28,7 @@ import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.shuffle.{IndexShuffleBlockResolver, ShuffleWriteMetricsReporter, ShuffleWriter}
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, SinglePartition}
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, SinglePartition}
 import org.apache.spark.sql.comet.{CometExec, CometMetricNode}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -170,7 +170,7 @@ class CometNativeShuffleWriter[K, V](
         case _: HashPartitioning =>
           val hashPartitioning = outputPartitioning.asInstanceOf[HashPartitioning]
 
-          val partitioning = PartitioningOuterClass.HashRepartition.newBuilder()
+          val partitioning = PartitioningOuterClass.HashPartition.newBuilder()
           partitioning.setNumPartitions(outputPartitioning.numPartitions)
 
           val partitionExprs = hashPartitioning.expressions
@@ -186,7 +186,29 @@ class CometNativeShuffleWriter[K, V](
           val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
           shuffleWriterBuilder.setPartitioning(
             partitioningBuilder.setHashPartition(partitioning).build())
+        case _: RangePartitioning =>
+          val rangePartitioning = outputPartitioning.asInstanceOf[RangePartitioning]
 
+          // scalastyle:off
+          println(rangePartitioning)
+          // scalastyle:on
+
+          val partitioning = PartitioningOuterClass.RangePartition.newBuilder()
+          partitioning.setNumPartitions(outputPartitioning.numPartitions)
+
+          val orderingExprs = rangePartitioning.ordering
+            .flatMap(e => QueryPlanSerde.exprToProto(e, outputAttributes))
+
+          if (orderingExprs.length != rangePartitioning.ordering.length) {
+            throw new UnsupportedOperationException(
+              s"Partitioning $rangePartitioning is not supported.")
+          }
+
+          partitioning.addAllSortOrders(orderingExprs.asJava)
+
+          val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
+          shuffleWriterBuilder.setPartitioning(
+            partitioningBuilder.setRangePartition(partitioning).build())
         case SinglePartition =>
           val partitioning = PartitioningOuterClass.SinglePartition.newBuilder()
 

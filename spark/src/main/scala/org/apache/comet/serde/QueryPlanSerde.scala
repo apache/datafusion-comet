@@ -39,8 +39,7 @@ import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
-import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD}
-import org.apache.spark.sql.execution.datasources.PartitionedFile
+import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, PartitionedFile}
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -2897,6 +2896,12 @@ object QueryPlanSerde extends Logging with CometExprShim {
         supported
       case SinglePartition =>
         inputs.forall(attr => supportedShuffleDataType(attr.dataType))
+      case RangePartitioning(ordering, numPartitions) =>
+        // scalastyle:off
+        println(s"trying to do RangePartitioning $ordering $numPartitions")
+        // scalastyle:on
+        // TODO: Apply any expression constraints similar to HashPartitioning above.
+        true
       case _ =>
         msg = s"unsupported Spark partitioning: ${partitioning.getClass.getName}"
         false

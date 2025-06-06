@@ -2202,6 +2202,16 @@ impl PhysicalPlanner {
                     hash_partition.num_partitions as usize,
                 ))
             }
+            PartitioningStruct::RangePartition(range_partition) => {
+                let exprs: Result<Vec<PhysicalSortExpr>, ExecutionError> = range_partition
+                    .sort_orders
+                    .iter()
+                    .map(|expr| self.create_sort_expr(expr, Arc::clone(&input_schema)))
+                    .collect();
+                let lex_ordering = LexOrdering::from(exprs?);
+                println!("{:?}", lex_ordering);
+                todo!();
+            }
             PartitioningStruct::SinglePartition(_) => Ok(Partitioning::UnknownPartitioning(1)),
         }
     }
