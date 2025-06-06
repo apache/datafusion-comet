@@ -68,9 +68,6 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
       case ColumnarToRowExec(shuffleExchangeExec: CometShuffleExchangeExec)
           if plan.conf.adaptiveExecutionEnabled =>
         shuffleExchangeExec
-      case ColumnarToRowExec(broadcastExchangeExec: CometBroadcastExchangeExec)
-          if plan.conf.adaptiveExecutionEnabled =>
-        broadcastExchangeExec
       case ColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
         if (sparkToColumnar.child.supportsColumnar) {
           // For Spark Columnar to Comet Columnar, we should keep the ColumnarToRowExec
