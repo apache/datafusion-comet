@@ -46,7 +46,7 @@ jobs:
         os: [ubuntu-24.04]
         java-version: [11]
         # TODO enbable other versions once tests are passing with 3.5.5
-        spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.5'}]
+        spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.4'}, {short: '3.5', full: '3.5.5'}]
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
           - {name: "sql/core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}
