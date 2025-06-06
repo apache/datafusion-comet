@@ -25,8 +25,9 @@ import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometCollectLimit
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
-import org.apache.comet.CometConf
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
+
+import org.apache.comet.CometConf
 
 // This rule is responsible for eliminating redundant transitions between row-based and
 // columnar-based operators for Comet. Currently, three potential redundant transitions are:
