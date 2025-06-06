@@ -291,67 +291,55 @@ under the License.
 
 <nav id="bd-toc-nav">
     <ul class="visible nav section-nav flex-column">
- <li class="toc-h1 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#">
-   Compatibility Guide
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#parquet-scans">
+   Parquet Scans
   </a>
  </li>
- <li class="toc-h1 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#id1">
-   Compatibility Guide
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#ansi-mode">
+   ANSI mode
   </a>
-  <ul class="visible nav section-nav flex-column">
-   <li class="toc-h2 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#parquet-scans">
-     Parquet Scans
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#floating-number-comparison">
+   Floating number comparison
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#incompatible-expressions">
+   Incompatible Expressions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#array-expressions">
+   Array Expressions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#regular-expressions">
+   Regular Expressions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#cast">
+   Cast
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#compatible-casts">
+     Compatible Casts
     </a>
    </li>
-   <li class="toc-h2 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#ansi-mode">
-     ANSI mode
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#incompatible-casts">
+     Incompatible Casts
     </a>
    </li>
-   <li class="toc-h2 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#floating-number-comparison">
-     Floating number comparison
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#unsupported-casts">
+     Unsupported Casts
     </a>
-   </li>
-   <li class="toc-h2 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#incompatible-expressions">
-     Incompatible Expressions
-    </a>
-   </li>
-   <li class="toc-h2 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#array-expressions">
-     Array Expressions
-    </a>
-   </li>
-   <li class="toc-h2 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#regular-expressions">
-     Regular Expressions
-    </a>
-   </li>
-   <li class="toc-h2 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#cast">
-     Cast
-    </a>
-    <ul class="nav section-nav flex-column">
-     <li class="toc-h3 nav-item toc-entry">
-      <a class="reference internal nav-link" href="#compatible-casts">
-       Compatible Casts
-      </a>
-     </li>
-     <li class="toc-h3 nav-item toc-entry">
-      <a class="reference internal nav-link" href="#incompatible-casts">
-       Incompatible Casts
-      </a>
-     </li>
-     <li class="toc-h3 nav-item toc-entry">
-      <a class="reference internal nav-link" href="#unsupported-casts">
-       Unsupported Casts
-      </a>
-     </li>
-    </ul>
    </li>
   </ul>
  </li>
@@ -408,11 +396,6 @@ TO MODIFY THIS CONTENT MAKE SURE THAT YOU MAKE YOUR CHANGES TO THE TEMPLATE FILE
 -->
 <section id="compatibility-guide">
 <h1>Compatibility Guide<a class="headerlink" href="#compatibility-guide" title="Link to this heading">¶</a></h1>
-<p>Comet aims to provide consistent results with the version of Apache Spark that is being used.</p>
-<p>This guide offers information about areas of functionality where there are known differences.</p>
-</section>
-<section id="id1">
-<h1>Compatibility Guide<a class="headerlink" href="#id1" title="Link to this heading">¶</a></h1>
 <p>Comet aims to provide consistent results with the version of Apache Spark that is being used.</p>
 <p>This guide offers information about areas of functionality where there are known differences.</p>
 <section id="parquet-scans">
@@ -475,6 +458,8 @@ However, one exception is comparison. Spark does not normalize NaN and zero when
 because they are handled well in Spark (e.g., <code class="docutils literal notranslate"><span class="pre">SQLOrderingUtil.compareFloats</span></code>). But the comparison
 functions of arrow-rs used by DataFusion do not normalize NaN and zero (e.g., <a class="reference external" href="https://docs.rs/arrow/latest/arrow/compute/kernels/cmp/fn.eq.html#">arrow::compute::kernels::cmp::eq</a>).
 So Comet will add additional normalization expression of NaN and zero for comparison.</p>
+<p>There is a known bug with using count(distinct) within aggregate queries, where each NaN value will be counted
+separately <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1824">#1824</a>.</p>
 </section>
 <section id="incompatible-expressions">
 <h2>Incompatible Expressions<a class="headerlink" href="#incompatible-expressions" title="Link to this heading">¶</a></h2>
