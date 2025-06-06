@@ -38,12 +38,13 @@ We recommend only using Comet with Spark versions where we currently have both C
 Other versions may work well enough for development and evaluation purposes.
 
 | Spark Version | Java Version | Scala Version | Comet Tests in CI | Spark Tests in CI |
-| ------------- | ------------ | ------------- | ----------------- | ----------------- |
+|---------------| ------------ | ------------- | ----------------- | ----------------- |
 | 3.4.3         | 11/17        | 2.12/2.13     | Yes               | Yes               |
 | 3.5.2         | 11/17        | 2.12/2.13     | Partial\*         | No                |
 | 3.5.3         | 11/17        | 2.12/2.13     | Partial\*         | No                |
 | 3.5.4         | 11/17        | 2.12/2.13     | Partial\*         | Yes               |
-| 3.5.5         | 11/17        | 2.12/2.13     | Yes               | Yes               |
+| 3.5.5         | 11/17        | 2.12/2.13     | Partial\*         | Yes               |
+| 3.5.6         | 11/17        | 2.12/2.13     | Yes               | Yes               |
 
 \* For older Spark 3.5.x releases, we do not test the full matrix of supported Java and Scala versions in CI.
 
