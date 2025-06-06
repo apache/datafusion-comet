@@ -2445,8 +2445,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             checkSparkAnswerAndOperator(df.select("map1"))
           }
           // we fall back to Spark for map_keys and map_values
-          checkSparkAnswerAndOperator(df.select(map_keys(col("map1"))))
-          checkSparkAnswerAndOperator(df.select(map_values(col("map1"))))
+          checkSparkAnswer(df.select(map_keys(col("map1"))))
+          checkSparkAnswer(df.select(map_values(col("map1"))))
         }
       }
     }
