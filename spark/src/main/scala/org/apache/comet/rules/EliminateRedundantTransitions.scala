@@ -25,6 +25,7 @@ import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 
 import org.apache.comet.CometConf
 
@@ -112,6 +113,7 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
   private def hasCometNativeChild(op: SparkPlan): Boolean = {
     op match {
       case c: QueryStageExec => hasCometNativeChild(c.plan)
+      case c: ReusedExchangeExec => hasCometNativeChild(c.child)
       case _ => op.exists(_.isInstanceOf[CometPlan])
     }
   }
