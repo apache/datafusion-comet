@@ -2553,8 +2553,7 @@ mod tests {
     use futures::{poll, StreamExt};
     use std::{sync::Arc, task::Poll};
 
-    use arrow::array::{Array, BooleanArray, DictionaryArray, Int32Array, StringArray};
-    use arrow::compute::or;
+    use arrow::array::{Array, DictionaryArray, Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Fields, Schema};
     use datafusion::catalog::memory::DataSourceExec;
     use datafusion::datasource::listing::PartitionedFile;
