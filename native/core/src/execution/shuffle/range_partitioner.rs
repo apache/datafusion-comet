@@ -15,8 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{RecordBatch, UInt64Array};
-use arrow::compute::{take, TakeOptions};
+use arrow::array::{ArrayRef, PrimitiveArray, RecordBatch, UInt64Array};
+use arrow::compute::{take, take_record_batch, TakeOptions};
+use arrow::row::{RowConverter, SortField};
+use datafusion::common::HashSet;
 use datafusion::physical_expr::expressions::col;
 use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
 use datafusion::physical_plan::sorts::sort::sort_batch;
@@ -24,19 +26,25 @@ use num::ToPrimitive;
 use rand::Rng;
 use std::sync::Arc;
 
-struct RangePartitioner;
+pub struct RangePartitioner;
 
 impl RangePartitioner {
     // Adapted from https://en.wikipedia.org/wiki/Reservoir_sampling#Optimal:_Algorithm_L
     // We use sample_size instead of k and input_length instead of n.
     // We use indices in the reservoir instead of actual values since we'll do one take() on the
     // input array at the end.
-    fn reservoir_sample(input: RecordBatch, sample_size: usize) -> RecordBatch {
-        let input_length = input.num_rows();
+    pub fn reservoir_sample(input: RecordBatch, sample_size: usize) -> RecordBatch {
+        // Build our indices array and then take the values from the input.
+        let indices = UInt64Array::from(Self::reservoir_sample_indices(input.num_rows(), sample_size));
 
-        if input_length <= sample_size {
+        // TODO: This bounds checks, probably not necessary.
+        take_record_batch(&input, &indices).unwrap()
+    }
+
+    pub fn reservoir_sample_indices(num_rows: usize, sample_size: usize) -> Vec<u64> {
+        if num_rows <= sample_size {
             // Just return the original input since we can't create a bigger sample.
-            return input.clone();
+            return (0..num_rows as u64).collect();
         }
 
         // Initialize our reservoir with indices of the first |sample_size| elements.
@@ -44,12 +52,12 @@ impl RangePartitioner {
 
         let mut rng = rand::rng();
         let mut w = (rng.random::<f64>().ln() / sample_size as f64).exp();
-        let mut i = sample_size;
+        let mut i = sample_size - 1;
 
-        while i < input_length {
-            i += (rng.random::<f64>().ln() / (1.0 - w).ln()).floor() as usize;
+        while i < num_rows {
+            i += (rng.random::<f64>().ln() / (1.0 - w).ln()).floor() as usize + 1;
 
-            if i < input_length {
+            if i < num_rows {
                 // Replace a random item in the reservoir with i
                 let random_index = rng.random_range(0..sample_size);
                 reservoir[random_index] = i as u64;
@@ -57,27 +65,20 @@ impl RangePartitioner {
             }
         }
 
-        // Build our indices array and then take the values from the input.
-        let indices = UInt64Array::from(reservoir);
+        let set: HashSet<u64> = reservoir.iter().map(|e| *e).collect();
+        assert_eq!(set.len(), reservoir.len());
 
-        // let result = take_record_batch(&input, &indices).unwrap();
+        reservoir
+    }
 
-        // We don't use take_record_batch because it needlessly bounds checks
-        let columns = input
-            .columns()
-            .iter()
-            .map(|c| {
-                take(
-                    c,
-                    &indices,
-                    Some(TakeOptions {
-                        check_bounds: false,
-                    }),
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        RecordBatch::try_new(input.schema(), columns).unwrap()
+    // Adapted from org.apache.spark.RangePartitioner.determineBounds
+    pub fn determine_bounds_for_batch<T>(
+        input: RecordBatch,
+        lex_ordering: &LexOrdering,
+        partitions: i32,
+    ) -> ArrayRef {
+        // sort.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
+        todo!()
     }
 
     // Adapted from org.apache.spark.RangePartitioner.determineBounds
@@ -129,7 +130,7 @@ mod test {
     #[test]
     fn test_sort_record_batch() {
         let batch = create_random_batch(10000);
-        let sample_size = 10;
+        let sample_size = 20;
         let lex_ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(
             col("a", batch.schema().as_ref()).unwrap(),
         )]);
