@@ -2890,21 +2890,6 @@ mod tests {
     }
 
     #[test]
-    fn test_create_array1() {
-        // Create two BooleanArrays
-        let a = BooleanArray::from(vec![Some(true), Some(false), None, Some(true)]);
-        let b = BooleanArray::from(vec![Some(false), Some(false), Some(true), None]);
-
-        // Compute OR
-        let result = or(&a, &b).unwrap();
-
-        // Print result
-        for i in 0..result.len() {
-            println!("Index {}: {:?}", i, result.value(i));
-        }
-    }
-
-    #[test]
     fn test_create_array() {
         let session_ctx = SessionContext::new();
         session_ctx.register_udf(ScalarUDF::from(
