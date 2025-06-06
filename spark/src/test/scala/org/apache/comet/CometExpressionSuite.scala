@@ -221,7 +221,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 val qry = "select _9 from tbl order by _11"
                 if (usingDataSourceExec(conf)) {
                   if (!allowIncompatible) {
-                    checkSparkAnswer(qry)
+                    checkSparkAnswerAndOperator(qry)
                   } else {
                     // need to convert the values to unsigned values
                     val expected = (Byte.MinValue to Byte.MaxValue)
