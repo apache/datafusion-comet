@@ -16,6 +16,7 @@
 // under the License.
 
 pub(crate) mod codec;
+mod comet_partitioning;
 mod list;
 mod map;
 mod range_partitioner;
@@ -23,4 +24,5 @@ pub mod row;
 mod shuffle_writer;
 
 pub use codec::{read_ipc_compressed, CompressionCodec, ShuffleBlockWriter};
+pub use comet_partitioning::CometPartitioning;
 pub use shuffle_writer::ShuffleWriterExec;

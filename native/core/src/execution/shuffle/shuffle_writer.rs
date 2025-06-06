@@ -17,12 +17,12 @@
 
 //! Defines the External shuffle repartition plan.
 
-use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
+use crate::execution::shuffle::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use crate::execution::tracing::{with_trace, with_trace_async};
 use arrow::compute::interleave_record_batch;
 use async_trait::async_trait;
 use datafusion::common::utils::proxy::VecAllocExt;
-use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_expr::{EquivalenceProperties, LexOrdering, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::EmptyRecordBatchStream;
 use datafusion::{
@@ -66,7 +66,7 @@ pub struct ShuffleWriterExec {
     /// Input execution plan
     input: Arc<dyn ExecutionPlan>,
     /// Partitioning scheme to use
-    partitioning: Partitioning,
+    partitioning: CometPartitioning,
     /// Output data file path
     output_data_file: String,
     /// Output index file path
@@ -84,7 +84,7 @@ impl ShuffleWriterExec {
     /// Create a new ShuffleWriterExec
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
-        partitioning: Partitioning,
+        partitioning: CometPartitioning,
         codec: CompressionCodec,
         output_data_file: String,
         output_index_file: String,
@@ -92,7 +92,7 @@ impl ShuffleWriterExec {
     ) -> Result<Self> {
         let cache = PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
-            partitioning.clone(),
+            partitioning.clone().into(),
             EmissionType::Final,
             Boundedness::Bounded,
         );
@@ -209,7 +209,7 @@ async fn external_shuffle(
     partition: usize,
     output_data_file: String,
     output_index_file: String,
-    partitioning: Partitioning,
+    partitioning: CometPartitioning,
     metrics: ShuffleRepartitionerMetrics,
     context: Arc<TaskContext>,
     codec: CompressionCodec,
@@ -321,7 +321,7 @@ struct MultiPartitionShuffleRepartitioner {
     partition_writers: Vec<PartitionWriter>,
     shuffle_block_writer: ShuffleBlockWriter,
     /// Partitioning scheme to use
-    partitioning: Partitioning,
+    partitioning: CometPartitioning,
     runtime: Arc<RuntimeEnv>,
     metrics: ShuffleRepartitionerMetrics,
     /// Reused scratch space for computing partition indices
@@ -356,7 +356,7 @@ impl MultiPartitionShuffleRepartitioner {
         output_data_file: String,
         output_index_file: String,
         schema: SchemaRef,
-        partitioning: Partitioning,
+        partitioning: CometPartitioning,
         metrics: ShuffleRepartitionerMetrics,
         runtime: Arc<RuntimeEnv>,
         batch_size: usize,
@@ -431,7 +431,7 @@ impl MultiPartitionShuffleRepartitioner {
         self.metrics.baseline.record_output(input.num_rows());
 
         match &self.partitioning {
-            Partitioning::Hash(exprs, num_output_partitions) => {
+            CometPartitioning::Hash(exprs, num_output_partitions) => {
                 let mut scratch = std::mem::take(&mut self.scratch);
                 let (partition_starts, partition_row_indices): (&Vec<u32>, &Vec<u32>) = {
                     let mut timer = self.metrics.repart_time.timer();
@@ -512,7 +512,7 @@ impl MultiPartitionShuffleRepartitioner {
                 // this should be unreachable as long as the validation logic
                 // in the constructor is kept up-to-date
                 return Err(DataFusionError::NotImplemented(format!(
-                    "Unsupported repartitioning scheme {:?}",
+                    "Unsupported shuffle partitioning scheme {:?}",
                     other
                 )));
             }
@@ -1253,7 +1253,7 @@ mod test {
             "/tmp/data.out".to_string(),
             "/tmp/index.out".to_string(),
             batch.schema(),
-            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+            CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
             ShuffleRepartitionerMetrics::new(&metrics_set, 0),
             runtime_env,
             1024,
@@ -1303,7 +1303,7 @@ mod test {
             Arc::new(DataSourceExec::new(Arc::new(
                 MemorySourceConfig::try_new(partitions, batch.schema(), None).unwrap(),
             ))),
-            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+            CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
             CompressionCodec::Zstd(1),
             "/tmp/data.out".to_string(),
             "/tmp/index.out".to_string(),
