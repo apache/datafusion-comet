@@ -17,9 +17,13 @@
 
 //! Defines the External shuffle repartition plan.
 
+use crate::execution::shuffle::range_partitioner;
+use crate::execution::shuffle::range_partitioner::RangePartitioner;
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use crate::execution::tracing::{with_trace, with_trace_async};
-use arrow::compute::interleave_record_batch;
+use arrow::compute::{interleave_record_batch, partition, take, take_arrays};
+use arrow::datatypes::Schema;
+use arrow::row::{RowConverter, SortField};
 use async_trait::async_trait;
 use datafusion::common::utils::proxy::VecAllocExt;
 use datafusion::physical_expr::{EquivalenceProperties, LexOrdering, PhysicalExpr};
@@ -507,6 +511,55 @@ impl MultiPartitionShuffleRepartitioner {
                 )
                 .await?;
                 self.scratch = scratch;
+            }
+            CometPartitioning::RangePartitioning(lex_ordering, num_output_partitions) => {
+                println!("{:?}", lex_ordering);
+                println!("{:?}", num_output_partitions);
+                println!("{:?}", input.schema());
+                println!("{:?}", input.num_rows());
+
+                // evaluate partition expressions
+                let partition_arrays = lex_ordering
+                    .iter()
+                    .map(|expr| expr.expr.evaluate(&input)?.into_array(input.num_rows()))
+                    .collect::<Result<Vec<_>>>()?;
+
+                println!("partition_arrays: {:?}", partition_arrays);
+
+                let sample_indices = UInt64Array::from(RangePartitioner::reservoir_sample_indices(
+                    input.num_rows(),
+                    100,
+                ));
+
+                println!("sample_indices: {:?}", sample_indices);
+
+                let sampled_columns = partition_arrays
+                    .iter()
+                    .map(|c| take(c, &sample_indices, None))
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+
+                println!("sampled_columns: {:?}", sampled_columns);
+
+                let sort_fields = partition_arrays
+                    .iter()
+                    .zip(lex_ordering)
+                    .map(|(array, sort_expr)| {
+                        SortField::new_with_options(array.data_type().clone(), sort_expr.options)
+                    })
+                    .collect();
+
+                println!("{:?}", sort_fields);
+                let converter = RowConverter::new(sort_fields)?;
+                let rows = converter.convert_columns(sampled_columns.as_slice())?;
+                let mut sort: Vec<_> = rows.iter().enumerate().collect();
+                sort.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
+                let sort_indices =
+                    UInt32Array::from_iter_values(sort.iter().map(|(i, _)| *i as u32));
+                println!("indices: {:?}", sort_indices);
+                let sorted_sample = take_arrays(sampled_columns.as_slice(), &sort_indices, None)?;
+                println!("sorted_sample: {:?}", sorted_sample);
+
+                todo!();
             }
             other => {
                 // this should be unreachable as long as the validation logic

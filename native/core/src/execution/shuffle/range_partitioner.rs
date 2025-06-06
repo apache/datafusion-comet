@@ -35,7 +35,10 @@ impl RangePartitioner {
     // input array at the end.
     pub fn reservoir_sample(input: RecordBatch, sample_size: usize) -> RecordBatch {
         // Build our indices array and then take the values from the input.
-        let indices = UInt64Array::from(Self::reservoir_sample_indices(input.num_rows(), sample_size));
+        let indices = UInt64Array::from(Self::reservoir_sample_indices(
+            input.num_rows(),
+            sample_size,
+        ));
 
         // TODO: This bounds checks, probably not necessary.
         take_record_batch(&input, &indices).unwrap()
