@@ -25,8 +25,8 @@ import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometCollectLimit
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
-
 import org.apache.comet.CometConf
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 
 // This rule is responsible for eliminating redundant transitions between row-based and
 // columnar-based operators for Comet. Currently, three potential redundant transitions are:
@@ -116,6 +116,7 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
   private def hasCometNativeChild(op: SparkPlan): Boolean = {
     op match {
       case c: QueryStageExec => hasCometNativeChild(c.plan)
+      case c: ReusedExchangeExec => hasCometNativeChild(c.child)
       case _ => op.exists(_.isInstanceOf[CometPlan])
     }
   }
