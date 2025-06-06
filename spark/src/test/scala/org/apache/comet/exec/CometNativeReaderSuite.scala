@@ -25,6 +25,7 @@ import org.scalatest.Tag
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
 
 import org.apache.comet.CometConf
 
@@ -346,5 +347,51 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         | )
         |""".stripMargin,
       "select map_values(c0).y from tbl")
+  }
+
+  test("native reader - select struct field with user defined schema") {
+    // extract existing A column
+    var readSchema = new StructType().add(
+      "c0",
+      new StructType()
+        .add("a", IntegerType, nullable = true),
+      nullable = true)
+
+    testSingleLineQuery(
+      """
+        | select named_struct('a', 0, 'b', 'xyz') c0
+        |""".stripMargin,
+      "select * from tbl",
+      readSchema = Some(readSchema))
+
+    // extract existing A column, nonexisting X
+    readSchema = new StructType().add(
+      "c0",
+      new StructType()
+        .add("a", IntegerType, nullable = true)
+        .add("x", StringType, nullable = true),
+      nullable = true)
+
+    testSingleLineQuery(
+      """
+        | select named_struct('a', 0, 'b', 'xyz') c0
+        |""".stripMargin,
+      "select * from tbl",
+      readSchema = Some(readSchema))
+
+    // extract nonexisting X, Y columns
+    readSchema = new StructType().add(
+      "c0",
+      new StructType()
+        .add("y", IntegerType, nullable = true)
+        .add("x", StringType, nullable = true),
+      nullable = true)
+
+    testSingleLineQuery(
+      """
+        | select named_struct('a', 0, 'b', 'xyz') c0
+        |""".stripMargin,
+      "select * from tbl",
+      readSchema = Some(readSchema))
   }
 }

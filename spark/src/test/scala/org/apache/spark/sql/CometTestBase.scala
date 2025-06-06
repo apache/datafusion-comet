@@ -861,6 +861,7 @@ abstract class CometTestBase
       testName: String = "test",
       tableName: String = "tbl",
       sqlConf: Seq[(String, String)] = Seq.empty,
+      readSchema: Option[StructType] = None,
       debugCometDF: DataFrame => Unit = _ => (),
       checkCometOperator: Boolean = true): Unit = {
 
@@ -876,7 +877,9 @@ abstract class CometTestBase
       }
 
       spark.createDataFrame(data, schema).repartition(1).write.parquet(path)
-      readParquetFile(path, Some(schema)) { df => df.createOrReplaceTempView(tableName) }
+      readParquetFile(path, readSchema.orElse(Some(schema))) { df =>
+        df.createOrReplaceTempView(tableName)
+      }
 
       withSQLConf(sqlConf: _*) {
         val cometDF = sql(testQuery)
