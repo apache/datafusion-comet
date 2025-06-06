@@ -15,9 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{ArrayRef, AsArray, PrimitiveArray, RecordBatch, UInt64Array};
-use arrow::compute::{take, take_record_batch, TakeOptions};
-use arrow::row::{Row, RowConverter, Rows, SortField};
+use arrow::array::{ArrayRef, AsArray, RecordBatch, UInt64Array};
+use arrow::compute::take_record_batch;
+use arrow::row::{Row, RowConverter, SortField};
 use datafusion::common::HashSet;
 use datafusion::physical_expr::expressions::col;
 use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
@@ -73,16 +73,6 @@ impl RangePartitioner {
         assert_eq!(set.len(), reservoir.len());
 
         reservoir
-    }
-
-    // Adapted from org.apache.spark.RangePartitioner.determineBounds
-    pub fn determine_bounds_for_batch<T>(
-        input: RecordBatch,
-        lex_ordering: &LexOrdering,
-        partitions: i32,
-    ) -> ArrayRef {
-        // sort.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
-        todo!()
     }
 
     // Adapted from org.apache.spark.RangePartitioner.determineBounds
@@ -161,7 +151,7 @@ impl RangePartitioner {
             }
             i += 1
         }
-        
+
         println!("bounds_indices.len(): {:?}", bounds_indices.len());
 
         let selection: Vec<Row> = bounds_indices.iter().map(|&idx| rows.row(idx)).collect();
