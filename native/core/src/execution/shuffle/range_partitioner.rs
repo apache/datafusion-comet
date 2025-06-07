@@ -15,11 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{ArrayRef, RecordBatch, UInt64Array};
-use arrow::compute::take_record_batch;
+use arrow::array::ArrayRef;
 use arrow::row::{OwnedRow, Row, RowConverter, SortField};
 use datafusion::common::HashSet;
-use num::ToPrimitive;
 use rand::Rng;
 
 pub struct RangePartitioner;
@@ -29,17 +27,6 @@ impl RangePartitioner {
     // We use sample_size instead of k and input_length instead of n.
     // We use indices in the reservoir instead of actual values since we'll do one take() on the
     // input array at the end.
-    pub fn reservoir_sample(input: RecordBatch, sample_size: usize) -> RecordBatch {
-        // Build our indices array and then take the values from the input.
-        let indices = UInt64Array::from(Self::reservoir_sample_indices(
-            input.num_rows(),
-            sample_size,
-        ));
-
-        // TODO: This bounds checks, probably not necessary.
-        take_record_batch(&input, &indices).unwrap()
-    }
-
     pub fn reservoir_sample_indices(num_rows: usize, sample_size: usize) -> Vec<u64> {
         if num_rows <= sample_size {
             // Just return the original input since we can't create a bigger sample.
@@ -68,41 +55,6 @@ impl RangePartitioner {
         assert_eq!(set.len(), reservoir.len());
 
         reservoir
-    }
-
-    // Adapted from org.apache.spark.RangePartitioner.determineBounds
-    fn determine_bounds<T>(mut candidates: Vec<(T, f64)>, partitions: i32) -> Vec<T>
-    where
-        T: PartialOrd + Copy,
-    {
-        candidates.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-        let num_candidates = candidates.len();
-        let sum_weights = candidates
-            .iter()
-            .map(|x| x.1.to_f64().unwrap())
-            .sum::<f64>();
-        let step = sum_weights / partitions as f64;
-        let mut cumulative_weights = 0.0;
-        let mut target = step;
-        let mut bounds = Vec::with_capacity((partitions - 1) as usize);
-        let mut i = 0;
-        let mut j = 0;
-        let mut previous_bound: Option<T> = None;
-        while (i < num_candidates) && (j < partitions - 1) {
-            let (key, weight) = &candidates[i];
-            cumulative_weights += weight;
-            if cumulative_weights >= target {
-                // Skip duplicate values.
-                if previous_bound.is_none() || *key > previous_bound.unwrap() {
-                    bounds.push(*key);
-                    target += step;
-                    j += 1;
-                    previous_bound = Some(*key)
-                }
-            }
-            i += 1
-        }
-        bounds
     }
 
     // Adapted from org.apache.spark.RangePartitioner.determineBounds
@@ -156,23 +108,32 @@ impl RangePartitioner {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow::array::{AsArray, Float64Array, Int32Array, RecordBatch};
-    use arrow::datatypes::{DataType, Field, Int32Type, Schema};
-    use datafusion::physical_expr::expressions::col;
-    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
-    use datafusion::physical_plan::sorts::sort::sort_batch;
+    use arrow::array::{AsArray, Float64Array, Int32Array, RecordBatch, UInt64Array};
+    use arrow::compute::take_record_batch;
+    use arrow::datatypes::DataType::Float64;
+    use arrow::datatypes::{DataType, Field, Float64Type, Int32Type, Schema};
+    use datafusion::common::record_batch;
+    use itertools::Itertools;
     use std::sync::Arc;
 
-    #[test]
-    fn test_sort_record_batch() {
-        let batch = create_random_batch(10000);
-        let sample_size = 20;
-        let lex_ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(
-            col("a", batch.schema().as_ref()).unwrap(),
-        )]);
-        let batch = sort_batch(&batch, &lex_ordering, None).unwrap();
-        let sample = RangePartitioner::reservoir_sample(batch, sample_size);
-        let sorted_sample = sort_batch(&sample, &lex_ordering, None).unwrap();
+    fn sample_batch(input: RecordBatch, indices: Vec<u64>) -> RecordBatch {
+        let indices = UInt64Array::from(indices);
+        take_record_batch(&input, &indices).unwrap()
+    }
+
+    fn check_indices(indices: &Vec<u64>, batch_size: usize, sample_size: usize) {
+        // sample indices size should never exceed the batch size
+        assert!(indices.len() <= batch_size);
+        assert_eq!(indices.len(), batch_size.min(sample_size));
+        // Check that values are distinct and not out of bounds
+        let sorted_indices = indices.into_iter().sorted().collect_vec();
+        sorted_indices
+            .iter()
+            .for_each(|&&idx| assert!(idx < batch_size as u64));
+        assert_eq!(
+            sorted_indices.len(),
+            sorted_indices.iter().dedup().collect_vec().len()
+        );
     }
 
     #[test]
@@ -180,12 +141,18 @@ mod test {
     // "reservoirSampleAndCount"
     fn reservoir_sample() {
         let batch = create_random_batch(100);
-        let sample1 = RangePartitioner::reservoir_sample(batch.clone(), 150);
-        assert_eq!(batch, sample1);
-        let sample2 = RangePartitioner::reservoir_sample(batch.clone(), 100);
-        assert_eq!(batch, sample2);
-        let sample3 = RangePartitioner::reservoir_sample(batch.clone(), 10);
-        assert_eq!(sample3.num_rows(), 10);
+        // sample_size > batch.num_rows returns entire batch after sampling
+        let sample1_indices = RangePartitioner::reservoir_sample_indices(batch.num_rows(), 150);
+        check_indices(&sample1_indices, batch.num_rows(), 150);
+        assert_eq!(batch, sample_batch(batch.clone(), sample1_indices));
+        // sample_size == batch.num_rows returns entire batch after sampling
+        let sample2_indices = RangePartitioner::reservoir_sample_indices(batch.num_rows(), 100);
+        check_indices(&sample2_indices, batch.num_rows(), 100);
+        assert_eq!(batch, sample_batch(batch.clone(), sample2_indices));
+        // sample_size < batch.num_rows returns a random subset, so can't compare to original batch
+        let sample3_indices = RangePartitioner::reservoir_sample_indices(batch.num_rows(), 10);
+        check_indices(&sample3_indices, batch.num_rows(), 10);
+        assert_eq!(sample3_indices.len(), 10);
     }
 
     #[test]
@@ -198,7 +165,8 @@ mod test {
         let batch = RecordBatch::try_new(Arc::clone(&schema), vec![array.clone()]).unwrap();
         let mut counts: Vec<i32> = vec![0; array.len()];
         for _i in 0..500 {
-            let result = RangePartitioner::reservoir_sample(batch.clone(), 1);
+            let indices = RangePartitioner::reservoir_sample_indices(batch.num_rows(), 1);
+            let result = sample_batch(batch.clone(), indices);
             assert_eq!(result.num_rows(), 1);
             counts[result.column(0).as_primitive::<Int32Type>().value(0) as usize] += 1;
         }
@@ -209,18 +177,38 @@ mod test {
     #[test]
     // org.apache.spark.PartitioningSuite
     // "RangePartitioner.determineBounds"
-    fn determine_bounds() {
-        let candidates = vec![
-            (0.7, 2.0),
-            (0.1, 1.0),
-            (0.4, 1.0),
-            (0.3, 1.0),
-            (0.2, 1.0),
-            (0.5, 1.0),
-            (1.0, 3.0),
-        ];
-        let result = RangePartitioner::determine_bounds(candidates, 3);
-        assert_eq!(vec![0.4, 0.7], result);
+    fn determine_bounds_for_rows() {
+        // The original test had weights on the values. We just duplicate them because our
+        // determine_bounds function is unweighted.
+        let batch = record_batch!((
+            "a",
+            Float64,
+            vec![
+                Some(0.7),
+                Some(0.7),
+                Some(0.1),
+                Some(0.4),
+                Some(0.3),
+                Some(0.2),
+                Some(0.5),
+                Some(1.0),
+                Some(1.0),
+                Some(1.0),
+            ]
+        ))
+        .unwrap();
+
+        let sort_fields = vec![SortField::new(Float64)];
+
+        let (rows, row_converter) =
+            RangePartitioner::determine_bounds_for_rows(sort_fields, Vec::from(batch.columns()), 3);
+
+        assert_eq!(rows.len(), 2);
+
+        let selection = [rows[0].row(), rows[1].row()];
+        let converted = row_converter.convert_rows(selection).unwrap();
+        let c1 = converted[0].as_primitive::<Float64Type>();
+        assert_eq!(c1.values(), &[0.4, 0.7]);
     }
 
     fn create_random_batch(batch_size: i32) -> RecordBatch {
