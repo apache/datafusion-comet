@@ -69,10 +69,8 @@ pub(crate) fn init_datasource_exec(
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
     let (table_parquet_options, spark_parquet_options) =
         get_options(session_timezone, case_sensitive);
-    let mut parquet_source =
-        ParquetSource::new(table_parquet_options).with_schema_adapter_factory(Arc::new(
-            SparkSchemaAdapterFactory::new(spark_parquet_options, default_values),
-        ));
+    let mut parquet_source = ParquetSource::new(table_parquet_options);
+
     // Create a conjunctive form of the vector because ParquetExecBuilder takes
     // a single expression
     if let Some(data_filters) = data_filters {
@@ -89,6 +87,10 @@ pub(crate) fn init_datasource_exec(
         }
     }
 
+    let file_source = parquet_source.with_schema_adapter_factory(Arc::new(
+        SparkSchemaAdapterFactory::new(spark_parquet_options, default_values),
+    ))?;
+
     let file_groups = file_groups
         .iter()
         .map(|files| FileGroup::new(files.clone()))
@@ -101,7 +103,7 @@ pub(crate) fn init_datasource_exec(
                 partition_schema,
                 file_groups,
                 object_store_url,
-                Arc::new(parquet_source),
+                file_source,
             )
             .with_projection(Some(projection_vector))
             .with_table_partition_cols(partition_fields)
@@ -112,7 +114,7 @@ pub(crate) fn init_datasource_exec(
             partition_schema,
             file_groups,
             object_store_url,
-            Arc::new(parquet_source),
+            file_source,
         )
         .build(),
     };
