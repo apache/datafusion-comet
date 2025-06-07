@@ -1273,29 +1273,29 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
- "datafusion-catalog",
+ "datafusion-catalog 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
  "datafusion-catalog-listing",
- "datafusion-common",
- "datafusion-common-runtime",
- "datafusion-datasource",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-common-runtime 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-datasource 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
  "datafusion-datasource-csv",
  "datafusion-datasource-json",
  "datafusion-datasource-parquet",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-functions",
+ "datafusion-execution 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-functions 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
  "datafusion-functions-aggregate",
  "datafusion-functions-nested",
  "datafusion-functions-table",
  "datafusion-functions-window",
  "datafusion-optimizer",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-physical-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
  "datafusion-physical-optimizer",
- "datafusion-physical-plan",
- "datafusion-session",
- "datafusion-sql",
+ "datafusion-physical-plan 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-session 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-sql 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
  "futures",
  "itertools 0.14.0",
  "log",
@@ -1319,15 +1319,40 @@ dependencies = [
  "arrow",
  "async-trait",
  "dashmap",
- "datafusion-common",
- "datafusion-common-runtime",
- "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr",
- "datafusion-physical-plan",
- "datafusion-session",
- "datafusion-sql",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-common-runtime 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-datasource 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-execution 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-plan 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-session 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-sql 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "futures",
+ "itertools 0.14.0",
+ "log",
+ "object_store",
+ "parking_lot",
+ "tokio",
+]
+
+[[package]]
+name = "datafusion-catalog"
+version = "48.0.0"
+source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc3#33a32d4382bee7e3c705d0f55d05c24a115a2f98"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "dashmap",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-common-runtime 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-datasource 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-execution 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-physical-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-physical-plan 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-session 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-sql 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
  "futures",
  "itertools 0.14.0",
  "log",
@@ -1343,15 +1368,15 @@ source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc2#85f6621a6b1680
 dependencies = [
  "arrow",
  "async-trait",
- "datafusion-catalog",
- "datafusion-common",
- "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
- "datafusion-physical-plan",
- "datafusion-session",
+ "datafusion-catalog 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-datasource 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-execution 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-plan 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-session 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
  "futures",
  "log",
  "object_store",
@@ -1470,9 +1495,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-common"
+version = "48.0.0"
+source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc3#33a32d4382bee7e3c705d0f55d05c24a115a2f98"
+dependencies = [
+ "ahash",
+ "arrow",
+ "arrow-ipc",
+ "base64",
+ "half",
+ "hashbrown 0.14.5",
+ "indexmap",
+ "libc",
+ "log",
+ "object_store",
+ "paste",
+ "sqlparser",
+ "tokio",
+ "web-time",
+]
+
+[[package]]
 name = "datafusion-common-runtime"
 version = "48.0.0"
 source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc2#85f6621a6b1680b40d483a56b10ff3495861ece3"
+dependencies = [
+ "futures",
+ "log",
+ "tokio",
+]
+
+[[package]]
+name = "datafusion-common-runtime"
+version = "48.0.0"
+source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc3#33a32d4382bee7e3c705d0f55d05c24a115a2f98"
 dependencies = [
  "futures",
  "log",
@@ -1488,14 +1544,14 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
- "datafusion-common",
- "datafusion-common-runtime",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
- "datafusion-physical-plan",
- "datafusion-session",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-common-runtime 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-execution 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-plan 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-session 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
  "futures",
  "glob",
  "itertools 0.14.0",
@@ -1509,6 +1565,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-datasource"
+version = "48.0.0"
+source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc3#33a32d4382bee7e3c705d0f55d05c24a115a2f98"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-common-runtime 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-execution 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-physical-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-physical-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-physical-plan 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-session 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "futures",
+ "glob",
+ "itertools 0.14.0",
+ "log",
+ "object_store",
+ "rand 0.9.1",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "datafusion-datasource-csv"
 version = "48.0.0"
 source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc2#85f6621a6b1680b40d483a56b10ff3495861ece3"
@@ -1516,16 +1599,16 @@ dependencies = [
  "arrow",
  "async-trait",
  "bytes",
- "datafusion-catalog",
- "datafusion-common",
- "datafusion-common-runtime",
- "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
- "datafusion-physical-plan",
- "datafusion-session",
+ "datafusion-catalog 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-common-runtime 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-datasource 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-execution 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-plan 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-session 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
  "futures",
  "object_store",
  "regex",
@@ -1540,16 +1623,16 @@ dependencies = [
  "arrow",
  "async-trait",
  "bytes",
- "datafusion-catalog",
- "datafusion-common",
- "datafusion-common-runtime",
- "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
- "datafusion-physical-plan",
- "datafusion-session",
+ "datafusion-catalog 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-common-runtime 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-datasource 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-execution 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-plan 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-session 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
  "futures",
  "object_store",
  "serde_json",
@@ -1564,18 +1647,18 @@ dependencies = [
  "arrow",
  "async-trait",
  "bytes",
- "datafusion-catalog",
- "datafusion-common",
- "datafusion-common-runtime",
- "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
+ "datafusion-catalog 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-common-runtime 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-datasource 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-execution 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
  "datafusion-functions-aggregate",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-physical-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
  "datafusion-physical-optimizer",
- "datafusion-physical-plan",
- "datafusion-session",
+ "datafusion-physical-plan 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-session 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
  "futures",
  "itertools 0.14.0",
  "log",
@@ -1592,14 +1675,37 @@ version = "48.0.0"
 source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc2#85f6621a6b1680b40d483a56b10ff3495861ece3"
 
 [[package]]
+name = "datafusion-doc"
+version = "48.0.0"
+source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc3#33a32d4382bee7e3c705d0f55d05c24a115a2f98"
+
+[[package]]
 name = "datafusion-execution"
 version = "48.0.0"
 source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc2#85f6621a6b1680b40d483a56b10ff3495861ece3"
 dependencies = [
  "arrow",
  "dashmap",
- "datafusion-common",
- "datafusion-expr",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "futures",
+ "log",
+ "object_store",
+ "parking_lot",
+ "rand 0.9.1",
+ "tempfile",
+ "url",
+]
+
+[[package]]
+name = "datafusion-execution"
+version = "48.0.0"
+source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc3#33a32d4382bee7e3c705d0f55d05c24a115a2f98"
+dependencies = [
+ "arrow",
+ "dashmap",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
  "futures",
  "log",
  "object_store",
@@ -1616,12 +1722,31 @@ source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc2#85f6621a6b1680
 dependencies = [
  "arrow",
  "chrono",
- "datafusion-common",
- "datafusion-doc",
- "datafusion-expr-common",
- "datafusion-functions-aggregate-common",
- "datafusion-functions-window-common",
- "datafusion-physical-expr-common",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-doc 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-functions-aggregate-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-functions-window-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "indexmap",
+ "paste",
+ "serde_json",
+ "sqlparser",
+]
+
+[[package]]
+name = "datafusion-expr"
+version = "48.0.0"
+source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc3#33a32d4382bee7e3c705d0f55d05c24a115a2f98"
+dependencies = [
+ "arrow",
+ "chrono",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-doc 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-functions-aggregate-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-functions-window-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-physical-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
  "indexmap",
  "paste",
  "serde_json",
@@ -1634,7 +1759,19 @@ version = "48.0.0"
 source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc2#85f6621a6b1680b40d483a56b10ff3495861ece3"
 dependencies = [
  "arrow",
- "datafusion-common",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "indexmap",
+ "itertools 0.14.0",
+ "paste",
+]
+
+[[package]]
+name = "datafusion-expr-common"
+version = "48.0.0"
+source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc3#33a32d4382bee7e3c705d0f55d05c24a115a2f98"
+dependencies = [
+ "arrow",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
  "indexmap",
  "itertools 0.14.0",
  "paste",
@@ -1651,12 +1788,12 @@ dependencies = [
  "blake2",
  "blake3",
  "chrono",
- "datafusion-common",
- "datafusion-doc",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-macros",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-doc 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-execution 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-macros 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
  "hex",
  "itertools 0.14.0",
  "log",
@@ -1669,20 +1806,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-functions"
+version = "48.0.0"
+source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc3#33a32d4382bee7e3c705d0f55d05c24a115a2f98"
+dependencies = [
+ "arrow",
+ "arrow-buffer",
+ "base64",
+ "chrono",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-doc 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-execution 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-macros 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "hex",
+ "itertools 0.14.0",
+ "log",
+ "rand 0.9.1",
+ "regex",
+ "unicode-segmentation",
+ "uuid",
+]
+
+[[package]]
 name = "datafusion-functions-aggregate"
 version = "48.0.0"
 source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc2#85f6621a6b1680b40d483a56b10ff3495861ece3"
 dependencies = [
  "ahash",
  "arrow",
- "datafusion-common",
- "datafusion-doc",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions-aggregate-common",
- "datafusion-macros",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-doc 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-execution 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-functions-aggregate-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-macros 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
  "half",
  "log",
  "paste",
@@ -1695,9 +1856,21 @@ source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc2#85f6621a6b1680
 dependencies = [
  "ahash",
  "arrow",
- "datafusion-common",
- "datafusion-expr-common",
- "datafusion-physical-expr-common",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+]
+
+[[package]]
+name = "datafusion-functions-aggregate-common"
+version = "48.0.0"
+source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc3#33a32d4382bee7e3c705d0f55d05c24a115a2f98"
+dependencies = [
+ "ahash",
+ "arrow",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-physical-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
 ]
 
 [[package]]
@@ -1707,14 +1880,14 @@ source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc2#85f6621a6b1680
 dependencies = [
  "arrow",
  "arrow-ord",
- "datafusion-common",
- "datafusion-doc",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-doc 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-execution 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-functions 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
  "datafusion-functions-aggregate",
- "datafusion-macros",
- "datafusion-physical-expr-common",
+ "datafusion-macros 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
  "itertools 0.14.0",
  "log",
  "paste",
@@ -1727,10 +1900,10 @@ source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc2#85f6621a6b1680
 dependencies = [
  "arrow",
  "async-trait",
- "datafusion-catalog",
- "datafusion-common",
- "datafusion-expr",
- "datafusion-physical-plan",
+ "datafusion-catalog 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-plan 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
  "parking_lot",
  "paste",
 ]
@@ -1741,13 +1914,13 @@ version = "48.0.0"
 source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc2#85f6621a6b1680b40d483a56b10ff3495861ece3"
 dependencies = [
  "arrow",
- "datafusion-common",
- "datafusion-doc",
- "datafusion-expr",
- "datafusion-functions-window-common",
- "datafusion-macros",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-doc 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-functions-window-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-macros 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
  "log",
  "paste",
 ]
@@ -1757,8 +1930,17 @@ name = "datafusion-functions-window-common"
 version = "48.0.0"
 source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc2#85f6621a6b1680b40d483a56b10ff3495861ece3"
 dependencies = [
- "datafusion-common",
- "datafusion-physical-expr-common",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+]
+
+[[package]]
+name = "datafusion-functions-window-common"
+version = "48.0.0"
+source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc3#33a32d4382bee7e3c705d0f55d05c24a115a2f98"
+dependencies = [
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-physical-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
 ]
 
 [[package]]
@@ -1766,7 +1948,17 @@ name = "datafusion-macros"
 version = "48.0.0"
 source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc2#85f6621a6b1680b40d483a56b10ff3495861ece3"
 dependencies = [
- "datafusion-expr",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "quote",
+ "syn 2.0.101",
+]
+
+[[package]]
+name = "datafusion-macros"
+version = "48.0.0"
+source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc3#33a32d4382bee7e3c705d0f55d05c24a115a2f98"
+dependencies = [
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
  "quote",
  "syn 2.0.101",
 ]
@@ -1778,9 +1970,9 @@ source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc2#85f6621a6b1680
 dependencies = [
  "arrow",
  "chrono",
- "datafusion-common",
- "datafusion-expr",
- "datafusion-physical-expr",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
  "indexmap",
  "itertools 0.14.0",
  "log",
@@ -1795,11 +1987,32 @@ source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc2#85f6621a6b1680
 dependencies = [
  "ahash",
  "arrow",
- "datafusion-common",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-functions-aggregate-common",
- "datafusion-physical-expr-common",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-functions-aggregate-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "half",
+ "hashbrown 0.14.5",
+ "indexmap",
+ "itertools 0.14.0",
+ "log",
+ "paste",
+ "petgraph 0.8.1",
+]
+
+[[package]]
+name = "datafusion-physical-expr"
+version = "48.0.0"
+source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc3#33a32d4382bee7e3c705d0f55d05c24a115a2f98"
+dependencies = [
+ "ahash",
+ "arrow",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-functions-aggregate-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-physical-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
  "half",
  "hashbrown 0.14.5",
  "indexmap",
@@ -1816,8 +2029,21 @@ source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc2#85f6621a6b1680
 dependencies = [
  "ahash",
  "arrow",
- "datafusion-common",
- "datafusion-expr-common",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "hashbrown 0.14.5",
+ "itertools 0.14.0",
+]
+
+[[package]]
+name = "datafusion-physical-expr-common"
+version = "48.0.0"
+source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc3#33a32d4382bee7e3c705d0f55d05c24a115a2f98"
+dependencies = [
+ "ahash",
+ "arrow",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
  "hashbrown 0.14.5",
  "itertools 0.14.0",
 ]
@@ -1828,13 +2054,13 @@ version = "48.0.0"
 source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc2#85f6621a6b1680b40d483a56b10ff3495861ece3"
 dependencies = [
  "arrow",
- "datafusion-common",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-expr-common",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
- "datafusion-physical-plan",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-execution 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-plan 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
  "itertools 0.14.0",
  "log",
 ]
@@ -1850,13 +2076,42 @@ dependencies = [
  "arrow-schema",
  "async-trait",
  "chrono",
- "datafusion-common",
- "datafusion-common-runtime",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions-window-common",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-common-runtime 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-execution 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-functions-window-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "futures",
+ "half",
+ "hashbrown 0.14.5",
+ "indexmap",
+ "itertools 0.14.0",
+ "log",
+ "parking_lot",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
+name = "datafusion-physical-plan"
+version = "48.0.0"
+source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc3#33a32d4382bee7e3c705d0f55d05c24a115a2f98"
+dependencies = [
+ "ahash",
+ "arrow",
+ "arrow-ord",
+ "arrow-schema",
+ "async-trait",
+ "chrono",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-common-runtime 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-execution 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-functions-window-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-physical-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-physical-expr-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
  "futures",
  "half",
  "hashbrown 0.14.5",
@@ -1876,13 +2131,36 @@ dependencies = [
  "arrow",
  "async-trait",
  "dashmap",
- "datafusion-common",
- "datafusion-common-runtime",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-physical-expr",
- "datafusion-physical-plan",
- "datafusion-sql",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-common-runtime 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-execution 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-physical-plan 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-sql 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "futures",
+ "itertools 0.14.0",
+ "log",
+ "object_store",
+ "parking_lot",
+ "tokio",
+]
+
+[[package]]
+name = "datafusion-session"
+version = "48.0.0"
+source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc3#33a32d4382bee7e3c705d0f55d05c24a115a2f98"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "dashmap",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-common-runtime 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-execution 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-physical-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-physical-plan 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-sql 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
  "futures",
  "itertools 0.14.0",
  "log",
@@ -1894,15 +2172,15 @@ dependencies = [
 [[package]]
 name = "datafusion-spark"
 version = "48.0.0"
-source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc2#85f6621a6b1680b40d483a56b10ff3495861ece3"
+source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc3#33a32d4382bee7e3c705d0f55d05c24a115a2f98"
 dependencies = [
  "arrow",
- "datafusion-catalog",
- "datafusion-common",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions",
- "datafusion-macros",
+ "datafusion-catalog 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-execution 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-functions 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-macros 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
  "log",
 ]
 
@@ -1913,8 +2191,23 @@ source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc2#85f6621a6b1680
 dependencies = [
  "arrow",
  "bigdecimal",
- "datafusion-common",
- "datafusion-expr",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc2)",
+ "indexmap",
+ "log",
+ "regex",
+ "sqlparser",
+]
+
+[[package]]
+name = "datafusion-sql"
+version = "48.0.0"
+source = "git+https://github.com/apache/datafusion?rev=48.0.0-rc3#33a32d4382bee7e3c705d0f55d05c24a115a2f98"
+dependencies = [
+ "arrow",
+ "bigdecimal",
+ "datafusion-common 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
+ "datafusion-expr 48.0.0 (git+https://github.com/apache/datafusion?rev=48.0.0-rc3)",
  "indexmap",
  "log",
  "regex",
