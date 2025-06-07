@@ -22,7 +22,7 @@ inputs:
     description: 'The Apache Spark short version (e.g., 3.5) to build'
     required: true
   spark-version:
-    description: 'The Apache Spark version (e.g., 3.5.5) to build'
+    description: 'The Apache Spark version (e.g., 3.5.6) to build'
     required: true
 runs:
   using: "composite"
