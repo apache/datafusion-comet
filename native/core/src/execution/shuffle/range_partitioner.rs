@@ -108,7 +108,7 @@ impl RangePartitioner {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow::array::{AsArray, Float64Array, Int32Array, RecordBatch, UInt64Array};
+    use arrow::array::{Array, AsArray, Float64Array, Int32Array, RecordBatch, UInt64Array};
     use arrow::compute::take_record_batch;
     use arrow::datatypes::DataType::Float64;
     use arrow::datatypes::{DataType, Field, Float64Type, Int32Type, Schema};
@@ -126,10 +126,11 @@ mod test {
         assert!(indices.len() <= batch_size);
         assert_eq!(indices.len(), batch_size.min(sample_size));
         // Check that values are distinct and not out of bounds
-        let sorted_indices = indices.into_iter().sorted().collect_vec();
-        sorted_indices
+        indices
             .iter()
-            .for_each(|&&idx| assert!(idx < batch_size as u64));
+            .for_each(|&idx| assert!(idx < batch_size as u64));
+        // Check that values are distinct and not out of bounds
+        let sorted_indices = indices.into_iter().sorted().collect_vec();
         assert_eq!(
             sorted_indices.len(),
             sorted_indices.iter().dedup().collect_vec().len()
@@ -205,10 +206,27 @@ mod test {
 
         assert_eq!(rows.len(), 2);
 
-        let selection = [rows[0].row(), rows[1].row()];
-        let converted = row_converter.convert_rows(selection).unwrap();
-        let c1 = converted[0].as_primitive::<Float64Type>();
-        assert_eq!(c1.values(), &[0.4, 0.7]);
+        let bounds = row_converter
+            .convert_rows([rows[0].row(), rows[1].row()])
+            .unwrap();
+        let bounds_array = bounds[0].as_primitive::<Float64Type>();
+        assert_eq!(bounds_array.values(), &[0.4, 0.7]);
+    }
+
+    #[test]
+    fn determine_bounds_with_nulls() {
+        let batch = record_batch!(("a", Float64, vec![None, None, Some(0.1),])).unwrap();
+
+        let sort_fields = vec![SortField::new(Float64)];
+
+        let (rows, row_converter) =
+            RangePartitioner::determine_bounds_for_rows(sort_fields, Vec::from(batch.columns()), 2);
+
+        assert_eq!(rows.len(), 1);
+
+        let bounds = row_converter.convert_rows([rows[0].row()]).unwrap();
+        let bounds_array = bounds[0].as_primitive::<Float64Type>();
+        assert!(bounds_array.is_null(0));
     }
 
     fn create_random_batch(batch_size: i32) -> RecordBatch {

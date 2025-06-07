@@ -1420,13 +1420,15 @@ mod test {
     ) {
         let batch = create_batch(batch_size);
 
-        for partitioning in [CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+        for partitioning in [
+            CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
             CometPartitioning::RangePartitioning(
                 LexOrdering::new(vec![PhysicalSortExpr::new_default(
                     col("a", batch.schema().as_ref()).unwrap(),
                 )]),
                 num_partitions,
-            )] {
+            ),
+        ] {
             let batches = (0..num_batches).map(|_| batch.clone()).collect::<Vec<_>>();
 
             let partitions = &[batches];
