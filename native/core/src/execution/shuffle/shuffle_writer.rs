@@ -518,6 +518,7 @@ impl MultiPartitionShuffleRepartitioner {
                 self.scratch = scratch;
             }
             CometPartitioning::RangePartitioning(lex_ordering, num_output_partitions) => {
+                let mut scratch = std::mem::take(&mut self.scratch);
                 // evaluate partition expressions
                 let partition_arrays = lex_ordering
                     .iter()
@@ -564,19 +565,19 @@ impl MultiPartitionShuffleRepartitioner {
                     .unwrap()
                     .convert_columns(partition_arrays.as_slice())?;
 
-                let partition_indices: Vec<usize> = row_batch
-                    .iter()
-                    .map(|row| {
-                        let search_result = self
-                            .range_boundaries
-                            .as_ref()
-                            .unwrap()
-                            .binary_search(&row.owned());
-                        search_result.unwrap_or_else(|idx| idx)
-                    })
-                    .collect();
+                let partition_ids = &mut scratch.partition_ids[..partition_arrays[0].len()];
+                row_batch.iter().enumerate().for_each(|(idx, row)| {
+                    let search_result = self
+                        .range_boundaries
+                        .as_ref()
+                        .unwrap()
+                        .binary_search(&row.owned());
+                    let partition = search_result.unwrap_or_else(|idx| idx);
+                    assert!(partition < *num_output_partitions);
+                    partition_ids[idx] = partition as u32;
+                });
 
-                println!("{:?}", partition_indices);
+                println!("{:?}", partition_ids);
 
                 todo!();
             }
