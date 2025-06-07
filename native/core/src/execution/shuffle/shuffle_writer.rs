@@ -519,67 +519,123 @@ impl MultiPartitionShuffleRepartitioner {
             }
             CometPartitioning::RangePartitioning(lex_ordering, num_output_partitions) => {
                 let mut scratch = std::mem::take(&mut self.scratch);
-                // evaluate partition expressions
-                let partition_arrays = lex_ordering
-                    .iter()
-                    .map(|expr| expr.expr.evaluate(&input)?.into_array(input.num_rows()))
-                    .collect::<Result<Vec<_>>>()?;
+                let (partition_starts, partition_row_indices): (&Vec<u32>, &Vec<u32>) = {
+                    let mut timer = self.metrics.repart_time.timer();
 
-                if self.range_boundaries.is_none() {
-                    assert!(self.row_converter.is_none());
-
-                    // TODO: Adjust sample size.
-                    let sample_indices = UInt64Array::from(
-                        RangePartitioner::reservoir_sample_indices(input.num_rows(), 100),
-                    );
-
-                    let sampled_columns = partition_arrays
+                    // evaluate partition expressions
+                    let partition_arrays = lex_ordering
                         .iter()
-                        .map(|c| take(c, &sample_indices, None))
-                        .collect::<std::result::Result<Vec<_>, _>>()?;
+                        .map(|expr| expr.expr.evaluate(&input)?.into_array(input.num_rows()))
+                        .collect::<Result<Vec<_>>>()?;
 
-                    let sort_fields: Vec<SortField> = partition_arrays
-                        .iter()
-                        .zip(lex_ordering)
-                        .map(|(array, sort_expr)| {
-                            SortField::new_with_options(
-                                array.data_type().clone(),
-                                sort_expr.options,
-                            )
-                        })
-                        .collect();
+                    if self.range_boundaries.is_none() {
+                        assert!(self.row_converter.is_none());
 
-                    let (bounds, converter) = RangePartitioner::determine_bounds_for_rows(
-                        sort_fields,
-                        sampled_columns,
-                        *num_output_partitions as i32,
-                    );
+                        // TODO: Adjust sample size.
+                        let sample_indices = UInt64Array::from(
+                            RangePartitioner::reservoir_sample_indices(input.num_rows(), 100),
+                        );
 
-                    self.range_boundaries = Some(bounds);
-                    self.row_converter = Some(converter);
-                }
+                        let sampled_columns = partition_arrays
+                            .iter()
+                            .map(|c| take(c, &sample_indices, None))
+                            .collect::<std::result::Result<Vec<_>, _>>()?;
 
-                let row_batch = self
-                    .row_converter
-                    .as_ref()
-                    .unwrap()
-                    .convert_columns(partition_arrays.as_slice())?;
+                        let sort_fields: Vec<SortField> = partition_arrays
+                            .iter()
+                            .zip(lex_ordering)
+                            .map(|(array, sort_expr)| {
+                                SortField::new_with_options(
+                                    array.data_type().clone(),
+                                    sort_expr.options,
+                                )
+                            })
+                            .collect();
 
-                let partition_ids = &mut scratch.partition_ids[..partition_arrays[0].len()];
-                row_batch.iter().enumerate().for_each(|(idx, row)| {
-                    let search_result = self
-                        .range_boundaries
+                        let (bounds, converter) = RangePartitioner::determine_bounds_for_rows(
+                            sort_fields,
+                            sampled_columns,
+                            *num_output_partitions as i32,
+                        );
+
+                        self.range_boundaries = Some(bounds);
+                        self.row_converter = Some(converter);
+                    }
+
+                    let row_batch = self
+                        .row_converter
                         .as_ref()
                         .unwrap()
-                        .binary_search(&row.owned());
-                    let partition = search_result.unwrap_or_else(|idx| idx);
-                    assert!(partition < *num_output_partitions);
-                    partition_ids[idx] = partition as u32;
-                });
+                        .convert_columns(partition_arrays.as_slice())?;
 
-                println!("{:?}", partition_ids);
+                    let partition_ids = &mut scratch.partition_ids[..partition_arrays[0].len()];
+                    row_batch.iter().enumerate().for_each(|(idx, row)| {
+                        let search_result = self
+                            .range_boundaries
+                            .as_ref()
+                            .unwrap()
+                            .binary_search(&row.owned());
+                        let partition = search_result.unwrap_or_else(|idx| idx);
+                        assert!(partition < *num_output_partitions);
+                        partition_ids[idx] = partition as u32;
+                    });
 
-                todo!();
+                    println!("{:?}", partition_ids);
+
+                    // count each partition size, while leaving the last extra element as 0
+                    let partition_counters = &mut scratch.partition_starts;
+                    partition_counters.resize(num_output_partitions + 1, 0);
+                    partition_counters.fill(0);
+                    partition_ids
+                        .iter()
+                        .for_each(|partition_id| partition_counters[*partition_id as usize] += 1);
+
+                    println!("{:?}", partition_counters);
+
+                    // accumulate partition counters into partition ends
+                    // e.g. partition counter: [1, 3, 2, 1, 0] => [1, 4, 6, 7, 7]
+                    let partition_ends = partition_counters;
+                    let mut accum = 0;
+                    partition_ends.iter_mut().for_each(|v| {
+                        *v += accum;
+                        accum = *v;
+                    });
+
+                    // calculate partition row indices and partition starts
+                    // e.g. partition ids: [3, 1, 1, 1, 2, 2, 0] will produce the following partition_row_indices
+                    // and partition_starts arrays:
+                    //
+                    //  partition_row_indices: [6, 1, 2, 3, 4, 5, 0]
+                    //  partition_starts: [0, 1, 4, 6, 7]
+                    //
+                    // partition_starts conceptually splits partition_row_indices into smaller slices.
+                    // Each slice partition_row_indices[partition_starts[K]..partition_starts[K + 1]] contains the
+                    // row indices of the input batch that are partitioned into partition K. For example,
+                    // first partition 0 has one row index [6], partition 1 has row indices [1, 2, 3], etc.
+                    let partition_row_indices = &mut scratch.partition_row_indices;
+                    partition_row_indices.resize(input.num_rows(), 0);
+                    for (index, partition_id) in partition_ids.iter().enumerate().rev() {
+                        partition_ends[*partition_id as usize] -= 1;
+                        let end = partition_ends[*partition_id as usize];
+                        partition_row_indices[end as usize] = index as u32;
+                    }
+
+                    // after calculating, partition ends become partition starts
+                    let partition_starts = partition_ends;
+                    timer.stop();
+                    Ok::<(&Vec<u32>, &Vec<u32>), DataFusionError>((
+                        partition_starts,
+                        partition_row_indices,
+                    ))
+                }?;
+
+                self.buffer_partitioned_batch_may_spill(
+                    input,
+                    partition_row_indices,
+                    partition_starts,
+                )
+                .await?;
+                self.scratch = scratch;
             }
             other => {
                 // this should be unreachable as long as the validation logic
