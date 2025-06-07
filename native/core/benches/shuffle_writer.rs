@@ -18,11 +18,13 @@
 use arrow::array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
 use arrow::array::{builder::StringBuilder, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
-use comet::execution::shuffle::{CompressionCodec, ShuffleBlockWriter, ShuffleWriterExec};
+use comet::execution::shuffle::{
+    CometPartitioning, CompressionCodec, ShuffleBlockWriter, ShuffleWriterExec,
+};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
-use datafusion::physical_expr::{expressions::Column, Partitioning};
+use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_plan::metrics::Time;
 use datafusion::{
     physical_plan::{common::collect, ExecutionPlan},
@@ -89,7 +91,7 @@ fn create_shuffle_writer_exec(compression_codec: CompressionCodec) -> ShuffleWri
         Arc::new(DataSourceExec::new(Arc::new(
             MemorySourceConfig::try_new(partitions, Arc::clone(&schema), None).unwrap(),
         ))),
-        Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
+        CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
         compression_codec,
         "/tmp/data.out".to_string(),
         "/tmp/index.out".to_string(),

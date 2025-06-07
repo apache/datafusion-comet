@@ -64,7 +64,7 @@ impl RangePartitioner {
             }
         }
 
-        let set: HashSet<u64> = reservoir.iter().map(|e| *e).collect();
+        let set: HashSet<u64> = reservoir.iter().copied().collect();
         assert_eq!(set.len(), reservoir.len());
 
         reservoir
@@ -181,9 +181,9 @@ mod test {
     fn reservoir_sample() {
         let batch = create_random_batch(100);
         let sample1 = RangePartitioner::reservoir_sample(batch.clone(), 150);
-        assert_eq!(batch, sample1.into());
+        assert_eq!(batch, sample1);
         let sample2 = RangePartitioner::reservoir_sample(batch.clone(), 100);
-        assert_eq!(batch, sample2.into());
+        assert_eq!(batch, sample2);
         let sample3 = RangePartitioner::reservoir_sample(batch.clone(), 10);
         assert_eq!(sample3.num_rows(), 10);
     }

@@ -56,9 +56,9 @@ impl From<Partitioning> for CometPartitioning {
     }
 }
 
-impl Into<Partitioning> for CometPartitioning {
-    fn into(self) -> Partitioning {
-        match self {
+impl From<CometPartitioning> for Partitioning {
+    fn from(val: CometPartitioning) -> Self {
+        match val {
             CometPartitioning::RoundRobinBatch(partitions) => {
                 Partitioning::RoundRobinBatch(partitions)
             }
