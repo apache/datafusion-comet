@@ -15,17 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{ArrayRef, AsArray, RecordBatch, UInt64Array};
+use arrow::array::{ArrayRef, RecordBatch, UInt64Array};
 use arrow::compute::take_record_batch;
 use arrow::row::{OwnedRow, Row, RowConverter, SortField};
 use datafusion::common::HashSet;
-use datafusion::physical_expr::expressions::col;
-use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
-use datafusion::physical_plan::sorts::sort::sort_batch;
-use itertools::Itertools;
 use num::ToPrimitive;
 use rand::Rng;
-use std::sync::Arc;
 
 pub struct RangePartitioner;
 

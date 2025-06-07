@@ -17,16 +17,14 @@
 
 //! Defines the External shuffle repartition plan.
 
-use crate::execution::shuffle::range_partitioner;
 use crate::execution::shuffle::range_partitioner::RangePartitioner;
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use crate::execution::tracing::{with_trace, with_trace_async};
-use arrow::compute::{interleave_record_batch, partition, take, take_arrays};
-use arrow::datatypes::Schema;
-use arrow::row::{OwnedRow, RowConverter, Rows, SortField};
+use arrow::compute::{interleave_record_batch, take};
+use arrow::row::{OwnedRow, RowConverter, SortField};
 use async_trait::async_trait;
 use datafusion::common::utils::proxy::VecAllocExt;
-use datafusion::physical_expr::{EquivalenceProperties, LexOrdering, PhysicalExpr};
+use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::EmptyRecordBatchStream;
 use datafusion::{
@@ -43,8 +41,8 @@ use datafusion::{
             BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, Time,
         },
         stream::RecordBatchStreamAdapter,
-        DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-        SendableRecordBatchStream, Statistics,
+        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
+        Statistics,
     },
 };
 use datafusion_comet_spark_expr::hash_funcs::murmur3::create_murmur3_hashes;
