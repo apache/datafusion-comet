@@ -574,7 +574,6 @@ impl MultiPartitionShuffleRepartitioner {
                             .unwrap()
                             .binary_search(&row.owned());
                         let partition = search_result.unwrap_or_else(|idx| idx);
-                        assert!(partition < *num_output_partitions);
                         partition_ids[idx] = partition as u32;
                     });
 
