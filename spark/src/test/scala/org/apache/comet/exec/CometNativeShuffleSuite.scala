@@ -139,10 +139,8 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
         .repartition(10, $"_1")
         .filter($"_1" > 1)
 
-      // Because the first exchange from the bottom is range exchange which native shuffle
-      // doesn't support. So Comet exec operators stop before the first exchange and thus
-      // there is no Comet exchange.
-      checkShuffleAnswer(shuffled2, 0)
+      // native shuffle supports RangePartitioning, so 2 Comet shuffle exchanges are expected
+      checkShuffleAnswer(shuffled2, 2)
     }
   }
 

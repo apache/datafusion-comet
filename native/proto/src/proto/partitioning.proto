@@ -28,15 +28,21 @@ option java_package = "org.apache.comet.serde";
 // The basic message representing a Spark partitioning.
 message Partitioning {
   oneof partitioning_struct {
-    HashRepartition hash_partition = 2;
-    SinglePartition single_partition = 3;
+    HashPartition hash_partition = 1;
+    SinglePartition single_partition = 2;
+    RangePartition range_partition = 3;
   }
 }
 
-message HashRepartition {
+message HashPartition {
   repeated spark.spark_expression.Expr hash_expression = 1;
   int32 num_partitions = 2;
 }
 
 message SinglePartition {
+}
+
+message RangePartition {
+  repeated spark.spark_expression.Expr sort_orders = 1;
+  int32 num_partitions = 2;
 }
