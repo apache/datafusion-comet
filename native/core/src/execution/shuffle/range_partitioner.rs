@@ -214,6 +214,40 @@ mod test {
     }
 
     #[test]
+    fn determine_bounds_sizes() {
+        let batch = record_batch!(("a", Float64, vec![Some(0.1), Some(0.2), Some(0.3),])).unwrap();
+
+        let sort_fields = vec![SortField::new(Float64)];
+
+        // num_partitions < sample size
+        let mut num_partitions = (batch.num_rows() - 1) as i32;
+        let (rows, _) = RangePartitioner::determine_bounds_for_rows(
+            sort_fields.clone(),
+            Vec::from(batch.columns()),
+            num_partitions,
+        );
+        assert_eq!(rows.len() as i32, num_partitions - 1);
+
+        // num_partitions == sample size
+        num_partitions = batch.num_rows() as i32;
+        let (rows, _) = RangePartitioner::determine_bounds_for_rows(
+            sort_fields.clone(),
+            Vec::from(batch.columns()),
+            num_partitions,
+        );
+        assert_eq!(rows.len() as i32, num_partitions - 1);
+
+        // num_partitions > sample size
+        num_partitions = (batch.num_rows() + 1) as i32;
+        let (rows, _) = RangePartitioner::determine_bounds_for_rows(
+            sort_fields.clone(),
+            Vec::from(batch.columns()),
+            num_partitions,
+        );
+        assert_eq!(rows.len(), batch.num_rows());
+    }
+
+    #[test]
     fn determine_bounds_with_nulls() {
         let batch = record_batch!(("a", Float64, vec![None, None, Some(0.1),])).unwrap();
 
