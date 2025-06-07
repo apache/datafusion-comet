@@ -587,13 +587,12 @@ impl MultiPartitionShuffleRepartitioner {
                         let mut partition_id = 0;
                         // TODO: binary search
                         for bound in partition_bounds {
-                            if row < bound {
+                            if row >= bound {
                                 partition_id += 1;
                             } else {
                                 break;
                             }
                         }
-                        assert!(partition_id < *num_output_partitions);
                         partition_ids[row_idx] = partition_id as u32;
                     });
 
