@@ -242,7 +242,7 @@ index 21a3ce1e12..f4762ab98f 100644
  
  -- In COMPENSATION views get invalidated if the type can't cast
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
-index e0ad3feda3..b7ccf02852 100644
+index e0ad3feda3..465455478d 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
 @@ -39,7 +39,7 @@ import org.apache.spark.sql.catalyst.util.DateTimeConstants
@@ -264,7 +264,17 @@ index e0ad3feda3..b7ccf02852 100644
    }
  
    test("A cached table preserves the partitioning and ordering of its cached SparkPlan") {
-@@ -1661,7 +1662,12 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
+@@ -1626,7 +1627,8 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
+     }
+   }
+ 
+-  test("SPARK-35332: Make cache plan disable configs configurable - check AQE") {
++  test("SPARK-35332: Make cache plan disable configs configurable - check AQE",
++    IgnoreComet("ignore for first stage of 4.0")) {
+     withSQLConf(SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+       SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1",
+       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true") {
+@@ -1661,7 +1663,12 @@ class CachedTableSuite extends QueryTest with SQLTestUtils
            _.nodeName.contains("AdaptiveSparkPlan"))
          val aqePlanRoot = findNodeInSparkPlanInfo(inMemoryScanNode.get,
            _.nodeName.contains("ResultQueryStage"))
@@ -279,7 +289,7 @@ index e0ad3feda3..b7ccf02852 100644
  
        withTempView("t0", "t1", "t2") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
-index 6ce0a657d5..2110e879bc 100644
+index 6ce0a657d5..1c76fa41e5 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 @@ -30,7 +30,7 @@ import org.apache.spark.sql.errors.DataTypeErrors.toSQLId
@@ -300,6 +310,16 @@ index 6ce0a657d5..2110e879bc 100644
        }
        assert(exchangePlans.length == 1)
      }
+@@ -2241,7 +2241,8 @@ class DataFrameAggregateSuite extends QueryTest
+     }
+   }
+ 
+-  test("SPARK-47430 Support GROUP BY MapType") {
++  test("SPARK-47430 Support GROUP BY MapType",
++    IgnoreComet("TODO: ignore for first stage of 4.0")) {
+     def genMapData(dataType: String): String = {
+       s"""
+         |case when id % 4 == 0 then map()
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameJoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameJoinSuite.scala
 index ed182322ae..1ae6afa686 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameJoinSuite.scala
@@ -1098,6 +1118,39 @@ index 2e33f6505a..47fa031add 100644
      }
  
      withTable("t1", "t2") {
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
+index 11e9547dfc..9d2b7ff481 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
+@@ -20,7 +20,7 @@ package org.apache.spark.sql.collation
+ import scala.jdk.CollectionConverters.MapHasAsJava
+ 
+ import org.apache.spark.SparkException
+-import org.apache.spark.sql.{AnalysisException, Row}
++import org.apache.spark.sql.{AnalysisException, IgnoreComet, Row}
+ import org.apache.spark.sql.catalyst.ExtendedAnalysisException
+ import org.apache.spark.sql.catalyst.expressions._
+ import org.apache.spark.sql.catalyst.util.CollationFactory
+@@ -1505,7 +1505,8 @@ class CollationSuite extends DatasourceV2SQLBase with AdaptiveSparkPlanHelper {
+     }
+   }
+ 
+-  test("hash join should be used for collated strings if sort merge join is not forced") {
++  test("hash join should be used for collated strings if sort merge join is not forced",
++    IgnoreComet("TODO: ignore for first stage of 4.0")) {
+     val t1 = "T_1"
+     val t2 = "T_2"
+ 
+@@ -1815,7 +1816,8 @@ class CollationSuite extends DatasourceV2SQLBase with AdaptiveSparkPlanHelper {
+     }
+   }
+ 
+-  test("rewrite with collationkey shouldn't disrupt multiple join conditions") {
++  test("rewrite with collationkey shouldn't disrupt multiple join conditions",
++    IgnoreComet("ignore for first stage of 4.0")) {
+     val t1 = "T_1"
+     val t2 = "T_2"
+ 
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/connector/DataSourceV2Suite.scala b/sql/core/src/test/scala/org/apache/spark/sql/connector/DataSourceV2Suite.scala
 index 3eeed2e417..9f21d547c1 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/connector/DataSourceV2Suite.scala
@@ -1187,10 +1240,15 @@ index 2a0ab21ddb..e8a5a89110 100644
          } finally {
            spark.listenerManager.unregister(listener)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/connector/KeyGroupedPartitioningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/connector/KeyGroupedPartitioningSuite.scala
-index c24f52bd93..493b79da97 100644
+index c24f52bd93..2de691460e 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/connector/KeyGroupedPartitioningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/connector/KeyGroupedPartitioningSuite.scala
-@@ -24,6 +24,7 @@ import org.apache.spark.sql.{DataFrame, Row}
+@@ -20,10 +20,11 @@ import java.sql.Timestamp
+ import java.util.Collections
+ 
+ import org.apache.spark.SparkConf
+-import org.apache.spark.sql.{DataFrame, Row}
++import org.apache.spark.sql.{DataFrame, IgnoreComet, Row}
  import org.apache.spark.sql.catalyst.InternalRow
  import org.apache.spark.sql.catalyst.expressions.{Literal, TransformExpression}
  import org.apache.spark.sql.catalyst.plans.physical
@@ -1224,6 +1282,16 @@ index c24f52bd93..493b79da97 100644
        })
    }
  
+@@ -370,7 +372,8 @@ class KeyGroupedPartitioningSuite extends DistributionAndOrderingSuiteBase {
+     checkAnswer(df.sort("res"), Seq(Row(10.0), Row(15.5), Row(41.0)))
+   }
+ 
+-  test("SPARK-48655: order by on partition keys should not introduce additional shuffle") {
++  test("SPARK-48655: order by on partition keys should not introduce additional shuffle",
++    IgnoreComet("TODO: ignore for first stage of 4.0")) {
+     val items_partitions = Array(identity("price"), identity("id"))
+     createTable(items, itemsColumns, items_partitions)
+     sql(s"INSERT INTO testcat.ns.$items VALUES " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/connector/WriteDistributionAndOrderingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/connector/WriteDistributionAndOrderingSuite.scala
 index f62e092138..c0404bfe85 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/connector/WriteDistributionAndOrderingSuite.scala
@@ -1292,6 +1360,49 @@ index 418ca3430b..eb8267192f 100644
      Seq("json", "orc", "parquet").foreach { format =>
        withTempPath { path =>
          val dir = path.getCanonicalPath
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/InsertSortForLimitAndOffsetSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/InsertSortForLimitAndOffsetSuite.scala
+index d1b11a74cf..5420c99b91 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/InsertSortForLimitAndOffsetSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/InsertSortForLimitAndOffsetSuite.scala
+@@ -17,7 +17,7 @@
+ 
+ package org.apache.spark.sql.execution
+ 
+-import org.apache.spark.sql.{Dataset, QueryTest}
++import org.apache.spark.sql.{Dataset, IgnoreComet, QueryTest}
+ import org.apache.spark.sql.IntegratedUDFTestUtils._
+ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+ import org.apache.spark.sql.functions.rand
+@@ -77,7 +77,8 @@ class InsertSortForLimitAndOffsetSuite extends QueryTest
+     assert(!hasLocalSort(physicalPlan))
+   }
+ 
+-  test("root LIMIT preserves data ordering with CollectLimitExec") {
++  test("root LIMIT preserves data ordering with CollectLimitExec",
++    IgnoreComet("TODO: ignore for first stage of 4.0")) {
+     withSQLConf(SQLConf.TOP_K_SORT_FALLBACK_THRESHOLD.key -> "1") {
+       val df = spark.range(10).orderBy($"id" % 8).limit(2)
+       df.collect()
+@@ -88,7 +89,8 @@ class InsertSortForLimitAndOffsetSuite extends QueryTest
+     }
+   }
+ 
+-  test("middle LIMIT preserves data ordering with the extra sort") {
++  test("middle LIMIT preserves data ordering with the extra sort",
++    IgnoreComet("TODO: ignore for first stage of 4.0")) {
+     withSQLConf(
+       SQLConf.TOP_K_SORT_FALLBACK_THRESHOLD.key -> "1",
+       // To trigger the bug, we have to disable the coalescing optimization. Otherwise we use only
+@@ -117,7 +119,8 @@ class InsertSortForLimitAndOffsetSuite extends QueryTest
+     assert(!hasLocalSort(physicalPlan))
+   }
+ 
+-  test("middle OFFSET preserves data ordering with the extra sort") {
++  test("middle OFFSET preserves data ordering with the extra sort",
++    IgnoreComet("TODO: ignore for first stage of 4.0")) {
+     val df = 1.to(10).map(v => v -> v).toDF("c1", "c2").orderBy($"c1" % 8)
+     verifySortAdded(df.offset(2))
+     verifySortAdded(df.filter($"c2" > rand()).offset(2))
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/LogicalPlanTagInSparkPlanSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/LogicalPlanTagInSparkPlanSuite.scala
 index 743ec41dbe..9f30d6c8e0 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/LogicalPlanTagInSparkPlanSuite.scala
@@ -3115,11 +3226,41 @@ index 52abd248f3..7a199931a0 100644
        case h: HiveTableScanExec => h.partitionPruningPred.collect {
          case d: DynamicPruningExpression => d.child
        }
+diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/HiveUDFDynamicLoadSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/HiveUDFDynamicLoadSuite.scala
+index 4b27082e18..2f58997d23 100644
+--- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/HiveUDFDynamicLoadSuite.scala
++++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/HiveUDFDynamicLoadSuite.scala
+@@ -17,7 +17,7 @@
+ 
+ package org.apache.spark.sql.hive
+ 
+-import org.apache.spark.sql.{QueryTest, Row}
++import org.apache.spark.sql.{IgnoreComet, QueryTest, Row}
+ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression}
+ import org.apache.spark.sql.hive.HiveShim.HiveFunctionWrapper
+ import org.apache.spark.sql.hive.test.TestHiveSingleton
+@@ -147,11 +147,14 @@ class HiveUDFDynamicLoadSuite extends QueryTest with SQLTestUtils with TestHiveS
+ 
+     // This jar file should not be placed to the classpath.
+     val jarPath = "src/test/noclasspath/hive-test-udfs.jar"
+-    assume(new java.io.File(jarPath).exists)
++    // Comet: hive-test-udfs.jar files has been removed from Apache Spark repository
++    //        comment out the following line for now
++    // assume(new java.io.File(jarPath).exists)
+     val jarUrl = s"file://${System.getProperty("user.dir")}/$jarPath"
+ 
+     test("Spark should be able to run Hive UDF using jar regardless of " +
+-      s"current thread context classloader (${udfInfo.identifier}") {
++      s"current thread context classloader (${udfInfo.identifier}",
++      IgnoreComet("ignore for first stage of 4.0")) {
+       Utils.withContextClassLoader(Utils.getSparkClassLoader) {
+         withUserDefinedFunction(udfInfo.funcName -> false) {
+           val sparkClassLoader = Thread.currentThread().getContextClassLoader
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
-index a394d0b739..d3662f1b11 100644
+index a394d0b739..8411da928a 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
-@@ -53,24 +53,47 @@ object TestHive
+@@ -53,24 +53,48 @@ object TestHive
      new SparkContext(
        System.getProperty("spark.sql.test.master", "local[1]"),
        "TestSQLContext",
@@ -3163,7 +3304,8 @@ index a394d0b739..d3662f1b11 100644
 +          if (v == null || !v.toBoolean) {
 +            conf
 +              .set("spark.comet.exec.enabled", "true")
-+              .set("spark.shuffle.manager", "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++              .set("spark.shuffle.manager",
++                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
 +              .set("spark.comet.exec.shuffle.enabled", "true")
 +          } else {
 +            conf

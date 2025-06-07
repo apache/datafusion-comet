@@ -80,15 +80,10 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
   private synchronized long _acquireMemory(long size) {
     if (allocatedMemory >= totalMemory) {
       throw new SparkOutOfMemoryError(
-          "Unable to acquire "
-              + size
-              + " bytes of memory, current usage "
-              + "is "
-              + allocatedMemory
-              + " bytes and max memory is "
-              + totalMemory
-              + " bytes",
-          java.util.Collections.emptyMap());
+          "UNABLE_TO_ACQUIRE_MEMORY",
+          java.util.Map.of(
+              "requestedBytes", String.valueOf(size),
+              "receivedBytes", String.valueOf(totalMemory - allocatedMemory)));
     }
     long allocationSize = Math.min(size, totalMemory - allocatedMemory);
     allocatedMemory += allocationSize;
@@ -128,13 +123,10 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
       allocatedMemory -= got;
 
       throw new SparkOutOfMemoryError(
-          "Unable to acquire "
-              + required
-              + " bytes of memory, got "
-              + got
-              + " bytes. Available: "
-              + (totalMemory - allocatedMemory),
-          java.util.Collections.emptyMap());
+          "UNABLE_TO_ACQUIRE_MEMORY",
+          java.util.Map.of(
+              "requestedBytes", String.valueOf(required),
+              "receivedBytes", String.valueOf(totalMemory - allocatedMemory)));
     }
 
     int pageNumber = allocatedPages.nextClearBit(0);
