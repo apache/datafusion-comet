@@ -343,16 +343,10 @@ index 7ee18df3756..64f01a68048 100644
        sql(
          """
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
-index 47a311c71d5..909a12bd830 100644
+index 47a311c71d5..342e71cfdd4 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
-@@ -18,14 +18,14 @@
- package org.apache.spark.sql
- 
- import org.scalatest.matchers.must.Matchers.the
--
- import org.apache.spark.TestUtils.{assertNotSpilled, assertSpilled}
- import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression, Lag, Literal, NonFoldableLiteral}
+@@ -24,8 +24,9 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression
  import org.apache.spark.sql.catalyst.optimizer.TransposeWindow
  import org.apache.spark.sql.catalyst.plans.logical.{Window => LogicalWindow}
  import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
@@ -363,7 +357,7 @@ index 47a311c71d5..909a12bd830 100644
  import org.apache.spark.sql.execution.window.WindowExec
  import org.apache.spark.sql.expressions.{Aggregator, MutableAggregationBuffer, UserDefinedAggregateFunction, Window}
  import org.apache.spark.sql.functions._
-@@ -1187,10 +1187,12 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+@@ -1187,10 +1188,12 @@ class DataFrameWindowFunctionsSuite extends QueryTest
      }
  
      def isShuffleExecByRequirement(
@@ -377,7 +371,7 @@ index 47a311c71d5..909a12bd830 100644
        case _ => false
      }
  
-@@ -1213,7 +1215,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+@@ -1213,7 +1216,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
        val shuffleByRequirement = windowed.queryExecution.executedPlan.exists {
          case w: WindowExec =>
            w.child.exists {
