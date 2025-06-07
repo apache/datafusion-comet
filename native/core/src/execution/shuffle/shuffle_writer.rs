@@ -513,32 +513,21 @@ impl MultiPartitionShuffleRepartitioner {
                 self.scratch = scratch;
             }
             CometPartitioning::RangePartitioning(lex_ordering, num_output_partitions) => {
-                // println!("{:?}", lex_ordering);
-                // println!("{:?}", num_output_partitions);
-                // println!("{:?}", input.schema());
-                // println!("{:?}", input.num_rows());
-
                 // evaluate partition expressions
                 let partition_arrays = lex_ordering
                     .iter()
                     .map(|expr| expr.expr.evaluate(&input)?.into_array(input.num_rows()))
                     .collect::<Result<Vec<_>>>()?;
 
-                // println!("partition_arrays: {:?}", partition_arrays);
-
                 let sample_indices = UInt64Array::from(RangePartitioner::reservoir_sample_indices(
                     input.num_rows(),
                     100,
                 ));
 
-                // println!("sample_indices: {:?}", sample_indices);
-
                 let sampled_columns = partition_arrays
                     .iter()
                     .map(|c| take(c, &sample_indices, None))
                     .collect::<std::result::Result<Vec<_>, _>>()?;
-
-                // println!("sampled_columns: {:?}", sampled_columns);
 
                 let sort_fields: Vec<SortField> = partition_arrays
                     .iter()
@@ -548,11 +537,13 @@ impl MultiPartitionShuffleRepartitioner {
                     })
                     .collect();
 
-                RangePartitioner::determine_bounds_for_rows(
+                let (bounds, converter) = RangePartitioner::determine_bounds_for_rows(
                     sort_fields,
                     sampled_columns,
                     *num_output_partitions as i32,
                 );
+
+                println!("{:?}", bounds);
 
                 todo!();
             }

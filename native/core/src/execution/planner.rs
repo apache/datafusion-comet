@@ -2209,7 +2209,6 @@ impl PhysicalPlanner {
                     .map(|expr| self.create_sort_expr(expr, Arc::clone(&input_schema)))
                     .collect();
                 let lex_ordering = LexOrdering::from(exprs?);
-                println!("{:?}", lex_ordering);
                 Ok(CometPartitioning::RangePartitioning(
                     lex_ordering,
                     range_partition.num_partitions as usize,

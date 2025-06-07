@@ -115,18 +115,15 @@ impl RangePartitioner {
         sort_fields: Vec<SortField>,
         sampled_columns: Vec<ArrayRef>,
         partitions: i32,
-    ) {
-        // println!("{:?}", partitions);
+    ) -> (Vec<ArrayRef>, RowConverter) {
         let converter = RowConverter::new(sort_fields).unwrap();
-        let rows = converter
+        let sampled_rows = converter
             .convert_columns(sampled_columns.as_slice())
             .unwrap();
-        // println!("rows: {:?}", rows);
-        let mut thing: Vec<_> = rows.iter().enumerate().collect();
-        thing.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
-        // println!("rows.sorted(): {:?}", thing);
+        let mut sorted_sampled_rows: Vec<(usize, Row)> = sampled_rows.iter().enumerate().collect();
+        sorted_sampled_rows.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
 
-        let num_candidates = rows.num_rows();
+        let num_candidates = sampled_rows.num_rows();
         let step = 1.0 / partitions as f64;
         let mut cumulative_weights = 0.0;
         let mut target = step;
@@ -136,7 +133,7 @@ impl RangePartitioner {
         let mut previous_bound = None;
         let sample_weight = 1.0 / num_candidates as f64;
         while (i < num_candidates) && (j < partitions - 1) {
-            let key = thing[i];
+            let key = sorted_sampled_rows[i];
             cumulative_weights += sample_weight;
             if cumulative_weights >= target {
                 // Skip duplicate values.
@@ -144,7 +141,6 @@ impl RangePartitioner {
                     // bounds.push(key.1);
                     bounds_indices.push(key.0);
                     target += step;
-                    println!("{}", i);
                     j += 1;
                     previous_bound = Some(key.1)
                 }
@@ -152,16 +148,14 @@ impl RangePartitioner {
             i += 1
         }
 
-        println!("bounds_indices.len(): {:?}", bounds_indices.len());
+        let selection: Vec<Row> = bounds_indices
+            .iter()
+            .map(|idx| sampled_rows.row(*idx))
+            .collect();
 
-        let selection: Vec<Row> = bounds_indices.iter().map(|&idx| rows.row(idx)).collect();
-
-        // let selection = [rows.row(0), rows2.row(1), rows.row(2), rows2.row(0)];
         let converted = converter.convert_rows(selection).unwrap();
 
-        println!("{:?}", converted);
-
-        todo!()
+        (converted, converter)
     }
 }
 
@@ -185,7 +179,6 @@ mod test {
         let batch = sort_batch(&batch, &lex_ordering, None).unwrap();
         let sample = RangePartitioner::reservoir_sample(batch, sample_size);
         let sorted_sample = sort_batch(&sample, &lex_ordering, None).unwrap();
-        println!("sorted_sample: {:?}", sorted_sample);
     }
 
     #[test]
