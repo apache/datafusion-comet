@@ -17,7 +17,7 @@
 
 use arrow::array::{ArrayRef, AsArray, RecordBatch, UInt64Array};
 use arrow::compute::take_record_batch;
-use arrow::row::{Row, RowConverter, SortField};
+use arrow::row::{OwnedRow, Row, RowConverter, SortField};
 use datafusion::common::HashSet;
 use datafusion::physical_expr::expressions::col;
 use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
@@ -115,7 +115,7 @@ impl RangePartitioner {
         sort_fields: Vec<SortField>,
         sampled_columns: Vec<ArrayRef>,
         partitions: i32,
-    ) -> (Vec<ArrayRef>, RowConverter) {
+    ) -> (Vec<OwnedRow>, RowConverter) {
         let converter = RowConverter::new(sort_fields).unwrap();
         let sampled_rows = converter
             .convert_columns(sampled_columns.as_slice())
@@ -148,14 +148,13 @@ impl RangePartitioner {
             i += 1
         }
 
-        let selection: Vec<Row> = bounds_indices
+        let mut result: Vec<OwnedRow> = Vec::with_capacity(bounds_indices.len());
+
+        bounds_indices
             .iter()
-            .map(|idx| sampled_rows.row(*idx))
-            .collect();
+            .for_each(|idx| result.push(sampled_rows.row(*idx).owned()));
 
-        let converted = converter.convert_rows(selection).unwrap();
-
-        (converted, converter)
+        (result, converter)
     }
 }
 

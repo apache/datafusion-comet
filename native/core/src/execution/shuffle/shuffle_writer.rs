@@ -23,7 +23,7 @@ use crate::execution::shuffle::{CometPartitioning, CompressionCodec, ShuffleBloc
 use crate::execution::tracing::{with_trace, with_trace_async};
 use arrow::compute::{interleave_record_batch, partition, take, take_arrays};
 use arrow::datatypes::Schema;
-use arrow::row::{RowConverter, Rows, SortField};
+use arrow::row::{OwnedRow, RowConverter, Rows, SortField};
 use async_trait::async_trait;
 use datafusion::common::utils::proxy::VecAllocExt;
 use datafusion::physical_expr::{EquivalenceProperties, LexOrdering, PhysicalExpr};
@@ -335,6 +335,9 @@ struct MultiPartitionShuffleRepartitioner {
     /// Reservation for repartitioning
     reservation: MemoryReservation,
     tracing_enabled: bool,
+    /// RangePartitioning-specific state
+    range_boundaries: Option<Vec<OwnedRow>>,
+    row_converter: Option<RowConverter>,
 }
 
 #[derive(Default)]
@@ -407,6 +410,8 @@ impl MultiPartitionShuffleRepartitioner {
             batch_size,
             reservation,
             tracing_enabled,
+            range_boundaries: None,
+            row_converter: None,
         })
     }
 
@@ -519,32 +524,39 @@ impl MultiPartitionShuffleRepartitioner {
                     .map(|expr| expr.expr.evaluate(&input)?.into_array(input.num_rows()))
                     .collect::<Result<Vec<_>>>()?;
 
-                let sample_indices = UInt64Array::from(RangePartitioner::reservoir_sample_indices(
-                    input.num_rows(),
-                    100,
-                ));
+                if self.range_boundaries.is_none() {
+                    assert!(self.row_converter.is_none());
 
-                let sampled_columns = partition_arrays
-                    .iter()
-                    .map(|c| take(c, &sample_indices, None))
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                    // TODO: Adjust sample size.
+                    let sample_indices = UInt64Array::from(
+                        RangePartitioner::reservoir_sample_indices(input.num_rows(), 100),
+                    );
 
-                let sort_fields: Vec<SortField> = partition_arrays
-                    .iter()
-                    .zip(lex_ordering)
-                    .map(|(array, sort_expr)| {
-                        SortField::new_with_options(array.data_type().clone(), sort_expr.options)
-                    })
-                    .collect();
+                    let sampled_columns = partition_arrays
+                        .iter()
+                        .map(|c| take(c, &sample_indices, None))
+                        .collect::<std::result::Result<Vec<_>, _>>()?;
 
-                let (bounds, converter) = RangePartitioner::determine_bounds_for_rows(
-                    sort_fields,
-                    sampled_columns,
-                    *num_output_partitions as i32,
-                );
+                    let sort_fields: Vec<SortField> = partition_arrays
+                        .iter()
+                        .zip(lex_ordering)
+                        .map(|(array, sort_expr)| {
+                            SortField::new_with_options(
+                                array.data_type().clone(),
+                                sort_expr.options,
+                            )
+                        })
+                        .collect();
 
-                println!("{:?}", bounds);
+                    let (bounds, converter) = RangePartitioner::determine_bounds_for_rows(
+                        sort_fields,
+                        sampled_columns,
+                        *num_output_partitions as i32,
+                    );
 
+                    self.range_boundaries = Some(bounds);
+                    self.row_converter = Some(converter);
+                }
                 todo!();
             }
             other => {
