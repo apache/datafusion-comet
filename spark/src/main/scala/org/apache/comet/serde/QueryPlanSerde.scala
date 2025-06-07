@@ -2897,9 +2897,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case SinglePartition =>
         inputs.forall(attr => supportedShuffleDataType(attr.dataType))
       case RangePartitioning(ordering, numPartitions) =>
-        // scalastyle:off
-        println(s"trying to do RangePartitioning $ordering $numPartitions")
-        // scalastyle:on
         // TODO: Apply any expression constraints similar to HashPartitioning above.
         true
       case _ =>

@@ -580,8 +580,6 @@ impl MultiPartitionShuffleRepartitioner {
                         partition_ids[idx] = partition as u32;
                     });
 
-                    println!("{:?}", partition_ids);
-
                     // count each partition size, while leaving the last extra element as 0
                     let partition_counters = &mut scratch.partition_starts;
                     partition_counters.resize(num_output_partitions + 1, 0);
@@ -589,8 +587,6 @@ impl MultiPartitionShuffleRepartitioner {
                     partition_ids
                         .iter()
                         .for_each(|partition_id| partition_counters[*partition_id as usize] += 1);
-
-                    println!("{:?}", partition_counters);
 
                     // accumulate partition counters into partition ends
                     // e.g. partition counter: [1, 3, 2, 1, 0] => [1, 4, 6, 7, 7]

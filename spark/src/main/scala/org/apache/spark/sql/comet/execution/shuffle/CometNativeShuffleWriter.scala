@@ -189,10 +189,6 @@ class CometNativeShuffleWriter[K, V](
         case _: RangePartitioning =>
           val rangePartitioning = outputPartitioning.asInstanceOf[RangePartitioning]
 
-          // scalastyle:off
-          println(rangePartitioning)
-          // scalastyle:on
-
           val partitioning = PartitioningOuterClass.RangePartition.newBuilder()
           partitioning.setNumPartitions(outputPartitioning.numPartitions)
 
