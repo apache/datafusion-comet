@@ -25,6 +25,7 @@ import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 
 import org.apache.comet.CometConf
 
@@ -56,7 +57,8 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
   override def apply(plan: SparkPlan): SparkPlan = {
     val newPlan = _apply(plan)
     if (showTransformations) {
-      logInfo(s"\nINPUT: $plan\nOUTPUT: $newPlan")
+      // scalastyle:off println
+      System.err.println(s"EliminateRedundantTransitions:\nINPUT: $plan\nOUTPUT: $newPlan")
     }
     newPlan
   }
@@ -64,7 +66,7 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
   private def _apply(plan: SparkPlan): SparkPlan = {
     val eliminatedPlan = plan transformUp {
       case ColumnarToRowExec(shuffleExchangeExec: CometShuffleExchangeExec)
-          if (plan.conf.adaptiveExecutionEnabled) =>
+          if plan.conf.adaptiveExecutionEnabled =>
         shuffleExchangeExec
       case ColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
         if (sparkToColumnar.child.supportsColumnar) {
@@ -112,6 +114,7 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
   private def hasCometNativeChild(op: SparkPlan): Boolean = {
     op match {
       case c: QueryStageExec => hasCometNativeChild(c.plan)
+      case c: ReusedExchangeExec => hasCometNativeChild(c.child)
       case _ => op.exists(_.isInstanceOf[CometPlan])
     }
   }
