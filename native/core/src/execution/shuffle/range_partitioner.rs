@@ -16,7 +16,7 @@
 // under the License.
 
 use arrow::array::ArrayRef;
-use arrow::row::{OwnedRow, Row, RowConverter, SortField};
+use arrow::row::{Row, RowConverter, SortField};
 use datafusion::common::HashSet;
 use rand::Rng;
 
@@ -62,7 +62,7 @@ impl RangePartitioner {
         sort_fields: Vec<SortField>,
         sampled_columns: Vec<ArrayRef>,
         partitions: i32,
-    ) -> (Vec<OwnedRow>, RowConverter) {
+    ) -> (Vec<u64>, RowConverter) {
         let converter = RowConverter::new(sort_fields).unwrap();
         let sampled_rows = converter
             .convert_columns(sampled_columns.as_slice())
@@ -74,7 +74,7 @@ impl RangePartitioner {
         let step = 1.0 / partitions as f64;
         let mut cumulative_weights = 0.0;
         let mut target = step;
-        let mut bounds_indices = Vec::with_capacity((partitions - 1) as usize);
+        let mut bounds_indices: Vec<u64> = Vec::with_capacity((partitions - 1) as usize);
         let mut i = 0;
         let mut j = 0;
         let mut previous_bound = None;
@@ -86,7 +86,7 @@ impl RangePartitioner {
                 // Skip duplicate values.
                 if previous_bound.is_none() || key.1 > previous_bound.unwrap() {
                     // bounds.push(key.1);
-                    bounds_indices.push(key.0);
+                    bounds_indices.push(key.0 as u64);
                     target += step;
                     j += 1;
                     previous_bound = Some(key.1)
@@ -95,13 +95,7 @@ impl RangePartitioner {
             i += 1
         }
 
-        let mut result: Vec<OwnedRow> = Vec::with_capacity(bounds_indices.len());
-
-        bounds_indices
-            .iter()
-            .for_each(|idx| result.push(sampled_rows.row(*idx).owned()));
-
-        (result, converter)
+        (bounds_indices, converter)
     }
 }
 
@@ -201,15 +195,15 @@ mod test {
 
         let sort_fields = vec![SortField::new(Float64)];
 
-        let (rows, row_converter) =
+        let (rows, _) =
             RangePartitioner::determine_bounds_for_rows(sort_fields, Vec::from(batch.columns()), 3);
 
         assert_eq!(rows.len(), 2);
 
-        let bounds = row_converter
-            .convert_rows([rows[0].row(), rows[1].row()])
-            .unwrap();
-        let bounds_array = bounds[0].as_primitive::<Float64Type>();
+        let indices = UInt64Array::from(rows);
+
+        let bounds = take_record_batch(&batch, &indices).unwrap();
+        let bounds_array = bounds.column(0).as_primitive::<Float64Type>();
         assert_eq!(bounds_array.values(), &[0.4, 0.7]);
     }
 
@@ -253,13 +247,15 @@ mod test {
 
         let sort_fields = vec![SortField::new(Float64)];
 
-        let (rows, row_converter) =
+        let (rows, _) =
             RangePartitioner::determine_bounds_for_rows(sort_fields, Vec::from(batch.columns()), 2);
 
         assert_eq!(rows.len(), 1);
 
-        let bounds = row_converter.convert_rows([rows[0].row()]).unwrap();
-        let bounds_array = bounds[0].as_primitive::<Float64Type>();
+        let indices = UInt64Array::from(rows);
+
+        let bounds = take_record_batch(&batch, &indices).unwrap();
+        let bounds_array = bounds.column(0).as_primitive::<Float64Type>();
         assert!(bounds_array.is_null(0));
     }
 

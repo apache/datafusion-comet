@@ -21,7 +21,7 @@ use crate::execution::shuffle::range_partitioner::RangePartitioner;
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use crate::execution::tracing::{with_trace, with_trace_async};
 use arrow::compute::{interleave_record_batch, take};
-use arrow::row::{OwnedRow, RowConverter, SortField};
+use arrow::row::{RowConverter, Rows, SortField};
 use async_trait::async_trait;
 use datafusion::common::utils::proxy::VecAllocExt;
 use datafusion::physical_expr::EquivalenceProperties;
@@ -113,7 +113,7 @@ impl ShuffleWriterExec {
 }
 
 impl DisplayAs for ShuffleWriterExec {
-    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter) -> fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(
@@ -334,7 +334,7 @@ struct MultiPartitionShuffleRepartitioner {
     reservation: MemoryReservation,
     tracing_enabled: bool,
     /// RangePartitioning-specific state
-    range_boundaries: Option<Vec<OwnedRow>>,
+    bounds_rows: Option<Rows>,
     row_converter: Option<RowConverter>,
 }
 
@@ -378,7 +378,10 @@ impl MultiPartitionShuffleRepartitioner {
         // initialization code is simply initializing the vectors to the desired size.
         // The initial values are not used.
         let scratch = ScratchSpace {
-            hashes_buf: vec![0; batch_size],
+            hashes_buf: match partitioning {
+                CometPartitioning::Hash(_, _) => vec![0; batch_size],
+                _ => vec![],
+            },
             partition_ids: vec![0; batch_size],
             partition_row_indices: vec![0; batch_size],
             partition_starts: vec![0; num_output_partitions + 1],
@@ -408,7 +411,7 @@ impl MultiPartitionShuffleRepartitioner {
             batch_size,
             reservation,
             tracing_enabled,
-            range_boundaries: None,
+            bounds_rows: None,
             row_converter: None,
         })
     }
@@ -526,9 +529,7 @@ impl MultiPartitionShuffleRepartitioner {
                         .map(|expr| expr.expr.evaluate(&input)?.into_array(input.num_rows()))
                         .collect::<Result<Vec<_>>>()?;
 
-                    if self.range_boundaries.is_none() {
-                        assert!(self.row_converter.is_none());
-
+                    if self.row_converter.is_none() {
                         // TODO: Adjust sample size.
                         let sample_indices = UInt64Array::from(
                             RangePartitioner::reservoir_sample_indices(input.num_rows(), 100),
@@ -550,14 +551,26 @@ impl MultiPartitionShuffleRepartitioner {
                             })
                             .collect();
 
-                        let (bounds, converter) = RangePartitioner::determine_bounds_for_rows(
-                            sort_fields,
-                            sampled_columns,
-                            *num_output_partitions as i32,
-                        );
+                        let (bounds_indices, row_converter) =
+                            RangePartitioner::determine_bounds_for_rows(
+                                sort_fields,
+                                sampled_columns,
+                                *num_output_partitions as i32,
+                            );
 
-                        self.range_boundaries = Some(bounds);
-                        self.row_converter = Some(converter);
+                        let bounds_indices_array = UInt64Array::from(bounds_indices);
+
+                        let bounds_arrays = partition_arrays
+                            .iter()
+                            .map(|c| take(c, &bounds_indices_array, None))
+                            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+                        self.bounds_rows = Some(
+                            row_converter
+                                .convert_columns(bounds_arrays.as_slice())
+                                .unwrap(),
+                        );
+                        self.row_converter = Some(row_converter);
                     }
 
                     let row_batch = self
@@ -567,14 +580,21 @@ impl MultiPartitionShuffleRepartitioner {
                         .convert_columns(partition_arrays.as_slice())?;
 
                     let partition_ids = &mut scratch.partition_ids[..partition_arrays[0].len()];
-                    row_batch.iter().enumerate().for_each(|(idx, row)| {
-                        let search_result = self
-                            .range_boundaries
-                            .as_ref()
-                            .unwrap()
-                            .binary_search(&row.owned());
-                        let partition = search_result.unwrap_or_else(|idx| idx);
-                        partition_ids[idx] = partition as u32;
+
+                    let partition_bounds = self.bounds_rows.as_ref().unwrap();
+
+                    row_batch.iter().enumerate().for_each(|(row_idx, row)| {
+                        let mut partition_id = 0;
+                        // TODO: binary search
+                        for bound in partition_bounds {
+                            if row < bound {
+                                partition_id += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        assert!(partition_id < *num_output_partitions);
+                        partition_ids[row_idx] = partition_id as u32;
                     });
 
                     // count each partition size, while leaving the last extra element as 0
