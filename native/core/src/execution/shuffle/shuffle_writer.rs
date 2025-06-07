@@ -557,6 +557,27 @@ impl MultiPartitionShuffleRepartitioner {
                     self.range_boundaries = Some(bounds);
                     self.row_converter = Some(converter);
                 }
+
+                let row_batch = self
+                    .row_converter
+                    .as_ref()
+                    .unwrap()
+                    .convert_columns(partition_arrays.as_slice())?;
+
+                let partition_indices: Vec<usize> = row_batch
+                    .iter()
+                    .map(|row| {
+                        let search_result = self
+                            .range_boundaries
+                            .as_ref()
+                            .unwrap()
+                            .binary_search(&row.owned());
+                        search_result.unwrap_or_else(|idx| idx)
+                    })
+                    .collect();
+
+                println!("{:?}", partition_indices);
+
                 todo!();
             }
             other => {
