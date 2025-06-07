@@ -1300,7 +1300,8 @@ mod test {
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::config::SessionConfig;
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::expressions::{col, Column};
+    use datafusion::physical_expr::PhysicalSortExpr;
     use datafusion::physical_plan::common::collect;
     use datafusion::prelude::SessionContext;
     use std::io::Cursor;
@@ -1421,34 +1422,44 @@ mod test {
     ) {
         let batch = create_batch(batch_size);
 
-        let batches = (0..num_batches).map(|_| batch.clone()).collect::<Vec<_>>();
-
-        let partitions = &[batches];
-        let exec = ShuffleWriterExec::try_new(
-            Arc::new(DataSourceExec::new(Arc::new(
-                MemorySourceConfig::try_new(partitions, batch.schema(), None).unwrap(),
-            ))),
+        for partitioning in vec![
             CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
-            CompressionCodec::Zstd(1),
-            "/tmp/data.out".to_string(),
-            "/tmp/index.out".to_string(),
-            false,
-        )
-        .unwrap();
+            CometPartitioning::RangePartitioning(
+                LexOrdering::new(vec![PhysicalSortExpr::new_default(
+                    col("a", batch.schema().as_ref()).unwrap(),
+                )]),
+                num_partitions,
+            ),
+        ] {
+            let batches = (0..num_batches).map(|_| batch.clone()).collect::<Vec<_>>();
 
-        // 10MB memory should be enough for running this test
-        let config = SessionConfig::new();
-        let mut runtime_env_builder = RuntimeEnvBuilder::new();
-        runtime_env_builder = match memory_limit {
-            Some(limit) => runtime_env_builder.with_memory_limit(limit, 1.0),
-            None => runtime_env_builder,
-        };
-        let runtime_env = Arc::new(runtime_env_builder.build().unwrap());
-        let ctx = SessionContext::new_with_config_rt(config, runtime_env);
-        let task_ctx = ctx.task_ctx();
-        let stream = exec.execute(0, task_ctx).unwrap();
-        let rt = Runtime::new().unwrap();
-        rt.block_on(collect(stream)).unwrap();
+            let partitions = &[batches];
+            let exec = ShuffleWriterExec::try_new(
+                Arc::new(DataSourceExec::new(Arc::new(
+                    MemorySourceConfig::try_new(partitions, batch.schema(), None).unwrap(),
+                ))),
+                partitioning,
+                CompressionCodec::Zstd(1),
+                "/tmp/data.out".to_string(),
+                "/tmp/index.out".to_string(),
+                false,
+            )
+            .unwrap();
+
+            // 10MB memory should be enough for running this test
+            let config = SessionConfig::new();
+            let mut runtime_env_builder = RuntimeEnvBuilder::new();
+            runtime_env_builder = match memory_limit {
+                Some(limit) => runtime_env_builder.with_memory_limit(limit, 1.0),
+                None => runtime_env_builder,
+            };
+            let runtime_env = Arc::new(runtime_env_builder.build().unwrap());
+            let ctx = SessionContext::new_with_config_rt(config, runtime_env);
+            let task_ctx = ctx.task_ctx();
+            let stream = exec.execute(0, task_ctx).unwrap();
+            let rt = Runtime::new().unwrap();
+            rt.block_on(collect(stream)).unwrap();
+        }
     }
 
     fn create_batch(batch_size: usize) -> RecordBatch {
