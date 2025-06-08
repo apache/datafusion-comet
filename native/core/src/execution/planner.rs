@@ -83,8 +83,7 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{
-    create_comet_physical_fun, create_negate_expr, SparkBitwiseCount, SparkBitwiseNot,
-    SparkContains, SparkEndsWith, SparkLike, SparkStartsWith,
+    create_comet_physical_fun, create_negate_expr, SparkBitwiseCount, SparkBitwiseNot, SparkLike,
 };
 
 use crate::parquet::parquet_exec::init_datasource_exec;
@@ -157,9 +156,6 @@ impl PhysicalPlanner {
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseCount::default()));
-        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkContains::default()));
-        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkStartsWith::default()));
-        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkEndsWith::default()));
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLike::default()));
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
