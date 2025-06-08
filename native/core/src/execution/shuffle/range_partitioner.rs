@@ -17,7 +17,6 @@
 
 use arrow::array::ArrayRef;
 use arrow::row::{Row, RowConverter, Rows, SortField};
-use itertools::Itertools;
 use rand::Rng;
 
 pub struct RangePartitioner;
@@ -58,10 +57,9 @@ impl RangePartitioner {
 
     pub fn partition_indices_for_batch(
         row_batch: &Rows,
-        partition_bounds: &Rows,
+        partition_bounds_vec: &Vec<Row>,
         partition_ids: &mut [u32],
     ) {
-        let partition_bounds_vec = partition_bounds.iter().collect_vec();
         row_batch.iter().enumerate().for_each(|(row_idx, row)| {
             partition_ids[row_idx] =
                 partition_bounds_vec.partition_point(|bound| *bound <= row) as u32
@@ -160,9 +158,11 @@ mod test {
 
         let bounds_rows = row_converter.convert_columns(bounds.columns()).unwrap();
 
+        let bounds_rows_vec = bounds_rows.iter().collect_vec();
+
         RangePartitioner::partition_indices_for_batch(
             &input_rows,
-            &bounds_rows,
+            &bounds_rows_vec,
             &mut partition_ids,
         );
 
