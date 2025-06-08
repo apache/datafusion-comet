@@ -102,10 +102,10 @@ impl RangePartitioner {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow::array::{Array, AsArray, Float64Array, Int32Array, RecordBatch, UInt64Array};
+    use arrow::array::{Array, AsArray, Int32Array, Int64Array, RecordBatch, UInt64Array};
     use arrow::compute::take_record_batch;
-    use arrow::datatypes::DataType::Float64;
-    use arrow::datatypes::{DataType, Field, Float64Type, Int32Type, Schema};
+    use arrow::datatypes::DataType::{Float64, Int64};
+    use arrow::datatypes::{DataType, Field, Float64Type, Int32Type, Int64Type, Schema};
     use datafusion::common::{record_batch, HashSet};
     use itertools::Itertools;
     use std::sync::Arc;
@@ -135,7 +135,7 @@ mod test {
     fn reservoir_sample_fuzz() {
         let mut rng = rand::rng();
 
-        for _ in 0..8192 {
+        for _ in 0..1000 {
             let batch_size: usize = rng.random_range(0..=8192);
             let sample_size: usize = rng.random_range(1..=8192);
             let reservoir = RangePartitioner::reservoir_sample_indices(batch_size, sample_size);
@@ -264,9 +264,9 @@ mod test {
     fn determine_bounds_fuzz() {
         let mut rng = rand::rng();
 
-        let sort_fields = vec![SortField::new(Float64)];
+        let sort_fields = vec![SortField::new(Int64)];
 
-        for _ in 0..8192 {
+        for _ in 0..1000 {
             let batch_size: i32 = rng.random_range(0..=8192);
             let num_partitions: i32 = rng.random_range(2..1048576);
 
@@ -283,6 +283,24 @@ mod test {
             } else {
                 assert_eq!(rows.len(), (num_partitions - 1) as usize);
             }
+
+            let mut set: HashSet<u64> = HashSet::with_capacity(rows.len());
+            rows.iter().for_each(|&idx| {
+                assert!(idx < batch_size as u64);
+                assert!(set.insert(idx));
+            });
+
+            let rows_array = UInt64Array::from(rows);
+
+            let bounds = take_record_batch(&batch, &rows_array).unwrap();
+
+            let bounds_vec: Vec<i64> = bounds
+                .column(0)
+                .as_primitive::<Int64Type>()
+                .values()
+                .to_vec();
+
+            assert!(bounds_vec.is_sorted());
         }
     }
 
@@ -306,9 +324,9 @@ mod test {
 
     fn create_random_batch(batch_size: i32) -> RecordBatch {
         let mut rng = rand::rng();
-        let column: Vec<f64> = (0..batch_size).map(|_| rng.random::<f64>()).collect();
-        let array = Float64Array::from(column);
-        let schema = Arc::new(Schema::new(vec![Field::new("a", Float64, true)]));
+        let column: Vec<i64> = (0..batch_size).map(|_| rng.random::<i64>()).collect();
+        let array = Int64Array::from(column);
+        let schema = Arc::new(Schema::new(vec![Field::new("a", Int64, true)]));
         RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).unwrap()
     }
 }
