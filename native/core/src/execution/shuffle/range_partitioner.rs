@@ -61,6 +61,8 @@ impl RangePartitioner {
         sampled_columns: Vec<ArrayRef>,
         partitions: i32,
     ) -> (Vec<u64>, RowConverter) {
+        assert!(partitions > 1);
+
         let converter = RowConverter::new(sort_fields).unwrap();
         let sampled_rows = converter
             .convert_columns(sampled_columns.as_slice())
@@ -133,7 +135,7 @@ mod test {
     fn reservoir_sample_fuzz() {
         let mut rng = rand::rng();
 
-        for _ in 0..1024 {
+        for _ in 0..8192 {
             let batch_size: usize = rng.random_range(0..=8192);
             let sample_size: usize = rng.random_range(1..=8192);
             let reservoir = RangePartitioner::reservoir_sample_indices(batch_size, sample_size);
@@ -259,6 +261,32 @@ mod test {
     }
 
     #[test]
+    fn determine_bounds_fuzz() {
+        let mut rng = rand::rng();
+
+        let sort_fields = vec![SortField::new(Float64)];
+
+        for _ in 0..8192 {
+            let batch_size: i32 = rng.random_range(0..=8192);
+            let num_partitions: i32 = rng.random_range(2..1048576);
+
+            let batch = create_random_batch(batch_size);
+
+            let (rows, _) = RangePartitioner::determine_bounds_for_rows(
+                sort_fields.clone(),
+                Vec::from(batch.columns()),
+                num_partitions,
+            );
+
+            if batch_size < num_partitions {
+                assert_eq!(rows.len(), batch_size as usize);
+            } else {
+                assert_eq!(rows.len(), (num_partitions - 1) as usize);
+            }
+        }
+    }
+
+    #[test]
     fn determine_bounds_with_nulls() {
         let batch = record_batch!(("a", Float64, vec![None, None, Some(0.1),])).unwrap();
 
@@ -280,7 +308,7 @@ mod test {
         let mut rng = rand::rng();
         let column: Vec<f64> = (0..batch_size).map(|_| rng.random::<f64>()).collect();
         let array = Float64Array::from(column);
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Float64, true)]));
+        let schema = Arc::new(Schema::new(vec![Field::new("a", Float64, true)]));
         RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).unwrap()
     }
 }
