@@ -226,7 +226,7 @@ index 9815cb816c9..95b5f9992b0 100644
  
    test("A cached table preserves the partitioning and ordering of its cached SparkPlan") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
-index 5a8681aed97..db69fde723a 100644
+index 5a8681aed97..da9d25e2eb4 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 @@ -28,7 +28,7 @@ import org.apache.spark.sql.catalyst.plans.logical.Expand
@@ -247,16 +247,6 @@ index 5a8681aed97..db69fde723a 100644
        }
        assert(exchangePlans.length == 1)
      }
-@@ -1255,7 +1255,8 @@ class DataFrameAggregateSuite extends QueryTest
-     }
-   }
- 
--  test("SPARK-32038: NormalizeFloatingNumbers should work on distinct aggregate") {
-+  test("SPARK-32038: NormalizeFloatingNumbers should work on distinct aggregate",
-+    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/1824")) {
-     withTempView("view") {
-       val nan1 = java.lang.Float.intBitsToFloat(0x7f800001)
-       val nan2 = java.lang.Float.intBitsToFloat(0x7fffffff)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameJoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameJoinSuite.scala
 index 56e9520fdab..917932336df 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameJoinSuite.scala
