@@ -173,8 +173,6 @@ mod test {
         partition_counts
             .iter()
             .for_each(|&partition_count| assert!(partition_count > 700));
-
-        partition_counts.fill(0);
     }
 
     #[test]

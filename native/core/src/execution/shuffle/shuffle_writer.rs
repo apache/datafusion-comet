@@ -587,20 +587,14 @@ impl MultiPartitionShuffleRepartitioner {
 
                     let partition_ids = &mut scratch.partition_ids[..partition_arrays[0].len()];
 
-                    let partition_bounds = self.bounds_rows.as_ref().unwrap();
+                    // TODO: Try to cache this vector.
+                    let bounds_rows_vec = self.bounds_rows.as_ref().unwrap().iter().collect_vec();
 
-                    row_batch.iter().enumerate().for_each(|(row_idx, row)| {
-                        let mut partition_id = 0;
-                        // TODO: binary search
-                        for bound in partition_bounds {
-                            if row >= bound {
-                                partition_id += 1;
-                            } else {
-                                break;
-                            }
-                        }
-                        partition_ids[row_idx] = partition_id as u32;
-                    });
+                    RangePartitioner::partition_indices_for_batch(
+                        &row_batch,
+                        &bounds_rows_vec,
+                        partition_ids,
+                    );
 
                     // count each partition size, while leaving the last extra element as 0
                     let partition_counters = &mut scratch.partition_starts;
