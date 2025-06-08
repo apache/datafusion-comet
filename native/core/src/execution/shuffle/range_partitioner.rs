@@ -27,6 +27,8 @@ impl RangePartitioner {
     // We use indices in the reservoir instead of actual values since we'll do one take() on the
     // input array at the end.
     pub fn reservoir_sample_indices(num_rows: usize, sample_size: usize) -> Vec<u64> {
+        assert!(sample_size > 0);
+
         if num_rows <= sample_size {
             // Just return the original input since we can't create a bigger sample.
             return (0..num_rows as u64).collect();
@@ -102,7 +104,7 @@ mod test {
     use arrow::compute::take_record_batch;
     use arrow::datatypes::DataType::Float64;
     use arrow::datatypes::{DataType, Field, Float64Type, Int32Type, Schema};
-    use datafusion::common::record_batch;
+    use datafusion::common::{record_batch, HashSet};
     use itertools::Itertools;
     use std::sync::Arc;
 
@@ -133,7 +135,7 @@ mod test {
 
         for _ in 0..1024 {
             let batch_size: usize = rng.random_range(0..=8192);
-            let sample_size: usize = rng.random_range(0..=8192);
+            let sample_size: usize = rng.random_range(1..=8192);
             let reservoir = RangePartitioner::reservoir_sample_indices(batch_size, sample_size);
 
             assert_eq!(reservoir.len(), sample_size.min(batch_size));
