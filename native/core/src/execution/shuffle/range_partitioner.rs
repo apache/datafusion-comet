@@ -16,7 +16,8 @@
 // under the License.
 
 use arrow::array::ArrayRef;
-use arrow::row::{Row, RowConverter, SortField};
+use arrow::row::{Row, RowConverter, Rows, SortField};
+use itertools::Itertools;
 use rand::Rng;
 
 pub struct RangePartitioner;
@@ -53,6 +54,18 @@ impl RangePartitioner {
         }
 
         reservoir
+    }
+
+    pub fn partition_indices_for_batch(
+        row_batch: &Rows,
+        partition_bounds: &Rows,
+        partition_ids: &mut [u32],
+    ) {
+        let partition_bounds_vec = partition_bounds.iter().collect_vec();
+        row_batch.iter().enumerate().for_each(|(row_idx, row)| {
+            partition_ids[row_idx] =
+                partition_bounds_vec.partition_point(|bound| *bound <= row) as u32
+        });
     }
 
     // Adapted from org.apache.spark.RangePartitioner.determineBounds
@@ -132,6 +145,39 @@ mod test {
     }
 
     #[test]
+    fn partition_indices_for_batch() {
+        let sort_fields = vec![SortField::new(Int64)];
+        let row_converter = RowConverter::new(sort_fields).unwrap();
+        let mut partition_ids = vec![0u32; 8192];
+        let mut partition_counts = vec![0u32; 10];
+
+        let input_batch = create_random_batch(8192, false, Some((0, 10)));
+        let bounds = record_batch!(("a", Int64, (1..=9).collect_vec())).unwrap();
+
+        let input_rows = row_converter
+            .convert_columns(input_batch.columns())
+            .unwrap();
+
+        let bounds_rows = row_converter.convert_columns(bounds.columns()).unwrap();
+
+        RangePartitioner::partition_indices_for_batch(
+            &input_rows,
+            &bounds_rows,
+            &mut partition_ids,
+        );
+
+        partition_ids
+            .iter()
+            .for_each(|&partition_id| partition_counts[partition_id as usize] += 1);
+
+        partition_counts
+            .iter()
+            .for_each(|&partition_count| assert!(partition_count > 700));
+
+        partition_counts.fill(0);
+    }
+
+    #[test]
     fn reservoir_sample_fuzz() {
         let mut rng = rand::rng();
 
@@ -154,7 +200,7 @@ mod test {
     // org.apache.spark.util.random.SamplingUtilsSuite
     // "reservoirSampleAndCount"
     fn reservoir_sample() {
-        let batch = create_random_batch(100);
+        let batch = create_random_batch(100, false, None);
         // sample_size > batch.num_rows returns entire batch after sampling
         let sample1_indices = RangePartitioner::reservoir_sample_indices(batch.num_rows(), 150);
         check_indices(&sample1_indices, batch.num_rows(), 150);
@@ -267,10 +313,10 @@ mod test {
         let sort_fields = vec![SortField::new(Int64)];
 
         for _ in 0..1000 {
-            let batch_size: i32 = rng.random_range(0..=8192);
+            let batch_size = rng.random_range(0..=8192);
             let num_partitions: i32 = rng.random_range(2..1048576);
 
-            let batch = create_random_batch(batch_size);
+            let batch = create_random_batch(batch_size, false, None);
 
             let (rows, _) = RangePartitioner::determine_bounds_for_rows(
                 sort_fields.clone(),
@@ -278,7 +324,7 @@ mod test {
                 num_partitions,
             );
 
-            if batch_size < num_partitions {
+            if batch_size < num_partitions as u32 {
                 assert_eq!(rows.len(), batch_size as usize);
             } else {
                 assert_eq!(rows.len(), (num_partitions - 1) as usize);
@@ -322,9 +368,19 @@ mod test {
         assert!(bounds_array.is_null(0));
     }
 
-    fn create_random_batch(batch_size: i32) -> RecordBatch {
+    fn create_random_batch(batch_size: u32, sort: bool, range: Option<(i64, i64)>) -> RecordBatch {
         let mut rng = rand::rng();
-        let column: Vec<i64> = (0..batch_size).map(|_| rng.random::<i64>()).collect();
+        let mut column: Vec<i64> = if let Some((min, max)) = range {
+            assert!(min <= max);
+            (0..batch_size)
+                .map(|_| rng.random_range(min..max))
+                .collect()
+        } else {
+            (0..batch_size).map(|_| rng.random::<i64>()).collect()
+        };
+        if sort {
+            column.sort();
+        }
         let array = Int64Array::from(column);
         let schema = Arc::new(Schema::new(vec![Field::new("a", Int64, true)]));
         RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).unwrap()
