@@ -17,7 +17,6 @@
 
 use arrow::array::ArrayRef;
 use arrow::row::{Row, RowConverter, SortField};
-use datafusion::common::HashSet;
 use rand::Rng;
 
 pub struct RangePartitioner;
@@ -50,9 +49,6 @@ impl RangePartitioner {
                 w *= (rng.random::<f64>().ln() / sample_size as f64).exp();
             }
         }
-
-        let set: HashSet<u64> = reservoir.iter().copied().collect();
-        assert_eq!(set.len(), reservoir.len());
 
         reservoir
     }
@@ -129,6 +125,25 @@ mod test {
             sorted_indices.len(),
             sorted_indices.iter().dedup().collect_vec().len()
         );
+    }
+
+    #[test]
+    fn reservoir_sample_fuzz() {
+        let mut rng = rand::rng();
+
+        for _ in 0..1024 {
+            let batch_size: usize = rng.random_range(0..=8192);
+            let sample_size: usize = rng.random_range(0..=8192);
+            let reservoir = RangePartitioner::reservoir_sample_indices(batch_size, sample_size);
+
+            assert_eq!(reservoir.len(), sample_size.min(batch_size));
+
+            let mut set: HashSet<u64> = HashSet::with_capacity(sample_size);
+            reservoir.iter().for_each(|&idx| {
+                assert!(idx < batch_size as u64);
+                assert!(set.insert(idx));
+            });
+        }
     }
 
     #[test]

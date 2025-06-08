@@ -20,7 +20,7 @@
 use crate::execution::shuffle::range_partitioner::RangePartitioner;
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use crate::execution::tracing::{with_trace, with_trace_async};
-use arrow::compute::{interleave_record_batch, take};
+use arrow::compute::{interleave_record_batch, take_arrays, TakeOptions};
 use arrow::row::{RowConverter, Rows, SortField};
 use async_trait::async_trait;
 use datafusion::common::utils::proxy::VecAllocExt;
@@ -535,10 +535,13 @@ impl MultiPartitionShuffleRepartitioner {
                             RangePartitioner::reservoir_sample_indices(input.num_rows(), 100),
                         );
 
-                        let sampled_columns = partition_arrays
-                            .iter()
-                            .map(|c| take(c, &sample_indices, None))
-                            .collect::<std::result::Result<Vec<_>, _>>()?;
+                        let sampled_columns = take_arrays(
+                            &partition_arrays,
+                            &sample_indices,
+                            Some(TakeOptions {
+                                check_bounds: false,
+                            }),
+                        )?;
 
                         let sort_fields: Vec<SortField> = partition_arrays
                             .iter()
@@ -560,10 +563,13 @@ impl MultiPartitionShuffleRepartitioner {
 
                         let bounds_indices_array = UInt64Array::from(bounds_indices);
 
-                        let bounds_arrays = partition_arrays
-                            .iter()
-                            .map(|c| take(c, &bounds_indices_array, None))
-                            .collect::<std::result::Result<Vec<_>, _>>()?;
+                        let bounds_arrays = take_arrays(
+                            &partition_arrays,
+                            &bounds_indices_array,
+                            Some(TakeOptions {
+                                check_bounds: false,
+                            }),
+                        )?;
 
                         self.bounds_rows = Some(
                             row_converter
