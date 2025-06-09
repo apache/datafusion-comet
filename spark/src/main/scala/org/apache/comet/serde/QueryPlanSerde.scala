@@ -2903,8 +2903,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         supported
       case SinglePartition =>
         inputs.forall(attr => supportedShuffleDataType(attr.dataType))
-      case RangePartitioning(ordering, numPartitions) =>
-        // TODO: Apply any expression constraints similar to HashPartitioning above.
+      case RangePartitioning(_, _) =>
         true
       case _ =>
         msg = s"unsupported Spark partitioning: ${partitioning.getClass.getName}"
