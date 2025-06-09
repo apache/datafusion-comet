@@ -37,6 +37,7 @@ import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{CodegenSupport, ColumnarToRowTransition, SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.adaptive.BroadcastQueryStageExec
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.vectorized.{ConstantColumnVector, WritableColumnVector}
 import org.apache.spark.sql.types._
@@ -172,6 +173,7 @@ case class CometColumnarToRowExec(child: SparkPlan)
     op match {
       case b: CometBroadcastExchangeExec => Some(b)
       case b: BroadcastQueryStageExec => findCometBroadcastExchange(b.plan)
+      case b: ReusedExchangeExec => findCometBroadcastExchange(b.child)
       case _ => op.children.collectFirst(Function.unlift(findCometBroadcastExchange))
     }
   }
