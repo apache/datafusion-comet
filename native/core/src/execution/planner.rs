@@ -2570,7 +2570,9 @@ mod tests {
     use datafusion::catalog::memory::DataSourceExec;
     use datafusion::datasource::listing::PartitionedFile;
     use datafusion::datasource::object_store::ObjectStoreUrl;
-    use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
+    use datafusion::datasource::physical_plan::{
+        FileGroup, FileScanConfigBuilder, FileSource, ParquetSource,
+    };
     use datafusion::error::DataFusionError;
     use datafusion::logical_expr::ScalarUDF;
     use datafusion::physical_plan::ExecutionPlan;
@@ -3201,14 +3203,12 @@ mod tests {
             }
         }
 
-        let source = Arc::new(
-            ParquetSource::default().with_schema_adapter_factory(Arc::new(
-                SparkSchemaAdapterFactory::new(
-                    SparkParquetOptions::new(EvalMode::Ansi, "", false),
-                    None,
-                ),
-            )),
-        );
+        let source = ParquetSource::default().with_schema_adapter_factory(Arc::new(
+            SparkSchemaAdapterFactory::new(
+                SparkParquetOptions::new(EvalMode::Ansi, "", false),
+                None,
+            ),
+        ))?;
 
         let object_store_url = ObjectStoreUrl::local_filesystem();
         let file_scan_config =
@@ -3276,14 +3276,12 @@ mod tests {
             }
         }
 
-        let source = Arc::new(
-            ParquetSource::default().with_schema_adapter_factory(Arc::new(
-                SparkSchemaAdapterFactory::new(
-                    SparkParquetOptions::new(EvalMode::Ansi, "", false),
-                    None,
-                ),
-            )),
-        );
+        let source = ParquetSource::default().with_schema_adapter_factory(Arc::new(
+            SparkSchemaAdapterFactory::new(
+                SparkParquetOptions::new(EvalMode::Ansi, "", false),
+                None,
+            ),
+        ))?;
 
         // Define schema Comet reads with
         let required_schema = Schema::new(Fields::from(vec![Field::new(

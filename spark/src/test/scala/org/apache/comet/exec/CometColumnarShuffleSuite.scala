@@ -19,6 +19,9 @@
 
 package org.apache.comet.exec
 
+import java.nio.file.Files
+import java.nio.file.Paths
+
 import scala.reflect.runtime.universe._
 import scala.util.Random
 
@@ -817,6 +820,33 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
       assert(metrics.contains("shuffleWriteTime"))
       assert(metrics("shuffleWriteTime").value > 0)
+    }
+  }
+
+  test("columnar shuffle on null struct fields") {
+    withTempDir { dir =>
+      val testData = "{}\n"
+      val path = Paths.get(dir.toString, "test.json")
+      Files.write(path, testData.getBytes)
+
+      // Define the nested struct schema
+      val readSchema = StructType(
+        Array(
+          StructField(
+            "metaData",
+            StructType(
+              Array(StructField(
+                "format",
+                StructType(Array(StructField("provider", StringType, nullable = true))),
+                nullable = true))),
+            nullable = true)))
+
+      // Read JSON with custom schema and repartition, this will repartition rows that contain
+      // null struct fields.
+      val df = spark.read.format("json").schema(readSchema).load(path.toString).repartition(2)
+      assert(df.count() == 1)
+      val row = df.collect()(0)
+      assert(row.getAs[org.apache.spark.sql.Row]("metaData") == null)
     }
   }
 

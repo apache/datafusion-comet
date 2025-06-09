@@ -81,7 +81,7 @@ class CometExecSuite extends CometTestBase {
           .create()
 
         val df = sql("SELECT * FROM test_data ORDER BY c1 LIMIT 3")
-        checkSparkAnswer(df)
+        checkSparkAnswerAndOperator(df)
       }
     }
   }
@@ -255,7 +255,7 @@ class CometExecSuite extends CometTestBase {
           |)
           |SELECT *, (SELECT COUNT(*) FROM t2) FROM t2 LIMIT 10
           |""".stripMargin)
-      checkSparkAnswer(df)
+      checkSparkAnswerAndOperator(df)
     }
   }
 
@@ -766,7 +766,7 @@ class CometExecSuite extends CometTestBase {
              |""".stripMargin
 
         val df = sql(query)
-        checkSparkAnswer(df)
+        checkSparkAnswerAndOperator(df)
         val exchanges = stripAQEPlan(df.queryExecution.executedPlan).collect {
           case s: CometShuffleExchangeExec if s.shuffleType == CometColumnarShuffle =>
             s
@@ -826,7 +826,7 @@ class CometExecSuite extends CometTestBase {
                 |  GROUP BY a._1) t
                 |JOIN tbl_c c ON t.a1 = c._1
                 |""".stripMargin)
-            checkSparkAnswer(df)
+            checkSparkAnswerAndOperator(df)
 
             // Before AQE: one CometBroadcastExchange, no CometColumnarToRow
             var columnarToRowExec = stripAQEPlan(df.queryExecution.executedPlan).collect {

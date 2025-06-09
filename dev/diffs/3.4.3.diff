@@ -247,7 +247,7 @@ index cf40e944c09..bdd5be4f462 100644
  
    test("A cached table preserves the partitioning and ordering of its cached SparkPlan") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
-index 1cc09c3d7fc..f031fa45c33 100644
+index 1cc09c3d7fc..b85b53a9688 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 @@ -27,7 +27,7 @@ import org.apache.spark.SparkException
@@ -268,6 +268,16 @@ index 1cc09c3d7fc..f031fa45c33 100644
        }
        assert(exchangePlans.length == 1)
      }
+@@ -1100,7 +1100,8 @@ class DataFrameAggregateSuite extends QueryTest
+     }
+   }
+ 
+-  test("SPARK-32038: NormalizeFloatingNumbers should work on distinct aggregate") {
++  test("SPARK-32038: NormalizeFloatingNumbers should work on distinct aggregate",
++    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/1824")) {
+     withTempView("view") {
+       val nan1 = java.lang.Float.intBitsToFloat(0x7f800001)
+       val nan2 = java.lang.Float.intBitsToFloat(0x7fffffff)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameJoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameJoinSuite.scala
 index 56e9520fdab..917932336df 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameJoinSuite.scala
@@ -1295,153 +1305,27 @@ index b14f4a405f6..ab7baf434a5 100644
            spark.range(1).foreach { _ =>
              columnarToRowExec.canonicalized
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
-index ac710c32296..baae214c6ee 100644
+index ac710c32296..2854b433dd3 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
-@@ -19,6 +19,7 @@ package org.apache.spark.sql.execution
+@@ -17,7 +17,7 @@
  
- import org.apache.spark.sql.{Dataset, QueryTest, Row, SaveMode}
+ package org.apache.spark.sql.execution
+ 
+-import org.apache.spark.sql.{Dataset, QueryTest, Row, SaveMode}
++import org.apache.spark.sql.{Dataset, IgnoreCometSuite, QueryTest, Row, SaveMode}
  import org.apache.spark.sql.catalyst.expressions.codegen.{ByteCodeStats, CodeAndComment, CodeGenerator}
-+import org.apache.spark.sql.comet.{CometHashJoinExec, CometSortMergeJoinExec}
  import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecutionSuite
  import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, SortAggregateExec}
- import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
-@@ -169,6 +170,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
-     val oneJoinDF = df1.join(df2.hint("SHUFFLE_HASH"), $"k1" === $"k2")
-     assert(oneJoinDF.queryExecution.executedPlan.collect {
-       case WholeStageCodegenExec(_ : ShuffledHashJoinExec) => true
-+      case _: CometHashJoinExec => true
-     }.size === 1)
-     checkAnswer(oneJoinDF, Seq(Row(0, 0), Row(1, 1), Row(2, 2), Row(3, 3), Row(4, 4)))
+@@ -29,7 +29,7 @@ import org.apache.spark.sql.test.SharedSparkSession
+ import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
  
-@@ -177,6 +179,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
-       .join(df3.hint("SHUFFLE_HASH"), $"k1" === $"k3")
-     assert(twoJoinsDF.queryExecution.executedPlan.collect {
-       case WholeStageCodegenExec(_ : ShuffledHashJoinExec) => true
-+      case _: CometHashJoinExec => true
-     }.size === 2)
-     checkAnswer(twoJoinsDF,
-       Seq(Row(0, 0, 0), Row(1, 1, 1), Row(2, 2, 2), Row(3, 3, 3), Row(4, 4, 4)))
-@@ -193,6 +196,8 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
-       assert(joinUniqueDF.queryExecution.executedPlan.collect {
-         case WholeStageCodegenExec(_ : ShuffledHashJoinExec) if hint == "SHUFFLE_HASH" => true
-         case WholeStageCodegenExec(_ : SortMergeJoinExec) if hint == "SHUFFLE_MERGE" => true
-+        case _: CometHashJoinExec if hint == "SHUFFLE_HASH" => true
-+        case _: CometSortMergeJoinExec if hint == "SHUFFLE_MERGE" => true
-       }.size === 1)
-       checkAnswer(joinUniqueDF, Seq(Row(0, 0), Row(1, 1), Row(2, 2), Row(3, 3), Row(4, 4),
-         Row(null, 5), Row(null, 6), Row(null, 7), Row(null, 8), Row(null, 9)))
-@@ -203,6 +208,8 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
-       assert(joinNonUniqueDF.queryExecution.executedPlan.collect {
-         case WholeStageCodegenExec(_ : ShuffledHashJoinExec) if hint == "SHUFFLE_HASH" => true
-         case WholeStageCodegenExec(_ : SortMergeJoinExec) if hint == "SHUFFLE_MERGE" => true
-+        case _: CometHashJoinExec if hint == "SHUFFLE_HASH" => true
-+        case _: CometSortMergeJoinExec if hint == "SHUFFLE_MERGE" => true
-       }.size === 1)
-       checkAnswer(joinNonUniqueDF, Seq(Row(0, 0), Row(0, 3), Row(0, 6), Row(0, 9), Row(1, 1),
-         Row(1, 4), Row(1, 7), Row(2, 2), Row(2, 5), Row(2, 8), Row(3, null), Row(4, null)))
-@@ -213,6 +220,8 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
-       assert(joinWithNonEquiDF.queryExecution.executedPlan.collect {
-         case WholeStageCodegenExec(_ : ShuffledHashJoinExec) if hint == "SHUFFLE_HASH" => true
-         case WholeStageCodegenExec(_ : SortMergeJoinExec) if hint == "SHUFFLE_MERGE" => true
-+        case _: CometHashJoinExec if hint == "SHUFFLE_HASH" => true
-+        case _: CometSortMergeJoinExec if hint == "SHUFFLE_MERGE" => true
-       }.size === 1)
-       checkAnswer(joinWithNonEquiDF, Seq(Row(0, 0), Row(0, 6), Row(0, 9), Row(1, 1),
-         Row(1, 7), Row(2, 2), Row(2, 8), Row(3, null), Row(4, null), Row(null, 3), Row(null, 4),
-@@ -224,6 +233,8 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
-       assert(twoJoinsDF.queryExecution.executedPlan.collect {
-         case WholeStageCodegenExec(_ : ShuffledHashJoinExec) if hint == "SHUFFLE_HASH" => true
-         case WholeStageCodegenExec(_ : SortMergeJoinExec) if hint == "SHUFFLE_MERGE" => true
-+        case _: CometHashJoinExec if hint == "SHUFFLE_HASH" => true
-+        case _: CometSortMergeJoinExec if hint == "SHUFFLE_MERGE" => true
-       }.size === 2)
-       checkAnswer(twoJoinsDF,
-         Seq(Row(0, 0, 0), Row(1, 1, null), Row(2, 2, 2), Row(3, 3, null), Row(4, 4, null),
-@@ -241,6 +252,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
-     val oneLeftOuterJoinDF = df1.join(df2.hint("SHUFFLE_MERGE"), $"k1" === $"k2", "left_outer")
-     assert(oneLeftOuterJoinDF.queryExecution.executedPlan.collect {
-       case WholeStageCodegenExec(_ : SortMergeJoinExec) => true
-+      case _: CometSortMergeJoinExec => true
-     }.size === 1)
-     checkAnswer(oneLeftOuterJoinDF, Seq(Row(0, 0), Row(1, 1), Row(2, 2), Row(3, 3), Row(4, null),
-       Row(5, null), Row(6, null), Row(7, null), Row(8, null), Row(9, null)))
-@@ -249,6 +261,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
-     val oneRightOuterJoinDF = df2.join(df3.hint("SHUFFLE_MERGE"), $"k2" === $"k3", "right_outer")
-     assert(oneRightOuterJoinDF.queryExecution.executedPlan.collect {
-       case WholeStageCodegenExec(_ : SortMergeJoinExec) => true
-+      case _: CometSortMergeJoinExec => true
-     }.size === 1)
-     checkAnswer(oneRightOuterJoinDF, Seq(Row(0, 0), Row(1, 1), Row(2, 2), Row(3, 3), Row(null, 4),
-       Row(null, 5)))
-@@ -258,6 +271,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
-       .join(df1.hint("SHUFFLE_MERGE"), $"k3" === $"k1", "right_outer")
-     assert(twoJoinsDF.queryExecution.executedPlan.collect {
-       case WholeStageCodegenExec(_ : SortMergeJoinExec) => true
-+      case _: CometSortMergeJoinExec => true
-     }.size === 2)
-     checkAnswer(twoJoinsDF,
-       Seq(Row(0, 0, 0), Row(1, 1, 1), Row(2, 2, 2), Row(3, 3, 3), Row(4, null, 4), Row(5, null, 5),
-@@ -273,6 +287,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
-     val oneJoinDF = df1.join(df2.hint("SHUFFLE_MERGE"), $"k1" === $"k2", "left_semi")
-     assert(oneJoinDF.queryExecution.executedPlan.collect {
-       case WholeStageCodegenExec(ProjectExec(_, _ : SortMergeJoinExec)) => true
-+      case _: CometSortMergeJoinExec => true
-     }.size === 1)
-     checkAnswer(oneJoinDF, Seq(Row(0), Row(1), Row(2), Row(3)))
+ // Disable AQE because the WholeStageCodegenExec is added when running QueryStageExec
+-class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
++class WholeStageCodegenSuite extends QueryTest with SharedSparkSession with IgnoreCometSuite
+   with DisableAdaptiveExecutionSuite {
  
-@@ -280,8 +295,8 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
-     val twoJoinsDF = df3.join(df2.hint("SHUFFLE_MERGE"), $"k3" === $"k2", "left_semi")
-       .join(df1.hint("SHUFFLE_MERGE"), $"k3" === $"k1", "left_semi")
-     assert(twoJoinsDF.queryExecution.executedPlan.collect {
--      case WholeStageCodegenExec(ProjectExec(_, _ : SortMergeJoinExec)) |
--           WholeStageCodegenExec(_ : SortMergeJoinExec) => true
-+      case _: SortMergeJoinExec => true
-+      case _: CometSortMergeJoinExec => true
-     }.size === 2)
-     checkAnswer(twoJoinsDF, Seq(Row(0), Row(1), Row(2), Row(3)))
-   }
-@@ -295,6 +310,7 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
-     val oneJoinDF = df1.join(df2.hint("SHUFFLE_MERGE"), $"k1" === $"k2", "left_anti")
-     assert(oneJoinDF.queryExecution.executedPlan.collect {
-       case WholeStageCodegenExec(ProjectExec(_, _ : SortMergeJoinExec)) => true
-+      case _: CometSortMergeJoinExec => true
-     }.size === 1)
-     checkAnswer(oneJoinDF, Seq(Row(4), Row(5), Row(6), Row(7), Row(8), Row(9)))
- 
-@@ -302,8 +318,8 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
-     val twoJoinsDF = df1.join(df2.hint("SHUFFLE_MERGE"), $"k1" === $"k2", "left_anti")
-       .join(df3.hint("SHUFFLE_MERGE"), $"k1" === $"k3", "left_anti")
-     assert(twoJoinsDF.queryExecution.executedPlan.collect {
--      case WholeStageCodegenExec(ProjectExec(_, _ : SortMergeJoinExec)) |
--           WholeStageCodegenExec(_ : SortMergeJoinExec) => true
-+      case _: SortMergeJoinExec => true
-+      case _: CometSortMergeJoinExec => true
-     }.size === 2)
-     checkAnswer(twoJoinsDF, Seq(Row(6), Row(7), Row(8), Row(9)))
-   }
-@@ -433,10 +449,6 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
- 
-   test("Sort should be included in WholeStageCodegen") {
-     val df = spark.range(3, 0, -1).toDF().sort(col("id"))
--    val plan = df.queryExecution.executedPlan
--    assert(plan.exists(p =>
--      p.isInstanceOf[WholeStageCodegenExec] &&
--        p.asInstanceOf[WholeStageCodegenExec].child.isInstanceOf[SortExec]))
-     assert(df.collect() === Array(Row(1), Row(2), Row(3)))
-   }
- 
-@@ -616,7 +628,9 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
-           .write.mode(SaveMode.Overwrite).parquet(path)
- 
-         withSQLConf(SQLConf.WHOLESTAGE_MAX_NUM_FIELDS.key -> "255",
--            SQLConf.WHOLESTAGE_SPLIT_CONSUME_FUNC_BY_OPERATOR.key -> "true") {
-+            SQLConf.WHOLESTAGE_SPLIT_CONSUME_FUNC_BY_OPERATOR.key -> "true",
-+            // Disable Comet native execution because this checks wholestage codegen.
-+            "spark.comet.exec.enabled" -> "false") {
-           val projection = Seq.tabulate(columnNum)(i => s"c$i + c$i as newC$i")
-           val df = spark.read.parquet(path).selectExpr(projection: _*)
- 
+   import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 index 593bd7bb4ba..32af28b0238 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
