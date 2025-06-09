@@ -90,12 +90,12 @@ of Apache Spark to enable Comet when running tests. This is a highly manual proc
 vary depending on the changes in the new version of Spark, but here is a general guide to the process.
 
 We typically start by applying a patch from a previous version of Spark. For example, when enabling the tests
-for Spark version 3.5.5 we may start by applying the existing diff for 3.4.3 first.
+for Spark version 3.5.6 we may start by applying the existing diff for 3.5.5 first.
 
 ```shell
 cd git/apache/spark
-git checkout v3.5.5
-git apply --reject --whitespace=fix ../datafusion-comet/dev/diffs/3.4.3.diff
+git checkout v3.5.6
+git apply --reject --whitespace=fix ../datafusion-comet/dev/diffs/3.5.5.diff
 ```
 
 Any changes that cannot be cleanly applied will instead be written out to reject files. For example, the above
@@ -140,7 +140,7 @@ configuration setting to use 11 digits hashes for consistency with existing diff
 
 ```shell
 git config core.abbrev 11;
-git diff v3.5.5 > ../datafusion-comet/dev/diffs/3.5.5.diff
+git diff v3.5.6 > ../datafusion-comet/dev/diffs/3.5.6.diff
 ```
 
 ## Running Tests in CI

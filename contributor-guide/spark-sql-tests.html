@@ -463,10 +463,10 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 of Apache Spark to enable Comet when running tests. This is a highly manual process and the process can
 vary depending on the changes in the new version of Spark, but here is a general guide to the process.</p>
 <p>We typically start by applying a patch from a previous version of Spark. For example, when enabling the tests
-for Spark version 3.5.5 we may start by applying the existing diff for 3.4.3 first.</p>
+for Spark version 3.5.6 we may start by applying the existing diff for 3.5.5 first.</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>git/apache/spark
-git<span class="w"> </span>checkout<span class="w"> </span>v3.5.5
-git<span class="w"> </span>apply<span class="w"> </span>--reject<span class="w"> </span>--whitespace<span class="o">=</span>fix<span class="w"> </span>../datafusion-comet/dev/diffs/3.4.3.diff
+git<span class="w"> </span>checkout<span class="w"> </span>v3.5.6
+git<span class="w"> </span>apply<span class="w"> </span>--reject<span class="w"> </span>--whitespace<span class="o">=</span>fix<span class="w"> </span>../datafusion-comet/dev/diffs/3.5.5.diff
 </pre></div>
 </div>
 <p>Any changes that cannot be cleanly applied will instead be written out to reject files. For example, the above
@@ -504,7 +504,7 @@ command generated the following files.</p>
 <p>The diff file can be generated using the <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">diff</span></code> command. It may be necessary to set the <code class="docutils literal notranslate"><span class="pre">core.abbrev</span></code>
 configuration setting to use 11 digits hashes for consistency with existing diff files.</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>config<span class="w"> </span>core.abbrev<span class="w"> </span><span class="m">11</span><span class="p">;</span>
-git<span class="w"> </span>diff<span class="w"> </span>v3.5.5<span class="w"> </span>&gt;<span class="w"> </span>../datafusion-comet/dev/diffs/3.5.5.diff
+git<span class="w"> </span>diff<span class="w"> </span>v3.5.6<span class="w"> </span>&gt;<span class="w"> </span>../datafusion-comet/dev/diffs/3.5.6.diff
 </pre></div>
 </div>
 </section>
