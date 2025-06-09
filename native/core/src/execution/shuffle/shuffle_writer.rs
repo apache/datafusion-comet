@@ -426,6 +426,57 @@ impl MultiPartitionShuffleRepartitioner {
             return Ok(());
         }
 
+        fn count_partitions(
+            partition_ids: &[u32],
+            partition_counters: &mut Vec<u32>,
+            num_output_partitions: usize,
+        ) {
+            // count each partition size, while leaving the last extra element as 0
+            partition_counters.resize(num_output_partitions + 1, 0);
+            partition_counters.fill(0);
+            partition_ids
+                .iter()
+                .for_each(|partition_id| partition_counters[*partition_id as usize] += 1);
+        }
+
+        fn accumulate_partition_counters(partition_ends: &mut Vec<u32>) {
+            // accumulate partition counters into partition ends
+            // e.g. partition counter: [1, 3, 2, 1, 0] => [1, 4, 6, 7, 7]
+            // this is basically an inclusive scan/prefix sum
+            let mut accum = 0;
+            partition_ends.iter_mut().for_each(|v| {
+                *v += accum;
+                accum = *v;
+            });
+        }
+
+        fn calculate_partition_row_indices_and_partition_starts(
+            scratch: &mut ScratchSpace,
+            num_rows: usize,
+        ) {
+            // calculate partition row indices and partition starts
+            // e.g. partition ids: [3, 1, 1, 1, 2, 2, 0] will produce the following partition_row_indices
+            // and partition_starts arrays:
+            //
+            //  partition_row_indices: [6, 1, 2, 3, 4, 5, 0]
+            //  partition_starts: [0, 1, 4, 6, 7]
+            //
+            // partition_starts conceptually splits partition_row_indices into smaller slices.
+            // Each slice partition_row_indices[partition_starts[K]..partition_starts[K + 1]] contains the
+            // row indices of the input batch that are partitioned into partition K. For example,
+            // first partition 0 has one row index [6], partition 1 has row indices [1, 2, 3], etc.
+            let partition_ids = &mut scratch.partition_ids[..num_rows];
+            let partition_row_indices = &mut scratch.partition_row_indices;
+            let partition_ends = &mut scratch.partition_starts;
+            partition_row_indices.resize(num_rows, 0);
+            for (index, partition_id) in partition_ids.iter().enumerate().rev() {
+                partition_ends[*partition_id as usize] -= 1;
+                let end = partition_ends[*partition_id as usize];
+                partition_row_indices[end as usize] = index as u32;
+            }
+            // after calculating, partition ends become partition starts
+        }
+
         if input.num_rows() > self.batch_size {
             return Err(DataFusionError::Internal(
                 "Input batch size exceeds configured batch size. Call `insert_batch` instead."
@@ -456,57 +507,34 @@ impl MultiPartitionShuffleRepartitioner {
                     let hashes_buf = &mut scratch.hashes_buf[..arrays[0].len()];
                     hashes_buf.fill(42_u32);
 
-                    // Hash arrays and compute buckets based on number of partitions
-                    let partition_ids = &mut scratch.partition_ids[..arrays[0].len()];
-                    create_murmur3_hashes(&arrays, hashes_buf)?
-                        .iter()
-                        .enumerate()
-                        .for_each(|(idx, hash)| {
-                            partition_ids[idx] = pmod(*hash, *num_output_partitions) as u32;
-                        });
-
-                    // count each partition size, while leaving the last extra element as 0
-                    let partition_counters = &mut scratch.partition_starts;
-                    partition_counters.resize(num_output_partitions + 1, 0);
-                    partition_counters.fill(0);
-                    partition_ids
-                        .iter()
-                        .for_each(|partition_id| partition_counters[*partition_id as usize] += 1);
-
-                    // accumulate partition counters into partition ends
-                    // e.g. partition counter: [1, 3, 2, 1, 0] => [1, 4, 6, 7, 7]
-                    let partition_ends = partition_counters;
-                    let mut accum = 0;
-                    partition_ends.iter_mut().for_each(|v| {
-                        *v += accum;
-                        accum = *v;
-                    });
-
-                    // calculate partition row indices and partition starts
-                    // e.g. partition ids: [3, 1, 1, 1, 2, 2, 0] will produce the following partition_row_indices
-                    // and partition_starts arrays:
-                    //
-                    //  partition_row_indices: [6, 1, 2, 3, 4, 5, 0]
-                    //  partition_starts: [0, 1, 4, 6, 7]
-                    //
-                    // partition_starts conceptually splits partition_row_indices into smaller slices.
-                    // Each slice partition_row_indices[partition_starts[K]..partition_starts[K + 1]] contains the
-                    // row indices of the input batch that are partitioned into partition K. For example,
-                    // first partition 0 has one row index [6], partition 1 has row indices [1, 2, 3], etc.
-                    let partition_row_indices = &mut scratch.partition_row_indices;
-                    partition_row_indices.resize(input.num_rows(), 0);
-                    for (index, partition_id) in partition_ids.iter().enumerate().rev() {
-                        partition_ends[*partition_id as usize] -= 1;
-                        let end = partition_ends[*partition_id as usize];
-                        partition_row_indices[end as usize] = index as u32;
+                    {
+                        // Hash arrays and compute buckets based on number of partitions
+                        let partition_ids = &mut scratch.partition_ids[..arrays[0].len()];
+                        create_murmur3_hashes(&arrays, hashes_buf)?
+                            .iter()
+                            .enumerate()
+                            .for_each(|(idx, hash)| {
+                                partition_ids[idx] = pmod(*hash, *num_output_partitions) as u32;
+                            });
                     }
 
-                    // after calculating, partition ends become partition starts
-                    let partition_starts = partition_ends;
+                    count_partitions(
+                        &mut scratch.partition_ids[..arrays[0].len()],
+                        &mut scratch.partition_starts,
+                        *num_output_partitions,
+                    );
+
+                    accumulate_partition_counters(&mut scratch.partition_starts);
+
+                    calculate_partition_row_indices_and_partition_starts(
+                        &mut scratch,
+                        arrays[0].len(),
+                    );
+
                     timer.stop();
                     Ok::<(&Vec<u32>, &Vec<u32>), DataFusionError>((
-                        partition_starts,
-                        partition_row_indices,
+                        &scratch.partition_starts,
+                        &scratch.partition_row_indices,
                     ))
                 }?;
 
@@ -548,60 +576,37 @@ impl MultiPartitionShuffleRepartitioner {
                         .as_ref()
                         .unwrap()
                         .convert_columns(partition_arrays.as_slice())?;
+                    {
+                        let partition_ids = &mut scratch.partition_ids[..partition_arrays[0].len()];
 
-                    let partition_ids = &mut scratch.partition_ids[..partition_arrays[0].len()];
+                        // TODO: Try to cache this vector.
+                        let bounds_rows_vec =
+                            self.bounds_rows.as_ref().unwrap().iter().collect_vec();
 
-                    // TODO: Try to cache this vector.
-                    let bounds_rows_vec = self.bounds_rows.as_ref().unwrap().iter().collect_vec();
-
-                    RangePartitioner::partition_indices_for_batch(
-                        &row_batch,
-                        &bounds_rows_vec,
-                        partition_ids,
-                    );
-
-                    // count each partition size, while leaving the last extra element as 0
-                    let partition_counters = &mut scratch.partition_starts;
-                    partition_counters.resize(num_output_partitions + 1, 0);
-                    partition_counters.fill(0);
-                    partition_ids
-                        .iter()
-                        .for_each(|partition_id| partition_counters[*partition_id as usize] += 1);
-
-                    // accumulate partition counters into partition ends
-                    // e.g. partition counter: [1, 3, 2, 1, 0] => [1, 4, 6, 7, 7]
-                    let partition_ends = partition_counters;
-                    let mut accum = 0;
-                    partition_ends.iter_mut().for_each(|v| {
-                        *v += accum;
-                        accum = *v;
-                    });
-
-                    // calculate partition row indices and partition starts
-                    // e.g. partition ids: [3, 1, 1, 1, 2, 2, 0] will produce the following partition_row_indices
-                    // and partition_starts arrays:
-                    //
-                    //  partition_row_indices: [6, 1, 2, 3, 4, 5, 0]
-                    //  partition_starts: [0, 1, 4, 6, 7]
-                    //
-                    // partition_starts conceptually splits partition_row_indices into smaller slices.
-                    // Each slice partition_row_indices[partition_starts[K]..partition_starts[K + 1]] contains the
-                    // row indices of the input batch that are partitioned into partition K. For example,
-                    // first partition 0 has one row index [6], partition 1 has row indices [1, 2, 3], etc.
-                    let partition_row_indices = &mut scratch.partition_row_indices;
-                    partition_row_indices.resize(input.num_rows(), 0);
-                    for (index, partition_id) in partition_ids.iter().enumerate().rev() {
-                        partition_ends[*partition_id as usize] -= 1;
-                        let end = partition_ends[*partition_id as usize];
-                        partition_row_indices[end as usize] = index as u32;
+                        RangePartitioner::partition_indices_for_batch(
+                            &row_batch,
+                            &bounds_rows_vec,
+                            partition_ids,
+                        );
                     }
 
-                    // after calculating, partition ends become partition starts
-                    let partition_starts = partition_ends;
+                    count_partitions(
+                        &mut scratch.partition_ids[..partition_arrays[0].len()],
+                        &mut scratch.partition_starts,
+                        *num_output_partitions,
+                    );
+
+                    accumulate_partition_counters(&mut scratch.partition_starts);
+
+                    calculate_partition_row_indices_and_partition_starts(
+                        &mut scratch,
+                        partition_arrays[0].len(),
+                    );
+
                     timer.stop();
                     Ok::<(&Vec<u32>, &Vec<u32>), DataFusionError>((
-                        partition_starts,
-                        partition_row_indices,
+                        &scratch.partition_starts,
+                        &scratch.partition_row_indices,
                     ))
                 }?;
 
