@@ -333,7 +333,7 @@ index 7ee18df3756..64f01a68048 100644
        sql(
          """
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
-index 47a311c71d5..8cbc4912d60 100644
+index 47a311c71d5..342e71cfdd4 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
 @@ -24,8 +24,9 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression
@@ -356,7 +356,7 @@ index 47a311c71d5..8cbc4912d60 100644
          desiredClusterColumns: Seq[String]): Boolean = plan match {
        case ShuffleExchangeExec(op: HashPartitioning, _, ENSURE_REQUIREMENTS, _) =>
          partitionExpressionsColumns(op.expressions) === desiredClusterColumns
-+      case CometShuffleExchangeExec(op: HashPartitioning, _, ENSURE_REQUIREMENTS, _) =>
++      case CometShuffleExchangeExec(op: HashPartitioning, _, _, ENSURE_REQUIREMENTS, _, _) =>
 +        partitionExpressionsColumns(op.expressions) === desiredClusterColumns
        case _ => false
      }
