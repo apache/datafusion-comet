@@ -191,7 +191,7 @@ mod test {
             .iter()
             .for_each(|&idx| assert!(idx < batch_size as u64));
         // Check that values are distinct and not out of bounds
-        let sorted_indices = indices.into_iter().sorted().collect_vec();
+        let sorted_indices = indices.iter().sorted().collect_vec();
         assert_eq!(
             sorted_indices.len(),
             sorted_indices.iter().dedup().collect_vec().len()
@@ -203,7 +203,7 @@ mod test {
         let sort_fields = vec![SortField::new(Int64)];
         let row_converter = RowConverter::new(sort_fields).unwrap();
         let mut partition_ids = vec![0u32; 8192];
-        let mut partition_counts = vec![0u32; 10];
+        let mut partition_counts = [0u32; 10];
 
         let input_batch = create_random_batch(8192, false, Some((0, 10)));
         let bounds = record_batch!(("a", Int64, (1..=9).collect_vec())).unwrap();

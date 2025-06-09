@@ -439,7 +439,7 @@ impl MultiPartitionShuffleRepartitioner {
                 .for_each(|partition_id| partition_counters[*partition_id as usize] += 1);
         }
 
-        fn accumulate_partition_counters(partition_ends: &mut Vec<u32>) {
+        fn accumulate_partition_counters(partition_ends: &mut [u32]) {
             // accumulate partition counters into partition ends
             // e.g. partition counter: [1, 3, 2, 1, 0] => [1, 4, 6, 7, 7]
             // this is basically an inclusive scan/prefix sum
@@ -519,7 +519,7 @@ impl MultiPartitionShuffleRepartitioner {
                     }
 
                     count_partitions(
-                        &mut scratch.partition_ids[..arrays[0].len()],
+                        &scratch.partition_ids[..arrays[0].len()],
                         &mut scratch.partition_starts,
                         *num_output_partitions,
                     );
@@ -591,7 +591,7 @@ impl MultiPartitionShuffleRepartitioner {
                     }
 
                     count_partitions(
-                        &mut scratch.partition_ids[..partition_arrays[0].len()],
+                        &scratch.partition_ids[..partition_arrays[0].len()],
                         &mut scratch.partition_starts,
                         *num_output_partitions,
                     );
