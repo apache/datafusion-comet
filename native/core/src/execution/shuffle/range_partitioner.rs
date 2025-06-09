@@ -169,10 +169,10 @@ impl RangePartitioner {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow::array::{Array, AsArray, Int32Array, Int64Array, RecordBatch, UInt64Array};
+    use arrow::array::{Array, AsArray, Int64Array, RecordBatch, UInt64Array};
     use arrow::compute::take_record_batch;
     use arrow::datatypes::DataType::{Float64, Int64};
-    use arrow::datatypes::{DataType, Field, Float64Type, Int32Type, Int64Type, Schema};
+    use arrow::datatypes::{Field, Float64Type, Int32Type, Int64Type, Schema};
     use datafusion::common::{record_batch, HashSet};
     use itertools::Itertools;
     use std::sync::Arc;
@@ -273,11 +273,8 @@ mod test {
     // org.apache.spark.util.random.SamplingUtilsSuite
     // "SPARK-18678 reservoirSampleAndCount with tiny input"
     fn reservoir_sample_and_count_with_tiny_input() {
-        let column = vec![0, 1];
-        let array = Arc::new(Int32Array::from(column));
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
-        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![array.clone()]).unwrap();
-        let mut counts: Vec<i32> = vec![0; array.len()];
+        let batch = record_batch!(("a", Int32, vec![0, 1])).unwrap();
+        let mut counts: Vec<i32> = vec![0; 2];
         for _i in 0..500 {
             let indices = RangePartitioner::reservoir_sample_indices(batch.num_rows(), 1);
             let result = sample_batch(batch.clone(), indices);
