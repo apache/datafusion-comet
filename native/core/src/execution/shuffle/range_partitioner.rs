@@ -15,8 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::ArrayRef;
+use arrow::array::{ArrayRef, UInt64Array};
+use arrow::compute::{take_arrays, TakeOptions};
 use arrow::row::{Row, RowConverter, Rows, SortField};
+use datafusion::physical_expr::LexOrdering;
 use rand::Rng;
 
 pub struct RangePartitioner;
@@ -66,11 +68,65 @@ impl RangePartitioner {
         });
     }
 
+    pub fn generate_bounds(
+        partition_arrays: &Vec<ArrayRef>,
+        lex_ordering: &LexOrdering,
+        num_output_partitions: usize,
+        num_rows: usize,    // TODO: u16
+        sample_size: usize, // TODO: u16
+    ) -> (Rows, RowConverter) {
+        let sample_indices = UInt64Array::from(RangePartitioner::reservoir_sample_indices(
+            num_rows,
+            sample_size,
+        ));
+
+        let sampled_columns = take_arrays(
+            partition_arrays,
+            &sample_indices,
+            Some(TakeOptions {
+                check_bounds: false,
+            }),
+        )
+        .unwrap();
+
+        let sort_fields: Vec<SortField> = partition_arrays
+            .iter()
+            .zip(lex_ordering)
+            .map(|(array, sort_expr)| {
+                SortField::new_with_options(array.data_type().clone(), sort_expr.options)
+            })
+            .collect();
+
+        let (bounds_indices, row_converter) = RangePartitioner::determine_bounds_for_rows(
+            sort_fields,
+            sampled_columns,
+            num_output_partitions,
+        );
+
+        let bounds_indices_array = UInt64Array::from(bounds_indices);
+
+        let bounds_arrays = take_arrays(
+            partition_arrays,
+            &bounds_indices_array,
+            Some(TakeOptions {
+                check_bounds: false,
+            }),
+        )
+        .unwrap();
+
+        (
+            row_converter
+                .convert_columns(bounds_arrays.as_slice())
+                .unwrap(),
+            row_converter,
+        )
+    }
+
     // Adapted from org.apache.spark.RangePartitioner.determineBounds
     pub fn determine_bounds_for_rows(
         sort_fields: Vec<SortField>,
         sampled_columns: Vec<ArrayRef>,
-        partitions: i32,
+        partitions: usize,
     ) -> (Vec<u64>, RowConverter) {
         assert!(partitions > 1);
 
@@ -85,7 +141,7 @@ impl RangePartitioner {
         let step = 1.0 / partitions as f64;
         let mut cumulative_weights = 0.0;
         let mut target = step;
-        let mut bounds_indices: Vec<u64> = Vec::with_capacity((partitions - 1) as usize);
+        let mut bounds_indices: Vec<u64> = Vec::with_capacity(partitions - 1);
         let mut i = 0;
         let mut j = 0;
         let mut previous_bound = None;
@@ -277,25 +333,25 @@ mod test {
         let sort_fields = vec![SortField::new(Float64)];
 
         // num_partitions < sample size
-        let mut num_partitions = (batch.num_rows() - 1) as i32;
+        let mut num_partitions = batch.num_rows() - 1;
         let (rows, _) = RangePartitioner::determine_bounds_for_rows(
             sort_fields.clone(),
             Vec::from(batch.columns()),
             num_partitions,
         );
-        assert_eq!(rows.len() as i32, num_partitions - 1);
+        assert_eq!(rows.len(), num_partitions - 1);
 
         // num_partitions == sample size
-        num_partitions = batch.num_rows() as i32;
+        num_partitions = batch.num_rows();
         let (rows, _) = RangePartitioner::determine_bounds_for_rows(
             sort_fields.clone(),
             Vec::from(batch.columns()),
             num_partitions,
         );
-        assert_eq!(rows.len() as i32, num_partitions - 1);
+        assert_eq!(rows.len(), num_partitions - 1);
 
         // num_partitions > sample size
-        num_partitions = (batch.num_rows() + 1) as i32;
+        num_partitions = batch.num_rows() + 1;
         let (rows, _) = RangePartitioner::determine_bounds_for_rows(
             sort_fields.clone(),
             Vec::from(batch.columns()),
@@ -312,7 +368,7 @@ mod test {
 
         for _ in 0..1000 {
             let batch_size = rng.random_range(0..=8192);
-            let num_partitions: i32 = rng.random_range(2..1048576);
+            let num_partitions = rng.random_range(2..1048576);
 
             let batch = create_random_batch(batch_size, false, None);
 

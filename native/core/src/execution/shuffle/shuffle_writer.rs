@@ -20,8 +20,8 @@
 use crate::execution::shuffle::range_partitioner::RangePartitioner;
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use crate::execution::tracing::{with_trace, with_trace_async};
-use arrow::compute::{interleave_record_batch, take_arrays, TakeOptions};
-use arrow::row::{RowConverter, Rows, SortField};
+use arrow::compute::interleave_record_batch;
+use arrow::row::{RowConverter, Rows};
 use async_trait::async_trait;
 use datafusion::common::utils::proxy::VecAllocExt;
 use datafusion::physical_expr::EquivalenceProperties;
@@ -531,51 +531,15 @@ impl MultiPartitionShuffleRepartitioner {
 
                     if self.row_converter.is_none() {
                         // TODO: Adjust sample size.
-                        let sample_indices = UInt64Array::from(
-                            RangePartitioner::reservoir_sample_indices(input.num_rows(), 100),
+                        let (bounds_rows, row_converter) = RangePartitioner::generate_bounds(
+                            &partition_arrays,
+                            lex_ordering,
+                            *num_output_partitions,
+                            input.num_rows(),
+                            100,
                         );
 
-                        let sampled_columns = take_arrays(
-                            &partition_arrays,
-                            &sample_indices,
-                            Some(TakeOptions {
-                                check_bounds: false,
-                            }),
-                        )?;
-
-                        let sort_fields: Vec<SortField> = partition_arrays
-                            .iter()
-                            .zip(lex_ordering)
-                            .map(|(array, sort_expr)| {
-                                SortField::new_with_options(
-                                    array.data_type().clone(),
-                                    sort_expr.options,
-                                )
-                            })
-                            .collect();
-
-                        let (bounds_indices, row_converter) =
-                            RangePartitioner::determine_bounds_for_rows(
-                                sort_fields,
-                                sampled_columns,
-                                *num_output_partitions as i32,
-                            );
-
-                        let bounds_indices_array = UInt64Array::from(bounds_indices);
-
-                        let bounds_arrays = take_arrays(
-                            &partition_arrays,
-                            &bounds_indices_array,
-                            Some(TakeOptions {
-                                check_bounds: false,
-                            }),
-                        )?;
-
-                        self.bounds_rows = Some(
-                            row_converter
-                                .convert_columns(bounds_arrays.as_slice())
-                                .unwrap(),
-                        );
+                        self.bounds_rows = Some(bounds_rows);
                         self.row_converter = Some(row_converter);
                     }
 
