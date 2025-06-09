@@ -182,7 +182,7 @@ mod test {
         take_record_batch(&input, &indices).unwrap()
     }
 
-    fn check_indices(indices: &Vec<u64>, batch_size: usize, sample_size: usize) {
+    fn check_indices(indices: &[u64], batch_size: usize, sample_size: usize) {
         // sample indices size should never exceed the batch size
         assert!(indices.len() <= batch_size);
         assert_eq!(indices.len(), batch_size.min(sample_size));
