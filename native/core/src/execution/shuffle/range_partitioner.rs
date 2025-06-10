@@ -24,10 +24,12 @@ use rand::{rngs::SmallRng, Rng, SeedableRng};
 pub struct RangePartitioner;
 
 impl RangePartitioner {
-    // Adapted from https://en.wikipedia.org/wiki/Reservoir_sampling#Optimal:_Algorithm_L
-    // We use sample_size instead of k and num_rows instead of n.
-    // We use indices instead of actual values in the reservoir  since we'll do one take() on the
-    // input arrays at the end.
+    /// Given a number of rows, sample size, and a random seed, generates unique indices to take
+    /// from an input batch to act as a random sample.
+    /// Adapted from https://en.wikipedia.org/wiki/Reservoir_sampling#Optimal:_Algorithm_L
+    /// We use sample_size instead of k and num_rows instead of n.
+    /// We use indices instead of actual values in the reservoir  since we'll do one take() on the
+    /// input arrays at the end.
     pub fn reservoir_sample_indices(num_rows: usize, sample_size: usize, seed: u64) -> Vec<u64> {
         assert!(sample_size > 0);
         assert!(
@@ -56,6 +58,9 @@ impl RangePartitioner {
         reservoir
     }
 
+    /// Given a batch of Rows, an ordered vector of Rows that represent partition boundaries, and
+    /// a slice with enough space for the input batch, determines a partition id for every input
+    /// Row using binary search.
     pub fn partition_indices_for_batch(
         row_batch: &Rows,
         partition_bounds_vec: &Vec<Row>,
@@ -67,6 +72,9 @@ impl RangePartitioner {
         });
     }
 
+    /// Given input arrays and range partitioning metadata: samples the input arrays, generates
+    /// partition bounds, and returns Rows (for comparison against) and a RowConverter (for
+    /// adapting future incoming batches).
     pub fn generate_bounds(
         partition_arrays: &Vec<ArrayRef>,
         lex_ordering: &LexOrdering,
@@ -76,12 +84,14 @@ impl RangePartitioner {
         seed: u64,
     ) -> (Rows, RowConverter) {
         let sampled_columns = if sample_size < num_rows {
+            // Construct our sample indices.
             let sample_indices = UInt64Array::from(RangePartitioner::reservoir_sample_indices(
                 num_rows,
                 sample_size,
                 seed,
             ));
 
+            // Extract our sampled data from the input data.
             take_arrays(
                 partition_arrays,
                 &sample_indices,
@@ -91,9 +101,11 @@ impl RangePartitioner {
             )
             .unwrap()
         } else {
+            // Requested sample_size is larger than the batch, so just use the batch.
             partition_arrays.clone()
         };
 
+        // Generate our bounds indices.
         let sort_fields: Vec<SortField> = partition_arrays
             .iter()
             .zip(lex_ordering)
@@ -104,14 +116,14 @@ impl RangePartitioner {
 
         let (bounds_indices, row_converter) = RangePartitioner::determine_bounds_for_rows(
             sort_fields,
-            sampled_columns,
+            sampled_columns.as_slice(),
             num_output_partitions,
         );
 
+        // Extract our bounds data from the sampled data.
         let bounds_indices_array = UInt64Array::from(bounds_indices);
-
         let bounds_arrays = take_arrays(
-            partition_arrays,
+            sampled_columns.as_slice(),
             &bounds_indices_array,
             Some(TakeOptions {
                 check_bounds: false,
@@ -119,6 +131,7 @@ impl RangePartitioner {
         )
         .unwrap();
 
+        // Convert the bounds data to Rows and return with RowConverter.
         (
             row_converter
                 .convert_columns(bounds_arrays.as_slice())
@@ -127,18 +140,19 @@ impl RangePartitioner {
         )
     }
 
-    // Adapted from org.apache.spark.RangePartitioner.determineBounds
+    /// Given a sort ordering, sampled data, and a number of target partitions, finds the partition
+    /// bounds and returns them as indices into the sampled data.
+    /// Adapted from org.apache.spark.RangePartitioner.determineBounds but without weighted
+    /// values since we don't have cross-partition samples to merge.
     pub fn determine_bounds_for_rows(
         sort_fields: Vec<SortField>,
-        sampled_columns: Vec<ArrayRef>,
+        sampled_columns: &[ArrayRef],
         partitions: usize,
     ) -> (Vec<u64>, RowConverter) {
         assert!(partitions > 1);
 
         let converter = RowConverter::new(sort_fields).unwrap();
-        let sampled_rows = converter
-            .convert_columns(sampled_columns.as_slice())
-            .unwrap();
+        let sampled_rows = converter.convert_columns(sampled_columns).unwrap();
         let mut sorted_sampled_rows: Vec<(usize, Row)> = sampled_rows.iter().enumerate().collect();
         sorted_sampled_rows.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
 
@@ -157,7 +171,6 @@ impl RangePartitioner {
             if cumulative_weights >= target {
                 // Skip duplicate values.
                 if previous_bound.is_none() || key.1 > previous_bound.unwrap() {
-                    // bounds.push(key.1);
                     bounds_indices.push(key.0 as u64);
                     target += step;
                     j += 1;
@@ -292,7 +305,7 @@ mod test {
         let sort_fields = vec![SortField::new(Float64)];
 
         let (rows, _) =
-            RangePartitioner::determine_bounds_for_rows(sort_fields, Vec::from(batch.columns()), 3);
+            RangePartitioner::determine_bounds_for_rows(sort_fields, batch.columns(), 3);
 
         assert_eq!(rows.len(), 2);
 
@@ -313,7 +326,7 @@ mod test {
         let mut num_partitions = batch.num_rows() - 1;
         let (rows, _) = RangePartitioner::determine_bounds_for_rows(
             sort_fields.clone(),
-            Vec::from(batch.columns()),
+            batch.columns(),
             num_partitions,
         );
         assert_eq!(rows.len(), num_partitions - 1);
@@ -322,7 +335,7 @@ mod test {
         num_partitions = batch.num_rows();
         let (rows, _) = RangePartitioner::determine_bounds_for_rows(
             sort_fields.clone(),
-            Vec::from(batch.columns()),
+            batch.columns(),
             num_partitions,
         );
         assert_eq!(rows.len(), num_partitions - 1);
@@ -331,7 +344,7 @@ mod test {
         num_partitions = batch.num_rows() + 1;
         let (rows, _) = RangePartitioner::determine_bounds_for_rows(
             sort_fields.clone(),
-            Vec::from(batch.columns()),
+            batch.columns(),
             num_partitions,
         );
         assert_eq!(rows.len(), batch.num_rows());
@@ -351,14 +364,14 @@ mod test {
 
             let (rows, _) = RangePartitioner::determine_bounds_for_rows(
                 sort_fields.clone(),
-                Vec::from(batch.columns()),
+                batch.columns(),
                 num_partitions,
             );
 
             if batch_size < num_partitions as u32 {
                 assert_eq!(rows.len(), batch_size as usize);
             } else {
-                assert_eq!(rows.len(), (num_partitions - 1) as usize);
+                assert_eq!(rows.len(), num_partitions - 1);
             }
 
             let mut set: HashSet<u64> = HashSet::with_capacity(rows.len());
@@ -388,7 +401,7 @@ mod test {
         let sort_fields = vec![SortField::new(Float64)];
 
         let (rows, _) =
-            RangePartitioner::determine_bounds_for_rows(sort_fields, Vec::from(batch.columns()), 2);
+            RangePartitioner::determine_bounds_for_rows(sort_fields, batch.columns(), 2);
 
         assert_eq!(rows.len(), 1);
 
