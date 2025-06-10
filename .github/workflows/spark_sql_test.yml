@@ -45,7 +45,11 @@ jobs:
       matrix:
         os: [ubuntu-24.04]
         java-version: [11]
-        spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.4'}, {short: '3.5', full: '3.5.5'}, {short: '3.5', full: '3.5.6'}]
+        spark-version:
+          - {short: '3.4', full: '3.4.3'}
+          - {short: '3.5', full: '3.5.4'}
+          - {short: '3.5', full: '3.5.5'}
+          - {short: '3.5', full: '3.5.6'}
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
           - {name: "sql/core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}
@@ -60,18 +64,24 @@ jobs:
     container:
       image: amd64/rust
     steps:
+      - name: Skip Spark 3.5.5 and 3.5.6 on pull_request
+        if: ${{ github.event_name == 'pull_request' && (matrix.spark-version.full == '3.5.4' || matrix.spark-version.full == '3.5.5') }}
+        run: echo "Skipping for PR with Spark version ${{ matrix.spark-version.full }}" && exit 0
       - uses: actions/checkout@v4
       - name: Setup Rust & Java toolchain
+        if: ${{ !(github.event_name == 'pull_request' && (matrix.spark-version.full == '3.5.4' || matrix.spark-version.full == '3.5.5')) }}
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
       - name: Setup Spark
+        if: ${{ !(github.event_name == 'pull_request' && (matrix.spark-version.full == '3.5.4' || matrix.spark-version.full == '3.5.5')) }}
         uses: ./.github/actions/setup-spark-builder
         with:
           spark-version: ${{ matrix.spark-version.full }}
           spark-short-version: ${{ matrix.spark-version.short }}
       - name: Run Spark tests
+        if: ${{ !(github.event_name == 'pull_request' && (matrix.spark-version.full == '3.5.4' || matrix.spark-version.full == '3.5.5')) }}
         run: |
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
