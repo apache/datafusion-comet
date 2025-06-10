@@ -203,7 +203,7 @@ class CometNativeShuffleWriter[K, V](
                 .toDouble * outputPartitioning.numPartitions,
               1e6)
             // Assume the input partitions are roughly balanced and over-sample a little bit.
-            // Comet change: we don't divide by numPartitions since each DF plan handles one partition.
+            // Comet: we don't divide by numPartitions since each DF plan handles one partition.
             math.ceil(3.0 * sampleSize).toInt
           }
           partitioning.setSampleSize(sampleSize)

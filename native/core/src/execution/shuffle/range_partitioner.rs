@@ -30,11 +30,10 @@ impl RangePartitioner {
     // input array at the end.
     pub fn reservoir_sample_indices(num_rows: usize, sample_size: usize) -> Vec<u64> {
         assert!(sample_size > 0);
-
-        if num_rows <= sample_size {
-            // Just return the original input since we can't create a bigger sample.
-            return (0..num_rows as u64).collect();
-        }
+        assert!(
+            num_rows > sample_size,
+            "Sample size > num_rows yields original batch."
+        );
 
         // Initialize our reservoir with indices of the first |sample_size| elements.
         let mut reservoir: Vec<u64> = (0..sample_size as u64).collect();
@@ -72,22 +71,26 @@ impl RangePartitioner {
         partition_arrays: &Vec<ArrayRef>,
         lex_ordering: &LexOrdering,
         num_output_partitions: usize,
-        num_rows: usize,    // TODO: u16
-        sample_size: usize, // TODO: u16
+        num_rows: usize,
+        sample_size: usize,
     ) -> (Rows, RowConverter) {
-        let sample_indices = UInt64Array::from(RangePartitioner::reservoir_sample_indices(
-            num_rows,
-            sample_size,
-        ));
+        let sampled_columns = if sample_size < num_rows {
+            let sample_indices = UInt64Array::from(RangePartitioner::reservoir_sample_indices(
+                num_rows,
+                sample_size,
+            ));
 
-        let sampled_columns = take_arrays(
-            partition_arrays,
-            &sample_indices,
-            Some(TakeOptions {
-                check_bounds: false,
-            }),
-        )
-        .unwrap();
+            take_arrays(
+                partition_arrays,
+                &sample_indices,
+                Some(TakeOptions {
+                    check_bounds: false,
+                }),
+            )
+            .unwrap()
+        } else {
+            partition_arrays.clone()
+        };
 
         let sort_fields: Vec<SortField> = partition_arrays
             .iter()
@@ -232,41 +235,16 @@ mod test {
     }
 
     #[test]
-    fn reservoir_sample_fuzz() {
+    fn reservoir_sample_random() {
         let mut rng = rand::rng();
 
         for _ in 0..1000 {
             let batch_size: usize = rng.random_range(0..=8192);
-            let sample_size: usize = rng.random_range(1..=8192);
-            let reservoir = RangePartitioner::reservoir_sample_indices(batch_size, sample_size);
+            let sample_size: usize = rng.random_range(1..batch_size);
+            let indices = RangePartitioner::reservoir_sample_indices(batch_size, sample_size);
 
-            assert_eq!(reservoir.len(), sample_size.min(batch_size));
-
-            let mut set: HashSet<u64> = HashSet::with_capacity(sample_size);
-            reservoir.iter().for_each(|&idx| {
-                assert!(idx < batch_size as u64);
-                assert!(set.insert(idx));
-            });
+            check_indices(&indices, batch_size, sample_size);
         }
-    }
-
-    #[test]
-    // org.apache.spark.util.random.SamplingUtilsSuite
-    // "reservoirSampleAndCount"
-    fn reservoir_sample() {
-        let batch = create_random_batch(100, false, None);
-        // sample_size > batch.num_rows returns entire batch after sampling
-        let sample1_indices = RangePartitioner::reservoir_sample_indices(batch.num_rows(), 150);
-        check_indices(&sample1_indices, batch.num_rows(), 150);
-        assert_eq!(batch, sample_batch(batch.clone(), sample1_indices));
-        // sample_size == batch.num_rows returns entire batch after sampling
-        let sample2_indices = RangePartitioner::reservoir_sample_indices(batch.num_rows(), 100);
-        check_indices(&sample2_indices, batch.num_rows(), 100);
-        assert_eq!(batch, sample_batch(batch.clone(), sample2_indices));
-        // sample_size < batch.num_rows returns a random subset, so can't compare to original batch
-        let sample3_indices = RangePartitioner::reservoir_sample_indices(batch.num_rows(), 10);
-        check_indices(&sample3_indices, batch.num_rows(), 10);
-        assert_eq!(sample3_indices.len(), 10);
     }
 
     #[test]
@@ -358,7 +336,7 @@ mod test {
     }
 
     #[test]
-    fn determine_bounds_fuzz() {
+    fn determine_bounds_random() {
         let mut rng = rand::rng();
 
         let sort_fields = vec![SortField::new(Int64)];

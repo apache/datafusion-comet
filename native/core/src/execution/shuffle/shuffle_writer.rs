@@ -1417,7 +1417,7 @@ mod test {
                     col("a", batch.schema().as_ref()).unwrap(),
                 )]),
                 num_partitions,
-                100,
+                ((100.0 * num_partitions as f64).min(1e6) * 3.0) as usize,
             ),
         ] {
             let batches = (0..num_batches).map(|_| batch.clone()).collect::<Vec<_>>();
