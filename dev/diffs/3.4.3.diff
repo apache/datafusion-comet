@@ -895,7 +895,7 @@ index 525d97e4998..8a3e7457618 100644
        sql("SELECT * FROM testData2 ORDER BY a ASC, b ASC").collect()
      }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
-index 48ad10992c5..bd3d55d9711 100644
+index 48ad10992c5..3ec91cccfa8 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
 @@ -188,11 +188,13 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper {
@@ -914,6 +914,26 @@ index 48ad10992c5..bd3d55d9711 100644
      testInjectColumnar(false)
    }
  
+@@ -213,7 +215,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper {
+     }
+   }
+ 
+-  test("SPARK-39991: AQE should retain column statistics from completed query stages") {
++  test("SPARK-39991: AQE should retain column statistics from completed query stages",
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1197")) {
+     val extensions = create { extensions =>
+       extensions.injectColumnar(_ =>
+         MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule()))
+@@ -313,7 +316,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper {
+     }
+   }
+ 
+-  test("reset column vectors") {
++  test("reset column vectors",
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1197")) {
+     val session = SparkSession.builder()
+       .master("local[1]")
+       .config(COLUMN_BATCH_SIZE.key, 2)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
 index 18123a4d6ec..fbe4c766eee 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
