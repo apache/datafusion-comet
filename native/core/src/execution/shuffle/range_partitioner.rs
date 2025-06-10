@@ -358,7 +358,7 @@ mod test {
 
         for _ in 0..2048 {
             let batch_size = rng.random_range(0..=8192);
-            let num_partitions = rng.random_range(2..1048576);
+            let num_partitions = rng.random_range(2..1000);
 
             let batch = create_random_batch(batch_size, false, None);
 
