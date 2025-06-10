@@ -380,6 +380,7 @@ impl MultiPartitionShuffleRepartitioner {
         // The initial values are not used.
         let scratch = ScratchSpace {
             hashes_buf: match partitioning {
+                // Only allocate the hashes_buf if hash partitioning.
                 CometPartitioning::Hash(_, _) => vec![0; batch_size],
                 _ => vec![],
             },
@@ -414,6 +415,7 @@ impl MultiPartitionShuffleRepartitioner {
             tracing_enabled,
             bounds_rows: None,
             row_converter: None,
+            // Spark RangePartitioner seeds off of partition number.
             seed: partition as u64,
         })
     }
@@ -428,34 +430,30 @@ impl MultiPartitionShuffleRepartitioner {
             return Ok(());
         }
 
-        fn count_partitions(
-            partition_ids: &[u32],
-            partition_counters: &mut Vec<u32>,
+        fn map_partition_ids_to_starts_and_indices(
+            scratch: &mut ScratchSpace,
             num_output_partitions: usize,
+            num_rows: usize,
         ) {
+            let partition_ids = &mut scratch.partition_ids[..num_rows];
+
             // count each partition size, while leaving the last extra element as 0
+            let partition_counters = &mut scratch.partition_starts;
             partition_counters.resize(num_output_partitions + 1, 0);
             partition_counters.fill(0);
             partition_ids
                 .iter()
                 .for_each(|partition_id| partition_counters[*partition_id as usize] += 1);
-        }
 
-        fn accumulate_partition_counters(partition_ends: &mut [u32]) {
             // accumulate partition counters into partition ends
             // e.g. partition counter: [1, 3, 2, 1, 0] => [1, 4, 6, 7, 7]
-            // this is basically an inclusive scan/prefix sum
+            let partition_ends = partition_counters;
             let mut accum = 0;
             partition_ends.iter_mut().for_each(|v| {
                 *v += accum;
                 accum = *v;
             });
-        }
 
-        fn calculate_partition_row_indices_and_partition_starts(
-            scratch: &mut ScratchSpace,
-            num_rows: usize,
-        ) {
             // calculate partition row indices and partition starts
             // e.g. partition ids: [3, 1, 1, 1, 2, 2, 0] will produce the following partition_row_indices
             // and partition_starts arrays:
@@ -467,15 +465,14 @@ impl MultiPartitionShuffleRepartitioner {
             // Each slice partition_row_indices[partition_starts[K]..partition_starts[K + 1]] contains the
             // row indices of the input batch that are partitioned into partition K. For example,
             // first partition 0 has one row index [6], partition 1 has row indices [1, 2, 3], etc.
-            let partition_ids = &mut scratch.partition_ids[..num_rows];
             let partition_row_indices = &mut scratch.partition_row_indices;
-            let partition_ends = &mut scratch.partition_starts;
             partition_row_indices.resize(num_rows, 0);
             for (index, partition_id) in partition_ids.iter().enumerate().rev() {
                 partition_ends[*partition_id as usize] -= 1;
                 let end = partition_ends[*partition_id as usize];
                 partition_row_indices[end as usize] = index as u32;
             }
+
             // after calculating, partition ends become partition starts
         }
 
@@ -499,19 +496,22 @@ impl MultiPartitionShuffleRepartitioner {
                 let (partition_starts, partition_row_indices): (&Vec<u32>, &Vec<u32>) = {
                     let mut timer = self.metrics.repart_time.timer();
 
-                    // evaluate partition expressions
+                    // Evaluate partition expressions to get rows to apply partitioning scheme.
                     let arrays = exprs
                         .iter()
                         .map(|expr| expr.evaluate(&input)?.into_array(input.num_rows()))
                         .collect::<Result<Vec<_>>>()?;
 
-                    // use identical seed as spark hash partition
-                    let hashes_buf = &mut scratch.hashes_buf[..arrays[0].len()];
+                    let num_rows = arrays[0].len();
+
+                    // Use identical seed as Spark hash partitioning.
+                    let hashes_buf = &mut scratch.hashes_buf[..num_rows];
                     hashes_buf.fill(42_u32);
 
+                    // Generate partition ids for every row.
                     {
-                        // Hash arrays and compute buckets based on number of partitions
-                        let partition_ids = &mut scratch.partition_ids[..arrays[0].len()];
+                        // Hash arrays and compute partition ids based on number of partitions.
+                        let partition_ids = &mut scratch.partition_ids[..num_rows];
                         create_murmur3_hashes(&arrays, hashes_buf)?
                             .iter()
                             .enumerate()
@@ -520,17 +520,12 @@ impl MultiPartitionShuffleRepartitioner {
                             });
                     }
 
-                    count_partitions(
-                        &scratch.partition_ids[..arrays[0].len()],
-                        &mut scratch.partition_starts,
-                        *num_output_partitions,
-                    );
-
-                    accumulate_partition_counters(&mut scratch.partition_starts);
-
-                    calculate_partition_row_indices_and_partition_starts(
+                    // We now have partition ids for every input row, map that to partition starts
+                    // and partition indices to eventually right these rows to partition buffers.
+                    map_partition_ids_to_starts_and_indices(
                         &mut scratch,
-                        arrays[0].len(),
+                        *num_output_partitions,
+                        num_rows,
                     );
 
                     timer.stop();
@@ -557,15 +552,19 @@ impl MultiPartitionShuffleRepartitioner {
                 let (partition_starts, partition_row_indices): (&Vec<u32>, &Vec<u32>) = {
                     let mut timer = self.metrics.repart_time.timer();
 
-                    // evaluate partition expressions
-                    let partition_arrays = lex_ordering
+                    // Evaluate partition expressions for values to apply partitioning scheme on.
+                    let arrays = lex_ordering
                         .iter()
                         .map(|expr| expr.expr.evaluate(&input)?.into_array(input.num_rows()))
                         .collect::<Result<Vec<_>>>()?;
 
+                    let num_rows = arrays[0].len();
+
+                    // If necessary (i.e., when first batch arrives) generate the bounds (as Rows)
+                    // for range partitioning based on randomly reservoir sampling the batch.
                     if self.row_converter.is_none() {
                         let (bounds_rows, row_converter) = RangePartitioner::generate_bounds(
-                            &partition_arrays,
+                            &arrays,
                             lex_ordering,
                             *num_output_partitions,
                             input.num_rows(),
@@ -577,13 +576,16 @@ impl MultiPartitionShuffleRepartitioner {
                         self.row_converter = Some(row_converter);
                     }
 
+                    // Generate partition ids for every row, first by converting the partition
+                    // arrays to Rows, and then doing binary search for each Row against the
+                    // bounds Rows.
                     let row_batch = self
                         .row_converter
                         .as_ref()
                         .unwrap()
-                        .convert_columns(partition_arrays.as_slice())?;
+                        .convert_columns(arrays.as_slice())?;
                     {
-                        let partition_ids = &mut scratch.partition_ids[..partition_arrays[0].len()];
+                        let partition_ids = &mut scratch.partition_ids[..num_rows];
 
                         // TODO: Try to cache this vector.
                         let bounds_rows_vec =
@@ -596,17 +598,12 @@ impl MultiPartitionShuffleRepartitioner {
                         );
                     }
 
-                    count_partitions(
-                        &scratch.partition_ids[..partition_arrays[0].len()],
-                        &mut scratch.partition_starts,
-                        *num_output_partitions,
-                    );
-
-                    accumulate_partition_counters(&mut scratch.partition_starts);
-
-                    calculate_partition_row_indices_and_partition_starts(
+                    // We now have partition ids for every input row, map that to partition starts
+                    // and partition indices to eventually right these rows to partition buffers.
+                    map_partition_ids_to_starts_and_indices(
                         &mut scratch,
-                        partition_arrays[0].len(),
+                        *num_output_partitions,
+                        num_rows,
                     );
 
                     timer.stop();
