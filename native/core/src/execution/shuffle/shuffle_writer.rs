@@ -336,6 +336,7 @@ struct MultiPartitionShuffleRepartitioner {
     /// RangePartitioning-specific state
     bounds_rows: Option<Rows>,
     row_converter: Option<RowConverter>,
+    seed: u64,
 }
 
 #[derive(Default)]
@@ -413,6 +414,7 @@ impl MultiPartitionShuffleRepartitioner {
             tracing_enabled,
             bounds_rows: None,
             row_converter: None,
+            seed: partition as u64,
         })
     }
 
@@ -568,6 +570,7 @@ impl MultiPartitionShuffleRepartitioner {
                             *num_output_partitions,
                             input.num_rows(),
                             *sample_size,
+                            self.seed,
                         );
 
                         self.bounds_rows = Some(bounds_rows);

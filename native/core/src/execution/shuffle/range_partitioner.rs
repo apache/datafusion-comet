@@ -19,16 +19,16 @@ use arrow::array::{ArrayRef, UInt64Array};
 use arrow::compute::{take_arrays, TakeOptions};
 use arrow::row::{Row, RowConverter, Rows, SortField};
 use datafusion::physical_expr::LexOrdering;
-use rand::Rng;
+use rand::{rngs::SmallRng, Rng, SeedableRng};
 
 pub struct RangePartitioner;
 
 impl RangePartitioner {
     // Adapted from https://en.wikipedia.org/wiki/Reservoir_sampling#Optimal:_Algorithm_L
-    // We use sample_size instead of k and input_length instead of n.
-    // We use indices in the reservoir instead of actual values since we'll do one take() on the
-    // input array at the end.
-    pub fn reservoir_sample_indices(num_rows: usize, sample_size: usize) -> Vec<u64> {
+    // We use sample_size instead of k and num_rows instead of n.
+    // We use indices instead of actual values in the reservoir  since we'll do one take() on the
+    // input arrays at the end.
+    pub fn reservoir_sample_indices(num_rows: usize, sample_size: usize, seed: u64) -> Vec<u64> {
         assert!(sample_size > 0);
         assert!(
             num_rows > sample_size,
@@ -38,7 +38,7 @@ impl RangePartitioner {
         // Initialize our reservoir with indices of the first |sample_size| elements.
         let mut reservoir: Vec<u64> = (0..sample_size as u64).collect();
 
-        let mut rng = rand::rng();
+        let mut rng = SmallRng::seed_from_u64(seed);
         let mut w = (rng.random::<f64>().ln() / sample_size as f64).exp();
         let mut i = sample_size - 1;
 
@@ -73,11 +73,13 @@ impl RangePartitioner {
         num_output_partitions: usize,
         num_rows: usize,
         sample_size: usize,
+        seed: u64,
     ) -> (Rows, RowConverter) {
         let sampled_columns = if sample_size < num_rows {
             let sample_indices = UInt64Array::from(RangePartitioner::reservoir_sample_indices(
                 num_rows,
                 sample_size,
+                seed,
             ));
 
             take_arrays(
@@ -236,12 +238,12 @@ mod test {
 
     #[test]
     fn reservoir_sample_random() {
-        let mut rng = rand::rng();
+        let mut rng = SmallRng::seed_from_u64(42);
 
-        for _ in 0..1000 {
-            let batch_size: usize = rng.random_range(0..=8192);
+        for _ in 0..8192 {
+            let batch_size: usize = rng.random_range(1..=8192);
             let sample_size: usize = rng.random_range(1..batch_size);
-            let indices = RangePartitioner::reservoir_sample_indices(batch_size, sample_size);
+            let indices = RangePartitioner::reservoir_sample_indices(batch_size, sample_size, 42);
 
             check_indices(&indices, batch_size, sample_size);
         }
@@ -253,8 +255,8 @@ mod test {
     fn reservoir_sample_and_count_with_tiny_input() {
         let batch = record_batch!(("a", Int32, vec![0, 1])).unwrap();
         let mut counts: Vec<i32> = vec![0; 2];
-        for _i in 0..500 {
-            let indices = RangePartitioner::reservoir_sample_indices(batch.num_rows(), 1);
+        for i in 0..500 {
+            let indices = RangePartitioner::reservoir_sample_indices(batch.num_rows(), 1, i);
             let result = sample_batch(batch.clone(), indices);
             assert_eq!(result.num_rows(), 1);
             counts[result.column(0).as_primitive::<Int32Type>().value(0) as usize] += 1;
@@ -337,11 +339,11 @@ mod test {
 
     #[test]
     fn determine_bounds_random() {
-        let mut rng = rand::rng();
+        let mut rng = SmallRng::seed_from_u64(42);
 
         let sort_fields = vec![SortField::new(Int64)];
 
-        for _ in 0..1000 {
+        for _ in 0..2048 {
             let batch_size = rng.random_range(0..=8192);
             let num_partitions = rng.random_range(2..1048576);
 
@@ -398,7 +400,7 @@ mod test {
     }
 
     fn create_random_batch(batch_size: u32, sort: bool, range: Option<(i64, i64)>) -> RecordBatch {
-        let mut rng = rand::rng();
+        let mut rng = SmallRng::seed_from_u64(42);
         let mut column: Vec<i64> = if let Some((min, max)) = range {
             assert!(min <= max);
             (0..batch_size)
