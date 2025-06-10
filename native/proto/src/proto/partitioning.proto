@@ -45,4 +45,5 @@ message SinglePartition {
 message RangePartition {
   repeated spark.spark_expression.Expr sort_orders = 1;
   int32 num_partitions = 2;
+  int32 sample_size = 3;
 }

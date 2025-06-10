@@ -91,6 +91,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 col("c0", batch.schema().as_ref()).unwrap(),
             )]),
             16,
+            100,
         ),
     ] {
         let compression_codec = CompressionCodec::None;

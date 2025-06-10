@@ -2212,6 +2212,7 @@ impl PhysicalPlanner {
                 Ok(CometPartitioning::RangePartitioning(
                     lex_ordering,
                     range_partition.num_partitions as usize,
+                    range_partition.sample_size as usize,
                 ))
             }
             PartitioningStruct::SinglePartition(_) => Ok(CometPartitioning::UnknownPartitioning(1)),

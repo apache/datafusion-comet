@@ -27,7 +27,7 @@ pub enum CometPartitioning {
     Hash(Vec<Arc<dyn PhysicalExpr>>, usize),
     /// Allocate rows based on lexical order of one of more expressions and the specified number of
     /// partitions
-    RangePartitioning(LexOrdering, usize),
+    RangePartitioning(LexOrdering, usize, usize),
     /// Unknown partitioning scheme with a known number of partitions
     UnknownPartitioning(usize),
 }
@@ -36,9 +36,10 @@ impl CometPartitioning {
     pub fn partition_count(&self) -> usize {
         use CometPartitioning::*;
         match self {
-            RoundRobinBatch(n) | Hash(_, n) | UnknownPartitioning(n) | RangePartitioning(_, n) => {
-                *n
-            }
+            RoundRobinBatch(n)
+            | Hash(_, n)
+            | UnknownPartitioning(n)
+            | RangePartitioning(_, n, _) => *n,
         }
     }
 }
@@ -67,8 +68,8 @@ impl From<CometPartitioning> for Partitioning {
             CometPartitioning::UnknownPartitioning(partitions) => {
                 Partitioning::UnknownPartitioning(partitions)
             }
-            CometPartitioning::RangePartitioning(_lex_ordering, usize) => {
-                Partitioning::UnknownPartitioning(usize)
+            CometPartitioning::RangePartitioning(_, partitions, _) => {
+                Partitioning::UnknownPartitioning(partitions)
             }
         }
     }

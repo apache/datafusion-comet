@@ -546,7 +546,11 @@ impl MultiPartitionShuffleRepartitioner {
                 .await?;
                 self.scratch = scratch;
             }
-            CometPartitioning::RangePartitioning(lex_ordering, num_output_partitions) => {
+            CometPartitioning::RangePartitioning(
+                lex_ordering,
+                num_output_partitions,
+                sample_size,
+            ) => {
                 let mut scratch = std::mem::take(&mut self.scratch);
                 let (partition_starts, partition_row_indices): (&Vec<u32>, &Vec<u32>) = {
                     let mut timer = self.metrics.repart_time.timer();
@@ -558,13 +562,12 @@ impl MultiPartitionShuffleRepartitioner {
                         .collect::<Result<Vec<_>>>()?;
 
                     if self.row_converter.is_none() {
-                        // TODO: Adjust sample size.
                         let (bounds_rows, row_converter) = RangePartitioner::generate_bounds(
                             &partition_arrays,
                             lex_ordering,
                             *num_output_partitions,
                             input.num_rows(),
-                            100,
+                            *sample_size,
                         );
 
                         self.bounds_rows = Some(bounds_rows);
@@ -1414,6 +1417,7 @@ mod test {
                     col("a", batch.schema().as_ref()).unwrap(),
                 )]),
                 num_partitions,
+                100,
             ),
         ] {
             let batches = (0..num_batches).map(|_| batch.clone()).collect::<Vec<_>>();

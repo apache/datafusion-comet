@@ -31,6 +31,7 @@ import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, SinglePartition}
 import org.apache.spark.sql.comet.{CometExec, CometMetricNode}
 import org.apache.spark.sql.execution.metric.SQLMetric
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometConf
@@ -191,6 +192,21 @@ class CometNativeShuffleWriter[K, V](
 
           val partitioning = PartitioningOuterClass.RangePartition.newBuilder()
           partitioning.setNumPartitions(outputPartitioning.numPartitions)
+          val sampleSize = {
+            // taken from org.apache.spark.RangePartitioner#rangeBounds
+            // This is the sample size we need to have roughly balanced output partitions,
+            // capped at 1M.
+            // Cast to double to avoid overflowing ints or longs
+            val sampleSize = math.min(
+              SQLConf.get
+                .getConf(SQLConf.RANGE_EXCHANGE_SAMPLE_SIZE_PER_PARTITION)
+                .toDouble * outputPartitioning.numPartitions,
+              1e6)
+            // Assume the input partitions are roughly balanced and over-sample a little bit.
+            // Comet change: we don't divide by numPartitions since each DF plan handles one partition.
+            math.ceil(3.0 * sampleSize).toInt
+          }
+          partitioning.setSampleSize(sampleSize)
 
           val orderingExprs = rangePartitioning.ordering
             .flatMap(e => QueryPlanSerde.exprToProto(e, outputAttributes))
