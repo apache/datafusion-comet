@@ -25,6 +25,7 @@ import java.nio.file.{Files, Paths}
 import scala.collection.JavaConverters.asJavaIterableConverter
 
 import org.apache.spark.{SparkEnv, TaskContext}
+import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.shuffle.{IndexShuffleBlockResolver, ShuffleWriteMetricsReporter, ShuffleWriter}
 import org.apache.spark.sql.catalyst.expressions.Attribute
@@ -51,7 +52,8 @@ class CometNativeShuffleWriter[K, V](
     mapId: Long,
     context: TaskContext,
     metricsReporter: ShuffleWriteMetricsReporter)
-    extends ShuffleWriter[K, V] {
+    extends ShuffleWriter[K, V]
+    with Logging {
 
   private val OFFSET_LENGTH = 8
 
@@ -205,6 +207,10 @@ class CometNativeShuffleWriter[K, V](
             // Assume the input partitions are roughly balanced and over-sample a little bit.
             // Comet: we don't divide by numPartitions since each DF plan handles one partition.
             math.ceil(3.0 * sampleSize).toInt
+          }
+          if (sampleSize > 8192) {
+            logWarning(
+              s"RangePartitioning sampleSize of s$sampleSize exceeds Comet RecordBatch size.")
           }
           partitioning.setSampleSize(sampleSize)
 
