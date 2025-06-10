@@ -27,13 +27,7 @@ source rather than using available artifacts in Maven**
 Run a Maven install so that we can compile Iceberg against latest Comet:
 
 ```shell
-mvn install -DskipTests
-```
-
-Build the release JAR to be used from Spark:
-
-```shell
-make release
+make release PROFILES="-Pscala-2.13"
 ```
 
 Set `COMET_JAR` env var:
@@ -50,19 +44,13 @@ Clone the Iceberg repository.
 git clone git@github.com:apache/iceberg.git
 ```
 
-It will be necessary to make some small changes to Iceberg:
+Modify `libs.versions.toml` to update the Comet version to the installed snapshot version:
 
-- Update Gradle files to change Comet version to `0.9.0-SNAPSHOT`.
-- Replace `import org.apache.comet.shaded.arrow.c.CometSchemaImporter;` with `import org.apache.comet.CometSchemaImporter;`
-- Modify `SparkBatchQueryScan` so that it implements the `SupportsComet` interface
-- Stop shading Parquet by commenting out the following lines in the iceberg-spark build:
-
-```
-//    relocate 'org.apache.parquet', 'org.apache.iceberg.shaded.org.apache.parquet'
-//    relocate 'shaded.parquet', 'org.apache.iceberg.shaded.org.apache.parquet.shaded'
+```toml
+comet = "0.9.0-SNAPSHOT"
 ```
 
-Perform a clean build
+Perform a clean build.
 
 ```shell
 ./gradlew clean
@@ -93,7 +81,7 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.sql.iceberg.parquet.reader-type=COMET \
     --conf spark.comet.explainFallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
-    --conf spark.memory.offHeap.size=16g
+    --conf spark.memory.offHeap.size=2g
 ```
 
 Create an Iceberg table. Note that Comet will not accelerate this part.

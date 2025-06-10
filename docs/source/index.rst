@@ -44,6 +44,7 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    Installing Comet <user-guide/installation>
    Building From Source <user-guide/source>
    Kubernetes Guide <user-guide/kubernetes>
+   Iceberg Integration <user-guide/iceberg>
    Supported Data Sources <user-guide/datasources>
    Supported Data Types <user-guide/datatypes>
    Supported Operators <user-guide/operators>
