@@ -64,7 +64,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - name: Skip Spark 3.5.5 and 3.5.6 on pull_request
+      - name: Skip older Spark 3.5.x versions on pull_request
         if: ${{ github.event_name == 'pull_request' && (matrix.spark-version.full == '3.5.4' || matrix.spark-version.full == '3.5.5') }}
         run: echo "Skipping for PR with Spark version ${{ matrix.spark-version.full }}" && exit 0
       - uses: actions/checkout@v4
