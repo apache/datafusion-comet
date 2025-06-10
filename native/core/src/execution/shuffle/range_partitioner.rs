@@ -192,6 +192,8 @@ mod test {
     use arrow::datatypes::DataType::{Float64, Int64};
     use arrow::datatypes::{Field, Float64Type, Int32Type, Int64Type, Schema};
     use datafusion::common::record_batch;
+    use datafusion::physical_expr::expressions::col;
+    use datafusion::physical_expr::PhysicalSortExpr;
     use itertools::Itertools;
     use std::sync::Arc;
 
@@ -230,6 +232,42 @@ mod test {
             sorted_indices.len(),
             sorted_indices.iter().dedup().collect_vec().len()
         );
+    }
+
+    #[test]
+    fn partition_sorted_batch() {
+        // let sort_fields = vec![SortField::new(Int64)];
+        // let row_converter = RowConverter::new(sort_fields).unwrap();
+        // let mut partition_ids = vec![0u32; 8192];
+        // let mut partition_counts = [0u32; 10];
+
+        let input_batch = create_random_batch(8192, true, Some((0, 8192)));
+
+        let lex_ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(
+            col("a", input_batch.schema().as_ref()).unwrap(),
+        )]);
+
+        let (rows, row_converter) = RangePartitioner::generate_bounds(
+            input_batch.columns().to_vec().as_ref(),
+            &lex_ordering,
+            10,
+            input_batch.num_rows(),
+            8192,
+            42,
+        );
+
+        let rows_array = row_converter.convert_rows(&rows).unwrap();
+
+        let primitive_array = rows_array[0].as_primitive::<Int64Type>();
+
+        for i in 0..8 {
+            assert!(
+                (primitive_array.values().get(i + 1).unwrap()
+                    - primitive_array.values().get(i).unwrap())
+                .abs()
+                    < 1000
+            )
+        }
     }
 
     #[test]
