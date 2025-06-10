@@ -191,7 +191,7 @@ mod test {
     use arrow::compute::take_record_batch;
     use arrow::datatypes::DataType::{Float64, Int64};
     use arrow::datatypes::{Field, Float64Type, Int32Type, Int64Type, Schema};
-    use datafusion::common::{record_batch, HashSet};
+    use datafusion::common::record_batch;
     use itertools::Itertools;
     use std::sync::Arc;
 
@@ -200,15 +200,31 @@ mod test {
         take_record_batch(&input, &indices).unwrap()
     }
 
-    fn check_indices(indices: &[u64], batch_size: usize, sample_size: usize) {
+    fn check_sample_indices(indices: &[u64], batch_size: usize, sample_size: usize) {
         // sample indices size should never exceed the batch size
         assert!(indices.len() <= batch_size);
+        // number of samples should be the smaller of batch size and sample size
         assert_eq!(indices.len(), batch_size.min(sample_size));
-        // Check that values are distinct and not out of bounds
+        // Check that indices are not out of bounds
         indices
             .iter()
             .for_each(|&idx| assert!(idx < batch_size as u64));
-        // Check that values are distinct and not out of bounds
+        // Check that values are distinct
+        let sorted_indices = indices.iter().sorted().collect_vec();
+        assert_eq!(
+            sorted_indices.len(),
+            sorted_indices.iter().dedup().collect_vec().len()
+        );
+    }
+
+    fn check_bounds_indices(indices: &[u64], sample_size: usize) {
+        // bounds indices size should never exceed the sample size
+        assert!(indices.len() <= sample_size);
+        // Check that indices are not out of bounds
+        indices
+            .iter()
+            .for_each(|&idx| assert!(idx < sample_size as u64));
+        // Check that values are distinct
         let sorted_indices = indices.iter().sorted().collect_vec();
         assert_eq!(
             sorted_indices.len(),
@@ -250,15 +266,20 @@ mod test {
     }
 
     #[test]
+    // We want to verify that reservoir sampling yields valid indices for different size input
+    // batches. We randomly generate batch sizes and sample sizes, and then construct reservoir
+    // samples for each scenario. Finally, we validate the indices.
     fn reservoir_sample_random() {
         let mut rng = SmallRng::seed_from_u64(42);
 
         for _ in 0..8192 {
             let batch_size: usize = rng.random_range(1..=8192);
+            // We don't test sample size > batch_size since in that case you would just take the
+            // entire batch as the sample.
             let sample_size: usize = rng.random_range(1..batch_size);
             let indices = RangePartitioner::reservoir_sample_indices(batch_size, sample_size, 42);
 
-            check_indices(&indices, batch_size, sample_size);
+            check_sample_indices(&indices, batch_size, sample_size);
         }
     }
 
@@ -307,6 +328,8 @@ mod test {
         let (rows, _) =
             RangePartitioner::determine_bounds_for_rows(sort_fields, batch.columns(), 3);
 
+        check_bounds_indices(rows.as_slice(), batch.num_rows());
+
         assert_eq!(rows.len(), 2);
 
         let indices = UInt64Array::from(rows);
@@ -317,40 +340,9 @@ mod test {
     }
 
     #[test]
-    fn determine_bounds_sizes() {
-        let batch = record_batch!(("a", Float64, vec![Some(0.1), Some(0.2), Some(0.3),])).unwrap();
-
-        let sort_fields = vec![SortField::new(Float64)];
-
-        // num_partitions < sample size
-        let mut num_partitions = batch.num_rows() - 1;
-        let (rows, _) = RangePartitioner::determine_bounds_for_rows(
-            sort_fields.clone(),
-            batch.columns(),
-            num_partitions,
-        );
-        assert_eq!(rows.len(), num_partitions - 1);
-
-        // num_partitions == sample size
-        num_partitions = batch.num_rows();
-        let (rows, _) = RangePartitioner::determine_bounds_for_rows(
-            sort_fields.clone(),
-            batch.columns(),
-            num_partitions,
-        );
-        assert_eq!(rows.len(), num_partitions - 1);
-
-        // num_partitions > sample size
-        num_partitions = batch.num_rows() + 1;
-        let (rows, _) = RangePartitioner::determine_bounds_for_rows(
-            sort_fields.clone(),
-            batch.columns(),
-            num_partitions,
-        );
-        assert_eq!(rows.len(), batch.num_rows());
-    }
-
-    #[test]
+    // We want to verify that determining bounds yields valid indices for different size sample
+    // batches. We randomly generate batches and number of partitions, and then construct
+    // bounds for each scenario. Finally, we validate the indices.
     fn determine_bounds_random() {
         let mut rng = SmallRng::seed_from_u64(42);
 
@@ -358,7 +350,9 @@ mod test {
 
         for _ in 0..2048 {
             let batch_size = rng.random_range(0..=8192);
-            let num_partitions = rng.random_range(2..1000);
+            // We don't test fewer than 2 partitions since this is used by the
+            // MultiPartitionShuffleRepartitioner which is for >1 partitions.
+            let num_partitions = rng.random_range(2..=10000);
 
             let batch = create_random_batch(batch_size, false, None);
 
@@ -368,17 +362,7 @@ mod test {
                 num_partitions,
             );
 
-            if batch_size < num_partitions as u32 {
-                assert_eq!(rows.len(), batch_size as usize);
-            } else {
-                assert_eq!(rows.len(), num_partitions - 1);
-            }
-
-            let mut set: HashSet<u64> = HashSet::with_capacity(rows.len());
-            rows.iter().for_each(|&idx| {
-                assert!(idx < batch_size as u64);
-                assert!(set.insert(idx));
-            });
+            check_bounds_indices(rows.as_slice(), batch_size as usize);
 
             let rows_array = UInt64Array::from(rows);
 
@@ -390,11 +374,20 @@ mod test {
                 .values()
                 .to_vec();
 
+            // Bounds should be sorted.
             assert!(bounds_vec.is_sorted());
+            // Bounds should be unique.
+            assert_eq!(
+                bounds_vec.len(),
+                bounds_vec.iter().dedup().collect_vec().len()
+            );
         }
     }
 
     #[test]
+    // We want to make sure that finding bounds works with nulls. DF has more exhaustive tests for
+    // sorting with nulls, so we defer to those for more coverage. This is just a small
+    // deterministic test to verify that nulls can be partition boundaries.
     fn determine_bounds_with_nulls() {
         let batch = record_batch!(("a", Float64, vec![None, None, Some(0.1),])).unwrap();
 
