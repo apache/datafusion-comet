@@ -233,6 +233,11 @@ mod test {
     }
 
     #[test]
+    // We want to verify that with hand-written bounds for a distribution of data that we get
+    // reasonable partition indices for a random batch. For this scenario, we create a full
+    // RecordBatch with one partition column. The values in the column are uniform randomly
+    // distributed between [0,10). We request 10 partitions with bounds of [1,2,3,4,5,6,7,8,9],
+    // and the result should be 10 bins with reasonably close counts.
     fn partition_indices_for_batch() {
         let sort_fields = vec![SortField::new(Int64)];
         let row_converter = RowConverter::new(sort_fields).unwrap();
@@ -260,6 +265,8 @@ mod test {
             .iter()
             .for_each(|&partition_id| partition_counts[partition_id as usize] += 1);
 
+        // The RecordBatch won't be perfectly distributed, so for 8192 / 10 possible values we
+        // check that each partition just has >700 values in them.
         partition_counts
             .iter()
             .for_each(|&partition_count| assert!(partition_count > 700));
