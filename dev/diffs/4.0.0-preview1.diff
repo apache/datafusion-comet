@@ -995,6 +995,26 @@ index 56c364e2084..fc3abd7cdc4 100644
      withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
        SQLConf.ANSI_ENABLED.key -> "true") {
        withTable("t") {
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
+index 4d38e360f43..4fc255a347f 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
+@@ -190,11 +190,13 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
+     }
+   }
+ 
+-  test("inject columnar AQE on") {
++  test("inject columnar AQE on",
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1197")) {
+     testInjectColumnar(true)
+   }
+ 
+-  test("inject columnar AQE off") {
++  test("inject columnar AQE off",
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1197")) {
+     testInjectColumnar(false)
+   }
+ 
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
 index 3fc0b572d80..0d87150d446 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala

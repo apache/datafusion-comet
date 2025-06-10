@@ -894,6 +894,26 @@ index 525d97e4998..8a3e7457618 100644
      AccumulatorSuite.verifyPeakExecutionMemorySet(sparkContext, "external sort") {
        sql("SELECT * FROM testData2 ORDER BY a ASC, b ASC").collect()
      }
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
+index 48ad10992c5..bd3d55d9711 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
+@@ -188,11 +188,13 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper {
+     }
+   }
+ 
+-  test("inject columnar AQE on") {
++  test("inject columnar AQE on",
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1197")) {
+     testInjectColumnar(true)
+   }
+ 
+-  test("inject columnar AQE off") {
++  test("inject columnar AQE off",
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1197")) {
+     testInjectColumnar(false)
+   }
+ 
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
 index 18123a4d6ec..fbe4c766eee 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
