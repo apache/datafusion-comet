@@ -2733,7 +2733,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withSQLConf(
         SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_ENABLED.key -> "false",
+        CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion",
         SQLConf.PARQUET_VECTORIZED_READER_NESTED_COLUMN_ENABLED.key -> "true",
@@ -2748,9 +2748,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           nullable = false)
 
         withParquetFile(data) { file =>
-          spark.read.parquet(file).show(false)
-          spark.read.parquet(file).printSchema()
-          spark.read.schema(readSchema).parquet(file).show(false)
           checkAnswer(
             spark.read.schema(readSchema).parquet(file),
             Row(null) :: Row(null) :: Row(null) :: Nil)
