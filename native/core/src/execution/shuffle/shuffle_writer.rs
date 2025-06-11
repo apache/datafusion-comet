@@ -21,7 +21,7 @@ use crate::execution::shuffle::range_partitioner::RangePartitioner;
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use crate::execution::tracing::{with_trace, with_trace_async};
 use arrow::compute::interleave_record_batch;
-use arrow::row::{RowConverter, Rows};
+use arrow::row::{OwnedRow, RowConverter};
 use async_trait::async_trait;
 use datafusion::common::utils::proxy::VecAllocExt;
 use datafusion::physical_expr::EquivalenceProperties;
@@ -334,7 +334,7 @@ struct MultiPartitionShuffleRepartitioner {
     reservation: MemoryReservation,
     tracing_enabled: bool,
     /// RangePartitioning-specific state
-    bounds_rows: Option<Rows>,
+    bounds_rows: Option<Vec<OwnedRow>>,
     row_converter: Option<RowConverter>,
     seed: u64,
 }
@@ -572,7 +572,8 @@ impl MultiPartitionShuffleRepartitioner {
                             self.seed,
                         )?;
 
-                        self.bounds_rows = Some(bounds_rows);
+                        self.bounds_rows =
+                            Some(bounds_rows.iter().map(|row| row.owned()).collect_vec());
                         self.row_converter = Some(row_converter);
                     }
 
@@ -584,19 +585,12 @@ impl MultiPartitionShuffleRepartitioner {
                         .as_ref()
                         .unwrap()
                         .convert_columns(arrays.as_slice())?;
-                    {
-                        let partition_ids = &mut scratch.partition_ids[..num_rows];
 
-                        // TODO: Try to cache this vector.
-                        let bounds_rows_vec =
-                            self.bounds_rows.as_ref().unwrap().iter().collect_vec();
-
-                        RangePartitioner::partition_indices_for_batch(
-                            &row_batch,
-                            &bounds_rows_vec,
-                            partition_ids,
-                        );
-                    }
+                    RangePartitioner::partition_indices_for_batch(
+                        &row_batch,
+                        self.bounds_rows.as_ref().unwrap().as_slice(),
+                        &mut scratch.partition_ids[..num_rows],
+                    );
 
                     // We now have partition ids for every input row, map that to partition starts
                     // and partition indices to eventually right these rows to partition buffers.
