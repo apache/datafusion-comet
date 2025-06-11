@@ -44,6 +44,11 @@ Clone the Iceberg repository.
 git clone git@github.com:apache/iceberg.git
 ```
 
+Change the default Spark version in `gradle.properties`
+```toml
+systemProp.defaultSparkVersions=3.5
+```
+
 Modify `libs.versions.toml` to update the Comet version to the installed snapshot version:
 
 ```toml

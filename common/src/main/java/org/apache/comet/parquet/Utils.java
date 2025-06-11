@@ -28,6 +28,14 @@ import org.apache.comet.CometSchemaImporter;
 
 public class Utils {
 
+  /*
+   'org.apache.comet.parquet.ColumnReader org.apache.comet.parquet.Utils.getColumnReader(
+   org.apache.spark.sql.types.DataType,
+   org.apache.iceberg.shaded.org.apache.parquet.column.ColumnDescriptor,
+   org.apache.comet.CometSchemaImporter, int, boolean, boolean)'
+
+   */
+
   /** This method is called from Apache Iceberg. */
   public static ColumnReader getColumnReader(
       DataType type,
