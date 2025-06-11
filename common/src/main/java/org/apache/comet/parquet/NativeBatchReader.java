@@ -486,14 +486,14 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   private String getMatchingNameById(
       StructField f,
       Map<Integer, List<Type>> idToParquetFieldMap,
-      Map<String, List<Type>> nameToParquetFieldMap /*, Map<String, String> nameMap*/,
+      Map<String, List<Type>> nameToParquetFieldMap,
       boolean isCaseSensitive) {
     Type matched =
         getMatchingParquetFieldById(f, idToParquetFieldMap, nameToParquetFieldMap, isCaseSensitive);
 
     // When there is no ID match, we use a fake name to avoid a name match by accident
     // We need this name to be unique as well, otherwise there will be type conflicts
-    if (matched == null /*|| matched.isEmpty()*/) {
+    if (matched == null) {
       return CometParquetReadSupport.generateFakeColumnName();
     } else {
       return matched.getName();
