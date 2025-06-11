@@ -2888,6 +2888,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
     val inputs = s.child.output
     val partitioning = s.outputPartitioning
+    val conf = SQLConf.get
     var msg = ""
     val supported = partitioning match {
       case HashPartitioning(expressions, _) =>
@@ -2896,7 +2897,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val supported =
           expressions.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
             expressions.forall(e => supportedPartitionKeyDataType(e.dataType)) &&
-            inputs.forall(attr => supportedShuffleDataType(attr.dataType))
+            inputs.forall(attr => supportedShuffleDataType(attr.dataType)) &&
+            CometConf.COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED.get(conf)
         if (!supported) {
           msg = s"unsupported Spark partitioning expressions: $expressions"
         }
@@ -2904,7 +2906,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case SinglePartition =>
         inputs.forall(attr => supportedShuffleDataType(attr.dataType))
       case RangePartitioning(_, _) =>
-        true
+        CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.get(conf)
       case _ =>
         msg = s"unsupported Spark partitioning: ${partitioning.getClass.getName}"
         false

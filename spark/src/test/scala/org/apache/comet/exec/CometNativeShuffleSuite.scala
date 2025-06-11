@@ -27,6 +27,7 @@ import org.scalatest.Tag
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkEnv
 import org.apache.spark.sql.{CometTestBase, DataFrame}
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
@@ -120,27 +121,59 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
-  test("native operator after native shuffle") {
+  test("native operator after native shuffle with hash partitioning") {
     withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
       val df = sql("SELECT * FROM tbl")
 
-      val shuffled1 = df
+      val shuffled = df
         .repartition(10, $"_2")
         .select($"_1", $"_1" + 1, $"_2" + 2)
         .repartition(10, $"_1")
         .filter($"_1" > 1)
 
       // 2 Comet shuffle exchanges are expected
-      checkShuffleAnswer(shuffled1, 2)
+      checkShuffleAnswer(shuffled, 2)
 
-      val shuffled2 = df
+      // check the partitioning schemes on the native shuffles
+      val sparkPlan = stripAQEPlan(shuffled.queryExecution.executedPlan)
+      val cometShuffleExecs = sparkPlan.collect { case b: CometShuffleExchangeExec => b }
+      var hash_partitions = 0;
+      var range_partitions = 0;
+      cometShuffleExecs.foreach(shuffleExec =>
+        shuffleExec.outputPartitioning match {
+          case RangePartitioning(_, _) => range_partitions += 1
+          case HashPartitioning(_, _) => hash_partitions += 1
+        })
+
+      assert(hash_partitions == 2 && range_partitions == 0)
+    }
+  }
+
+  test("native operator after native shuffle with range partitioning") {
+    withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
+      val df = sql("SELECT * FROM tbl")
+
+      val shuffled = df
         .repartitionByRange(10, $"_2")
         .select($"_1", $"_1" + 1, $"_2" + 2)
         .repartition(10, $"_1")
         .filter($"_1" > 1)
 
       // native shuffle supports RangePartitioning, so 2 Comet shuffle exchanges are expected
-      checkShuffleAnswer(shuffled2, 2)
+      checkShuffleAnswer(shuffled, 2)
+
+      // check the partitioning schemes on the native shuffles
+      val sparkPlan = stripAQEPlan(shuffled.queryExecution.executedPlan)
+      val cometShuffleExecs = sparkPlan.collect { case b: CometShuffleExchangeExec => b }
+      var hash_partitions = 0;
+      var range_partitions = 0;
+      cometShuffleExecs.foreach(shuffleExec =>
+        shuffleExec.outputPartitioning match {
+          case RangePartitioning(_, _) => range_partitions += 1
+          case HashPartitioning(_, _) => hash_partitions += 1
+        })
+
+      assert(hash_partitions == 1 && range_partitions == 1)
     }
   }
 
