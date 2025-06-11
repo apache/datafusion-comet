@@ -376,6 +376,14 @@ under the License.
         <scope>test</scope>
         <exclusions>
           <exclusion>
+            <groupId>org.apache.parquet</groupId>
+            <artifactId>parquet-hadoop</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.apache.parquet</groupId>
+            <artifactId>parquet-column</artifactId>
+          </exclusion>
+          <exclusion>
             <groupId>org.apache.datafusion</groupId>
             <artifactId>*</artifactId>
           </exclusion>
