@@ -150,6 +150,7 @@ mod test {
     use datafusion::physical_plan::ColumnarValue;
 
     #[test]
+    #[cfg_attr(miri, ignore)] // roudning does not work when miri enabled
     fn test_round_f32_array() -> Result<()> {
         let args = vec![
             ColumnarValue::Array(Arc::new(Float32Array::from(vec![
@@ -167,6 +168,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // roudning does not work when miri enabled
     fn test_round_f64_array() -> Result<()> {
         let args = vec![
             ColumnarValue::Array(Arc::new(Float64Array::from(vec![
@@ -184,6 +186,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // roudning does not work when miri enabled
     fn test_round_f32_scalar() -> Result<()> {
         let args = vec![
             ColumnarValue::Scalar(ScalarValue::Float32(Some(125.2345))),
@@ -199,6 +202,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // roudning does not work when miri enabled
     fn test_round_f64_scalar() -> Result<()> {
         let args = vec![
             ColumnarValue::Scalar(ScalarValue::Float64(Some(125.2345))),
