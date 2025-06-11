@@ -235,12 +235,11 @@ mod test {
     }
 
     #[test]
-    fn partition_sorted_batch() {
-        // let sort_fields = vec![SortField::new(Int64)];
-        // let row_converter = RowConverter::new(sort_fields).unwrap();
-        // let mut partition_ids = vec![0u32; 8192];
-        // let mut partition_counts = [0u32; 10];
-
+    // Reservoir sampling from a sorted batch can appear like an adversarial case, so we want to
+    // ensure that we still generate reasonable bounds. A sorted batch with partitioning column of
+    // [0,8192) is sampled and we generate bounds for 10 partitions. A perfect split would have
+    // ~819 between each partition, so we just assert that the difference in bounds is <1000.
+    fn generate_bounds_for_sorted_batch() {
         let input_batch = create_random_batch(8192, true, Some((0, 8192)));
 
         let lex_ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(
@@ -252,7 +251,7 @@ mod test {
             &lex_ordering,
             10,
             input_batch.num_rows(),
-            8192,
+            1000,
             42,
         );
 
@@ -266,7 +265,7 @@ mod test {
                     - primitive_array.values().get(i).unwrap())
                 .abs()
                     < 1000
-            )
+            );
         }
     }
 
