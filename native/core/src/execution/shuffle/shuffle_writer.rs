@@ -24,7 +24,7 @@ use arrow::compute::interleave_record_batch;
 use arrow::row::{OwnedRow, RowConverter};
 use async_trait::async_trait;
 use datafusion::common::utils::proxy::VecAllocExt;
-use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::EmptyRecordBatchStream;
 use datafusion::{
@@ -94,7 +94,7 @@ impl ShuffleWriterExec {
     ) -> Result<Self> {
         let cache = PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
-            partitioning.clone().into(),
+            Partitioning::UnknownPartitioning(1),
             EmissionType::Final,
             Boundedness::Bounded,
         );

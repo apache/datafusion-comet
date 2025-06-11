@@ -15,62 +15,26 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use datafusion::physical_expr::{LexOrdering, Partitioning, PhysicalExpr};
+use datafusion::physical_expr::{LexOrdering, PhysicalExpr};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub enum CometPartitioning {
-    /// Allocate batches using a round-robin algorithm and the specified number of partitions
-    RoundRobinBatch(usize),
+    SinglePartition,
     /// Allocate rows based on a hash of one of more expressions and the specified number of
     /// partitions
     Hash(Vec<Arc<dyn PhysicalExpr>>, usize),
     /// Allocate rows based on lexical order of one of more expressions and the specified number of
     /// partitions
     RangePartitioning(LexOrdering, usize, usize),
-    /// Unknown partitioning scheme with a known number of partitions
-    UnknownPartitioning(usize),
 }
 
 impl CometPartitioning {
     pub fn partition_count(&self) -> usize {
         use CometPartitioning::*;
         match self {
-            RoundRobinBatch(n)
-            | Hash(_, n)
-            | UnknownPartitioning(n)
-            | RangePartitioning(_, n, _) => *n,
-        }
-    }
-}
-
-impl From<Partitioning> for CometPartitioning {
-    fn from(df_partitioning: Partitioning) -> Self {
-        match df_partitioning {
-            Partitioning::RoundRobinBatch(partitions) => {
-                CometPartitioning::RoundRobinBatch(partitions)
-            }
-            Partitioning::Hash(exprs, partitions) => CometPartitioning::Hash(exprs, partitions),
-            Partitioning::UnknownPartitioning(partitions) => {
-                CometPartitioning::UnknownPartitioning(partitions)
-            }
-        }
-    }
-}
-
-impl From<CometPartitioning> for Partitioning {
-    fn from(val: CometPartitioning) -> Self {
-        match val {
-            CometPartitioning::RoundRobinBatch(partitions) => {
-                Partitioning::RoundRobinBatch(partitions)
-            }
-            CometPartitioning::Hash(exprs, partitions) => Partitioning::Hash(exprs, partitions),
-            CometPartitioning::UnknownPartitioning(partitions) => {
-                Partitioning::UnknownPartitioning(partitions)
-            }
-            CometPartitioning::RangePartitioning(_, partitions, _) => {
-                Partitioning::UnknownPartitioning(partitions)
-            }
+            SinglePartition => 1,
+            Hash(_, n) | RangePartitioning(_, n, _) => *n,
         }
     }
 }

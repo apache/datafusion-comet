@@ -2215,7 +2215,7 @@ impl PhysicalPlanner {
                     range_partition.sample_size as usize,
                 ))
             }
-            PartitioningStruct::SinglePartition(_) => Ok(CometPartitioning::UnknownPartitioning(1)),
+            PartitioningStruct::SinglePartition(_) => Ok(CometPartitioning::SinglePartition),
         }
     }
 
