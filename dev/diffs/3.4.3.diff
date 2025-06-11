@@ -895,45 +895,36 @@ index 525d97e4998..8a3e7457618 100644
        sql("SELECT * FROM testData2 ORDER BY a ASC, b ASC").collect()
      }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
-index 48ad10992c5..3ec91cccfa8 100644
+index 48ad10992c5..51d1ee65422 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
-@@ -188,11 +188,13 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper {
+@@ -221,6 +221,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper {
+     withSession(extensions) { session =>
+       session.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED, true)
+       session.conf.set(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key, "-1")
++      // https://github.com/apache/datafusion-comet/issues/1197
++      session.conf.set("spark.comet.enabled", false)
+       assert(session.sessionState.columnarRules.contains(
+         MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())))
+       import session.sqlContext.implicits._
+@@ -279,6 +281,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper {
      }
-   }
- 
--  test("inject columnar AQE on") {
-+  test("inject columnar AQE on",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1197")) {
-     testInjectColumnar(true)
-   }
- 
--  test("inject columnar AQE off") {
-+  test("inject columnar AQE off",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1197")) {
-     testInjectColumnar(false)
-   }
- 
-@@ -213,7 +215,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper {
-     }
-   }
- 
--  test("SPARK-39991: AQE should retain column statistics from completed query stages") {
-+  test("SPARK-39991: AQE should retain column statistics from completed query stages",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1197")) {
-     val extensions = create { extensions =>
-       extensions.injectColumnar(_ =>
-         MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule()))
-@@ -313,7 +316,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper {
-     }
-   }
- 
--  test("reset column vectors") {
-+  test("reset column vectors",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1197")) {
+     withSession(extensions) { session =>
+       session.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED, enableAQE)
++      // https://github.com/apache/datafusion-comet/issues/1197
++      session.conf.set("spark.comet.enabled", false)
+       assert(session.sessionState.columnarRules.contains(
+         MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())))
+       import session.sqlContext.implicits._
+@@ -317,6 +321,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper {
      val session = SparkSession.builder()
        .master("local[1]")
        .config(COLUMN_BATCH_SIZE.key, 2)
++      // https://github.com/apache/datafusion-comet/issues/1197
++      .config("spark.comet.enabled", false)
+       .withExtensions { extensions =>
+         extensions.injectColumnar(session =>
+           MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())) }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
 index 18123a4d6ec..fbe4c766eee 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
