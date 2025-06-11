@@ -60,6 +60,9 @@ builds:
         # We need to compile CometException so that the cargo test can pass
         - (cd ../common && ../mvnw ${PROFILES} clean compile -DskipTests)
 
+        # Run clean before creating cargo-reports
+        - cargo clean
+
         # We create the target directory for the test results, following the naming convention used
         # by surefire and scalatest (i.e. "${basedir}/target/${runner}-reports")
         - mkdir -p target/cargo-reports
@@ -100,9 +103,8 @@ builds:
     build: &test_comet_java_build
       template: freestyle:v4:build
       steps:
-        - cd native
-        - cargo build
-        - cd .. && ./mvnw ${PROFILES} compile test-compile scalafix:scalafix -Psemanticdb -Dscalafix.mode=CHECK && SPARK_HOME=`pwd` ./mvnw ${PROFILES} clean install
+        - make clean core
+        - ./mvnw ${PROFILES} compile test-compile scalafix:scalafix -Psemanticdb -Dscalafix.mode=CHECK && SPARK_HOME=`pwd` ./mvnw ${PROFILES} clean install
     reports:
       <<: *reports
 
@@ -196,7 +198,7 @@ builds:
         - git apply ../dev/diffs/tpcds-kit.diff
         - cd tools && make OS=LINUX
         - cd ../..
-        - PROFILES="${PROFILES}" make release
+        - PROFILES="${PROFILES}" make clean release
         - cd spark && MAVEN_OPTS='-Xmx20g --add-exports java.base/sun.nio.ch=ALL-UNNAMED' ../mvnw ${PROFILES} exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCDSData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--dsdgenDir `pwd`/../tpcds-kit/tools --location `pwd`/tpcds --scaleFactor 1  --numPartitions 1"
         - cd .. && SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/spark/tpcds MAVEN_OPTS='--add-exports java.base/sun.nio.ch=ALL-UNNAMED' ./mvnw ${PROFILES} -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
 
@@ -223,7 +225,7 @@ builds:
     build: &comet-tpch-build
       template: freestyle:v4:prb
       steps:
-        - PROFILES="${PROFILES}" make release
+        - PROFILES="${PROFILES}" make clean release
         - cd spark && MAVEN_OPTS='-Xmx20g --add-exports java.base/sun.nio.ch=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED --add-opens java.base/java.lang.invoke=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED' ../mvnw ${PROFILES} exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCHData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--location `pwd` --scaleFactor 1 --numPartitions 1 --overwrite"
         - cd .. && SPARK_HOME=`pwd` SPARK_TPCH_DATA=`pwd`/spark/tpch/sf1_parquet MAVEN_OPTS='--add-exports java.base/sun.nio.ch=ALL-UNNAMED' ./mvnw ${PROFILES} -Dsuites=org.apache.spark.sql.CometTPCHQuerySuite test
 
