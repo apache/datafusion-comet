@@ -2877,7 +2877,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
      * Hash Partition Key determines how data should be collocated for operations like
      * `groupByKey`, `reduceByKey` or `join`.
      */
-    def supportedPartitionKeyDataType(dt: DataType): Boolean = dt match {
+    def supportedHashPartitionKeyDataType(dt: DataType): Boolean = dt match {
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
           _: TimestampNTZType | _: DecimalType | _: DateType =>
@@ -2896,7 +2896,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         // due to lack of hashing support for those types
         val supported =
           expressions.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-            expressions.forall(e => supportedPartitionKeyDataType(e.dataType)) &&
+            expressions.forall(e => supportedHashPartitionKeyDataType(e.dataType)) &&
             inputs.forall(attr => supportedShuffleDataType(attr.dataType)) &&
             CometConf.COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED.get(conf)
         if (!supported) {
@@ -2905,7 +2905,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
         supported
       case SinglePartition =>
         inputs.forall(attr => supportedShuffleDataType(attr.dataType))
-      case RangePartitioning(_, _) =>
+      case RangePartitioning(ordering, _) =>
+        ordering.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
+        inputs.forall(attr => supportedShuffleDataType(attr.dataType)) &&
         CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.get(conf)
       case _ =>
         msg = s"unsupported Spark partitioning: ${partitioning.getClass.getName}"
