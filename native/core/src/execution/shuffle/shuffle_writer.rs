@@ -570,7 +570,7 @@ impl MultiPartitionShuffleRepartitioner {
                             input.num_rows(),
                             *sample_size,
                             self.seed,
-                        );
+                        )?;
 
                         self.bounds_rows = Some(bounds_rows);
                         self.row_converter = Some(row_converter);

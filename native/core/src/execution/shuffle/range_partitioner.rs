@@ -18,6 +18,7 @@
 use arrow::array::{ArrayRef, UInt64Array};
 use arrow::compute::{take_arrays, TakeOptions};
 use arrow::row::{Row, RowConverter, Rows, SortField};
+use datafusion::error::{DataFusionError, Result};
 use datafusion::physical_expr::LexOrdering;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 
@@ -30,7 +31,7 @@ impl RangePartitioner {
     /// We use sample_size instead of k and num_rows instead of n.
     /// We use indices instead of actual values in the reservoir  since we'll do one take() on the
     /// input arrays at the end.
-    pub fn reservoir_sample_indices(num_rows: usize, sample_size: usize, seed: u64) -> Vec<u64> {
+    fn reservoir_sample_indices(num_rows: usize, sample_size: usize, seed: u64) -> Vec<u64> {
         assert!(sample_size > 0);
         assert!(
             num_rows > sample_size,
@@ -82,7 +83,7 @@ impl RangePartitioner {
         num_rows: usize,
         sample_size: usize,
         seed: u64,
-    ) -> (Rows, RowConverter) {
+    ) -> Result<(Rows, RowConverter), DataFusionError> {
         let sampled_columns = if sample_size < num_rows {
             // Construct our sample indices.
             let sample_indices = UInt64Array::from(RangePartitioner::reservoir_sample_indices(
@@ -98,8 +99,7 @@ impl RangePartitioner {
                 Some(TakeOptions {
                     check_bounds: false,
                 }),
-            )
-            .unwrap()
+            )?
         } else {
             // Requested sample_size is larger than the batch, so just use the batch.
             partition_arrays.clone()
@@ -118,7 +118,7 @@ impl RangePartitioner {
             sort_fields,
             sampled_columns.as_slice(),
             num_output_partitions,
-        );
+        )?;
 
         // Extract our bounds data from the sampled data.
         let bounds_indices_array = UInt64Array::from(bounds_indices);
@@ -128,31 +128,28 @@ impl RangePartitioner {
             Some(TakeOptions {
                 check_bounds: false,
             }),
-        )
-        .unwrap();
+        )?;
 
         // Convert the bounds data to Rows and return with RowConverter.
-        (
-            row_converter
-                .convert_columns(bounds_arrays.as_slice())
-                .unwrap(),
+        Ok((
+            row_converter.convert_columns(bounds_arrays.as_slice())?,
             row_converter,
-        )
+        ))
     }
 
     /// Given a sort ordering, sampled data, and a number of target partitions, finds the partition
     /// bounds and returns them as indices into the sampled data.
     /// Adapted from org.apache.spark.RangePartitioner.determineBounds but without weighted
     /// values since we don't have cross-partition samples to merge.
-    pub fn determine_bounds_for_rows(
+    fn determine_bounds_for_rows(
         sort_fields: Vec<SortField>,
         sampled_columns: &[ArrayRef],
         partitions: usize,
-    ) -> (Vec<u64>, RowConverter) {
+    ) -> Result<(Vec<u64>, RowConverter), DataFusionError> {
         assert!(partitions > 1);
 
-        let converter = RowConverter::new(sort_fields).unwrap();
-        let sampled_rows = converter.convert_columns(sampled_columns).unwrap();
+        let converter = RowConverter::new(sort_fields)?;
+        let sampled_rows = converter.convert_columns(sampled_columns)?;
         let mut sorted_sampled_rows: Vec<(usize, Row)> = sampled_rows.iter().enumerate().collect();
         sorted_sampled_rows.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
 
@@ -180,7 +177,7 @@ impl RangePartitioner {
             i += 1
         }
 
-        (bounds_indices, converter)
+        Ok((bounds_indices, converter))
     }
 }
 
@@ -253,7 +250,8 @@ mod test {
             input_batch.num_rows(),
             1000,
             42,
-        );
+        )
+        .unwrap();
 
         let rows_array = row_converter.convert_rows(&rows).unwrap();
 
@@ -370,7 +368,7 @@ mod test {
         let sort_fields = vec![SortField::new(Float64)];
 
         let (rows, _) =
-            RangePartitioner::determine_bounds_for_rows(sort_fields, batch.columns(), 3);
+            RangePartitioner::determine_bounds_for_rows(sort_fields, batch.columns(), 3).unwrap();
 
         check_bounds_indices(rows.as_slice(), batch.num_rows());
 
@@ -404,7 +402,8 @@ mod test {
                 sort_fields.clone(),
                 batch.columns(),
                 num_partitions,
-            );
+            )
+            .unwrap();
 
             check_bounds_indices(rows.as_slice(), batch_size as usize);
 
@@ -438,7 +437,7 @@ mod test {
         let sort_fields = vec![SortField::new(Float64)];
 
         let (rows, _) =
-            RangePartitioner::determine_bounds_for_rows(sort_fields, batch.columns(), 2);
+            RangePartitioner::determine_bounds_for_rows(sort_fields, batch.columns(), 2).unwrap();
 
         assert_eq!(rows.len(), 1);
 
