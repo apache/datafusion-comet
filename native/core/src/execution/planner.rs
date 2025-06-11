@@ -3365,14 +3365,12 @@ mod tests {
             }
         }
 
-        let source = Arc::new(
-            ParquetSource::default().with_schema_adapter_factory(Arc::new(
-                SparkSchemaAdapterFactory::new(
-                    SparkParquetOptions::new(EvalMode::Ansi, "", false),
-                    None,
-                ),
-            )),
-        );
+        let source = ParquetSource::default().with_schema_adapter_factory(Arc::new(
+            SparkSchemaAdapterFactory::new(
+                SparkParquetOptions::new(EvalMode::Ansi, "", false),
+                None,
+            ),
+        ))?;
 
         let object_store_url = ObjectStoreUrl::local_filesystem();
 
@@ -3389,7 +3387,7 @@ mod tests {
         let file_scan_config = FileScanConfigBuilder::new(
             object_store_url.clone(),
             required_schema.into(),
-            Arc::<ParquetSource>::clone(&source),
+            Arc::clone(&source),
         )
         .with_file_groups(file_groups.clone())
         .build();
@@ -3414,7 +3412,7 @@ mod tests {
         let file_scan_config = FileScanConfigBuilder::new(
             object_store_url.clone(),
             required_schema.into(),
-            Arc::<ParquetSource>::clone(&source),
+            Arc::clone(&source),
         )
         .with_file_groups(file_groups.clone())
         .build();
@@ -3448,7 +3446,7 @@ mod tests {
         let file_scan_config = FileScanConfigBuilder::new(
             object_store_url.clone(),
             required_schema.into(),
-            Arc::<ParquetSource>::clone(&source),
+            Arc::clone(&source),
         )
         .with_file_groups(file_groups.clone())
         .build();
