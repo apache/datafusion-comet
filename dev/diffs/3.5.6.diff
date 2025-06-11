@@ -1780,39 +1780,6 @@ index 2f8e401e743..a4f94417dcc 100644
        plan.inputPlan.output.zip(plan.finalPhysicalPlan.output).foreach { case (o1, o2) =>
          assert(o1.semanticEquals(o2), "Different output column order after AQE optimization")
        }
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileSourceCustomMetadataStructSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileSourceCustomMetadataStructSuite.scala
-index 05872d41131..a2c328b9742 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileSourceCustomMetadataStructSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/FileSourceCustomMetadataStructSuite.scala
-@@ -21,7 +21,7 @@ import java.io.File
- 
- import org.apache.hadoop.fs.{FileStatus, Path}
- 
--import org.apache.spark.sql.{DataFrame, Dataset, QueryTest, Row}
-+import org.apache.spark.sql.{DataFrame, Dataset, IgnoreComet, QueryTest, Row}
- import org.apache.spark.sql.catalyst.InternalRow
- import org.apache.spark.sql.catalyst.expressions.{Expression, FileSourceConstantMetadataStructField, FileSourceGeneratedMetadataStructField, Literal}
- import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
-@@ -134,7 +134,8 @@ class FileSourceCustomMetadataStructSuite extends QueryTest with SharedSparkSess
-     }
-   }
- 
--  test("[SPARK-43226] extra constant metadata fields with extractors") {
-+  test("[SPARK-43226] extra constant metadata fields with extractors",
-+      IgnoreComet("TODO: fix Comet for this test")) {
-     withTempData("parquet", FILE_SCHEMA) { (_, f0, f1) =>
-       val format = new TestFileFormat(extraConstantMetadataFields) {
-         val extractPartitionNumber = { pf: PartitionedFile =>
-@@ -335,7 +336,8 @@ class FileSourceCustomMetadataStructSuite extends QueryTest with SharedSparkSess
-     }
-   }
- 
--  test("generated columns and extractors take precedence over metadata map values") {
-+  test("generated columns and extractors take precedence over metadata map values",
-+      IgnoreComet("TODO: fix Comet for this test")) {
-     withTempData("parquet", FILE_SCHEMA) { (_, f0, f1) =>
-       import FileFormat.{FILE_NAME, FILE_SIZE}
-       import ParquetFileFormat.ROW_INDEX
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
 index bf496d6db21..9bb57a9b4c6 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
