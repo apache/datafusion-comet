@@ -972,6 +972,24 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("cast StructType to StructType with different names") {
+    withTable("tab1") {
+      sql("""
+           |CREATE TABLE tab1 (s struct<a: string, b: string>)
+           |USING parquet
+         """.stripMargin)
+      sql("INSERT INTO TABLE tab1 SELECT named_struct('col1','1','col2','2')")
+      if (usingDataSourceExec) {
+        checkSparkAnswerAndOperator(
+          "SELECT CAST(s AS struct<field1:string, field2:string>) AS new_struct FROM tab1")
+      } else {
+        // Should just fall back to Spark since non-DataSoruceExec scan does not support nested types.
+        checkSparkAnswer(
+          "SELECT CAST(s AS struct<field1:string, field2:string>) AS new_struct FROM tab1")
+      }
+    }
+  }
+
   test("cast between decimals with different precision and scale") {
     val rowData = Seq(
       Row(BigDecimal("12345.6789")),
