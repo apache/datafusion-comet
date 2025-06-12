@@ -36,7 +36,7 @@ import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
-import org.apache.spark.sql.types.{Decimal, DecimalType}
+import org.apache.spark.sql.types.{Decimal, DecimalType, IntegerType, StringType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
@@ -2726,6 +2726,34 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       w
     }
     assert(cometWindowExecs.isEmpty)
+  }
+
+  test("vectorized reader: missing all struct fields") {
+    Seq(true, false).foreach { offheapEnabled =>
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion",
+        SQLConf.PARQUET_VECTORIZED_READER_NESTED_COLUMN_ENABLED.key -> "true",
+        SQLConf.COLUMN_VECTOR_OFFHEAP_ENABLED.key -> offheapEnabled.toString) {
+        val data = Seq(Tuple1((1, "a")), Tuple1((2, null)), Tuple1(null))
+
+        val readSchema = new StructType().add(
+          "_1",
+          new StructType()
+            .add("_3", IntegerType, nullable = false)
+            .add("_4", StringType, nullable = false),
+          nullable = false)
+
+        withParquetFile(data) { file =>
+          checkAnswer(
+            spark.read.schema(readSchema).parquet(file),
+            Row(null) :: Row(null) :: Row(null) :: Nil)
+        }
+      }
+    }
   }
 
 }

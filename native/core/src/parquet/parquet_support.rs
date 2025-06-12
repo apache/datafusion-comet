@@ -17,6 +17,7 @@
 
 use crate::execution::operators::ExecutionError;
 use arrow::array::{ListArray, MapArray};
+use arrow::buffer::NullBuffer;
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{FieldRef, Fields};
 use arrow::{
@@ -211,6 +212,8 @@ fn cast_struct_to_struct(
 ) -> DataFusionResult<ArrayRef> {
     match (from_type, to_type) {
         (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
+            // if dest and target schemas has any column in common
+            let mut field_overlap = false;
             // TODO some of this logic may be specific to converting Parquet to Spark
             let mut field_name_to_index_map = HashMap::new();
             for (i, field) in from_fields.iter().enumerate() {
@@ -239,14 +242,24 @@ fn cast_struct_to_struct(
                         parquet_options,
                     )?;
                     cast_fields.push(cast_field);
+                    field_overlap = true;
                 } else {
                     cast_fields.push(new_null_array(to_fields[i].data_type(), array.len()));
                 }
             }
+
+            // If target schema doesn't contain any of the existing fields
+            // mark such a column in array as NULL
+            let nulls = if field_overlap {
+                array.nulls().cloned()
+            } else {
+                Some(NullBuffer::new_null(array.len()))
+            };
+
             Ok(Arc::new(StructArray::new(
                 to_fields.clone(),
                 cast_fields,
-                array.nulls().cloned(),
+                nulls,
             )))
         }
         _ => unreachable!(),
@@ -271,12 +284,12 @@ fn cast_map_values(
             ))?;
 
             let key_array = cast_array(
-                Arc::<dyn Array>::clone(from.keys()),
+                Arc::clone(from.keys()),
                 key_field.data_type(),
                 parquet_options,
             )?;
             let value_array = cast_array(
-                Arc::<dyn Array>::clone(from.values()),
+                Arc::clone(from.values()),
                 value_field.data_type(),
                 parquet_options,
             )?;
