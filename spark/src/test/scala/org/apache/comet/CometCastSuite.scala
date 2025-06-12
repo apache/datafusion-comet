@@ -983,7 +983,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndOperator(
           "SELECT CAST(s AS struct<field1:string, field2:string>) AS new_struct FROM tab1")
       } else {
-        // Should just fall back to Spark since non-DataSoruceExec scan does not support nested types.
+        // Should just fall back to Spark since non-DataSourceExec scan does not support nested types.
         checkSparkAnswer(
           "SELECT CAST(s AS struct<field1:string, field2:string>) AS new_struct FROM tab1")
       }
