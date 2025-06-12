@@ -78,7 +78,6 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
-    conf.set(CometConf.COMET_SHUFFLE_FALLBACK_TO_COLUMNAR.key, "true")
     conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
     conf.set(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key, "true")
@@ -862,6 +861,7 @@ abstract class CometTestBase
       testName: String = "test",
       tableName: String = "tbl",
       sqlConf: Seq[(String, String)] = Seq.empty,
+      readSchema: Option[StructType] = None,
       debugCometDF: DataFrame => Unit = _ => (),
       checkCometOperator: Boolean = true): Unit = {
 
@@ -877,7 +877,9 @@ abstract class CometTestBase
       }
 
       spark.createDataFrame(data, schema).repartition(1).write.parquet(path)
-      readParquetFile(path, Some(schema)) { df => df.createOrReplaceTempView(tableName) }
+      readParquetFile(path, readSchema.orElse(Some(schema))) { df =>
+        df.createOrReplaceTempView(tableName)
+      }
 
       withSQLConf(sqlConf: _*) {
         val cometDF = sql(testQuery)

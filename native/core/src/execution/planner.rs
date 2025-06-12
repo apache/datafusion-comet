@@ -64,12 +64,14 @@ use datafusion::{
     },
     prelude::SessionContext,
 };
-use datafusion_comet_spark_expr::{create_comet_physical_fun, create_negate_expr, SparkBitwiseNot};
+use datafusion_comet_spark_expr::{
+    create_comet_physical_fun, create_negate_expr, SparkBitwiseCount, SparkBitwiseNot,
+};
 
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::CompressionCodec;
 use crate::execution::spark_plan::SparkPlan;
-use crate::parquet::parquet_support::prepare_object_store;
+use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
@@ -146,16 +148,7 @@ pub struct PhysicalPlanner {
 
 impl Default for PhysicalPlanner {
     fn default() -> Self {
-        let session_ctx = Arc::new(SessionContext::new());
-
-        // register UDFs from datafusion-spark crate
-        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
-        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
-
-        Self {
-            exec_context_id: TEST_EXEC_CONTEXT_ID,
-            session_ctx,
-        }
+        Self::new(Arc::new(SessionContext::new()))
     }
 }
 
@@ -164,6 +157,7 @@ impl PhysicalPlanner {
         // register UDFs from datafusion-spark crate
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
+        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseCount::default()));
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,
@@ -1156,8 +1150,17 @@ impl PhysicalPlanner {
                     .and_then(|f| f.partitioned_file.first())
                     .map(|f| f.file_path.clone())
                     .ok_or(GeneralError("Failed to locate file".to_string()))?;
-                let (object_store_url, _) =
-                    prepare_object_store(self.session_ctx.runtime_env(), one_file)?;
+
+                let object_store_options: HashMap<String, String> = scan
+                    .object_store_options
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                let (object_store_url, _) = prepare_object_store_with_configs(
+                    self.session_ctx.runtime_env(),
+                    one_file,
+                    &object_store_options,
+                )?;
 
                 // Generate file groups
                 let mut file_groups: Vec<Vec<PartitionedFile>> =
@@ -2555,7 +2558,9 @@ mod tests {
     use datafusion::catalog::memory::DataSourceExec;
     use datafusion::datasource::listing::PartitionedFile;
     use datafusion::datasource::object_store::ObjectStoreUrl;
-    use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
+    use datafusion::datasource::physical_plan::{
+        FileGroup, FileScanConfigBuilder, FileSource, ParquetSource,
+    };
     use datafusion::error::DataFusionError;
     use datafusion::logical_expr::ScalarUDF;
     use datafusion::physical_plan::ExecutionPlan;
@@ -2951,14 +2956,8 @@ mod tests {
             })),
         };
 
-        let a = Int32Array::from(vec![0, 3]);
-        let b = Int32Array::from(vec![1, 4]);
-        let c = Int32Array::from(vec![2, 5]);
-        let input_batch = InputBatch::Batch(vec![Arc::new(a), Arc::new(b), Arc::new(c)], 2);
-
         let (mut scans, datafusion_plan) =
             planner.create_plan(&projection, &mut vec![], 1).unwrap();
-        scans[0].set_input_batch(input_batch);
 
         let mut stream = datafusion_plan.native_plan.execute(0, task_ctx).unwrap();
 
@@ -3192,14 +3191,12 @@ mod tests {
             }
         }
 
-        let source = Arc::new(
-            ParquetSource::default().with_schema_adapter_factory(Arc::new(
-                SparkSchemaAdapterFactory::new(
-                    SparkParquetOptions::new(EvalMode::Ansi, "", false),
-                    None,
-                ),
-            )),
-        );
+        let source = ParquetSource::default().with_schema_adapter_factory(Arc::new(
+            SparkSchemaAdapterFactory::new(
+                SparkParquetOptions::new(EvalMode::Ansi, "", false),
+                None,
+            ),
+        ))?;
 
         let object_store_url = ObjectStoreUrl::local_filesystem();
         let file_scan_config =
@@ -3267,14 +3264,12 @@ mod tests {
             }
         }
 
-        let source = Arc::new(
-            ParquetSource::default().with_schema_adapter_factory(Arc::new(
-                SparkSchemaAdapterFactory::new(
-                    SparkParquetOptions::new(EvalMode::Ansi, "", false),
-                    None,
-                ),
-            )),
-        );
+        let source = ParquetSource::default().with_schema_adapter_factory(Arc::new(
+            SparkSchemaAdapterFactory::new(
+                SparkParquetOptions::new(EvalMode::Ansi, "", false),
+                None,
+            ),
+        ))?;
 
         // Define schema Comet reads with
         let required_schema = Schema::new(Fields::from(vec![Field::new(
@@ -3329,6 +3324,146 @@ mod tests {
             "+------------------------------+",
             "| {{b: n}: {a: 2, b: m, c: y}} |",
             "+------------------------------+",
+        ];
+        assert_batches_eq!(expected, &[actual.clone()]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_nested_types_extract_missing_struct_names() -> Result<(), DataFusionError> {
+        let session_ctx = SessionContext::new();
+
+        // generate test data in the temp folder
+        let test_data = "select named_struct('a', 1, 'b', 'abc') c0";
+        let tmp_dir = TempDir::new()?;
+        let test_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let plan = session_ctx
+            .sql(test_data)
+            .await?
+            .create_physical_plan()
+            .await?;
+
+        // Write a parquet file into temp folder
+        session_ctx
+            .write_parquet(plan, test_path.clone(), None)
+            .await?;
+
+        // Register all parquet with temp data as file groups
+        let mut file_groups: Vec<FileGroup> = vec![];
+        for entry in std::fs::read_dir(&test_path)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.extension().and_then(|ext| ext.to_str()) == Some("parquet") {
+                if let Some(path_str) = path.to_str() {
+                    file_groups.push(FileGroup::new(vec![PartitionedFile::from_path(
+                        path_str.into(),
+                    )?]));
+                }
+            }
+        }
+
+        let source = ParquetSource::default().with_schema_adapter_factory(Arc::new(
+            SparkSchemaAdapterFactory::new(
+                SparkParquetOptions::new(EvalMode::Ansi, "", false),
+                None,
+            ),
+        ))?;
+
+        let object_store_url = ObjectStoreUrl::local_filesystem();
+
+        // Define schema Comet reads with
+        let required_schema = Schema::new(Fields::from(vec![Field::new(
+            "c0",
+            DataType::Struct(Fields::from(vec![
+                Field::new("c", DataType::Int64, true),
+                Field::new("d", DataType::Utf8, true),
+            ])),
+            true,
+        )]));
+
+        let file_scan_config = FileScanConfigBuilder::new(
+            object_store_url.clone(),
+            required_schema.into(),
+            Arc::clone(&source),
+        )
+        .with_file_groups(file_groups.clone())
+        .build();
+
+        // Run native read
+        let scan = Arc::new(DataSourceExec::new(Arc::new(file_scan_config.clone())));
+        let stream = scan.execute(0, session_ctx.task_ctx())?;
+        let result: Vec<_> = stream.collect().await;
+
+        let actual = result.first().unwrap().as_ref().unwrap();
+
+        let expected = ["+----+", "| c0 |", "+----+", "|    |", "+----+"];
+        assert_batches_eq!(expected, &[actual.clone()]);
+
+        // Define schema Comet reads with
+        let required_schema = Schema::new(Fields::from(vec![Field::new(
+            "c0",
+            DataType::Struct(Fields::from(vec![Field::new("a", DataType::Int64, true)])),
+            true,
+        )]));
+
+        let file_scan_config = FileScanConfigBuilder::new(
+            object_store_url.clone(),
+            required_schema.into(),
+            Arc::clone(&source),
+        )
+        .with_file_groups(file_groups.clone())
+        .build();
+
+        // Run native read
+        let scan = Arc::new(DataSourceExec::new(Arc::new(file_scan_config.clone())));
+        let stream = scan.execute(0, session_ctx.task_ctx())?;
+        let result: Vec<_> = stream.collect().await;
+
+        let actual = result.first().unwrap().as_ref().unwrap();
+
+        let expected = [
+            "+--------+",
+            "| c0     |",
+            "+--------+",
+            "| {a: 1} |",
+            "+--------+",
+        ];
+        assert_batches_eq!(expected, &[actual.clone()]);
+
+        // Define schema Comet reads with
+        let required_schema = Schema::new(Fields::from(vec![Field::new(
+            "c0",
+            DataType::Struct(Fields::from(vec![
+                Field::new("a", DataType::Int64, true),
+                Field::new("x", DataType::Int64, true),
+            ])),
+            true,
+        )]));
+
+        let file_scan_config = FileScanConfigBuilder::new(
+            object_store_url.clone(),
+            required_schema.into(),
+            Arc::clone(&source),
+        )
+        .with_file_groups(file_groups.clone())
+        .build();
+
+        // Run native read
+        let scan = Arc::new(DataSourceExec::new(Arc::new(file_scan_config.clone())));
+        let stream = scan.execute(0, session_ctx.task_ctx())?;
+        let result: Vec<_> = stream.collect().await;
+
+        let actual = result.first().unwrap().as_ref().unwrap();
+
+        let expected = [
+            "+-------------+",
+            "| c0          |",
+            "+-------------+",
+            "| {a: 1, x: } |",
+            "+-------------+",
         ];
         assert_batches_eq!(expected, &[actual.clone()]);
 

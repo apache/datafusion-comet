@@ -45,7 +45,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04]
         java-version: [11]
-        spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.4'}, {short: '3.5', full: '3.5.5'}]
+        spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.6'}]
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
           - {name: "sql/core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}
@@ -84,11 +84,11 @@ jobs:
       matrix:
         os: [ubuntu-24.04]
         java-version: [11]
-        spark-version: [{short: '3.5', full: '3.5.5'}]
+        spark-version: [{short: '3.5', full: '3.5.6'}]
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
-#          - {name: "sql/core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}
-#          - {name: "sql/core-2", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest"}
+          - {name: "sql/core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}
+          - {name: "sql/core-2", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest"}
           - {name: "sql/core-3", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest"}
           - {name: "sql/hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
           - {name: "sql/hive-2", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
@@ -114,6 +114,6 @@ jobs:
         run: |
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          ENABLE_COMET=true ENABLE_COMET_SHUFFLE=true COMET_SPARK_PARQUET_IMPL=native_iceberg_compat build/sbt ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
+          ENABLE_COMET=true ENABLE_COMET_SHUFFLE=true COMET_SPARK_PARQUET_IMPL=native_iceberg_compat build/sbt -Dsbt.log.noformat=true ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
         env:
           LC_ALL: "C.UTF-8"

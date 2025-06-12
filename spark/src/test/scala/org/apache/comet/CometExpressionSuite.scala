@@ -21,6 +21,7 @@ package org.apache.comet
 
 import java.time.{Duration, Period}
 
+import scala.collection.immutable.Seq
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 import scala.util.Random
@@ -28,13 +29,14 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec, CometWindowExec}
 import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
-import org.apache.spark.sql.types.{Decimal, DecimalType}
+import org.apache.spark.sql.types.{Decimal, DecimalType, IntegerType, StringType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
@@ -219,7 +221,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 val qry = "select _9 from tbl order by _11"
                 if (usingDataSourceExec(conf)) {
                   if (!allowIncompatible) {
-                    checkSparkAnswer(qry)
+                    checkSparkAnswerAndOperator(qry)
                   } else {
                     // need to convert the values to unsigned values
                     val expected = (Byte.MinValue to Byte.MaxValue)
@@ -2703,6 +2705,55 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           }
         }
       }
+  }
+
+  test("window query with rangeBetween") {
+
+    // values are int
+    val df = Seq(1, 2, 4, 3, 2, 1).toDF("value")
+    val window = Window.orderBy($"value".desc)
+
+    // ranges are long
+    val df2 = df.select(
+      $"value",
+      sum($"value").over(window.rangeBetween(Window.unboundedPreceding, 1L)),
+      sum($"value").over(window.rangeBetween(1L, Window.unboundedFollowing)))
+
+    // Comet does not support RANGE BETWEEN
+    // https://github.com/apache/datafusion-comet/issues/1246
+    val (_, cometPlan) = checkSparkAnswer(df2)
+    val cometWindowExecs = collect(cometPlan) { case w: CometWindowExec =>
+      w
+    }
+    assert(cometWindowExecs.isEmpty)
+  }
+
+  test("vectorized reader: missing all struct fields") {
+    Seq(true, false).foreach { offheapEnabled =>
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion",
+        SQLConf.PARQUET_VECTORIZED_READER_NESTED_COLUMN_ENABLED.key -> "true",
+        SQLConf.COLUMN_VECTOR_OFFHEAP_ENABLED.key -> offheapEnabled.toString) {
+        val data = Seq(Tuple1((1, "a")), Tuple1((2, null)), Tuple1(null))
+
+        val readSchema = new StructType().add(
+          "_1",
+          new StructType()
+            .add("_3", IntegerType, nullable = false)
+            .add("_4", StringType, nullable = false),
+          nullable = false)
+
+        withParquetFile(data) { file =>
+          checkAnswer(
+            spark.read.schema(readSchema).parquet(file),
+            Row(null) :: Row(null) :: Row(null) :: Nil)
+        }
+      }
+    }
   }
 
 }

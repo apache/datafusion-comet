@@ -70,7 +70,7 @@ under the License.
     <scala.plugin.version>4.8.0</scala.plugin.version>
     <scalatest.version>3.2.16</scalatest.version>
     <scalatest-maven-plugin.version>2.2.0</scalatest-maven-plugin.version>
-    <spark.version>3.5.5</spark.version>
+    <spark.version>3.5.6</spark.version>
     <spark.version.short>3.5</spark.version.short>
     <spark.maven.scope>provided</spark.maven.scope>
     <protobuf.version>3.25.5</protobuf.version>
@@ -84,6 +84,8 @@ under the License.
     <semanticdb.version>4.8.8</semanticdb.version>
     <slf4j.version>2.0.7</slf4j.version>
     <guava.version>33.2.1-jre</guava.version>
+    <testcontainers.version>1.21.0</testcontainers.version>
+    <amazon-awssdk-v2.version>2.31.51</amazon-awssdk-v2.version>
     <jni.dir>${project.basedir}/../native/target/debug</jni.dir>
     <platform>darwin</platform>
     <arch>x86_64</arch>
@@ -453,6 +455,20 @@ under the License.
         </exclusions>
       </dependency>
 
+      <!-- TestContainers for testing reading Parquet on S3 -->
+      <dependency>
+        <groupId>org.testcontainers</groupId>
+        <artifactId>minio</artifactId>
+        <version>${testcontainers.version}</version>
+        <scope>test</scope>
+      </dependency>
+      <dependency>
+        <groupId>software.amazon.awssdk</groupId>
+        <artifactId>s3</artifactId>
+        <version>${amazon-awssdk-v2.version}</version>
+        <scope>test</scope>
+      </dependency>
+
       <dependency>
         <groupId>org.codehaus.jackson</groupId>
         <artifactId>jackson-mapper-asl</artifactId>
@@ -585,7 +601,7 @@ under the License.
       <id>spark-3.5</id>
       <properties>
         <scala.version>2.12.18</scala.version>
-        <spark.version>3.5.5</spark.version>
+        <spark.version>3.5.6</spark.version>
         <spark.version.short>3.5</spark.version.short>
         <parquet.version>1.13.1</parquet.version>
         <slf4j.version>2.0.7</slf4j.version>

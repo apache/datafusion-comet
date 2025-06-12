@@ -74,14 +74,14 @@ jobs:
             maven_opts: "-Pspark-3.4 -Pscala-2.12"
             scan_impl: "native_comet"
 
-          - name: "Spark 3.5, JDK 11, Scala 2.12"
-            java_version: "17"
-            maven_opts: "-Pspark-3.5 -Pscala-2.12"
+          - name: "Spark 3.5.4, JDK 11, Scala 2.12"
+            java_version: "11"
+            maven_opts: "-Pspark-3.5 -Dspark.version=3.5.4 -Pscala-2.12"
             scan_impl: "native_comet"
 
-          - name: "Spark 3.5, JDK 17, Scala 2.13"
+          - name: "Spark 3.5.5, JDK 17, Scala 2.13"
             java_version: "17"
-            maven_opts: "-Pspark-3.5 -Pscala-2.13"
+            maven_opts: "-Pspark-3.5 -Dspark.version=3.5.5 -Pscala-2.13"
             scan_impl: "native_comet"
 
           - name: "Spark 3.5, JDK 17, Scala 2.12 native_datafusion"
@@ -159,6 +159,7 @@ jobs:
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
+          artifact_name: ${{ matrix.os }}-${{ matrix.profile.name }}-${{ matrix.suite.name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
           suites: ${{ matrix.suite.value }}
           maven_opts: ${{ matrix.profile.maven_opts }}
           scan_impl: ${{ matrix.profile.scan_impl }}

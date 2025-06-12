@@ -15,7 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, GenericListArray, OffsetSizeTrait, StructArray};
+use arrow::array::{make_array, Array, GenericListArray, OffsetSizeTrait, StructArray};
+use arrow::buffer::NullBuffer;
 use arrow::datatypes::{DataType, FieldRef, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::{
@@ -80,10 +81,6 @@ impl PhysicalExpr for GetArrayStructFields {
         self
     }
 
-    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
-        unimplemented!()
-    }
-
     fn data_type(&self, input_schema: &Schema) -> DataFusionResult<DataType> {
         let struct_field = self.child_field(input_schema)?;
         match self.child.data_type(input_schema)? {
@@ -138,6 +135,10 @@ impl PhysicalExpr for GetArrayStructFields {
             _ => internal_err!("GetArrayStructFields should have exactly one child"),
         }
     }
+
+    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
+    }
 }
 
 fn get_array_struct_fields<O: OffsetSizeTrait>(
@@ -148,13 +149,36 @@ fn get_array_struct_fields<O: OffsetSizeTrait>(
         .values()
         .as_any()
         .downcast_ref::<StructArray>()
-        .expect("A struct is expected");
+        .expect("A StructType is expected");
 
-    let column = Arc::clone(values.column(ordinal));
     let field = Arc::clone(&values.fields()[ordinal]);
+    // Get struct column by ordinal
+    let extracted_column = values.column(ordinal);
 
-    let offsets = list_array.offsets();
-    let array = GenericListArray::new(field, offsets.clone(), column, list_array.nulls().cloned());
+    let data = if values.null_count() == extracted_column.null_count() {
+        Arc::clone(extracted_column)
+    } else {
+        // In some cases the column obtained from struct by ordinal doesn't
+        // represent all nulls that imposed by parent values.
+        // This maybe caused by a low level reader bug and needs more investigation.
+        // For this specific case we patch the null buffer for the column by merging nulls buffers
+        // from parent and column
+        let merged_nulls = NullBuffer::union(values.nulls(), extracted_column.nulls());
+        make_array(
+            extracted_column
+                .into_data()
+                .into_builder()
+                .nulls(merged_nulls)
+                .build()?,
+        )
+    };
+
+    let array = GenericListArray::new(
+        field,
+        list_array.offsets().clone(),
+        data,
+        list_array.nulls().cloned(),
+    );
 
     Ok(ColumnarValue::Array(Arc::new(array)))
 }

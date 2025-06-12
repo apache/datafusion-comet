@@ -40,6 +40,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD}
+import org.apache.spark.sql.execution.datasources.PartitionedFile
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -51,6 +52,7 @@ import org.apache.spark.unsafe.types.UTF8String
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
 import org.apache.comet.expressions._
+import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType._
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
@@ -259,7 +261,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
               .newBuilder()
               .setCurrentRow(OperatorOuterClass.CurrentRow.newBuilder().build())
               .build()
-          case e =>
+          case e if frameType == RowFrame =>
             val offset = e.eval() match {
               case i: Integer => i.toLong
               case l: Long => l
@@ -273,6 +275,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
                   .setOffset(offset)
                   .build())
               .build()
+          case _ =>
+            // TODO add support for numeric and temporal RANGE BETWEEN expressions
+            // see https://github.com/apache/datafusion-comet/issues/1246
+            return None
         }
 
         val uBoundProto = uBound match {
@@ -286,13 +292,12 @@ object QueryPlanSerde extends Logging with CometExprShim {
               .newBuilder()
               .setCurrentRow(OperatorOuterClass.CurrentRow.newBuilder().build())
               .build()
-          case e =>
+          case e if frameType == RowFrame =>
             val offset = e.eval() match {
               case i: Integer => i.toLong
               case l: Long => l
               case _ => return None
             }
-
             OperatorOuterClass.UpperWindowFrameBound
               .newBuilder()
               .setFollowing(
@@ -301,6 +306,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
                   .setOffset(offset)
                   .build())
               .build()
+          case _ =>
+            // TODO add support for numeric and temporal RANGE BETWEEN expressions
+            // see https://github.com/apache/datafusion-comet/issues/1246
+            return None
         }
 
         (frameProto, lBoundProto, uBoundProto)
@@ -1973,11 +1982,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case mk: MapKeys =>
         val childExpr = exprToProtoInternal(mk.child, inputs, binding)
         scalarFunctionExprToProto("map_keys", childExpr)
-//  commented out because of correctness issue
-//  https://github.com/apache/datafusion-comet/issues/1789
-//      case mv: MapValues =>
-//        val childExpr = exprToProtoInternal(mv.child, inputs, binding)
-//        scalarFunctionExprToProto("map_values", childExpr)
+      case mv: MapValues =>
+        val childExpr = exprToProtoInternal(mv.child, inputs, binding)
+        scalarFunctionExprToProto("map_values", childExpr)
       case _ =>
         withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
         None
@@ -2241,12 +2248,16 @@ object QueryPlanSerde extends Logging with CometExprShim {
           }
 
           // TODO: modify CometNativeScan to generate the file partitions without instantiating RDD.
+          var firstPartition: Option[PartitionedFile] = None
           scan.inputRDD match {
             case rdd: DataSourceRDD =>
               val partitions = rdd.partitions
               partitions.foreach(p => {
                 val inputPartitions = p.asInstanceOf[DataSourceRDDPartition].inputPartitions
                 inputPartitions.foreach(partition => {
+                  if (firstPartition.isEmpty) {
+                    firstPartition = partition.asInstanceOf[FilePartition].files.headOption
+                  }
                   partition2Proto(
                     partition.asInstanceOf[FilePartition],
                     nativeScanBuilder,
@@ -2255,6 +2266,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
               })
             case rdd: FileScanRDD =>
               rdd.filePartitions.foreach(partition => {
+                if (firstPartition.isEmpty) {
+                  firstPartition = partition.files.headOption
+                }
                 partition2Proto(partition, nativeScanBuilder, scan.relation.partitionSchema)
               })
             case _ =>
@@ -2285,6 +2299,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
           nativeScanBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
           nativeScanBuilder.setSessionTimezone(conf.getConfString("spark.sql.session.timeZone"))
           nativeScanBuilder.setCaseSensitive(conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
+
+          // Collect S3/cloud storage configurations
+          val hadoopConf = scan.relation.sparkSession.sessionState
+            .newHadoopConfWithOptions(scan.relation.options)
+          firstPartition.foreach { partitionFile =>
+            val objectStoreOptions =
+              NativeConfig.extractObjectStoreOptions(hadoopConf, partitionFile.pathUri)
+            objectStoreOptions.foreach { case (key, value) =>
+              nativeScanBuilder.putObjectStoreOptions(key, value)
+            }
+          }
 
           Some(result.setNativeScan(nativeScanBuilder).build())
 
