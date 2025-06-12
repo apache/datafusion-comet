@@ -80,6 +80,16 @@ case class CometShuffleExchangeExec(
     "CometColumnarExchange"
   }
 
+  override protected def doCanonicalize(): SparkPlan = {
+    CometShuffleExchangeExec(
+      outputPartitioning,
+      child,
+      null,
+      shuffleOrigin,
+      null,
+      advisoryPartitionSize)
+  }
+
   private lazy val serializer: Serializer =
     new UnsafeRowSerializer(child.output.size, longMetric("dataSize"))
 
