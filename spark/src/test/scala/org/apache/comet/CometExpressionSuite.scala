@@ -26,6 +26,9 @@ import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 import scala.util.Random
 
+import org.scalactic.source.Position
+import org.scalatest.Tag
+
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
@@ -43,6 +46,15 @@ import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
+
+  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
+      pos: Position): Unit = {
+    super.test(testName, testTags: _*) {
+      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
+        testFun
+      }
+    }
+  }
 
   test("compare true/false to negative zero") {
     Seq(false, true).foreach { dictionary =>
@@ -193,11 +205,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false") {
-          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        }
-        withParquetTable(path.toString, "tbl") {
-          checkSparkAnswerAndOperator("select * FROM tbl WHERE _2 > 100")
+          withParquetTable(path.toString, "tbl") {
+            checkSparkAnswerAndOperator("select * FROM tbl WHERE _2 > 100")
+          }
         }
       }
     }
@@ -1372,7 +1384,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           -128,
           128,
           randomSize = 100)
-        withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
+        // this test requires native_comet scan due to unsigned u8/u16 issue
+        withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
           withParquetTable(path.toString, "tbl") {
             for (s <- Seq(-5, -1, 0, 1, 5, -1000, 1000, -323, -308, 308, -15, 15, -16, 16,
                 null)) {
@@ -1429,7 +1442,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "hex.parquet")
-        withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
+        // this test requires native_comet scan due to unsigned u8/u16 issue
+        withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
           makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
           withParquetTable(path.toString, "tbl") {
             checkSparkAnswerAndOperator(
@@ -2639,46 +2653,47 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("test integral divide") {
-    // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!usingDataSourceExec)
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path1 = new Path(dir.toURI.toString, "test1.parquet")
-        val path2 = new Path(dir.toURI.toString, "test2.parquet")
-        makeParquetFileAllTypes(
-          path1,
-          dictionaryEnabled = dictionaryEnabled,
-          0,
-          0,
-          randomSize = 10000)
-        makeParquetFileAllTypes(
-          path2,
-          dictionaryEnabled = dictionaryEnabled,
-          0,
-          0,
-          randomSize = 10000)
-        withParquetTable(path1.toString, "tbl1") {
-          withParquetTable(path2.toString, "tbl2") {
-            checkSparkAnswerAndOperator("""
-                |select
-                | t1._2 div t2._2, div(t1._2, t2._2),
-                | t1._3 div t2._3, div(t1._3, t2._3),
-                | t1._4 div t2._4, div(t1._4, t2._4),
-                | t1._5 div t2._5, div(t1._5, t2._5),
-                | t1._9 div t2._9, div(t1._9, t2._9),
-                | t1._10 div t2._10, div(t1._10, t2._10),
-                | t1._11 div t2._11, div(t1._11, t2._11)
-                | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
-                | order by t1._id""".stripMargin)
+    // this test requires native_comet scan due to unsigned u8/u16 issue
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path1 = new Path(dir.toURI.toString, "test1.parquet")
+          val path2 = new Path(dir.toURI.toString, "test2.parquet")
+          makeParquetFileAllTypes(
+            path1,
+            dictionaryEnabled = dictionaryEnabled,
+            0,
+            0,
+            randomSize = 10000)
+          makeParquetFileAllTypes(
+            path2,
+            dictionaryEnabled = dictionaryEnabled,
+            0,
+            0,
+            randomSize = 10000)
+          withParquetTable(path1.toString, "tbl1") {
+            withParquetTable(path2.toString, "tbl2") {
+              checkSparkAnswerAndOperator("""
+                  |select
+                  | t1._2 div t2._2, div(t1._2, t2._2),
+                  | t1._3 div t2._3, div(t1._3, t2._3),
+                  | t1._4 div t2._4, div(t1._4, t2._4),
+                  | t1._5 div t2._5, div(t1._5, t2._5),
+                  | t1._9 div t2._9, div(t1._9, t2._9),
+                  | t1._10 div t2._10, div(t1._10, t2._10),
+                  | t1._11 div t2._11, div(t1._11, t2._11)
+                  | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
+                  | order by t1._id""".stripMargin)
 
-            checkSparkAnswerAndOperator("""
-                |select
-                | t1._12 div t2._12, div(t1._12, t2._12),
-                | t1._15 div t2._15, div(t1._15, t2._15),
-                | t1._16 div t2._16, div(t1._16, t2._16),
-                | t1._17 div t2._17, div(t1._17, t2._17)
-                | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
-                | order by t1._id""".stripMargin)
+              checkSparkAnswerAndOperator("""
+                  |select
+                  | t1._12 div t2._12, div(t1._12, t2._12),
+                  | t1._15 div t2._15, div(t1._15, t2._15),
+                  | t1._16 div t2._16, div(t1._16, t2._16),
+                  | t1._17 div t2._17, div(t1._17, t2._17)
+                  | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
+                  | order by t1._id""".stripMargin)
+            }
           }
         }
       }
