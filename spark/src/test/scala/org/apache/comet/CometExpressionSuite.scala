@@ -1384,10 +1384,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           -128,
           128,
           randomSize = 100)
-        withSQLConf(
-          CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true",
-          // TODO test produces incorrect results with native_iceberg_compat/auto
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
+        // this test requires native_comet scan due to unsigned u8/u16 issue
+        withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
           withParquetTable(path.toString, "tbl") {
             for (s <- Seq(-5, -1, 0, 1, 5, -1000, 1000, -323, -308, 308, -15, 15, -16, 16,
                 null)) {
@@ -1444,10 +1442,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "hex.parquet")
-        withSQLConf(
-          CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true",
-          // TODO test produces incorrect results with native_iceberg_compat/auto
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
+        // this test requires native_comet scan due to unsigned u8/u16 issue
+        withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
           makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
           withParquetTable(path.toString, "tbl") {
             checkSparkAnswerAndOperator(
@@ -2657,7 +2653,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("test integral divide") {
-    // TODO test produces incorrect results with native_iceberg_compat/auto
+    // this test requires native_comet scan due to unsigned u8/u16 issue
     withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>

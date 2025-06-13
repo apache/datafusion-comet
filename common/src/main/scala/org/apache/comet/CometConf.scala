@@ -589,8 +589,8 @@ object CometConf extends ShimCometConf {
   val COMET_SCAN_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
     conf("spark.comet.scan.allowIncompatible")
       .doc(
-        "Comet is not currently fully compatible with Spark for all datatypes. " +
-          s"Set this config to true to allow them anyway. $COMPAT_GUIDE.")
+        "Some Comet scan implementations are not currently fully compatible with Spark for " +
+          s"all datatypes. Set this config to true to allow them anyway. $COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 
