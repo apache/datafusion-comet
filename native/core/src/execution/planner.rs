@@ -66,6 +66,7 @@ use datafusion::{
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_negate_expr, SparkBitwiseCount, SparkBitwiseNot,
+    SparkDateTrunc,
 };
 
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -105,10 +106,10 @@ use datafusion_comet_proto::{
 };
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Contains, Correlation, Covariance,
-    CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields, GetStructField, HourExpr,
-    IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike, SecondExpr,
-    SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
-    TimestampTruncExpr, ToJson, UnboundColumn, Variance,
+    CreateNamedStruct, EndsWith, GetArrayStructFields, GetStructField, HourExpr, IfExpr, Like,
+    ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike, SecondExpr, SparkCastOptions, StartsWith,
+    Stddev, StringSpaceExpr, SubstringExpr, SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn,
+    Variance,
 };
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use itertools::Itertools;
@@ -158,6 +159,7 @@ impl PhysicalPlanner {
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseCount::default()));
+        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateTrunc::default()));
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,
@@ -474,13 +476,6 @@ impl PhysicalPlanner {
                 let timezone = expr.timezone.clone();
 
                 Ok(Arc::new(SecondExpr::new(child, timezone)))
-            }
-            ExprStruct::TruncDate(expr) => {
-                let child =
-                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let format = self.create_expr(expr.format.as_ref().unwrap(), input_schema)?;
-
-                Ok(Arc::new(DateTruncExpr::new(child, format)))
             }
             ExprStruct::TruncTimestamp(expr) => {
                 let child =
