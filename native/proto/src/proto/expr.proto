@@ -70,7 +70,6 @@ message Expr {
     BinaryExpr bitwiseShiftLeft = 43;
     IfExpr if = 44;
     NormalizeNaNAndZero normalize_nan_and_zero = 45;
-    TruncDate truncDate = 46;
     TruncTimestamp truncTimestamp = 47;
     Abs abs = 49;
     Subquery subquery = 50;
@@ -342,11 +341,6 @@ message IfExpr {
   Expr if_expr = 1;
   Expr true_expr = 2;
   Expr false_expr = 3;
-}
-
-message TruncDate {
-  Expr child = 1;
-  Expr format = 2;
 }
 
 message TruncTimestamp {
