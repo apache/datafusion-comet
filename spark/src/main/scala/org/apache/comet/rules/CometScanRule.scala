@@ -107,44 +107,9 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
 
         var scanImpl = COMET_NATIVE_SCAN_IMPL.get()
 
-        // if scan is auto then pick best available scan
+        // if scan is auto then pick the best available scan
         if (scanImpl == SCAN_AUTO) {
-          // TODO these checks are not yet exhaustive. For example, native_iceberg_compat does
-          //  not support reading from S3
-
-          val typeChecker = CometScanTypeChecker(SCAN_NATIVE_ICEBERG_COMPAT)
-          val schemaSupported =
-            typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
-          val partitionSchemaSupported =
-            typeChecker.isSchemaSupported(r.partitionSchema, fallbackReasons)
-
-          // additional checks for known issues
-          def isComplexType(dt: DataType): Boolean = dt match {
-            case _: StructType | _: ArrayType | _: MapType => true
-            case _ => false
-          }
-
-          def hasKnownIssues(dataType: DataType): Boolean = {
-            dataType match {
-              case s: StructType => s.exists(field => hasKnownIssues(field.dataType))
-              case a: ArrayType => hasKnownIssues(a.elementType)
-              case m: MapType => isComplexType(m.keyType) || isComplexType(m.valueType)
-              case _ => false
-            }
-          }
-
-          val knownIssues =
-            scanExec.requiredSchema.exists(field => hasKnownIssues(field.dataType)) ||
-              r.partitionSchema.exists(field => hasKnownIssues(field.dataType))
-
-          if (COMET_EXEC_ENABLED.get() && schemaSupported && partitionSchemaSupported &&
-            !knownIssues) {
-            scanImpl = SCAN_NATIVE_ICEBERG_COMPAT
-          }
-        }
-
-        if (scanImpl == SCAN_AUTO) {
-          scanImpl = SCAN_NATIVE_COMET
+          scanImpl = selectScan(scanExec, r.partitionSchema)
         }
 
         if (scanImpl == SCAN_NATIVE_DATAFUSION && !COMET_EXEC_ENABLED.get()) {
@@ -289,6 +254,56 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
           scanExec,
           s"Unsupported scan: ${other.getClass.getName}. " +
             "Comet Scan only supports Parquet and Iceberg Parquet file formats")
+    }
+  }
+
+  private def selectScan(scanExec: FileSourceScanExec, partitionSchema: StructType): String = {
+    // TODO these checks are not yet exhaustive. For example, native_iceberg_compat does
+    //  not support reading from S3
+
+    val fallbackReasons = new ListBuffer[String]()
+
+    val typeChecker = CometScanTypeChecker(SCAN_NATIVE_ICEBERG_COMPAT)
+    val schemaSupported =
+      typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
+    val partitionSchemaSupported =
+      typeChecker.isSchemaSupported(partitionSchema, fallbackReasons)
+
+    def isComplexType(dt: DataType): Boolean = dt match {
+      case _: StructType | _: ArrayType | _: MapType => true
+      case _ => false
+    }
+
+    def hasMapsContainingStructs(dataType: DataType): Boolean = {
+      dataType match {
+        case s: StructType => s.exists(field => hasMapsContainingStructs(field.dataType))
+        case a: ArrayType => hasMapsContainingStructs(a.elementType)
+        case m: MapType => isComplexType(m.keyType) || isComplexType(m.valueType)
+        case _ => false
+      }
+    }
+
+    val knownIssues =
+      scanExec.requiredSchema.exists(field => hasMapsContainingStructs(field.dataType)) ||
+        partitionSchema.exists(field => hasMapsContainingStructs(field.dataType))
+
+    if (knownIssues) {
+      fallbackReasons += "There are known issues with maps containing structs when using " +
+        s"$SCAN_NATIVE_ICEBERG_COMPAT"
+    }
+
+    val cometExecEnabled = COMET_EXEC_ENABLED.get()
+    if (!cometExecEnabled) {
+      fallbackReasons += s"$SCAN_NATIVE_ICEBERG_COMPAT requires ${COMET_EXEC_ENABLED.key}=true"
+    }
+
+    if (cometExecEnabled && schemaSupported && partitionSchemaSupported && !knownIssues) {
+      logInfo(s"Auto scan mode selecting $SCAN_NATIVE_ICEBERG_COMPAT")
+      SCAN_NATIVE_ICEBERG_COMPAT
+    } else {
+      logInfo(
+        s"Auto scan mode falling back to $SCAN_NATIVE_COMET due to ${fallbackReasons.mkString(", ")}")
+      SCAN_NATIVE_COMET
     }
   }
 
