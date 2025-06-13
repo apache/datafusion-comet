@@ -50,7 +50,6 @@ import com.google.common.primitives.UnsignedLong
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
-import org.apache.comet.parquet.CometParquetUtils.PARQUET_FIELD_ID_READ_ENABLED
 import org.apache.comet.rules.CometScanTypeChecker
 
 abstract class ParquetReadSuite extends CometTestBase {
