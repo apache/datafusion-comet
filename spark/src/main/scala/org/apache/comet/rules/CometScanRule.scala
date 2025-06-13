@@ -109,8 +109,8 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
 
         // if scan is auto then pick best available scan
         if (scanImpl == SCAN_AUTO) {
-          // TODO these checks are not yet exhaustive. For example, native_datafusion does
-          //  not support reading from object stores such as S3 yet
+          // TODO these checks are not yet exhaustive. For example, native_iceberg_compat does
+          //  not support reading from S3
 
           val typeChecker = CometScanTypeChecker(SCAN_NATIVE_ICEBERG_COMPAT)
           val schemaSupported =
