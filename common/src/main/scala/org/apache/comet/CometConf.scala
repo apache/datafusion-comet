@@ -88,6 +88,7 @@ object CometConf extends ShimCometConf {
   val SCAN_NATIVE_COMET = "native_comet"
   val SCAN_NATIVE_DATAFUSION = "native_datafusion"
   val SCAN_NATIVE_ICEBERG_COMPAT = "native_iceberg_compat"
+  val SCAN_AUTO = "auto"
 
   val COMET_NATIVE_SCAN_IMPL: ConfigEntry[String] = conf("spark.comet.scan.impl")
     .doc(
@@ -97,11 +98,12 @@ object CometConf extends ShimCometConf {
         "parquet file reader and native column decoding. Supports simple types only " +
         s"'$SCAN_NATIVE_DATAFUSION' is a fully native implementation of scan based on DataFusion" +
         s"'$SCAN_NATIVE_ICEBERG_COMPAT' is a native implementation that exposes apis to read " +
-        "parquet columns natively.")
+        s"parquet columns natively. $SCAN_AUTO chooses the best scan.")
     .internal()
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
-    .checkValues(Set(SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT))
+    .checkValues(
+      Set(SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT, SCAN_AUTO))
     .createWithDefault(sys.env
       .getOrElse("COMET_PARQUET_SCAN_IMPL", SCAN_NATIVE_COMET)
       .toLowerCase(Locale.ROOT))
@@ -589,8 +591,8 @@ object CometConf extends ShimCometConf {
   val COMET_SCAN_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
     conf("spark.comet.scan.allowIncompatible")
       .doc(
-        "Comet is not currently fully compatible with Spark for all datatypes. " +
-          s"Set this config to true to allow them anyway. $COMPAT_GUIDE.")
+        "Some Comet scan implementations are not currently fully compatible with Spark for " +
+          s"all datatypes. Set this config to true to allow them anyway. $COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 
