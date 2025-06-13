@@ -2900,15 +2900,19 @@ object QueryPlanSerde extends Logging with CometExprShim {
             inputs.forall(attr => supportedShuffleDataType(attr.dataType)) &&
             CometConf.COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED.get(conf)
         if (!supported) {
-          msg = s"unsupported Spark partitioning expressions: $expressions"
+          msg = s"unsupported Spark partitioning: $expressions"
         }
         supported
       case SinglePartition =>
         inputs.forall(attr => supportedShuffleDataType(attr.dataType))
       case RangePartitioning(ordering, _) =>
-        ordering.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-        inputs.forall(attr => supportedShuffleDataType(attr.dataType)) &&
-        CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.get(conf)
+        val supported = ordering.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
+          inputs.forall(attr => supportedShuffleDataType(attr.dataType)) &&
+          CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.get(conf)
+        if (!supported) {
+          msg = s"unsupported Spark partitioning: $ordering"
+        }
+        supported
       case _ =>
         msg = s"unsupported Spark partitioning: ${partitioning.getClass.getName}"
         false
