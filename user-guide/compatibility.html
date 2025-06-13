@@ -429,6 +429,7 @@ implementation:</p>
 <li><p>Improves performance</p></li>
 </ul>
 <p>The new scans currently have the following limitations:</p>
+<p>Issues common to both <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> and <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code>:</p>
 <ul class="simple">
 <li><p>When reading Parquet files written by systems other than Spark that contain columns with the logical types <code class="docutils literal notranslate"><span class="pre">UINT_8</span></code>
 or <code class="docutils literal notranslate"><span class="pre">UINT_16</span></code>, Comet will produce different results than Spark because Spark does not preserve or understand these
@@ -438,9 +439,16 @@ types (regardless of the logical type). This behavior can be disabled by setting
 <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.allowIncompatible=true</span></code>.</p></li>
 <li><p>There is a known performance issue when pushing filters down to Parquet. See the <a class="reference internal" href="tuning.html"><span class="std std-doc">Comet Tuning Guide</span></a> for more
 information.</p></li>
+<li><p>Reading maps containing complex types can result in errors or incorrect results <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1754">#1754</a></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">PARQUET_FIELD_ID_READ_ENABLED</span></code> is not respected <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1758">#1758</a></p></li>
 <li><p>There are failures in the Spark SQL test suite when enabling these new scans (tracking issues: <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1542">#1542</a> and <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1545">#1545</a>).</p></li>
 <li><p>No support for default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.</p></li>
 <li><p>Setting Spark configs <code class="docutils literal notranslate"><span class="pre">ignoreMissingFiles</span></code> or <code class="docutils literal notranslate"><span class="pre">ignoreCorruptFiles</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> is not compatible with <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> scan.</p></li>
+</ul>
+<p>Issues specific to <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code>:</p>
+<ul class="simple">
+<li><p>Bucketed scans are not supported</p></li>
+<li><p>No support for row indexes</p></li>
 </ul>
 </section>
 <section id="ansi-mode">
