@@ -54,8 +54,8 @@ trait CometTPCQueryBenchmarkBase extends SqlBasedBenchmark with CometTPCQueryBas
       cometSpark.sql(queryString).queryExecution.analyzed.foreach {
         case SubqueryAlias(alias, _: LogicalRelation) =>
           queryRelations.add(alias.name)
-        case LogicalRelation(_, _, Some(catalogTable), _) =>
-          queryRelations.add(catalogTable.identifier.table)
+        case rel: LogicalRelation if rel.catalogTable.isDefined =>
+          queryRelations.add(rel.catalogTable.get.identifier.table)
         case HiveTableRelation(tableMeta, _, _, _, _) =>
           queryRelations.add(tableMeta.identifier.table)
         case _ =>

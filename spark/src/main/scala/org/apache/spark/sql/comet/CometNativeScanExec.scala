@@ -27,6 +27,7 @@ import org.apache.spark.sql.catalyst._
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
+import org.apache.spark.sql.comet.shims.ShimStreamSourceAwareSparkPlan
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
@@ -56,7 +57,8 @@ case class CometNativeScanExec(
     originalPlan: FileSourceScanExec,
     override val serializedPlanOpt: SerializedPlan)
     extends CometLeafExec
-    with DataSourceScanExec {
+    with DataSourceScanExec
+    with ShimStreamSourceAwareSparkPlan {
 
   override lazy val metadata: Map[String, String] = originalPlan.metadata
 
