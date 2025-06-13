@@ -41,6 +41,7 @@ import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
@@ -49,6 +50,7 @@ import com.google.common.primitives.UnsignedLong
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.parquet.CometParquetUtils.PARQUET_FIELD_ID_READ_ENABLED
 import org.apache.comet.rules.CometScanTypeChecker
 
 abstract class ParquetReadSuite extends CometTestBase {
@@ -1741,6 +1743,77 @@ abstract class ParquetReadSuite extends CometTestBase {
       super.test(cometTestName, testTags: _*) {
         withSQLConf(CometConf.COMET_SCAN_PREFETCH_ENABLED.key -> prefetch.toString) {
           testFun
+        }
+      }
+    }
+  }
+
+  private def withId(id: Int) =
+    new MetadataBuilder().putLong(ParquetUtils.FIELD_ID_METADATA_KEY, id).build()
+
+  // Based on Spark ParquetIOSuite.test("vectorized reader: array of nested struct")
+  test("array of nested struct with and without field id") {
+    val nestedSchema = StructType(
+      Seq(StructField(
+        "_1",
+        StructType(Seq(
+          StructField("_1", StringType, nullable = true, withId(1)), // Field ID 1
+          StructField(
+            "_2",
+            ArrayType(StructType(Seq(
+              StructField("_1", StringType, nullable = true, withId(2)), // Field ID 2
+              StructField("_2", StringType, nullable = true, withId(3)) // Field ID 3
+            ))),
+            nullable = true))),
+        nullable = true)))
+    val nestedSchemaNoId = StructType(
+      Seq(StructField(
+        "_1",
+        StructType(Seq(
+          StructField("_1", StringType, nullable = true),
+          StructField(
+            "_2",
+            ArrayType(StructType(Seq(
+              StructField("_1", StringType, nullable = true),
+              StructField("_2", StringType, nullable = true)))),
+            nullable = true))),
+        nullable = true)))
+    // data matching the schema
+    val data = Seq(
+      Row(Row("a", null)),
+      Row(Row("b", Seq(Row("c", "d")))),
+      Row(null),
+      Row(Row("e", Seq(Row("f", null), Row(null, "g")))),
+      Row(Row(null, null)),
+      Row(Row(null, Seq(null))),
+      Row(Row(null, Seq(Row(null, null), Row("h", null), null))),
+      Row(Row("i", Seq())),
+      Row(null))
+    val answer =
+      Row(Row("a", null)) ::
+        Row(Row("b", Seq(Row("c", "d")))) ::
+        Row(null) ::
+        Row(Row("e", Seq(Row("f", null), Row(null, "g")))) ::
+        Row(Row(null, null)) ::
+        Row(Row(null, Seq(null))) ::
+        Row(Row(null, Seq(Row(null, null), Row("h", null), null))) ::
+        Row(Row("i", Seq())) ::
+        Row(null) ::
+        Nil
+
+    withSQLConf("spark.sql.parquet.fieldId.read.enabled" -> "true") {
+      val df = spark.createDataFrame(spark.sparkContext.parallelize(data), nestedSchema)
+      withTempPath { path =>
+        df.write.parquet(path.getCanonicalPath)
+        readParquetFile(path.getCanonicalPath) { df =>
+          checkAnswer(df, answer)
+        }
+      }
+      val df2 = spark.createDataFrame(spark.sparkContext.parallelize(data), nestedSchemaNoId)
+      withTempPath { path =>
+        df2.write.parquet(path.getCanonicalPath)
+        readParquetFile(path.getCanonicalPath) { df =>
+          checkAnswer(df, answer)
         }
       }
     }

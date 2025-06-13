@@ -533,13 +533,20 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     return newSchema;
   }
 
+  private static boolean isPrimitiveCatalystType(DataType dataType) {
+    return !(dataType instanceof ArrayType)
+        && !(dataType instanceof MapType)
+        && !(dataType instanceof StructType);
+  }
+
   private DataType getSparkTypeByFieldId(
       DataType dataType, Type parquetType, boolean caseSensitive) {
     DataType newDataType;
     if (dataType instanceof StructType) {
       newDataType =
           getSparkSchemaByFieldId((StructType) dataType, parquetType.asGroupType(), caseSensitive);
-    } else if (dataType instanceof ArrayType) {
+    } else if (dataType instanceof ArrayType
+        && !isPrimitiveCatalystType(((ArrayType) dataType).elementType())) {
 
       newDataType =
           getSparkArrayTypeByFieldId(
@@ -575,11 +582,10 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   }
 
   private DataType getSparkArrayTypeByFieldId(
-      ArrayType arrayType, GroupType parquetType, boolean caseSensitive) {
+      ArrayType arrayType, GroupType parquetList, boolean caseSensitive) {
     DataType newDataType;
     DataType elementType = arrayType.elementType();
     DataType newElementType;
-    Type parquetList = parquetType.getFields().get(0);
     Type parquetElementType;
     if (parquetList.getLogicalTypeAnnotation() == null
         && parquetList.isRepetition(Type.Repetition.REPEATED)) {
