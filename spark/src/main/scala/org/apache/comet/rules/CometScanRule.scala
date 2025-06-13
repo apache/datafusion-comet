@@ -302,7 +302,8 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
       SCAN_NATIVE_ICEBERG_COMPAT
     } else {
       logInfo(
-        s"Auto scan mode falling back to $SCAN_NATIVE_COMET due to ${fallbackReasons.mkString(", ")}")
+        s"Auto scan mode falling back to $SCAN_NATIVE_COMET due to " +
+          s"${fallbackReasons.mkString(", ")}")
       SCAN_NATIVE_COMET
     }
   }
