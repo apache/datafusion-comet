@@ -292,7 +292,7 @@ mod test {
 
         RangePartitioner::partition_indices_for_batch(
             &input_rows,
-            &owned_rows_vec.as_slice(),
+            owned_rows_vec.as_slice(),
             &mut partition_ids,
         );
 
