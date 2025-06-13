@@ -1800,7 +1800,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         Row(null) ::
         Nil
 
-    withSQLConf("spark.sql.parquet.fieldId.read.enabled" -> "true") {
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key  -> "true") {
       val df = spark.createDataFrame(spark.sparkContext.parallelize(data), nestedSchema)
       withTempPath { path =>
         df.write.parquet(path.getCanonicalPath)
