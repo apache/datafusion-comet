@@ -953,31 +953,19 @@ object QueryPlanSerde extends Logging with CometExprShim {
           (builder, binaryExpr) => builder.setRlike(binaryExpr))
 
       case StartsWith(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setStartsWith(binaryExpr))
+        val arg0 = exprToProtoInternal(left, inputs, binding)
+        val arg1 = exprToProtoInternal(right, inputs, binding)
+        scalarFunctionExprToProto("starts_with", arg0, arg1)
 
       case EndsWith(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setEndsWith(binaryExpr))
+        val arg0 = exprToProtoInternal(left, inputs, binding)
+        val arg1 = exprToProtoInternal(right, inputs, binding)
+        scalarFunctionExprToProto("ends_with", arg0, arg1)
 
       case Contains(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setContains(binaryExpr))
+        val arg0 = exprToProtoInternal(left, inputs, binding)
+        val arg1 = exprToProtoInternal(right, inputs, binding)
+        scalarFunctionExprToProto("contains", arg0, arg1)
 
       case StringSpace(child) =>
         createUnaryExpr(
