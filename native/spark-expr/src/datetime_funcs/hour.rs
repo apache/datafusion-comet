@@ -16,82 +16,62 @@
 // under the License.
 
 use crate::utils::array_with_timezone;
-use arrow::datatypes::{DataType, Schema, TimeUnit::Microsecond};
-use arrow::{
-    compute::{date_part, DatePart},
-    record_batch::RecordBatch,
-};
-use datafusion::common::DataFusionError;
-use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr::PhysicalExpr;
-use std::hash::Hash;
+use arrow::datatypes::{DataType, TimeUnit::Microsecond};
+use arrow::compute::{date_part, DatePart};
+use datafusion::common::{internal_datafusion_err, DataFusionError};
+use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
 use std::{
     any::Any,
-    fmt::{Debug, Display, Formatter},
-    sync::Arc,
+    fmt::Debug,
 };
 
-#[derive(Debug, Eq)]
-pub struct HourExpr {
-    /// An array with DataType::Timestamp(TimeUnit::Microsecond, None)
-    child: Arc<dyn PhysicalExpr>,
+#[derive(Debug)]
+pub struct SparkHour {
+    signature: Signature,
+    aliases: Vec<String>,
     timezone: String,
 }
 
-impl Hash for HourExpr {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.child.hash(state);
-        self.timezone.hash(state);
-    }
-}
-impl PartialEq for HourExpr {
-    fn eq(&self, other: &Self) -> bool {
-        self.child.eq(&other.child) && self.timezone.eq(&other.timezone)
-    }
-}
-
-impl HourExpr {
-    pub fn new(child: Arc<dyn PhysicalExpr>, timezone: String) -> Self {
-        HourExpr { child, timezone }
+impl SparkHour {
+    pub fn new(timezone: String) -> Self {
+        SparkHour {
+            signature: Signature::user_defined(Volatility::Immutable),
+            aliases: vec![],
+            timezone,
+        }
     }
 }
 
-impl Display for HourExpr {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Hour [timezone:{}, child: {}]",
-            self.timezone, self.child
-        )
-    }
-}
-
-impl PhysicalExpr for HourExpr {
+impl ScalarUDFImpl for SparkHour {
     fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
-        unimplemented!()
+    fn name(&self) -> &str {
+        "hour"
     }
 
-    fn data_type(&self, input_schema: &Schema) -> datafusion::common::Result<DataType> {
-        match self.child.data_type(input_schema).unwrap() {
-            DataType::Dictionary(key_type, _) => {
-                Ok(DataType::Dictionary(key_type, Box::new(DataType::Int32)))
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, arg_types: &[DataType]) -> datafusion::common::Result<DataType> {
+        Ok(match &arg_types[0] {
+            DataType::Dictionary(_, _) => {
+                DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Int32))
             }
-            _ => Ok(DataType::Int32),
-        }
+            _ => DataType::Int32,
+        })
     }
 
-    fn nullable(&self, _: &Schema) -> datafusion::common::Result<bool> {
-        Ok(true)
-    }
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> datafusion::common::Result<ColumnarValue> {
+        let args: [ColumnarValue; 1] = args
+            .args
+            .try_into()
+            .map_err(|_| internal_datafusion_err!("hour expects exactly one argument"))?;
 
-    fn evaluate(&self, batch: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
-        let arg = self.child.evaluate(batch)?;
-        match arg {
-            ColumnarValue::Array(array) => {
+        match args {
+            [ColumnarValue::Array(array)] => {
                 let array = array_with_timezone(
                     array,
                     self.timezone.clone(),
@@ -108,19 +88,10 @@ impl PhysicalExpr for HourExpr {
                 "Hour(scalar) should be fold in Spark JVM side.".to_string(),
             )),
         }
+
     }
 
-    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
-        vec![&self.child]
-    }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn PhysicalExpr>>,
-    ) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
-        Ok(Arc::new(HourExpr::new(
-            Arc::clone(&children[0]),
-            self.timezone.clone(),
-        )))
+    fn aliases(&self) -> &[String] {
+        &self.aliases
     }
 }
