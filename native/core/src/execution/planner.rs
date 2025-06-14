@@ -19,7 +19,11 @@
 
 use super::expressions::EvalMode;
 use crate::execution::operators::CopyMode;
+use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::operators::FilterExec as CometFilterExec;
+use crate::execution::shuffle::CompressionCodec;
+use crate::execution::spark_plan::SparkPlan;
+use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -34,11 +38,25 @@ use crate::{
 };
 use arrow::compute::CastOptions;
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
+use datafusion::common::scalar::ScalarStructBuilder;
+use datafusion::common::{
+    tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
+    JoinType as DFJoinType, ScalarValue,
+};
+use datafusion::datasource::listing::PartitionedFile;
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
+use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
+use datafusion::logical_expr::{
+    AggregateUDF, ReturnFieldArgs, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    WindowFunctionDefinition,
+};
 use datafusion::physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
+use datafusion::physical_expr::expressions::{Literal, StatsType};
+use datafusion::physical_expr::window::WindowExpr;
+use datafusion::physical_expr::LexOrdering;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
@@ -66,26 +84,8 @@ use datafusion::{
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_negate_expr, SparkBitwiseCount, SparkBitwiseNot,
+    SparkContains, SparkEndsWith, SparkLike, SparkStartsWith,
 };
-
-use crate::execution::operators::ExecutionError::GeneralError;
-use crate::execution::shuffle::CompressionCodec;
-use crate::execution::spark_plan::SparkPlan;
-use crate::parquet::parquet_support::prepare_object_store_with_configs;
-use datafusion::common::scalar::ScalarStructBuilder;
-use datafusion::common::{
-    tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
-    JoinType as DFJoinType, ScalarValue,
-};
-use datafusion::datasource::listing::PartitionedFile;
-use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
-use datafusion::logical_expr::{
-    AggregateUDF, ReturnFieldArgs, ScalarUDF, WindowFrame, WindowFrameBound, WindowFrameUnits,
-    WindowFunctionDefinition,
-};
-use datafusion::physical_expr::expressions::{Literal, StatsType};
-use datafusion::physical_expr::window::WindowExpr;
-use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
@@ -104,11 +104,10 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Contains, Correlation, Covariance,
-    CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields, GetStructField, HourExpr,
-    IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike, SecondExpr,
-    SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
-    TimestampTruncExpr, ToJson, UnboundColumn, Variance,
+    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
+    DateTruncExpr, GetArrayStructFields, GetStructField, HourExpr, IfExpr, ListExtract, MinuteExpr,
+    NormalizeNaNAndZero, RLike, SecondExpr, SparkCastOptions, Stddev, StringSpaceExpr,
+    SubstringExpr, SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use itertools::Itertools;
@@ -158,6 +157,10 @@ impl PhysicalPlanner {
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseCount::default()));
+        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkContains::default()));
+        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkStartsWith::default()));
+        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkEndsWith::default()));
+        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLike::default()));
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,
@@ -507,34 +510,6 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
 
                 Ok(Arc::new(StringSpaceExpr::new(child)))
-            }
-            ExprStruct::Contains(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-
-                Ok(Arc::new(Contains::new(left, right)))
-            }
-            ExprStruct::StartsWith(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-
-                Ok(Arc::new(StartsWith::new(left, right)))
-            }
-            ExprStruct::EndsWith(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-
-                Ok(Arc::new(EndsWith::new(left, right)))
-            }
-            ExprStruct::Like(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-
-                Ok(Arc::new(Like::new(left, right)))
             }
             ExprStruct::Rlike(expr) => {
                 let left =

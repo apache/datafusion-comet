@@ -39,8 +39,7 @@ import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
-import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD}
-import org.apache.spark.sql.execution.datasources.PartitionedFile
+import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, PartitionedFile}
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -913,13 +912,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
       case Like(left, right, escapeChar) =>
         if (escapeChar == '\\') {
-          createBinaryExpr(
-            expr,
-            left,
-            right,
-            inputs,
-            binding,
-            (builder, binaryExpr) => builder.setLike(binaryExpr))
+          val leftExpr = exprToProto(left, inputs, binding)
+          val rightExpr = exprToProto(right, inputs, binding)
+          scalarFunctionExprToProtoWithReturnType("like", BooleanType, leftExpr, rightExpr)
         } else {
           // TODO custom escape char
           withInfo(expr, s"custom escape character $escapeChar not supported in LIKE")
@@ -952,32 +947,23 @@ object QueryPlanSerde extends Logging with CometExprShim {
           binding,
           (builder, binaryExpr) => builder.setRlike(binaryExpr))
 
-      case StartsWith(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setStartsWith(binaryExpr))
+      case _: StartsWith =>
+        val startsWithExpr = expr.asInstanceOf[StartsWith]
+        val leftProto = exprToProto(startsWithExpr.left, inputs, binding)
+        val rightProto = exprToProto(startsWithExpr.right, inputs, binding)
+        scalarFunctionExprToProtoWithReturnType("start_with", BooleanType, leftProto, rightProto)
 
-      case EndsWith(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setEndsWith(binaryExpr))
+      case _: EndsWith =>
+        val endWithExpr = expr.asInstanceOf[EndsWith]
+        val leftProto = exprToProto(endWithExpr.left, inputs, binding)
+        val rightProto = exprToProto(endWithExpr.right, inputs, binding)
+        scalarFunctionExprToProtoWithReturnType("end_with", BooleanType, leftProto, rightProto)
 
-      case Contains(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setContains(binaryExpr))
+      case _: Contains =>
+        val containsExpr = expr.asInstanceOf[Contains]
+        val leftProto = exprToProto(containsExpr.left, inputs, binding)
+        val rightProto = exprToProto(containsExpr.right, inputs, binding)
+        scalarFunctionExprToProtoWithReturnType("contains", BooleanType, leftProto, rightProto)
 
       case StringSpace(child) =>
         createUnaryExpr(

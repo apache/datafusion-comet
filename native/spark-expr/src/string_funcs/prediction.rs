@@ -17,125 +17,105 @@
 
 #![allow(deprecated)]
 
-use arrow::datatypes::{DataType, Schema};
-use arrow::{
-    compute::{
-        contains_dyn, contains_utf8_scalar_dyn, ends_with_dyn, ends_with_utf8_scalar_dyn, like_dyn,
-        like_utf8_scalar_dyn, starts_with_dyn, starts_with_utf8_scalar_dyn,
-    },
-    record_batch::RecordBatch,
+use arrow::compute::{
+    contains_dyn, contains_utf8_scalar_dyn, ends_with_dyn, ends_with_utf8_scalar_dyn, like_dyn,
+    like_utf8_scalar_dyn, starts_with_dyn, starts_with_utf8_scalar_dyn,
 };
-use datafusion::common::{DataFusionError, ScalarValue::Utf8};
-use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr::PhysicalExpr;
-use std::{
-    any::Any,
-    fmt::{Display, Formatter},
-    hash::Hash,
-    sync::Arc,
-};
+use arrow::datatypes::DataType;
+use datafusion::common::ScalarValue::Utf8;
+use datafusion::common::{exec_err, internal_datafusion_err, Result};
+use datafusion::logical_expr::{ColumnarValue, Volatility};
+use datafusion::logical_expr::{ScalarFunctionArgs, ScalarUDFImpl, Signature};
+use std::any::Any;
+use std::sync::Arc;
 
 macro_rules! make_predicate_function {
-    ($name: ident, $kernel: ident, $str_scalar_kernel: ident) => {
-        #[derive(Debug, Eq)]
+    ($name: ident, $name_snake: expr, $kernel: ident, $str_scalar_kernel: ident) => {
+        #[derive(Debug)]
         pub struct $name {
-            left: Arc<dyn PhysicalExpr>,
-            right: Arc<dyn PhysicalExpr>,
+            signature: Signature,
+            aliases: Vec<String>,
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::new()
+            }
         }
 
         impl $name {
-            pub fn new(left: Arc<dyn PhysicalExpr>, right: Arc<dyn PhysicalExpr>) -> Self {
-                Self { left, right }
+            pub fn new() -> Self {
+                Self {
+                    signature: Signature::user_defined(Volatility::Immutable),
+                    aliases: vec![],
+                }
             }
         }
 
-        impl Display for $name {
-            fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-                write!(f, "$name [left: {}, right: {}]", self.left, self.right)
-            }
-        }
-
-        impl Hash for $name {
-            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-                self.left.hash(state);
-                self.right.hash(state);
-            }
-        }
-
-        impl PartialEq for $name {
-            fn eq(&self, other: &Self) -> bool {
-                self.left.eq(&other.left) && self.right.eq(&other.right)
-            }
-        }
-
-        impl PhysicalExpr for $name {
+        impl ScalarUDFImpl for $name {
             fn as_any(&self) -> &dyn Any {
                 self
             }
 
-            fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
-                unimplemented!()
+            fn name(&self) -> &str {
+                $name_snake
             }
 
-            fn data_type(&self, _: &Schema) -> datafusion::common::Result<DataType> {
+            fn signature(&self) -> &Signature {
+                &self.signature
+            }
+
+            fn aliases(&self) -> &[String] {
+                &self.aliases
+            }
+
+            fn return_type(&self, _: &[DataType]) -> Result<DataType> {
                 Ok(DataType::Boolean)
             }
 
-            fn nullable(&self, _: &Schema) -> datafusion::common::Result<bool> {
-                Ok(true)
-            }
-
-            fn evaluate(&self, batch: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
-                let left_arg = self.left.evaluate(batch)?;
-                let right_arg = self.right.evaluate(batch)?;
-
-                let array = match (left_arg, right_arg) {
+            fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+                let args: [ColumnarValue; 2] = args.args.try_into().map_err(|_| {
+                    internal_datafusion_err!("{} expects exactly two arguments", $name_snake)
+                })?;
+                let array = match args {
                     // array (op) scalar
-                    (ColumnarValue::Array(array), ColumnarValue::Scalar(Utf8(Some(string)))) => {
+                    [ColumnarValue::Array(array), ColumnarValue::Scalar(Utf8(Some(string)))] => {
                         $str_scalar_kernel(&array, string.as_str())
                     }
-                    (ColumnarValue::Array(_), ColumnarValue::Scalar(other)) => {
-                        return Err(DataFusionError::Execution(format!(
-                            "Should be String but got: {:?}",
-                            other
-                        )))
+                    [ColumnarValue::Array(_), ColumnarValue::Scalar(other)] => {
+                        return exec_err!("Should be String but got: {:?}", other)
                     }
                     // array (op) array
-                    (ColumnarValue::Array(array1), ColumnarValue::Array(array2)) => {
+                    [ColumnarValue::Array(array1), ColumnarValue::Array(array2)] => {
                         $kernel(&array1, &array2)
                     }
-                    // scalar (op) scalar should be folded at Spark optimizer
-                    _ => {
-                        return Err(DataFusionError::Execution(
-                            "Predicate on two literals should be folded at Spark".to_string(),
-                        ))
-                    }
+                    _ => return exec_err!("Predicate on two literals should be folded at Spark"),
                 }?;
-
                 Ok(ColumnarValue::Array(Arc::new(array)))
-            }
-
-            fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
-                vec![&self.left, &self.right]
-            }
-
-            fn with_new_children(
-                self: Arc<Self>,
-                children: Vec<Arc<dyn PhysicalExpr>>,
-            ) -> datafusion::common::Result<Arc<dyn PhysicalExpr>> {
-                Ok(Arc::new($name::new(
-                    children[0].clone(),
-                    children[1].clone(),
-                )))
             }
         }
     };
 }
 
-make_predicate_function!(Like, like_dyn, like_utf8_scalar_dyn);
+make_predicate_function!(SparkLike, "like", like_dyn, like_utf8_scalar_dyn);
 
-make_predicate_function!(StartsWith, starts_with_dyn, starts_with_utf8_scalar_dyn);
+make_predicate_function!(
+    SparkStartsWith,
+    "start_with",
+    starts_with_dyn,
+    starts_with_utf8_scalar_dyn
+);
 
-make_predicate_function!(EndsWith, ends_with_dyn, ends_with_utf8_scalar_dyn);
+make_predicate_function!(
+    SparkEndsWith,
+    "end_with",
+    ends_with_dyn,
+    ends_with_utf8_scalar_dyn
+);
 
-make_predicate_function!(Contains, contains_dyn, contains_utf8_scalar_dyn);
+make_predicate_function!(
+    SparkContains,
+    "contains",
+    contains_dyn,
+    contains_utf8_scalar_dyn
+);
