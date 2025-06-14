@@ -2278,7 +2278,7 @@ index d083cac48ff..3c11bcde807 100644
    import testImplicits._
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
-index 746f289c393..199ee138375 100644
+index 746f289c393..a90106a1463 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 @@ -19,16 +19,19 @@ package org.apache.spark.sql.sources
@@ -2408,31 +2408,40 @@ index 746f289c393..199ee138375 100644
        checkAnswer(aggDF, df1.groupBy("j").agg(max("k")))
      }
    }
-@@ -896,6 +929,7 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -895,7 +928,10 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+   }
  
    test("SPARK-29655 Read bucketed tables obeys spark.sql.shuffle.partitions") {
++    // Range partitioning uses random samples, so per-partition comparisons do not always yield
++    // the same results. Disable Comet native range partitioning.
      withSQLConf(
 +      CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "false",
        SQLConf.SHUFFLE_PARTITIONS.key -> "5",
        SQLConf.COALESCE_PARTITIONS_INITIAL_PARTITION_NUM.key -> "7")  {
        val bucketSpec = Some(BucketSpec(6, Seq("i", "j"), Nil))
-@@ -915,6 +949,7 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -914,7 +950,10 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+   }
  
    test("SPARK-32767 Bucket join should work if SHUFFLE_PARTITIONS larger than bucket number") {
++    // Range partitioning uses random samples, so per-partition comparisons do not always yield
++    // the same results. Disable Comet native range partitioning.
      withSQLConf(
 +      CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "false",
        SQLConf.SHUFFLE_PARTITIONS.key -> "9",
        SQLConf.COALESCE_PARTITIONS_INITIAL_PARTITION_NUM.key -> "10")  {
  
-@@ -945,6 +980,7 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -944,7 +983,10 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+   }
  
    test("bucket coalescing eliminates shuffle") {
++    // Range partitioning uses random samples, so per-partition comparisons do not always yield
++    // the same results. Disable Comet native range partitioning.
      withSQLConf(
 +      CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "false",
        SQLConf.COALESCE_BUCKETS_IN_JOIN_ENABLED.key -> "true",
        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
        // The side with bucketedTableTestSpec1 will be coalesced to have 4 output partitions.
-@@ -1029,15 +1065,21 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -1029,15 +1071,21 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
            Seq(true, false).foreach { aqeEnabled =>
              withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled.toString) {
                val plan = sql(query).queryExecution.executedPlan
@@ -2863,7 +2872,7 @@ index 549431ef4f4..e48f1730da6 100644
        withSQLConf(
          "parquet.crypto.factory.class" ->
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala
-index 6160c3e5f6c..d6761dc6f7c 100644
+index 6160c3e5f6c..0956d7d9edc 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala
 @@ -24,6 +24,7 @@ import java.sql.{Date, Timestamp}
@@ -2874,12 +2883,14 @@ index 6160c3e5f6c..d6761dc6f7c 100644
  import org.apache.hadoop.fs.{FileSystem, Path}
  
  import org.apache.spark.{SparkException, TestUtils}
-@@ -838,8 +839,11 @@ abstract class SQLQuerySuiteBase extends QueryTest with SQLTestUtils with TestHi
+@@ -838,8 +839,13 @@ abstract class SQLQuerySuiteBase extends QueryTest with SQLTestUtils with TestHi
    }
  
    test("SPARK-2554 SumDistinct partial aggregation") {
 -    checkAnswer(sql("SELECT sum( distinct key) FROM src group by key order by key"),
 -      sql("SELECT distinct key FROM src order by key").collect().toSeq)
++    // Range partitioning uses random samples, so per-partition comparisons do not always yield
++    // the same results. Disable Comet native range partitioning.
 +    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "false")
 +    {
 +      checkAnswer(sql("SELECT sum( distinct key) FROM src group by key order by key"),
