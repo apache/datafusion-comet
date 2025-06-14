@@ -15,14 +15,26 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub(crate) mod codec;
-mod comet_partitioning;
-mod list;
-mod map;
-mod range_partitioner;
-pub mod row;
-mod shuffle_writer;
+use datafusion::physical_expr::{LexOrdering, PhysicalExpr};
+use std::sync::Arc;
 
-pub use codec::{read_ipc_compressed, CompressionCodec, ShuffleBlockWriter};
-pub use comet_partitioning::CometPartitioning;
-pub use shuffle_writer::ShuffleWriterExec;
+#[derive(Debug, Clone)]
+pub enum CometPartitioning {
+    SinglePartition,
+    /// Allocate rows based on a hash of one of more expressions and the specified number of
+    /// partitions
+    Hash(Vec<Arc<dyn PhysicalExpr>>, usize),
+    /// Allocate rows based on lexical order of one of more expressions and the specified number of
+    /// partitions
+    RangePartitioning(LexOrdering, usize, usize),
+}
+
+impl CometPartitioning {
+    pub fn partition_count(&self) -> usize {
+        use CometPartitioning::*;
+        match self {
+            SinglePartition => 1,
+            Hash(_, n) | RangePartitioning(_, n, _) => *n,
+        }
+    }
+}

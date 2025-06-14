@@ -25,12 +25,14 @@ import java.nio.file.{Files, Paths}
 import scala.collection.JavaConverters.asJavaIterableConverter
 
 import org.apache.spark.{SparkEnv, TaskContext}
+import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.shuffle.{IndexShuffleBlockResolver, ShuffleWriteMetricsReporter, ShuffleWriter}
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, SinglePartition}
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, SinglePartition}
 import org.apache.spark.sql.comet.{CometExec, CometMetricNode}
 import org.apache.spark.sql.execution.metric.SQLMetric
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometConf
@@ -50,7 +52,8 @@ class CometNativeShuffleWriter[K, V](
     mapId: Long,
     context: TaskContext,
     metricsReporter: ShuffleWriteMetricsReporter)
-    extends ShuffleWriter[K, V] {
+    extends ShuffleWriter[K, V]
+    with Logging {
 
   private val OFFSET_LENGTH = 8
 
@@ -170,7 +173,7 @@ class CometNativeShuffleWriter[K, V](
         case _: HashPartitioning =>
           val hashPartitioning = outputPartitioning.asInstanceOf[HashPartitioning]
 
-          val partitioning = PartitioningOuterClass.HashRepartition.newBuilder()
+          val partitioning = PartitioningOuterClass.HashPartition.newBuilder()
           partitioning.setNumPartitions(outputPartitioning.numPartitions)
 
           val partitionExprs = hashPartitioning.expressions
@@ -186,7 +189,44 @@ class CometNativeShuffleWriter[K, V](
           val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
           shuffleWriterBuilder.setPartitioning(
             partitioningBuilder.setHashPartition(partitioning).build())
+        case _: RangePartitioning =>
+          val rangePartitioning = outputPartitioning.asInstanceOf[RangePartitioning]
 
+          val partitioning = PartitioningOuterClass.RangePartition.newBuilder()
+          partitioning.setNumPartitions(outputPartitioning.numPartitions)
+          val sampleSize = {
+            // taken from org.apache.spark.RangePartitioner#rangeBounds
+            // This is the sample size we need to have roughly balanced output partitions,
+            // capped at 1M.
+            // Cast to double to avoid overflowing ints or longs
+            val sampleSize = math.min(
+              SQLConf.get
+                .getConf(SQLConf.RANGE_EXCHANGE_SAMPLE_SIZE_PER_PARTITION)
+                .toDouble * outputPartitioning.numPartitions,
+              1e6)
+            // Assume the input partitions are roughly balanced and over-sample a little bit.
+            // Comet: we don't divide by numPartitions since each DF plan handles one partition.
+            math.ceil(3.0 * sampleSize).toInt
+          }
+          if (sampleSize > 8192) {
+            logWarning(
+              s"RangePartitioning sampleSize of s$sampleSize exceeds Comet RecordBatch size.")
+          }
+          partitioning.setSampleSize(sampleSize)
+
+          val orderingExprs = rangePartitioning.ordering
+            .flatMap(e => QueryPlanSerde.exprToProto(e, outputAttributes))
+
+          if (orderingExprs.length != rangePartitioning.ordering.length) {
+            throw new UnsupportedOperationException(
+              s"Partitioning $rangePartitioning is not supported.")
+          }
+
+          partitioning.addAllSortOrders(orderingExprs.asJava)
+
+          val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
+          shuffleWriterBuilder.setPartitioning(
+            partitioningBuilder.setRangePartition(partitioning).build())
         case SinglePartition =>
           val partitioning = PartitioningOuterClass.SinglePartition.newBuilder()
 

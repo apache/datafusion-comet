@@ -595,7 +595,7 @@ index 49a33d1c925..197c93d62b3 100644
          }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
 new file mode 100644
-index 00000000000..5db1532cf9f
+index 00000000000..5691536c114
 --- /dev/null
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
 @@ -0,0 +1,45 @@
@@ -2517,10 +2517,18 @@ index 6ff07449c0c..9f95cff99e5 100644
    import testImplicits._
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
-index 3573bafe482..11d387110ea 100644
+index 3573bafe482..8bf48a94fba 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
-@@ -25,10 +25,11 @@ import org.apache.spark.sql.catalyst.expressions
+@@ -19,16 +19,19 @@ package org.apache.spark.sql.sources
+ 
+ import scala.util.Random
+ 
++import org.apache.comet.CometConf
++
+ import org.apache.spark.sql._
+ import org.apache.spark.sql.catalyst.catalog.BucketSpec
+ import org.apache.spark.sql.catalyst.expressions
  import org.apache.spark.sql.catalyst.expressions._
  import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
  import org.apache.spark.sql.catalyst.types.DataTypeUtils
@@ -2534,7 +2542,7 @@ index 3573bafe482..11d387110ea 100644
  import org.apache.spark.sql.execution.joins.SortMergeJoinExec
  import org.apache.spark.sql.functions._
  import org.apache.spark.sql.internal.SQLConf
-@@ -102,12 +103,20 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -102,12 +105,20 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
      }
    }
  
@@ -2557,7 +2565,7 @@ index 3573bafe482..11d387110ea 100644
    // To verify if the bucket pruning works, this function checks two conditions:
    //   1) Check if the pruned buckets (before filtering) are empty.
    //   2) Verify the final result is the same as the expected one
-@@ -156,7 +165,8 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -156,7 +167,8 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
            val planWithoutBucketedScan = bucketedDataFrame.filter(filterCondition)
              .queryExecution.executedPlan
            val fileScan = getFileScan(planWithoutBucketedScan)
@@ -2567,7 +2575,7 @@ index 3573bafe482..11d387110ea 100644
  
            val bucketColumnType = bucketedDataFrame.schema.apply(bucketColumnIndex).dataType
            val rowsWithInvalidBuckets = fileScan.execute().filter(row => {
-@@ -452,28 +462,49 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -452,28 +464,49 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
          val joinOperator = if (joined.sparkSession.sessionState.conf.adaptiveExecutionEnabled) {
            val executedPlan =
              joined.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec].executedPlan
@@ -2625,7 +2633,7 @@ index 3573bafe482..11d387110ea 100644
            s"expected sort in the right child to be $sortRight but found\n${joinOperator.right}")
  
          // check the output partitioning
-@@ -836,11 +867,11 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -836,11 +869,11 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
        df1.write.format("parquet").bucketBy(8, "i").saveAsTable("bucketed_table")
  
        val scanDF = spark.table("bucketed_table").select("j")
@@ -2639,7 +2647,40 @@ index 3573bafe482..11d387110ea 100644
        checkAnswer(aggDF, df1.groupBy("j").agg(max("k")))
      }
    }
-@@ -1029,15 +1060,21 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -895,7 +928,10 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+   }
+ 
+   test("SPARK-29655 Read bucketed tables obeys spark.sql.shuffle.partitions") {
++    // Range partitioning uses random samples, so per-partition comparisons do not always yield
++    // the same results. Disable Comet native range partitioning.
+     withSQLConf(
++      CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "false",
+       SQLConf.SHUFFLE_PARTITIONS.key -> "5",
+       SQLConf.COALESCE_PARTITIONS_INITIAL_PARTITION_NUM.key -> "7")  {
+       val bucketSpec = Some(BucketSpec(6, Seq("i", "j"), Nil))
+@@ -914,7 +950,10 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+   }
+ 
+   test("SPARK-32767 Bucket join should work if SHUFFLE_PARTITIONS larger than bucket number") {
++    // Range partitioning uses random samples, so per-partition comparisons do not always yield
++    // the same results. Disable Comet native range partitioning.
+     withSQLConf(
++      CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "false",
+       SQLConf.SHUFFLE_PARTITIONS.key -> "9",
+       SQLConf.COALESCE_PARTITIONS_INITIAL_PARTITION_NUM.key -> "10")  {
+ 
+@@ -944,7 +983,10 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+   }
+ 
+   test("bucket coalescing eliminates shuffle") {
++    // Range partitioning uses random samples, so per-partition comparisons do not always yield
++    // the same results. Disable Comet native range partitioning.
+     withSQLConf(
++      CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "false",
+       SQLConf.COALESCE_BUCKETS_IN_JOIN_ENABLED.key -> "true",
+       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+       // The side with bucketedTableTestSpec1 will be coalesced to have 4 output partitions.
+@@ -1029,15 +1071,21 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
            Seq(true, false).foreach { aqeEnabled =>
              withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled.toString) {
                val plan = sql(query).queryExecution.executedPlan
@@ -3036,6 +3077,34 @@ index 52abd248f3a..7a199931a08 100644
        case h: HiveTableScanExec => h.partitionPruningPred.collect {
          case d: DynamicPruningExpression => d.child
        }
+diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala
+index 0bcac639443..8957c76886f 100644
+--- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala
++++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala
+@@ -24,6 +24,7 @@ import java.sql.{Date, Timestamp}
+ import java.util.{Locale, Set}
+ 
+ import com.google.common.io.Files
++import org.apache.comet.CometConf
+ import org.apache.hadoop.fs.{FileSystem, Path}
+ 
+ import org.apache.spark.{SparkException, TestUtils}
+@@ -838,8 +839,13 @@ abstract class SQLQuerySuiteBase extends QueryTest with SQLTestUtils with TestHi
+   }
+ 
+   test("SPARK-2554 SumDistinct partial aggregation") {
+-    checkAnswer(sql("SELECT sum( distinct key) FROM src group by key order by key"),
+-      sql("SELECT distinct key FROM src order by key").collect().toSeq)
++    // Range partitioning uses random samples, so per-partition comparisons do not always yield
++    // the same results. Disable Comet native range partitioning.
++    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "false")
++    {
++      checkAnswer(sql("SELECT sum( distinct key) FROM src group by key order by key"),
++        sql("SELECT distinct key FROM src order by key").collect().toSeq)
++    }
+   }
+ 
+   test("SPARK-4963 DataFrame sample on mutable row return wrong result") {
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 index 3f8de93b330..53417076481 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
