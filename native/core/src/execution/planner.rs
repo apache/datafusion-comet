@@ -66,7 +66,7 @@ use datafusion::{
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_negate_expr, SparkBitwiseCount, SparkBitwiseNot, SparkHour,
-    SparkDateTrunc,
+    SparkMinute, SparkSecond, SparkDateTrunc,
 };
 
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -106,10 +106,9 @@ use datafusion_comet_proto::{
 };
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Contains, Correlation, Covariance,
-    CreateNamedStruct, EndsWith, GetArrayStructFields, GetStructField,
-    IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike, SecondExpr,
-    SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
-    TimestampTruncExpr, ToJson, UnboundColumn, Variance,
+    CreateNamedStruct,  EndsWith, GetArrayStructFields, GetStructField, IfExpr, Like,
+    ListExtract, NormalizeNaNAndZero, RLike, SparkCastOptions, StartsWith, Stddev, StringSpaceExpr,
+    SubstringExpr, SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use itertools::Itertools;
@@ -460,26 +459,40 @@ impl PhysicalPlanner {
                 )))
             }
             ExprStruct::Hour(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let child =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let timezone = expr.timezone.clone();
                 let args = vec![child];
                 let comet_hour = Arc::new(ScalarUDF::new_from_impl(SparkHour::new(timezone)));
                 let field_ref = Arc::new(Field::new("hour", DataType::Int32, true));
-                let expr: ScalarFunctionExpr = ScalarFunctionExpr::new("hour", comet_hour, args, field_ref);
+                let expr: ScalarFunctionExpr =
+                    ScalarFunctionExpr::new("hour", comet_hour, args, field_ref);
 
                 Ok(Arc::new(expr))
             }
             ExprStruct::Minute(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
+                let child =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let timezone = expr.timezone.clone();
+                let args = vec![child];
+                let comet_minute = Arc::new(ScalarUDF::new_from_impl(SparkMinute::new(timezone)));
+                let field_ref = Arc::new(Field::new("hour", DataType::Int32, true));
+                let expr: ScalarFunctionExpr =
+                    ScalarFunctionExpr::new("hour", comet_minute, args, field_ref);
 
-                Ok(Arc::new(MinuteExpr::new(child, timezone)))
+                Ok(Arc::new(expr))
             }
             ExprStruct::Second(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
+                let child =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let timezone = expr.timezone.clone();
+                let args = vec![child];
+                let comet_second = Arc::new(ScalarUDF::new_from_impl(SparkSecond::new(timezone)));
+                let field_ref = Arc::new(Field::new("hour", DataType::Int32, true));
+                let expr: ScalarFunctionExpr =
+                    ScalarFunctionExpr::new("hour", comet_second, args, field_ref);
 
-                Ok(Arc::new(SecondExpr::new(child, timezone)))
+                Ok(Arc::new(expr))
             }
             ExprStruct::TruncTimestamp(expr) => {
                 let child =

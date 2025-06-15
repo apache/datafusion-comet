@@ -31,6 +31,7 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Literal}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec, CometWindowExec}
 import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, WholeStageCodegenExec}
@@ -470,13 +471,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "part-r-0.parquet")
         val expected = makeRawTimeParquetFile(path, dictionaryEnabled = dictionaryEnabled, 10000)
         readParquetFile(path.toString) { df =>
-          val query = df.select(expr("hour(_1)"), expr("minute(_1)"), expr("second(_1)"))
-
+          val query =
+            df.select(expr("hour(_1)"), expr("minute(_1)"), expr("second(_1)"))
+          query.explain(false)
           checkAnswer(
             query,
             expected.map {
               case None =>
-                Row(null, null, null)
+                Row(null, null, null, null)
               case Some(i) =>
                 val timestamp = new java.sql.Timestamp(i).toLocalDateTime
                 val hour = timestamp.getHour
@@ -487,6 +489,29 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             })
         }
       }
+    }
+  }
+
+  test("time expressions folded on jvm") {
+    val ts = "1969-12-31 16:23:45"
+
+    val functions = Map("hour" -> 16, "minute" -> 23, "second" -> 45)
+
+    functions.foreach { case (func, expectedValue) =>
+      val query = s"SELECT $func('$ts') AS result"
+      val df = spark.sql(query)
+      val optimizedPlan = df.queryExecution.optimizedPlan
+
+      val isFolded = optimizedPlan.expressions.exists {
+        case alias: Alias =>
+          alias.child match {
+            case Literal(value, _) => value == expectedValue
+            case _ => false
+          }
+        case _ => false
+      }
+
+      assert(isFolded, s"Expected '$func(...)' to be constant-folded to Literal($expectedValue)")
     }
   }
 
