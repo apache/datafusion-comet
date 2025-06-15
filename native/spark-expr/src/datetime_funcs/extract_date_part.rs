@@ -72,7 +72,7 @@ macro_rules! extract_date_part {
                 let args: [ColumnarValue; 1] = args.args.try_into().map_err(|_| {
                     internal_datafusion_err!(concat!($fn_name, " expects exactly one argument"))
                 })?;
-                
+
                 match args {
                     [ColumnarValue::Array(array)] => {
                         let array = array_with_timezone(

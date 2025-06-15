@@ -471,14 +471,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "part-r-0.parquet")
         val expected = makeRawTimeParquetFile(path, dictionaryEnabled = dictionaryEnabled, 10000)
         readParquetFile(path.toString) { df =>
-          val query =
-            df.select(expr("hour(_1)"), expr("minute(_1)"), expr("second(_1)"))
-          query.explain(false)
+          val query = df.select(expr("hour(_1)"), expr("minute(_1)"), expr("second(_1)"))
+
           checkAnswer(
             query,
             expected.map {
               case None =>
-                Row(null, null, null, null)
+                Row(null, null, null)
               case Some(i) =>
                 val timestamp = new java.sql.Timestamp(i).toLocalDateTime
                 val hour = timestamp.getHour
