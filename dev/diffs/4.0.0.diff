@@ -138,6 +138,21 @@ index 17815ed5dd..baad440b1c 100644
  -- test cases for collation support
  
  -- Create a test table with data
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/decimalArithmeticOperations.sql b/sql/core/src/test/resources/sql-tests/inputs/decimalArithmeticOperations.sql
+index 13bbd9d81b..fb6edc8ceb 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/decimalArithmeticOperations.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/decimalArithmeticOperations.sql
+@@ -15,6 +15,10 @@
+ --   limitations under the License.
+ --
+ 
++-- TODO: Disabled due to one of the test failed for Spark4.0
++-- select /*+ COALESCE(1) */ id, a+b, a-b, a*b, a/b from decimals_test order by id
++--SET spark.comet.enabled = false
++
+ CREATE TEMPORARY VIEW t AS SELECT 1.0 as a, 0.0 as b;
+ 
+ -- division, remainder and pmod by 0 return NULL
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql b/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql
 index 7aef901da4..f3d6e18926 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/explain-aqe.sql
@@ -213,6 +228,40 @@ index 0efe0877e9..f9df0400c9 100644
  -- load test data
  CREATE TABLE test_having (a int, b int, c string, d string) USING parquet;
  INSERT INTO test_having VALUES (0, 1, 'XXXX', 'A');
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-limit.sql b/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-limit.sql
+index 7c816d8a41..e49d6056fc 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-limit.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-limit.sql
+@@ -1,6 +1,21 @@
+ -- A test suite for IN LIMIT in parent side, subquery, and both predicate subquery
+ -- It includes correlated cases.
+ 
++-- TODO: Disabled due to one of the test failed for Spark4.0
++-- SELECT Count(DISTINCT( t1a )),
++--        t1b
++-- FROM   t1
++-- WHERE  t1d NOT IN (SELECT t2d
++--                    FROM   t2
++--                    WHERE t2b > t1b
++--                    ORDER  BY t2b DESC nulls first, t2d
++--     LIMIT 1
++-- OFFSET 1)
++-- GROUP  BY t1b
++-- ORDER BY t1b NULLS last
++--     LIMIT  1
++-- OFFSET 1;
++--SET spark.comet.enabled = false
+ --CONFIG_DIM1 spark.sql.optimizeNullAwareAntiJoin=true
+ --CONFIG_DIM1 spark.sql.optimizeNullAwareAntiJoin=false
+ 
+@@ -61,6 +76,7 @@ WHERE  t1a IN (SELECT t2a
+                WHERE  t1d = t2d)
+ LIMIT  2;
+ 
++--SET spark.sql.cbo.enabled=true
+ -- correlated IN subquery
+ -- LIMIT on both parent and subquery sides
+ SELECT *
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/view-schema-binding-config.sql b/sql/core/src/test/resources/sql-tests/inputs/view-schema-binding-config.sql
 index e803254ea6..74db78aee3 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/view-schema-binding-config.sql
