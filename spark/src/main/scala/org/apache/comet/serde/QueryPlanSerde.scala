@@ -1044,21 +1044,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case TruncDate(child, format) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
         val formatExpr = exprToProtoInternal(format, inputs, binding)
-
-        if (childExpr.isDefined && formatExpr.isDefined) {
-          val builder = ExprOuterClass.TruncDate.newBuilder()
-          builder.setChild(childExpr.get)
-          builder.setFormat(formatExpr.get)
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setTruncDate(builder)
-              .build())
-        } else {
-          withInfo(expr, child, format)
-          None
-        }
+        val optExpr =
+          scalarFunctionExprToProtoWithReturnType("date_trunc", DateType, childExpr, formatExpr)
+        optExprWithInfo(optExpr, expr, child, format)
 
       case TruncTimestamp(format, child, timeZoneId) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
