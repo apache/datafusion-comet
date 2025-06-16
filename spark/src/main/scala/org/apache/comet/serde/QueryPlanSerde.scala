@@ -1414,12 +1414,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
             optExprWithInfo(optExpr, expr, r.child)
         }
 
-      // TODO enable once https://github.com/apache/datafusion/issues/11557 is fixed or
-      // when we have a Spark-compatible version implemented in Comet
-//        case Signum(child) =>
-//          val childExpr = exprToProtoInternal(child, inputs)
-//          val optExpr = scalarExprToProto("signum", childExpr)
-//          optExprWithInfo(optExpr, expr, child)
+      case Signum(child) =>
+        val childExpr = exprToProtoInternal(child, inputs, binding)
+        val optExpr = scalarFunctionExprToProto("signum", childExpr)
+        optExprWithInfo(optExpr, expr, child)
 
       case Sin(child) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)

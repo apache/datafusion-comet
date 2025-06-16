@@ -1237,11 +1237,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("expm1") {
+  private def testDoubleScalarExpr(expr: String): Unit = {
     val testValues = Seq(
-      -1,
-      0,
-      +1,
+      -1.0,
+      0.0,
+      -0.0,
+      +1.0,
       Double.MinValue,
       Double.MaxValue,
       Double.NaN,
@@ -1249,9 +1250,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Double.PositiveInfinity,
       Double.NegativeInfinity)
     val testValuesRepeated = testValues.flatMap(v => Seq.fill(1000)(v))
-    withParquetTable(testValuesRepeated.map(n => (n, n)), "tbl") {
-      checkSparkAnswerWithTol("SELECT expm1(_1) FROM tbl")
+    for (withDictionary <- Seq(true, false)) {
+      withParquetTable(testValuesRepeated.map(n => (n, n)), "tbl", withDictionary) {
+        val df = checkSparkAnswerWithTol(s"SELECT $expr(_1) FROM tbl")
+        val projections = collect(df.queryExecution.executedPlan) { case p: CometProjectExec =>
+          p
+        }
+        assert(projections.length == 1)
+      }
     }
+  }
+
+  test("signum") {
+    testDoubleScalarExpr("signum")
+  }
+
+  test("expm1") {
+    testDoubleScalarExpr("expm1")
   }
 
   // https://github.com/apache/datafusion-comet/issues/666
