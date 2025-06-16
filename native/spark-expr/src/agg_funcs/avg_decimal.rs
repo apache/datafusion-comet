@@ -337,29 +337,16 @@ impl AvgDecimalGroupsAccumulator {
         }
     }
 
-    fn is_overflow(&self, index: usize) -> bool {
-        self.counts[index] != 0 && !self.is_not_null.get_bit(index)
-    }
-
     #[inline]
     fn update_single(&mut self, group_index: usize, value: i128) {
-        if unlikely(self.is_overflow(group_index)) {
-            // This means there's a overflow in decimal, so we will just skip the rest
-            // of the computation
-            return;
-        }
-
         let (new_sum, is_overflow) = self.sums[group_index].overflowing_add(value);
         self.counts[group_index] += 1;
+        self.sums[group_index] = new_sum;
 
         if unlikely(is_overflow || !is_valid_decimal_precision(new_sum, self.sum_precision)) {
             // Overflow: set buffer accumulator to null
             self.is_not_null.set_bit(group_index, false);
-            return;
         }
-
-        self.sums[group_index] = new_sum;
-        self.is_not_null.set_bit(group_index, true)
     }
 }
 
@@ -427,6 +414,15 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
         for (&group_index, &new_value) in iter2 {
             let sum = &mut self.sums[group_index];
             *sum = sum.add_wrapping(new_value);
+        }
+
+        ensure_bit_capacity(&mut self.is_not_null, total_num_groups);
+        if partial_counts.null_count() != 0 {
+            for (index, &group_index) in group_indices.iter().enumerate() {
+                if partial_counts.is_null(index) {
+                    self.is_not_null.set_bit(group_index, false);
+                }
+            }
         }
 
         Ok(())
