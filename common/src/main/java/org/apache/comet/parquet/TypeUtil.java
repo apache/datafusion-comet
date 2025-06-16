@@ -322,7 +322,7 @@ public class TypeUtil {
         && ((IntLogicalTypeAnnotation) logicalTypeAnnotation).getBitWidth() == bitWidth;
   }
 
-  private static boolean isSpark40Plus() {
+  static boolean isSpark40Plus() {
     return package$.MODULE$.SPARK_VERSION().compareTo("4.0") >= 0;
   }
 }
