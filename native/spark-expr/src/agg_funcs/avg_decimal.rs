@@ -297,9 +297,6 @@ struct AvgDecimalGroupsAccumulator {
     /// Tracks if the value is null
     is_not_null: BooleanBufferBuilder,
 
-    // Tracks if the value is empty
-    is_empty: BooleanBufferBuilder,
-
     /// The type of the avg return type
     return_data_type: DataType,
     target_precision: u8,
@@ -329,7 +326,6 @@ impl AvgDecimalGroupsAccumulator {
     ) -> Self {
         Self {
             is_not_null: BooleanBufferBuilder::new(0),
-            is_empty: BooleanBufferBuilder::new(0),
             return_data_type: return_data_type.clone(),
             target_precision,
             target_scale,
@@ -342,7 +338,7 @@ impl AvgDecimalGroupsAccumulator {
     }
 
     fn is_overflow(&self, index: usize) -> bool {
-        !self.is_empty.get_bit(index) && !self.is_not_null.get_bit(index)
+        self.counts[index] != 0 && !self.is_not_null.get_bit(index)
     }
 
     #[inline]
@@ -353,7 +349,6 @@ impl AvgDecimalGroupsAccumulator {
             return;
         }
 
-        self.is_empty.set_bit(group_index, false);
         let (new_sum, is_overflow) = self.sums[group_index].overflowing_add(value);
         self.counts[group_index] += 1;
 
@@ -390,7 +385,6 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
         // increment counts, update sums
         self.counts.resize(total_num_groups, 0);
         self.sums.resize(total_num_groups, 0);
-        ensure_bit_capacity(&mut self.is_empty, total_num_groups);
         ensure_bit_capacity(&mut self.is_not_null, total_num_groups);
 
         let iter = group_indices.iter().zip(data.iter());
