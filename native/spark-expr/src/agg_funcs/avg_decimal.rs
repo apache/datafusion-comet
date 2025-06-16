@@ -345,6 +345,7 @@ impl AvgDecimalGroupsAccumulator {
         !self.is_empty.get_bit(index) && !self.is_not_null.get_bit(index)
     }
 
+    #[inline]
     fn update_single(&mut self, group_index: usize, value: i128) {
         if self.is_overflow(group_index) {
             // This means there's a overflow in decimal, so we will just skip the rest
