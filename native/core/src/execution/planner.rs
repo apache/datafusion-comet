@@ -65,8 +65,8 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{
-    create_comet_physical_fun, create_negate_expr, SparkBitwiseCount, SparkBitwiseNot, SparkHour,
-    SparkMinute, SparkSecond, SparkDateTrunc,
+    create_comet_physical_fun, create_negate_expr, SparkBitwiseCount, SparkBitwiseNot,
+    SparkDateTrunc, SparkHour, SparkMinute, SparkSecond,
 };
 
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -106,8 +106,8 @@ use datafusion_comet_proto::{
 };
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Contains, Correlation, Covariance,
-    CreateNamedStruct,  EndsWith, GetArrayStructFields, GetStructField, IfExpr, Like,
-    ListExtract, NormalizeNaNAndZero, RLike, SparkCastOptions, StartsWith, Stddev, StringSpaceExpr,
+    CreateNamedStruct, EndsWith, GetArrayStructFields, GetStructField, IfExpr, Like, ListExtract,
+    NormalizeNaNAndZero, RLike, SparkCastOptions, StartsWith, Stddev, StringSpaceExpr,
     SubstringExpr, SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
 use datafusion_spark::function::math::expm1::SparkExpm1;

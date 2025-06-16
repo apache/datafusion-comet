@@ -21,7 +21,7 @@ mod extract_date_part;
 mod timestamp_trunc;
 
 pub use date_arithmetic::{spark_date_add, spark_date_sub};
-pub  use date_trunc::SparkDateTrunc;
+pub use date_trunc::SparkDateTrunc;
 pub use extract_date_part::SparkHour;
 pub use extract_date_part::SparkMinute;
 pub use extract_date_part::SparkSecond;
