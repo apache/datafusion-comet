@@ -151,63 +151,63 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(
       generateBytes(),
       DataTypes.BooleanType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      allowFallback = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ByteType to ShortType") {
     castTest(
       generateBytes(),
       DataTypes.ShortType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      allowFallback = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ByteType to IntegerType") {
     castTest(
       generateBytes(),
       DataTypes.IntegerType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      allowFallback = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ByteType to LongType") {
     castTest(
       generateBytes(),
       DataTypes.LongType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      allowFallback = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ByteType to FloatType") {
     castTest(
       generateBytes(),
       DataTypes.FloatType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      allowFallback = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ByteType to DoubleType") {
     castTest(
       generateBytes(),
       DataTypes.DoubleType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      allowFallback = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ByteType to DecimalType(10,2)") {
     castTest(
       generateBytes(),
       DataTypes.createDecimalType(10, 2),
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      allowFallback = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ByteType to StringType") {
     castTest(
       generateBytes(),
       DataTypes.StringType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      allowFallback = usingParquetExecWithIncompatTypes)
   }
 
   ignore("cast ByteType to BinaryType") {
     castTest(
       generateBytes(),
       DataTypes.BinaryType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      allowFallback = usingParquetExecWithIncompatTypes)
   }
 
   ignore("cast ByteType to TimestampType") {
@@ -215,7 +215,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(
       generateBytes(),
       DataTypes.TimestampType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      allowFallback = usingParquetExecWithIncompatTypes)
   }
 
   // CAST from ShortType
@@ -224,7 +224,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(
       generateShorts(),
       DataTypes.BooleanType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      allowFallback = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ShortType to ByteType") {
@@ -232,56 +232,56 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(
       generateShorts(),
       DataTypes.ByteType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      allowFallback = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ShortType to IntegerType") {
     castTest(
       generateShorts(),
       DataTypes.IntegerType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      allowFallback = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ShortType to LongType") {
     castTest(
       generateShorts(),
       DataTypes.LongType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      allowFallback = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ShortType to FloatType") {
     castTest(
       generateShorts(),
       DataTypes.FloatType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      allowFallback = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ShortType to DoubleType") {
     castTest(
       generateShorts(),
       DataTypes.DoubleType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      allowFallback = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ShortType to DecimalType(10,2)") {
     castTest(
       generateShorts(),
       DataTypes.createDecimalType(10, 2),
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      allowFallback = usingParquetExecWithIncompatTypes)
   }
 
   test("cast ShortType to StringType") {
     castTest(
       generateShorts(),
       DataTypes.StringType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      allowFallback = usingParquetExecWithIncompatTypes)
   }
 
   ignore("cast ShortType to BinaryType") {
     castTest(
       generateShorts(),
       DataTypes.BinaryType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      allowFallback = usingParquetExecWithIncompatTypes)
   }
 
   ignore("cast ShortType to TimestampType") {
@@ -289,7 +289,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(
       generateShorts(),
       DataTypes.TimestampType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      allowFallback = usingParquetExecWithIncompatTypes)
   }
 
   // CAST from integer
@@ -875,49 +875,48 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   // CAST from TimestampType
 
-  ignore("cast TimestampType to BooleanType") {
+  test("cast TimestampType to BooleanType") {
     // Arrow error: Cast error: Casting from Timestamp(Microsecond, Some("America/Los_Angeles")) to Boolean not supported
-    castTest(generateTimestamps(), DataTypes.BooleanType)
+    castTest(generateTimestamps(), DataTypes.BooleanType, allowFallback = true)
   }
 
-  ignore("cast TimestampType to ByteType") {
+  test("cast TimestampType to ByteType") {
     // https://github.com/apache/datafusion-comet/issues/352
     // input: 2023-12-31 10:00:00.0, expected: 32, actual: null
-    castTest(generateTimestamps(), DataTypes.ByteType)
+    castTest(generateTimestamps(), DataTypes.ByteType, allowFallback = true)
   }
 
-  ignore("cast TimestampType to ShortType") {
+  test("cast TimestampType to ShortType") {
     // https://github.com/apache/datafusion-comet/issues/352
     // input: 2023-12-31 10:00:00.0, expected: -21472, actual: null]
-    castTest(generateTimestamps(), DataTypes.ShortType)
+    castTest(generateTimestamps(), DataTypes.ShortType, allowFallback = true)
   }
 
-  ignore("cast TimestampType to IntegerType") {
+  test("cast TimestampType to IntegerType") {
     // https://github.com/apache/datafusion-comet/issues/352
     // input: 2023-12-31 10:00:00.0, expected: 1704045600, actual: null]
-    castTest(generateTimestamps(), DataTypes.IntegerType)
+    castTest(generateTimestamps(), DataTypes.IntegerType, allowFallback = true)
   }
 
   test("cast TimestampType to LongType") {
     castTest(generateTimestampsExtended(), DataTypes.LongType)
   }
 
-  ignore("cast TimestampType to FloatType") {
+  test("cast TimestampType to FloatType") {
     // https://github.com/apache/datafusion-comet/issues/352
     // input: 2023-12-31 10:00:00.0, expected: 1.7040456E9, actual: 1.7040456E15
-    castTest(generateTimestamps(), DataTypes.FloatType)
+    castTest(generateTimestamps(), DataTypes.FloatType, allowFallback = true)
   }
 
-  ignore("cast TimestampType to DoubleType") {
+  test("cast TimestampType to DoubleType") {
     // https://github.com/apache/datafusion-comet/issues/352
     // input: 2023-12-31 10:00:00.0, expected: 1.7040456E9, actual: 1.7040456E15
-    castTest(generateTimestamps(), DataTypes.DoubleType)
+    castTest(generateTimestamps(), DataTypes.DoubleType, allowFallback = true)
   }
 
-  ignore("cast TimestampType to DecimalType(10,2)") {
-    // https://github.com/apache/datafusion-comet/issues/1280
-    // Native cast invoked for unsupported cast from Timestamp(Microsecond, Some("Etc/UTC")) to Decimal128(10, 2)
-    castTest(generateTimestamps(), DataTypes.createDecimalType(10, 2))
+  test("cast TimestampType to DecimalType(10,2)") {
+    // supporting this cast is not a priority, so we fallback to Spark
+    castTest(generateTimestamps(), DataTypes.createDecimalType(10, 2), allowFallback = true)
   }
 
   test("cast TimestampType to StringType") {
@@ -1171,7 +1170,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private def castTest(
       input: DataFrame,
       toType: DataType,
-      hasIncompatibleType: Boolean = false,
+      allowFallback: Boolean = false,
       testAnsi: Boolean = true): Unit = {
 
     withTempPath { dir =>
@@ -1181,7 +1180,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
         // cast() should return null for invalid inputs when ansi mode is disabled
         val df = spark.sql(s"select a, cast(a as ${toType.sql}) from t order by a")
-        if (hasIncompatibleType) {
+        if (allowFallback) {
           checkSparkAnswer(df)
         } else {
           checkSparkAnswerAndOperator(df)
@@ -1190,7 +1189,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         // try_cast() should always return null for invalid inputs
         val df2 =
           spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
-        if (hasIncompatibleType) {
+        if (allowFallback) {
           checkSparkAnswer(df2)
         } else {
           checkSparkAnswerAndOperator(df2)
@@ -1243,7 +1242,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           // try_cast() should always return null for invalid inputs
           val df2 =
             spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
-          if (hasIncompatibleType) {
+          if (allowFallback) {
             checkSparkAnswer(df2)
           } else {
             checkSparkAnswerAndOperator(df2)
