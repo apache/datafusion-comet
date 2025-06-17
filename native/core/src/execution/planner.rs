@@ -476,9 +476,9 @@ impl PhysicalPlanner {
                 let timezone = expr.timezone.clone();
                 let args = vec![child];
                 let comet_minute = Arc::new(ScalarUDF::new_from_impl(SparkMinute::new(timezone)));
-                let field_ref = Arc::new(Field::new("hour", DataType::Int32, true));
+                let field_ref = Arc::new(Field::new("minute", DataType::Int32, true));
                 let expr: ScalarFunctionExpr =
-                    ScalarFunctionExpr::new("hour", comet_minute, args, field_ref);
+                    ScalarFunctionExpr::new("minute", comet_minute, args, field_ref);
 
                 Ok(Arc::new(expr))
             }
@@ -488,9 +488,9 @@ impl PhysicalPlanner {
                 let timezone = expr.timezone.clone();
                 let args = vec![child];
                 let comet_second = Arc::new(ScalarUDF::new_from_impl(SparkSecond::new(timezone)));
-                let field_ref = Arc::new(Field::new("hour", DataType::Int32, true));
+                let field_ref = Arc::new(Field::new("second", DataType::Int32, true));
                 let expr: ScalarFunctionExpr =
-                    ScalarFunctionExpr::new("hour", comet_second, args, field_ref);
+                    ScalarFunctionExpr::new("second", comet_second, args, field_ref);
 
                 Ok(Arc::new(expr))
             }
