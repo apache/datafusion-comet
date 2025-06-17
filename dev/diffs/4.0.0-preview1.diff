@@ -2907,8 +2907,8 @@ index 5fbf379644f..8bdb733fec5 100644
 +        ignore(testName + " (disabled when Comet is on)", testTags: _*)(testFun)
 +      } else {
 +        val cometScanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get(conf)
-+        val isNativeIcebergCompat = cometScanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT || cometScanImpl == CometConf.SCAN_AUTO
-+        val isNativeDataFusion = cometScanImpl == CometConf.SCAN_NATIVE_DATAFUSION || cometScanImpl == CometConf.SCAN_AUTO
++        val isNativeIcebergCompat = cometScanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT
++        val isNativeDataFusion = cometScanImpl == CometConf.SCAN_NATIVE_DATAFUSION
 +        if (isCometEnabled && isNativeIcebergCompat &&
 +          testTags.exists(_.isInstanceOf[IgnoreCometNativeIcebergCompat])) {
 +          ignore(testName + " (disabled for NATIVE_ICEBERG_COMPAT)", testTags: _*)(testFun)
