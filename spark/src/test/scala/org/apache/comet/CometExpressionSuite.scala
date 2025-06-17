@@ -1217,7 +1217,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  val doubleValues = Seq(
+  private val doubleValues: Seq[Double] = Seq(
     -1.0,
     // TODO we should eventually enable negative zero but there are known issues still
     // -0.0,
