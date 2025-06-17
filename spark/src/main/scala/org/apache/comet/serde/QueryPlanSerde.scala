@@ -1958,6 +1958,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
       case _: ArrayRemove => convert(CometArrayRemove)
       case _: ArrayContains => convert(CometArrayContains)
+      case _: ArrayMax => convert(CometArrayMax)
       case _: ArrayAppend => convert(CometArrayAppend)
       case _: ArrayIntersect => convert(CometArrayIntersect)
       case _: ArrayJoin => convert(CometArrayJoin)

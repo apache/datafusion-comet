@@ -164,6 +164,19 @@ object CometArrayIntersect extends CometExpressionSerde with IncompatExpr {
   }
 }
 
+object CometArrayMax extends CometExpressionSerde with IncompatExpr {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
+
+    val arrayContainsScalarExpr =
+      scalarFunctionExprToProto("array_max", arrayExprProto)
+    optExprWithInfo(arrayContainsScalarExpr, expr)
+  }
+}
+
 object CometArraysOverlap extends CometExpressionSerde with IncompatExpr {
   override def convert(
       expr: Expression,
