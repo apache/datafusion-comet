@@ -141,6 +141,8 @@ impl RangePartitioner {
     /// bounds and returns them as indices into the sampled data.
     /// Adapted from org.apache.spark.RangePartitioner.determineBounds but without weighted
     /// values since we don't have cross-partition samples to merge.
+    /// We normalize the math to use ints instead of floating point by replacing 1.0 with a
+    /// (imagined) num_candidates * partitions range.
     fn determine_bounds_for_rows(
         sort_fields: Vec<SortField>,
         sampled_columns: &[ArrayRef],
@@ -154,14 +156,14 @@ impl RangePartitioner {
         sorted_sampled_rows.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
 
         let num_candidates = sampled_rows.num_rows();
-        let step = 1.0 / partitions as f64;
-        let mut cumulative_weights = 0.0;
+        let step = num_candidates; // this was 1.0 / num_partitions
+        let mut cumulative_weights = 0;
         let mut target = step;
         let mut bounds_indices: Vec<u64> = Vec::with_capacity(partitions - 1);
         let mut i = 0;
         let mut j = 0;
         let mut previous_bound = None;
-        let sample_weight = 1.0 / num_candidates as f64;
+        let sample_weight = partitions; // this was 1.0 / num_candidates
         while (i < num_candidates) && (j < partitions - 1) {
             let key = sorted_sampled_rows[i];
             cumulative_weights += sample_weight;
