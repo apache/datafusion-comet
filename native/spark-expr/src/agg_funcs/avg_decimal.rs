@@ -30,7 +30,7 @@ use datafusion::logical_expr::{
 use datafusion::physical_expr::expressions::format_state_name;
 use std::{any::Any, sync::Arc};
 
-use crate::utils::is_valid_decimal_precision;
+use crate::utils::{is_valid_decimal_precision, unlikely};
 use arrow::array::ArrowNativeTypeOp;
 use arrow::datatypes::{MAX_DECIMAL128_FOR_EACH_PRECISION, MIN_DECIMAL128_FOR_EACH_PRECISION};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
@@ -347,7 +347,7 @@ impl AvgDecimalGroupsAccumulator {
 
     #[inline]
     fn update_single(&mut self, group_index: usize, value: i128) {
-        if self.is_overflow(group_index) {
+        if unlikely(self.is_overflow(group_index)) {
             // This means there's a overflow in decimal, so we will just skip the rest
             // of the computation
             return;
@@ -357,7 +357,7 @@ impl AvgDecimalGroupsAccumulator {
         let (new_sum, is_overflow) = self.sums[group_index].overflowing_add(value);
         self.counts[group_index] += 1;
 
-        if is_overflow || !is_valid_decimal_precision(new_sum, self.sum_precision) {
+        if unlikely(is_overflow || !is_valid_decimal_precision(new_sum, self.sum_precision)) {
             // Overflow: set buffer accumulator to null
             self.is_not_null.set_bit(group_index, false);
             return;
