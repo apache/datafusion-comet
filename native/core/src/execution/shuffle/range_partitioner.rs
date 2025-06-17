@@ -316,6 +316,8 @@ mod test {
     fn reservoir_sample_random() {
         let mut rng = SmallRng::seed_from_u64(42);
 
+        // These functions don't rely on unsafe Rust, so we reduce the number iterations for CI
+        // when testing with Miri.
         for _ in 0..if cfg!(miri) { 128 } else { 8192 } {
             let batch_size: usize = rng.random_range(1..=8192);
             // We don't test sample size > batch_size since in that case you would just take the
@@ -392,6 +394,8 @@ mod test {
 
         let sort_fields = vec![SortField::new(Int64)];
 
+        // These functions don't rely on unsafe Rust, so we reduce the number iterations for CI
+        // when testing with Miri.
         for _ in 0..if cfg!(miri) { 64 } else { 2048 } {
             let batch_size = rng.random_range(0..=8192);
             // We don't test fewer than 2 partitions since this is used by the
