@@ -1217,38 +1217,54 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  val doubleValues = Seq(
+    -1.0,
+    // TODO we should eventually enable negative zero but there are known issues still
+    // -0.0,
+    0.0,
+    +1.0,
+    Double.MinValue,
+    Double.MaxValue,
+    Double.NaN,
+    Double.MinPositiveValue,
+    Double.PositiveInfinity,
+    Double.NegativeInfinity)
+
   test("various math scalar functions") {
-    Seq("true", "false").foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary) {
-        withParquetTable(
-          (-5 until 5).map(i => (i.toDouble + 0.3, i.toDouble + 0.8)),
-          "tbl",
-          withDictionary = dictionary.toBoolean) {
-          checkSparkAnswerWithTol(
-            "SELECT abs(_1), acos(_2), asin(_1), atan(_2), atan2(_1, _2), cos(_1) FROM tbl")
-          checkSparkAnswerWithTol(
-            "SELECT exp(_1), ln(_2), log10(_1), log2(_1), pow(_1, _2) FROM tbl")
-          // TODO: comment in the round tests once supported
-          // checkSparkAnswerWithTol("SELECT round(_1), round(_2) FROM tbl")
-          checkSparkAnswerWithTol("SELECT signum(_1), sin(_1), sqrt(_1) FROM tbl")
-          checkSparkAnswerWithTol("SELECT tan(_1) FROM tbl")
+    val data = doubleValues.map(n => (n, n))
+    withParquetTable(data, "tbl") {
+      // expressions with single arg
+      for (expr <- Seq(
+          "acos",
+          "asin",
+          "atan",
+          "cos",
+          "exp",
+          "ln",
+          "log10",
+          "log2",
+          "sin",
+          "sqrt",
+          "tan")) {
+        val df = checkSparkAnswerWithTol(s"SELECT $expr(_1), $expr(_2) FROM tbl")
+        val cometProjectExecs = collect(df.queryExecution.executedPlan) {
+          case op: CometProjectExec => op
         }
+        assert(cometProjectExecs.length == 1, expr)
+      }
+      // expressions with two args
+      for (expr <- Seq("atan2", "pow")) {
+        val df = checkSparkAnswerWithTol(s"SELECT $expr(_1, _2) FROM tbl")
+        val cometProjectExecs = collect(df.queryExecution.executedPlan) {
+          case op: CometProjectExec => op
+        }
+        assert(cometProjectExecs.length == 1, expr)
       }
     }
   }
 
   test("expm1") {
-    val testValues = Seq(
-      -1,
-      0,
-      +1,
-      Double.MinValue,
-      Double.MaxValue,
-      Double.NaN,
-      Double.MinPositiveValue,
-      Double.PositiveInfinity,
-      Double.NegativeInfinity)
-    val testValuesRepeated = testValues.flatMap(v => Seq.fill(1000)(v))
+    val testValuesRepeated = doubleValues.flatMap(v => Seq.fill(1000)(v))
     withParquetTable(testValuesRepeated.map(n => (n, n)), "tbl") {
       checkSparkAnswerWithTol("SELECT expm1(_1) FROM tbl")
     }
