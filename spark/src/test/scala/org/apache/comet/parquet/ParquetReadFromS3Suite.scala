@@ -33,15 +33,18 @@ import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.comet.CometScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, sum}
+import org.apache.spark.tags.DockerTest
 
 import org.apache.comet.CometConf.SCAN_NATIVE_ICEBERG_COMPAT
 
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
+import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.s3.S3Client
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest
 
+@DockerTest
 class ParquetReadFromS3Suite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private var minioContainer: MinIOContainer = _
@@ -51,11 +54,17 @@ class ParquetReadFromS3Suite extends CometTestBase with AdaptiveSparkPlanHelper 
 
   override def beforeAll(): Unit = {
     // Start MinIO container
-    minioContainer = new MinIOContainer(DockerImageName.parse("minio/minio:latest"))
-      .withUserName(userName)
-      .withPassword(password)
-    minioContainer.start()
-    createBucketIfNotExists(testBucketName)
+    try {
+      minioContainer = new MinIOContainer(DockerImageName.parse("minio/minio:latest"))
+        .withUserName(userName)
+        .withPassword(password)
+      minioContainer.start()
+      createBucketIfNotExists(testBucketName)
+    } catch {
+      case missingDockerApi: IllegalStateException =>
+        missingDockerApi.printStackTrace()
+        minioContainer = null
+    }
 
     // Initialize Spark session
     super.beforeAll()
@@ -63,6 +72,7 @@ class ParquetReadFromS3Suite extends CometTestBase with AdaptiveSparkPlanHelper 
 
   override def afterAll(): Unit = {
     super.afterAll()
+
     if (minioContainer != null) {
       minioContainer.stop()
     }
@@ -72,7 +82,9 @@ class ParquetReadFromS3Suite extends CometTestBase with AdaptiveSparkPlanHelper 
     val conf = super.sparkConf
     conf.set("spark.hadoop.fs.s3a.access.key", userName)
     conf.set("spark.hadoop.fs.s3a.secret.key", password)
-    conf.set("spark.hadoop.fs.s3a.endpoint", minioContainer.getS3URL)
+    if (minioContainer != null) {
+      conf.set("spark.hadoop.fs.s3a.endpoint", minioContainer.getS3URL)
+    }
     conf.set("spark.hadoop.fs.s3a.path.style.access", "true")
   }
 
@@ -82,6 +94,7 @@ class ParquetReadFromS3Suite extends CometTestBase with AdaptiveSparkPlanHelper 
       .builder()
       .endpointOverride(URI.create(minioContainer.getS3URL))
       .credentialsProvider(StaticCredentialsProvider.create(credentials))
+      .region(Region.US_WEST_1)
       .forcePathStyle(true)
       .build()
     try {
@@ -105,6 +118,8 @@ class ParquetReadFromS3Suite extends CometTestBase with AdaptiveSparkPlanHelper 
   }
 
   test("read parquet file from MinIO") {
+    assume(minioContainer != null, "No Docker API is available")
+
     // native_iceberg_compat mode does not have comprehensive S3 support, so we don't run tests
     // under this mode.
     assume(sys.env.getOrElse("COMET_PARQUET_SCAN_IMPL", "") != SCAN_NATIVE_ICEBERG_COMPAT)

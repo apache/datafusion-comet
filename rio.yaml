@@ -104,7 +104,7 @@ builds:
       template: freestyle:v4:build
       steps:
         - make clean core
-        - ./mvnw ${PROFILES} compile test-compile scalafix:scalafix -Psemanticdb -Dscalafix.mode=CHECK && SPARK_HOME=`pwd` ./mvnw ${PROFILES} clean install
+        - ./mvnw ${PROFILES} compile test-compile scalafix:scalafix -Psemanticdb -Dscalafix.mode=CHECK && SPARK_HOME=`pwd` ./mvnw ${PROFILES} clean install -DtagsToExclude=org.apache.spark.tags.DockerTest
     reports:
       <<: *reports
 

@@ -531,6 +531,13 @@ under the License.
           </exclusion>
         </exclusions>
       </dependency>
+      <dependency>
+        <groupId>org.apache.spark</groupId>
+        <artifactId>spark-tags_${scala.binary.version}</artifactId>
+        <type>test-jar</type>
+        <scope>test</scope>
+        <version>${spark.version}</version>
+      </dependency>
 
       <!-- TestContainers for testing reading Parquet on S3 -->
       <dependency>
