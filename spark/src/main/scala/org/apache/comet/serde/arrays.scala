@@ -164,7 +164,7 @@ object CometArrayIntersect extends CometExpressionSerde with IncompatExpr {
   }
 }
 
-object CometArrayMax extends CometExpressionSerde with IncompatExpr {
+object CometArrayMax extends CometExpressionSerde {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
