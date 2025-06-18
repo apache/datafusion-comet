@@ -537,8 +537,8 @@ TO MODIFY THIS CONTENT MAKE SURE THAT YOU MAKE YOUR CHANGES TO THE TEMPLATE FILE
 <td><p>true</p></td>
 </tr>
 <tr class="row-odd"><td><p>spark.comet.native.shuffle.partitioning.range.enabled</p></td>
-<td><p>Whether to enable range partitioning for Comet native shuffle.</p></td>
-<td><p>true</p></td>
+<td><p>Experimental feature to enable range partitioning for Comet native shuffle. This feature is experimental while we investigate scenarios that don’t partition data correctly.</p></td>
+<td><p>false</p></td>
 </tr>
 <tr class="row-even"><td><p>spark.comet.nativeLoadRequired</p></td>
 <td><p>Whether to require Comet native library to load successfully when Comet is enabled. If not, Comet will silently fallback to Spark when it fails to load the native lib. Otherwise, an error will be thrown and the Spark job will be aborted.</p></td>
