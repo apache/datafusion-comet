@@ -60,16 +60,17 @@ use datafusion::{
         limit::LocalLimitExec,
         projection::ProjectionExec,
         sorts::sort::SortExec,
-        ExecutionPlan, Partitioning,
+        ExecutionPlan,
     },
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_negate_expr, SparkBitwiseCount, SparkBitwiseNot,
+    SparkDateTrunc, SparkHour, SparkMinute, SparkSecond,
 };
 
 use crate::execution::operators::ExecutionError::GeneralError;
-use crate::execution::shuffle::CompressionCodec;
+use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use datafusion::common::scalar::ScalarStructBuilder;
@@ -105,10 +106,9 @@ use datafusion_comet_proto::{
 };
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Contains, Correlation, Covariance,
-    CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields, GetStructField, HourExpr,
-    IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike, SecondExpr,
-    SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
-    TimestampTruncExpr, ToJson, UnboundColumn, Variance,
+    CreateNamedStruct, EndsWith, GetArrayStructFields, GetStructField, IfExpr, Like, ListExtract,
+    NormalizeNaNAndZero, RLike, SparkCastOptions, StartsWith, Stddev, StringSpaceExpr,
+    SubstringExpr, SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use itertools::Itertools;
@@ -158,6 +158,7 @@ impl PhysicalPlanner {
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseCount::default()));
+        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateTrunc::default()));
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,
@@ -458,29 +459,40 @@ impl PhysicalPlanner {
                 )))
             }
             ExprStruct::Hour(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                let timezone = expr.timezone.clone();
-
-                Ok(Arc::new(HourExpr::new(child, timezone)))
-            }
-            ExprStruct::Minute(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                let timezone = expr.timezone.clone();
-
-                Ok(Arc::new(MinuteExpr::new(child, timezone)))
-            }
-            ExprStruct::Second(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                let timezone = expr.timezone.clone();
-
-                Ok(Arc::new(SecondExpr::new(child, timezone)))
-            }
-            ExprStruct::TruncDate(expr) => {
                 let child =
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let format = self.create_expr(expr.format.as_ref().unwrap(), input_schema)?;
+                let timezone = expr.timezone.clone();
+                let args = vec![child];
+                let comet_hour = Arc::new(ScalarUDF::new_from_impl(SparkHour::new(timezone)));
+                let field_ref = Arc::new(Field::new("hour", DataType::Int32, true));
+                let expr: ScalarFunctionExpr =
+                    ScalarFunctionExpr::new("hour", comet_hour, args, field_ref);
 
-                Ok(Arc::new(DateTruncExpr::new(child, format)))
+                Ok(Arc::new(expr))
+            }
+            ExprStruct::Minute(expr) => {
+                let child =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let timezone = expr.timezone.clone();
+                let args = vec![child];
+                let comet_minute = Arc::new(ScalarUDF::new_from_impl(SparkMinute::new(timezone)));
+                let field_ref = Arc::new(Field::new("minute", DataType::Int32, true));
+                let expr: ScalarFunctionExpr =
+                    ScalarFunctionExpr::new("minute", comet_minute, args, field_ref);
+
+                Ok(Arc::new(expr))
+            }
+            ExprStruct::Second(expr) => {
+                let child =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let timezone = expr.timezone.clone();
+                let args = vec![child];
+                let comet_second = Arc::new(ScalarUDF::new_from_impl(SparkSecond::new(timezone)));
+                let field_ref = Arc::new(Field::new("second", DataType::Int32, true));
+                let expr: ScalarFunctionExpr =
+                    ScalarFunctionExpr::new("second", comet_second, args, field_ref);
+
+                Ok(Arc::new(expr))
             }
             ExprStruct::TruncTimestamp(expr) => {
                 let child =
@@ -921,7 +933,7 @@ impl PhysicalPlanner {
         let children = &spark_plan.children;
         match spark_plan.op_struct.as_ref().unwrap() {
             OpStruct::Projection(project) => {
-                assert!(children.len() == 1);
+                assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
                 let exprs: PhyExprResult = project
                     .project_list
@@ -942,7 +954,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::Filter(filter) => {
-                assert!(children.len() == 1);
+                assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
@@ -965,7 +977,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::HashAgg(agg) => {
-                assert!(children.len() == 1);
+                assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
                 let group_exprs: PhyExprResult = agg
@@ -1043,7 +1055,7 @@ impl PhysicalPlanner {
                 }
             }
             OpStruct::Limit(limit) => {
-                assert!(children.len() == 1);
+                assert_eq!(children.len(), 1);
                 let num = limit.limit;
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
@@ -1057,7 +1069,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::Sort(sort) => {
-                assert!(children.len() == 1);
+                assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
                 let exprs: Result<Vec<PhysicalSortExpr>, ExecutionError> = sort
@@ -1225,7 +1237,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::ShuffleWriter(writer) => {
-                assert!(children.len() == 1);
+                assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
                 let partitioning = self
@@ -1263,7 +1275,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::Expand(expand) => {
-                assert!(children.len() == 1);
+                assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
                 let mut projections = vec![];
@@ -1509,7 +1521,7 @@ impl PhysicalPlanner {
         condition: &Option<Expr>,
         partition_count: usize,
     ) -> Result<(JoinParameters, Vec<ScanExec>), ExecutionError> {
-        assert!(children.len() == 2);
+        assert_eq!(children.len(), 2);
         let (mut left_scans, left) = self.create_plan(&children[0], inputs, partition_count)?;
         let (mut right_scans, right) = self.create_plan(&children[1], inputs, partition_count)?;
 
@@ -2189,7 +2201,7 @@ impl PhysicalPlanner {
         &self,
         spark_partitioning: &SparkPartitioning,
         input_schema: SchemaRef,
-    ) -> Result<Partitioning, ExecutionError> {
+    ) -> Result<CometPartitioning, ExecutionError> {
         match spark_partitioning.partitioning_struct.as_ref().unwrap() {
             PartitioningStruct::HashPartition(hash_partition) => {
                 let exprs: PartitionPhyExprResult = hash_partition
@@ -2197,12 +2209,25 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|x| self.create_expr(x, Arc::clone(&input_schema)))
                     .collect();
-                Ok(Partitioning::Hash(
+                Ok(CometPartitioning::Hash(
                     exprs?,
                     hash_partition.num_partitions as usize,
                 ))
             }
-            PartitioningStruct::SinglePartition(_) => Ok(Partitioning::UnknownPartitioning(1)),
+            PartitioningStruct::RangePartition(range_partition) => {
+                let exprs: Result<Vec<PhysicalSortExpr>, ExecutionError> = range_partition
+                    .sort_orders
+                    .iter()
+                    .map(|expr| self.create_sort_expr(expr, Arc::clone(&input_schema)))
+                    .collect();
+                let lex_ordering = LexOrdering::from(exprs?);
+                Ok(CometPartitioning::RangePartitioning(
+                    lex_ordering,
+                    range_partition.num_partitions as usize,
+                    range_partition.sample_size as usize,
+                ))
+            }
+            PartitioningStruct::SinglePartition(_) => Ok(CometPartitioning::SinglePartition),
         }
     }
 
