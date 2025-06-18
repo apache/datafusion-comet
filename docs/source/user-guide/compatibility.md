@@ -29,7 +29,13 @@ Comet aims to provide consistent results with the version of Apache Spark that i
 
 This guide offers information about areas of functionality where there are known differences.
 
-## Parquet Scans
+## Parquet
+
+### Data Type Support
+
+Comet does not support reading decimals encoded in binary format.
+
+### Parquet Scans
 
 Comet currently has three distinct implementations of the Parquet scan operator. The configuration property
 `spark.comet.scan.impl` is used to select an implementation.
