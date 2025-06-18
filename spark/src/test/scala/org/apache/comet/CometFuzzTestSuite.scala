@@ -162,7 +162,9 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       // cannot run fully natively due to range partitioning and sort
       val (_, cometPlan) = checkSparkAnswer(sql)
       if (usingDataSourceExec) {
+        // Native scans and native shuffle should support all data types for this query
         assert(1 == collectNativeScans(cometPlan).length)
+        assert(1 == collectCometShuffleExchanges(cometPlan).length)
       }
     }
   }
@@ -187,7 +189,9 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // cannot run fully natively due to range partitioning and sort
     val (_, cometPlan) = checkSparkAnswer(sql)
     if (usingDataSourceExec) {
+      // Native scans and native shuffle should support all data types for this query
       assert(1 == collectNativeScans(cometPlan).length)
+      assert(1 == collectCometShuffleExchanges(cometPlan).length)
     }
   }
 
@@ -250,10 +254,31 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val df = spark.read.parquet(filename)
     val df2 = df.repartition(8, df.col("c0")).sort("c1")
     df2.collect()
-    if (usingDataSourceExec) {
-      val cometShuffles = collectCometShuffleExchanges(df2.queryExecution.executedPlan)
-      assert(1 == cometShuffles.length)
+    val expectedNumCometShuffles = CometConf.COMET_NATIVE_SCAN_IMPL.get() match {
+      case CometConf.SCAN_NATIVE_COMET =>
+        CometConf.COMET_SHUFFLE_MODE.get() match {
+          case "jvm" =>
+            // Uses a single CometColumnarExchange for hash partitioning
+            // Range partitioning is in Spark
+            1
+          case "native" =>
+            // Uses Spark for hash partitioning and range partitioning
+            0
+        }
+      case CometConf.SCAN_NATIVE_ICEBERG_COMPAT | CometConf.SCAN_NATIVE_DATAFUSION =>
+        CometConf.COMET_SHUFFLE_MODE.get() match {
+          case "jvm" =>
+            // Uses a single CometColumnarExchange for hash partitioning
+            // Range partitioning is in Spark
+            1
+          case "native" =>
+            // Uses Comet for hash partitioning and range partitioning
+            2
+        }
     }
+
+    val cometShuffles = collectCometShuffleExchanges(df2.queryExecution.executedPlan)
+    assert(expectedNumCometShuffles == cometShuffles.length)
   }
 
   test("join") {

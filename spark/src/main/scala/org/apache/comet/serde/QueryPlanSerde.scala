@@ -39,8 +39,7 @@ import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
-import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD}
-import org.apache.spark.sql.execution.datasources.PartitionedFile
+import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, PartitionedFile}
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -2866,7 +2865,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
      * Hash Partition Key determines how data should be collocated for operations like
      * `groupByKey`, `reduceByKey` or `join`.
      */
-    def supportedPartitionKeyDataType(dt: DataType): Boolean = dt match {
+    def supportedHashPartitionKeyDataType(dt: DataType): Boolean = dt match {
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
           _: TimestampNTZType | _: DecimalType | _: DateType =>
@@ -2877,6 +2876,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
     val inputs = s.child.output
     val partitioning = s.outputPartitioning
+    val conf = SQLConf.get
     var msg = ""
     val supported = partitioning match {
       case HashPartitioning(expressions, _) =>
@@ -2884,14 +2884,23 @@ object QueryPlanSerde extends Logging with CometExprShim {
         // due to lack of hashing support for those types
         val supported =
           expressions.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-            expressions.forall(e => supportedPartitionKeyDataType(e.dataType)) &&
-            inputs.forall(attr => supportedShuffleDataType(attr.dataType))
+            expressions.forall(e => supportedHashPartitionKeyDataType(e.dataType)) &&
+            inputs.forall(attr => supportedShuffleDataType(attr.dataType)) &&
+            CometConf.COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED.get(conf)
         if (!supported) {
-          msg = s"unsupported Spark partitioning expressions: $expressions"
+          msg = s"unsupported Spark partitioning: $expressions"
         }
         supported
       case SinglePartition =>
         inputs.forall(attr => supportedShuffleDataType(attr.dataType))
+      case RangePartitioning(ordering, _) =>
+        val supported = ordering.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
+          inputs.forall(attr => supportedShuffleDataType(attr.dataType)) &&
+          CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.get(conf)
+        if (!supported) {
+          msg = s"unsupported Spark partitioning: $ordering"
+        }
+        supported
       case _ =>
         msg = s"unsupported Spark partitioning: ${partitioning.getClass.getName}"
         false

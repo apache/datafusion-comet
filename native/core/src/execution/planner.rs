@@ -60,7 +60,7 @@ use datafusion::{
         limit::LocalLimitExec,
         projection::ProjectionExec,
         sorts::sort::SortExec,
-        ExecutionPlan, Partitioning,
+        ExecutionPlan,
     },
     prelude::SessionContext,
 };
@@ -70,7 +70,7 @@ use datafusion_comet_spark_expr::{
 };
 
 use crate::execution::operators::ExecutionError::GeneralError;
-use crate::execution::shuffle::CompressionCodec;
+use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use datafusion::common::scalar::ScalarStructBuilder;
@@ -933,7 +933,7 @@ impl PhysicalPlanner {
         let children = &spark_plan.children;
         match spark_plan.op_struct.as_ref().unwrap() {
             OpStruct::Projection(project) => {
-                assert!(children.len() == 1);
+                assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
                 let exprs: PhyExprResult = project
                     .project_list
@@ -954,7 +954,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::Filter(filter) => {
-                assert!(children.len() == 1);
+                assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
@@ -977,7 +977,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::HashAgg(agg) => {
-                assert!(children.len() == 1);
+                assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
                 let group_exprs: PhyExprResult = agg
@@ -1055,7 +1055,7 @@ impl PhysicalPlanner {
                 }
             }
             OpStruct::Limit(limit) => {
-                assert!(children.len() == 1);
+                assert_eq!(children.len(), 1);
                 let num = limit.limit;
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
@@ -1069,7 +1069,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::Sort(sort) => {
-                assert!(children.len() == 1);
+                assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
                 let exprs: Result<Vec<PhysicalSortExpr>, ExecutionError> = sort
@@ -1237,7 +1237,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::ShuffleWriter(writer) => {
-                assert!(children.len() == 1);
+                assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
                 let partitioning = self
@@ -1275,7 +1275,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::Expand(expand) => {
-                assert!(children.len() == 1);
+                assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
                 let mut projections = vec![];
@@ -1521,7 +1521,7 @@ impl PhysicalPlanner {
         condition: &Option<Expr>,
         partition_count: usize,
     ) -> Result<(JoinParameters, Vec<ScanExec>), ExecutionError> {
-        assert!(children.len() == 2);
+        assert_eq!(children.len(), 2);
         let (mut left_scans, left) = self.create_plan(&children[0], inputs, partition_count)?;
         let (mut right_scans, right) = self.create_plan(&children[1], inputs, partition_count)?;
 
@@ -2201,7 +2201,7 @@ impl PhysicalPlanner {
         &self,
         spark_partitioning: &SparkPartitioning,
         input_schema: SchemaRef,
-    ) -> Result<Partitioning, ExecutionError> {
+    ) -> Result<CometPartitioning, ExecutionError> {
         match spark_partitioning.partitioning_struct.as_ref().unwrap() {
             PartitioningStruct::HashPartition(hash_partition) => {
                 let exprs: PartitionPhyExprResult = hash_partition
@@ -2209,12 +2209,25 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|x| self.create_expr(x, Arc::clone(&input_schema)))
                     .collect();
-                Ok(Partitioning::Hash(
+                Ok(CometPartitioning::Hash(
                     exprs?,
                     hash_partition.num_partitions as usize,
                 ))
             }
-            PartitioningStruct::SinglePartition(_) => Ok(Partitioning::UnknownPartitioning(1)),
+            PartitioningStruct::RangePartition(range_partition) => {
+                let exprs: Result<Vec<PhysicalSortExpr>, ExecutionError> = range_partition
+                    .sort_orders
+                    .iter()
+                    .map(|expr| self.create_sort_expr(expr, Arc::clone(&input_schema)))
+                    .collect();
+                let lex_ordering = LexOrdering::from(exprs?);
+                Ok(CometPartitioning::RangePartitioning(
+                    lex_ordering,
+                    range_partition.num_partitions as usize,
+                    range_partition.sample_size as usize,
+                ))
+            }
+            PartitioningStruct::SinglePartition(_) => Ok(CometPartitioning::SinglePartition),
         }
     }
 
