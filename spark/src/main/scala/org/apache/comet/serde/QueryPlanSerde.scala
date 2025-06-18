@@ -61,6 +61,33 @@ import org.apache.comet.shims.CometExprShim
  * An utility object for query plan and expression serialization.
  */
 object QueryPlanSerde extends Logging with CometExprShim {
+
+  val exprHandlers: Map[Class[_], CometExpressionSerde] = Map(
+    classOf[ArrayRemove] -> CometArrayRemove,
+    classOf[ArrayContains] -> CometArrayContains,
+    classOf[ArrayAppend] -> CometArrayAppend,
+    classOf[ArrayIntersect] -> CometArrayIntersect,
+    classOf[ArrayJoin] -> CometArrayJoin,
+    classOf[ArraysOverlap] -> CometArraysOverlap,
+    classOf[ArrayRepeat] -> CometArrayRepeat,
+    classOf[Ascii] -> CometAscii,
+    classOf[ConcatWs] -> CometConcatWs,
+    classOf[Chr] -> CometChr,
+    classOf[InitCap] -> CometInitCap,
+    classOf[Length] -> CometLength,
+    classOf[StringInstr] -> CometStringInstr,
+    classOf[StringRepeat] -> CometStringRepeat,
+    classOf[StringReplace] -> CometStringReplace,
+    classOf[StringTranslate] -> CometLength,
+    classOf[StringTrim] -> CometTrim,
+    classOf[StringTrimLeft] -> CometStringTrimLeft,
+    classOf[StringTrimRight] -> CometStringTrimRight,
+    classOf[StringTrimBoth] -> CometStringTrimBoth,
+    classOf[Upper] -> CometUpper,
+    classOf[Lower] -> CometLower,
+    classOf[Murmur3Hash] -> CometMurmur3Hash,
+    classOf[XxHash64] -> CometXxHash64)
+
   def emitWarning(reason: String): Unit = {
     logWarning(s"Comet native execution is disabled due to: $reason")
   }
@@ -1421,9 +1448,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val optExpr = scalarFunctionExprToProto("tan", childExpr)
         optExprWithInfo(optExpr, expr, child)
 
-      case _: Ascii =>
-        CometAscii.convert(expr, inputs, binding)
-
       case Expm1(child) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
         val optExpr = scalarFunctionExprToProto("expm1", childExpr)
@@ -1478,9 +1502,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             None
         }
 
-      case _: BitLength =>
-        CometBitLength.convert(expr, inputs, binding)
-
       case If(predicate, trueValue, falseValue) =>
         val predicateExpr = exprToProtoInternal(predicate, inputs, binding)
         val trueExpr = exprToProtoInternal(trueValue, inputs, binding)
@@ -1534,17 +1555,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(expr, allBranches: _*)
           None
         }
-      case _: ConcatWs =>
-        CometConcatWs.convert(expr, inputs, binding)
-
-      case _: Chr =>
-        CometChr.convert(expr, inputs, binding)
-
-      case _: InitCap =>
-        CometInitCap.convert(expr, inputs, binding)
-
-      case _: Length =>
-        CometLength.convert(expr, inputs, binding)
 
       case Md5(child) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
@@ -1562,36 +1572,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val childExpr = exprToProtoInternal(castExpr, inputs, binding)
         val optExpr = scalarFunctionExprToProto("reverse", childExpr)
         optExprWithInfo(optExpr, expr, castExpr)
-
-      case _: StringInstr =>
-        CometStringInstr.convert(expr, inputs, binding)
-
-      case _: StringRepeat =>
-        CometStringRepeat.convert(expr, inputs, binding)
-
-      case _: StringReplace =>
-        CometStringReplace.convert(expr, inputs, binding)
-
-      case _: StringTranslate =>
-        CometStringTranslate.convert(expr, inputs, binding)
-
-      case _: StringTrim =>
-        CometTrim.convert(expr, inputs, binding)
-
-      case _: StringTrimLeft =>
-        CometStringTrimLeft.convert(expr, inputs, binding)
-
-      case _: StringTrimRight =>
-        CometStringTrimRight.convert(expr, inputs, binding)
-
-      case _: StringTrimBoth =>
-        CometStringTrimBoth.convert(expr, inputs, binding)
-
-      case _: Upper =>
-        CometUpper.convert(expr, inputs, binding)
-
-      case _: Lower =>
-        CometLower.convert(expr, inputs, binding)
 
       case BitwiseAnd(left, right) =>
         createBinaryExpr(
@@ -1811,10 +1791,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case _: Murmur3Hash => CometMurmur3Hash.convert(expr, inputs, binding)
-
-      case _: XxHash64 => CometXxHash64.convert(expr, inputs, binding)
-
       case Sha2(left, numBits) =>
         if (!numBits.foldable) {
           withInfo(expr, "non literal numBits is not supported")
@@ -1953,13 +1929,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(expr, "unsupported arguments for GetArrayStructFields", child)
           None
         }
-      case _: ArrayRemove => convert(CometArrayRemove)
-      case _: ArrayContains => convert(CometArrayContains)
-      case _: ArrayAppend => convert(CometArrayAppend)
-      case _: ArrayIntersect => convert(CometArrayIntersect)
-      case _: ArrayJoin => convert(CometArrayJoin)
-      case _: ArraysOverlap => convert(CometArraysOverlap)
-      case _: ArrayRepeat => convert(CometArrayRepeat)
       case _ @ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
         convert(CometArrayCompact)
       case _: ArrayExcept =>
@@ -1970,9 +1939,13 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case mv: MapValues =>
         val childExpr = exprToProtoInternal(mv.child, inputs, binding)
         scalarFunctionExprToProto("map_values", childExpr)
-      case _ =>
-        withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
-        None
+      case expr =>
+        QueryPlanSerde.exprHandlers.get(expr.getClass) match {
+          case Some(x) => x.convert(expr, inputs, binding)
+          case _ =>
+            withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
+            None
+        }
     }
 
   }
