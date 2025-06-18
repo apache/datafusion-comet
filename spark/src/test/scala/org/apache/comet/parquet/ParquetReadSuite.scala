@@ -1886,7 +1886,12 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
         CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false") {
-        makeParquetFileAllTypes(path, dictionaryEnabled = false, 0, rows, nullEnabled = false)
+        makeParquetFileAllPrimitiveTypes(
+          path,
+          dictionaryEnabled = false,
+          0,
+          rows,
+          nullEnabled = false)
       }
       Seq(
         (CometConf.SCAN_NATIVE_DATAFUSION, "output_rows"),

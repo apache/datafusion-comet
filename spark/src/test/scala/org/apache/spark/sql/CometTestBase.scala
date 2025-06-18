@@ -433,8 +433,8 @@ abstract class CometTestBase
     value % div
   }
 
-  def makeParquetFileAllTypes(path: Path, dictionaryEnabled: Boolean, n: Int): Unit = {
-    makeParquetFileAllTypes(path, dictionaryEnabled, 0, n)
+  def makeParquetFileAllPrimitiveTypes(path: Path, dictionaryEnabled: Boolean, n: Int): Unit = {
+    makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 0, n)
   }
 
   def getPrimitiveTypesParquetSchema: String = {
@@ -500,7 +500,7 @@ abstract class CometTestBase
     }
   }
 
-  def makeParquetFileAllTypes(
+  def makeParquetFileAllPrimitiveTypes(
       path: Path,
       dictionaryEnabled: Boolean,
       begin: Int,
