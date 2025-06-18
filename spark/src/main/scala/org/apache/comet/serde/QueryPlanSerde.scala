@@ -2592,6 +2592,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
 
         if (join.buildSide == BuildRight && join.joinType == LeftAnti) {
+          // https://github.com/apache/datafusion-comet/issues/457
           withInfo(join, "BuildRight with LeftAnti is not supported")
           return None
         }
