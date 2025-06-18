@@ -2587,11 +2587,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           return None
         }
 
-        if (join.buildSide == BuildRight && join.joinType == LeftAnti) {
-          withInfo(join, "BuildRight with LeftAnti is not supported")
-          return None
-        }
-
         val condition = join.condition.map { cond =>
           val condProto = exprToProto(cond, join.left.output ++ join.right.output)
           if (condProto.isEmpty) {
