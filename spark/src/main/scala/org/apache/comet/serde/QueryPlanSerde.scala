@@ -66,13 +66,15 @@ object QueryPlanSerde extends Logging with CometExprShim {
    * Mapping of Spark expression class to Comet expression handler.
    */
   private val exprHandlers: Map[Class[_], CometExpressionSerde] = Map(
-    classOf[ArrayRemove] -> CometArrayRemove,
-    classOf[ArrayContains] -> CometArrayContains,
     classOf[ArrayAppend] -> CometArrayAppend,
+    classOf[ArrayContains] -> CometArrayContains,
+    classOf[ArrayExcept] -> CometArrayExcept,
+    classOf[ArrayInsert] -> CometArrayInsert,
     classOf[ArrayIntersect] -> CometArrayIntersect,
     classOf[ArrayJoin] -> CometArrayJoin,
-    classOf[ArraysOverlap] -> CometArraysOverlap,
+    classOf[ArrayRemove] -> CometArrayRemove,
     classOf[ArrayRepeat] -> CometArrayRepeat,
+    classOf[ArraysOverlap] -> CometArraysOverlap,
     classOf[Ascii] -> CometAscii,
     classOf[ConcatWs] -> CometConcatWs,
     classOf[Chr] -> CometChr,
@@ -1885,8 +1887,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case expr if expr.prettyName == "array_insert" => convert(CometArrayInsert)
-
       case ElementAt(child, ordinal, defaultValue, failOnError)
           if child.dataType.isInstanceOf[ArrayType] =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
@@ -1934,8 +1934,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
       case _ @ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
         convert(CometArrayCompact)
-      case _: ArrayExcept =>
-        convert(CometArrayExcept)
       case mk: MapKeys =>
         val childExpr = exprToProtoInternal(mk.child, inputs, binding)
         scalarFunctionExprToProto("map_keys", childExpr)
@@ -1944,7 +1942,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         scalarFunctionExprToProto("map_values", childExpr)
       case expr =>
         QueryPlanSerde.exprHandlers.get(expr.getClass) match {
-          case Some(handler) => handler.convert(expr, inputs, binding)
+          case Some(handler) => convert(handler)
           case _ =>
             withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
             None
