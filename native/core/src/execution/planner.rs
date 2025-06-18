@@ -567,7 +567,7 @@ impl PhysicalPlanner {
                         true,
                         false,
                     ))),
-                    _ => Ok(func),
+                    _ => func,
                 }
             }
             ExprStruct::EqNullSafe(expr) => {
