@@ -292,9 +292,21 @@ under the License.
 <nav id="bd-toc-nav">
     <ul class="visible nav section-nav flex-column">
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#parquet-scans">
-   Parquet Scans
+  <a class="reference internal nav-link" href="#parquet">
+   Parquet
   </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#data-type-support">
+     Data Type Support
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#parquet-scans">
+     Parquet Scans
+    </a>
+   </li>
+  </ul>
  </li>
  <li class="toc-h2 nav-item toc-entry">
   <a class="reference internal nav-link" href="#ansi-mode">
@@ -398,8 +410,14 @@ TO MODIFY THIS CONTENT MAKE SURE THAT YOU MAKE YOUR CHANGES TO THE TEMPLATE FILE
 <h1>Compatibility Guide<a class="headerlink" href="#compatibility-guide" title="Link to this heading">¶</a></h1>
 <p>Comet aims to provide consistent results with the version of Apache Spark that is being used.</p>
 <p>This guide offers information about areas of functionality where there are known differences.</p>
+<section id="parquet">
+<h2>Parquet<a class="headerlink" href="#parquet" title="Link to this heading">¶</a></h2>
+<section id="data-type-support">
+<h3>Data Type Support<a class="headerlink" href="#data-type-support" title="Link to this heading">¶</a></h3>
+<p>Comet does not support reading decimals encoded in binary format.</p>
+</section>
 <section id="parquet-scans">
-<h2>Parquet Scans<a class="headerlink" href="#parquet-scans" title="Link to this heading">¶</a></h2>
+<h3>Parquet Scans<a class="headerlink" href="#parquet-scans" title="Link to this heading">¶</a></h3>
 <p>Comet currently has three distinct implementations of the Parquet scan operator. The configuration property
 <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.impl</span></code> is used to select an implementation.</p>
 <table class="table">
@@ -450,6 +468,7 @@ information.</p></li>
 <li><p>Bucketed scans are not supported</p></li>
 <li><p>No support for row indexes</p></li>
 </ul>
+</section>
 </section>
 <section id="ansi-mode">
 <h2>ANSI mode<a class="headerlink" href="#ansi-mode" title="Link to this heading">¶</a></h2>
