@@ -67,7 +67,7 @@ endif
 
 core-amd64:
 	rustup target add x86_64-apple-darwin
-	cd native && RUSTFLAGS="-Ctarget-cpu=skylake -Ctarget-feature=-prefer-256-bit" CC=o64-clang CXX=o64-clang++ cargo build --target x86_64-apple-darwin --release
+	cd native && RUSTFLAGS="-Ctarget-cpu=skylake -Ctarget-feature=-prefer-256-bit" CC=x86_64-apple-darwin21.4-clang cargo build --target x86_64-apple-darwin --release
 	mkdir -p common/target/classes/org/apache/comet/darwin/x86_64
 	cp native/target/x86_64-apple-darwin/release/libcomet.dylib common/target/classes/org/apache/comet/darwin/x86_64
 	cd native && RUSTFLAGS="-Ctarget-cpu=haswell -Ctarget-feature=-prefer-256-bit" cargo build --release
