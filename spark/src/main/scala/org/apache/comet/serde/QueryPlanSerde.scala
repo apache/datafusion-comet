@@ -2168,9 +2168,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
    */
   private def supportedSortMergeJoinEqualType(dataType: DataType): Boolean = dataType match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-        _: DoubleType | _: StringType | _: DateType | _: DecimalType | _: BooleanType =>
+        _: DoubleType | _: StringType | _: DateType | _: DecimalType | _: BooleanType |
+        _: TimestampType =>
       true
-    case TimestampNTZType => true
+    case dt if isTimestampNTZType(dt) => true
     case _ => false
   }
 
