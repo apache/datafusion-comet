@@ -62,7 +62,10 @@ import org.apache.comet.shims.CometExprShim
  */
 object QueryPlanSerde extends Logging with CometExprShim {
 
-  val exprHandlers: Map[Class[_], CometExpressionSerde] = Map(
+  /**
+   * Mapping of Spark expression class to Comet expression handler.
+   */
+  private val exprHandlers: Map[Class[_], CometExpressionSerde] = Map(
     classOf[ArrayRemove] -> CometArrayRemove,
     classOf[ArrayContains] -> CometArrayContains,
     classOf[ArrayAppend] -> CometArrayAppend,
@@ -1941,7 +1944,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         scalarFunctionExprToProto("map_values", childExpr)
       case expr =>
         QueryPlanSerde.exprHandlers.get(expr.getClass) match {
-          case Some(x) => x.convert(expr, inputs, binding)
+          case Some(handler) => handler.convert(expr, inputs, binding)
           case _ =>
             withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
             None
