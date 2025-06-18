@@ -1,7 +1,7 @@
 == Physical Plan ==
 * CometColumnarToRow (43)
 +- CometSort (42)
-   +- CometExchange (41)
+   +- CometColumnarExchange (41)
       +- CometHashAggregate (40)
          +- CometExchange (39)
             +- CometHashAggregate (38)
@@ -234,9 +234,9 @@ Input [6]: [cc_call_center_id#5, cc_name#3, cc_manager#4, cd_marital_status#23, 
 Keys [5]: [cc_call_center_id#5, cc_name#3, cc_manager#4, cd_marital_status#23, cd_education_status#24]
 Functions [1]: [sum(UnscaledValue(cr_net_loss#8))]
 
-(41) CometExchange
+(41) CometColumnarExchange
 Input [4]: [Call_Center#28, Call_Center_Name#29, Manager#30, Returns_Loss#31]
-Arguments: rangepartitioning(Returns_Loss#31 DESC NULLS LAST, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
+Arguments: rangepartitioning(Returns_Loss#31 DESC NULLS LAST, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
 (42) CometSort
 Input [4]: [Call_Center#28, Call_Center_Name#29, Manager#30, Returns_Loss#31]
