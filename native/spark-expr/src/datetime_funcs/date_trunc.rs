@@ -15,76 +15,58 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::datatypes::{DataType, Schema};
-use arrow::record_batch::RecordBatch;
-use datafusion::common::{DataFusionError, ScalarValue::Utf8};
-use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr::PhysicalExpr;
-use std::hash::Hash;
-use std::{
-    any::Any,
-    fmt::{Debug, Display, Formatter},
-    sync::Arc,
+use arrow::datatypes::DataType;
+use datafusion::common::{utils::take_function_args, DataFusionError, Result, ScalarValue::Utf8};
+use datafusion::logical_expr::{
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
+use std::any::Any;
 
 use crate::kernels::temporal::{date_trunc_array_fmt_dyn, date_trunc_dyn};
 
-#[derive(Debug, Eq)]
-pub struct DateTruncExpr {
-    /// An array with DataType::Date32
-    child: Arc<dyn PhysicalExpr>,
-    /// Scalar UTF8 string matching the valid values in Spark SQL: https://spark.apache.org/docs/latest/api/sql/index.html#trunc
-    format: Arc<dyn PhysicalExpr>,
+#[derive(Debug)]
+pub struct SparkDateTrunc {
+    signature: Signature,
+    aliases: Vec<String>,
 }
 
-impl Hash for DateTruncExpr {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.child.hash(state);
-        self.format.hash(state);
-    }
-}
-impl PartialEq for DateTruncExpr {
-    fn eq(&self, other: &Self) -> bool {
-        self.child.eq(&other.child) && self.format.eq(&other.format)
-    }
-}
-
-impl DateTruncExpr {
-    pub fn new(child: Arc<dyn PhysicalExpr>, format: Arc<dyn PhysicalExpr>) -> Self {
-        DateTruncExpr { child, format }
+impl SparkDateTrunc {
+    pub fn new() -> Self {
+        Self {
+            signature: Signature::exact(
+                vec![DataType::Date32, DataType::Utf8],
+                Volatility::Immutable,
+            ),
+            aliases: vec![],
+        }
     }
 }
 
-impl Display for DateTruncExpr {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "DateTrunc [child:{}, format: {}]",
-            self.child, self.format
-        )
+impl Default for SparkDateTrunc {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-impl PhysicalExpr for DateTruncExpr {
+impl ScalarUDFImpl for SparkDateTrunc {
     fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
-        unimplemented!()
+    fn name(&self) -> &str {
+        "date_trunc"
     }
 
-    fn data_type(&self, input_schema: &Schema) -> datafusion::common::Result<DataType> {
-        self.child.data_type(input_schema)
+    fn signature(&self) -> &Signature {
+        &self.signature
     }
 
-    fn nullable(&self, _: &Schema) -> datafusion::common::Result<bool> {
-        Ok(true)
+    fn return_type(&self, _: &[DataType]) -> Result<DataType> {
+        Ok(DataType::Date32)
     }
 
-    fn evaluate(&self, batch: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
-        let date = self.child.evaluate(batch)?;
-        let format = self.format.evaluate(batch)?;
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        let [date, format] = take_function_args(self.name(), args.args)?;
         match (date, format) {
             (ColumnarValue::Array(date), ColumnarValue::Scalar(Utf8(Some(format)))) => {
                 let result = date_trunc_dyn(&date, format)?;
@@ -101,17 +83,7 @@ impl PhysicalExpr for DateTruncExpr {
         }
     }
 
-    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
-        vec![&self.child]
-    }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn PhysicalExpr>>,
-    ) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
-        Ok(Arc::new(DateTruncExpr::new(
-            Arc::clone(&children[0]),
-            Arc::clone(&self.format),
-        )))
+    fn aliases(&self) -> &[String] {
+        &self.aliases
     }
 }

@@ -31,6 +31,7 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Literal}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec, CometWindowExec}
 import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, WholeStageCodegenExec}
@@ -487,6 +488,29 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             })
         }
       }
+    }
+  }
+
+  test("time expressions folded on jvm") {
+    val ts = "1969-12-31 16:23:45"
+
+    val functions = Map("hour" -> 16, "minute" -> 23, "second" -> 45)
+
+    functions.foreach { case (func, expectedValue) =>
+      val query = s"SELECT $func('$ts') AS result"
+      val df = spark.sql(query)
+      val optimizedPlan = df.queryExecution.optimizedPlan
+
+      val isFolded = optimizedPlan.expressions.exists {
+        case alias: Alias =>
+          alias.child match {
+            case Literal(value, _) => value == expectedValue
+            case _ => false
+          }
+        case _ => false
+      }
+
+      assert(isFolded, s"Expected '$func(...)' to be constant-folded to Literal($expectedValue)")
     }
   }
 
@@ -1217,41 +1241,71 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  private val doubleValues: Seq[Double] = Seq(
+    -1.0,
+    // TODO we should eventually enable negative zero but there are known issues still
+    // -0.0,
+    0.0,
+    +1.0,
+    Double.MinValue,
+    Double.MaxValue,
+    Double.NaN,
+    Double.MinPositiveValue,
+    Double.PositiveInfinity,
+    Double.NegativeInfinity)
+
   test("various math scalar functions") {
-    Seq("true", "false").foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary) {
-        withParquetTable(
-          (-5 until 5).map(i => (i.toDouble + 0.3, i.toDouble + 0.8)),
-          "tbl",
-          withDictionary = dictionary.toBoolean) {
-          checkSparkAnswerWithTol(
-            "SELECT abs(_1), acos(_2), asin(_1), atan(_2), atan2(_1, _2), cos(_1) FROM tbl")
-          checkSparkAnswerWithTol(
-            "SELECT exp(_1), ln(_2), log10(_1), log2(_1), pow(_1, _2) FROM tbl")
-          // TODO: comment in the round tests once supported
-          // checkSparkAnswerWithTol("SELECT round(_1), round(_2) FROM tbl")
-          checkSparkAnswerWithTol("SELECT signum(_1), sin(_1), sqrt(_1) FROM tbl")
-          checkSparkAnswerWithTol("SELECT tan(_1) FROM tbl")
+    val data = doubleValues.map(n => (n, n))
+    withParquetTable(data, "tbl") {
+      // expressions with single arg
+      for (expr <- Seq(
+          "acos",
+          "asin",
+          "atan",
+          "cos",
+          "exp",
+          "ln",
+          "log10",
+          "log2",
+          "sin",
+          "sqrt",
+          "tan")) {
+        val df = checkSparkAnswerWithTol(s"SELECT $expr(_1), $expr(_2) FROM tbl")
+        val cometProjectExecs = collect(df.queryExecution.executedPlan) {
+          case op: CometProjectExec => op
         }
+        assert(cometProjectExecs.length == 1, expr)
+      }
+      // expressions with two args
+      for (expr <- Seq("atan2", "pow")) {
+        val df = checkSparkAnswerWithTol(s"SELECT $expr(_1, _2) FROM tbl")
+        val cometProjectExecs = collect(df.queryExecution.executedPlan) {
+          case op: CometProjectExec => op
+        }
+        assert(cometProjectExecs.length == 1, expr)
       }
     }
   }
 
-  test("expm1") {
-    val testValues = Seq(
-      -1,
-      0,
-      +1,
-      Double.MinValue,
-      Double.MaxValue,
-      Double.NaN,
-      Double.MinPositiveValue,
-      Double.PositiveInfinity,
-      Double.NegativeInfinity)
-    val testValuesRepeated = testValues.flatMap(v => Seq.fill(1000)(v))
-    withParquetTable(testValuesRepeated.map(n => (n, n)), "tbl") {
-      checkSparkAnswerWithTol("SELECT expm1(_1) FROM tbl")
+  private def testDoubleScalarExpr(expr: String): Unit = {
+    val testValuesRepeated = doubleValues.flatMap(v => Seq.fill(1000)(v))
+    for (withDictionary <- Seq(true, false)) {
+      withParquetTable(testValuesRepeated.map(n => (n, n)), "tbl", withDictionary) {
+        val df = checkSparkAnswerWithTol(s"SELECT $expr(_1) FROM tbl")
+        val projections = collect(df.queryExecution.executedPlan) { case p: CometProjectExec =>
+          p
+        }
+        assert(projections.length == 1)
+      }
     }
+  }
+
+  test("signum") {
+    testDoubleScalarExpr("signum")
+  }
+
+  test("expm1") {
+    testDoubleScalarExpr("expm1")
   }
 
   // https://github.com/apache/datafusion-comet/issues/666
