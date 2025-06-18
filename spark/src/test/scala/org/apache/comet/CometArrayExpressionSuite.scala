@@ -243,17 +243,13 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       checkSparkAnswerAndOperator(
         spark.sql("SELECT array_max((CASE WHEN _2 =_3 THEN array(_2, _4) END)) FROM t1"));
       checkSparkAnswerAndOperator(
-        spark.sql("SELECT array_max(array(CAST(NULL AS INT), CAST(NULL AS INT))) FROM t1")
-      )
+        spark.sql("SELECT array_max(array(CAST(NULL AS INT), CAST(NULL AS INT))) FROM t1"))
       checkSparkAnswerAndOperator(
-        spark.sql("SELECT array_max(array(_2, CAST(NULL AS INT))) FROM t1")
-      )
+        spark.sql("SELECT array_max(array(_2, CAST(NULL AS INT))) FROM t1"))
+      checkSparkAnswerAndOperator(spark.sql("SELECT array_max(array()) FROM t1"))
       checkSparkAnswerAndOperator(
-        spark.sql("SELECT array_max(array()) FROM t1")
-      )
-      checkSparkAnswerAndOperator(
-        spark.sql("SELECT array_max(array(double('-Infinity'), 0.0, double('Infinity'))) FROM t1")
-      )
+        spark.sql(
+          "SELECT array_max(array(double('-Infinity'), 0.0, double('Infinity'))) FROM t1"))
     }
   }
 
