@@ -559,7 +559,7 @@ impl PhysicalPlanner {
                 let func = self.create_scalar_function_expr(expr, input_schema);
                 match expr.func.as_ref() {
                     // DataFusion map_extract returns array of struct entries even if lookup by key
-                    // Apache Spark waits a single value, so wrap the result into additional list extraction
+                    // Apache Spark wants a single value, so wrap the result into additional list extraction
                     "map_extract" => Ok(Arc::new(ListExtract::new(
                         func?,
                         Arc::new(Literal::new(ScalarValue::Int32(Some(1)))),
