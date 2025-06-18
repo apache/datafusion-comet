@@ -32,9 +32,9 @@ import org.apache.commons.lang3.StringUtils
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.column.ParquetProperties
 import org.apache.parquet.example.data.Group
-import org.apache.parquet.example.data.simple.SimpleGroup
+import org.apache.parquet.example.data.simple.{SimpleGroup, SimpleGroupFactory}
 import org.apache.parquet.hadoop.ParquetWriter
-import org.apache.parquet.hadoop.example.ExampleParquetWriter
+import org.apache.parquet.hadoop.example.{ExampleParquetWriter, GroupWriteSupport}
 import org.apache.parquet.schema.{MessageType, MessageTypeParser}
 import org.apache.spark._
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE, SHUFFLE_MANAGER}
@@ -696,6 +696,131 @@ abstract class CometTestBase
 
     writer.close()
     expected
+  }
+
+  // Generate a file based on a complex schema. Schema derived from https://arrow.apache.org/blog/2022/10/17/arrow-parquet-encoding-part-3/
+  def makeParquetFileComplexTypes(
+      path: Path,
+      dictionaryEnabled: Boolean,
+      numRows: Integer = 10000): Unit = {
+    val schemaString =
+      """
+      message ComplexDataSchema {
+        optional group optional_array (LIST) {
+          repeated group list {
+            optional int32 element;
+          }
+        }
+        required group array_of_struct (LIST) {
+          repeated group list {
+            optional group struct_element {
+              required int32 field1;
+              optional group optional_nested_array (LIST) {
+                repeated group list {
+                  required int32 element;
+                }
+              }
+            }
+          }
+        }
+        optional group optional_map (MAP) {
+          repeated group key_value {
+            required int32 key;
+            optional int32 value;
+          }
+        }
+        required group complex_map (MAP) {
+          repeated group key_value {
+            required group map_key {
+              required int32 key_field1;
+              optional int32 key_field2;
+            }
+            required group map_value {
+              required int32 value_field1;
+              repeated int32 value_field2;
+            }
+          }
+        }
+      }
+    """
+
+    val schema: MessageType = MessageTypeParser.parseMessageType(schemaString)
+    GroupWriteSupport.setSchema(schema, spark.sparkContext.hadoopConfiguration)
+
+    val writer = createParquetWriter(schema, path, dictionaryEnabled)
+
+    val groupFactory = new SimpleGroupFactory(schema)
+
+    for (i <- 0 until numRows) {
+      val record = groupFactory.newGroup()
+
+      // Optional array of optional integers
+      if (i % 2 == 0) { // optional_array for every other row
+        val optionalArray = record.addGroup("optional_array")
+        for (j <- 0 until (i % 5)) {
+          val elementGroup = optionalArray.addGroup("list")
+          if (j % 2 == 0) { // some elements are optional
+            elementGroup.append("element", j)
+          }
+        }
+      }
+
+      // Required array of structs
+      val arrayOfStruct = record.addGroup("array_of_struct")
+      for (j <- 0 until (i % 3) + 1) { // Add one to three elements
+        val structElementGroup = arrayOfStruct.addGroup("list").addGroup("struct_element")
+        structElementGroup.append("field1", i * 10 + j)
+
+        // Optional nested array
+        if (j % 2 != 0) { // optional nested array for every other struct
+          val nestedArray = structElementGroup.addGroup("optional_nested_array")
+          for (k <- 0 until (i % 4)) { // Add zero to three elements.
+            val nestedElementGroup = nestedArray.addGroup("list")
+            nestedElementGroup.append("element", i + j + k)
+          }
+        }
+      }
+
+      // Optional map
+      if (i % 3 == 0) { // optional_map every third row
+        val optionalMap = record.addGroup("optional_map")
+        optionalMap
+          .addGroup("key_value")
+          .append("key", i)
+          .append("value", i)
+        if (i % 5 == 0) { // another optional entry
+          optionalMap
+            .addGroup("key_value")
+            .append("key", i)
+          // Value is optional
+          if (i % 10 == 0) {
+            optionalMap
+              .addGroup("key_value")
+              .append("key", i)
+              .append("value", i)
+          }
+        }
+      }
+
+      // Required map with complex key and value types
+      val complexMap = record.addGroup("complex_map")
+      val complexMapKeyVal = complexMap.addGroup("key_value")
+
+      complexMapKeyVal
+        .addGroup("map_key")
+        .append("key_field1", i)
+
+      complexMapKeyVal
+        .addGroup("map_value")
+        .append("value_field1", i)
+        .append("value_field2", i * 100)
+        .append("value_field2", i * 101)
+        .append("value_field2", i * 102)
+
+      writer.write(record)
+    }
+
+    writer.close()
   }
 
   protected def makeDateTimeWithFormatTable(
