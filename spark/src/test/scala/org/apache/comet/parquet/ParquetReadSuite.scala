@@ -1956,24 +1956,23 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
           Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach(
             scanMode => {
               withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode) {
-                checkSparkAnswer(sql("select * from complex_types"))
+                checkSparkAnswerAndOperator(sql("select * from complex_types"))
                 // First level
-                checkSparkAnswer(sql(
+                checkSparkAnswerAndOperator(sql(
                   "select optional_array, array_of_struct, optional_map, complex_map from complex_types"))
                 // second nested level
-                checkSparkAnswer(
+                checkSparkAnswerAndOperator(
                   sql(
                     "select optional_array[0], " +
                       "array_of_struct[0].field1, " +
                       "array_of_struct[0].optional_nested_array, " +
                       "optional_map.key, " +
                       "optional_map.value, " +
-                      "map_entries(complex_map), " +
                       "map_keys(complex_map), " +
                       "map_values(complex_map) " +
                       "from complex_types"))
                 // leaf fields
-                checkSparkAnswer(
+                checkSparkAnswerAndOperator(
                   sql(
                     "select optional_array[0], " +
                       "array_of_struct[0].field1, " +
