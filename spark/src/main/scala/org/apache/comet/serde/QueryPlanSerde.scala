@@ -79,6 +79,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[ConcatWs] -> CometConcatWs,
     classOf[Chr] -> CometChr,
     classOf[InitCap] -> CometInitCap,
+    classOf[BitLength] -> CometBitLength,
     classOf[Length] -> CometLength,
     classOf[StringInstr] -> CometStringInstr,
     classOf[StringRepeat] -> CometStringRepeat,
