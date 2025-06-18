@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.{count_distinct, sum}
+import org.apache.spark.sql.functions.{avg, count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -273,6 +273,25 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           withParquetTable(path.toUri.toString, "tbl") {
             checkSparkAnswerAndOperator(
               sql("SELECT * FROM tbl").sort("_g1").groupBy("_g1").agg(sum("_8")))
+          }
+        }
+      }
+    }
+  }
+
+  test("AVG decimal supports emit.first") {
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> EliminateSorts.ruleName,
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test")
+          makeParquetFile(path, 10000, 10, dictionaryEnabled)
+          withParquetTable(path.toUri.toString, "tbl") {
+            checkSparkAnswerAndOperator(
+              sql("SELECT * FROM tbl").sort("_g1").groupBy("_g1").agg(avg("_8")))
           }
         }
       }
