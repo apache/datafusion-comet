@@ -2691,14 +2691,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
         // Checks if the join keys are supported by DataFusion SortMergeJoin.
         val errorMsgs = join.leftKeys.flatMap { key =>
           if (!supportedSortMergeJoinEqualType(key.dataType)) {
-            Some(s"Unsupported join key type ${key.dataType} on key: ${key.sql}")
+            Some(s"Unsupported join key type ${key.dataType} on key ${key.sql}")
           } else {
             None
           }
         }
 
         if (errorMsgs.nonEmpty) {
-          withInfo(op, errorMsgs.flatten.mkString("\n"))
+          withInfo(op, errorMsgs.mkString("\n"))
           return None
         }
 
