@@ -1265,7 +1265,7 @@ dependencies = [
 [[package]]
 name = "datafusion"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -1314,7 +1314,7 @@ dependencies = [
 [[package]]
 name = "datafusion-catalog"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1339,7 +1339,7 @@ dependencies = [
 [[package]]
 name = "datafusion-catalog-listing"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1450,7 +1450,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "ahash",
  "arrow",
@@ -1472,7 +1472,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common-runtime"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "futures",
  "log",
@@ -1482,7 +1482,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1511,7 +1511,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-csv"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1535,7 +1535,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-json"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1559,7 +1559,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-parquet"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1589,12 +1589,12 @@ dependencies = [
 [[package]]
 name = "datafusion-doc"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 
 [[package]]
 name = "datafusion-execution"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "arrow",
  "dashmap",
@@ -1612,7 +1612,7 @@ dependencies = [
 [[package]]
 name = "datafusion-expr"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "arrow",
  "chrono",
@@ -1631,7 +1631,7 @@ dependencies = [
 [[package]]
 name = "datafusion-expr-common"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -1643,7 +1643,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "arrow",
  "arrow-buffer",
@@ -1671,7 +1671,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "ahash",
  "arrow",
@@ -1691,7 +1691,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate-common"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "ahash",
  "arrow",
@@ -1703,7 +1703,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-nested"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "arrow",
  "arrow-ord",
@@ -1723,7 +1723,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-table"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1738,7 +1738,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-window"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -1755,7 +1755,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-window-common"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "datafusion-common",
  "datafusion-physical-expr-common",
@@ -1764,7 +1764,7 @@ dependencies = [
 [[package]]
 name = "datafusion-macros"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "datafusion-expr",
  "quote",
@@ -1774,7 +1774,7 @@ dependencies = [
 [[package]]
 name = "datafusion-optimizer"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "arrow",
  "chrono",
@@ -1791,7 +1791,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "ahash",
  "arrow",
@@ -1812,7 +1812,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr-common"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "ahash",
  "arrow",
@@ -1825,7 +1825,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-optimizer"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -1842,7 +1842,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-plan"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "ahash",
  "arrow",
@@ -1871,7 +1871,7 @@ dependencies = [
 [[package]]
 name = "datafusion-session"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1894,7 +1894,7 @@ dependencies = [
 [[package]]
 name = "datafusion-spark"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "arrow",
  "datafusion-catalog",
@@ -1909,7 +1909,7 @@ dependencies = [
 [[package]]
 name = "datafusion-sql"
 version = "48.0.0"
-source = "git+https://github.com/suibianwanwank/datafusion?rev=a17282f#a17282f7cadac2b13637b59f1faee80bc8c78268"
+source = "git+https://github.com/suibianwanwank/datafusion?rev=edc1694#edc16942fc6f13a85167988ea8f890a43afe88e7"
 dependencies = [
  "arrow",
  "bigdecimal",
@@ -2964,9 +2964,9 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lz4_flex"
-version = "0.11.4"
+version = "0.11.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c592ad9fbc1b7838633b3ae55ce69b17d01150c72fcef229fbb819d39ee51ee"
+checksum = "08ab2867e3eeeca90e844d1940eab391c9dc5228783db2ed999acbc0a9ed375a"
 dependencies = [
  "twox-hash",
 ]
@@ -3633,9 +3633,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-udp"
-version = "0.5.12"
+version = "0.5.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee4e529991f949c5e25755532370b8af5d114acae52326361d68d47af64aa842"
+checksum = "fcebb1209ee276352ef14ff8732e24cc2b02bbac986cd74a4c81bcb2f9881970"
 dependencies = [
  "cfg_aliases",
  "libc",
