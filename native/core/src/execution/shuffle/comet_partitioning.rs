@@ -15,14 +15,26 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod date_arithmetic;
-mod date_trunc;
-mod extract_date_part;
-mod timestamp_trunc;
+use datafusion::physical_expr::{LexOrdering, PhysicalExpr};
+use std::sync::Arc;
 
-pub use date_arithmetic::{spark_date_add, spark_date_sub};
-pub use date_trunc::SparkDateTrunc;
-pub use extract_date_part::SparkHour;
-pub use extract_date_part::SparkMinute;
-pub use extract_date_part::SparkSecond;
-pub use timestamp_trunc::TimestampTruncExpr;
+#[derive(Debug, Clone)]
+pub enum CometPartitioning {
+    SinglePartition,
+    /// Allocate rows based on a hash of one of more expressions and the specified number of
+    /// partitions
+    Hash(Vec<Arc<dyn PhysicalExpr>>, usize),
+    /// Allocate rows based on lexical order of one of more expressions and the specified number of
+    /// partitions
+    RangePartitioning(LexOrdering, usize, usize),
+}
+
+impl CometPartitioning {
+    pub fn partition_count(&self) -> usize {
+        use CometPartitioning::*;
+        match self {
+            SinglePartition => 1,
+            Hash(_, n) | RangePartitioning(_, n, _) => *n,
+        }
+    }
+}

@@ -121,28 +121,28 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   test("native operator after native shuffle") {
-    withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
-      val df = sql("SELECT * FROM tbl")
+    Seq("true", "false").zip(Seq("true", "false")).foreach { partitioning =>
+      withSQLConf(
+        CometConf.COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED.key -> partitioning._1,
+        CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> partitioning._2) {
+        withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
+          val df = sql("SELECT * FROM tbl")
 
-      val shuffled1 = df
-        .repartition(10, $"_2")
-        .select($"_1", $"_1" + 1, $"_2" + 2)
-        .repartition(10, $"_1")
-        .filter($"_1" > 1)
+          val shuffled = df
+            .repartition(10, $"_2")
+            .select($"_1", $"_1" + 1, $"_2" + 2)
+            .repartition(10, $"_1")
+            .filter($"_1" > 1)
 
-      // 2 Comet shuffle exchanges are expected
-      checkShuffleAnswer(shuffled1, 2)
-
-      val shuffled2 = df
-        .repartitionByRange(10, $"_2")
-        .select($"_1", $"_1" + 1, $"_2" + 2)
-        .repartition(10, $"_1")
-        .filter($"_1" > 1)
-
-      // Because the first exchange from the bottom is range exchange which native shuffle
-      // doesn't support. So Comet exec operators stop before the first exchange and thus
-      // there is no Comet exchange.
-      checkShuffleAnswer(shuffled2, 0)
+          // We expect a hash and range partitioned exchanges. If both are true, we'll get two
+          // native exchanges. Otherwise both will fall back.
+          if (partitioning._1 == "true" && partitioning._2 == "true") {
+            checkShuffleAnswer(shuffled, 2)
+          } else {
+            checkShuffleAnswer(shuffled, 0)
+          }
+        }
+      }
     }
   }
 
