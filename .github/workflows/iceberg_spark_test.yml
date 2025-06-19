@@ -46,8 +46,8 @@ jobs:
         os: [ubuntu-24.04]
         java-version: [11, 17]
         iceberg-version: [{short: '1.8', full: '1.8.1'}]
-        spark-version: [{short: '3.5', full: '3.5.4'}]
-        scala-version: [ '2.12', '2.13']
+        spark-version: [{short: '3.5', full: '3.5.6'}]
+        scala-version: ['2.13']
       fail-fast: false
     name: iceberg-spark-sql/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
     runs-on: ${{ matrix.os }}
@@ -62,6 +62,12 @@ jobs:
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
+      - name: Build local Spark jar with comet patch
+        uses: ./.github/actions/setup-spark-local-jar
+        with:
+          spark-version: ${{ matrix.spark-version.full }}
+          spark-short-version: ${{ matrix.spark-version.short }}
+          scala-version: ${{ matrix.scala-version }}
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-builder
         with:
@@ -73,7 +79,7 @@ jobs:
         run: |
           cd apache-iceberg
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          ./gradlew -DsparkVersions=${{ matrix.spark-version.short }} -DscalaVersion=${{ matrix.scala-version }} -DflinkVersions= -DkafkaVersions= \
+          ENABLE_COMET=true ./gradlew -DsparkVersions=${{ matrix.spark-version.short }} -DscalaVersion=${{ matrix.scala-version }} -DflinkVersions= -DkafkaVersions= \
             :iceberg-spark:iceberg-spark-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:check \
             :iceberg-spark:iceberg-spark-extensions-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:check \
             :iceberg-spark:iceberg-spark-runtime-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:check \

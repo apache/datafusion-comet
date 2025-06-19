@@ -1,3 +1,16 @@
+diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
+index 04ffa8f..d4107be 100644
+--- a/gradle/libs.versions.toml
++++ b/gradle/libs.versions.toml
+@@ -81,7 +81,7 @@ slf4j = "2.0.16"
+ snowflake-jdbc = "3.22.0"
+ spark-hive33 = "3.3.4"
+ spark-hive34 = "3.4.4"
+-spark-hive35 = "3.5.4"
++spark-hive35 = "3.5.6-SNAPSHOT"
+ sqlite-jdbc = "3.48.0.0"
+ testcontainers = "1.20.4"
+ tez010 = "0.10.4"
 diff --git a/spark/v3.4/build.gradle b/spark/v3.4/build.gradle
 index 6eb26e8..c288e72 100644
 --- a/spark/v3.4/build.gradle

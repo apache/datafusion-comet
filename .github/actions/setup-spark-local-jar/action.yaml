@@ -1,0 +1,50 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Setup Spark Local Jar
+description: 'Build comet-patched Apache Spark for Iceberg Spark tests'
+inputs:
+  spark-short-version:
+    description: 'The Apache Spark short version (e.g., 3.5) to build'
+    required: true
+  spark-version:
+    description: 'The Apache Spark version (e.g., 3.5.6) to build'
+    required: true
+  scala-version:
+    description: 'The Scala short version (e.g., 2.13) to build'
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - name: Clone Spark repo
+      uses: actions/checkout@v4
+      with:
+        repository: apache/spark
+        path: apache-spark
+        ref: v${{inputs.spark-version}}
+        fetch-depth: 1
+
+    - name: Publish local Spark snapshot w/ Comet
+      shell: bash
+      run: |
+        cd apache-spark
+        git apply ../dev/diffs/${{inputs.spark-version}}.diff
+# https://spark.apache.org/docs/3.5.0/building-spark.html#change-scala-version
+        ./dev/change-scala-version.sh ${{inputs.scala-version}
+        ./build/mvn versions:set -DnewVersion=${{inputs.spark-version}}-SNAPSHOT
+# Might need to skip enforcer b/c comet is snapshot
+        ./build/mvn -Pscala-${{inputs.scala-version}} -Phive -Phive-thriftserver -DskipTests -Denforcer.skip=true clean install
