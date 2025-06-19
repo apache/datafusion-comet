@@ -554,7 +554,7 @@ class CometExecSuite extends CometTestBase {
       CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "native-scan.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = true, 10000)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 10000)
         withParquetTable(path.toString, "tbl") {
           val df = sql("SELECT * FROM tbl WHERE _2 > _3")
           df.collect()
