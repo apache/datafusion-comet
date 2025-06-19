@@ -1298,6 +1298,7 @@ where
                             });
                         } else {
                             cast_array.append_null();
+                            continue;
                         }
                     }
                     cast_array.append_value(v);
