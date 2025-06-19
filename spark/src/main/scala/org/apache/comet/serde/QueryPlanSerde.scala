@@ -65,7 +65,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
   /**
    * Mapping of Spark expression class to Comet expression handler.
    */
-  private val exprHandlers: Map[Class[_], CometExpressionSerde] = Map(
+  private val exprSerdeMap: Map[Class[_], CometExpressionSerde] = Map(
     classOf[ArrayAppend] -> CometArrayAppend,
     classOf[ArrayContains] -> CometArrayContains,
     classOf[ArrayExcept] -> CometArrayExcept,
@@ -1946,7 +1946,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val keyExpr = exprToProtoInternal(gmv.key, inputs, binding)
         scalarFunctionExprToProto("map_extract", mapExpr, keyExpr)
       case expr =>
-        QueryPlanSerde.exprHandlers.get(expr.getClass) match {
+        QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
           case Some(handler) => convert(handler)
           case _ =>
             withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
