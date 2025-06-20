@@ -2200,6 +2200,7 @@ mod tests {
     use arrow::array::StringArray;
     use arrow::datatypes::TimestampMicrosecondType;
     use arrow::datatypes::{Field, Fields, TimeUnit};
+    use core::f64;
     use std::str::FromStr;
 
     use super::*;
@@ -2667,5 +2668,36 @@ mod tests {
         } else {
             unreachable!()
         }
+    }
+
+    #[test]
+    fn test_cast_float_to_decimal() {
+        let a: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(42.),
+            Some(0.5153125),
+            Some(-42.4242415),
+            Some(42e-314),
+            Some(0.),
+            Some(-4242.424242),
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+            Some(f64::NAN),
+            None,
+        ]));
+        let b =
+            cast_floating_point_to_decimal128::<Float64Type>(&a, 8, 6, EvalMode::Legacy).unwrap();
+        assert_eq!(b.len(), a.len());
+        let casted = b.as_primitive::<Decimal128Type>();
+        assert_eq!(casted.value(0), 42000000);
+        // https://github.com/apache/datafusion-comet/issues/1371
+        // assert_eq!(casted.value(1), 515313);
+        assert_eq!(casted.value(2), -42424242);
+        assert_eq!(casted.value(3), 0);
+        assert_eq!(casted.value(4), 0);
+        assert!(casted.is_null(5));
+        assert!(casted.is_null(6));
+        assert!(casted.is_null(7));
+        assert!(casted.is_null(8));
+        assert!(casted.is_null(9));
     }
 }
