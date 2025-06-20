@@ -33,18 +33,15 @@ public class RowGroupReader implements PageReadStore {
   private final Map<ColumnDescriptor, PageReader> readers = new HashMap<>();
   private final long rowCount;
   private final RowRanges rowRanges;
-  private final long rowIndexOffset;
 
-  public RowGroupReader(long rowCount, long rowIndexOffset) {
+  public RowGroupReader(long rowCount) {
     this.rowCount = rowCount;
     this.rowRanges = null;
-    this.rowIndexOffset = rowIndexOffset;
   }
 
   RowGroupReader(RowRanges rowRanges) {
     this.rowRanges = rowRanges;
     this.rowCount = rowRanges.rowCount();
-    this.rowIndexOffset = -1;
   }
 
   @Override
@@ -65,11 +62,6 @@ public class RowGroupReader implements PageReadStore {
   @Override
   public Optional<PrimitiveIterator.OfLong> getRowIndexes() {
     return rowRanges == null ? Optional.empty() : Optional.of(rowRanges.iterator());
-  }
-
-  @Override
-  public Optional<Long> getRowIndexOffset() {
-    return this.rowIndexOffset < 0L ? Optional.empty() : Optional.of(this.rowIndexOffset);
   }
 
   void addColumn(ColumnDescriptor path, ColumnPageReader reader) {

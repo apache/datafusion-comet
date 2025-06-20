@@ -155,7 +155,6 @@ public class FileReader implements Closeable {
     this.metrics = null;
     footer = readFooter(file, f, options, converter);
     this.fileMetaData = footer.getFileMetaData();
-    this.fileDecryptor = fileMetaData.getFileDecryptor(); // must be called before filterRowGroups!
     this.fileDecryptor = initDecryptor(fileMetaData);
 
     this.blocks = footer.getBlocks();
@@ -192,7 +191,6 @@ public class FileReader implements Closeable {
     }
     this.footer = footer;
     this.fileMetaData = footer.getFileMetaData();
-    this.fileDecryptor = fileMetaData.getFileDecryptor(); // must be called before filterRowGroups!
     this.fileDecryptor = initDecryptor(fileMetaData);
 
     this.blocks = filterRowGroups(footer.getBlocks());
@@ -355,7 +353,7 @@ public class FileReader implements Closeable {
     if (block.getRowCount() == 0) {
       throw new RuntimeException("Illegal row group of 0 rows");
     }
-    this.currentRowGroup = new RowGroupReader(block.getRowCount(), block.getRowIndexOffset());
+    this.currentRowGroup = new RowGroupReader(block.getRowCount());
     // prepare the list of consecutive parts to read them in one scan
     List<ConsecutivePartList> allParts = new ArrayList<>();
     ConsecutivePartList currentParts = null;
