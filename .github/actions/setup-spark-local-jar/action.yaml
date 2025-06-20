@@ -43,8 +43,6 @@ runs:
       run: |
         cd apache-spark
         git apply ../dev/diffs/${{inputs.spark-version}}.diff
-# https://spark.apache.org/docs/3.5.0/building-spark.html#change-scala-version
         ./dev/change-scala-version.sh ${{inputs.scala-version}
         ./build/mvn versions:set -DnewVersion=${{inputs.spark-version}}-SNAPSHOT
-# Might need to skip enforcer b/c comet is snapshot
         ./build/mvn -Pscala-${{inputs.scala-version}} -Phive -Phive-thriftserver -DskipTests -Denforcer.skip=true clean install
