@@ -18,9 +18,6 @@
 name: Setup Iceberg Builder
 description: 'Setup Apache Iceberg to run Spark SQL tests'
 inputs:
-  iceberg-short-version:
-    description: 'The Apache Iceberg short version (e.g., 1.8) to build'
-    required: true
   iceberg-version:
     description: 'The Apache Iceberg version (e.g., 1.8.1) to build'
     required: true
@@ -46,16 +43,6 @@ runs:
       run: |
         cd apache-iceberg
         git apply ../dev/diffs/iceberg/${{inputs.iceberg-version}}.diff
-
-    - name: Cache Maven dependencies
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.m2/repository
-          /root/.m2/repository
-        key: ${{ runner.os }}-iceberg-spark-sql-${{ hashFiles('spark/**/pom.xml', 'common/**/pom.xml') }}
-        restore-keys: |
-          ${{ runner.os }}-iceberg-spark-sql-
 
     - name: Build Comet
       shell: bash

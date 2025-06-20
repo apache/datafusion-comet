@@ -62,19 +62,18 @@ jobs:
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
-      - name: Build local Spark jar with comet patch
-        uses: ./.github/actions/setup-spark-local-jar
-        with:
-          spark-version: ${{ matrix.spark-version.full }}
-          spark-short-version: ${{ matrix.spark-version.short }}
-          scala-version: ${{ matrix.scala-version }}
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-builder
         with:
           iceberg-version: ${{ matrix.iceberg-version.full }}
-          iceberg-short-version: ${{ matrix.iceberg-version.short }}
           scala-version: ${{ matrix.scala-version }}
           spark-short-version: ${{ matrix.spark-version.short }}
+      - name: Build local Spark jar with comet patch
+        uses: ./.github/actions/setup-spark-local-jar
+        with:
+          spark-short-version: ${{ matrix.spark-version.short }}
+          spark-version: ${{ matrix.spark-version.full }}
+          scala-version: ${{ matrix.scala-version }}
       - name: Run Iceberg Spark tests
         run: |
           cd apache-iceberg
