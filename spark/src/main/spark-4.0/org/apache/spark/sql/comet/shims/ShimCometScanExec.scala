@@ -30,7 +30,7 @@ import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil, 
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
 
-trait ShimCometScanExec {
+trait ShimCometScanExec extends ShimStreamSourceAwareSparkPlan {
   def wrapped: FileSourceScanExec
 
   lazy val fileConstantMetadataColumns: Seq[AttributeReference] =
@@ -56,7 +56,7 @@ trait ShimCometScanExec {
   protected def isNeededForSchema(sparkSchema: StructType): Boolean = false
 
   protected def getPartitionedFile(f: FileStatusWithMetadata, p: PartitionDirectory): PartitionedFile =
-    PartitionedFileUtil.getPartitionedFile(f, p.values, 0, f.getLen)
+    PartitionedFileUtil.getPartitionedFile(f, f.getPath, p.values, 0, f.getLen)
 
   protected def splitFiles(sparkSession: SparkSession,
                            file: FileStatusWithMetadata,
@@ -64,7 +64,7 @@ trait ShimCometScanExec {
                            isSplitable: Boolean,
                            maxSplitBytes: Long,
                            partitionValues: InternalRow): Seq[PartitionedFile] =
-    PartitionedFileUtil.splitFiles(file, isSplitable, maxSplitBytes, partitionValues)
+    PartitionedFileUtil.splitFiles(file, filePath, isSplitable, maxSplitBytes, partitionValues)
 
   protected def getPushedDownFilters(relation: HadoopFsRelation , dataFilters: Seq[Expression]):  Seq[Filter] = {
     translateToV1Filters(relation, dataFilters, _.toLiteral)
