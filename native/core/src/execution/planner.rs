@@ -552,7 +552,21 @@ impl PhysicalPlanner {
                     fail_on_error,
                 )))
             }
-            ExprStruct::ScalarFunc(expr) => self.create_scalar_function_expr(expr, input_schema),
+            ExprStruct::ScalarFunc(expr) => {
+                let func = self.create_scalar_function_expr(expr, input_schema);
+                match expr.func.as_ref() {
+                    // DataFusion map_extract returns array of struct entries even if lookup by key
+                    // Apache Spark wants a single value, so wrap the result into additional list extraction
+                    "map_extract" => Ok(Arc::new(ListExtract::new(
+                        func?,
+                        Arc::new(Literal::new(ScalarValue::Int32(Some(1)))),
+                        None,
+                        true,
+                        false,
+                    ))),
+                    _ => func,
+                }
+            }
             ExprStruct::EqNullSafe(expr) => {
                 let left =
                     self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;

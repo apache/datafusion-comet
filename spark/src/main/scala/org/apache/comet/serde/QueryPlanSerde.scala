@@ -1943,6 +1943,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
       case _: ArrayRemove => convert(CometArrayRemove)
       case _: ArrayContains => convert(CometArrayContains)
+      case _: ArrayMax => convert(CometArrayMax)
       case _: ArrayAppend => convert(CometArrayAppend)
       case _: ArrayIntersect => convert(CometArrayIntersect)
       case _: ArrayJoin => convert(CometArrayJoin)
@@ -1958,6 +1959,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case mv: MapValues =>
         val childExpr = exprToProtoInternal(mv.child, inputs, binding)
         scalarFunctionExprToProto("map_values", childExpr)
+      case gmv: GetMapValue =>
+        val mapExpr = exprToProtoInternal(gmv.child, inputs, binding)
+        val keyExpr = exprToProtoInternal(gmv.key, inputs, binding)
+        scalarFunctionExprToProto("map_extract", mapExpr, keyExpr)
       case _ =>
         withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
         None
@@ -2576,6 +2581,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
 
         if (join.buildSide == BuildRight && join.joinType == LeftAnti) {
+          // https://github.com/apache/datafusion-comet/issues/457
           withInfo(join, "BuildRight with LeftAnti is not supported")
           return None
         }
