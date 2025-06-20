@@ -1289,11 +1289,7 @@ where
 
             match value {
                 Some((significand, exponent)) => {
-                    let mut v = if input_value < 0. {
-                        -significand
-                    } else {
-                        significand
-                    } as i128;
+                    let mut v = significand as i128;
 
                     let k = exponent + scale as i32;
                     if k > 0 {
@@ -1303,6 +1299,8 @@ where
                         let (div, rem) = if dk < v { v.div_rem(&dk) } else { (0, v) };
                         v = if rem * 2 >= dk { div + 1 } else { div };
                     }
+                    v = if input_value < 0. { -v } else { v };
+
                     if Decimal128Type::validate_decimal_precision(v, precision).is_err() {
                         if eval_mode == EvalMode::Ansi {
                             return Err(SparkError::NumericValueOutOfRange {
