@@ -21,7 +21,9 @@ package org.apache.comet.parquet;
 
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
+import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType;
+import org.apache.parquet.schema.Type;
 import org.apache.spark.sql.types.*;
 
 import org.apache.comet.CometSchemaImporter;
@@ -29,6 +31,19 @@ import org.apache.comet.CometSchemaImporter;
 public class Utils {
 
   /** This method is called from Apache Iceberg. */
+  public static ColumnReader getColumnReader(
+      DataType type,
+      ParquetColumnSpec columnSpec,
+      CometSchemaImporter importer,
+      int batchSize,
+      boolean useDecimal128,
+      boolean useLazyMaterialization) {
+
+    ColumnDescriptor descriptor = buildColumnDescriptor(columnSpec);
+    return getColumnReader(
+        type, descriptor, importer, batchSize, useDecimal128, useLazyMaterialization, true);
+  }
+
   public static ColumnReader getColumnReader(
       DataType type,
       ColumnDescriptor descriptor,
@@ -259,5 +274,31 @@ public class Utils {
       default:
         throw new UnsupportedOperationException("Unsupported TimeUnit " + tu);
     }
+  }
+
+  public static ColumnDescriptor buildColumnDescriptor(ParquetColumnSpec columnSpec) {
+    PrimitiveType.PrimitiveTypeName primType =
+        PrimitiveType.PrimitiveTypeName.valueOf(columnSpec.getPhysicalType());
+
+    Type.Repetition repetition;
+    if (columnSpec.getMaxRepetitionLevel() > 0) {
+      repetition = Type.Repetition.REPEATED;
+    } else if (columnSpec.getMaxDefinitionLevel() > 0) {
+      repetition = Type.Repetition.OPTIONAL;
+    } else {
+      repetition = Type.Repetition.REQUIRED;
+    }
+
+    String name = columnSpec.getPath()[columnSpec.getPath().length - 1];
+
+    PrimitiveType primitiveType;
+    if (primType == PrimitiveType.PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY) {
+      primitiveType = new PrimitiveType(repetition, primType, columnSpec.getTypeLength(), name);
+    } else {
+      primitiveType = new PrimitiveType(repetition, primType, name);
+    }
+
+    MessageType schema = new MessageType("root", primitiveType);
+    return schema.getColumnDescription(columnSpec.getPath());
   }
 }
