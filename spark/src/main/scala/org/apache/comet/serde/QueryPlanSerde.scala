@@ -850,6 +850,24 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
+      case ToPrettyString(child, timezoneId) =>
+        exprToProtoInternal(child, inputs, binding) match {
+          case Some(p) =>
+            val toPrettyString = ExprOuterClass.ToPrettyString
+              .newBuilder()
+              .setChild(p)
+              .setTimezone(timezoneId.getOrElse("UTC"))
+              .build()
+            Some(
+              ExprOuterClass.Expr
+                .newBuilder()
+                .setToPrettyString(toPrettyString)
+                .build())
+          case _ =>
+            withInfo(expr, child)
+            None
+        }
+
       case StructsToJson(options, child, timezoneId) =>
         if (options.nonEmpty) {
           withInfo(expr, "StructsToJson with options is not supported")

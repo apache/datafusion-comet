@@ -746,6 +746,19 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 Ok(Arc::new(ToJson::new(child, &expr.timezone)))
             }
+            ExprStruct::ToPrettyString(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
+                let cast = Arc::new(Cast::new(
+                    child.clone(),
+                    DataType::Utf8,
+                    SparkCastOptions::new(EvalMode::Try, &expr.timezone, true),
+                ));
+                Ok(Arc::new(IfExpr::new(
+                    Arc::new(IsNullExpr::new(child)),
+                    Arc::new(Literal::new(ScalarValue::Utf8(Some("NULL".to_string())))),
+                    cast,
+                )))
+            }
             ExprStruct::ListExtract(expr) => {
                 let child =
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
