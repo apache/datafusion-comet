@@ -18,11 +18,14 @@
 use arrow::array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
 use arrow::array::{builder::StringBuilder, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
-use comet::execution::shuffle::{CompressionCodec, ShuffleBlockWriter, ShuffleWriterExec};
+use comet::execution::shuffle::{
+    CometPartitioning, CompressionCodec, ShuffleBlockWriter, ShuffleWriterExec,
+};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
-use datafusion::physical_expr::{expressions::Column, Partitioning};
+use datafusion::physical_expr::expressions::{col, Column};
+use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
 use datafusion::physical_plan::metrics::Time;
 use datafusion::{
     physical_plan::{common::collect, ExecutionPlan},
@@ -42,20 +45,18 @@ fn criterion_benchmark(c: &mut Criterion) {
         CompressionCodec::Zstd(1),
         CompressionCodec::Zstd(6),
     ] {
-        for enable_fast_encoding in [true, false] {
-            let name = format!("shuffle_writer: write encoded (enable_fast_encoding={enable_fast_encoding}, compression={compression_codec:?})");
-            group.bench_function(name, |b| {
-                let mut buffer = vec![];
-                let ipc_time = Time::default();
-                let w = ShuffleBlockWriter::try_new(&batch.schema(), compression_codec.clone())
-                    .unwrap();
-                b.iter(|| {
-                    buffer.clear();
-                    let mut cursor = Cursor::new(&mut buffer);
-                    w.write_batch(&batch, &mut cursor, &ipc_time).unwrap();
-                });
+        let name = format!("shuffle_writer: write encoded (compression={compression_codec:?})");
+        group.bench_function(name, |b| {
+            let mut buffer = vec![];
+            let ipc_time = Time::default();
+            let w =
+                ShuffleBlockWriter::try_new(&batch.schema(), compression_codec.clone()).unwrap();
+            b.iter(|| {
+                buffer.clear();
+                let mut cursor = Cursor::new(&mut buffer);
+                w.write_batch(&batch, &mut cursor, &ipc_time).unwrap();
             });
-        }
+        });
     }
 
     for compression_codec in [
@@ -66,10 +67,40 @@ fn criterion_benchmark(c: &mut Criterion) {
         CompressionCodec::Zstd(6),
     ] {
         group.bench_function(
-            format!("shuffle_writer: end to end (compression = {compression_codec:?}"),
+            format!("shuffle_writer: end to end (compression = {compression_codec:?})"),
             |b| {
                 let ctx = SessionContext::new();
-                let exec = create_shuffle_writer_exec(compression_codec.clone());
+                let exec = create_shuffle_writer_exec(
+                    compression_codec.clone(),
+                    CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
+                );
+                b.iter(|| {
+                    let task_ctx = ctx.task_ctx();
+                    let stream = exec.execute(0, task_ctx).unwrap();
+                    let rt = Runtime::new().unwrap();
+                    rt.block_on(collect(stream)).unwrap();
+                });
+            },
+        );
+    }
+
+    for partitioning in [
+        CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
+        CometPartitioning::RangePartitioning(
+            LexOrdering::new(vec![PhysicalSortExpr::new_default(
+                col("c0", batch.schema().as_ref()).unwrap(),
+            )]),
+            16,
+            100,
+        ),
+    ] {
+        let compression_codec = CompressionCodec::None;
+        group.bench_function(
+            format!("shuffle_writer: end to end (partitioning={partitioning:?})"),
+            |b| {
+                let ctx = SessionContext::new();
+                let exec =
+                    create_shuffle_writer_exec(compression_codec.clone(), partitioning.clone());
                 b.iter(|| {
                     let task_ctx = ctx.task_ctx();
                     let stream = exec.execute(0, task_ctx).unwrap();
@@ -81,7 +112,10 @@ fn criterion_benchmark(c: &mut Criterion) {
     }
 }
 
-fn create_shuffle_writer_exec(compression_codec: CompressionCodec) -> ShuffleWriterExec {
+fn create_shuffle_writer_exec(
+    compression_codec: CompressionCodec,
+    partitioning: CometPartitioning,
+) -> ShuffleWriterExec {
     let batches = create_batches(8192, 10);
     let schema = batches[0].schema();
     let partitions = &[batches];
@@ -89,7 +123,7 @@ fn create_shuffle_writer_exec(compression_codec: CompressionCodec) -> ShuffleWri
         Arc::new(DataSourceExec::new(Arc::new(
             MemorySourceConfig::try_new(partitions, Arc::clone(&schema), None).unwrap(),
         ))),
-        Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
+        partitioning,
         compression_codec,
         "/tmp/data.out".to_string(),
         "/tmp/index.out".to_string(),

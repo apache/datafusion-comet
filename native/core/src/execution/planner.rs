@@ -78,7 +78,7 @@ use datafusion::{
         limit::LocalLimitExec,
         projection::ProjectionExec,
         sorts::sort::SortExec,
-        ExecutionPlan, Partitioning,
+        ExecutionPlan,
     },
     prelude::SessionContext,
 };
@@ -104,9 +104,9 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
-    DateTruncExpr, GetArrayStructFields, GetStructField, HourExpr, IfExpr, ListExtract, MinuteExpr,
-    NormalizeNaNAndZero, RLike, SecondExpr, SparkCastOptions, Stddev, StringSpaceExpr,
+    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Contains, Correlation, Covariance,
+    CreateNamedStruct, EndsWith, GetArrayStructFields, GetStructField, IfExpr, Like, ListExtract,
+    NormalizeNaNAndZero, RLike, SparkCastOptions, StartsWith, Stddev, StringSpaceExpr,
     SubstringExpr, SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
 use datafusion_spark::function::math::expm1::SparkExpm1;
@@ -157,6 +157,7 @@ impl PhysicalPlanner {
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseCount::default()));
+        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateTrunc::default()));
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkContains::default()));
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkStartsWith::default()));
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkEndsWith::default()));
@@ -461,29 +462,40 @@ impl PhysicalPlanner {
                 )))
             }
             ExprStruct::Hour(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                let timezone = expr.timezone.clone();
-
-                Ok(Arc::new(HourExpr::new(child, timezone)))
-            }
-            ExprStruct::Minute(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                let timezone = expr.timezone.clone();
-
-                Ok(Arc::new(MinuteExpr::new(child, timezone)))
-            }
-            ExprStruct::Second(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                let timezone = expr.timezone.clone();
-
-                Ok(Arc::new(SecondExpr::new(child, timezone)))
-            }
-            ExprStruct::TruncDate(expr) => {
                 let child =
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let format = self.create_expr(expr.format.as_ref().unwrap(), input_schema)?;
+                let timezone = expr.timezone.clone();
+                let args = vec![child];
+                let comet_hour = Arc::new(ScalarUDF::new_from_impl(SparkHour::new(timezone)));
+                let field_ref = Arc::new(Field::new("hour", DataType::Int32, true));
+                let expr: ScalarFunctionExpr =
+                    ScalarFunctionExpr::new("hour", comet_hour, args, field_ref);
 
-                Ok(Arc::new(DateTruncExpr::new(child, format)))
+                Ok(Arc::new(expr))
+            }
+            ExprStruct::Minute(expr) => {
+                let child =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let timezone = expr.timezone.clone();
+                let args = vec![child];
+                let comet_minute = Arc::new(ScalarUDF::new_from_impl(SparkMinute::new(timezone)));
+                let field_ref = Arc::new(Field::new("minute", DataType::Int32, true));
+                let expr: ScalarFunctionExpr =
+                    ScalarFunctionExpr::new("minute", comet_minute, args, field_ref);
+
+                Ok(Arc::new(expr))
+            }
+            ExprStruct::Second(expr) => {
+                let child =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let timezone = expr.timezone.clone();
+                let args = vec![child];
+                let comet_second = Arc::new(ScalarUDF::new_from_impl(SparkSecond::new(timezone)));
+                let field_ref = Arc::new(Field::new("second", DataType::Int32, true));
+                let expr: ScalarFunctionExpr =
+                    ScalarFunctionExpr::new("second", comet_second, args, field_ref);
+
+                Ok(Arc::new(expr))
             }
             ExprStruct::TruncTimestamp(expr) => {
                 let child =
@@ -535,7 +547,21 @@ impl PhysicalPlanner {
                     fail_on_error,
                 )))
             }
-            ExprStruct::ScalarFunc(expr) => self.create_scalar_function_expr(expr, input_schema),
+            ExprStruct::ScalarFunc(expr) => {
+                let func = self.create_scalar_function_expr(expr, input_schema);
+                match expr.func.as_ref() {
+                    // DataFusion map_extract returns array of struct entries even if lookup by key
+                    // Apache Spark wants a single value, so wrap the result into additional list extraction
+                    "map_extract" => Ok(Arc::new(ListExtract::new(
+                        func?,
+                        Arc::new(Literal::new(ScalarValue::Int32(Some(1)))),
+                        None,
+                        true,
+                        false,
+                    ))),
+                    _ => func,
+                }
+            }
             ExprStruct::EqNullSafe(expr) => {
                 let left =
                     self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
@@ -896,7 +922,7 @@ impl PhysicalPlanner {
         let children = &spark_plan.children;
         match spark_plan.op_struct.as_ref().unwrap() {
             OpStruct::Projection(project) => {
-                assert!(children.len() == 1);
+                assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
                 let exprs: PhyExprResult = project
                     .project_list
@@ -917,7 +943,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::Filter(filter) => {
-                assert!(children.len() == 1);
+                assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
@@ -940,7 +966,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::HashAgg(agg) => {
-                assert!(children.len() == 1);
+                assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
                 let group_exprs: PhyExprResult = agg
@@ -1018,7 +1044,7 @@ impl PhysicalPlanner {
                 }
             }
             OpStruct::Limit(limit) => {
-                assert!(children.len() == 1);
+                assert_eq!(children.len(), 1);
                 let num = limit.limit;
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
@@ -1032,7 +1058,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::Sort(sort) => {
-                assert!(children.len() == 1);
+                assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
                 let exprs: Result<Vec<PhysicalSortExpr>, ExecutionError> = sort
@@ -1200,7 +1226,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::ShuffleWriter(writer) => {
-                assert!(children.len() == 1);
+                assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
                 let partitioning = self
@@ -1238,7 +1264,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::Expand(expand) => {
-                assert!(children.len() == 1);
+                assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
                 let mut projections = vec![];
@@ -1484,7 +1510,7 @@ impl PhysicalPlanner {
         condition: &Option<Expr>,
         partition_count: usize,
     ) -> Result<(JoinParameters, Vec<ScanExec>), ExecutionError> {
-        assert!(children.len() == 2);
+        assert_eq!(children.len(), 2);
         let (mut left_scans, left) = self.create_plan(&children[0], inputs, partition_count)?;
         let (mut right_scans, right) = self.create_plan(&children[1], inputs, partition_count)?;
 
@@ -2164,7 +2190,7 @@ impl PhysicalPlanner {
         &self,
         spark_partitioning: &SparkPartitioning,
         input_schema: SchemaRef,
-    ) -> Result<Partitioning, ExecutionError> {
+    ) -> Result<CometPartitioning, ExecutionError> {
         match spark_partitioning.partitioning_struct.as_ref().unwrap() {
             PartitioningStruct::HashPartition(hash_partition) => {
                 let exprs: PartitionPhyExprResult = hash_partition
@@ -2172,12 +2198,25 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|x| self.create_expr(x, Arc::clone(&input_schema)))
                     .collect();
-                Ok(Partitioning::Hash(
+                Ok(CometPartitioning::Hash(
                     exprs?,
                     hash_partition.num_partitions as usize,
                 ))
             }
-            PartitioningStruct::SinglePartition(_) => Ok(Partitioning::UnknownPartitioning(1)),
+            PartitioningStruct::RangePartition(range_partition) => {
+                let exprs: Result<Vec<PhysicalSortExpr>, ExecutionError> = range_partition
+                    .sort_orders
+                    .iter()
+                    .map(|expr| self.create_sort_expr(expr, Arc::clone(&input_schema)))
+                    .collect();
+                let lex_ordering = LexOrdering::from(exprs?);
+                Ok(CometPartitioning::RangePartitioning(
+                    lex_ordering,
+                    range_partition.num_partitions as usize,
+                    range_partition.sample_size as usize,
+                ))
+            }
+            PartitioningStruct::SinglePartition(_) => Ok(CometPartitioning::SinglePartition),
         }
     }
 
@@ -2528,12 +2567,14 @@ mod tests {
     use futures::{poll, StreamExt};
     use std::{sync::Arc, task::Poll};
 
-    use arrow::array::{Array, DictionaryArray, Int32Array, StringArray};
+    use arrow::array::{Array, DictionaryArray, Int32Array, RecordBatch, StringArray};
     use arrow::datatypes::{DataType, Field, Fields, Schema};
     use datafusion::catalog::memory::DataSourceExec;
     use datafusion::datasource::listing::PartitionedFile;
     use datafusion::datasource::object_store::ObjectStoreUrl;
-    use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
+    use datafusion::datasource::physical_plan::{
+        FileGroup, FileScanConfigBuilder, FileSource, ParquetSource,
+    };
     use datafusion::error::DataFusionError;
     use datafusion::logical_expr::ScalarUDF;
     use datafusion::physical_plan::ExecutionPlan;
@@ -3106,115 +3147,21 @@ mod tests {
         });
     }
 
-    /*
-    Testing a nested types scenario
-
-    select arr[0].a, arr[0].c from (
-        select array(named_struct('a', 1, 'b', 'n', 'c', 'x')) arr)
-     */
-    #[tokio::test]
-    async fn test_nested_types_list_of_struct_by_index() -> Result<(), DataFusionError> {
+    /// Executes a `test_data_query` SQL query
+    /// and saves the result into a temp folder using parquet format
+    /// Read the file back to the memory using a custom schema
+    async fn make_parquet_data(
+        test_data_query: &str,
+        read_schema: Schema,
+    ) -> Result<RecordBatch, DataFusionError> {
         let session_ctx = SessionContext::new();
 
         // generate test data in the temp folder
-        let test_data = "select make_array(named_struct('a', 1, 'b', 'n', 'c', 'x')) c0";
         let tmp_dir = TempDir::new()?;
         let test_path = tmp_dir.path().to_str().unwrap().to_string();
 
         let plan = session_ctx
-            .sql(test_data)
-            .await?
-            .create_physical_plan()
-            .await?;
-
-        // Write parquet file into temp folder
-        session_ctx
-            .write_parquet(plan, test_path.clone(), None)
-            .await?;
-
-        // Define schema Comet reads with
-        let required_schema = Schema::new(Fields::from(vec![Field::new(
-            "c0",
-            DataType::List(
-                Field::new(
-                    "element",
-                    DataType::Struct(Fields::from(vec![
-                        Field::new("a", DataType::Int32, true),
-                        Field::new("c", DataType::Utf8, true),
-                    ] as Vec<Field>)),
-                    true,
-                )
-                .into(),
-            ),
-            true,
-        )]));
-
-        // Register all parquet with temp data as file groups
-        let mut file_groups: Vec<FileGroup> = vec![];
-        for entry in std::fs::read_dir(&test_path)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.extension().and_then(|ext| ext.to_str()) == Some("parquet") {
-                if let Some(path_str) = path.to_str() {
-                    file_groups.push(FileGroup::new(vec![PartitionedFile::from_path(
-                        path_str.into(),
-                    )?]));
-                }
-            }
-        }
-
-        let source = Arc::new(
-            ParquetSource::default().with_schema_adapter_factory(Arc::new(
-                SparkSchemaAdapterFactory::new(
-                    SparkParquetOptions::new(EvalMode::Ansi, "", false),
-                    None,
-                ),
-            )),
-        );
-
-        let object_store_url = ObjectStoreUrl::local_filesystem();
-        let file_scan_config =
-            FileScanConfigBuilder::new(object_store_url, required_schema.into(), source)
-                .with_file_groups(file_groups)
-                .build();
-
-        // Run native read
-        let scan = Arc::new(DataSourceExec::new(Arc::new(file_scan_config.clone())));
-        let stream = scan.execute(0, session_ctx.task_ctx())?;
-        let result: Vec<_> = stream.collect().await;
-
-        let actual = result.first().unwrap().as_ref().unwrap();
-
-        let expected = [
-            "+----------------+",
-            "| c0             |",
-            "+----------------+",
-            "| [{a: 1, c: x}] |",
-            "+----------------+",
-        ];
-        assert_batches_eq!(expected, &[actual.clone()]);
-
-        Ok(())
-    }
-
-    /*
-    Testing a nested types scenario map[struct, struct]
-
-    select map_keys(m).b from (
-        select map(named_struct('a', 1, 'b', 'n', 'c', 'x'), named_struct('a', 1, 'b', 'n', 'c', 'x')) m
-     */
-    #[tokio::test]
-    async fn test_nested_types_map_keys() -> Result<(), DataFusionError> {
-        let session_ctx = SessionContext::new();
-
-        // generate test data in the temp folder
-        let test_data = "select map([named_struct('a', 1, 'b', 'n', 'c', 'x')], [named_struct('a', 2, 'b', 'm', 'c', 'y')]) c0";
-        let tmp_dir = TempDir::new()?;
-        let test_path = tmp_dir.path().to_str().unwrap().to_string();
-
-        let plan = session_ctx
-            .sql(test_data)
+            .sql(test_data_query)
             .await?
             .create_physical_plan()
             .await?;
@@ -3239,16 +3186,75 @@ mod tests {
             }
         }
 
-        let source = Arc::new(
-            ParquetSource::default().with_schema_adapter_factory(Arc::new(
-                SparkSchemaAdapterFactory::new(
-                    SparkParquetOptions::new(EvalMode::Ansi, "", false),
-                    None,
-                ),
-            )),
-        );
+        let source = ParquetSource::default().with_schema_adapter_factory(Arc::new(
+            SparkSchemaAdapterFactory::new(
+                SparkParquetOptions::new(EvalMode::Ansi, "", false),
+                None,
+            ),
+        ))?;
+
+        let object_store_url = ObjectStoreUrl::local_filesystem();
+        let file_scan_config =
+            FileScanConfigBuilder::new(object_store_url, read_schema.into(), source)
+                .with_file_groups(file_groups)
+                .build();
+
+        // Run native read
+        let scan = Arc::new(DataSourceExec::new(Arc::new(file_scan_config.clone())));
+        let result: Vec<_> = scan.execute(0, session_ctx.task_ctx())?.collect().await;
+        Ok(result.first().unwrap().as_ref().unwrap().clone())
+    }
+
+    /*
+    Testing a nested types scenario
+
+    select arr[0].a, arr[0].c from (
+        select array(named_struct('a', 1, 'b', 'n', 'c', 'x')) arr)
+     */
+    #[tokio::test]
+    async fn test_nested_types_list_of_struct_by_index() -> Result<(), DataFusionError> {
+        let test_data = "select make_array(named_struct('a', 1, 'b', 'n', 'c', 'x')) c0";
 
         // Define schema Comet reads with
+        let required_schema = Schema::new(Fields::from(vec![Field::new(
+            "c0",
+            DataType::List(
+                Field::new(
+                    "element",
+                    DataType::Struct(Fields::from(vec![
+                        Field::new("a", DataType::Int32, true),
+                        Field::new("c", DataType::Utf8, true),
+                    ] as Vec<Field>)),
+                    true,
+                )
+                .into(),
+            ),
+            true,
+        )]));
+
+        let actual = make_parquet_data(test_data, required_schema).await?;
+
+        let expected = [
+            "+----------------+",
+            "| c0             |",
+            "+----------------+",
+            "| [{a: 1, c: x}] |",
+            "+----------------+",
+        ];
+        assert_batches_eq!(expected, &[actual]);
+
+        Ok(())
+    }
+
+    /*
+    Testing a nested types scenario map[struct, struct]
+
+    select map_keys(m).b from (
+        select map(named_struct('a', 1, 'b', 'n', 'c', 'x'), named_struct('a', 1, 'b', 'n', 'c', 'x')) m
+     */
+    #[tokio::test]
+    async fn test_nested_types_map_keys() -> Result<(), DataFusionError> {
+        let test_data = "select map([named_struct('a', 1, 'b', 'n', 'c', 'x')], [named_struct('a', 2, 'b', 'm', 'c', 'y')]) c0";
         let required_schema = Schema::new(Fields::from(vec![Field::new(
             "c0",
             DataType::Map(
@@ -3282,19 +3288,7 @@ mod tests {
             true,
         )]));
 
-        let object_store_url = ObjectStoreUrl::local_filesystem();
-        let file_scan_config =
-            FileScanConfigBuilder::new(object_store_url, required_schema.into(), source)
-                .with_file_groups(file_groups)
-                .build();
-
-        // Run native read
-        let scan = Arc::new(DataSourceExec::new(Arc::new(file_scan_config.clone())));
-        let stream = scan.execute(0, session_ctx.task_ctx())?;
-        let result: Vec<_> = stream.collect().await;
-
-        let actual = result.first().unwrap().as_ref().unwrap();
-
+        let actual = make_parquet_data(test_data, required_schema).await?;
         let expected = [
             "+------------------------------+",
             "| c0                           |",
@@ -3304,6 +3298,73 @@ mod tests {
         ];
         assert_batches_eq!(expected, &[actual.clone()]);
 
+        Ok(())
+    }
+
+    // Read struct using schema where schema fields do not overlap with
+    // struct fields
+    #[tokio::test]
+    async fn test_nested_types_extract_missing_struct_names_non_overlap(
+    ) -> Result<(), DataFusionError> {
+        let test_data = "select named_struct('a', 1, 'b', 'abc') c0";
+        let required_schema = Schema::new(Fields::from(vec![Field::new(
+            "c0",
+            DataType::Struct(Fields::from(vec![
+                Field::new("c", DataType::Int64, true),
+                Field::new("d", DataType::Utf8, true),
+            ])),
+            true,
+        )]));
+        let actual = make_parquet_data(test_data, required_schema).await?;
+        let expected = ["+----+", "| c0 |", "+----+", "|    |", "+----+"];
+        assert_batches_eq!(expected, &[actual]);
+        Ok(())
+    }
+
+    // Read struct using custom schema to read just a single field from the struct
+    #[tokio::test]
+    async fn test_nested_types_extract_missing_struct_names_single_field(
+    ) -> Result<(), DataFusionError> {
+        let test_data = "select named_struct('a', 1, 'b', 'abc') c0";
+        let required_schema = Schema::new(Fields::from(vec![Field::new(
+            "c0",
+            DataType::Struct(Fields::from(vec![Field::new("a", DataType::Int64, true)])),
+            true,
+        )]));
+        let actual = make_parquet_data(test_data, required_schema).await?;
+        let expected = [
+            "+--------+",
+            "| c0     |",
+            "+--------+",
+            "| {a: 1} |",
+            "+--------+",
+        ];
+        assert_batches_eq!(expected, &[actual]);
+        Ok(())
+    }
+
+    // Read struct using custom schema to handle a missing field
+    #[tokio::test]
+    async fn test_nested_types_extract_missing_struct_names_missing_field(
+    ) -> Result<(), DataFusionError> {
+        let test_data = "select named_struct('a', 1, 'b', 'abc') c0";
+        let required_schema = Schema::new(Fields::from(vec![Field::new(
+            "c0",
+            DataType::Struct(Fields::from(vec![
+                Field::new("a", DataType::Int64, true),
+                Field::new("x", DataType::Int64, true),
+            ])),
+            true,
+        )]));
+        let actual = make_parquet_data(test_data, required_schema).await?;
+        let expected = [
+            "+-------------+",
+            "| c0          |",
+            "+-------------+",
+            "| {a: 1, x: } |",
+            "+-------------+",
+        ];
+        assert_batches_eq!(expected, &[actual]);
         Ok(())
     }
 }

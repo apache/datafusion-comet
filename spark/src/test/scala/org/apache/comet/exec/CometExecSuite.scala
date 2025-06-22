@@ -59,7 +59,9 @@ class CometExecSuite extends CometTestBase {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
-      withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+      withSQLConf(
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
         testFun
       }
     }
@@ -544,13 +546,15 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("Comet native metrics: scan") {
-    // https://github.com/apache/datafusion-comet/issues/1441
-    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
-
-    withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
+    withSQLConf(
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      // TODO: update this test to work with native_iceberg_compat/auto,
+      // scan is set to native_comet for now as a workaround
+      // https://github.com/apache/datafusion-comet/issues/1882
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "native-scan.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = true, 10000)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 10000)
         withParquetTable(path.toString, "tbl") {
           val df = sql("SELECT * FROM tbl WHERE _2 > _3")
           df.collect()

@@ -25,6 +25,7 @@ import org.scalatest.Tag
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
 
 import org.apache.comet.CometConf
 
@@ -346,5 +347,93 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         | )
         |""".stripMargin,
       "select map_values(c0).y from tbl")
+  }
+
+  test("native reader - select struct field with user defined schema") {
+    // extract existing A column
+    var readSchema = new StructType().add(
+      "c0",
+      new StructType()
+        .add("a", IntegerType, nullable = true),
+      nullable = true)
+
+    testSingleLineQuery(
+      """
+        | select named_struct('a', 0, 'b', 'xyz') c0
+        |""".stripMargin,
+      "select * from tbl",
+      readSchema = Some(readSchema))
+
+    // extract existing A column, nonexisting X
+    readSchema = new StructType().add(
+      "c0",
+      new StructType()
+        .add("a", IntegerType, nullable = true)
+        .add("x", StringType, nullable = true),
+      nullable = true)
+
+    testSingleLineQuery(
+      """
+        | select named_struct('a', 0, 'b', 'xyz') c0
+        |""".stripMargin,
+      "select * from tbl",
+      readSchema = Some(readSchema))
+
+    // extract nonexisting X, Y columns
+    readSchema = new StructType().add(
+      "c0",
+      new StructType()
+        .add("y", IntegerType, nullable = true)
+        .add("x", StringType, nullable = true),
+      nullable = true)
+
+    testSingleLineQuery(
+      """
+        | select named_struct('a', 0, 'b', 'xyz') c0
+        |""".stripMargin,
+      "select * from tbl",
+      readSchema = Some(readSchema))
+  }
+
+  test("native reader - extract map by key") {
+    // existing key
+    testSingleLineQuery(
+      """
+        | select map(str0, str1) c0 from
+        | (
+        |    select 'key0' str0, named_struct('a', 1, 'b', 'str') str1
+        | )
+        |""".stripMargin,
+      "select c0['key0'] from tbl")
+
+    // existing key, existing struct subfield
+    testSingleLineQuery(
+      """
+        | select map(str0, str1) c0 from
+        | (
+        |    select 'key0' str0, named_struct('a', 1, 'b', 'str') str1
+        | )
+        |""".stripMargin,
+      "select c0['key0'].b from tbl")
+
+    // nonexisting key
+    testSingleLineQuery(
+      """
+        | select map(str0, str1) c0 from
+        | (
+        |    select 'key0' str0, named_struct('a', 1, 'b', 'str') str1
+        | )
+        |""".stripMargin,
+      "select c0['key1'] from tbl")
+
+    // nonexisting key, existing struct subfield
+    testSingleLineQuery(
+      """
+        | select map(str0, str1) c0 from
+        | (
+        |    select 'key0' str0, named_struct('a', 1, 'b', 'str') str1
+        | )
+        |""".stripMargin,
+      "select c0['key1'].b from tbl")
   }
 }

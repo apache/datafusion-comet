@@ -17,6 +17,7 @@
 
 use crate::execution::operators::ExecutionError;
 use arrow::array::{ListArray, MapArray};
+use arrow::buffer::NullBuffer;
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{FieldRef, Fields};
 use arrow::{
@@ -43,6 +44,10 @@ use url::Url;
 
 use super::objectstore;
 
+// This file originates from cast.rs. While developing native scan support and implementing
+// SparkSchemaAdapter we observed that Spark's type conversion logic on Parquet reads does not
+// always align to the CAST expression's logic, so it was duplicated here to adapt its behavior.
+
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
 static PARQUET_OPTIONS: CastOptions = CastOptions {
@@ -52,7 +57,7 @@ static PARQUET_OPTIONS: CastOptions = CastOptions {
         .with_timestamp_format(TIMESTAMP_FORMAT),
 };
 
-/// Spark cast options
+/// Spark Parquet type conversion options
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct SparkParquetOptions {
     /// Spark evaluation mode
@@ -108,7 +113,7 @@ pub fn spark_parquet_convert(
     parquet_options: &SparkParquetOptions,
 ) -> DataFusionResult<ColumnarValue> {
     match arg {
-        ColumnarValue::Array(array) => Ok(ColumnarValue::Array(cast_array(
+        ColumnarValue::Array(array) => Ok(ColumnarValue::Array(parquet_convert_array(
             array,
             data_type,
             parquet_options,
@@ -118,14 +123,16 @@ pub fn spark_parquet_convert(
             // some cases e.g., scalar subquery, Spark will not fold it, so we need to handle it
             // here.
             let array = scalar.to_array()?;
-            let scalar =
-                ScalarValue::try_from_array(&cast_array(array, data_type, parquet_options)?, 0)?;
+            let scalar = ScalarValue::try_from_array(
+                &parquet_convert_array(array, data_type, parquet_options)?,
+                0,
+            )?;
             Ok(ColumnarValue::Scalar(scalar))
         }
     }
 }
 
-fn cast_array(
+fn parquet_convert_array(
     array: ArrayRef,
     to_type: &DataType,
     parquet_options: &SparkParquetOptions,
@@ -145,7 +152,7 @@ fn cast_array(
 
             let casted_dictionary = DictionaryArray::<Int32Type>::new(
                 dict_array.keys().clone(),
-                cast_array(Arc::clone(dict_array.values()), to_type, parquet_options)?,
+                parquet_convert_array(Arc::clone(dict_array.values()), to_type, parquet_options)?,
             );
 
             let casted_result = match to_type {
@@ -161,7 +168,7 @@ fn cast_array(
     // Try Comet specific handlers first, then arrow-rs cast if supported,
     // return uncasted data otherwise
     match (from_type, to_type) {
-        (Struct(_), Struct(_)) => Ok(cast_struct_to_struct(
+        (Struct(_), Struct(_)) => Ok(parquet_convert_struct_to_struct(
             array.as_struct(),
             from_type,
             to_type,
@@ -169,7 +176,7 @@ fn cast_array(
         )?),
         (List(_), List(to_inner_type)) => {
             let list_arr: &ListArray = array.as_list();
-            let cast_field = cast_array(
+            let cast_field = parquet_convert_array(
                 Arc::clone(list_arr.values()),
                 to_inner_type.data_type(),
                 parquet_options,
@@ -191,7 +198,7 @@ fn cast_array(
             ))
         }
         (Map(_, ordered_from), Map(_, ordered_to)) if ordered_from == ordered_to =>
-            cast_map_values(array.as_map(), to_type, parquet_options, *ordered_to)
+            parquet_convert_map_to_map(array.as_map(), to_type, parquet_options, *ordered_to)
             ,
         // If Arrow cast supports the cast, delegate the cast to Arrow
         _ if can_cast_types(from_type, to_type) => {
@@ -203,7 +210,7 @@ fn cast_array(
 
 /// Cast between struct types based on logic in
 /// `org.apache.spark.sql.catalyst.expressions.Cast#castStruct`.
-fn cast_struct_to_struct(
+fn parquet_convert_struct_to_struct(
     array: &StructArray,
     from_type: &DataType,
     to_type: &DataType,
@@ -211,6 +218,8 @@ fn cast_struct_to_struct(
 ) -> DataFusionResult<ArrayRef> {
     match (from_type, to_type) {
         (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
+            // if dest and target schemas has any column in common
+            let mut field_overlap = false;
             // TODO some of this logic may be specific to converting Parquet to Spark
             let mut field_name_to_index_map = HashMap::new();
             for (i, field) in from_fields.iter().enumerate() {
@@ -233,20 +242,30 @@ fn cast_struct_to_struct(
                 };
                 if field_name_to_index_map.contains_key(&key) {
                     let from_index = field_name_to_index_map[&key];
-                    let cast_field = cast_array(
+                    let cast_field = parquet_convert_array(
                         Arc::clone(array.column(from_index)),
                         to_fields[i].data_type(),
                         parquet_options,
                     )?;
                     cast_fields.push(cast_field);
+                    field_overlap = true;
                 } else {
                     cast_fields.push(new_null_array(to_fields[i].data_type(), array.len()));
                 }
             }
+
+            // If target schema doesn't contain any of the existing fields
+            // mark such a column in array as NULL
+            let nulls = if field_overlap {
+                array.nulls().cloned()
+            } else {
+                Some(NullBuffer::new_null(array.len()))
+            };
+
             Ok(Arc::new(StructArray::new(
                 to_fields.clone(),
                 cast_fields,
-                array.nulls().cloned(),
+                nulls,
             )))
         }
         _ => unreachable!(),
@@ -254,8 +273,8 @@ fn cast_struct_to_struct(
 }
 
 /// Cast a map type to another map type. The same as arrow-cast except we recursively call our own
-/// cast_array
-fn cast_map_values(
+/// parquet_convert_array
+fn parquet_convert_map_to_map(
     from: &MapArray,
     to_data_type: &DataType,
     parquet_options: &SparkParquetOptions,
@@ -270,13 +289,13 @@ fn cast_map_values(
                 "map is missing value field".to_string(),
             ))?;
 
-            let key_array = cast_array(
-                Arc::<dyn Array>::clone(from.keys()),
+            let key_array = parquet_convert_array(
+                Arc::clone(from.keys()),
                 key_field.data_type(),
                 parquet_options,
             )?;
-            let value_array = cast_array(
-                Arc::<dyn Array>::clone(from.values()),
+            let value_array = parquet_convert_array(
+                Arc::clone(from.values()),
                 value_field.data_type(),
                 parquet_options,
             )?;
