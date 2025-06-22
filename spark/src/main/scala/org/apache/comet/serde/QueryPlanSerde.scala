@@ -850,7 +850,12 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case ToPrettyString(child, timezoneId) =>
+      // ToPrettyString is new in Spark 3.5
+      case _
+          if expr.getClass.getSimpleName == "ToPrettyString" && expr
+            .isInstanceOf[UnaryExpression] && expr.isInstanceOf[TimeZoneAwareExpression] =>
+        val child = expr.asInstanceOf[UnaryExpression].child
+        val timezoneId = expr.asInstanceOf[TimeZoneAwareExpression].timeZoneId
         exprToProtoInternal(child, inputs, binding) match {
           case Some(p) =>
             val toPrettyString = ExprOuterClass.ToPrettyString
