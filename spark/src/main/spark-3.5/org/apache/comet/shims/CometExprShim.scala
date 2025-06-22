@@ -25,10 +25,6 @@ import org.apache.spark.sql.catalyst.expressions._
  * `CometExprShim` acts as a shim for for parsing expressions from different Spark versions.
  */
 trait CometExprShim {
-
-    def foo(): Unit = {
-
-    }
     /**
      * Returns a tuple of expressions for the `unhex` function.
      */
