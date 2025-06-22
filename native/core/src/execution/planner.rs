@@ -748,11 +748,10 @@ impl PhysicalPlanner {
             }
             ExprStruct::ToPrettyString(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                let cast = Arc::new(Cast::new(
-                    child.clone(),
-                    DataType::Utf8,
-                    SparkCastOptions::new(EvalMode::Try, &expr.timezone, true),
-                ));
+                let mut spark_cast_options =
+                    SparkCastOptions::new(EvalMode::Try, &expr.timezone, true);
+                spark_cast_options.null_string = "NULL".to_string();
+                let cast = Arc::new(Cast::new(child.clone(), DataType::Utf8, spark_cast_options));
                 Ok(Arc::new(IfExpr::new(
                     Arc::new(IsNullExpr::new(child)),
                     Arc::new(Literal::new(ScalarValue::Utf8(Some("NULL".to_string())))),
