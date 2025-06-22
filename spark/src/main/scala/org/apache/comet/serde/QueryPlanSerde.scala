@@ -947,20 +947,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
           binding,
           (builder, binaryExpr) => builder.setRlike(binaryExpr))
 
-      case _: StartsWith =>
-        val startsWithExpr = expr.asInstanceOf[StartsWith]
+      case startsWithExpr: StartsWith =>
         val leftProto = exprToProto(startsWithExpr.left, inputs, binding)
         val rightProto = exprToProto(startsWithExpr.right, inputs, binding)
         scalarFunctionExprToProtoWithReturnType("start_with", BooleanType, leftProto, rightProto)
 
-      case _: EndsWith =>
-        val endWithExpr = expr.asInstanceOf[EndsWith]
+      case endWithExpr: EndsWith =>
         val leftProto = exprToProto(endWithExpr.left, inputs, binding)
         val rightProto = exprToProto(endWithExpr.right, inputs, binding)
         scalarFunctionExprToProtoWithReturnType("end_with", BooleanType, leftProto, rightProto)
 
-      case _: Contains =>
-        val containsExpr = expr.asInstanceOf[Contains]
+      case containsExpr: Contains =>
         val leftProto = exprToProto(containsExpr.left, inputs, binding)
         val rightProto = exprToProto(containsExpr.right, inputs, binding)
         scalarFunctionExprToProtoWithReturnType("contains", BooleanType, leftProto, rightProto)

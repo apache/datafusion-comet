@@ -21,7 +21,7 @@ use super::expressions::EvalMode;
 use crate::execution::operators::CopyMode;
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::operators::FilterExec as CometFilterExec;
-use crate::execution::shuffle::CompressionCodec;
+use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use crate::{
@@ -84,7 +84,8 @@ use datafusion::{
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_negate_expr, SparkBitwiseCount, SparkBitwiseNot,
-    SparkContains, SparkEndsWith, SparkLike, SparkStartsWith,
+    SparkContains, SparkDateTrunc, SparkEndsWith, SparkHour, SparkLike, SparkMinute, SparkSecond,
+    SparkStartsWith,
 };
 
 use crate::parquet::parquet_exec::init_datasource_exec;
@@ -104,10 +105,10 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Contains, Correlation, Covariance,
-    CreateNamedStruct, EndsWith, GetArrayStructFields, GetStructField, IfExpr, Like, ListExtract,
-    NormalizeNaNAndZero, RLike, SparkCastOptions, StartsWith, Stddev, StringSpaceExpr,
-    SubstringExpr, SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn, Variance,
+    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
+    GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RLike,
+    SparkCastOptions, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal, TimestampTruncExpr,
+    ToJson, UnboundColumn, Variance,
 };
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use itertools::Itertools;
