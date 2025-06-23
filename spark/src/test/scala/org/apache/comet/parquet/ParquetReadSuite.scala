@@ -1886,7 +1886,12 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
         CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false") {
-        makeParquetFileAllTypes(path, dictionaryEnabled = false, 0, rows, nullEnabled = false)
+        makeParquetFileAllPrimitiveTypes(
+          path,
+          dictionaryEnabled = false,
+          0,
+          rows,
+          nullEnabled = false)
       }
       Seq(
         (CometConf.SCAN_NATIVE_DATAFUSION, "output_rows"),
@@ -1946,6 +1951,51 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
       }
     }
   }
+
+  test("read basic complex types") {
+    Seq(true, false).foreach(dictionaryEnabled => {
+      withTempPath { dir =>
+        val path = new Path(dir.toURI.toString, "complex_types.parquet")
+        makeParquetFileComplexTypes(path, dictionaryEnabled, 10)
+        withParquetTable(path.toUri.toString, "complex_types") {
+          Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach(
+            scanMode => {
+              withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode) {
+                checkSparkAnswerAndOperator(sql("select * from complex_types"))
+                // First level
+                checkSparkAnswerAndOperator(sql(
+                  "select optional_array, array_of_struct, optional_map, complex_map from complex_types"))
+                // second nested level
+                checkSparkAnswerAndOperator(
+                  sql(
+                    "select optional_array[0], " +
+                      "array_of_struct[0].field1, " +
+                      "array_of_struct[0].optional_nested_array, " +
+                      "optional_map.key, " +
+                      "optional_map.value, " +
+                      "map_keys(complex_map), " +
+                      "map_values(complex_map) " +
+                      "from complex_types"))
+                // leaf fields
+                checkSparkAnswerAndOperator(
+                  sql(
+                    "select optional_array[0], " +
+                      "array_of_struct[0].field1, " +
+                      "array_of_struct[0].optional_nested_array[0], " +
+                      "optional_map.key, " +
+                      "optional_map.value, " +
+                      "map_keys(complex_map)[0].key_field1, " +
+                      "map_keys(complex_map)[0].key_field2, " +
+                      "map_values(complex_map)[0].value_field1, " +
+                      "map_values(complex_map)[0].value_field2 " +
+                      "from complex_types"))
+              }
+            })
+        }
+      }
+    })
+  }
+
 }
 
 class ParquetReadV2Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
