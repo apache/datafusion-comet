@@ -26,9 +26,9 @@ import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNu
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometCoalesceExec, CometCollectLimitExec, CometExec, CometExpandExec, CometFilterExec, CometGlobalLimitExec, CometHashAggregateExec, CometHashJoinExec, CometLocalLimitExec, CometNativeExec, CometNativeScanExec, CometPlan, CometProjectExec, CometScanExec, CometScanWrapper, CometSinkPlaceHolder, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec, CometUnionExec, CometWindowExec, SerializedPlan}
+import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{CoalesceExec, CollectLimitExec, ExpandExec, FilterExec, GlobalLimitExec, LocalLimitExec, ProjectExec, SortExec, SparkPlan, TakeOrderedAndProjectExec, UnionExec}
+import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
@@ -37,12 +37,18 @@ import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
-import org.apache.comet.CometConf.{COMET_ANSI_MODE_ENABLED, COMET_NATIVE_SCAN_IMPL, COMET_SHUFFLE_FALLBACK_TO_COLUMNAR}
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometLoaded, isCometNativeShuffleMode, isCometScan, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo, withInfos}
+import org.apache.comet.CometConf.COMET_ANSI_MODE_ENABLED
+import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
 
+/**
+ * Spark physical optimizer rule for replacing Spark operators with Comet operators.
+ */
 case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
+
+  private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
+
   private def applyCometShuffle(plan: SparkPlan): SparkPlan = {
     plan.transformUp {
       case s: ShuffleExchangeExec
@@ -153,8 +159,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
     plan.transformUp {
       // Fully native scan for V1
-      case scan: CometScanExec
-          if COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_DATAFUSION =>
+      case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
         val nativeOp = QueryPlanSerde.operator2Proto(scan).get
         CometNativeScanExec(nativeOp, scan.wrapped, scan.session)
 
@@ -504,16 +509,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             None
           }
 
-        // this is a temporary workaround because some Spark SQL tests fail
-        // when we enable COMET_SHUFFLE_FALLBACK_TO_COLUMNAR due to valid bugs
-        // that we had not previously seen
-        val tryColumnarNext =
-          !nativePrecondition || (nativePrecondition && nativeShuffle.isEmpty &&
-            COMET_SHUFFLE_FALLBACK_TO_COLUMNAR.get(conf))
-
         val nativeOrColumnarShuffle = if (nativeShuffle.isDefined) {
           nativeShuffle
-        } else if (tryColumnarNext) {
+        } else {
           // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
           // (if configured).
           // If the child of ShuffleExchangeExec is also a ShuffleExchangeExec, we should not
@@ -539,15 +537,12 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           } else {
             None
           }
-        } else {
-          None
         }
 
         if (nativeOrColumnarShuffle.isDefined) {
           nativeOrColumnarShuffle.get
         } else {
           val isShuffleEnabled = isCometShuffleEnabled(conf)
-          s.outputPartitioning
           val reason = getCometShuffleNotEnabledReason(conf).getOrElse("no reason available")
           val msg1 = createMessage(!isShuffleEnabled, s"Comet shuffle is not enabled: $reason")
           val columnarShuffleEnabled = isCometJVMShuffleMode(conf)
@@ -636,6 +631,14 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   override def apply(plan: SparkPlan): SparkPlan = {
+    val newPlan = _apply(plan)
+    if (showTransformations) {
+      logInfo(s"\nINPUT: $plan\nOUTPUT: $newPlan")
+    }
+    newPlan
+  }
+
+  private def _apply(plan: SparkPlan): SparkPlan = {
     // DataFusion doesn't have ANSI mode. For now we just disable CometExec if ANSI mode is
     // enabled.
     if (isANSIEnabled(conf)) {

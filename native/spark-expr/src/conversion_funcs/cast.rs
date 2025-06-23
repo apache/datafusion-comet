@@ -38,7 +38,7 @@ use arrow::{
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
-use chrono::{NaiveDate, NaiveDateTime, TimeZone, Timelike};
+use chrono::{DateTime, NaiveDate, TimeZone, Timelike};
 use datafusion::common::{
     cast::as_generic_string_array, internal_err, Result as DataFusionResult, ScalarValue,
 };
@@ -49,7 +49,6 @@ use num::{
     ToPrimitive,
 };
 use regex::Regex;
-use std::collections::HashMap;
 use std::str::FromStr;
 use std::{
     any::Any,
@@ -882,7 +881,10 @@ fn cast_array(
     let array = match &from_type {
         Dictionary(key_type, value_type)
             if key_type.as_ref() == &Int32
-                && (value_type.as_ref() == &Utf8 || value_type.as_ref() == &LargeUtf8) =>
+                && (value_type.as_ref() == &Utf8
+                    || value_type.as_ref() == &LargeUtf8
+                    || value_type.as_ref() == &Binary
+                    || value_type.as_ref() == &LargeBinary) =>
         {
             let dict_array = array
                 .as_any()
@@ -1078,22 +1080,23 @@ fn cast_struct_to_struct(
 ) -> DataFusionResult<ArrayRef> {
     match (from_type, to_type) {
         (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
-            // TODO some of this logic may be specific to converting Parquet to Spark
-            let mut field_name_to_index_map = HashMap::new();
-            for (i, field) in from_fields.iter().enumerate() {
-                field_name_to_index_map.insert(field.name(), i);
-            }
-            assert_eq!(field_name_to_index_map.len(), from_fields.len());
-            let mut cast_fields: Vec<ArrayRef> = Vec::with_capacity(to_fields.len());
-            for i in 0..to_fields.len() {
-                let from_index = field_name_to_index_map[to_fields[i].name()];
-                let cast_field = cast_array(
-                    Arc::clone(array.column(from_index)),
-                    to_fields[i].data_type(),
-                    cast_options,
-                )?;
-                cast_fields.push(cast_field);
-            }
+            let cast_fields: Vec<ArrayRef> = from_fields
+                .iter()
+                .enumerate()
+                .zip(to_fields.iter())
+                .map(|((idx, _from), to)| {
+                    let from_field = Arc::clone(array.column(idx));
+                    let array_length = from_field.len();
+                    let cast_result = spark_cast(
+                        ColumnarValue::from(from_field),
+                        to.data_type(),
+                        cast_options,
+                    )
+                    .unwrap();
+                    cast_result.to_array(array_length).unwrap()
+                })
+                .collect();
+
             Ok(Arc::new(StructArray::new(
                 to_fields.clone(),
                 cast_fields,
@@ -2105,7 +2108,7 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
     ) {
         Some(date) => {
             let duration_since_epoch = date
-                .signed_duration_since(NaiveDateTime::UNIX_EPOCH.date())
+                .signed_duration_since(DateTime::UNIX_EPOCH.naive_utc().date())
                 .num_days();
             Ok(Some(duration_since_epoch.to_i32().unwrap()))
         }

@@ -25,6 +25,9 @@ import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
+
+import org.apache.comet.CometConf
 
 // This rule is responsible for eliminating redundant transitions between row-based and
 // columnar-based operators for Comet. Currently, three potential redundant transitions are:
@@ -48,8 +51,23 @@ import org.apache.spark.sql.execution.adaptive.QueryStageExec
 // another `ColumnarToRowExec` on top of `CometSparkToColumnarExec`. In this case, the pair could
 // be removed.
 case class EliminateRedundantTransitions(session: SparkSession) extends Rule[SparkPlan] {
+
+  private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
+
   override def apply(plan: SparkPlan): SparkPlan = {
+    val newPlan = _apply(plan)
+    if (showTransformations) {
+      // scalastyle:off println
+      System.err.println(s"EliminateRedundantTransitions:\nINPUT: $plan\nOUTPUT: $newPlan")
+    }
+    newPlan
+  }
+
+  private def _apply(plan: SparkPlan): SparkPlan = {
     val eliminatedPlan = plan transformUp {
+      case ColumnarToRowExec(shuffleExchangeExec: CometShuffleExchangeExec)
+          if plan.conf.adaptiveExecutionEnabled =>
+        shuffleExchangeExec
       case ColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
         if (sparkToColumnar.child.supportsColumnar) {
           // For Spark Columnar to Comet Columnar, we should keep the ColumnarToRowExec
@@ -96,6 +114,7 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
   private def hasCometNativeChild(op: SparkPlan): Boolean = {
     op match {
       case c: QueryStageExec => hasCometNativeChild(c.plan)
+      case c: ReusedExchangeExec => hasCometNativeChild(c.child)
       case _ => op.exists(_.isInstanceOf[CometPlan])
     }
   }

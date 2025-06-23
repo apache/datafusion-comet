@@ -28,8 +28,9 @@ import java.time.{Instant, LocalDateTime, ZoneId}
 import scala.collection.mutable.ListBuffer
 import scala.util.Random
 
+import org.apache.commons.lang3.RandomStringUtils
 import org.apache.spark.sql.{Row, SaveMode, SparkSession}
-import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, StructField, StructType}
+import org.apache.spark.sql.types._
 
 object ParquetGenerator {
 
@@ -208,6 +209,7 @@ object ParquetGenerator {
             case 1 => r.nextInt().toByte.toString
             case 2 => r.nextLong().toString
             case 3 => r.nextDouble().toString
+            case 4 => RandomStringUtils.randomAlphabetic(8)
             case _ => r.nextString(8)
           }
         })

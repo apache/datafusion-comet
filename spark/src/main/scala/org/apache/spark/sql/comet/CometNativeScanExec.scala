@@ -35,12 +35,12 @@ import org.apache.spark.util.collection._
 
 import com.google.common.base.Objects
 
-import org.apache.comet.DataTypeSupport
+import org.apache.comet.CometConf
 import org.apache.comet.parquet.CometParquetFileFormat
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 /**
- * Comet fully native scan node for DataSource V1.
+ * Comet fully native scan node for DataSource V1 that delegates to DataFusion's DataSourceExec.
  */
 case class CometNativeScanExec(
     override val nativeOp: Operator,
@@ -183,7 +183,7 @@ case class CometNativeScanExec(
   override def inputRDDs(): Seq[RDD[InternalRow]] = originalPlan.inputRDDs()
 }
 
-object CometNativeScanExec extends DataTypeSupport {
+object CometNativeScanExec {
   def apply(
       nativeOp: Operator,
       scanExec: FileSourceScanExec,
@@ -205,7 +205,8 @@ object CometNativeScanExec extends DataTypeSupport {
     // https://github.com/apache/arrow-datafusion-comet/issues/190
     def transform(arg: Any): AnyRef = arg match {
       case _: HadoopFsRelation =>
-        scanExec.relation.copy(fileFormat = new CometParquetFileFormat)(session)
+        scanExec.relation.copy(fileFormat =
+          new CometParquetFileFormat(CometConf.SCAN_NATIVE_DATAFUSION))(session)
       case other: AnyRef => other
       case null => null
     }
@@ -227,14 +228,5 @@ object CometNativeScanExec extends DataTypeSupport {
       SerializedPlan(None))
     scanExec.logicalLink.foreach(batchScanExec.setLogicalLink)
     batchScanExec
-  }
-
-  override def isAdditionallySupported(dt: DataType): Boolean = {
-    dt match {
-      case s: StructType => s.fields.map(_.dataType).forall(isTypeSupported)
-      case a: ArrayType => isTypeSupported(a.elementType)
-      case m: MapType => isTypeSupported(m.keyType) && isTypeSupported(m.valueType)
-      case _ => false
-    }
   }
 }

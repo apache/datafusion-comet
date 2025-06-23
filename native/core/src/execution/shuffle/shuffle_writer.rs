@@ -17,11 +17,14 @@
 
 //! Defines the External shuffle repartition plan.
 
-use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
+use crate::execution::shuffle::range_partitioner::RangePartitioner;
+use crate::execution::shuffle::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
+use crate::execution::tracing::{with_trace, with_trace_async};
 use arrow::compute::interleave_record_batch;
+use arrow::row::{OwnedRow, RowConverter};
 use async_trait::async_trait;
 use datafusion::common::utils::proxy::VecAllocExt;
-use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::EmptyRecordBatchStream;
 use datafusion::{
@@ -38,8 +41,8 @@ use datafusion::{
             BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, Time,
         },
         stream::RecordBatchStreamAdapter,
-        DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-        SendableRecordBatchStream, Statistics,
+        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
+        Statistics,
     },
 };
 use datafusion_comet_spark_expr::hash_funcs::murmur3::create_murmur3_hashes;
@@ -65,7 +68,7 @@ pub struct ShuffleWriterExec {
     /// Input execution plan
     input: Arc<dyn ExecutionPlan>,
     /// Partitioning scheme to use
-    partitioning: Partitioning,
+    partitioning: CometPartitioning,
     /// Output data file path
     output_data_file: String,
     /// Output index file path
@@ -76,23 +79,22 @@ pub struct ShuffleWriterExec {
     cache: PlanProperties,
     /// The compression codec to use when compressing shuffle blocks
     codec: CompressionCodec,
-    /// When true, Comet will use a fast proprietary encoding rather than using Arrow IPC
-    enable_fast_encoding: bool,
+    tracing_enabled: bool,
 }
 
 impl ShuffleWriterExec {
     /// Create a new ShuffleWriterExec
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
-        partitioning: Partitioning,
+        partitioning: CometPartitioning,
         codec: CompressionCodec,
         output_data_file: String,
         output_index_file: String,
-        enable_fast_encoding: bool,
+        tracing_enabled: bool,
     ) -> Result<Self> {
         let cache = PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
-            partitioning.clone(),
+            Partitioning::UnknownPartitioning(1),
             EmissionType::Final,
             Boundedness::Bounded,
         );
@@ -105,19 +107,19 @@ impl ShuffleWriterExec {
             output_index_file,
             cache,
             codec,
-            enable_fast_encoding,
+            tracing_enabled,
         })
     }
 }
 
 impl DisplayAs for ShuffleWriterExec {
-    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter) -> fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(
                     f,
-                    "ShuffleWriterExec: partitioning={:?}, fast_encoding={}, compression={:?}",
-                    self.partitioning, self.enable_fast_encoding, self.codec
+                    "ShuffleWriterExec: partitioning={:?}, compression={:?}",
+                    self.partitioning, self.codec
                 )
             }
             DisplayFormatType::TreeRender => unimplemented!(),
@@ -141,7 +143,7 @@ impl ExecutionPlan for ShuffleWriterExec {
     }
 
     fn statistics(&self) -> Result<Statistics> {
-        self.input.statistics()
+        self.input.partition_statistics(None)
     }
 
     fn properties(&self) -> &PlanProperties {
@@ -168,7 +170,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                 self.codec.clone(),
                 self.output_data_file.clone(),
                 self.output_index_file.clone(),
-                self.enable_fast_encoding,
+                self.tracing_enabled,
             )?)),
             _ => panic!("ShuffleWriterExec wrong number of children"),
         }
@@ -194,7 +196,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                     metrics,
                     context,
                     self.codec.clone(),
-                    self.enable_fast_encoding,
+                    self.tracing_enabled,
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
@@ -209,50 +211,54 @@ async fn external_shuffle(
     partition: usize,
     output_data_file: String,
     output_index_file: String,
-    partitioning: Partitioning,
+    partitioning: CometPartitioning,
     metrics: ShuffleRepartitionerMetrics,
     context: Arc<TaskContext>,
     codec: CompressionCodec,
-    enable_fast_encoding: bool,
+    tracing_enabled: bool,
 ) -> Result<SendableRecordBatchStream> {
-    let schema = input.schema();
+    with_trace_async("external_shuffle", tracing_enabled, || async {
+        let schema = input.schema();
 
-    let mut repartitioner: Box<dyn ShufflePartitioner> = match &partitioning {
-        any if any.partition_count() == 1 => Box::new(SinglePartitionShufflePartitioner::try_new(
-            output_data_file,
-            output_index_file,
-            Arc::clone(&schema),
-            metrics,
-            context.session_config().batch_size(),
-            codec,
-            enable_fast_encoding,
-        )?),
-        _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
-            partition,
-            output_data_file,
-            output_index_file,
-            Arc::clone(&schema),
-            partitioning,
-            metrics,
-            context.runtime_env(),
-            context.session_config().batch_size(),
-            codec,
-            enable_fast_encoding,
-        )?),
-    };
+        let mut repartitioner: Box<dyn ShufflePartitioner> = match &partitioning {
+            any if any.partition_count() == 1 => {
+                Box::new(SinglePartitionShufflePartitioner::try_new(
+                    output_data_file,
+                    output_index_file,
+                    Arc::clone(&schema),
+                    metrics,
+                    context.session_config().batch_size(),
+                    codec,
+                )?)
+            }
+            _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
+                partition,
+                output_data_file,
+                output_index_file,
+                Arc::clone(&schema),
+                partitioning,
+                metrics,
+                context.runtime_env(),
+                context.session_config().batch_size(),
+                codec,
+                tracing_enabled,
+            )?),
+        };
 
-    while let Some(batch) = input.next().await {
-        // Block on the repartitioner to insert the batch and shuffle the rows
-        // into the corresponding partition buffer.
-        // Otherwise, pull the next batch from the input stream might overwrite the
-        // current batch in the repartitioner.
-        block_on(repartitioner.insert_batch(batch?))?;
-    }
+        while let Some(batch) = input.next().await {
+            // Block on the repartitioner to insert the batch and shuffle the rows
+            // into the corresponding partition buffer.
+            // Otherwise, pull the next batch from the input stream might overwrite the
+            // current batch in the repartitioner.
+            block_on(repartitioner.insert_batch(batch?))?;
+        }
 
-    repartitioner.shuffle_write().await?;
+        repartitioner.shuffle_write()?;
 
-    // shuffle writer always has empty output
-    Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))))
+        // shuffle writer always has empty output
+        Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))) as SendableRecordBatchStream)
+    })
+    .await
 }
 
 struct ShuffleRepartitionerMetrics {
@@ -305,7 +311,7 @@ trait ShufflePartitioner: Send + Sync {
     /// Insert a batch into the partitioner
     async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()>;
     /// Write shuffle data and shuffle index file to disk
-    async fn shuffle_write(&mut self) -> Result<()>;
+    fn shuffle_write(&mut self) -> Result<()>;
 }
 
 /// A partitioner that uses a hash function to partition data into multiple partitions
@@ -317,7 +323,7 @@ struct MultiPartitionShuffleRepartitioner {
     partition_writers: Vec<PartitionWriter>,
     shuffle_block_writer: ShuffleBlockWriter,
     /// Partitioning scheme to use
-    partitioning: Partitioning,
+    partitioning: CometPartitioning,
     runtime: Arc<RuntimeEnv>,
     metrics: ShuffleRepartitionerMetrics,
     /// Reused scratch space for computing partition indices
@@ -326,6 +332,11 @@ struct MultiPartitionShuffleRepartitioner {
     batch_size: usize,
     /// Reservation for repartitioning
     reservation: MemoryReservation,
+    tracing_enabled: bool,
+    /// RangePartitioning-specific state
+    bounds_rows: Option<Vec<OwnedRow>>,
+    row_converter: Option<RowConverter>,
+    seed: u64,
 }
 
 #[derive(Default)]
@@ -351,12 +362,12 @@ impl MultiPartitionShuffleRepartitioner {
         output_data_file: String,
         output_index_file: String,
         schema: SchemaRef,
-        partitioning: Partitioning,
+        partitioning: CometPartitioning,
         metrics: ShuffleRepartitionerMetrics,
         runtime: Arc<RuntimeEnv>,
         batch_size: usize,
         codec: CompressionCodec,
-        enable_fast_encoding: bool,
+        tracing_enabled: bool,
     ) -> Result<Self> {
         let num_output_partitions = partitioning.partition_count();
         assert_ne!(
@@ -368,14 +379,17 @@ impl MultiPartitionShuffleRepartitioner {
         // initialization code is simply initializing the vectors to the desired size.
         // The initial values are not used.
         let scratch = ScratchSpace {
-            hashes_buf: vec![0; batch_size],
+            hashes_buf: match partitioning {
+                // Only allocate the hashes_buf if hash partitioning.
+                CometPartitioning::Hash(_, _) => vec![0; batch_size],
+                _ => vec![],
+            },
             partition_ids: vec![0; batch_size],
             partition_row_indices: vec![0; batch_size],
             partition_starts: vec![0; num_output_partitions + 1],
         };
 
-        let shuffle_block_writer =
-            ShuffleBlockWriter::try_new(schema.as_ref(), enable_fast_encoding, codec.clone())?;
+        let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
 
         let partition_writers = (0..num_output_partitions)
             .map(|_| PartitionWriter::try_new(shuffle_block_writer.clone()))
@@ -398,6 +412,11 @@ impl MultiPartitionShuffleRepartitioner {
             scratch,
             batch_size,
             reservation,
+            tracing_enabled,
+            bounds_rows: None,
+            row_converter: None,
+            // Spark RangePartitioner seeds off of partition number.
+            seed: partition as u64,
         })
     }
 
@@ -409,6 +428,52 @@ impl MultiPartitionShuffleRepartitioner {
         if input.num_rows() == 0 {
             // skip empty batch
             return Ok(());
+        }
+
+        fn map_partition_ids_to_starts_and_indices(
+            scratch: &mut ScratchSpace,
+            num_output_partitions: usize,
+            num_rows: usize,
+        ) {
+            let partition_ids = &mut scratch.partition_ids[..num_rows];
+
+            // count each partition size, while leaving the last extra element as 0
+            let partition_counters = &mut scratch.partition_starts;
+            partition_counters.resize(num_output_partitions + 1, 0);
+            partition_counters.fill(0);
+            partition_ids
+                .iter()
+                .for_each(|partition_id| partition_counters[*partition_id as usize] += 1);
+
+            // accumulate partition counters into partition ends
+            // e.g. partition counter: [1, 3, 2, 1, 0] => [1, 4, 6, 7, 7]
+            let partition_ends = partition_counters;
+            let mut accum = 0;
+            partition_ends.iter_mut().for_each(|v| {
+                *v += accum;
+                accum = *v;
+            });
+
+            // calculate partition row indices and partition starts
+            // e.g. partition ids: [3, 1, 1, 1, 2, 2, 0] will produce the following partition_row_indices
+            // and partition_starts arrays:
+            //
+            //  partition_row_indices: [6, 1, 2, 3, 4, 5, 0]
+            //  partition_starts: [0, 1, 4, 6, 7]
+            //
+            // partition_starts conceptually splits partition_row_indices into smaller slices.
+            // Each slice partition_row_indices[partition_starts[K]..partition_starts[K + 1]] contains the
+            // row indices of the input batch that are partitioned into partition K. For example,
+            // first partition 0 has one row index [6], partition 1 has row indices [1, 2, 3], etc.
+            let partition_row_indices = &mut scratch.partition_row_indices;
+            partition_row_indices.resize(num_rows, 0);
+            for (index, partition_id) in partition_ids.iter().enumerate().rev() {
+                partition_ends[*partition_id as usize] -= 1;
+                let end = partition_ends[*partition_id as usize];
+                partition_row_indices[end as usize] = index as u32;
+            }
+
+            // after calculating, partition ends become partition starts
         }
 
         if input.num_rows() > self.batch_size {
@@ -426,72 +491,119 @@ impl MultiPartitionShuffleRepartitioner {
         self.metrics.baseline.record_output(input.num_rows());
 
         match &self.partitioning {
-            Partitioning::Hash(exprs, num_output_partitions) => {
+            CometPartitioning::Hash(exprs, num_output_partitions) => {
                 let mut scratch = std::mem::take(&mut self.scratch);
                 let (partition_starts, partition_row_indices): (&Vec<u32>, &Vec<u32>) = {
                     let mut timer = self.metrics.repart_time.timer();
 
-                    // evaluate partition expressions
+                    // Evaluate partition expressions to get rows to apply partitioning scheme.
                     let arrays = exprs
                         .iter()
                         .map(|expr| expr.evaluate(&input)?.into_array(input.num_rows()))
                         .collect::<Result<Vec<_>>>()?;
 
-                    // use identical seed as spark hash partition
-                    let hashes_buf = &mut scratch.hashes_buf[..arrays[0].len()];
+                    let num_rows = arrays[0].len();
+
+                    // Use identical seed as Spark hash partitioning.
+                    let hashes_buf = &mut scratch.hashes_buf[..num_rows];
                     hashes_buf.fill(42_u32);
 
-                    // Hash arrays and compute buckets based on number of partitions
-                    let partition_ids = &mut scratch.partition_ids[..arrays[0].len()];
-                    create_murmur3_hashes(&arrays, hashes_buf)?
-                        .iter()
-                        .enumerate()
-                        .for_each(|(idx, hash)| {
-                            partition_ids[idx] = pmod(*hash, *num_output_partitions) as u32;
-                        });
-
-                    // count each partition size, while leaving the last extra element as 0
-                    let partition_counters = &mut scratch.partition_starts;
-                    partition_counters.resize(num_output_partitions + 1, 0);
-                    partition_counters.fill(0);
-                    partition_ids
-                        .iter()
-                        .for_each(|partition_id| partition_counters[*partition_id as usize] += 1);
-
-                    // accumulate partition counters into partition ends
-                    // e.g. partition counter: [1, 3, 2, 1, 0] => [1, 4, 6, 7, 7]
-                    let partition_ends = partition_counters;
-                    let mut accum = 0;
-                    partition_ends.iter_mut().for_each(|v| {
-                        *v += accum;
-                        accum = *v;
-                    });
-
-                    // calculate partition row indices and partition starts
-                    // e.g. partition ids: [3, 1, 1, 1, 2, 2, 0] will produce the following partition_row_indices
-                    // and partition_starts arrays:
-                    //
-                    //  partition_row_indices: [6, 1, 2, 3, 4, 5, 0]
-                    //  partition_starts: [0, 1, 4, 6, 7]
-                    //
-                    // partition_starts conceptually splits partition_row_indices into smaller slices.
-                    // Each slice partition_row_indices[partition_starts[K]..partition_starts[K + 1]] contains the
-                    // row indices of the input batch that are partitioned into partition K. For example,
-                    // first partition 0 has one row index [6], partition 1 has row indices [1, 2, 3], etc.
-                    let partition_row_indices = &mut scratch.partition_row_indices;
-                    partition_row_indices.resize(input.num_rows(), 0);
-                    for (index, partition_id) in partition_ids.iter().enumerate().rev() {
-                        partition_ends[*partition_id as usize] -= 1;
-                        let end = partition_ends[*partition_id as usize];
-                        partition_row_indices[end as usize] = index as u32;
+                    // Generate partition ids for every row.
+                    {
+                        // Hash arrays and compute partition ids based on number of partitions.
+                        let partition_ids = &mut scratch.partition_ids[..num_rows];
+                        create_murmur3_hashes(&arrays, hashes_buf)?
+                            .iter()
+                            .enumerate()
+                            .for_each(|(idx, hash)| {
+                                partition_ids[idx] = pmod(*hash, *num_output_partitions) as u32;
+                            });
                     }
 
-                    // after calculating, partition ends become partition starts
-                    let partition_starts = partition_ends;
+                    // We now have partition ids for every input row, map that to partition starts
+                    // and partition indices to eventually right these rows to partition buffers.
+                    map_partition_ids_to_starts_and_indices(
+                        &mut scratch,
+                        *num_output_partitions,
+                        num_rows,
+                    );
+
                     timer.stop();
                     Ok::<(&Vec<u32>, &Vec<u32>), DataFusionError>((
-                        partition_starts,
-                        partition_row_indices,
+                        &scratch.partition_starts,
+                        &scratch.partition_row_indices,
+                    ))
+                }?;
+
+                self.buffer_partitioned_batch_may_spill(
+                    input,
+                    partition_row_indices,
+                    partition_starts,
+                )
+                .await?;
+                self.scratch = scratch;
+            }
+            CometPartitioning::RangePartitioning(
+                lex_ordering,
+                num_output_partitions,
+                sample_size,
+            ) => {
+                let mut scratch = std::mem::take(&mut self.scratch);
+                let (partition_starts, partition_row_indices): (&Vec<u32>, &Vec<u32>) = {
+                    let mut timer = self.metrics.repart_time.timer();
+
+                    // Evaluate partition expressions for values to apply partitioning scheme on.
+                    let arrays = lex_ordering
+                        .iter()
+                        .map(|expr| expr.expr.evaluate(&input)?.into_array(input.num_rows()))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    let num_rows = arrays[0].len();
+
+                    // If necessary (i.e., when first batch arrives) generate the bounds (as Rows)
+                    // for range partitioning based on randomly reservoir sampling the batch.
+                    if self.row_converter.is_none() {
+                        let (bounds_rows, row_converter) = RangePartitioner::generate_bounds(
+                            &arrays,
+                            lex_ordering,
+                            *num_output_partitions,
+                            input.num_rows(),
+                            *sample_size,
+                            self.seed,
+                        )?;
+
+                        self.bounds_rows =
+                            Some(bounds_rows.iter().map(|row| row.owned()).collect_vec());
+                        self.row_converter = Some(row_converter);
+                    }
+
+                    // Generate partition ids for every row, first by converting the partition
+                    // arrays to Rows, and then doing binary search for each Row against the
+                    // bounds Rows.
+                    let row_batch = self
+                        .row_converter
+                        .as_ref()
+                        .unwrap()
+                        .convert_columns(arrays.as_slice())?;
+
+                    RangePartitioner::partition_indices_for_batch(
+                        &row_batch,
+                        self.bounds_rows.as_ref().unwrap().as_slice(),
+                        &mut scratch.partition_ids[..num_rows],
+                    );
+
+                    // We now have partition ids for every input row, map that to partition starts
+                    // and partition indices to eventually right these rows to partition buffers.
+                    map_partition_ids_to_starts_and_indices(
+                        &mut scratch,
+                        *num_output_partitions,
+                        num_rows,
+                    );
+
+                    timer.stop();
+                    Ok::<(&Vec<u32>, &Vec<u32>), DataFusionError>((
+                        &scratch.partition_starts,
+                        &scratch.partition_row_indices,
                     ))
                 }?;
 
@@ -507,7 +619,7 @@ impl MultiPartitionShuffleRepartitioner {
                 // this should be unreachable as long as the validation logic
                 // in the constructor is kept up-to-date
                 return Err(DataFusionError::NotImplemented(format!(
-                    "Unsupported repartitioning scheme {:?}",
+                    "Unsupported shuffle partitioning scheme {:?}",
                     other
                 )));
             }
@@ -557,7 +669,7 @@ impl MultiPartitionShuffleRepartitioner {
             result
         };
         if grow_result.is_err() {
-            self.spill().await?;
+            self.spill()?;
         }
 
         Ok(())
@@ -609,7 +721,7 @@ impl MultiPartitionShuffleRepartitioner {
         PartitionedBatchesProducer::new(buffered_batches, indices, self.batch_size)
     }
 
-    async fn spill(&mut self) -> Result<()> {
+    fn spill(&mut self) -> Result<()> {
         log::debug!(
             "ShuffleRepartitioner spilling shuffle data of {} to disk while inserting ({} time(s) so far)",
             self.used(),
@@ -621,22 +733,24 @@ impl MultiPartitionShuffleRepartitioner {
             return Ok(());
         }
 
-        let num_output_partitions = self.partition_writers.len();
-        let mut partitioned_batches = self.partitioned_batches();
-        let mut spilled_bytes = 0;
+        with_trace("shuffle_spill", self.tracing_enabled, || {
+            let num_output_partitions = self.partition_writers.len();
+            let mut partitioned_batches = self.partitioned_batches();
+            let mut spilled_bytes = 0;
 
-        for partition_id in 0..num_output_partitions {
-            let partition_writer = &mut self.partition_writers[partition_id];
-            let mut iter = partitioned_batches.produce(partition_id);
-            spilled_bytes += partition_writer.spill(&mut iter, &self.runtime, &self.metrics)?;
-        }
+            for partition_id in 0..num_output_partitions {
+                let partition_writer = &mut self.partition_writers[partition_id];
+                let mut iter = partitioned_batches.produce(partition_id);
+                spilled_bytes += partition_writer.spill(&mut iter, &self.runtime, &self.metrics)?;
+            }
 
-        let mut timer = self.metrics.mempool_time.timer();
-        self.reservation.free();
-        timer.stop();
-        self.metrics.spill_count.add(1);
-        self.metrics.spilled_bytes.add(spilled_bytes);
-        Ok(())
+            let mut timer = self.metrics.mempool_time.timer();
+            self.reservation.free();
+            timer.stop();
+            self.metrics.spill_count.add(1);
+            self.metrics.spilled_bytes.add(spilled_bytes);
+            Ok(())
+        })
     }
 }
 
@@ -646,92 +760,97 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
     /// This function will slice input batch according to configured batch size and then
     /// shuffle rows into corresponding partition buffer.
     async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()> {
-        let start_time = Instant::now();
-        let mut start = 0;
-        while start < batch.num_rows() {
-            let end = (start + self.batch_size).min(batch.num_rows());
-            let batch = batch.slice(start, end - start);
-            self.partitioning_batch(batch).await?;
-            start = end;
-        }
-        self.metrics.input_batches.add(1);
-        self.metrics
-            .baseline
-            .elapsed_compute()
-            .add_duration(start_time.elapsed());
-        Ok(())
+        with_trace_async("shuffle_insert_batch", self.tracing_enabled, || async {
+            let start_time = Instant::now();
+            let mut start = 0;
+            while start < batch.num_rows() {
+                let end = (start + self.batch_size).min(batch.num_rows());
+                let batch = batch.slice(start, end - start);
+                self.partitioning_batch(batch).await?;
+                start = end;
+            }
+            self.metrics.input_batches.add(1);
+            self.metrics
+                .baseline
+                .elapsed_compute()
+                .add_duration(start_time.elapsed());
+            Ok(())
+        })
+        .await
     }
 
     /// Writes buffered shuffled record batches into Arrow IPC bytes.
-    async fn shuffle_write(&mut self) -> Result<()> {
-        let start_time = Instant::now();
+    fn shuffle_write(&mut self) -> Result<()> {
+        with_trace("shuffle_write", self.tracing_enabled, || {
+            let start_time = Instant::now();
 
-        let mut partitioned_batches = self.partitioned_batches();
-        let num_output_partitions = self.partition_indices.len();
-        let mut offsets = vec![0; num_output_partitions + 1];
+            let mut partitioned_batches = self.partitioned_batches();
+            let num_output_partitions = self.partition_indices.len();
+            let mut offsets = vec![0; num_output_partitions + 1];
 
-        let data_file = self.output_data_file.clone();
-        let index_file = self.output_index_file.clone();
+            let data_file = self.output_data_file.clone();
+            let index_file = self.output_index_file.clone();
 
-        let output_data = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(data_file)
-            .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
+            let output_data = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(data_file)
+                .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
 
-        let mut output_data = BufWriter::new(output_data);
+            let mut output_data = BufWriter::new(output_data);
 
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..num_output_partitions {
-            offsets[i] = output_data.stream_position()?;
+            #[allow(clippy::needless_range_loop)]
+            for i in 0..num_output_partitions {
+                offsets[i] = output_data.stream_position()?;
 
-            // if we wrote a spill file for this partition then copy the
-            // contents into the shuffle file
-            if let Some(spill_data) = self.partition_writers[i].spill_file.as_ref() {
-                let mut spill_file =
-                    BufReader::new(File::open(spill_data.temp_file.path()).map_err(to_df_err)?);
-                let mut write_timer = self.metrics.write_time.timer();
-                std::io::copy(&mut spill_file, &mut output_data).map_err(to_df_err)?;
-                write_timer.stop();
+                // if we wrote a spill file for this partition then copy the
+                // contents into the shuffle file
+                if let Some(spill_data) = self.partition_writers[i].spill_file.as_ref() {
+                    let mut spill_file =
+                        BufReader::new(File::open(spill_data.temp_file.path()).map_err(to_df_err)?);
+                    let mut write_timer = self.metrics.write_time.timer();
+                    std::io::copy(&mut spill_file, &mut output_data).map_err(to_df_err)?;
+                    write_timer.stop();
+                }
+
+                // Write in memory batches to output data file
+                let mut partition_iter = partitioned_batches.produce(i);
+                Self::shuffle_write_partition(
+                    &mut partition_iter,
+                    &mut self.shuffle_block_writer,
+                    &mut output_data,
+                    &self.metrics.encode_time,
+                    &self.metrics.write_time,
+                )?;
             }
 
-            // Write in memory batches to output data file
-            let mut partition_iter = partitioned_batches.produce(i);
-            Self::shuffle_write_partition(
-                &mut partition_iter,
-                &mut self.shuffle_block_writer,
-                &mut output_data,
-                &self.metrics.encode_time,
-                &self.metrics.write_time,
-            )?;
-        }
+            let mut write_timer = self.metrics.write_time.timer();
+            output_data.flush()?;
+            write_timer.stop();
 
-        let mut write_timer = self.metrics.write_time.timer();
-        output_data.flush()?;
-        write_timer.stop();
+            // add one extra offset at last to ease partition length computation
+            offsets[num_output_partitions] = output_data.stream_position().map_err(to_df_err)?;
 
-        // add one extra offset at last to ease partition length computation
-        offsets[num_output_partitions] = output_data.stream_position().map_err(to_df_err)?;
-
-        let mut write_timer = self.metrics.write_time.timer();
-        let mut output_index =
-            BufWriter::new(File::create(index_file).map_err(|e| {
+            let mut write_timer = self.metrics.write_time.timer();
+            let mut output_index = BufWriter::new(File::create(index_file).map_err(|e| {
                 DataFusionError::Execution(format!("shuffle write error: {:?}", e))
             })?);
-        for offset in offsets {
-            output_index
-                .write_all(&(offset as i64).to_le_bytes()[..])
-                .map_err(to_df_err)?;
-        }
-        output_index.flush()?;
-        write_timer.stop();
+            for offset in offsets {
+                output_index
+                    .write_all(&(offset as i64).to_le_bytes()[..])
+                    .map_err(to_df_err)?;
+            }
+            output_index.flush()?;
+            write_timer.stop();
 
-        self.metrics
-            .baseline
-            .elapsed_compute()
-            .add_duration(start_time.elapsed());
-        Ok(())
+            self.metrics
+                .baseline
+                .elapsed_compute()
+                .add_duration(start_time.elapsed());
+
+            Ok(())
+        })
     }
 }
 
@@ -769,10 +888,8 @@ impl SinglePartitionShufflePartitioner {
         metrics: ShuffleRepartitionerMetrics,
         batch_size: usize,
         codec: CompressionCodec,
-        enable_fast_encoding: bool,
     ) -> Result<Self> {
-        let shuffle_block_writer =
-            ShuffleBlockWriter::try_new(schema.as_ref(), enable_fast_encoding, codec.clone())?;
+        let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
 
         let output_data_file = OpenOptions::new()
             .write(true)
@@ -877,7 +994,7 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
         Ok(())
     }
 
-    async fn shuffle_write(&mut self) -> Result<()> {
+    fn shuffle_write(&mut self) -> Result<()> {
         let start_time = Instant::now();
         let concatenated_batch = self.concat_buffered_batches()?;
 
@@ -1165,7 +1282,8 @@ mod test {
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::config::SessionConfig;
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::expressions::{col, Column};
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
     use datafusion::physical_plan::common::collect;
     use datafusion::prelude::SessionContext;
     use std::io::Cursor;
@@ -1175,30 +1293,24 @@ mod test {
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     fn roundtrip_ipc() {
         let batch = create_batch(8192);
-        for fast_encoding in [true, false] {
-            for codec in &[
-                CompressionCodec::None,
-                CompressionCodec::Zstd(1),
-                CompressionCodec::Snappy,
-                CompressionCodec::Lz4Frame,
-            ] {
-                let mut output = vec![];
-                let mut cursor = Cursor::new(&mut output);
-                let writer = ShuffleBlockWriter::try_new(
-                    batch.schema().as_ref(),
-                    fast_encoding,
-                    codec.clone(),
-                )
+        for codec in &[
+            CompressionCodec::None,
+            CompressionCodec::Zstd(1),
+            CompressionCodec::Snappy,
+            CompressionCodec::Lz4Frame,
+        ] {
+            let mut output = vec![];
+            let mut cursor = Cursor::new(&mut output);
+            let writer =
+                ShuffleBlockWriter::try_new(batch.schema().as_ref(), codec.clone()).unwrap();
+            let length = writer
+                .write_batch(&batch, &mut cursor, &Time::default())
                 .unwrap();
-                let length = writer
-                    .write_batch(&batch, &mut cursor, &Time::default())
-                    .unwrap();
-                assert_eq!(length, output.len());
+            assert_eq!(length, output.len());
 
-                let ipc_without_length_prefix = &output[16..];
-                let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
-                assert_eq!(batch, batch2);
-            }
+            let ipc_without_length_prefix = &output[16..];
+            let batch2 = read_ipc_compressed(ipc_without_length_prefix).unwrap();
+            assert_eq!(batch, batch2);
         }
     }
 
@@ -1249,12 +1361,12 @@ mod test {
             "/tmp/data.out".to_string(),
             "/tmp/index.out".to_string(),
             batch.schema(),
-            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+            CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
             ShuffleRepartitionerMetrics::new(&metrics_set, 0),
             runtime_env,
             1024,
             CompressionCodec::Lz4Frame,
-            true,
+            false,
         )
         .unwrap();
 
@@ -1265,7 +1377,7 @@ mod test {
         assert!(repartitioner.partition_writers[0].spill_file.is_none());
         assert!(repartitioner.partition_writers[1].spill_file.is_none());
 
-        repartitioner.spill().await.unwrap();
+        repartitioner.spill().unwrap();
 
         // after spill, there should be spill files
         assert!(repartitioner.partition_writers[0].spill_file.is_some());
@@ -1292,34 +1404,45 @@ mod test {
     ) {
         let batch = create_batch(batch_size);
 
-        let batches = (0..num_batches).map(|_| batch.clone()).collect::<Vec<_>>();
+        for partitioning in [
+            CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+            CometPartitioning::RangePartitioning(
+                LexOrdering::new(vec![PhysicalSortExpr::new_default(
+                    col("a", batch.schema().as_ref()).unwrap(),
+                )]),
+                num_partitions,
+                100,
+            ),
+        ] {
+            let batches = (0..num_batches).map(|_| batch.clone()).collect::<Vec<_>>();
 
-        let partitions = &[batches];
-        let exec = ShuffleWriterExec::try_new(
-            Arc::new(DataSourceExec::new(Arc::new(
-                MemorySourceConfig::try_new(partitions, batch.schema(), None).unwrap(),
-            ))),
-            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
-            CompressionCodec::Zstd(1),
-            "/tmp/data.out".to_string(),
-            "/tmp/index.out".to_string(),
-            true,
-        )
-        .unwrap();
+            let partitions = &[batches];
+            let exec = ShuffleWriterExec::try_new(
+                Arc::new(DataSourceExec::new(Arc::new(
+                    MemorySourceConfig::try_new(partitions, batch.schema(), None).unwrap(),
+                ))),
+                partitioning,
+                CompressionCodec::Zstd(1),
+                "/tmp/data.out".to_string(),
+                "/tmp/index.out".to_string(),
+                false,
+            )
+            .unwrap();
 
-        // 10MB memory should be enough for running this test
-        let config = SessionConfig::new();
-        let mut runtime_env_builder = RuntimeEnvBuilder::new();
-        runtime_env_builder = match memory_limit {
-            Some(limit) => runtime_env_builder.with_memory_limit(limit, 1.0),
-            None => runtime_env_builder,
-        };
-        let runtime_env = Arc::new(runtime_env_builder.build().unwrap());
-        let ctx = SessionContext::new_with_config_rt(config, runtime_env);
-        let task_ctx = ctx.task_ctx();
-        let stream = exec.execute(0, task_ctx).unwrap();
-        let rt = Runtime::new().unwrap();
-        rt.block_on(collect(stream)).unwrap();
+            // 10MB memory should be enough for running this test
+            let config = SessionConfig::new();
+            let mut runtime_env_builder = RuntimeEnvBuilder::new();
+            runtime_env_builder = match memory_limit {
+                Some(limit) => runtime_env_builder.with_memory_limit(limit, 1.0),
+                None => runtime_env_builder,
+            };
+            let runtime_env = Arc::new(runtime_env_builder.build().unwrap());
+            let ctx = SessionContext::new_with_config_rt(config, runtime_env);
+            let task_ctx = ctx.task_ctx();
+            let stream = exec.execute(0, task_ctx).unwrap();
+            let rt = Runtime::new().unwrap();
+            rt.block_on(collect(stream)).unwrap();
+        }
     }
 
     fn create_batch(batch_size: usize) -> RecordBatch {

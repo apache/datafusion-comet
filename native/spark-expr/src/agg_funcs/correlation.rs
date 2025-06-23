@@ -21,6 +21,7 @@ use std::{any::Any, sync::Arc};
 
 use crate::agg_funcs::covariance::CovarianceAccumulator;
 use crate::agg_funcs::stddev::StddevAccumulator;
+use arrow::datatypes::FieldRef;
 use arrow::{
     array::ArrayRef,
     datatypes::{DataType, Field},
@@ -83,38 +84,38 @@ impl AggregateUDFImpl for Correlation {
         )?))
     }
 
-    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<Field>> {
+    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
         Ok(vec![
-            Field::new(
+            Arc::new(Field::new(
                 format_state_name(&self.name, "count"),
                 DataType::Float64,
                 true,
-            ),
-            Field::new(
+            )),
+            Arc::new(Field::new(
                 format_state_name(&self.name, "mean1"),
                 DataType::Float64,
                 true,
-            ),
-            Field::new(
+            )),
+            Arc::new(Field::new(
                 format_state_name(&self.name, "mean2"),
                 DataType::Float64,
                 true,
-            ),
-            Field::new(
+            )),
+            Arc::new(Field::new(
                 format_state_name(&self.name, "algo_const"),
                 DataType::Float64,
                 true,
-            ),
-            Field::new(
+            )),
+            Arc::new(Field::new(
                 format_state_name(&self.name, "m2_1"),
                 DataType::Float64,
                 true,
-            ),
-            Field::new(
+            )),
+            Arc::new(Field::new(
                 format_state_name(&self.name, "m2_2"),
                 DataType::Float64,
                 true,
-            ),
+            )),
         ])
     }
 }

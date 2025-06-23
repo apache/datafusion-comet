@@ -22,23 +22,39 @@ package org.apache.comet.rules
 import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, PlanExpression}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, PlanExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.catalyst.util.MetadataColumnHelper
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
+import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types._
 
-import org.apache.comet.CometConf
-import org.apache.comet.CometConf.{COMET_DPP_FALLBACK_ENABLED, COMET_EXEC_ENABLED, COMET_NATIVE_SCAN_IMPL, COMET_SCHEMA_EVOLUTION_ENABLED, SCAN_NATIVE_ICEBERG_COMPAT}
-import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo}
+import org.apache.comet.{CometConf, DataTypeSupport}
+import org.apache.comet.CometConf._
+import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 
+/**
+ * Spark physical optimizer rule for replacing Spark scans with Comet scans.
+ */
 case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
+
+  private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
+
   override def apply(plan: SparkPlan): SparkPlan = {
+    val newPlan = _apply(plan)
+    if (showTransformations) {
+      logInfo(s"\nINPUT: $plan\nOUTPUT: $newPlan")
+    }
+    newPlan
+  }
+
+  private def _apply(plan: SparkPlan): SparkPlan = {
     if (!isCometLoaded(conf) || !isCometScanEnabled(conf)) {
       if (!isCometLoaded(conf)) {
         withInfo(plan, "Comet is not enabled")
@@ -86,24 +102,75 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
         val fallbackReasons = new ListBuffer[String]()
         if (!CometScanExec.isFileFormatSupported(r.fileFormat)) {
           fallbackReasons += s"Unsupported file format ${r.fileFormat}"
+          return withInfos(scanExec, fallbackReasons.toSet)
         }
 
-        val scanImpl = COMET_NATIVE_SCAN_IMPL.get()
-        if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && !COMET_EXEC_ENABLED.get()) {
+        var scanImpl = COMET_NATIVE_SCAN_IMPL.get()
+
+        // if scan is auto then pick the best available scan
+        if (scanImpl == SCAN_AUTO) {
+          scanImpl = selectScan(scanExec, r.partitionSchema)
+        }
+
+        if (scanImpl == SCAN_NATIVE_DATAFUSION && !COMET_EXEC_ENABLED.get()) {
           fallbackReasons +=
             s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled"
+          return withInfos(scanExec, fallbackReasons.toSet)
         }
 
-        val (schemaSupported, partitionSchemaSupported) = scanImpl match {
-          case CometConf.SCAN_NATIVE_DATAFUSION =>
-            (
-              CometNativeScanExec.isSchemaSupported(scanExec.requiredSchema),
-              CometNativeScanExec.isSchemaSupported(r.partitionSchema))
-          case CometConf.SCAN_NATIVE_COMET | SCAN_NATIVE_ICEBERG_COMPAT =>
-            (
-              CometScanExec.isSchemaSupported(scanExec.requiredSchema),
-              CometScanExec.isSchemaSupported(r.partitionSchema))
+        if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && (SQLConf.get.ignoreCorruptFiles ||
+            scanExec.relation.options
+              .get("ignorecorruptfiles") // Spark sets this to lowercase.
+              .contains("true"))) {
+          fallbackReasons +=
+            "Full native scan disabled because ignoreCorruptFiles enabled"
+          return withInfos(scanExec, fallbackReasons.toSet)
         }
+
+        if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && (SQLConf.get.ignoreMissingFiles ||
+            scanExec.relation.options
+              .get("ignoremissingfiles") // Spark sets this to lowercase.
+              .contains("true"))) {
+          fallbackReasons +=
+            "Full native scan disabled because ignoreMissingFiles enabled"
+          return withInfos(scanExec, fallbackReasons.toSet)
+        }
+
+        if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && scanExec.bucketedScan) {
+          // https://github.com/apache/datafusion-comet/issues/1719
+          fallbackReasons +=
+            "Full native scan disabled because bucketed scan is not supported"
+          return withInfos(scanExec, fallbackReasons.toSet)
+        }
+
+        val possibleDefaultValues = getExistenceDefaultValues(scanExec.requiredSchema)
+        if (possibleDefaultValues.exists(d => {
+            d != null && (d.isInstanceOf[ArrayBasedMapData] || d
+              .isInstanceOf[GenericInternalRow] || d.isInstanceOf[GenericArrayData])
+          })) {
+          // Spark already converted these to Java-native types, so we can't check SQL types.
+          // ArrayBasedMapData, GenericInternalRow, GenericArrayData correspond to maps, structs,
+          // and arrays respectively.
+          fallbackReasons +=
+            "Full native scan disabled because nested types for default values are not supported"
+          return withInfos(scanExec, fallbackReasons.toSet)
+        }
+
+        val encryptionEnabled: Boolean =
+          conf.getConfString("parquet.crypto.factory.class", "").nonEmpty &&
+            conf.getConfString("parquet.encryption.kms.client.class", "").nonEmpty
+
+        if (scanImpl != CometConf.SCAN_NATIVE_COMET && encryptionEnabled) {
+          fallbackReasons +=
+            "Full native scan disabled because encryption is not supported"
+          return withInfos(scanExec, fallbackReasons.toSet)
+        }
+
+        val typeChecker = CometScanTypeChecker(scanImpl)
+        val schemaSupported =
+          typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
+        val partitionSchemaSupported =
+          typeChecker.isSchemaSupported(r.partitionSchema, fallbackReasons)
 
         if (!schemaSupported) {
           fallbackReasons += s"Unsupported schema ${scanExec.requiredSchema} for $scanImpl"
@@ -112,10 +179,12 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
           fallbackReasons += s"Unsupported partitioning schema ${r.partitionSchema} for $scanImpl"
         }
 
-        if (fallbackReasons.isEmpty) {
-          CometScanExec(scanExec, session)
+        if (schemaSupported && partitionSchemaSupported) {
+          // this is confusing, but we always insert a CometScanExec here, which may replaced
+          // with a CometNativeExec when CometExecRule runs, depending on the scanImpl value.
+          CometScanExec(scanExec, session, scanImpl)
         } else {
-          withInfo(scanExec, fallbackReasons.mkString(", "))
+          withInfos(scanExec, fallbackReasons.toSet)
         }
 
       case _ =>
@@ -128,11 +197,15 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
     scanExec.scan match {
       case scan: ParquetScan =>
         val fallbackReasons = new ListBuffer[String]()
-        if (!CometBatchScanExec.isSchemaSupported(scan.readDataSchema)) {
+        val schemaSupported =
+          CometBatchScanExec.isSchemaSupported(scan.readDataSchema, fallbackReasons)
+        if (!schemaSupported) {
           fallbackReasons += s"Schema ${scan.readDataSchema} is not supported"
         }
 
-        if (!CometBatchScanExec.isSchemaSupported(scan.readPartitionSchema)) {
+        val partitionSchemaSupported =
+          CometBatchScanExec.isSchemaSupported(scan.readPartitionSchema, fallbackReasons)
+        if (!partitionSchemaSupported) {
           fallbackReasons += s"Partition schema ${scan.readPartitionSchema} is not supported"
         }
 
@@ -140,13 +213,13 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
           fallbackReasons += "Comet does not support pushed aggregate"
         }
 
-        if (fallbackReasons.isEmpty) {
+        if (schemaSupported && partitionSchemaSupported && scan.pushedAggregate.isEmpty) {
           val cometScan = CometParquetScan(scanExec.scan.asInstanceOf[ParquetScan])
           CometBatchScanExec(
             scanExec.copy(scan = cometScan),
             runtimeFilters = scanExec.runtimeFilters)
         } else {
-          withInfo(scanExec, fallbackReasons.mkString(", "))
+          withInfos(scanExec, fallbackReasons.toSet)
         }
 
       // Iceberg scan
@@ -158,19 +231,22 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
             s"${scanExec.scan.getClass.getSimpleName}: not enabled on data source side"
         }
 
-        if (!CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema())) {
+        val schemaSupported =
+          CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)
+
+        if (!schemaSupported) {
           fallbackReasons += "Comet extension is not enabled for " +
             s"${scanExec.scan.getClass.getSimpleName}: Schema not supported"
         }
 
-        if (fallbackReasons.isEmpty) {
+        if (s.isCometEnabled && schemaSupported) {
           // When reading from Iceberg, we automatically enable type promotion
           SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters)
         } else {
-          withInfo(scanExec, fallbackReasons.mkString(", "))
+          withInfos(scanExec, fallbackReasons.toSet)
         }
 
       case other =>
@@ -181,4 +257,75 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
     }
   }
 
+  private def selectScan(scanExec: FileSourceScanExec, partitionSchema: StructType): String = {
+    // TODO these checks are not yet exhaustive. For example, native_iceberg_compat does
+    //  not support reading from S3
+
+    val fallbackReasons = new ListBuffer[String]()
+
+    val typeChecker = CometScanTypeChecker(SCAN_NATIVE_ICEBERG_COMPAT)
+    val schemaSupported =
+      typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
+    val partitionSchemaSupported =
+      typeChecker.isSchemaSupported(partitionSchema, fallbackReasons)
+
+    def isComplexType(dt: DataType): Boolean = dt match {
+      case _: StructType | _: ArrayType | _: MapType => true
+      case _ => false
+    }
+
+    def hasMapsContainingStructs(dataType: DataType): Boolean = {
+      dataType match {
+        case s: StructType => s.exists(field => hasMapsContainingStructs(field.dataType))
+        case a: ArrayType => hasMapsContainingStructs(a.elementType)
+        case m: MapType => isComplexType(m.keyType) || isComplexType(m.valueType)
+        case _ => false
+      }
+    }
+
+    val knownIssues =
+      scanExec.requiredSchema.exists(field => hasMapsContainingStructs(field.dataType)) ||
+        partitionSchema.exists(field => hasMapsContainingStructs(field.dataType))
+
+    if (knownIssues) {
+      fallbackReasons += "There are known issues with maps containing structs when using " +
+        s"$SCAN_NATIVE_ICEBERG_COMPAT"
+    }
+
+    val cometExecEnabled = COMET_EXEC_ENABLED.get()
+    if (!cometExecEnabled) {
+      fallbackReasons += s"$SCAN_NATIVE_ICEBERG_COMPAT requires ${COMET_EXEC_ENABLED.key}=true"
+    }
+
+    if (cometExecEnabled && schemaSupported && partitionSchemaSupported && !knownIssues) {
+      logInfo(s"Auto scan mode selecting $SCAN_NATIVE_ICEBERG_COMPAT")
+      SCAN_NATIVE_ICEBERG_COMPAT
+    } else {
+      logInfo(
+        s"Auto scan mode falling back to $SCAN_NATIVE_COMET due to " +
+          s"${fallbackReasons.mkString(", ")}")
+      SCAN_NATIVE_COMET
+    }
+  }
+
+}
+
+case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport {
+  override def isTypeSupported(
+      dt: DataType,
+      name: String,
+      fallbackReasons: ListBuffer[String]): Boolean = {
+    dt match {
+      case ByteType | ShortType
+          if scanImpl != CometConf.SCAN_NATIVE_COMET &&
+            !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get() =>
+        fallbackReasons += s"$scanImpl scan cannot read $dt when " +
+          s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false. ${CometConf.COMPAT_GUIDE}."
+        false
+      case _: StructType | _: ArrayType | _: MapType if scanImpl == CometConf.SCAN_NATIVE_COMET =>
+        false
+      case _ =>
+        super.isTypeSupported(dt, name, fallbackReasons)
+    }
+  }
 }

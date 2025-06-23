@@ -15,8 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::any::Any;
-
+use arrow::datatypes::FieldRef;
 use arrow::{
     array::{ArrayRef, Float64Array},
     datatypes::{DataType, Field},
@@ -27,6 +26,8 @@ use datafusion::logical_expr::Volatility::Immutable;
 use datafusion::logical_expr::{Accumulator, AggregateUDFImpl, Signature};
 use datafusion::physical_expr::expressions::format_state_name;
 use datafusion::physical_expr::expressions::StatsType;
+use std::any::Any;
+use std::sync::Arc;
 
 /// VAR_SAMP and VAR_POP aggregate expression
 /// The implementation mostly is the same as the DataFusion's implementation. The reason
@@ -92,19 +93,23 @@ impl AggregateUDFImpl for Variance {
         )?))
     }
 
-    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<Field>> {
+    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
         Ok(vec![
-            Field::new(
+            Arc::new(Field::new(
                 format_state_name(&self.name, "count"),
                 DataType::Float64,
                 true,
-            ),
-            Field::new(
+            )),
+            Arc::new(Field::new(
                 format_state_name(&self.name, "mean"),
                 DataType::Float64,
                 true,
-            ),
-            Field::new(format_state_name(&self.name, "m2"), DataType::Float64, true),
+            )),
+            Arc::new(Field::new(
+                format_state_name(&self.name, "m2"),
+                DataType::Float64,
+                true,
+            )),
         ])
     }
 
