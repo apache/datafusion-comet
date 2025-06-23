@@ -25,6 +25,15 @@ RUN apt update \
     && apt install -y openjdk-11-jdk \
     && apt clean
 
+RUN apt install -y gcc-10 g++-10 cpp-10 unzip
+ENV CC="gcc-10"
+ENV CXX="g++-10"
+
+RUN PB_REL="https://github.com/protocolbuffers/protobuf/releases" \
+    && curl -LO $PB_REL/download/v30.2/protoc-30.2-linux-x86_64.zip \
+    && unzip protoc-30.2-linux-x86_64.zip -d /root/.local
+ENV PATH="$PATH:/root/.local/bin"
+
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 ENV RUSTFLAGS="-C debuginfo=line-tables-only -C incremental=false"
