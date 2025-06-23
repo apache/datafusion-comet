@@ -235,7 +235,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   test("array_max") {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
-      makeParquetFileAllTypes(path, dictionaryEnabled = false, n = 10000)
+      makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, n = 10000)
       spark.read.parquet(path.toString).createOrReplaceTempView("t1");
       checkSparkAnswerAndOperator(spark.sql("SELECT array_max(array(_2, _3, _4)) FROM t1"))
       checkSparkAnswerAndOperator(
