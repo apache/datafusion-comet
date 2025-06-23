@@ -1411,6 +1411,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-comet-dragonbox"
+version = "0.9.0"
+
+[[package]]
 name = "datafusion-comet-objectstore-hdfs"
 version = "0.9.0"
 dependencies = [
@@ -1441,6 +1445,7 @@ dependencies = [
  "chrono-tz",
  "criterion",
  "datafusion",
+ "datafusion-comet-dragonbox",
  "futures",
  "num",
  "rand 0.9.1",

@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::conversion_funcs::schubfach;
 use crate::timezone;
 use crate::utils::array_with_timezone;
 use crate::{EvalMode, SparkError, SparkResult};
@@ -45,6 +44,7 @@ use datafusion::common::{
 };
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
+use datafusion_comet_dragonbox::to_decimal;
 use num::{
     cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
     ToPrimitive,
@@ -1285,13 +1285,17 @@ where
             cast_array.append_null();
         } else {
             let input_value = input.value(i).as_();
-            let value = schubfach::to_decimal(input_value);
+            let value = if input_value.is_finite() {
+                Some(to_decimal(input_value))
+            } else {
+                None
+            };
 
             match value {
-                Some((significand, exponent)) => {
-                    let mut v = significand as i128;
+                Some(decimal) => {
+                    let mut v = decimal.significand as i128;
 
-                    let k = exponent + scale as i32;
+                    let k = decimal.exponent + scale as i32;
                     if k > 0 {
                         v = v.saturating_mul(Saturating(10_i128).pow(k as u32).0);
                     } else if k < 0 {

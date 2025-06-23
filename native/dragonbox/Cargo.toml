@@ -1,22 +1,32 @@
-[package]
-name = "dragonbox"
-version = "0.1.10"
-authors = ["David Tolnay <dtolnay@gmail.com>"]
-categories = ["value-formatting", "no-std", "no-std::no-alloc"]
-description = "Fast floating point to string conversion"
-documentation = "https://docs.rs/dragonbox"
-edition = "2018"
-exclude = ["performance.png", "chart/**"]
-keywords = ["float"]
-license = "Apache-2.0 WITH LLVM-exception OR BSL-1.0"
-repository = "https://github.com/dtolnay/dragonbox"
-rust-version = "1.52"
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
-[dev-dependencies]
-rand = "0.9"
+[package]
+name = "datafusion-comet-dragonbox"
+description = "Comet dragonbox integration"
+version = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+authors = { workspace = true }
+readme = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
 
 [package.metadata.docs.rs]
-targets = ["x86_64-unknown-linux-gnu"]
 rustdoc-args = [
     "--generate-link-to-definition",
     "--extern-html-root-url=core=https://doc.rust-lang.org",

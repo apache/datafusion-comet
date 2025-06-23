@@ -16,8 +16,8 @@
 # under the License.
 
 [workspace]
-default-members = ["core", "spark-expr", "proto"]
-members = ["core", "spark-expr", "proto", "hdfs"]
+default-members = ["core", "spark-expr", "proto", "dragonbox"]
+members = ["core", "spark-expr", "proto", "hdfs", "dragonbox"]
 resolver = "2"
 
 [workspace.package]
