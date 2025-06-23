@@ -54,25 +54,6 @@ class CometJoinSuite extends CometTestBase {
         .toSeq)
   }
 
-  test("SortMergeJoin with unsupported key type should fall back to Spark") {
-    withSQLConf(
-      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
-      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
-      withTable("t1", "t2") {
-        sql("CREATE TABLE t1(name STRING, time TIMESTAMP) USING PARQUET")
-        sql("INSERT OVERWRITE t1 VALUES('a', timestamp'2019-01-01 11:11:11')")
-
-        sql("CREATE TABLE t2(name STRING, time TIMESTAMP) USING PARQUET")
-        sql("INSERT OVERWRITE t2 VALUES('a', timestamp'2019-01-01 11:11:11')")
-
-        val df = sql("SELECT * FROM t1 JOIN t2 ON t1.time = t2.time")
-        val (sparkPlan, cometPlan) = checkSparkAnswer(df)
-        assert(sparkPlan.canonicalized === cometPlan.canonicalized)
-      }
-    }
-  }
-
   test("Broadcast HashJoin without join filter") {
     withSQLConf(
       CometConf.COMET_BATCH_SIZE.key -> "100",
@@ -445,5 +426,37 @@ class CometJoinSuite extends CometTestBase {
             |GROUP BY r.a
         """.stripMargin))
     }
+  }
+
+  test("join - timestamp") {
+    import java.sql.Timestamp
+
+    val df1 = Seq(
+      Timestamp.valueOf("2025-06-23 00:00:00"),
+      Timestamp.valueOf("2025-06-24 12:34:56")
+    ).toDF("ts").as("df1")
+
+    val df2 = Seq(
+      Timestamp.valueOf("2025-06-23 00:00:00"),
+      Timestamp.valueOf("2025-06-25 01:02:03")
+    ).toDF("ts").as("df2")
+
+    checkAnswer(
+      df1.join(df2, $"df1.ts" === $"df2.ts"),
+      sql(
+        """
+        SELECT a.ts, b.ts
+        FROM VALUES
+          (TIMESTAMP '2025-06-23 00:00:00'),
+          (TIMESTAMP '2025-06-24 12:34:56')
+        AS a(ts)
+        JOIN VALUES
+          (TIMESTAMP '2025-06-23 00:00:00'),
+          (TIMESTAMP '2025-06-25 01:02:03')
+        AS b(ts)
+        ON a.ts = b.ts
+        """
+      ).collect().toSeq
+    )
   }
 }
