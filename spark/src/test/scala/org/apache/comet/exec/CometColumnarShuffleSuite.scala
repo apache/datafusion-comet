@@ -567,7 +567,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     Seq(10, 201).foreach { numPartitions =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, false, 10000, 10010)
+        makeParquetFileAllPrimitiveTypes(path, false, 10000, 10010)
         // TODO: revisit this when we have resolution of https://github.com/apache/arrow-rs/issues/7040
         // and https://github.com/apache/arrow-rs/issues/7097
         val fieldsToTest =
@@ -742,7 +742,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
 
         Seq(10, 201).foreach { numPartitions =>
           (1 to 20).map(i => s"_$i").foreach { c =>
@@ -971,7 +971,7 @@ class CometShuffleEncryptionSuite extends CometTestBase {
         Seq(true, false).foreach { asyncEnabled =>
           withTempDir { dir =>
             val path = new Path(dir.toURI.toString, "test.parquet")
-            makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
+            makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
 
             (1 until 10).map(i => $"_$i").foreach { col =>
               withSQLConf(
