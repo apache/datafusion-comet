@@ -43,6 +43,6 @@ runs:
       run: |
         cd apache-spark
         git apply ../dev/diffs/${{inputs.spark-version}}.diff
-        ./dev/change-scala-version.sh ${{inputs.scala-version}
+        ./dev/change-scala-version.sh ${{inputs.scala-version}}
         ./build/mvn versions:set -DnewVersion=${{inputs.spark-version}}-SNAPSHOT
         ./build/mvn -Pscala-${{inputs.scala-version}} -Phive -Phive-thriftserver -DskipTests -Denforcer.skip=true clean install
