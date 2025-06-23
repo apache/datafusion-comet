@@ -105,9 +105,6 @@ class ParquetReadFromS3Suite extends CometTestBase with AdaptiveSparkPlanHelper 
   }
 
   test("read parquet file from MinIO") {
-    // native_iceberg_compat mode does not have comprehensive S3 support, so we don't run tests
-    // under this mode.
-    assume(sys.env.getOrElse("COMET_PARQUET_SCAN_IMPL", "") != SCAN_NATIVE_ICEBERG_COMPAT)
 
     val testFilePath = s"s3a://$testBucketName/data/test-file.parquet"
     writeTestParquetFile(testFilePath)

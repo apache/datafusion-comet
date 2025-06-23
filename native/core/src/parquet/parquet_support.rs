@@ -360,14 +360,6 @@ fn parse_hdfs_url(_url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_sto
     })
 }
 
-/// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
-pub(crate) fn prepare_object_store(
-    runtime_env: Arc<RuntimeEnv>,
-    url: String,
-) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
-    prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
-}
-
 /// Parses the url, registers the object store with configurations, and returns a tuple of the object store url
 /// and object store path
 pub(crate) fn prepare_object_store_with_configs(
