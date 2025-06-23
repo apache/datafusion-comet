@@ -428,7 +428,7 @@ source rather than using available artifacts in Maven</strong></p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>scala&gt; spark.sql(s&quot;SELECT * from t1&quot;).show()
 25/04/28 07:29:37 INFO core/src/lib.rs: Comet native library version 0.9.0 initialized
 25/04/28 07:29:37 WARN CometSparkSessionExtensions$CometExecRule: Comet cannot execute some parts of this plan natively (set spark.comet.explainFallback.enabled=false to disable this logging):
- CollectLimit [COMET: CollectLimit is not supported]
+ CollectLimit
 +-  Project [COMET: toprettystring is not supported]
    +- CometScanWrapper
 
