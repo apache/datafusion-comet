@@ -856,20 +856,33 @@ object QueryPlanSerde extends Logging with CometExprShim {
             .isInstanceOf[UnaryExpression] && expr.isInstanceOf[TimeZoneAwareExpression] =>
         val child = expr.asInstanceOf[UnaryExpression].child
         val timezoneId = expr.asInstanceOf[TimeZoneAwareExpression].timeZoneId
-        exprToProtoInternal(child, inputs, binding) match {
-          case Some(p) =>
-            val toPrettyString = ExprOuterClass.ToPrettyString
-              .newBuilder()
-              .setChild(p)
-              .setTimezone(timezoneId.getOrElse("UTC"))
-              .build()
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setToPrettyString(toPrettyString)
-                .build())
-          case _ =>
-            withInfo(expr, child)
+
+        handleCast(
+          expr,
+          child,
+          inputs,
+          binding,
+          DataTypes.StringType,
+          timezoneId,
+          CometEvalMode.TRY) match {
+          case Some(_) =>
+            exprToProtoInternal(child, inputs, binding) match {
+              case Some(p) =>
+                val toPrettyString = ExprOuterClass.ToPrettyString
+                  .newBuilder()
+                  .setChild(p)
+                  .setTimezone(timezoneId.getOrElse("UTC"))
+                  .build()
+                Some(
+                  ExprOuterClass.Expr
+                    .newBuilder()
+                    .setToPrettyString(toPrettyString)
+                    .build())
+              case _ =>
+                withInfo(expr, child)
+                None
+            }
+          case None =>
             None
         }
 
