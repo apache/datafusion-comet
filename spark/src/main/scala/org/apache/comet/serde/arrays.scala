@@ -150,6 +150,19 @@ object CometArrayContains extends CometExpressionSerde with IncompatExpr {
   }
 }
 
+object CometArrayDistinct extends CometExpressionSerde {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
+
+    val arrayDistinctScalarExpr =
+      scalarFunctionExprToProto("array_distinct", arrayExprProto)
+    optExprWithInfo(arrayDistinctScalarExpr, expr)
+  }
+}
+
 object CometArrayIntersect extends CometExpressionSerde with IncompatExpr {
   override def convert(
       expr: Expression,
@@ -171,9 +184,9 @@ object CometArrayMax extends CometExpressionSerde {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
 
-    val arrayContainsScalarExpr =
+    val arrayMaxScalarExpr =
       scalarFunctionExprToProto("array_max", arrayExprProto)
-    optExprWithInfo(arrayContainsScalarExpr, expr)
+    optExprWithInfo(arrayMaxScalarExpr, expr)
   }
 }
 
