@@ -108,7 +108,7 @@ public class FileReader implements Closeable {
   private final SeekableInputStream f;
   private final InputFile file;
   private final Map<String, SQLMetric> metrics;
-  private final Map<ColumnPath, ColumnDescriptor> paths;
+  private final Map<ColumnPath, ColumnDescriptor> paths = new HashMap<>();
   private final FileMetaData fileMetaData; // may be null
   private final List<BlockMetaData> blocks;
   private final List<ColumnIndexReader> blockIndexStores;
@@ -153,14 +153,26 @@ public class FileReader implements Closeable {
     this.options = options;
     this.cometOptions = cometOptions;
     this.metrics = null;
-    footer = readFooter(file, f, options, converter);
+    try {
+      this.footer = readFooter(file, options, f, converter);
+    } catch (Exception e) {
+      // In case that reading footer throws an exception in the constructor, the new stream
+      // should be closed. Otherwise, there's no way to close this outside.
+      f.close();
+      throw e;
+    }
     this.fileMetaData = footer.getFileMetaData();
-    this.fileDecryptor = initDecryptor(fileMetaData);
+    this.fileDecryptor = fileMetaData.getFileDecryptor(); // must be called before filterRowGroups!
+    if (null != fileDecryptor && fileDecryptor.plaintextFile()) {
+      this.fileDecryptor = null; // Plaintext file. No need in decryptor
+    }
 
-    this.blocks = footer.getBlocks();
+    this.blocks = footer.getBlocks(); // filter row group in iceberg
     this.blockIndexStores = listWithNulls(this.blocks.size());
     this.blockRowRanges = listWithNulls(this.blocks.size());
-    this.paths = buildPaths(fileMetaData);
+    for (ColumnDescriptor col : footer.getFileMetaData().getSchema().getColumns()) {
+      paths.put(ColumnPath.get(col.getPath()), col);
+    }
     this.crc = options.usePageChecksumVerification() ? new CRC32() : null;
   }
 
@@ -187,16 +199,28 @@ public class FileReader implements Closeable {
     this.cometOptions = cometOptions;
     this.metrics = metrics;
     if (footer == null) {
-      footer = readFooter(file, f, options, converter);
+      try {
+        footer = readFooter(file, options, f, converter);
+      } catch (Exception e) {
+        // In case that reading footer throws an exception in the constructor, the new stream
+        // should be closed. Otherwise, there's no way to close this outside.
+        f.close();
+        throw e;
+      }
     }
     this.footer = footer;
     this.fileMetaData = footer.getFileMetaData();
-    this.fileDecryptor = initDecryptor(fileMetaData);
+    this.fileDecryptor = fileMetaData.getFileDecryptor(); // must be called before filterRowGroups!
+    if (null != fileDecryptor && fileDecryptor.plaintextFile()) {
+      this.fileDecryptor = null; // Plaintext file. No need in decryptor
+    }
 
     this.blocks = filterRowGroups(footer.getBlocks());
     this.blockIndexStores = listWithNulls(this.blocks.size());
     this.blockRowRanges = listWithNulls(this.blocks.size());
-    this.paths = buildPaths(fileMetaData);
+    for (ColumnDescriptor col : footer.getFileMetaData().getSchema().getColumns()) {
+      paths.put(ColumnPath.get(col.getPath()), col);
+    }
     this.crc = options.usePageChecksumVerification() ? new CRC32() : null;
   }
 
@@ -230,42 +254,6 @@ public class FileReader implements Closeable {
     paths.clear();
     for (ColumnDescriptor col : projection) {
       paths.put(ColumnPath.get(col.getPath()), col);
-    }
-  }
-
-  /** This method is called from Apache Iceberg. */
-  public void setRequestedSchemaFromSpecs(List<ParquetColumnSpec> specList) {
-    paths.clear();
-    for (ParquetColumnSpec colSpec : specList) {
-      ColumnDescriptor descriptor = Utils.buildColumnDescriptor(colSpec);
-      paths.put(ColumnPath.get(colSpec.getPath()), descriptor);
-    }
-  }
-
-  private static InternalFileDecryptor initDecryptor(FileMetaData meta) {
-    InternalFileDecryptor decryptor = meta.getFileDecryptor();
-    return (decryptor != null && decryptor.plaintextFile()) ? null : decryptor;
-  }
-
-  private static Map<ColumnPath, ColumnDescriptor> buildPaths(FileMetaData meta) {
-    Map<ColumnPath, ColumnDescriptor> paths = new HashMap<>();
-    for (ColumnDescriptor col : meta.getSchema().getColumns()) {
-      paths.put(ColumnPath.get(col.getPath()), col);
-    }
-    return paths;
-  }
-
-  private static ParquetMetadata readFooter(
-      InputFile file,
-      SeekableInputStream f,
-      ParquetReadOptions options,
-      ParquetMetadataConverter converter)
-      throws IOException {
-    try {
-      return readFooter(file, options, f, converter);
-    } catch (IOException e) {
-      f.close();
-      throw e;
     }
   }
 
