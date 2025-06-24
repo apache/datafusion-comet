@@ -2815,13 +2815,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withSQLConf("spark.comet.batchSize" -> cometBatchSize.toString) {
       withParquetDataFrame((0 until rowsNumber).map(Tuple1.apply)) { df =>
         val dfWithRandParameters = df.repartition(partitionsNumber).withColumn("rnd", rand(seed))
-        checkSparkAnswer(dfWithRandParameters)
+        checkSparkAnswerAndOperator(dfWithRandParameters)
         val dfWithOverflowSeed =
           df.repartition(partitionsNumber).withColumn("rnd", rand(Long.MaxValue))
-        checkSparkAnswer(dfWithOverflowSeed)
+        checkSparkAnswerAndOperator(dfWithOverflowSeed)
         val dfWithNullSeed =
           df.repartition(partitionsNumber).selectExpr("_1", "rand(null) as rnd")
-        checkSparkAnswer(dfWithNullSeed)
+        checkSparkAnswerAndOperator(dfWithNullSeed)
       }
     }
   }
