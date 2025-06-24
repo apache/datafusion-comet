@@ -104,10 +104,10 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, BitwiseNotExpr, Cast, CheckOverflow, Contains, Correlation,
-    Covariance, CreateNamedStruct, DateTruncExpr, EndsWith, GetArrayStructFields, GetStructField,
-    HourExpr, IfExpr, Like, ListExtract, MinuteExpr, NormalizeNaNAndZero, RLike, RandExpr,
-    SecondExpr, SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
+    ArrayInsert, Avg, AvgDecimal,  Cast, CheckOverflow, Contains, Correlation,
+    Covariance, CreateNamedStruct, EndsWith, GetArrayStructFields, GetStructField,
+    IfExpr, Like, ListExtract, NormalizeNaNAndZero, RLike, RandExpr,
+    SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
     TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
 use itertools::Itertools;
@@ -3070,7 +3070,7 @@ mod tests {
     fn test_array_repeat() {
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
-        let planner = PhysicalPlanner::new(Arc::from(session_ctx));
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
 
         // Mock scan operator with 3 INT32 columns
         let op_scan = Operator {
