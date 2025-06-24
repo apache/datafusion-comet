@@ -150,7 +150,7 @@ object CometArrayContains extends CometExpressionSerde with IncompatExpr {
   }
 }
 
-object CometArrayDistinct extends CometExpressionSerde {
+object CometArrayDistinct extends CometExpressionSerde with IncompatExpr {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
