@@ -208,9 +208,10 @@ The following Spark expressions are currently available. Any known compatibility
 ## Other
 
 | Expression              | Notes                                                                           |
-| ----------------------- | ------------------------------------------------------------------------------- |
+|-------------------------| ------------------------------------------------------------------------------- |
 | Cast                    | See compatibility guide for list of supported cast expressions and known issues |
 | BloomFilterMightContain |                                                                                 |
 | ScalarSubquery          |                                                                                 |
 | Coalesce                |                                                                                 |
 | NormalizeNaNAndZero     |                                                                                 |
+| ToPrettyString          |                                                                                 |
