@@ -51,6 +51,9 @@ object CometConf extends ShimCometConf {
   private val TUNING_GUIDE = "For more information, refer to the Comet Tuning " +
     "Guide (https://datafusion.apache.org/comet/user-guide/tuning.html)"
 
+  private val TRACING_GUIDE = "For more information, refer to the Comet Tracing " +
+    "Guide (https://datafusion.apache.org/comet/user-guide/tracing.html)"
+
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
 
@@ -83,6 +86,7 @@ object CometConf extends ShimCometConf {
   val SCAN_NATIVE_COMET = "native_comet"
   val SCAN_NATIVE_DATAFUSION = "native_datafusion"
   val SCAN_NATIVE_ICEBERG_COMPAT = "native_iceberg_compat"
+  val SCAN_AUTO = "auto"
 
   val COMET_NATIVE_SCAN_IMPL: ConfigEntry[String] = conf("spark.comet.scan.impl")
     .doc(
@@ -92,19 +96,15 @@ object CometConf extends ShimCometConf {
         "parquet file reader and native column decoding. Supports simple types only " +
         s"'$SCAN_NATIVE_DATAFUSION' is a fully native implementation of scan based on DataFusion" +
         s"'$SCAN_NATIVE_ICEBERG_COMPAT' is a native implementation that exposes apis to read " +
-        "parquet columns natively.")
+        s"parquet columns natively. $SCAN_AUTO chooses the best scan.")
     .internal()
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
-    .checkValues(Set(SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT))
+    .checkValues(
+      Set(SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT, SCAN_AUTO))
     .createWithDefault(sys.env
       .getOrElse("COMET_PARQUET_SCAN_IMPL", SCAN_NATIVE_COMET)
       .toLowerCase(Locale.ROOT))
-
-  def isExperimentalNativeScan: Boolean = COMET_NATIVE_SCAN_IMPL.get() match {
-    case SCAN_NATIVE_DATAFUSION | SCAN_NATIVE_ICEBERG_COMPAT => true
-    case SCAN_NATIVE_COMET => false
-  }
 
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.parallel.io.enabled")
@@ -233,6 +233,12 @@ object CometConf extends ShimCometConf {
       defaultValue = true,
       notes = Some("stddev is slower than Spark's implementation"))
 
+  val COMET_TRACING_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.tracing.enabled")
+    .doc(s"Enable fine-grained tracing of events and memory usage. $TRACING_GUIDE.")
+    .internal()
+    .booleanConf
+    .createWithDefault(false)
+
   val COMET_MEMORY_OVERHEAD: OptionalConfigEntry[Long] = conf("spark.comet.memoryOverhead")
     .doc(
       "The amount of additional memory to be allocated per executor process for Comet, in MiB, " +
@@ -285,13 +291,6 @@ object CometConf extends ShimCometConf {
     .checkValues(Set("native", "jvm", "auto"))
     .createWithDefault("auto")
 
-  val COMET_SHUFFLE_FALLBACK_TO_COLUMNAR: ConfigEntry[Boolean] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.fallbackToColumnar")
-      .doc("Whether to try falling back to columnar shuffle when native shuffle is not supported")
-      .internal()
-      .booleanConf
-      .createWithDefault(false)
-
   val COMET_EXEC_BROADCAST_FORCE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.broadcast.enabled")
       .doc(
@@ -310,6 +309,21 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.native.shuffle.partitioning.hash.enabled")
+      .doc("Whether to enable hash partitioning for Comet native shuffle.")
+      .booleanConf
+      .createWithDefault(true)
+
+  // RangePartitioning contains bugs https://github.com/apache/datafusion-comet/issues/1906
+  val COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.native.shuffle.partitioning.range.enabled")
+      .doc("Experimental feature to enable range partitioning for Comet native shuffle. " +
+        "This feature is experimental while we investigate scenarios that don't partition data " +
+        "correctly.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
       .doc(
@@ -325,14 +339,6 @@ object CometConf extends ShimCometConf {
       .doc("The compression level to use when compressing shuffle files with zstd.")
       .intConf
       .createWithDefault(1)
-
-  val COMET_SHUFFLE_ENABLE_FAST_ENCODING: ConfigEntry[Boolean] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enableFastEncoding")
-      .doc("Whether to enable Comet's faster proprietary encoding for shuffle blocks " +
-        "rather than using Arrow IPC.")
-      .internal()
-      .booleanConf
-      .createWithDefault(true)
 
   val COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.columnar.shuffle.async.enabled")
@@ -455,6 +461,14 @@ object CometConf extends ShimCometConf {
         "When this setting is enabled, Comet will provide a tree representation of " +
           "the native query plan before execution and again after execution, with " +
           "metrics.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXPLAIN_TRANSFORMATIONS: ConfigEntry[Boolean] =
+    conf("spark.comet.explain.rules")
+      .doc("When this setting is enabled, Comet will log all plan transformations performed " +
+        "in physical optimizer rules. Default: false")
+      .internal()
       .booleanConf
       .createWithDefault(false)
 
@@ -590,8 +604,8 @@ object CometConf extends ShimCometConf {
   val COMET_SCAN_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
     conf("spark.comet.scan.allowIncompatible")
       .doc(
-        "Comet is not currently fully compatible with Spark for all datatypes. " +
-          s"Set this config to true to allow them anyway. $COMPAT_GUIDE.")
+        "Some Comet scan implementations are not currently fully compatible with Spark for " +
+          s"all datatypes. Set this config to true to allow them anyway. $COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 
@@ -773,11 +787,13 @@ private[comet] abstract class ConfigEntry[T](
 
   /**
    * Retrieves the config value from the current thread-local [[SQLConf]]
+   *
    * @return
    */
   def get(): T = get(SQLConf.get)
 
   def defaultValue: Option[T] = None
+
   def defaultValueString: String
 
   override def toString: String = {
@@ -796,6 +812,7 @@ private[comet] class ConfigEntryWithDefault[T](
     version: String)
     extends ConfigEntry(key, valueConverter, stringConverter, doc, isPublic, version) {
   override def defaultValue: Option[T] = Some(_defaultValue)
+
   override def defaultValueString: String = stringConverter(_defaultValue)
 
   def get(conf: SQLConf): T = {
@@ -831,6 +848,7 @@ private[comet] class OptionalConfigEntry[T](
 }
 
 private[comet] case class ConfigBuilder(key: String) {
+
   import ConfigHelpers._
 
   var _public = true

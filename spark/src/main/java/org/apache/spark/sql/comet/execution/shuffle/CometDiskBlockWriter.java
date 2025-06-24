@@ -36,11 +36,9 @@ import org.slf4j.LoggerFactory;
 import org.apache.spark.SparkConf;
 import org.apache.spark.TaskContext;
 import org.apache.spark.executor.ShuffleWriteMetrics;
-import org.apache.spark.memory.TaskMemoryManager;
 import org.apache.spark.serializer.SerializationStream;
 import org.apache.spark.serializer.SerializerInstance;
 import org.apache.spark.shuffle.ShuffleWriteMetricsReporter;
-import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator;
 import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocatorTrait;
 import org.apache.spark.shuffle.sort.RowPartition;
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow;
@@ -106,6 +104,7 @@ public final class CometDiskBlockWriter {
   private final String compressionCodec;
   private final int compressionLevel;
   private final boolean isAsync;
+  private final boolean tracingEnabled;
   private final int asyncThreadNum;
   private final ExecutorService threadPool;
   private final int numElementsForSpillThreshold;
@@ -129,7 +128,7 @@ public final class CometDiskBlockWriter {
 
   CometDiskBlockWriter(
       File file,
-      TaskMemoryManager taskMemoryManager,
+      CometShuffleMemoryAllocatorTrait allocator,
       TaskContext taskContext,
       SerializerInstance serializer,
       StructType schema,
@@ -137,20 +136,17 @@ public final class CometDiskBlockWriter {
       SparkConf conf,
       boolean isAsync,
       int asyncThreadNum,
-      ExecutorService threadPool) {
-    this.allocator =
-        CometShuffleMemoryAllocator.getInstance(
-            conf,
-            taskMemoryManager,
-            Math.min(MAXIMUM_PAGE_SIZE_BYTES, taskMemoryManager.pageSizeBytes()));
+      ExecutorService threadPool,
+      boolean tracingEnabled) {
     this.nativeLib = new Native();
-
+    this.allocator = allocator;
     this.taskContext = taskContext;
     this.serializer = serializer;
     this.schema = schema;
     this.writeMetrics = writeMetrics;
     this.file = file;
     this.isAsync = isAsync;
+    this.tracingEnabled = tracingEnabled;
     this.asyncThreadNum = asyncThreadNum;
     this.threadPool = threadPool;
 
@@ -409,7 +405,8 @@ public final class CometDiskBlockWriter {
                 writeMetricsToUse,
                 preferDictionaryRatio,
                 compressionCodec,
-                compressionLevel);
+                compressionLevel,
+                tracingEnabled);
       }
 
       // Update metrics

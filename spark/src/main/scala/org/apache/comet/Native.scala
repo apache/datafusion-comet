@@ -66,7 +66,8 @@ class Native extends NativeBase {
       memoryLimitPerTask: Long,
       taskAttemptId: Long,
       debug: Boolean,
-      explain: Boolean): Long
+      explain: Boolean,
+      tracingEnabled: Boolean): Long
   // scalastyle:on
 
   /**
@@ -145,7 +146,7 @@ class Native extends NativeBase {
       currentChecksum: Long,
       compressionCodec: String,
       compressionLevel: Int,
-      enableFastEncoding: Boolean): Array[Long]
+      tracingEnabled: Boolean): Array[Long]
   // scalastyle:on
 
   /**
@@ -156,7 +157,7 @@ class Native extends NativeBase {
    * @param size
    *   the size of the array.
    */
-  @native def sortRowPartitionsNative(addr: Long, size: Long): Unit
+  @native def sortRowPartitionsNative(addr: Long, size: Long, tracingEnabled: Boolean): Unit
 
   /**
    * Decompress and decode a native shuffle block.
@@ -173,6 +174,31 @@ class Native extends NativeBase {
       shuffleBlock: ByteBuffer,
       length: Int,
       arrayAddrs: Array[Long],
-      schemaAddrs: Array[Long]): Long
+      schemaAddrs: Array[Long],
+      tracingEnabled: Boolean): Long
+
+  /**
+   * Log the beginning of an event.
+   * @param name
+   *   The name of the event.
+   */
+  @native def traceBegin(name: String): Unit
+
+  /**
+   * Log the end of an event.
+   * @param name
+   *   The name of the event.
+   */
+  @native def traceEnd(name: String): Unit
+
+  /**
+   * Log the amount of memory currently in use.
+   *
+   * @param name
+   *   Type of memory e.g. jvm, native, off-heap pool
+   * @param memoryUsageBytes
+   *   Number of bytes in use
+   */
+  @native def logMemoryUsage(name: String, memoryUsageBytes: Long): Unit
 
 }

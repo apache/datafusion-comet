@@ -60,9 +60,9 @@ pub use conditional_funcs::*;
 pub use conversion_funcs::*;
 pub use nondetermenistic_funcs::*;
 
-pub use comet_scalar_funcs::create_comet_physical_fun;
+pub use comet_scalar_funcs::{create_comet_physical_fun, register_all_comet_functions};
 pub use datetime_funcs::{
-    spark_date_add, spark_date_sub, DateTruncExpr, HourExpr, MinuteExpr, SecondExpr,
+    spark_date_add, spark_date_sub, SparkDateTrunc, SparkHour, SparkMinute, SparkSecond,
     TimestampTruncExpr,
 };
 pub use error::{SparkError, SparkResult};

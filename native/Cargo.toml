@@ -34,11 +34,12 @@ edition = "2021"
 rust-version = "1.85"
 
 [workspace.dependencies]
-arrow = { version = "55.0.0", features = ["prettyprint", "ffi", "chrono-tz"] }
+arrow = { version = "55.1.0", features = ["prettyprint", "ffi", "chrono-tz"] }
 async-trait = { version = "0.1" }
 bytes = { version = "1.10.0" }
-parquet = { version = "55.0.0", default-features = false, features = ["experimental"] }
-datafusion = { version = "47.0.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
+parquet = { version = "55.1.0", default-features = false, features = ["experimental"] }
+datafusion = { version = "48.0.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
+datafusion-spark = { version = "48.0.0" }
 datafusion-comet-spark-expr = { path = "spark-expr" }
 datafusion-comet-proto = { path = "proto" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
@@ -50,6 +51,8 @@ regex = "1.9.6"
 thiserror = "2"
 object_store = { version = "0.12.0", features = ["gcp", "azure", "aws", "http"] }
 url = "2.2"
+aws-config = "1.6.3"
+aws-credential-types = "1.2.3"
 
 [profile.release]
 debug = true

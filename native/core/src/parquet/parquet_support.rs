@@ -16,6 +16,10 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
+use arrow::array::{ListArray, MapArray};
+use arrow::buffer::NullBuffer;
+use arrow::compute::can_cast_types;
+use arrow::datatypes::{FieldRef, Fields};
 use arrow::{
     array::{
         cast::AsArray, new_null_array, types::Int32Type, types::TimestampMicrosecondType, Array,
@@ -26,6 +30,7 @@ use arrow::{
     util::display::FormatOptions,
 };
 use datafusion::common::{Result as DataFusionResult, ScalarValue};
+use datafusion::error::DataFusionError;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ColumnarValue;
@@ -33,8 +38,15 @@ use datafusion_comet_spark_expr::EvalMode;
 use object_store::path::Path;
 use object_store::{parse_url, ObjectStore};
 use std::collections::HashMap;
+use std::time::Duration;
 use std::{fmt::Debug, hash::Hash, sync::Arc};
 use url::Url;
+
+use super::objectstore;
+
+// This file originates from cast.rs. While developing native scan support and implementing
+// SparkSchemaAdapter we observed that Spark's type conversion logic on Parquet reads does not
+// always align to the CAST expression's logic, so it was duplicated here to adapt its behavior.
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
@@ -45,7 +57,7 @@ static PARQUET_OPTIONS: CastOptions = CastOptions {
         .with_timestamp_format(TIMESTAMP_FORMAT),
 };
 
-/// Spark cast options
+/// Spark Parquet type conversion options
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct SparkParquetOptions {
     /// Spark evaluation mode
@@ -58,9 +70,6 @@ pub struct SparkParquetOptions {
     pub allow_incompat: bool,
     /// Support casting unsigned ints to signed ints (used by Parquet SchemaAdapter)
     pub allow_cast_unsigned_ints: bool,
-    /// We also use the cast logic for adapting Parquet schemas, so this flag is used
-    /// for that use case
-    pub is_adapting_schema: bool,
     /// Whether to always represent decimals using 128 bits. If false, the native reader may represent decimals using 32 or 64 bits, depending on the precision.
     pub use_decimal_128: bool,
     /// Whether to read dates/timestamps that were written in the legacy hybrid Julian + Gregorian calendar as it is. If false, throw exceptions instead. If the spark type is TimestampNTZ, this should be true.
@@ -76,7 +85,6 @@ impl SparkParquetOptions {
             timezone: timezone.to_string(),
             allow_incompat,
             allow_cast_unsigned_ints: false,
-            is_adapting_schema: false,
             use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
@@ -89,7 +97,6 @@ impl SparkParquetOptions {
             timezone: "".to_string(),
             allow_incompat,
             allow_cast_unsigned_ints: false,
-            is_adapting_schema: false,
             use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
@@ -106,7 +113,7 @@ pub fn spark_parquet_convert(
     parquet_options: &SparkParquetOptions,
 ) -> DataFusionResult<ColumnarValue> {
     match arg {
-        ColumnarValue::Array(array) => Ok(ColumnarValue::Array(cast_array(
+        ColumnarValue::Array(array) => Ok(ColumnarValue::Array(parquet_convert_array(
             array,
             data_type,
             parquet_options,
@@ -116,14 +123,16 @@ pub fn spark_parquet_convert(
             // some cases e.g., scalar subquery, Spark will not fold it, so we need to handle it
             // here.
             let array = scalar.to_array()?;
-            let scalar =
-                ScalarValue::try_from_array(&cast_array(array, data_type, parquet_options)?, 0)?;
+            let scalar = ScalarValue::try_from_array(
+                &parquet_convert_array(array, data_type, parquet_options)?,
+                0,
+            )?;
             Ok(ColumnarValue::Scalar(scalar))
         }
     }
 }
 
-fn cast_array(
+fn parquet_convert_array(
     array: ArrayRef,
     to_type: &DataType,
     parquet_options: &SparkParquetOptions,
@@ -143,7 +152,7 @@ fn cast_array(
 
             let casted_dictionary = DictionaryArray::<Int32Type>::new(
                 dict_array.keys().clone(),
-                cast_array(Arc::clone(dict_array.values()), to_type, parquet_options)?,
+                parquet_convert_array(Arc::clone(dict_array.values()), to_type, parquet_options)?,
             );
 
             let casted_result = match to_type {
@@ -156,13 +165,30 @@ fn cast_array(
     };
     let from_type = array.data_type();
 
+    // Try Comet specific handlers first, then arrow-rs cast if supported,
+    // return uncasted data otherwise
     match (from_type, to_type) {
-        (Struct(_), Struct(_)) => Ok(cast_struct_to_struct(
+        (Struct(_), Struct(_)) => Ok(parquet_convert_struct_to_struct(
             array.as_struct(),
             from_type,
             to_type,
             parquet_options,
         )?),
+        (List(_), List(to_inner_type)) => {
+            let list_arr: &ListArray = array.as_list();
+            let cast_field = parquet_convert_array(
+                Arc::clone(list_arr.values()),
+                to_inner_type.data_type(),
+                parquet_options,
+            )?;
+
+            Ok(Arc::new(ListArray::new(
+                Arc::clone(to_inner_type),
+                list_arr.offsets().clone(),
+                cast_field,
+                list_arr.nulls().cloned(),
+            )))
+        }
         (Timestamp(TimeUnit::Microsecond, None), Timestamp(TimeUnit::Microsecond, Some(tz))) => {
             Ok(Arc::new(
                 array
@@ -171,13 +197,20 @@ fn cast_array(
                     .with_timezone(Arc::clone(tz)),
             ))
         }
-        _ => Ok(cast_with_options(&array, to_type, &PARQUET_OPTIONS)?),
+        (Map(_, ordered_from), Map(_, ordered_to)) if ordered_from == ordered_to =>
+            parquet_convert_map_to_map(array.as_map(), to_type, parquet_options, *ordered_to)
+            ,
+        // If Arrow cast supports the cast, delegate the cast to Arrow
+        _ if can_cast_types(from_type, to_type) => {
+            Ok(cast_with_options(&array, to_type, &PARQUET_OPTIONS)?)
+        }
+        _ => Ok(array),
     }
 }
 
 /// Cast between struct types based on logic in
 /// `org.apache.spark.sql.catalyst.expressions.Cast#castStruct`.
-fn cast_struct_to_struct(
+fn parquet_convert_struct_to_struct(
     array: &StructArray,
     from_type: &DataType,
     to_type: &DataType,
@@ -185,10 +218,16 @@ fn cast_struct_to_struct(
 ) -> DataFusionResult<ArrayRef> {
     match (from_type, to_type) {
         (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
+            // if dest and target schemas has any column in common
+            let mut field_overlap = false;
             // TODO some of this logic may be specific to converting Parquet to Spark
             let mut field_name_to_index_map = HashMap::new();
             for (i, field) in from_fields.iter().enumerate() {
-                field_name_to_index_map.insert(field.name(), i);
+                if parquet_options.case_sensitive {
+                    field_name_to_index_map.insert(field.name().clone(), i);
+                } else {
+                    field_name_to_index_map.insert(field.name().to_lowercase(), i);
+                }
             }
             assert_eq!(field_name_to_index_map.len(), from_fields.len());
             let mut cast_fields: Vec<ArrayRef> = Vec::with_capacity(to_fields.len());
@@ -196,25 +235,104 @@ fn cast_struct_to_struct(
                 // Fields in the to_type schema may not exist in the from_type schema
                 // i.e. the required schema may have fields that the file does not
                 // have
-                if field_name_to_index_map.contains_key(to_fields[i].name()) {
-                    let from_index = field_name_to_index_map[to_fields[i].name()];
-                    let cast_field = cast_array(
+                let key = if parquet_options.case_sensitive {
+                    to_fields[i].name().clone()
+                } else {
+                    to_fields[i].name().to_lowercase()
+                };
+                if field_name_to_index_map.contains_key(&key) {
+                    let from_index = field_name_to_index_map[&key];
+                    let cast_field = parquet_convert_array(
                         Arc::clone(array.column(from_index)),
                         to_fields[i].data_type(),
                         parquet_options,
                     )?;
                     cast_fields.push(cast_field);
+                    field_overlap = true;
                 } else {
                     cast_fields.push(new_null_array(to_fields[i].data_type(), array.len()));
                 }
             }
+
+            // If target schema doesn't contain any of the existing fields
+            // mark such a column in array as NULL
+            let nulls = if field_overlap {
+                array.nulls().cloned()
+            } else {
+                Some(NullBuffer::new_null(array.len()))
+            };
+
             Ok(Arc::new(StructArray::new(
                 to_fields.clone(),
                 cast_fields,
-                array.nulls().cloned(),
+                nulls,
             )))
         }
         _ => unreachable!(),
+    }
+}
+
+/// Cast a map type to another map type. The same as arrow-cast except we recursively call our own
+/// parquet_convert_array
+fn parquet_convert_map_to_map(
+    from: &MapArray,
+    to_data_type: &DataType,
+    parquet_options: &SparkParquetOptions,
+    to_ordered: bool,
+) -> Result<ArrayRef, DataFusionError> {
+    match to_data_type {
+        DataType::Map(entries_field, _) => {
+            let key_field = key_field(entries_field).ok_or(DataFusionError::Internal(
+                "map is missing key field".to_string(),
+            ))?;
+            let value_field = value_field(entries_field).ok_or(DataFusionError::Internal(
+                "map is missing value field".to_string(),
+            ))?;
+
+            let key_array = parquet_convert_array(
+                Arc::clone(from.keys()),
+                key_field.data_type(),
+                parquet_options,
+            )?;
+            let value_array = parquet_convert_array(
+                Arc::clone(from.values()),
+                value_field.data_type(),
+                parquet_options,
+            )?;
+
+            Ok(Arc::new(MapArray::new(
+                Arc::<arrow::datatypes::Field>::clone(entries_field),
+                from.offsets().clone(),
+                StructArray::new(
+                    Fields::from(vec![key_field, value_field]),
+                    vec![key_array, value_array],
+                    from.entries().nulls().cloned(),
+                ),
+                from.nulls().cloned(),
+                to_ordered,
+            )))
+        }
+        dt => Err(DataFusionError::Internal(format!(
+            "Expected MapType. Got: {dt}"
+        ))),
+    }
+}
+
+/// Gets the key field from the entries of a map.  For all other types returns None.
+fn key_field(entries_field: &FieldRef) -> Option<FieldRef> {
+    if let DataType::Struct(fields) = entries_field.data_type() {
+        fields.first().cloned()
+    } else {
+        None
+    }
+}
+
+/// Gets the value field from the entries of a map.  For all other types returns None.
+fn value_field(entries_field: &FieldRef) -> Option<FieldRef> {
+    if let DataType::Struct(fields) = entries_field.data_type() {
+        fields.get(1).cloned()
+    } else {
+        None
     }
 }
 
@@ -247,6 +365,16 @@ pub(crate) fn prepare_object_store(
     runtime_env: Arc<RuntimeEnv>,
     url: String,
 ) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
+    prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
+}
+
+/// Parses the url, registers the object store with configurations, and returns a tuple of the object store url
+/// and object store path
+pub(crate) fn prepare_object_store_with_configs(
+    runtime_env: Arc<RuntimeEnv>,
+    url: String,
+    object_store_configs: &HashMap<String, String>,
+) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
     let mut url = Url::parse(url.as_str())
         .map_err(|e| ExecutionError::GeneralError(format!("Error parsing URL {url}: {e}")))?;
     let mut scheme = url.scheme();
@@ -264,6 +392,8 @@ pub(crate) fn prepare_object_store(
 
     let (object_store, object_store_path): (Box<dyn ObjectStore>, Path) = if scheme == "hdfs" {
         parse_hdfs_url(&url)
+    } else if scheme == "s3" {
+        objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
     } else {
         parse_url(&url)
     }
@@ -289,17 +419,12 @@ mod tests {
         use crate::execution::operators::ExecutionError;
 
         let local_file_system_url = "file:///comet/spark-warehouse/part-00000.snappy.parquet";
-        let s3_url = "s3a://test_bucket/comet/spark-warehouse/part-00000.snappy.parquet";
         let hdfs_url = "hdfs://localhost:8020/comet/spark-warehouse/part-00000.snappy.parquet";
 
-        let all_urls = [local_file_system_url, s3_url, hdfs_url];
+        let all_urls = [local_file_system_url, hdfs_url];
         let expected: Vec<Result<(ObjectStoreUrl, Path), ExecutionError>> = vec![
             Ok((
                 ObjectStoreUrl::parse("file://").unwrap(),
-                Path::from("/comet/spark-warehouse/part-00000.snappy.parquet"),
-            )),
-            Ok((
-                ObjectStoreUrl::parse("s3://test_bucket").unwrap(),
                 Path::from("/comet/spark-warehouse/part-00000.snappy.parquet"),
             )),
             Err(ExecutionError::GeneralError(

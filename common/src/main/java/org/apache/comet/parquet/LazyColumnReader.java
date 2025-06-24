@@ -21,11 +21,11 @@ package org.apache.comet.parquet;
 
 import java.io.IOException;
 
-import org.apache.arrow.c.CometSchemaImporter;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.column.page.PageReader;
 import org.apache.spark.sql.types.DataType;
 
+import org.apache.comet.CometSchemaImporter;
 import org.apache.comet.vector.CometLazyVector;
 import org.apache.comet.vector.CometVector;
 

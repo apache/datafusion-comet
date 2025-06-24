@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::datatypes::Field;
+use arrow::datatypes::{Field, FieldRef};
 use datafusion::{arrow::datatypes::DataType, logical_expr::Volatility};
 use std::{any::Any, sync::Arc};
 
@@ -97,8 +97,8 @@ impl AggregateUDFImpl for BloomFilterAgg {
         ))))
     }
 
-    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<Field>> {
-        Ok(vec![Field::new("bits", DataType::Binary, false)])
+    fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
+        Ok(vec![Arc::new(Field::new("bits", DataType::Binary, false))])
     }
 
     fn groups_accumulator_supported(&self, _args: AccumulatorArgs) -> bool {

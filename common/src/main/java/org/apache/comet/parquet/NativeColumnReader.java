@@ -24,13 +24,13 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.arrow.c.ArrowArray;
 import org.apache.arrow.c.ArrowSchema;
-import org.apache.arrow.c.CometSchemaImporter;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.schema.Type;
 import org.apache.spark.sql.types.DataType;
 
+import org.apache.comet.CometSchemaImporter;
 import org.apache.comet.vector.*;
 
 // TODO: extend ColumnReader instead of AbstractColumnReader to reduce code duplication

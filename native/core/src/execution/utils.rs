@@ -15,15 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+/// Utils for array vector, etc.
+use crate::errors::ExpressionError;
+use crate::execution::operators::ExecutionError;
 use arrow::{
     array::ArrayData,
     error::ArrowError,
     ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema},
 };
-
-/// Utils for array vector, etc.
-use crate::errors::ExpressionError;
-use crate::execution::operators::ExecutionError;
 
 impl From<ArrowError> for ExecutionError {
     fn from(error: ArrowError) -> ExecutionError {

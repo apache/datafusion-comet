@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import scala.collection.mutable.ListBuffer
+
 import org.apache.spark.rdd._
 import org.apache.spark.sql.catalyst._
 import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, Literal, SortOrder}
@@ -28,6 +30,7 @@ import org.apache.spark.sql.connector.read._
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources.v2._
 import org.apache.spark.sql.execution.metric._
+import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructType}
 import org.apache.spark.sql.vectorized._
 
 import com.google.common.base.Objects
@@ -150,4 +153,12 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
   override def supportsColumnar: Boolean = true
 }
 
-object CometBatchScanExec extends DataTypeSupport
+object CometBatchScanExec extends DataTypeSupport {
+  override def isTypeSupported(
+      dt: DataType,
+      name: String,
+      fallbackReasons: ListBuffer[String]): Boolean = dt match {
+    case _: StructType | _: ArrayType | _: MapType => false
+    case _ => super.isTypeSupported(dt, name, fallbackReasons)
+  }
+}

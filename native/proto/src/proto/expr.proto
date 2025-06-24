@@ -70,9 +70,7 @@ message Expr {
     BinaryExpr bitwiseShiftLeft = 43;
     IfExpr if = 44;
     NormalizeNaNAndZero normalize_nan_and_zero = 45;
-    TruncDate truncDate = 46;
     TruncTimestamp truncTimestamp = 47;
-    UnaryExpr bitwiseNot = 48;
     Abs abs = 49;
     Subquery subquery = 50;
     UnboundReference unbound = 51;
@@ -84,7 +82,8 @@ message Expr {
     GetArrayStructFields get_array_struct_fields = 57;
     ArrayInsert array_insert = 58;
     MathExpr integral_divide = 59;
-    UnaryExpr rand = 66;
+    ToPrettyString to_pretty_string = 60;
+    UnaryExpr rand = 61;
   }
 }
 
@@ -285,6 +284,11 @@ message ToJson {
   bool ignore_null_fields = 6;
 }
 
+message ToPrettyString {
+  Expr child = 1;
+  string timezone = 2;
+}
+
 message Hour {
   Expr child = 1;
   string timezone = 2;
@@ -344,11 +348,6 @@ message IfExpr {
   Expr if_expr = 1;
   Expr true_expr = 2;
   Expr false_expr = 3;
-}
-
-message TruncDate {
-  Expr child = 1;
-  Expr format = 2;
 }
 
 message TruncTimestamp {

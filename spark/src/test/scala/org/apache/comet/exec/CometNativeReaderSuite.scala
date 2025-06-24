@@ -25,6 +25,7 @@ import org.scalatest.Tag
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
 
 import org.apache.comet.CometConf
 
@@ -42,6 +43,20 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
           testFun
         }
       })
+  }
+
+  test("native reader case sensitivity") {
+    withTempPath { path =>
+      spark.range(10).toDF("a").write.parquet(path.toString)
+      Seq(true, false).foreach { caseSensitive =>
+        withSQLConf(SQLConf.CASE_SENSITIVE.key -> caseSensitive.toString) {
+          val tbl = s"case_sensitivity_${caseSensitive}_${System.currentTimeMillis()}"
+          sql(s"create table $tbl (A long) using parquet options (path '" + path + "')")
+          val df = sql(s"select A from $tbl")
+          checkSparkAnswer(df)
+        }
+      }
+    }
   }
 
   test("native reader - read simple STRUCT fields") {
@@ -223,5 +238,202 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         |select map('c', named_struct('f0', map(1, 'b'))) as c0
         |""".stripMargin,
       "select c0 from tbl")
+  }
+  test("native reader - read a STRUCT subfield from ARRAY of STRUCTS - second field") {
+    testSingleLineQuery(
+      """
+        | select array(str0, str1) c0 from
+        | (
+        |   select
+        |     named_struct('a', 1, 'b', 'n', 'c', 'x') str0,
+        |     named_struct('a', 2, 'b', 'w', 'c', 'y') str1
+        | )
+        |""".stripMargin,
+      "select c0[0].b col0 from tbl")
+  }
+
+  test("native reader - read a STRUCT subfield - field from second") {
+    withSQLConf(
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion") {
+      testSingleLineQuery(
+        """
+          |select 1 a, named_struct('a', 1, 'b', 'n') c0
+          |""".stripMargin,
+        "select c0.b from tbl")
+    }
+  }
+
+  test("native reader - read a STRUCT subfield from ARRAY of STRUCTS - field from first") {
+    testSingleLineQuery(
+      """
+        | select array(str0, str1) c0 from
+        | (
+        |   select
+        |     named_struct('a', 1, 'b', 'n', 'c', 'x') str0,
+        |     named_struct('a', 2, 'b', 'w', 'c', 'y') str1
+        | )
+        |""".stripMargin,
+      "select c0[0].a, c0[0].b, c0[0].c from tbl")
+  }
+
+  test("native reader - read a STRUCT subfield from ARRAY of STRUCTS - reverse fields") {
+    testSingleLineQuery(
+      """
+        | select array(str0, str1) c0 from
+        | (
+        |   select
+        |     named_struct('a', 1, 'b', 'n', 'c', 'x') str0,
+        |     named_struct('a', 2, 'b', 'w', 'c', 'y') str1
+        | )
+        |""".stripMargin,
+      "select c0[0].c, c0[0].b, c0[0].a from tbl")
+  }
+
+  test("native reader - read a STRUCT subfield from ARRAY of STRUCTS - skip field") {
+    testSingleLineQuery(
+      """
+        | select array(str0, str1) c0 from
+        | (
+        |   select
+        |     named_struct('a', 1, 'b', 'n', 'c', 'x') str0,
+        |     named_struct('a', 2, 'b', 'w', 'c', 'y') str1
+        | )
+        |""".stripMargin,
+      "select c0[0].a, c0[0].c from tbl")
+  }
+
+  test("native reader - read a STRUCT subfield from ARRAY of STRUCTS - duplicate first field") {
+    testSingleLineQuery(
+      """
+        | select array(str0, str1) c0 from
+        | (
+        |   select
+        |     named_struct('a', 1, 'b', 'n', 'c', 'x') str0,
+        |     named_struct('a', 2, 'b', 'w', 'c', 'y') str1
+        | )
+        |""".stripMargin,
+      "select c0[0].a, c0[0].a from tbl")
+  }
+
+  test("native reader - select nested field from a complex map[struct, struct] using map_keys") {
+    testSingleLineQuery(
+      """
+        | select map(str0, str1) c0 from
+        | (
+        |   select named_struct('a', cast(1 as long), 'b', cast(2 as long), 'c', cast(3 as long)) str0,
+        |          named_struct('x', cast(8 as long), 'y', cast(9 as long), 'z', cast(0 as long)) str1 union all
+        |   select named_struct('a', cast(3 as long), 'b', cast(4 as long), 'c', cast(5 as long)) str0,
+        |          named_struct('x', cast(6 as long), 'y', cast(7 as long), 'z', cast(8 as long)) str1
+        | )
+        |""".stripMargin,
+      "select map_keys(c0).b from tbl")
+  }
+
+  test(
+    "native reader - select nested field from a complex map[struct, struct] using map_values") {
+    testSingleLineQuery(
+      """
+        | select map(str0, str1) c0 from
+        | (
+        |   select named_struct('a', cast(1 as long), 'b', cast(2 as long), 'c', cast(3 as long)) str0,
+        |          named_struct('x', cast(8 as long), 'y', cast(9 as long), 'z', cast(0 as long)) str1 union all
+        |   select named_struct('a', cast(3 as long), 'b', cast(4 as long), 'c', cast(5 as long)) str0,
+        |          named_struct('x', cast(6 as long), 'y', cast(7 as long), 'z', cast(8 as long)) str1 union all
+        |   select named_struct('a', cast(31 as long), 'b', cast(41 as long), 'c', cast(51 as long)), null
+        | )
+        |""".stripMargin,
+      "select map_values(c0).y from tbl")
+  }
+
+  test("native reader - select struct field with user defined schema") {
+    // extract existing A column
+    var readSchema = new StructType().add(
+      "c0",
+      new StructType()
+        .add("a", IntegerType, nullable = true),
+      nullable = true)
+
+    testSingleLineQuery(
+      """
+        | select named_struct('a', 0, 'b', 'xyz') c0
+        |""".stripMargin,
+      "select * from tbl",
+      readSchema = Some(readSchema))
+
+    // extract existing A column, nonexisting X
+    readSchema = new StructType().add(
+      "c0",
+      new StructType()
+        .add("a", IntegerType, nullable = true)
+        .add("x", StringType, nullable = true),
+      nullable = true)
+
+    testSingleLineQuery(
+      """
+        | select named_struct('a', 0, 'b', 'xyz') c0
+        |""".stripMargin,
+      "select * from tbl",
+      readSchema = Some(readSchema))
+
+    // extract nonexisting X, Y columns
+    readSchema = new StructType().add(
+      "c0",
+      new StructType()
+        .add("y", IntegerType, nullable = true)
+        .add("x", StringType, nullable = true),
+      nullable = true)
+
+    testSingleLineQuery(
+      """
+        | select named_struct('a', 0, 'b', 'xyz') c0
+        |""".stripMargin,
+      "select * from tbl",
+      readSchema = Some(readSchema))
+  }
+
+  test("native reader - extract map by key") {
+    // existing key
+    testSingleLineQuery(
+      """
+        | select map(str0, str1) c0 from
+        | (
+        |    select 'key0' str0, named_struct('a', 1, 'b', 'str') str1
+        | )
+        |""".stripMargin,
+      "select c0['key0'] from tbl")
+
+    // existing key, existing struct subfield
+    testSingleLineQuery(
+      """
+        | select map(str0, str1) c0 from
+        | (
+        |    select 'key0' str0, named_struct('a', 1, 'b', 'str') str1
+        | )
+        |""".stripMargin,
+      "select c0['key0'].b from tbl")
+
+    // nonexisting key
+    testSingleLineQuery(
+      """
+        | select map(str0, str1) c0 from
+        | (
+        |    select 'key0' str0, named_struct('a', 1, 'b', 'str') str1
+        | )
+        |""".stripMargin,
+      "select c0['key1'] from tbl")
+
+    // nonexisting key, existing struct subfield
+    testSingleLineQuery(
+      """
+        | select map(str0, str1) c0 from
+        | (
+        |    select 'key0' str0, named_struct('a', 1, 'b', 'str') str1
+        | )
+        |""".stripMargin,
+      "select c0['key1'].b from tbl")
   }
 }

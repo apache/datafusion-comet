@@ -1,0 +1,127 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: PR Build (macOS)
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  push:
+    paths-ignore:
+      - "doc/**"
+      - "docs/**"
+      - "**.md"
+  pull_request:
+    paths-ignore:
+      - "doc/**"
+      - "docs/**"
+      - "**.md"
+  # manual trigger
+  # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
+  workflow_dispatch:
+
+env:
+  RUST_VERSION: stable
+
+jobs:
+
+  macos-aarch64-test:
+    strategy:
+      matrix:
+        os: [macos-14]
+
+        # the goal with these profiles is to get coverage of all Java, Scala, and Spark
+        # versions without testing all possible combinations, which would be overkill
+        profile:
+          - name: "Spark 3.4, JDK 11, Scala 2.12"
+            java_version: "11"
+            maven_opts: "-Pspark-3.4 -Pscala-2.12"
+
+          - name: "Spark 3.5, JDK 17, Scala 2.13"
+            java_version: "17"
+            maven_opts: "-Pspark-3.5 -Pscala-2.13"
+
+          - name: "Spark 4.0, JDK 17, Scala 2.13"
+            java_version: "17"
+            maven_opts: "-Pspark-4.0 -Pscala-2.13"
+
+        suite:
+          - name: "fuzz"
+            value: |
+              org.apache.comet.CometFuzzTestSuite
+              org.apache.comet.DataGeneratorSuite
+          - name: "shuffle"
+            value: |
+              org.apache.comet.exec.CometShuffleSuite
+              org.apache.comet.exec.CometShuffle4_0Suite
+              org.apache.comet.exec.CometNativeShuffleSuite
+              org.apache.comet.exec.CometShuffleEncryptionSuite
+              org.apache.comet.exec.CometShuffleManagerSuite
+              org.apache.comet.exec.CometAsyncShuffleSuite
+              org.apache.comet.exec.DisableAQECometShuffleSuite
+              org.apache.comet.exec.DisableAQECometAsyncShuffleSuite
+          - name: "parquet"
+            value: |
+              org.apache.comet.parquet.ParquetReadV1Suite
+              org.apache.comet.parquet.ParquetReadV2Suite
+              org.apache.spark.sql.comet.ParquetDatetimeRebaseV1Suite
+              org.apache.spark.sql.comet.ParquetDatetimeRebaseV2Suite
+              org.apache.spark.sql.comet.ParquetEncryptionITCase
+              org.apache.comet.exec.CometNativeReaderSuite
+          - name: "exec"
+            value: |
+              org.apache.comet.exec.CometAggregateSuite
+              org.apache.comet.exec.CometExec3_4PlusSuite
+              org.apache.comet.exec.CometExecSuite
+              org.apache.comet.exec.CometJoinSuite
+              org.apache.comet.CometArrayExpressionSuite
+              org.apache.comet.CometCastSuite
+              org.apache.comet.CometExpressionSuite
+              org.apache.comet.CometExpressionCoverageSuite
+              org.apache.comet.CometNativeSuite
+              org.apache.comet.CometSparkSessionExtensionsSuite
+              org.apache.comet.CometStringExpressionSuite
+              org.apache.spark.CometPluginsSuite
+              org.apache.spark.CometPluginsDefaultSuite
+              org.apache.spark.CometPluginsNonOverrideSuite
+              org.apache.spark.CometPluginsUnifiedModeOverrideSuite
+              org.apache.spark.sql.CometTPCDSQuerySuite
+              org.apache.spark.sql.CometTPCDSQueryTestSuite
+              org.apache.spark.sql.CometTPCHQuerySuite
+              org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite
+              org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite
+              org.apache.spark.sql.comet.CometTaskMetricsSuite
+      fail-fast: false
+    name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-macos-builder
+        with:
+          rust-version: ${{env.RUST_VERSION}}
+          jdk-version: ${{ matrix.profile.java_version }}
+          jdk-architecture: aarch64
+          protoc-architecture: aarch_64
+      - name: Java test steps
+        uses: ./.github/actions/java-test
+        with:
+          artifact_name: ${{ matrix.os }}-${{ matrix.profile.name }}-${{ matrix.suite.name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+          suites: ${{ matrix.suite.value }}
+          maven_opts: ${{ matrix.profile.maven_opts }}

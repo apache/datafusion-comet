@@ -19,6 +19,7 @@
 
 package org.apache.comet.parquet;
 
+/** This is implemented in Apache Iceberg */
 public interface SupportsComet {
   boolean isCometEnabled();
 }
