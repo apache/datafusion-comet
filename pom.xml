@@ -1078,6 +1078,7 @@ under the License.
             <exclude>**/build/**</exclude>
             <exclude>**/target/**</exclude>
             <exclude>**/apache-spark/**</exclude>
+            <exclude>**/apache-iceberg/**</exclude>
             <exclude>.dockerignore</exclude>
             <exclude>.cicd/**</exclude>
             <exclude>.git/**</exclude>
