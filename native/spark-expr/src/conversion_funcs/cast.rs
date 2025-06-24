@@ -31,8 +31,8 @@ use arrow::{
     },
     compute::{cast_with_options, take, unary, CastOptions},
     datatypes::{
-        ArrowPrimitiveType, Decimal128Type, DecimalType, Float32Type, Float64Type, Int64Type,
-        TimestampMicrosecondType,
+        is_validate_decimal_precision, ArrowPrimitiveType, Decimal128Type, Float32Type,
+        Float64Type, Int64Type, TimestampMicrosecondType,
     },
     error::ArrowError,
     record_batch::RecordBatch,
@@ -1283,39 +1283,25 @@ where
     for i in 0..input.len() {
         if input.is_null(i) {
             cast_array.append_null();
-        } else {
-            let input_value = input.value(i).as_();
-            let value = (input_value * mul).round().to_i128();
-
-            match value {
-                Some(v) => {
-                    if Decimal128Type::validate_decimal_precision(v, precision).is_err() {
-                        if eval_mode == EvalMode::Ansi {
-                            return Err(SparkError::NumericValueOutOfRange {
-                                value: input_value.to_string(),
-                                precision,
-                                scale,
-                            });
-                        } else {
-                            cast_array.append_null();
-                            continue;
-                        }
-                    }
-                    cast_array.append_value(v);
-                }
-                None => {
-                    if eval_mode == EvalMode::Ansi {
-                        return Err(SparkError::NumericValueOutOfRange {
-                            value: input_value.to_string(),
-                            precision,
-                            scale,
-                        });
-                    } else {
-                        cast_array.append_null();
-                    }
-                }
-            }
+            continue;
         }
+
+        let input_value = input.value(i).as_();
+        if let Some(v) = (input_value * mul).round().to_i128() {
+            if is_validate_decimal_precision(v, precision) {
+                cast_array.append_value(v);
+                continue;
+            }
+        };
+
+        if eval_mode == EvalMode::Ansi {
+            return Err(SparkError::NumericValueOutOfRange {
+                value: input_value.to_string(),
+                precision,
+                scale,
+            });
+        }
+        cast_array.append_null();
     }
 
     let res = Arc::new(
