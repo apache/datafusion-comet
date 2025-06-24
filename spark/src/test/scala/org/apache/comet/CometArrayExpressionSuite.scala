@@ -37,7 +37,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
         spark.read.parquet(path.toString).createOrReplaceTempView("t1")
         checkSparkAnswerAndOperator(
           sql("SELECT array_remove(array(_2, _3,_4), _2) from t1 where _2 is null"))
@@ -114,7 +114,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   test("array_remove - fallback for unsupported type struct") {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
-      makeParquetFileAllTypes(path, dictionaryEnabled = true, 100)
+      makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 100)
       spark.read.parquet(path.toString).createOrReplaceTempView("t1")
       sql("SELECT array(struct(_1, _2)) as a, struct(_1, _2) as b FROM t1")
         .createOrReplaceTempView("t2")
@@ -134,7 +134,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
           spark.read.parquet(path.toString).createOrReplaceTempView("t1");
           checkSparkAnswerAndOperator(spark.sql("Select array_append(array(_1),false) from t1"))
           checkSparkAnswerAndOperator(
@@ -159,7 +159,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
           spark.read.parquet(path.toString).createOrReplaceTempView("t1");
           checkSparkAnswerAndOperator(spark.sql("Select array_prepend(array(_1),false) from t1"))
           checkSparkAnswerAndOperator(
@@ -183,7 +183,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       Seq(true, false).foreach(dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
           val df = spark.read
             .parquet(path.toString)
             .withColumn("arr", array(col("_4"), lit(null), col("_4")))
@@ -207,7 +207,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = false, 10000)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, 10000)
         val df = spark.read
           .parquet(path.toString)
           .withColumn("arr", array(col("_4"), lit(null), col("_4")))
@@ -222,13 +222,34 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = false, n = 10000)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, n = 10000)
         spark.read.parquet(path.toString).createOrReplaceTempView("t1");
         checkSparkAnswerAndOperator(
           spark.sql("SELECT array_contains(array(_2, _3, _4), _2) FROM t1"))
         checkSparkAnswerAndOperator(
           spark.sql("SELECT array_contains((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
       }
+    }
+  }
+
+  test("array_max") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, n = 10000)
+      spark.read.parquet(path.toString).createOrReplaceTempView("t1");
+      checkSparkAnswerAndOperator(spark.sql("SELECT array_max(array(_2, _3, _4)) FROM t1"))
+      checkSparkAnswerAndOperator(
+        spark.sql("SELECT array_max((CASE WHEN _2 =_3 THEN array(_4) END)) FROM t1"));
+      checkSparkAnswerAndOperator(
+        spark.sql("SELECT array_max((CASE WHEN _2 =_3 THEN array(_2, _4) END)) FROM t1"));
+      checkSparkAnswerAndOperator(
+        spark.sql("SELECT array_max(array(CAST(NULL AS INT), CAST(NULL AS INT))) FROM t1"))
+      checkSparkAnswerAndOperator(
+        spark.sql("SELECT array_max(array(_2, CAST(NULL AS INT))) FROM t1"))
+      checkSparkAnswerAndOperator(spark.sql("SELECT array_max(array()) FROM t1"))
+      checkSparkAnswerAndOperator(
+        spark.sql(
+          "SELECT array_max(array(double('-Infinity'), 0.0, double('Infinity'))) FROM t1"))
     }
   }
 
@@ -240,7 +261,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
           spark.read.parquet(path.toString).createOrReplaceTempView("t1")
           checkSparkAnswerAndOperator(
             sql("SELECT array_intersect(array(_2, _3, _4), array(_3, _4)) from t1"))
@@ -258,7 +279,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
           spark.read.parquet(path.toString).createOrReplaceTempView("t1")
           checkSparkAnswerAndOperator(sql(
             "SELECT array_join(array(cast(_1 as string), cast(_2 as string), cast(_6 as string)), ' @ ') from t1"))
@@ -279,7 +300,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
           spark.read.parquet(path.toString).createOrReplaceTempView("t1")
           checkSparkAnswerAndOperator(sql(
             "SELECT arrays_overlap(array(_2, _3, _4), array(_3, _4)) from t1 where _2 is not null"))
@@ -299,7 +320,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, n = 10000)
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, n = 10000)
           spark.read.parquet(path.toString).createOrReplaceTempView("t1")
 
           checkSparkAnswerAndOperator(
@@ -318,7 +339,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllTypes(path, dictionaryEnabled, 10000)
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
           spark.read.parquet(path.toString).createOrReplaceTempView("t1")
 
           checkSparkAnswerAndOperator(
@@ -411,7 +432,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllTypes(path, dictionaryEnabled, 100)
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 100)
           spark.read.parquet(path.toString).createOrReplaceTempView("t1")
 
           checkSparkAnswerAndOperator(sql("SELECT array_repeat(_4, null) from t1"))

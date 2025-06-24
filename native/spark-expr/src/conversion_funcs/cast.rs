@@ -814,6 +814,8 @@ pub struct SparkCastOptions {
     /// We also use the cast logic for adapting Parquet schemas, so this flag is used
     /// for that use case
     pub is_adapting_schema: bool,
+    /// String to use to represent null values
+    pub null_string: String,
 }
 
 impl SparkCastOptions {
@@ -824,6 +826,7 @@ impl SparkCastOptions {
             allow_incompat,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
+            null_string: "null".to_string(),
         }
     }
 
@@ -834,6 +837,7 @@ impl SparkCastOptions {
             allow_incompat,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
+            null_string: "null".to_string(),
         }
     }
 }
@@ -1143,7 +1147,7 @@ fn casts_struct_to_string(
                     str.push_str(", ");
                 }
                 if field.is_null(row_index) {
-                    str.push_str("null");
+                    str.push_str(&spark_cast_options.null_string);
                 } else {
                     str.push_str(field.value(row_index));
                 }
