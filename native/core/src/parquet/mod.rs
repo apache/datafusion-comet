@@ -654,7 +654,6 @@ pub fn get_object_store_options(
     let map = JMap::from_env(env, &map_object)?;
     // Convert to a HashMap
     let mut collected_map = HashMap::new();
-    // let mut iter = map.iter(&mut env)?;
     map.iter(env).and_then(|mut iter| {
         while let Some((key, value)) = iter.next(env)? {
             let key_string: String = String::from(env.get_string(&JString::from(key))?);
