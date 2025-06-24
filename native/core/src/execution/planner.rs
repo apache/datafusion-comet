@@ -104,11 +104,10 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal,  Cast, CheckOverflow, Contains, Correlation,
-    Covariance, CreateNamedStruct, EndsWith, GetArrayStructFields, GetStructField,
-    IfExpr, Like, ListExtract, NormalizeNaNAndZero, RLike, RandExpr,
-    SparkCastOptions, StartsWith, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
-    TimestampTruncExpr, ToJson, UnboundColumn, Variance,
+    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Contains, Correlation, Covariance,
+    CreateNamedStruct, EndsWith, GetArrayStructFields, GetStructField, IfExpr, Like, ListExtract,
+    NormalizeNaNAndZero, RLike, RandExpr, SparkCastOptions, StartsWith, Stddev, StringSpaceExpr,
+    SubstringExpr, SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
 use itertools::Itertools;
 use jni::objects::GlobalRef;
