@@ -850,6 +850,42 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
+      // ToPrettyString is new in Spark 3.5
+      case _
+          if expr.getClass.getSimpleName == "ToPrettyString" && expr
+            .isInstanceOf[UnaryExpression] && expr.isInstanceOf[TimeZoneAwareExpression] =>
+        val child = expr.asInstanceOf[UnaryExpression].child
+        val timezoneId = expr.asInstanceOf[TimeZoneAwareExpression].timeZoneId
+
+        handleCast(
+          expr,
+          child,
+          inputs,
+          binding,
+          DataTypes.StringType,
+          timezoneId,
+          CometEvalMode.TRY) match {
+          case Some(_) =>
+            exprToProtoInternal(child, inputs, binding) match {
+              case Some(p) =>
+                val toPrettyString = ExprOuterClass.ToPrettyString
+                  .newBuilder()
+                  .setChild(p)
+                  .setTimezone(timezoneId.getOrElse("UTC"))
+                  .build()
+                Some(
+                  ExprOuterClass.Expr
+                    .newBuilder()
+                    .setToPrettyString(toPrettyString)
+                    .build())
+              case _ =>
+                withInfo(expr, child)
+                None
+            }
+          case None =>
+            None
+        }
+
       case StructsToJson(options, child, timezoneId) =>
         if (options.nonEmpty) {
           withInfo(expr, "StructsToJson with options is not supported")
