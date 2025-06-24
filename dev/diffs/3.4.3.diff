@@ -1890,7 +1890,7 @@ index 07e2849ce6f..3e73645b638 100644
        ParquetOutputFormat.WRITER_VERSION -> ParquetProperties.WriterVersion.PARQUET_2_0.toString
      )
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
-index 104b4e416cd..0bd2e24e387 100644
+index 104b4e416cd..37ea65081e4 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 @@ -1096,7 +1096,11 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
@@ -1942,7 +1942,17 @@ index 104b4e416cd..0bd2e24e387 100644
        }
      }
    }
-@@ -1985,7 +1998,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -1744,7 +1757,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+     }
+   }
+ 
+-  test("SPARK-17091: Convert IN predicate to Parquet filter push-down") {
++  test("SPARK-17091: Convert IN predicate to Parquet filter push-down",
++    IgnoreCometNativeScan("Comet has different push-down behavior")) {
+     val schema = StructType(Seq(
+       StructField("a", IntegerType, nullable = false)
+     ))
+@@ -1985,7 +1999,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
      }
    }
  
@@ -1952,7 +1962,7 @@ index 104b4e416cd..0bd2e24e387 100644
      // block 1:
      //                      null count  min                                       max
      // page-0                         0  0                                         99
-@@ -2045,7 +2059,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -2045,7 +2060,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
      }
    }
  
@@ -1962,7 +1972,7 @@ index 104b4e416cd..0bd2e24e387 100644
      withTempPath { dir =>
        val path = dir.getCanonicalPath
        spark.range(100).selectExpr("id * 2 AS id")
-@@ -2277,7 +2292,11 @@ class ParquetV1FilterSuite extends ParquetFilterSuite {
+@@ -2277,7 +2293,11 @@ class ParquetV1FilterSuite extends ParquetFilterSuite {
            assert(pushedParquetFilters.exists(_.getClass === filterClass),
              s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
  
@@ -1975,7 +1985,7 @@ index 104b4e416cd..0bd2e24e387 100644
          } else {
            assert(selectedFilters.isEmpty, "There is filter pushed down")
          }
-@@ -2337,7 +2356,11 @@ class ParquetV2FilterSuite extends ParquetFilterSuite {
+@@ -2337,7 +2357,11 @@ class ParquetV2FilterSuite extends ParquetFilterSuite {
            assert(pushedParquetFilters.exists(_.getClass === filterClass),
              s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
  
@@ -2282,10 +2292,17 @@ index d083cac48ff..3c11bcde807 100644
    import testImplicits._
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
-index 266bb343526..c3e3d155813 100644
+index 266bb343526..6675cf7b636 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
-@@ -24,10 +24,11 @@ import org.apache.spark.sql.catalyst.catalog.BucketSpec
+@@ -19,15 +19,18 @@ package org.apache.spark.sql.sources
+ 
+ import scala.util.Random
+ 
++import org.apache.comet.CometConf
++
+ import org.apache.spark.sql._
+ import org.apache.spark.sql.catalyst.catalog.BucketSpec
  import org.apache.spark.sql.catalyst.expressions
  import org.apache.spark.sql.catalyst.expressions._
  import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
@@ -2299,7 +2316,7 @@ index 266bb343526..c3e3d155813 100644
  import org.apache.spark.sql.execution.joins.SortMergeJoinExec
  import org.apache.spark.sql.functions._
  import org.apache.spark.sql.internal.SQLConf
-@@ -101,12 +102,20 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -101,12 +104,20 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
      }
    }
  
@@ -2322,7 +2339,7 @@ index 266bb343526..c3e3d155813 100644
    // To verify if the bucket pruning works, this function checks two conditions:
    //   1) Check if the pruned buckets (before filtering) are empty.
    //   2) Verify the final result is the same as the expected one
-@@ -155,7 +164,8 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -155,7 +166,8 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
            val planWithoutBucketedScan = bucketedDataFrame.filter(filterCondition)
              .queryExecution.executedPlan
            val fileScan = getFileScan(planWithoutBucketedScan)
@@ -2332,7 +2349,7 @@ index 266bb343526..c3e3d155813 100644
  
            val bucketColumnType = bucketedDataFrame.schema.apply(bucketColumnIndex).dataType
            val rowsWithInvalidBuckets = fileScan.execute().filter(row => {
-@@ -451,28 +461,49 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -451,28 +463,49 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
          val joinOperator = if (joined.sqlContext.conf.adaptiveExecutionEnabled) {
            val executedPlan =
              joined.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec].executedPlan
@@ -2390,7 +2407,7 @@ index 266bb343526..c3e3d155813 100644
            s"expected sort in the right child to be $sortRight but found\n${joinOperator.right}")
  
          // check the output partitioning
-@@ -835,11 +866,11 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -835,11 +868,11 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
        df1.write.format("parquet").bucketBy(8, "i").saveAsTable("bucketed_table")
  
        val scanDF = spark.table("bucketed_table").select("j")
@@ -2404,7 +2421,40 @@ index 266bb343526..c3e3d155813 100644
        checkAnswer(aggDF, df1.groupBy("j").agg(max("k")))
      }
    }
-@@ -1026,15 +1057,23 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -894,7 +927,10 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+   }
+ 
+   test("SPARK-29655 Read bucketed tables obeys spark.sql.shuffle.partitions") {
++    // Range partitioning uses random samples, so per-partition comparisons do not always yield
++    // the same results. Disable Comet native range partitioning.
+     withSQLConf(
++      CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "false",
+       SQLConf.SHUFFLE_PARTITIONS.key -> "5",
+       SQLConf.COALESCE_PARTITIONS_INITIAL_PARTITION_NUM.key -> "7")  {
+       val bucketSpec = Some(BucketSpec(6, Seq("i", "j"), Nil))
+@@ -913,7 +949,10 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+   }
+ 
+   test("SPARK-32767 Bucket join should work if SHUFFLE_PARTITIONS larger than bucket number") {
++    // Range partitioning uses random samples, so per-partition comparisons do not always yield
++    // the same results. Disable Comet native range partitioning.
+     withSQLConf(
++      CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "false",
+       SQLConf.SHUFFLE_PARTITIONS.key -> "9",
+       SQLConf.COALESCE_PARTITIONS_INITIAL_PARTITION_NUM.key -> "10")  {
+ 
+@@ -943,7 +982,10 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+   }
+ 
+   test("bucket coalescing eliminates shuffle") {
++    // Range partitioning uses random samples, so per-partition comparisons do not always yield
++    // the same results. Disable Comet native range partitioning.
+     withSQLConf(
++      CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "false",
+       SQLConf.COALESCE_BUCKETS_IN_JOIN_ENABLED.key -> "true",
+       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+       // The side with bucketedTableTestSpec1 will be coalesced to have 4 output partitions.
+@@ -1026,15 +1068,23 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
              expectedNumShuffles: Int,
              expectedCoalescedNumBuckets: Option[Int]): Unit = {
            val plan = sql(query).queryExecution.executedPlan
@@ -2816,6 +2866,34 @@ index 52abd248f3a..7a199931a08 100644
        case h: HiveTableScanExec => h.partitionPruningPred.collect {
          case d: DynamicPruningExpression => d.child
        }
+diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala
+index a902cb3a69e..800a3acbe99 100644
+--- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala
++++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala
+@@ -24,6 +24,7 @@ import java.sql.{Date, Timestamp}
+ import java.util.{Locale, Set}
+ 
+ import com.google.common.io.Files
++import org.apache.comet.CometConf
+ import org.apache.hadoop.fs.{FileSystem, Path}
+ 
+ import org.apache.spark.{SparkException, TestUtils}
+@@ -838,8 +839,13 @@ abstract class SQLQuerySuiteBase extends QueryTest with SQLTestUtils with TestHi
+   }
+ 
+   test("SPARK-2554 SumDistinct partial aggregation") {
+-    checkAnswer(sql("SELECT sum( distinct key) FROM src group by key order by key"),
+-      sql("SELECT distinct key FROM src order by key").collect().toSeq)
++    // Range partitioning uses random samples, so per-partition comparisons do not always yield
++    // the same results. Disable Comet native range partitioning.
++    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "false")
++    {
++      checkAnswer(sql("SELECT sum( distinct key) FROM src group by key order by key"),
++        sql("SELECT distinct key FROM src order by key").collect().toSeq)
++    }
+   }
+ 
+   test("SPARK-4963 DataFrame sample on mutable row return wrong result") {
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 index 07361cfdce9..b4d53dbe900 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala

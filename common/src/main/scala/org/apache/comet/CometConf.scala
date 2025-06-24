@@ -309,6 +309,21 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.native.shuffle.partitioning.hash.enabled")
+      .doc("Whether to enable hash partitioning for Comet native shuffle.")
+      .booleanConf
+      .createWithDefault(true)
+
+  // RangePartitioning contains bugs https://github.com/apache/datafusion-comet/issues/1906
+  val COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.native.shuffle.partitioning.range.enabled")
+      .doc("Experimental feature to enable range partitioning for Comet native shuffle. " +
+        "This feature is experimental while we investigate scenarios that don't partition data " +
+        "correctly.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
       .doc(
@@ -772,11 +787,13 @@ private[comet] abstract class ConfigEntry[T](
 
   /**
    * Retrieves the config value from the current thread-local [[SQLConf]]
+   *
    * @return
    */
   def get(): T = get(SQLConf.get)
 
   def defaultValue: Option[T] = None
+
   def defaultValueString: String
 
   override def toString: String = {
@@ -795,6 +812,7 @@ private[comet] class ConfigEntryWithDefault[T](
     version: String)
     extends ConfigEntry(key, valueConverter, stringConverter, doc, isPublic, version) {
   override def defaultValue: Option[T] = Some(_defaultValue)
+
   override def defaultValueString: String = stringConverter(_defaultValue)
 
   def get(conf: SQLConf): T = {
@@ -830,6 +848,7 @@ private[comet] class OptionalConfigEntry[T](
 }
 
 private[comet] case class ConfigBuilder(key: String) {
+
   import ConfigHelpers._
 
   var _public = true
