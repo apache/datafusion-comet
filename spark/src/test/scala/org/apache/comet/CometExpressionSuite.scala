@@ -21,7 +21,6 @@ package org.apache.comet
 
 import java.time.{Duration, Period}
 
-import scala.collection.immutable.Seq
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 import scala.util.Random
@@ -40,7 +39,7 @@ import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
-import org.apache.spark.sql.types.{Decimal, DecimalType, IntegerType, StringType, StructType}
+import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
