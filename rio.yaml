@@ -60,27 +60,9 @@ builds:
         # We need to compile CometException so that the cargo test can pass
         - (cd ../common && ../mvnw ${PROFILES} clean compile -DskipTests)
 
-        # Run clean before creating cargo-reports
-        - cargo clean
-
-        # We create the target directory for the test results, following the naming convention used
-        # by surefire and scalatest (i.e. "${basedir}/target/${runner}-reports")
-        - mkdir -p target/cargo-reports
-
-        # Running tests results in multiple testsuites if you use "--format junit" which results in
-        # an invalid XML file.  These can be aggregated by Formatting the results as JSON and using
-        # cargo2junit to reformat the results as JUnit XML.
-        # FIXME Temporarily install here until we update the builder
-        - rustup install nightly && cargo +nightly install cargo2junit
         # TODO: enable all-features
-        - cargo +nightly test --release --color=never -- --color=never -Zunstable-options --report-time --format json | cargo2junit > target/cargo-reports/TEST-all.xml
-    reports: &reports
-      junit:
-        paths:
-          - "**/target/**/TEST*.xml"
-      logs:
-        paths:
-          - "**/target/**/*-output.txt"
+        - cargo clean
+        - cargo test --release
 
   - <<: *test-comet-rust
     build:
@@ -105,8 +87,13 @@ builds:
       steps:
         - make clean core
         - ./mvnw ${PROFILES} compile test-compile scalafix:scalafix -Psemanticdb -Dscalafix.mode=CHECK && SPARK_HOME=`pwd` ./mvnw ${PROFILES} clean install -DtagsToExclude=org.apache.spark.tags.DockerTest
-    reports:
-      <<: *reports
+    reports: &reports
+      junit:
+        paths:
+          - "**/target/**/TEST*.xml"
+      logs:
+        paths:
+          - "**/target/**/*-output.txt"
 
   - <<: *comet-java
     version: 3.3_2.12
