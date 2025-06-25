@@ -210,7 +210,10 @@ impl Accumulator for SumDecimalAccumulator {
         //      are null, in this case we'll return null
         //   2. if `is_empty` is false, but `null_state` is true, it means there's an overflow. In
         //      non-ANSI mode Spark returns null.
-        if self.is_empty || !self.is_not_null {
+        if self.is_empty
+            || !self.is_not_null
+            || !is_valid_decimal_precision(self.sum, self.precision)
+        {
             ScalarValue::new_primitive::<Decimal128Type>(
                 None,
                 &DataType::Decimal128(self.precision, self.scale),
