@@ -2681,7 +2681,7 @@ index abe606ad9c1..2d930b64cca 100644
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-index e937173a590..18c0232014b 100644
+index e937173a590..ca06132102d 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 @@ -27,6 +27,7 @@ import scala.concurrent.duration._
@@ -2700,7 +2700,7 @@ index e937173a590..18c0232014b 100644
  import org.apache.spark.sql.execution.FilterExec
  import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecution
  import org.apache.spark.sql.execution.datasources.DataSourceUtils
-@@ -126,7 +128,26 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
+@@ -126,7 +128,28 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
          }
        }
      } else {
@@ -2709,8 +2709,10 @@ index e937173a590..18c0232014b 100644
 +        ignore(testName + " (disabled when Comet is on)", testTags: _*)(testFun)
 +      } else {
 +        val cometScanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get(conf)
-+        val isNativeIcebergCompat = cometScanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT
-+        val isNativeDataFusion = cometScanImpl == CometConf.SCAN_NATIVE_DATAFUSION
++        val isNativeIcebergCompat = cometScanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT ||
++          cometScanImpl == CometConf.SCAN_AUTO
++        val isNativeDataFusion = cometScanImpl == CometConf.SCAN_NATIVE_DATAFUSION ||
++          cometScanImpl == CometConf.SCAN_AUTO
 +        if (isCometEnabled && isNativeIcebergCompat &&
 +          testTags.exists(_.isInstanceOf[IgnoreCometNativeIcebergCompat])) {
 +          ignore(testName + " (disabled for NATIVE_ICEBERG_COMPAT)", testTags: _*)(testFun)
@@ -2728,7 +2730,7 @@ index e937173a590..18c0232014b 100644
      }
    }
  
-@@ -242,6 +263,29 @@ private[sql] trait SQLTestUtilsBase
+@@ -242,6 +265,29 @@ private[sql] trait SQLTestUtilsBase
      protected override def _sqlContext: SQLContext = self.spark.sqlContext
    }
  
@@ -2758,7 +2760,7 @@ index e937173a590..18c0232014b 100644
    protected override def withSQLConf(pairs: (String, String)*)(f: => Unit): Unit = {
      SparkSession.setActiveSession(spark)
      super.withSQLConf(pairs: _*)(f)
-@@ -435,6 +479,8 @@ private[sql] trait SQLTestUtilsBase
+@@ -435,6 +481,8 @@ private[sql] trait SQLTestUtilsBase
      val schema = df.schema
      val withoutFilters = df.queryExecution.executedPlan.transform {
        case FilterExec(_, child) => child
