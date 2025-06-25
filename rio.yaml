@@ -61,9 +61,12 @@ builds:
         - (cd ../common && ../mvnw ${PROFILES} clean compile -DskipTests)
 
         # TODO: enable all-features
-        - cargo clean
         - cargo test --release
 
+        # Perform the same build as the future "publish" step to catch multi-target errors
+        # TODO Restore multi-target build
+        - cd ..
+        - make clean core
   - <<: *test-comet-rust
     build:
       <<: *test-comet-rust-build
@@ -85,7 +88,8 @@ builds:
     build: &test_comet_java_build
       template: freestyle:v4:build
       steps:
-        - make clean core
+        # TODO Restore multi-target build
+        -  make clean core
         - ./mvnw ${PROFILES} compile test-compile scalafix:scalafix -Psemanticdb -Dscalafix.mode=CHECK && SPARK_HOME=`pwd` ./mvnw ${PROFILES} clean install -DtagsToExclude=org.apache.spark.tags.DockerTest
     reports: &reports
       junit:
@@ -185,7 +189,7 @@ builds:
         - git apply ../dev/diffs/tpcds-kit.diff
         - cd tools && make OS=LINUX
         - cd ../..
-        - PROFILES="${PROFILES}" make clean release
+        - make clean release
         - cd spark && MAVEN_OPTS='-Xmx20g --add-exports java.base/sun.nio.ch=ALL-UNNAMED' ../mvnw ${PROFILES} exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCDSData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--dsdgenDir `pwd`/../tpcds-kit/tools --location `pwd`/tpcds --scaleFactor 1  --numPartitions 1"
         - cd .. && SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/spark/tpcds MAVEN_OPTS='--add-exports java.base/sun.nio.ch=ALL-UNNAMED' ./mvnw ${PROFILES} -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
 
@@ -212,7 +216,7 @@ builds:
     build: &comet-tpch-build
       template: freestyle:v4:prb
       steps:
-        - PROFILES="${PROFILES}" make clean release
+        - make clean release
         - cd spark && MAVEN_OPTS='-Xmx20g --add-exports java.base/sun.nio.ch=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED --add-opens java.base/java.lang.invoke=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED' ../mvnw ${PROFILES} exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCHData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--location `pwd` --scaleFactor 1 --numPartitions 1 --overwrite"
         - cd .. && SPARK_HOME=`pwd` SPARK_TPCH_DATA=`pwd`/spark/tpch/sf1_parquet MAVEN_OPTS='--add-exports java.base/sun.nio.ch=ALL-UNNAMED' ./mvnw ${PROFILES} -Dsuites=org.apache.spark.sql.CometTPCHQuerySuite test
 
@@ -240,7 +244,7 @@ builds:
     build:
       template: freestyle:v4:build
       steps:
-        - PROFILES="${PROFILES}" dev/install-comet-spark.sh
+        - dev/install-comet-spark.sh
         - source apache-spark/comet-parameters.sh
         - cd apache-spark
         - if [ "${RIO_ARCH}" == "arm64" ]; then sed -i -E "s|<leveldbjni.group>org.fusesource.leveldbjni|<leveldbjni.group>org.openlabtesting.leveldbjni|" pom.xml; fi
@@ -285,7 +289,7 @@ builds:
         - localedef -c -f UTF-8 -i en_US en_US.UTF-8
         # Dynamically add the hostname to the http.nonProxyHosts list
         - export PROXY_OPTS="-Dhttp.proxyHost=proxy.config.pcp.local -Dhttp.proxyPort=3128 -Dhttps.proxyHost=proxy.config.pcp.local -Dhttps.proxyPort=3128 -Dhttp.nonProxyHosts=\"localhost|127.0.0.1|10.100.0.0/16|*.internal|*.apple.com|internal|apple.com|${HOSTNAME}\""
-        - PROFILES="${PROFILES}" dev/install-comet-spark.sh
+        - dev/install-comet-spark.sh
         - source apache-spark/comet-parameters.sh
         - cd apache-spark
         - if [ "${RIO_ARCH}" == "arm64" ]; then sed -i -E "s|<leveldbjni.group>org.fusesource.leveldbjni|<leveldbjni.group>org.openlabtesting.leveldbjni|" pom.xml; fi
@@ -881,7 +885,7 @@ builds:
         - localedef -c -f UTF-8 -i en_US en_US.UTF-8
         # Dynamically add the hostname to the http.nonProxyHosts list
         - export PROXY_OPTS="-Dhttp.proxyHost=proxy.config.pcp.local -Dhttp.proxyPort=3128 -Dhttps.proxyHost=proxy.config.pcp.local -Dhttps.proxyPort=3128 -Dhttp.nonProxyHosts=\"localhost|127.0.0.1|10.100.0.0/16|*.internal|*.apple.com|internal|apple.com|${HOSTNAME}\""
-        - PROFILES="${PROFILES}" dev/install-comet-spark.sh
+        - dev/install-comet-spark.sh
         - source apache-spark/comet-parameters.sh
         - cd apache-spark
         - if [ "${RIO_ARCH}" == "arm64" ]; then sed -i -E "s|<leveldbjni.group>org.fusesource.leveldbjni|<leveldbjni.group>org.openlabtesting.leveldbjni|" pom.xml; fi
@@ -959,7 +963,7 @@ builds:
         - COMET_VERSION=$(./mvnw -nsu -q $PROFILES help:evaluate -Dexpression=project.version -DforceStdout 2>/dev/null | sed -e "s/-SNAPSHOT/-pr${BUILD_PARAM_PR_NUMBER}-SNAPSHOT/")
         - export NEXT_VERSION="$COMET_VERSION-iceberg"
         - ./mvnw versions:set -DnewVersion="$NEXT_VERSION"
-        - PROFILES="${PROFILES}" make clean release
+        - make clean release
         - rm -rf apache-incubator-iceberg
         - git clone git@github.pie.apple.com:IPR/apache-incubator-iceberg.git --depth 1 --branch ${ICEBERG_BRANCH}
         - cd apache-incubator-iceberg
@@ -1134,7 +1138,8 @@ builds:
         - if [ $(grep '^strip = "debuginfo"$' native/Cargo.toml | wc -l) -ne 1 ]; then echo "ERROR Debug Info must be stripped"; exit 1; fi
 
         # Build Comet
-        - PROFILES="${PROFILES}" make clean core-${RIO_ARCH}
+        # TODO Restore multi-target build
+        - make clean core
         - ci stage-lib --many-many-artifacts "$LOCAL_REPO/**/*" --exclude "**/*.xml" --exclude "**/*.md5" --exclude "**/*.sha1"
     package:
       release: false
@@ -1204,7 +1209,7 @@ builds:
 
         # Clear the previous build
         - rm -rf $LOCAL_REPO
-        - PROFILES="${PROFILES}" make clean
+        - make clean
 
         # Extract the native libraries into the "common" tree
         - mkdir -p common/target/classes/org/apache/comet
@@ -1705,7 +1710,8 @@ builds:
         - if [ $(grep '^strip = "debuginfo"$' native/Cargo.toml | wc -l) -ne 1 ]; then echo "ERROR Debug Info must be stripped"; exit 1; fi
 
         # Build Comet
-        - PROFILES="${PROFILES}" make clean core-${RIO_ARCH}
+        # TODO Restore multi-target build
+        - make clean core
         - ci stage-lib --many-many-artifacts "$LOCAL_REPO/**/*" --exclude "**/*.xml" --exclude "**/*.md5" --exclude "**/*.sha1"
     package:
       release: true
@@ -1782,7 +1788,7 @@ builds:
 
         # Clear the previous build
         - rm -rf $LOCAL_REPO
-        - PROFILES="${PROFILES}" make clean
+        - make clean
 
         # Extract the native libraries into the "common" tree
         - mkdir -p common/target/classes/org/apache/comet
@@ -2174,7 +2180,8 @@ builds:
         - if [ "${BUILD_PARAM_STRIP}" != "debuginfo" ]; then sed -i.bak "s/strip = \"debuginfo\"/strip = \"${BUILD_PARAM_STRIP}\"/" native/Cargo.toml; fi
 
         # Build Comet
-        - PROFILES="${PROFILES}" make clean core-${RIO_ARCH}
+        # TODO Restore multi-target build
+        - make clean core
         - ci stage-lib --many-many-artifacts "$LOCAL_REPO/**/*" --exclude "**/*.xml" --exclude "**/*.md5" --exclude "**/*.sha1"
     package:
       release: false
@@ -2268,7 +2275,7 @@ builds:
 
         # Clear the previous build
         - rm -rf $LOCAL_REPO
-        - PROFILES="${PROFILES}" make clean
+        - make clean
 
         # Extract the native libraries into the "common" tree
         - mkdir -p common/target/classes/org/apache/comet
