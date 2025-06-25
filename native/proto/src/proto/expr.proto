@@ -83,6 +83,7 @@ message Expr {
     ArrayInsert array_insert = 58;
     MathExpr integral_divide = 59;
     ToPrettyString to_pretty_string = 60;
+    UnaryExpr rand = 61;
   }
 }
 
