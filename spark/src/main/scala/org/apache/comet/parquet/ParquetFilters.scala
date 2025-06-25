@@ -46,6 +46,7 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.parquet.SourceFilterSerde.{createBinaryExpr, createNameExpr, createUnaryExpr, createValueExpr}
 import org.apache.comet.serde.ExprOuterClass
+import org.apache.comet.serde.QueryPlanSerde.scalarFunctionExprToProto
 import org.apache.comet.shims.ShimSQLConf
 
 /**
@@ -1013,21 +1014,27 @@ class ParquetFilters(
 
       case sources.StringStartsWith(name, prefix)
           if pushDownStringPredicate && canMakeFilterOn(name, prefix) =>
-        nameValueBinaryExpr(name, prefix) { (builder, binaryExpr) =>
-          builder.setStartsWith(binaryExpr)
+        val arg0 = createNameExpr(name, dataSchema)
+        val arg1 = arg0.flatMap { case (dataType, _) =>
+          createValueExpr(prefix, dataType)
         }
+        scalarFunctionExprToProto("starts_with", Some(arg0.get._2), arg1)
 
       case sources.StringEndsWith(name, suffix)
           if pushDownStringPredicate && canMakeFilterOn(name, suffix) =>
-        nameValueBinaryExpr(name, suffix) { (builder, binaryExpr) =>
-          builder.setEndsWith(binaryExpr)
+        val arg0 = createNameExpr(name, dataSchema)
+        val arg1 = arg0.flatMap { case (dataType, _) =>
+          createValueExpr(suffix, dataType)
         }
+        scalarFunctionExprToProto("ends_with", Some(arg0.get._2), arg1)
 
       case sources.StringContains(name, value)
           if pushDownStringPredicate && canMakeFilterOn(name, value) =>
-        nameValueBinaryExpr(name, value) { (builder, binaryExpr) =>
-          builder.setContains(binaryExpr)
+        val arg0 = createNameExpr(name, dataSchema)
+        val arg1 = arg0.flatMap { case (dataType, _) =>
+          createValueExpr(value, dataType)
         }
+        scalarFunctionExprToProto("contains", Some(arg0.get._2), arg1)
 
       case _ => None
     }

@@ -49,7 +49,7 @@ use datafusion::{
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
         expressions::{
-            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNotNullExpr, IsNullExpr,
+            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNotNullExpr, IsNullExpr, LikeExpr,
             Literal as DataFusionLiteral, NotExpr,
         },
         PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
@@ -104,10 +104,11 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Contains, Correlation, Covariance,
-    CreateNamedStruct, EndsWith, GetArrayStructFields, GetStructField, IfExpr, Like, ListExtract,
-    NormalizeNaNAndZero, RLike, SparkCastOptions, StartsWith, Stddev, StringSpaceExpr,
-    SubstringExpr, SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn, Variance,
+    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance,
+    CreateNamedStruct, GetArrayStructFields, GetStructField,
+    IfExpr, ListExtract, NormalizeNaNAndZero, RLike,
+    SparkCastOptions, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
+    TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
 use itertools::Itertools;
 use jni::objects::GlobalRef;
@@ -513,33 +514,12 @@ impl PhysicalPlanner {
 
                 Ok(Arc::new(StringSpaceExpr::new(child)))
             }
-            ExprStruct::Contains(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-
-                Ok(Arc::new(Contains::new(left, right)))
-            }
-            ExprStruct::StartsWith(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-
-                Ok(Arc::new(StartsWith::new(left, right)))
-            }
-            ExprStruct::EndsWith(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-
-                Ok(Arc::new(EndsWith::new(left, right)))
-            }
             ExprStruct::Like(expr) => {
                 let left =
                     self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
 
-                Ok(Arc::new(Like::new(left, right)))
+                Ok(Arc::new(LikeExpr::new(false, false, left, right)))
             }
             ExprStruct::Rlike(expr) => {
                 let left =
