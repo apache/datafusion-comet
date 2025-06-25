@@ -301,7 +301,8 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
       fallbackReasons += s"$SCAN_NATIVE_ICEBERG_COMPAT requires ${COMET_EXEC_ENABLED.key}=true"
     }
 
-    if (cometExecEnabled && schemaSupported && partitionSchemaSupported && !knownIssues) {
+    if (cometExecEnabled && schemaSupported && partitionSchemaSupported && !knownIssues &&
+      fallbackReasons.isEmpty) {
       logInfo(s"Auto scan mode selecting $SCAN_NATIVE_ICEBERG_COMPAT")
       SCAN_NATIVE_ICEBERG_COMPAT
     } else {
