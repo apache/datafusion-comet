@@ -103,7 +103,7 @@ object CometConf extends ShimCometConf {
     .checkValues(
       Set(SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT, SCAN_AUTO))
     .createWithDefault(sys.env
-      .getOrElse("COMET_PARQUET_SCAN_IMPL", SCAN_NATIVE_COMET)
+      .getOrElse("COMET_PARQUET_SCAN_IMPL", SCAN_AUTO)
       .toLowerCase(Locale.ROOT))
 
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
