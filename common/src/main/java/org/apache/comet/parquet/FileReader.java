@@ -257,6 +257,15 @@ public class FileReader implements Closeable {
     }
   }
 
+  /** This method is called from Apache Iceberg. */
+  public void setRequestedSchemaFromSpecs(List<ParquetColumnSpec> specList) {
+    paths.clear();
+    for (ParquetColumnSpec colSpec : specList) {
+      ColumnDescriptor descriptor = Utils.buildColumnDescriptor(colSpec);
+      paths.put(ColumnPath.get(colSpec.getPath()), descriptor);
+    }
+  }
+
   private static ParquetReadOptions buildParquetReadOptions(
       Configuration conf,
       Map<String, String> properties,
