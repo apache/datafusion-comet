@@ -34,8 +34,6 @@ import org.apache.spark.sql.comet.CometScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, sum}
 
-import org.apache.comet.CometConf.SCAN_NATIVE_ICEBERG_COMPAT
-
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
 import software.amazon.awssdk.services.s3.S3Client
@@ -105,9 +103,6 @@ class ParquetReadFromS3Suite extends CometTestBase with AdaptiveSparkPlanHelper 
   }
 
   test("read parquet file from MinIO") {
-    // native_iceberg_compat mode does not have comprehensive S3 support, so we don't run tests
-    // under this mode.
-    assume(sys.env.getOrElse("COMET_PARQUET_SCAN_IMPL", "") != SCAN_NATIVE_ICEBERG_COMPAT)
 
     val testFilePath = s"s3a://$testBucketName/data/test-file.parquet"
     writeTestParquetFile(testFilePath)
