@@ -362,10 +362,16 @@ under the License.
     </a>
    </li>
    <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#native-datafusion">
+    <a class="reference internal nav-link" href="#native-datafusion-and-native-iceberg-compat">
      <code class="docutils literal notranslate">
       <span class="pre">
        native_datafusion
+      </span>
+     </code>
+     and
+     <code class="docutils literal notranslate">
+      <span class="pre">
+       native_iceberg_compat
       </span>
      </code>
     </a>
@@ -391,15 +397,6 @@ under the License.
       </a>
      </li>
     </ul>
-   </li>
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#native-iceberg-compat">
-     <code class="docutils literal notranslate">
-      <span class="pre">
-       native_iceberg_compat
-      </span>
-     </code>
-    </a>
    </li>
   </ul>
  </li>
@@ -590,9 +587,9 @@ Input<span class="w"> </span><span class="o">[</span><span class="m">3</span><sp
 <h3><code class="docutils literal notranslate"><span class="pre">native_comet</span></code><a class="headerlink" href="#native-comet" title="Link to this heading">¶</a></h3>
 <p>The default <code class="docutils literal notranslate"><span class="pre">native_comet</span></code> Parquet scan implementation reads data from S3 using the <a class="reference external" href="https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html">Hadoop-AWS module</a>, which is identical to the approach commonly used with vanilla Spark. AWS credential configuration and other Hadoop S3A configurations works the same way as in vanilla Spark.</p>
 </section>
-<section id="native-datafusion">
-<h3><code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code><a class="headerlink" href="#native-datafusion" title="Link to this heading">¶</a></h3>
-<p>The <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> Parquet scan implementation completely offloads data loading to native code. It uses the <a class="reference external" href="https://crates.io/crates/object_store"><code class="docutils literal notranslate"><span class="pre">object_store</span></code> crate</a> to read data from S3 and supports configuring S3 access using standard <a class="reference external" href="https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html#General_S3A_Client_configuration">Hadoop S3A configurations</a> by translating them to the <code class="docutils literal notranslate"><span class="pre">object_store</span></code> crate’s format.</p>
+<section id="native-datafusion-and-native-iceberg-compat">
+<h3><code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> and <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code><a class="headerlink" href="#native-datafusion-and-native-iceberg-compat" title="Link to this heading">¶</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> and <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> Parquet scan implementations completely offload data loading to native code. They use the <a class="reference external" href="https://crates.io/crates/object_store"><code class="docutils literal notranslate"><span class="pre">object_store</span></code> crate</a> to read data from S3 and support configuring S3 access using standard <a class="reference external" href="https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html#General_S3A_Client_configuration">Hadoop S3A configurations</a> by translating them to the <code class="docutils literal notranslate"><span class="pre">object_store</span></code> crate’s format.</p>
 <p>This implementation maintains compatibility with existing Hadoop S3A configurations, so existing code will continue to work as long as the configurations are supported and can be translated without loss of functionality.</p>
 <section id="supported-credential-providers">
 <h4>Supported Credential Providers<a class="headerlink" href="#supported-credential-providers" title="Link to this heading">¶</a></h4>
@@ -705,10 +702,6 @@ Input<span class="w"> </span><span class="o">[</span><span class="m">3</span><sp
 <li><p><strong>Custom credential providers</strong>: Custom implementations of AWS credential providers are not supported. The implementation only supports the standard credential providers listed in the table above. We are planning to add support for custom credential providers through a JNI-based adapter that will allow calling Java credential providers from native code. See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1829">issue #1829</a> for more details.</p></li>
 </ol>
 </section>
-</section>
-<section id="native-iceberg-compat">
-<h3><code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code><a class="headerlink" href="#native-iceberg-compat" title="Link to this heading">¶</a></h3>
-<p>The <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> Parquet scan implementation does not support reading data from S3 yet, but we are working on it.</p>
 </section>
 </section>
 </section>
