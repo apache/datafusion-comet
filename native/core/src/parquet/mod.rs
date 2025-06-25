@@ -28,6 +28,7 @@ pub mod schema_adapter;
 
 mod objectstore;
 
+use std::collections::HashMap;
 use std::task::Poll;
 use std::{boxed::Box, ptr::NonNull, sync::Arc};
 
@@ -53,7 +54,7 @@ use crate::execution::serde;
 use crate::execution::utils::SparkArrowConvert;
 use crate::parquet::data_type::AsBytes;
 use crate::parquet::parquet_exec::init_datasource_exec;
-use crate::parquet::parquet_support::prepare_object_store;
+use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use arrow::array::{Array, RecordBatch};
 use arrow::buffer::{Buffer, MutableBuffer};
 use datafusion::datasource::listing::PartitionedFile;
@@ -61,7 +62,9 @@ use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::{poll, StreamExt};
-use jni::objects::{JBooleanArray, JByteArray, JLongArray, JPrimitiveArray, JString, ReleaseMode};
+use jni::objects::{
+    JBooleanArray, JByteArray, JLongArray, JMap, JObject, JPrimitiveArray, JString, ReleaseMode,
+};
 use jni::sys::{jstring, JNI_FALSE};
 use object_store::path::Path;
 use read::ColumnReader;
@@ -644,6 +647,25 @@ fn get_file_groups_single_file(
     vec![groups]
 }
 
+pub fn get_object_store_options(
+    env: &mut JNIEnv,
+    map_object: JObject,
+) -> Result<HashMap<String, String>, CometError> {
+    let map = JMap::from_env(env, &map_object)?;
+    // Convert to a HashMap
+    let mut collected_map = HashMap::new();
+    map.iter(env).and_then(|mut iter| {
+        while let Some((key, value)) = iter.next(env)? {
+            let key_string: String = String::from(env.get_string(&JString::from(key))?);
+            let value_string: String = String::from(env.get_string(&JString::from(value))?);
+            collected_map.insert(key_string, value_string);
+        }
+        Ok(())
+    })?;
+
+    Ok(collected_map)
+}
+
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
@@ -660,6 +682,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     session_timezone: jstring,
     batch_size: jint,
     case_sensitive: jboolean,
+    object_store_options: jobject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| unsafe {
         let session_config = SessionConfig::new().with_batch_size(batch_size as usize);
@@ -672,8 +695,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             .unwrap()
             .into();
 
-        let (object_store_url, object_store_path) =
-            prepare_object_store(session_ctx.runtime_env(), path.clone())?;
+        let object_store_config =
+            get_object_store_options(&mut env, JObject::from_raw(object_store_options))?;
+        let (object_store_url, object_store_path) = prepare_object_store_with_configs(
+            session_ctx.runtime_env(),
+            path.clone(),
+            &object_store_config,
+        )?;
 
         let required_schema_array = JByteArray::from_raw(required_schema);
         let required_schema_buffer = env.convert_byte_array(&required_schema_array)?;
