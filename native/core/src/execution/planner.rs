@@ -65,8 +65,7 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{
-    create_comet_physical_fun, create_negate_expr, SparkBitwiseCount, SparkBitwiseNot,
-    SparkDateTrunc, SparkHour, SparkMinute, SparkSecond,
+    create_comet_physical_fun, create_negate_expr, SparkHour, SparkMinute, SparkSecond,
 };
 
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -110,7 +109,6 @@ use datafusion_comet_spark_expr::{
     NormalizeNaNAndZero, RLike, SparkCastOptions, StartsWith, Stddev, StringSpaceExpr,
     SubstringExpr, SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
-use datafusion_spark::function::math::expm1::SparkExpm1;
 use itertools::Itertools;
 use jni::objects::GlobalRef;
 use num::{BigInt, ToPrimitive};
@@ -154,11 +152,6 @@ impl Default for PhysicalPlanner {
 
 impl PhysicalPlanner {
     pub fn new(session_ctx: Arc<SessionContext>) -> Self {
-        // register UDFs from datafusion-spark crate
-        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
-        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
-        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseCount::default()));
-        session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateTrunc::default()));
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,
@@ -745,6 +738,25 @@ impl PhysicalPlanner {
             ExprStruct::ToJson(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 Ok(Arc::new(ToJson::new(child, &expr.timezone)))
+            }
+            ExprStruct::ToPrettyString(expr) => {
+                let mut spark_cast_options =
+                    SparkCastOptions::new(EvalMode::Try, &expr.timezone, true);
+                let null_string = "NULL";
+                spark_cast_options.null_string = null_string.to_string();
+                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
+                let cast = Arc::new(Cast::new(
+                    Arc::clone(&child),
+                    DataType::Utf8,
+                    spark_cast_options,
+                ));
+                Ok(Arc::new(IfExpr::new(
+                    Arc::new(IsNullExpr::new(child)),
+                    Arc::new(Literal::new(ScalarValue::Utf8(Some(
+                        null_string.to_string(),
+                    )))),
+                    cast,
+                )))
             }
             ExprStruct::ListExtract(expr) => {
                 let child =

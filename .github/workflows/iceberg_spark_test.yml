@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-name: Spark SQL Tests (native_auto)
+name: Iceberg Spark SQL Tests
 
 concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
@@ -40,25 +40,21 @@ env:
   RUST_VERSION: stable
 
 jobs:
-  spark-sql-catalyst-native-auto:
+  iceberg-spark-sql:
     strategy:
       matrix:
         os: [ubuntu-24.04]
-        java-version: [11]
-        spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.6'}]
-        module:
-          - {name: "catalyst", args1: "catalyst/test", args2: ""}
-          - {name: "sql/core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}
-          - {name: "sql/core-2", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest"}
-          - {name: "sql/core-3", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest"}
-          - {name: "sql/hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
-          - {name: "sql/hive-2", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
-          - {name: "sql/hive-3", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
+        java-version: [11, 17]
+        iceberg-version: [{short: '1.8', full: '1.8.1'}]
+        spark-version: [{short: '3.5', full: '3.5.6'}]
+        scala-version: ['2.13']
       fail-fast: false
-    name: spark-sql-native-auto-${{ matrix.module.name }}/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
+    name: iceberg-spark-sql/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
+    env:
+      SPARK_LOCAL_IP: localhost
     steps:
       - uses: actions/checkout@v4
       - name: Setup Rust & Java toolchain
@@ -66,16 +62,24 @@ jobs:
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
-      - name: Setup Spark
-        uses: ./.github/actions/setup-spark-builder
+      - name: Setup Iceberg
+        uses: ./.github/actions/setup-iceberg-builder
         with:
-          spark-version: ${{ matrix.spark-version.full }}
+          iceberg-version: ${{ matrix.iceberg-version.full }}
+          scala-version: ${{ matrix.scala-version }}
           spark-short-version: ${{ matrix.spark-version.short }}
-      - name: Run Spark tests
+      - name: Build local Spark jar with comet patch
+        uses: ./.github/actions/setup-spark-local-jar
+        with:
+          spark-short-version: ${{ matrix.spark-version.short }}
+          spark-version: ${{ matrix.spark-version.full }}
+          scala-version: ${{ matrix.scala-version }}
+      - name: Run Iceberg Spark tests
         run: |
-          cd apache-spark
+          cd apache-iceberg
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          ENABLE_COMET=true ENABLE_COMET_SHUFFLE=true COMET_PARQUET_SCAN_IMPL=auto build/sbt -Dsbt.log.noformat=true ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
-        env:
-          LC_ALL: "C.UTF-8"
-
+          ENABLE_COMET=true ./gradlew -DsparkVersions=${{ matrix.spark-version.short }} -DscalaVersion=${{ matrix.scala-version }} -DflinkVersions= -DkafkaVersions= \
+            :iceberg-spark:iceberg-spark-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:check \
+            :iceberg-spark:iceberg-spark-extensions-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:check \
+            :iceberg-spark:iceberg-spark-runtime-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:check \
+            -Pquick=true -x javadoc
