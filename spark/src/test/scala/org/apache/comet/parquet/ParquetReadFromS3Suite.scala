@@ -35,8 +35,6 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, sum}
 import org.apache.spark.tags.DockerTest
 
-import org.apache.comet.CometConf.SCAN_NATIVE_ICEBERG_COMPAT
-
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
 import software.amazon.awssdk.regions.Region
