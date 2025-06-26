@@ -16,7 +16,9 @@
 // under the License.
 
 mod bitwise_count;
+mod bitwise_get;
 mod bitwise_not;
 
 pub use bitwise_count::SparkBitwiseCount;
+pub use bitwise_get::SparkBitwiseGet;
 pub use bitwise_not::SparkBitwiseNot;
