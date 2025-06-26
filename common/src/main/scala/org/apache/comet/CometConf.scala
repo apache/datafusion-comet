@@ -106,7 +106,7 @@ object CometConf extends ShimCometConf {
       .getOrElse("COMET_PARQUET_SCAN_IMPL", SCAN_NATIVE_COMET)
       .toLowerCase(Locale.ROOT))
 
-  val COMET_RESPECT_PARQUET_FILTER_PUSHDOWN_ENABLED: ConfigEntry[Boolean] =
+  val COMET_RESPECT_PARQUET_FILTER_PUSHDOWN: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.respectFilterPushdown")
       .doc(
         "Whether to respect Spark's PARQUET_FILTER_PUSHDOWN_ENABLED config. This needs to be " +

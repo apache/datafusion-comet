@@ -100,7 +100,7 @@ class CometParquetFileFormat(scanImpl: String)
     val parquetOptions = new ParquetOptions(optionsMap, sqlConf)
     val datetimeRebaseModeInRead = parquetOptions.datetimeRebaseModeInRead
     val parquetFilterPushDown = sqlConf.parquetFilterPushDown &&
-      CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN_ENABLED.get(sqlConf)
+      CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.get(sqlConf)
 
     // Comet specific configurations
     val capacity = CometConf.COMET_BATCH_SIZE.get(sqlConf)

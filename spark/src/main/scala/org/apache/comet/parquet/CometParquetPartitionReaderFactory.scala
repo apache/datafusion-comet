@@ -68,7 +68,7 @@ case class CometParquetPartitionReaderFactory(
   private val pushDownInFilterThreshold = sqlConf.parquetFilterPushDownInFilterThreshold
   private val datetimeRebaseModeInRead = options.datetimeRebaseModeInRead
   private val parquetFilterPushDown = sqlConf.parquetFilterPushDown &&
-    CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN_ENABLED.get(sqlConf)
+    CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.get(sqlConf)
 
   // Comet specific configurations
   private val batchSize = CometConf.COMET_BATCH_SIZE.get(sqlConf)

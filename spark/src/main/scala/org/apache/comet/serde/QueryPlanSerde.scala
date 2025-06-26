@@ -2225,7 +2225,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
           result.clearChildren()
 
           if (conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED) &&
-            CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN_ENABLED.get(conf)) {
+            CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.get(conf)) {
 
             val dataFilters = new ListBuffer[Expr]()
             for (filter <- scan.dataFilters) {
