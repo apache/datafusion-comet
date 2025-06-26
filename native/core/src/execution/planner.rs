@@ -323,8 +323,7 @@ impl PhysicalPlanner {
                 let idx = bound.index as usize;
                 if idx >= input_schema.fields().len() {
                     return Err(GeneralError(format!(
-                        "Column index {} is out of bound. Schema: {}",
-                        idx, input_schema
+                        "Column index {idx} is out of bound. Schema: {input_schema}"
                     )));
                 }
                 let field = input_schema.field(idx);
@@ -382,7 +381,7 @@ impl PhysicalPlanner {
                         DataType::List(f) => DataType::List(f).try_into()?,
                         DataType::Null => ScalarValue::Null,
                         dt => {
-                            return Err(GeneralError(format!("{:?} is not supported in Comet", dt)))
+                            return Err(GeneralError(format!("{dt:?} is not supported in Comet")))
                         }
                     }
                 } else {
@@ -395,8 +394,7 @@ impl PhysicalPlanner {
                             DataType::Date32 => ScalarValue::Date32(Some(*value)),
                             dt => {
                                 return Err(GeneralError(format!(
-                                    "Expected either 'Int32' or 'Date32' for IntVal, but found {:?}",
-                                    dt
+                                    "Expected either 'Int32' or 'Date32' for IntVal, but found {dt:?}"
                                 )))
                             }
                         },
@@ -410,8 +408,7 @@ impl PhysicalPlanner {
                             }
                             dt => {
                                 return Err(GeneralError(format!(
-                                    "Expected either 'Int64' or 'Timestamp' for LongVal, but found {:?}",
-                                    dt
+                                    "Expected either 'Int64' or 'Timestamp' for LongVal, but found {dt:?}"
                                 )))
                             }
                         },
@@ -423,8 +420,7 @@ impl PhysicalPlanner {
                             let big_integer = BigInt::from_signed_bytes_be(value);
                             let integer = big_integer.to_i128().ok_or_else(|| {
                                 GeneralError(format!(
-                                    "Cannot parse {:?} as i128 for Decimal literal",
-                                    big_integer
+                                    "Cannot parse {big_integer:?} as i128 for Decimal literal"
                                 ))
                             })?;
 
@@ -434,8 +430,7 @@ impl PhysicalPlanner {
                                 }
                                 dt => {
                                     return Err(GeneralError(format!(
-                                        "Decimal literal's data type should be Decimal128 but got {:?}",
-                                        dt
+                                        "Decimal literal's data type should be Decimal128 but got {dt:?}"
                                     )))
                                 }
                             }
@@ -808,7 +803,7 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 Ok(Arc::new(RandExpr::new(child, self.partition)))
             }
-            expr => Err(GeneralError(format!("Not implemented: {:?}", expr))),
+            expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
         }
     }
 
@@ -834,7 +829,7 @@ impl PhysicalPlanner {
                     options,
                 })
             }
-            expr => Err(GeneralError(format!("{:?} isn't a SortOrder", expr))),
+            expr => Err(GeneralError(format!("{expr:?} isn't a SortOrder"))),
         }
     }
 
@@ -974,7 +969,7 @@ impl PhysicalPlanner {
                     .enumerate()
                     .map(|(idx, expr)| {
                         self.create_expr(expr, child.schema())
-                            .map(|r| (r, format!("col_{}", idx)))
+                            .map(|r| (r, format!("col_{idx}")))
                     })
                     .collect();
                 let projection = Arc::new(ProjectionExec::try_new(
@@ -1019,7 +1014,7 @@ impl PhysicalPlanner {
                     .enumerate()
                     .map(|(idx, expr)| {
                         self.create_expr(expr, child.schema())
-                            .map(|r| (r, format!("col_{}", idx)))
+                            .map(|r| (r, format!("col_{idx}")))
                     })
                     .collect();
                 let group_by = PhysicalGroupBy::new_single(group_exprs?);
@@ -1055,7 +1050,7 @@ impl PhysicalPlanner {
                     .enumerate()
                     .map(|(idx, expr)| {
                         self.create_expr(expr, aggregate.schema())
-                            .map(|r| (r, format!("col_{}", idx)))
+                            .map(|r| (r, format!("col_{idx}")))
                     })
                     .collect();
 
@@ -1338,7 +1333,7 @@ impl PhysicalPlanner {
                 let fields: Vec<Field> = datatypes
                     .iter()
                     .enumerate()
-                    .map(|(idx, dt)| Field::new(format!("col_{}", idx), dt.clone(), true))
+                    .map(|(idx, dt)| Field::new(format!("col_{idx}"), dt.clone(), true))
                     .collect();
                 let schema = Arc::new(Schema::new(fields));
 
@@ -1585,8 +1580,7 @@ impl PhysicalPlanner {
             Ok(JoinType::RightAnti) => DFJoinType::RightAnti,
             Err(_) => {
                 return Err(GeneralError(format!(
-                    "Unsupported join type: {:?}",
-                    join_type
+                    "Unsupported join type: {join_type:?}"
                 )));
             }
         };
@@ -1914,8 +1908,7 @@ impl PhysicalPlanner {
                         )
                     }
                     stats_type => Err(GeneralError(format!(
-                        "Unknown StatisticsType {:?} for Variance",
-                        stats_type
+                        "Unknown StatisticsType {stats_type:?} for Variance"
                     ))),
                 }
             }
@@ -1944,8 +1937,7 @@ impl PhysicalPlanner {
                         Self::create_aggr_func_expr("variance_pop", schema, vec![child], func)
                     }
                     stats_type => Err(GeneralError(format!(
-                        "Unknown StatisticsType {:?} for Variance",
-                        stats_type
+                        "Unknown StatisticsType {stats_type:?} for Variance"
                     ))),
                 }
             }
@@ -1974,8 +1966,7 @@ impl PhysicalPlanner {
                         Self::create_aggr_func_expr("stddev_pop", schema, vec![child], func)
                     }
                     stats_type => Err(GeneralError(format!(
-                        "Unknown StatisticsType {:?} for stddev",
-                        stats_type
+                        "Unknown StatisticsType {stats_type:?} for stddev"
                     ))),
                 }
             }

@@ -102,7 +102,7 @@ impl ShuffleBlockWriter {
                 arrow_writer.write(batch)?;
                 arrow_writer.finish()?;
                 wtr.finish().map_err(|e| {
-                    DataFusionError::Execution(format!("lz4 compression error: {}", e))
+                    DataFusionError::Execution(format!("lz4 compression error: {e}"))
                 })?
             }
 
@@ -121,7 +121,7 @@ impl ShuffleBlockWriter {
                 arrow_writer.write(batch)?;
                 arrow_writer.finish()?;
                 wtr.into_inner().map_err(|e| {
-                    DataFusionError::Execution(format!("snappy compression error: {}", e))
+                    DataFusionError::Execution(format!("snappy compression error: {e}"))
                 })?
             }
         };
