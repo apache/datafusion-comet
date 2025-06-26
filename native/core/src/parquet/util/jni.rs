@@ -94,7 +94,7 @@ pub fn convert_encoding(ordinal: jint) -> Encoding {
         6 => Encoding::DELTA_LENGTH_BYTE_ARRAY,
         7 => Encoding::DELTA_BYTE_ARRAY,
         8 => Encoding::RLE_DICTIONARY,
-        _ => panic!("Invalid Java Encoding ordinal: {}", ordinal),
+        _ => panic!("Invalid Java Encoding ordinal: {ordinal}"),
     }
 }
 
@@ -153,7 +153,7 @@ fn convert_physical_type(id: jint) -> PhysicalType {
         5 => PhysicalType::DOUBLE,
         6 => PhysicalType::BYTE_ARRAY,
         7 => PhysicalType::FIXED_LEN_BYTE_ARRAY,
-        _ => panic!("Invalid id for Parquet physical type: {} ", id),
+        _ => panic!("Invalid id for Parquet physical type: {id} "),
     }
 }
 
@@ -180,7 +180,7 @@ fn convert_logical_type(
         },
         5 => LogicalType::Enum,
         6 => LogicalType::Uuid,
-        _ => panic!("Invalid id for Parquet logical type: {}", id),
+        _ => panic!("Invalid id for Parquet logical type: {id}"),
     }
 }
 
@@ -189,7 +189,7 @@ fn convert_time_unit(time_unit: jint) -> TimeUnit {
         0 => TimeUnit::MILLIS(MilliSeconds::new()),
         1 => TimeUnit::MICROS(MicroSeconds::new()),
         2 => TimeUnit::NANOS(NanoSeconds::new()),
-        _ => panic!("Invalid time unit id for Parquet: {}", time_unit),
+        _ => panic!("Invalid time unit id for Parquet: {time_unit}"),
     }
 }
 

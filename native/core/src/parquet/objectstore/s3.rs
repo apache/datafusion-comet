@@ -63,7 +63,7 @@ pub fn create_store(
     if scheme != ObjectStoreScheme::AmazonS3 {
         return Err(object_store::Error::Generic {
             store: "S3",
-            source: format!("Scheme of URL is not S3: {}", url).into(),
+            source: format!("Scheme of URL is not S3: {url}").into(),
         });
     }
     let path = Path::from_url_path(path)?;
@@ -84,7 +84,7 @@ pub fn create_store(
     };
 
     let s3_configs = extract_s3_config_options(configs, bucket);
-    debug!("S3 configs for bucket {}: {:?}", bucket, s3_configs);
+    debug!("S3 configs for bucket {bucket}: {s3_configs:?}");
 
     // When using the default AWS S3 endpoint (no custom endpoint configured), a valid region
     // is required. If no region is explicitly configured, attempt to auto-resolve it by
@@ -94,7 +94,7 @@ pub fn create_store(
     {
         let region =
             get_runtime().block_on(resolve_bucket_region(bucket, &ClientOptions::new()))?;
-        debug!("resolved region: {:?}", region);
+        debug!("resolved region: {region:?}");
         builder = builder.with_config(AmazonS3ConfigKey::Region, region.to_string());
     }
 
@@ -178,16 +178,16 @@ fn normalize_endpoint(
     }
 
     let endpoint = if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
-        format!("https://{}", endpoint)
+        format!("https://{endpoint}")
     } else {
         endpoint.to_string()
     };
 
     if virtual_hosted_style_request {
         if endpoint.ends_with("/") {
-            Some(format!("{}{}", endpoint, bucket))
+            Some(format!("{endpoint}{bucket}"))
         } else {
-            Some(format!("{}/{}", endpoint, bucket))
+            Some(format!("{endpoint}/{bucket}"))
         }
     } else {
         Some(endpoint) // Avoid extra to_string() call since endpoint is already a String
@@ -199,9 +199,9 @@ fn get_config<'a>(
     bucket: &str,
     property: &str,
 ) -> Option<&'a String> {
-    let per_bucket_key = format!("fs.s3a.bucket.{}.{}", bucket, property);
+    let per_bucket_key = format!("fs.s3a.bucket.{bucket}.{property}");
     configs.get(&per_bucket_key).or_else(|| {
-        let global_key = format!("fs.s3a.{}", property);
+        let global_key = format!("fs.s3a.{property}");
         configs.get(&global_key)
     })
 }
@@ -362,8 +362,7 @@ fn build_aws_credential_provider_metadata(
         _ => Err(object_store::Error::Generic {
             store: "S3",
             source: format!(
-                "Unsupported credential provider: {}",
-                credential_provider_name
+                "Unsupported credential provider: {credential_provider_name}"
             )
             .into(),
         }),
@@ -508,7 +507,7 @@ impl CachedAwsCredentialProvider {
 
     async fn refresh_credential(&self) -> object_store::Result<aws_credential_types::Credentials> {
         let credentials = self.provider.provide_credentials().await.map_err(|e| {
-            error!("Failed to retrieve credentials: {:?}", e);
+            error!("Failed to retrieve credentials: {e:?}");
             object_store::Error::Generic {
                 store: "S3",
                 source: Box::new(e),
@@ -631,7 +630,7 @@ impl CredentialProviderMetadata {
             CredentialProviderMetadata::Environment => "Environment".to_string(),
             CredentialProviderMetadata::WebIdentity => "WebIdentity".to_string(),
             CredentialProviderMetadata::Static { is_valid, .. } => {
-                format!("Static(valid: {})", is_valid)
+                format!("Static(valid: {is_valid})")
             }
             CredentialProviderMetadata::AssumeRole {
                 role_arn,
@@ -776,7 +775,7 @@ mod tests {
 
         fn with_bucket_credential_provider(mut self, bucket: &str, provider: &str) -> Self {
             self.configs.insert(
-                format!("fs.s3a.bucket.{}.aws.credentials.provider", bucket),
+                format!("fs.s3a.bucket.{bucket}.aws.credentials.provider"),
                 provider.to_string(),
             );
             self
@@ -802,7 +801,7 @@ mod tests {
 
         fn with_bucket_access_key(mut self, bucket: &str, key: &str) -> Self {
             self.configs.insert(
-                format!("fs.s3a.bucket.{}.access.key", bucket),
+                format!("fs.s3a.bucket.{bucket}.access.key"),
                 key.to_string(),
             );
             self
@@ -810,7 +809,7 @@ mod tests {
 
         fn with_bucket_secret_key(mut self, bucket: &str, key: &str) -> Self {
             self.configs.insert(
-                format!("fs.s3a.bucket.{}.secret.key", bucket),
+                format!("fs.s3a.bucket.{bucket}.secret.key"),
                 key.to_string(),
             );
             self
@@ -818,7 +817,7 @@ mod tests {
 
         fn with_bucket_session_token(mut self, bucket: &str, token: &str) -> Self {
             self.configs.insert(
-                format!("fs.s3a.bucket.{}.session.token", bucket),
+                format!("fs.s3a.bucket.{bucket}.session.token"),
                 token.to_string(),
             );
             self
@@ -904,8 +903,7 @@ mod tests {
         assert_eq!(credential_provider_names, vec![HADOOP_ANONYMOUS]);
 
         let aws_credential_provider_names = format!(
-            "{},{},{}",
-            HADOOP_ANONYMOUS, AWS_ENVIRONMENT, AWS_ENVIRONMENT_V1
+            "{HADOOP_ANONYMOUS},{AWS_ENVIRONMENT},{AWS_ENVIRONMENT_V1}"
         );
         let credential_provider_names =
             parse_credential_provider_names(&aws_credential_provider_names);
@@ -915,8 +913,7 @@ mod tests {
         );
 
         let aws_credential_provider_names = format!(
-            " {}, {},, {},",
-            HADOOP_ANONYMOUS, AWS_ENVIRONMENT, AWS_ENVIRONMENT_V1
+            " {HADOOP_ANONYMOUS}, {AWS_ENVIRONMENT},, {AWS_ENVIRONMENT_V1},"
         );
         let credential_provider_names =
             parse_credential_provider_names(&aws_credential_provider_names);
@@ -926,8 +923,7 @@ mod tests {
         );
 
         let aws_credential_provider_names = format!(
-            "\n  {},\n  {},\n  , \n  {},\n",
-            HADOOP_ANONYMOUS, AWS_ENVIRONMENT, AWS_ENVIRONMENT_V1
+            "\n  {HADOOP_ANONYMOUS},\n  {AWS_ENVIRONMENT},\n  , \n  {AWS_ENVIRONMENT_V1},\n"
         );
         let credential_provider_names =
             parse_credential_provider_names(&aws_credential_provider_names);
@@ -984,7 +980,7 @@ mod tests {
     #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_mixed_anonymous_and_other_providers_error() {
         let configs = TestConfigBuilder::new()
-            .with_credential_provider(&format!("{},{}", HADOOP_ANONYMOUS, AWS_ENVIRONMENT))
+            .with_credential_provider(&format!("{HADOOP_ANONYMOUS},{AWS_ENVIRONMENT}"))
             .build();
 
         let result =
@@ -1404,8 +1400,7 @@ mod tests {
         // Test three providers in chain: Environment -> IMDS -> ECS
         let configs = TestConfigBuilder::new()
             .with_credential_provider(&format!(
-                "{},{},{}",
-                AWS_ENVIRONMENT, AWS_INSTANCE_PROFILE, AWS_CONTAINER_CREDENTIALS
+                "{AWS_ENVIRONMENT},{AWS_INSTANCE_PROFILE},{AWS_CONTAINER_CREDENTIALS}"
             ))
             .build();
 
@@ -1433,8 +1428,7 @@ mod tests {
         // Test chaining static credentials -> environment -> web identity
         let configs = TestConfigBuilder::new()
             .with_credential_provider(&format!(
-                "{},{},{}",
-                HADOOP_SIMPLE, AWS_ENVIRONMENT, AWS_WEB_IDENTITY
+                "{HADOOP_SIMPLE},{AWS_ENVIRONMENT},{AWS_WEB_IDENTITY}"
             ))
             .with_access_key("chain_access_key")
             .with_secret_key("chain_secret_key")
@@ -1536,8 +1530,7 @@ mod tests {
             .with_assume_role_arn("arn:aws:iam::123456789012:role/chained-role")
             .with_assume_role_session_name("chained-base-session")
             .with_assume_role_credentials_provider(&format!(
-                "{},{},{}",
-                HADOOP_SIMPLE, AWS_ENVIRONMENT, AWS_INSTANCE_PROFILE
+                "{HADOOP_SIMPLE},{AWS_ENVIRONMENT},{AWS_INSTANCE_PROFILE}"
             ))
             .with_access_key("chained_base_access_key")
             .with_secret_key("chained_base_secret_key")
@@ -1576,14 +1569,12 @@ mod tests {
         // Test assume role as first provider in a chain, followed by environment and IMDS
         let configs = TestConfigBuilder::new()
             .with_credential_provider(&format!(
-                "  {}\n,  {}\n",
-                HADOOP_ASSUMED_ROLE, AWS_INSTANCE_PROFILE
+                "  {HADOOP_ASSUMED_ROLE}\n,  {AWS_INSTANCE_PROFILE}\n"
             ))
             .with_assume_role_arn("arn:aws:iam::123456789012:role/first-in-chain")
             .with_assume_role_session_name("first-chain-session")
             .with_assume_role_credentials_provider(&format!(
-                "  {}\n,  {}\n,  {}\n",
-                AWS_WEB_IDENTITY, HADOOP_TEMPORARY, AWS_ENVIRONMENT
+                "  {AWS_WEB_IDENTITY}\n,  {HADOOP_TEMPORARY}\n,  {AWS_ENVIRONMENT}\n"
             ))
             .with_access_key("assume_role_base_key")
             .with_secret_key("assume_role_base_secret")
@@ -1706,7 +1697,7 @@ mod tests {
     async fn test_invalid_static_credential_provider_should_not_prevent_other_providers_from_working(
     ) {
         let configs = TestConfigBuilder::new()
-            .with_credential_provider(&format!("{},{}", HADOOP_TEMPORARY, HADOOP_SIMPLE))
+            .with_credential_provider(&format!("{HADOOP_TEMPORARY},{HADOOP_SIMPLE}"))
             .with_access_key("test_access_key")
             .with_secret_key("test_secret_key")
             .build();
@@ -1757,8 +1748,8 @@ mod tests {
         {
             let cnt = self.counter.fetch_add(1, Ordering::SeqCst);
             let cred = Credentials::builder()
-                .access_key_id(format!("test_access_key_{}", cnt))
-                .secret_access_key(format!("test_secret_key_{}", cnt))
+                .access_key_id(format!("test_access_key_{cnt}"))
+                .secret_access_key(format!("test_secret_key_{cnt}"))
                 .expiry(SystemTime::now() + Duration::from_secs(60))
                 .provider_name("mock_provider")
                 .build();
@@ -1781,8 +1772,8 @@ mod tests {
         );
         for k in 0..3 {
             let credential = cached_provider.get_credential().await.unwrap();
-            assert_eq!(credential.key_id, format!("test_access_key_{}", k));
-            assert_eq!(credential.secret_key, format!("test_secret_key_{}", k));
+            assert_eq!(credential.key_id, format!("test_access_key_{k}"));
+            assert_eq!(credential.secret_key, format!("test_secret_key_{k}"));
         }
     }
 

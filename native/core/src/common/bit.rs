@@ -954,8 +954,7 @@ impl BitReader {
             shift += 7;
             debug_assert!(
                 shift <= MAX_VLQ_BYTE_LEN * 7,
-                "Num of bytes exceed MAX_VLQ_BYTE_LEN ({})",
-                MAX_VLQ_BYTE_LEN
+                "Num of bytes exceed MAX_VLQ_BYTE_LEN ({MAX_VLQ_BYTE_LEN})"
             );
             if likely(byte & 0x80 == 0) {
                 return Some(v);
@@ -1326,8 +1325,7 @@ mod tests {
         (0..total).for_each(|i| {
             assert!(
                 writer.put_value(values[i], num_bits),
-                "[{}]: put_value() failed",
-                i
+                "[{i}]: put_value() failed"
             );
         });
 
@@ -1479,8 +1477,7 @@ mod tests {
         for i in 0..batch.len() {
             assert_eq!(
                 batch[i], expected_values[i],
-                "num_bits = {}, index = {}",
-                num_bits, i
+                "num_bits = {num_bits}, index = {i}"
             );
         }
     }
@@ -1511,8 +1508,7 @@ mod tests {
                 for i in 0..batch.len() {
                     assert_eq!(
                         batch[i], values[i],
-                        "num_bits = {}, index = {}",
-                        num_bits, i
+                        "num_bits = {num_bits}, index = {i}"
                     );
                 }
             }
@@ -1554,14 +1550,12 @@ mod tests {
             if i % 2 == 0 {
                 assert!(
                     writer.put_value(values[j] as u64, num_bits),
-                    "[{}]: put_value() failed",
-                    i
+                    "[{i}]: put_value() failed"
                 );
             } else {
                 assert!(
                     writer.put_aligned::<T>(aligned_values[j], aligned_value_byte_width),
-                    "[{}]: put_aligned() failed",
-                    i
+                    "[{i}]: put_aligned() failed"
                 );
             }
         }
@@ -1599,8 +1593,7 @@ mod tests {
         (0..total).for_each(|i| {
             assert!(
                 writer.put_vlq_int(values[i] as u64),
-                "[{}]; put_vlq_int() failed",
-                i
+                "[{i}]; put_vlq_int() failed"
             );
         });
 
@@ -1625,8 +1618,7 @@ mod tests {
         (0..total).for_each(|i| {
             assert!(
                 writer.put_zigzag_vlq_int(values[i] as i64),
-                "[{}]; put_zigzag_vlq_int() failed",
-                i
+                "[{i}]; put_zigzag_vlq_int() failed"
             );
         });
 

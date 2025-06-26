@@ -80,8 +80,7 @@ impl ListExtract {
         match self.child.data_type(input_schema)? {
             DataType::List(field) | DataType::LargeList(field) => Ok(field),
             data_type => Err(DataFusionError::Internal(format!(
-                "Unexpected data type in ListExtract: {:?}",
-                data_type
+                "Unexpected data type in ListExtract: {data_type:?}"
             ))),
         }
     }
@@ -121,8 +120,7 @@ impl PhysicalExpr for ListExtract {
                     }
                     ColumnarValue::Scalar(scalar) => Ok(scalar),
                     v => Err(DataFusionError::Execution(format!(
-                        "Expected scalar default value for ListExtract, got {:?}",
-                        v
+                        "Expected scalar default value for ListExtract, got {v:?}"
                     ))),
                 })
             })
@@ -161,8 +159,7 @@ impl PhysicalExpr for ListExtract {
                 )
             }
             data_type => Err(DataFusionError::Internal(format!(
-                "Unexpected child type for ListExtract: {:?}",
-                data_type
+                "Unexpected child type for ListExtract: {data_type:?}"
             ))),
         }
     }

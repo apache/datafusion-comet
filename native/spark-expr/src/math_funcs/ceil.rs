@@ -51,8 +51,7 @@ pub fn spark_ceil(
                 make_decimal_array(array, precision, scale, &f)
             }
             other => Err(DataFusionError::Internal(format!(
-                "Unsupported data type {:?} for function ceil",
-                other,
+                "Unsupported data type {other:?} for function ceil",
             ))),
         },
         ColumnarValue::Scalar(a) => match a {

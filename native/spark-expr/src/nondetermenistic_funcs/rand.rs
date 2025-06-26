@@ -163,8 +163,7 @@ impl PhysicalExpr for RandExpr {
         match self.seed.evaluate(batch)? {
             ColumnarValue::Scalar(seed) => self.evaluate_batch(seed, batch.num_rows()),
             ColumnarValue::Array(_arr) => Err(DataFusionError::NotImplemented(format!(
-                "Only literal seeds are supported for {}",
-                self
+                "Only literal seeds are supported for {self}"
             ))),
         }
     }

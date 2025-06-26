@@ -45,8 +45,7 @@ pub fn string_space(length: &dyn Array) -> Result<ArrayRef, DataFusionError> {
             Ok(Arc::new(result))
         }
         dt => panic!(
-            "Unsupported input type for function 'string_space': {:?}",
-            dt
+            "Unsupported input type for function 'string_space': {dt:?}"
         ),
     }
 }
@@ -82,7 +81,7 @@ pub fn substring(array: &dyn Array, start: i64, length: u64) -> Result<ArrayRef,
             let result = DictionaryArray::try_new(dict.keys().clone(), values)?;
             Ok(Arc::new(result))
         }
-        dt => panic!("Unsupported input type for function 'substring': {:?}", dt),
+        dt => panic!("Unsupported input type for function 'substring': {dt:?}"),
     }
 }
 

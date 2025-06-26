@@ -395,7 +395,7 @@ impl MultiPartitionShuffleRepartitioner {
             .map(|_| PartitionWriter::try_new(shuffle_block_writer.clone()))
             .collect::<Result<Vec<_>>>()?;
 
-        let reservation = MemoryConsumer::new(format!("ShuffleRepartitioner[{}]", partition))
+        let reservation = MemoryConsumer::new(format!("ShuffleRepartitioner[{partition}]"))
             .with_can_spill(true)
             .register(&runtime.memory_pool);
 
@@ -619,8 +619,7 @@ impl MultiPartitionShuffleRepartitioner {
                 // this should be unreachable as long as the validation logic
                 // in the constructor is kept up-to-date
                 return Err(DataFusionError::NotImplemented(format!(
-                    "Unsupported shuffle partitioning scheme {:?}",
-                    other
+                    "Unsupported shuffle partitioning scheme {other:?}"
                 )));
             }
         }
@@ -796,7 +795,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                 .create(true)
                 .truncate(true)
                 .open(data_file)
-                .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
+                .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?;
 
             let mut output_data = BufWriter::new(output_data);
 
@@ -834,7 +833,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
 
             let mut write_timer = self.metrics.write_time.timer();
             let mut output_index = BufWriter::new(File::create(index_file).map_err(|e| {
-                DataFusionError::Execution(format!("shuffle write error: {:?}", e))
+                DataFusionError::Execution(format!("shuffle write error: {e:?}"))
             })?);
             for offset in offsets {
                 output_index
@@ -1014,7 +1013,7 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
             .create(true)
             .truncate(true)
             .open(self.output_index_path.clone())
-            .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {:?}", e)))?;
+            .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?;
         let data_file_length = self
             .output_data_writer
             .writer
@@ -1036,7 +1035,7 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
 }
 
 fn to_df_err(e: Error) -> DataFusionError {
-    DataFusionError::Execution(format!("shuffle write error: {:?}", e))
+    DataFusionError::Execution(format!("shuffle write error: {e:?}"))
 }
 
 /// A helper struct to produce shuffled batches.
@@ -1197,7 +1196,7 @@ impl PartitionWriter {
                 .truncate(true)
                 .open(spill_file.path())
                 .map_err(|e| {
-                    DataFusionError::Execution(format!("Error occurred while spilling {}", e))
+                    DataFusionError::Execution(format!("Error occurred while spilling {e}"))
                 })?;
             self.spill_file = Some(SpillFile {
                 temp_file: spill_file,
