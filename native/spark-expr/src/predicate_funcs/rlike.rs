@@ -69,7 +69,7 @@ impl RLike {
             child,
             pattern_str: pattern.to_string(),
             pattern: Regex::new(pattern).map_err(|e| {
-                SparkError::Internal(format!("Failed to compile pattern {}: {}", pattern, e))
+                SparkError::Internal(format!("Failed to compile pattern {pattern}: {e}"))
             })?,
         })
     }

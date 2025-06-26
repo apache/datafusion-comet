@@ -210,8 +210,7 @@ impl ScanExec {
 
         if iter.is_null() {
             return Err(CometError::from(ExecutionError::GeneralError(format!(
-                "Null batch iterator object. Plan id: {}",
-                exec_context_id
+                "Null batch iterator object. Plan id: {exec_context_id}"
             ))));
         }
 
@@ -303,14 +302,14 @@ fn scan_schema(input_batch: &InputBatch, data_types: &[DataType]) -> SchemaRef {
                 .map(|(idx, c)| {
                     let datatype = ScanExec::unpack_dictionary_type(c.data_type());
                     // We don't use the field name. Put a placeholder.
-                    Field::new(format!("col_{}", idx), datatype, true)
+                    Field::new(format!("col_{idx}"), datatype, true)
                 })
                 .collect::<Vec<Field>>()
         }
         _ => data_types
             .iter()
             .enumerate()
-            .map(|(idx, dt)| Field::new(format!("col_{}", idx), dt.clone(), true))
+            .map(|(idx, dt)| Field::new(format!("col_{idx}"), dt.clone(), true))
             .collect(),
     };
 
