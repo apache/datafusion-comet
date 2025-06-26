@@ -120,7 +120,7 @@ class CometBitwiseExpressionSuite extends CometTestBase with AdaptiveSparkPlanHe
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled, 0, 10000, nullEnabled = false)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 0, 10000, nullEnabled = false)
         val table = spark.read.parquet(path.toString)
         (0 to 10).foreach { _ =>
           val byteBitPosition = randomBitPosition(java.lang.Byte.SIZE)
@@ -193,7 +193,7 @@ class CometBitwiseExpressionSuite extends CometTestBase with AdaptiveSparkPlanHe
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled, 0, 10000, nullEnabled = false)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 0, 10000, nullEnabled = false)
         val table = spark.read.parquet(path.toString)
         checkSparkAnswerAndOperator(
           table

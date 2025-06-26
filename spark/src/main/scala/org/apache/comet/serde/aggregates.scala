@@ -232,11 +232,6 @@ object CometFirst extends CometAggregateExpressionSerde {
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
     val first = expr.asInstanceOf[First]
-    if (first.ignoreNulls) {
-      // DataFusion doesn't support ignoreNulls true
-      withInfo(aggExpr, "First not supported when ignoreNulls=true")
-      return None
-    }
     val child = first.children.head
     val childExpr = exprToProto(child, inputs, binding)
     val dataType = serializeDataType(first.dataType)
@@ -245,6 +240,7 @@ object CometFirst extends CometAggregateExpressionSerde {
       val builder = ExprOuterClass.First.newBuilder()
       builder.setChild(childExpr.get)
       builder.setDatatype(dataType.get)
+      builder.setIgnoreNulls(first.ignoreNulls)
 
       Some(
         ExprOuterClass.AggExpr
@@ -269,11 +265,6 @@ object CometLast extends CometAggregateExpressionSerde {
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
     val last = expr.asInstanceOf[Last]
-    if (last.ignoreNulls) {
-      // DataFusion doesn't support ignoreNulls true
-      withInfo(aggExpr, "Last not supported when ignoreNulls=true")
-      return None
-    }
     val child = last.children.head
     val childExpr = exprToProto(child, inputs, binding)
     val dataType = serializeDataType(last.dataType)
@@ -282,6 +273,7 @@ object CometLast extends CometAggregateExpressionSerde {
       val builder = ExprOuterClass.Last.newBuilder()
       builder.setChild(childExpr.get)
       builder.setDatatype(dataType.get)
+      builder.setIgnoreNulls(last.ignoreNulls)
 
       Some(
         ExprOuterClass.AggExpr

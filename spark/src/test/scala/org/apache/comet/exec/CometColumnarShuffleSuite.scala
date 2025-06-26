@@ -19,6 +19,9 @@
 
 package org.apache.comet.exec
 
+import java.nio.file.Files
+import java.nio.file.Paths
+
 import scala.reflect.runtime.universe._
 import scala.util.Random
 
@@ -564,7 +567,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     Seq(10, 201).foreach { numPartitions =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, false, 10000, 10010)
+        makeParquetFileAllPrimitiveTypes(path, false, 10000, 10010)
         // TODO: revisit this when we have resolution of https://github.com/apache/arrow-rs/issues/7040
         // and https://github.com/apache/arrow-rs/issues/7097
         val fieldsToTest =
@@ -739,7 +742,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
 
         Seq(10, 201).foreach { numPartitions =>
           (1 to 20).map(i => s"_$i").foreach { c =>
@@ -817,6 +820,33 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
       assert(metrics.contains("shuffleWriteTime"))
       assert(metrics("shuffleWriteTime").value > 0)
+    }
+  }
+
+  test("columnar shuffle on null struct fields") {
+    withTempDir { dir =>
+      val testData = "{}\n"
+      val path = Paths.get(dir.toString, "test.json")
+      Files.write(path, testData.getBytes)
+
+      // Define the nested struct schema
+      val readSchema = StructType(
+        Array(
+          StructField(
+            "metaData",
+            StructType(
+              Array(StructField(
+                "format",
+                StructType(Array(StructField("provider", StringType, nullable = true))),
+                nullable = true))),
+            nullable = true)))
+
+      // Read JSON with custom schema and repartition, this will repartition rows that contain
+      // null struct fields.
+      val df = spark.read.format("json").schema(readSchema).load(path.toString).repartition(2)
+      assert(df.count() == 1)
+      val row = df.collect()(0)
+      assert(row.getAs[org.apache.spark.sql.Row]("metaData") == null)
     }
   }
 
@@ -941,7 +971,7 @@ class CometShuffleEncryptionSuite extends CometTestBase {
         Seq(true, false).foreach { asyncEnabled =>
           withTempDir { dir =>
             val path = new Path(dir.toURI.toString, "test.parquet")
-            makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
+            makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
 
             (1 until 10).map(i => $"_$i").foreach { col =>
               withSQLConf(
