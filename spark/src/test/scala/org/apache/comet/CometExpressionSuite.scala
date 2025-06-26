@@ -2324,6 +2324,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("get_struct_field - select primitive fields") {
+    val scanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
+    assume(!(scanImpl == CometConf.SCAN_AUTO && CometSparkSessionExtensions.isSpark40Plus))
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2338,7 +2340,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val df = spark.read.parquet(dir.toString()).select("nested1.id")
       // Comet's original scan does not support structs.
       // The plan will have a Comet Scan only if scan impl is native_full or native_recordbatch
-      if (!CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_COMET)) {
+      if (!scanImpl.equals(CometConf.SCAN_NATIVE_COMET)) {
         checkSparkAnswerAndOperator(df)
       } else {
         checkSparkAnswer(df)
@@ -2347,6 +2349,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("get_struct_field - select subset of struct") {
+    val scanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
+    assume(!(scanImpl == CometConf.SCAN_AUTO && CometSparkSessionExtensions.isSpark40Plus))
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2368,7 +2372,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val df = spark.read.parquet(dir.toString())
       // Comet's original scan does not support structs.
       // The plan will have a Comet Scan only if scan impl is native_full or native_recordbatch
-      if (!CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_COMET)) {
+      if (scanImpl != CometConf.SCAN_NATIVE_COMET) {
         checkSparkAnswerAndOperator(df.select("nested1.id"))
         checkSparkAnswerAndOperator(df.select("nested1.nested2"))
         checkSparkAnswerAndOperator(df.select("nested1.nested2.id"))
@@ -2383,6 +2387,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("get_struct_field - read entire struct") {
+    val scanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
+    assume(!(scanImpl == CometConf.SCAN_AUTO && CometSparkSessionExtensions.isSpark40Plus))
     withTempPath { dir =>
       // create input file with Comet disabled
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -2404,7 +2410,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val df = spark.read.parquet(dir.toString()).select("nested1.id")
       // Comet's original scan does not support structs.
       // The plan will have a Comet Scan only if scan impl is native_full or native_recordbatch
-      if (!CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_COMET)) {
+      if (scanImpl != CometConf.SCAN_NATIVE_COMET) {
         checkSparkAnswerAndOperator(df)
       } else {
         checkSparkAnswer(df)
