@@ -58,6 +58,7 @@ import org.apache.parquet.column.page.DictionaryPage;
 import org.apache.parquet.column.page.PageReadStore;
 import org.apache.parquet.compression.CompressionCodecFactory;
 import org.apache.parquet.crypto.AesCipher;
+import org.apache.parquet.crypto.EncryptionPropertiesFactory;
 import org.apache.parquet.crypto.FileDecryptionProperties;
 import org.apache.parquet.crypto.InternalColumnDecryptionSetup;
 import org.apache.parquet.crypto.InternalFileDecryptor;
@@ -72,12 +73,12 @@ import org.apache.parquet.format.FileCryptoMetaData;
 import org.apache.parquet.format.PageHeader;
 import org.apache.parquet.format.Util;
 import org.apache.parquet.format.converter.ParquetMetadataConverter;
+import org.apache.parquet.hadoop.ParquetInputFormat;
 import org.apache.parquet.hadoop.metadata.BlockMetaData;
 import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
 import org.apache.parquet.hadoop.metadata.ColumnPath;
 import org.apache.parquet.hadoop.metadata.FileMetaData;
 import org.apache.parquet.hadoop.metadata.ParquetMetadata;
-import org.apache.parquet.hadoop.util.HadoopInputFile;
 import org.apache.parquet.hadoop.util.counters.BenchmarkCounter;
 import org.apache.parquet.internal.column.columnindex.OffsetIndex;
 import org.apache.parquet.internal.filter2.columnindex.ColumnIndexFilter;
@@ -148,7 +149,7 @@ public class FileReader implements Closeable {
     ParquetReadOptions options =
         buildParquetReadOptions(conf, properties, start, length, fileEncryptionKey, fileAADPrefix);
     this.converter = new ParquetMetadataConverter(options);
-    this.file = HadoopInputFile.fromPath(path, conf);
+    this.file = CometInputFile.fromPath(path, conf);
     this.f = file.newStream();
     this.options = options;
     this.cometOptions = cometOptions;
@@ -274,12 +275,14 @@ public class FileReader implements Closeable {
       byte[] fileEncryptionKey,
       byte[] fileAADPrefix) {
 
+    // Iceberg remove these read properties when building the ParquetReadOptions.
+    // We want build the exact same ParquetReadOptions as Iceberg's.
     Collection<String> readPropertiesToRemove =
         Sets.newHashSet(
-            "parquet.read.filter",
-            "parquet.private.read.filter.predicate",
-            "parquet.read.support.class",
-            "parquet.crypto.factory.class");
+            ParquetInputFormat.UNBOUND_RECORD_FILTER,
+            ParquetInputFormat.FILTER_PREDICATE,
+            ParquetInputFormat.READ_SUPPORT_CLASS,
+            EncryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME);
 
     for (String property : readPropertiesToRemove) {
       conf.unset(property);
