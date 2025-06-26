@@ -1506,10 +1506,7 @@ mod tests {
                     reader.get_u32_batch(batch.as_mut_ptr(), *total, num_bits);
                 }
                 for i in 0..batch.len() {
-                    assert_eq!(
-                        batch[i], values[i],
-                        "num_bits = {num_bits}, index = {i}"
-                    );
+                    assert_eq!(batch[i], values[i], "num_bits = {num_bits}, index = {i}");
                 }
             }
         }

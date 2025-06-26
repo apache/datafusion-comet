@@ -46,9 +46,7 @@ impl SparkUnsafeMap {
         }
 
         if key_array_size > i32::MAX as i64 {
-            panic!(
-                "Number of key size in bytes should <= i32::MAX: {key_array_size}"
-            );
+            panic!("Number of key size in bytes should <= i32::MAX: {key_array_size}");
         }
 
         let value_array_size = size - key_array_size as i32 - 8;

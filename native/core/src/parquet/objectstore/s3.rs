@@ -361,10 +361,7 @@ fn build_aws_credential_provider_metadata(
         AWS_WEB_IDENTITY_V1 | AWS_WEB_IDENTITY => Ok(CredentialProviderMetadata::WebIdentity),
         _ => Err(object_store::Error::Generic {
             store: "S3",
-            source: format!(
-                "Unsupported credential provider: {credential_provider_name}"
-            )
-            .into(),
+            source: format!("Unsupported credential provider: {credential_provider_name}").into(),
         }),
     }
 }
@@ -902,9 +899,8 @@ mod tests {
         let credential_provider_names = parse_credential_provider_names(HADOOP_ANONYMOUS);
         assert_eq!(credential_provider_names, vec![HADOOP_ANONYMOUS]);
 
-        let aws_credential_provider_names = format!(
-            "{HADOOP_ANONYMOUS},{AWS_ENVIRONMENT},{AWS_ENVIRONMENT_V1}"
-        );
+        let aws_credential_provider_names =
+            format!("{HADOOP_ANONYMOUS},{AWS_ENVIRONMENT},{AWS_ENVIRONMENT_V1}");
         let credential_provider_names =
             parse_credential_provider_names(&aws_credential_provider_names);
         assert_eq!(
@@ -912,9 +908,8 @@ mod tests {
             vec![HADOOP_ANONYMOUS, AWS_ENVIRONMENT, AWS_ENVIRONMENT_V1]
         );
 
-        let aws_credential_provider_names = format!(
-            " {HADOOP_ANONYMOUS}, {AWS_ENVIRONMENT},, {AWS_ENVIRONMENT_V1},"
-        );
+        let aws_credential_provider_names =
+            format!(" {HADOOP_ANONYMOUS}, {AWS_ENVIRONMENT},, {AWS_ENVIRONMENT_V1},");
         let credential_provider_names =
             parse_credential_provider_names(&aws_credential_provider_names);
         assert_eq!(
