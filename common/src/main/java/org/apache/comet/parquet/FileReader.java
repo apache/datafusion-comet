@@ -31,6 +31,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -41,7 +42,6 @@ import java.util.zip.CRC32;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.commons.compress.utils.Sets;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.parquet.HadoopReadOptions;
@@ -278,7 +278,7 @@ public class FileReader implements Closeable {
     // Iceberg remove these read properties when building the ParquetReadOptions.
     // We want build the exact same ParquetReadOptions as Iceberg's.
     Collection<String> readPropertiesToRemove =
-        Sets.newHashSet(
+        Set.of(
             ParquetInputFormat.UNBOUND_RECORD_FILTER,
             ParquetInputFormat.FILTER_PREDICATE,
             ParquetInputFormat.READ_SUPPORT_CLASS,
