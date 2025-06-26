@@ -68,6 +68,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
   private val exprSerdeMap: Map[Class[_], CometExpressionSerde] = Map(
     classOf[ArrayAppend] -> CometArrayAppend,
     classOf[ArrayContains] -> CometArrayContains,
+    classOf[ArrayDistinct] -> CometArrayDistinct,
     classOf[ArrayExcept] -> CometArrayExcept,
     classOf[ArrayInsert] -> CometArrayInsert,
     classOf[ArrayIntersect] -> CometArrayIntersect,
