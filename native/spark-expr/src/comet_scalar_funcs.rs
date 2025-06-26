@@ -20,7 +20,7 @@ use crate::{
     spark_array_repeat, spark_ceil, spark_date_add, spark_date_sub, spark_decimal_div,
     spark_decimal_integral_div, spark_floor, spark_hex, spark_isnan, spark_make_decimal,
     spark_read_side_padding, spark_round, spark_rpad, spark_unhex, spark_unscaled_value,
-    SparkBitwiseCount, SparkBitwiseNot, SparkChrFunc, SparkDateTrunc,
+    SparkBitwiseCount, SparkBitwiseGet, SparkBitwiseNot, SparkChrFunc, SparkDateTrunc,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -157,6 +157,7 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         Arc::new(ScalarUDF::new_from_impl(SparkChrFunc::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkBitwiseNot::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkBitwiseCount::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkBitwiseGet::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateTrunc::default())),
     ]
 }
