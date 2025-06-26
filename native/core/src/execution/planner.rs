@@ -1580,9 +1580,7 @@ impl PhysicalPlanner {
             Ok(JoinType::RightOuter) => DFJoinType::Right,
             Ok(JoinType::FullOuter) => DFJoinType::Full,
             Ok(JoinType::LeftSemi) => DFJoinType::LeftSemi,
-            Ok(JoinType::RightSemi) => DFJoinType::RightSemi,
             Ok(JoinType::LeftAnti) => DFJoinType::LeftAnti,
-            Ok(JoinType::RightAnti) => DFJoinType::RightAnti,
             Err(_) => {
                 return Err(GeneralError(format!(
                     "Unsupported join type: {:?}",

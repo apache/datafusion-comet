@@ -177,9 +177,7 @@ enum JoinType {
   RightOuter = 2;
   FullOuter = 3;
   LeftSemi = 4;
-  RightSemi = 5;
-  LeftAnti = 6;
-  RightAnti = 7;
+  LeftAnti = 5;
 }
 
 enum BuildSide {
