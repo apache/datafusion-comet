@@ -687,7 +687,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     try_unwrap_or_throw(&e, |mut env| unsafe {
         let session_config = SessionConfig::new().with_batch_size(batch_size as usize);
         let planer =
-            PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(session_config)));
+            PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(session_config)), 0);
         let session_ctx = planer.session_ctx();
 
         let path: String = env
