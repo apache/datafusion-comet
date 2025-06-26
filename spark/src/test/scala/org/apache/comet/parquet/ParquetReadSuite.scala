@@ -26,7 +26,7 @@ import java.time.{ZoneId, ZoneOffset}
 import scala.collection.mutable.ListBuffer
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
-import scala.util.control.Breaks.{break, breakable}
+import scala.util.control.Breaks.breakable
 
 import org.scalactic.source.Position
 import org.scalatest.Tag
