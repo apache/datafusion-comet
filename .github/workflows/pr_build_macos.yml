@@ -58,6 +58,7 @@ jobs:
             maven_opts: "-Pspark-3.5 -Pscala-2.13"
 
             # TODO fails with OOM
+            # https://github.com/apache/datafusion-comet/issues/1949
 #          - name: "Spark 4.0, JDK 17, Scala 2.13"
 #            java_version: "17"
 #            maven_opts: "-Pspark-4.0 -Pscala-2.13"
