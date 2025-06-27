@@ -59,8 +59,7 @@ impl GetArrayStructFields {
         match self.child.data_type(input_schema)? {
             DataType::List(field) | DataType::LargeList(field) => Ok(field),
             data_type => Err(DataFusionError::Internal(format!(
-                "Unexpected data type in GetArrayStructFields: {:?}",
-                data_type
+                "Unexpected data type in GetArrayStructFields: {data_type:?}"
             ))),
         }
     }
@@ -69,8 +68,7 @@ impl GetArrayStructFields {
         match self.list_field(input_schema)?.data_type() {
             DataType::Struct(fields) => Ok(Arc::clone(&fields[self.ordinal])),
             data_type => Err(DataFusionError::Internal(format!(
-                "Unexpected data type in GetArrayStructFields: {:?}",
-                data_type
+                "Unexpected data type in GetArrayStructFields: {data_type:?}"
             ))),
         }
     }
@@ -87,8 +85,7 @@ impl PhysicalExpr for GetArrayStructFields {
             DataType::List(_) => Ok(DataType::List(struct_field)),
             DataType::LargeList(_) => Ok(DataType::LargeList(struct_field)),
             data_type => Err(DataFusionError::Internal(format!(
-                "Unexpected data type in GetArrayStructFields: {:?}",
-                data_type
+                "Unexpected data type in GetArrayStructFields: {data_type:?}"
             ))),
         }
     }
@@ -113,8 +110,7 @@ impl PhysicalExpr for GetArrayStructFields {
                 get_array_struct_fields(list_array, self.ordinal)
             }
             data_type => Err(DataFusionError::Internal(format!(
-                "Unexpected child type for ListExtract: {:?}",
-                data_type
+                "Unexpected child type for ListExtract: {data_type:?}"
             ))),
         }
     }
