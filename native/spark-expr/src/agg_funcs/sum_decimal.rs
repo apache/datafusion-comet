@@ -210,7 +210,10 @@ impl Accumulator for SumDecimalAccumulator {
         //      are null, in this case we'll return null
         //   2. if `is_empty` is false, but `null_state` is true, it means there's an overflow. In
         //      non-ANSI mode Spark returns null.
-        if self.is_empty || !self.is_not_null {
+        if self.is_empty
+            || !self.is_not_null
+            || !is_valid_decimal_precision(self.sum, self.precision)
+        {
             ScalarValue::new_primitive::<Decimal128Type>(
                 None,
                 &DataType::Decimal128(self.precision, self.scale),
@@ -375,11 +378,17 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
         //      are null, in this case we'll return null
         //   2. if `is_empty` is false, but `null_state` is true, it means there's an overflow. In
         //      non-ANSI mode Spark returns null.
+        let result = emit_to.take_needed(&mut self.sum);
+        result.iter().enumerate().for_each(|(i, &v)| {
+            if !is_valid_decimal_precision(v, self.precision) {
+                self.is_not_null.set_bit(i, false);
+            }
+        });
+
         let nulls = build_bool_state(&mut self.is_not_null, &emit_to);
         let is_empty = build_bool_state(&mut self.is_empty, &emit_to);
         let x = (!&is_empty).bitand(&nulls);
 
-        let result = emit_to.take_needed(&mut self.sum);
         let result = Decimal128Array::new(result.into(), Some(NullBuffer::new(x)))
             .with_data_type(self.result_type.clone());
 
