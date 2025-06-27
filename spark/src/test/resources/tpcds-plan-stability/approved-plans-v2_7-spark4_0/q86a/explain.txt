@@ -97,7 +97,7 @@ Condition : isnotnull(i_item_sk#7)
 
 (11) CometProject
 Input [3]: [i_item_sk#7, i_class#8, i_category#9]
-Arguments: [i_item_sk#7, i_class#10, i_category#11], [i_item_sk#7, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_class#8, 50, true, false, true) AS i_class#10, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#9, 50, true, false, true) AS i_category#11]
+Arguments: [i_item_sk#7, i_class#10, i_category#11], [i_item_sk#7, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_class#8, 50)) AS i_class#10, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_category#9, 50)) AS i_category#11]
 
 (12) CometBroadcastExchange
 Input [3]: [i_item_sk#7, i_class#10, i_category#11]

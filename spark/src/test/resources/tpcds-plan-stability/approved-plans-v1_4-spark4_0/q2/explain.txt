@@ -79,7 +79,7 @@ Condition : (isnotnull(d_date_sk#9) AND isnotnull(d_week_seq#10))
 
 (8) CometProject
 Input [3]: [d_date_sk#9, d_week_seq#10, d_day_name#11]
-Arguments: [d_date_sk#9, d_week_seq#10, d_day_name#12], [d_date_sk#9, d_week_seq#10, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, d_day_name#11, 9, true, false, true) AS d_day_name#12]
+Arguments: [d_date_sk#9, d_week_seq#10, d_day_name#12], [d_date_sk#9, d_week_seq#10, static_invoke(CharVarcharCodegenUtils.readSidePadding(d_day_name#11, 9)) AS d_day_name#12]
 
 (9) CometBroadcastExchange
 Input [3]: [d_date_sk#9, d_week_seq#10, d_day_name#12]
