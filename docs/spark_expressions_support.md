@@ -81,21 +81,21 @@
 
 ### array_funcs
  - [x] array
- - [ ] array_append
- - [ ] array_compact
- - [ ] array_contains
- - [ ] array_distinct
- - [ ] array_except
- - [ ] array_insert
- - [ ] array_intersect
- - [ ] array_join
- - [ ] array_max
+ - [x] array_append
+ - [x] array_compact
+ - [x] array_contains
+ - [x] array_distinct
+ - [x] array_except
+ - [x] array_insert
+ - [x] array_intersect
+ - [x] array_join
+ - [x] array_max
  - [ ] array_min
  - [ ] array_position
- - [ ] array_remove
- - [ ] array_repeat
- - [ ] array_union
- - [ ] arrays_overlap
+ - [x] array_remove
+ - [x] array_repeat
+ - [x] array_union
+ - [x] arrays_overlap
  - [ ] arrays_zip
  - [x] element_at
  - [ ] flatten
