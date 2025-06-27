@@ -31,7 +31,7 @@ import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
-import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
+import org.apache.spark.sql.catalyst.util.{CharVarcharCodegenUtils, TimestampFormatter}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
@@ -1185,9 +1185,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val timeZone = exprToProtoInternal(Literal(timeZoneId.orNull), inputs, binding)
 
         // TODO: DataFusion from_unixtime does not support format yet
-        if (secExpr.isDefined && formatExpr.isEmpty) {
+        // TODO: DataFusion supports only -8334601211038 <= sec <= 8210266876799, Why?
+        if (secExpr.isDefined && formatExpr.isDefined && format == Literal(
+            TimestampFormatter.defaultPattern)) {
           val optExpr = scalarFunctionExprToProto("from_unixtime", Seq(secExpr, timeZone): _*)
-          optExprWithInfo(optExpr, expr, sec)
+          castToProto(expr, timeZoneId, StringType, optExpr.get, CometEvalMode.LEGACY)
         } else {
           withInfo(expr, sec, format)
           None

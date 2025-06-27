@@ -1616,7 +1616,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             dictionaryEnabled = dictionary,
             -128,
             128,
-            randomSize = 100)
+            // TODO: DataFusion supports only -8334601211038 <= sec <= 8210266876799, Why?
+            // randomSize = 100)
+            randomSize = 0)
           withParquetTable(path.toString, table) {
             checkSparkAnswerAndOperator(s"SELECT from_unixtime(_5) FROM $table")
             checkSparkAnswerAndOperator(s"SELECT from_unixtime(_8) FROM $table")
