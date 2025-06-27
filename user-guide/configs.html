@@ -568,35 +568,39 @@ TO MODIFY THIS CONTENT MAKE SURE THAT YOU MAKE YOUR CHANGES TO THE TEMPLATE FILE
 <td><p>The maximum number of parallel threads the parallel reader will use in a single executor. For executors configured with a smaller number of cores, use a smaller number.</p></td>
 <td><p>16</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.regexp.allowIncompatible</p></td>
+<tr class="row-odd"><td><p>spark.comet.parquet.respectFilterPushdown</p></td>
+<td><p>Whether to respect Spark’s PARQUET_FILTER_PUSHDOWN_ENABLED config. This needs to be respected when running the Spark SQL test suite but the default setting results in poor performance in Comet when using the new native scans, disabled by default</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.regexp.allowIncompatible</p></td>
 <td><p>Comet is not currently fully compatible with Spark for all regular expressions. Set this config to true to allow them anyway. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.scan.allowIncompatible</p></td>
+<tr class="row-odd"><td><p>spark.comet.scan.allowIncompatible</p></td>
 <td><p>Some Comet scan implementations are not currently fully compatible with Spark for all datatypes. Set this config to true to allow them anyway. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.scan.enabled</p></td>
+<tr class="row-even"><td><p>spark.comet.scan.enabled</p></td>
 <td><p>Whether to enable native scans. When this is turned on, Spark will use Comet to read supported data sources (currently only Parquet is supported natively). Note that to enable native vectorized execution, both this config and ‘spark.comet.exec.enabled’ need to be enabled.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.scan.preFetch.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.scan.preFetch.enabled</p></td>
 <td><p>Whether to enable pre-fetching feature of CometScan.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.scan.preFetch.threadNum</p></td>
+<tr class="row-even"><td><p>spark.comet.scan.preFetch.threadNum</p></td>
 <td><p>The number of threads running pre-fetching for CometScan. Effective if spark.comet.scan.preFetch.enabled is enabled. Note that more pre-fetching threads means more memory requirement to store pre-fetched row groups.</p></td>
 <td><p>2</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.shuffle.preferDictionary.ratio</p></td>
+<tr class="row-odd"><td><p>spark.comet.shuffle.preferDictionary.ratio</p></td>
 <td><p>The ratio of total values to distinct values in a string column to decide whether to prefer dictionary encoding when shuffling the column. If the ratio is higher than this config, dictionary encoding will be used on shuffling string column. This config is effective if it is higher than 1.0. Note that this config is only used when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code> is <code class="docutils literal notranslate"><span class="pre">jvm</span></code>.</p></td>
 <td><p>10.0</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.shuffle.sizeInBytesMultiplier</p></td>
+<tr class="row-even"><td><p>spark.comet.shuffle.sizeInBytesMultiplier</p></td>
 <td><p>Comet reports smaller sizes for shuffle due to using Arrow’s columnar memory format and this can result in Spark choosing a different join strategy due to the estimated size of the exchange being smaller. Comet will multiple sizeInBytes by this amount to avoid regressions in join strategy.</p></td>
 <td><p>1.0</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.sparkToColumnar.supportedOperatorList</p></td>
+<tr class="row-odd"><td><p>spark.comet.sparkToColumnar.supportedOperatorList</p></td>
 <td><p>A comma-separated list of operators that will be converted to Arrow columnar format when ‘spark.comet.sparkToColumnar.enabled’ is true</p></td>
 <td><p>Range,InMemoryTableScan</p></td>
 </tr>
