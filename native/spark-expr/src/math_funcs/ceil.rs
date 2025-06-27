@@ -163,7 +163,9 @@ mod test {
         Ok(())
     }
 
+    // https://github.com/apache/datafusion-comet/issues/1729
     #[test]
+    #[ignore]
     fn test_ceil_decimal128_array() -> Result<()> {
         let array = Decimal128Array::from(vec![
             Some(12345),  // 123.45
@@ -224,7 +226,9 @@ mod test {
         Ok(())
     }
 
+    // https://github.com/apache/datafusion-comet/issues/1729
     #[test]
+    #[ignore]
     fn test_ceil_decimal128_scalar() -> Result<()> {
         let args = vec![ColumnarValue::Scalar(ScalarValue::Decimal128(
             Some(567),

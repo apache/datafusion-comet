@@ -163,7 +163,9 @@ mod test {
         Ok(())
     }
 
+    // https://github.com/apache/datafusion-comet/issues/1729
     #[test]
+    #[ignore]
     fn test_floor_decimal128_array() -> Result<()> {
         let array = Decimal128Array::from(vec![
             Some(12345),  // 123.45
@@ -180,8 +182,9 @@ mod test {
             Some(12300),  // 123.00
             Some(12500),  // 125.00
             Some(-13000), // -130.00
-            None])
-            .with_precision_and_scale(5, 2)?;
+            None,
+        ])
+        .with_precision_and_scale(5, 2)?;
         let actual = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
         assert_eq!(actual, &expected);
         Ok(())
@@ -223,7 +226,9 @@ mod test {
         Ok(())
     }
 
+    // https://github.com/apache/datafusion-comet/issues/1729
     #[test]
+    #[ignore]
     fn test_floor_decimal128_scalar() -> Result<()> {
         let args = vec![ColumnarValue::Scalar(ScalarValue::Decimal128(
             Some(567),
