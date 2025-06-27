@@ -111,8 +111,7 @@ object CometConf extends ShimCometConf {
       .doc(
         "Whether to respect Spark's PARQUET_FILTER_PUSHDOWN_ENABLED config. This needs to be " +
           "respected when running the Spark SQL test suite but the default setting " +
-          "results in poor performance in Comet when using the new native scans, so we want " +
-          "to disable by default")
+          "results in poor performance in Comet when using the new native scans, disabled by default")
       .booleanConf
       .createWithDefault(false)
 
