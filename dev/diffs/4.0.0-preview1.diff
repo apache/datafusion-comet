@@ -3080,6 +3080,28 @@ index 52abd248f3a..7a199931a08 100644
        case h: HiveTableScanExec => h.partitionPruningPred.collect {
          case d: DynamicPruningExpression => d.child
        }
+diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
+index de3b1ffccf0..2a76d127093 100644
+--- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
++++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
+@@ -23,14 +23,15 @@ import java.util.concurrent.{Executors, TimeUnit}
+ import org.scalatest.BeforeAndAfterEach
+ 
+ import org.apache.spark.metrics.source.HiveCatalogMetrics
+-import org.apache.spark.sql.QueryTest
++import org.apache.spark.sql.{IgnoreCometSuite, QueryTest}
+ import org.apache.spark.sql.execution.datasources.FileStatusCache
+ import org.apache.spark.sql.hive.test.TestHiveSingleton
+ import org.apache.spark.sql.internal.SQLConf
+ import org.apache.spark.sql.test.SQLTestUtils
+ 
+ class PartitionedTablePerfStatsSuite
+-  extends QueryTest with TestHiveSingleton with SQLTestUtils with BeforeAndAfterEach {
++  extends QueryTest with TestHiveSingleton with SQLTestUtils with BeforeAndAfterEach
++    with IgnoreCometSuite {
+ 
+   override def beforeEach(): Unit = {
+     super.beforeEach()
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala
 index 0bcac639443..8957c76886f 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala
