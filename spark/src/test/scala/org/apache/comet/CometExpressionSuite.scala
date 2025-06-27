@@ -1612,8 +1612,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withTable(table) {
           sql(s"create table $table(col timestamp) using parquet")
           sql(s"insert into $table values (now()), (null)")
-          checkSparkAnswerAndOperator(
-            s"SELECT from_unixtime(col), from_unixtime(col, 'America/New_York') FROM $table")
+          checkSparkAnswerAndOperator(s"SELECT from_unixtime(col) FROM $table")
+          // checkSparkAnswerAndOperator(s"SELECT from_unixtime(col, 'YYYY') FROM $table")
+          withSQLConf(SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
+            checkSparkAnswerAndOperator(s"SELECT from_unixtime(col) FROM $table")
+            // checkSparkAnswerAndOperator(s"SELECT from_unixtime(col, 'YYYY') FROM $table")
+          }
         }
       }
     }
