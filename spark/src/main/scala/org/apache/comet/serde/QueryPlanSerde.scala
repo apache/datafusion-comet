@@ -22,6 +22,7 @@ package org.apache.comet.serde
 import java.util.Locale
 
 import scala.collection.JavaConverters._
+import scala.collection.mutable.ListBuffer
 import scala.math.min
 
 import org.apache.spark.internal.Logging
@@ -2192,9 +2193,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
           // Sink operators don't have children
           result.clearChildren()
 
-          if (conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED)) {
-            // TODO remove flatMap and add error handling for unsupported data filters
-            val dataFilters = scan.dataFilters.flatMap(exprToProto(_, scan.output))
+          if (conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED) &&
+            CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.get(conf)) {
+
+            val dataFilters = new ListBuffer[Expr]()
+            for (filter <- scan.dataFilters) {
+              exprToProto(filter, scan.output) match {
+                case Some(proto) => dataFilters += proto
+                case _ =>
+                  logWarning(s"Unsupported data filter $filter")
+              }
+            }
             nativeScanBuilder.addAllDataFilters(dataFilters.asJava)
           }
 
