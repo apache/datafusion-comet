@@ -53,7 +53,7 @@ Condition : ((isnotnull(i_manager_id#4) AND (i_manager_id#4 = 1)) AND isnotnull(
 
 (3) CometProject
 Input [4]: [i_item_sk#1, i_brand_id#2, i_brand#3, i_manager_id#4]
-Arguments: [i_item_sk#1, i_brand_id#2, i_brand#5], [i_item_sk#1, i_brand_id#2, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_brand#3, 50, true, false, true) AS i_brand#5]
+Arguments: [i_item_sk#1, i_brand_id#2, i_brand#5], [i_item_sk#1, i_brand_id#2, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_brand#3, 50)) AS i_brand#5]
 
 (4) CometBroadcastExchange
 Input [3]: [i_item_sk#1, i_brand_id#2, i_brand#5]
@@ -170,7 +170,7 @@ ReadSchema: struct<t_time_sk:int,t_hour:int,t_minute:int,t_meal_time:string>
 
 (27) CometFilter
 Input [4]: [t_time_sk#35, t_hour#36, t_minute#37, t_meal_time#38]
-Condition : (((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, t_meal_time#38, 20, true, false, true) = breakfast           ) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, t_meal_time#38, 20, true, false, true) = dinner              )) AND isnotnull(t_time_sk#35))
+Condition : (((static_invoke(CharVarcharCodegenUtils.readSidePadding(t_meal_time#38, 20)) = breakfast           ) OR (static_invoke(CharVarcharCodegenUtils.readSidePadding(t_meal_time#38, 20)) = dinner              )) AND isnotnull(t_time_sk#35))
 
 (28) CometProject
 Input [4]: [t_time_sk#35, t_hour#36, t_minute#37, t_meal_time#38]

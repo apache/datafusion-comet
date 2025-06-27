@@ -78,12 +78,12 @@ Arguments: [ss_customer_sk#2, ss_quantity#4, ss_sales_price#5, sr_reason_sk#8, s
 Output [2]: [r_reason_sk#12, r_reason_desc#13]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/reason]
-PushedFilters: [IsNotNull(r_reason_sk)]
+PushedFilters: [IsNotNull(r_reason_desc), IsNotNull(r_reason_sk)]
 ReadSchema: struct<r_reason_sk:int,r_reason_desc:string>
 
 (13) CometFilter
 Input [2]: [r_reason_sk#12, r_reason_desc#13]
-Condition : ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, r_reason_desc#13, 100, true, false, true) = reason 28                                                                                           ) AND isnotnull(r_reason_sk#12))
+Condition : ((isnotnull(r_reason_desc#13) AND (static_invoke(CharVarcharCodegenUtils.readSidePadding(r_reason_desc#13, 100)) = reason 28                                                                                           )) AND isnotnull(r_reason_sk#12))
 
 (14) CometProject
 Input [2]: [r_reason_sk#12, r_reason_desc#13]

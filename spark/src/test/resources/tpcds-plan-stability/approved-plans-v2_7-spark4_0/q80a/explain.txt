@@ -221,7 +221,7 @@ Condition : isnotnull(s_store_sk#16)
 
 (20) CometProject
 Input [2]: [s_store_sk#16, s_store_id#17]
-Arguments: [s_store_sk#16, s_store_id#18], [s_store_sk#16, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_store_id#17, 16, true, false, true) AS s_store_id#18]
+Arguments: [s_store_sk#16, s_store_id#18], [s_store_sk#16, static_invoke(CharVarcharCodegenUtils.readSidePadding(s_store_id#17, 16)) AS s_store_id#18]
 
 (21) CometBroadcastExchange
 Input [2]: [s_store_sk#16, s_store_id#18]
@@ -268,12 +268,12 @@ Arguments: [ss_promo_sk#3, ss_ext_sales_price#5, ss_net_profit#6, sr_return_amt#
 Output [2]: [p_promo_sk#21, p_channel_tv#22]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/promotion]
-PushedFilters: [IsNotNull(p_promo_sk)]
+PushedFilters: [IsNotNull(p_channel_tv), IsNotNull(p_promo_sk)]
 ReadSchema: struct<p_promo_sk:int,p_channel_tv:string>
 
 (31) CometFilter
 Input [2]: [p_promo_sk#21, p_channel_tv#22]
-Condition : ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, p_channel_tv#22, 1, true, false, true) = N) AND isnotnull(p_promo_sk#21))
+Condition : ((isnotnull(p_channel_tv#22) AND (static_invoke(CharVarcharCodegenUtils.readSidePadding(p_channel_tv#22, 1)) = N)) AND isnotnull(p_promo_sk#21))
 
 (32) CometProject
 Input [2]: [p_promo_sk#21, p_channel_tv#22]
@@ -393,7 +393,7 @@ Condition : isnotnull(cp_catalog_page_sk#55)
 
 (57) CometProject
 Input [2]: [cp_catalog_page_sk#55, cp_catalog_page_id#56]
-Arguments: [cp_catalog_page_sk#55, cp_catalog_page_id#57], [cp_catalog_page_sk#55, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cp_catalog_page_id#56, 16, true, false, true) AS cp_catalog_page_id#57]
+Arguments: [cp_catalog_page_sk#55, cp_catalog_page_id#57], [cp_catalog_page_sk#55, static_invoke(CharVarcharCodegenUtils.readSidePadding(cp_catalog_page_id#56, 16)) AS cp_catalog_page_id#57]
 
 (58) CometBroadcastExchange
 Input [2]: [cp_catalog_page_sk#55, cp_catalog_page_id#57]
@@ -533,7 +533,7 @@ Condition : isnotnull(web_site_sk#92)
 
 (88) CometProject
 Input [2]: [web_site_sk#92, web_site_id#93]
-Arguments: [web_site_sk#92, web_site_id#94], [web_site_sk#92, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, web_site_id#93, 16, true, false, true) AS web_site_id#94]
+Arguments: [web_site_sk#92, web_site_id#94], [web_site_sk#92, static_invoke(CharVarcharCodegenUtils.readSidePadding(web_site_id#93, 16)) AS web_site_id#94]
 
 (89) CometBroadcastExchange
 Input [2]: [web_site_sk#92, web_site_id#94]

@@ -59,7 +59,7 @@ Condition : isnotnull(cc_call_center_sk#1)
 
 (3) CometProject
 Input [4]: [cc_call_center_sk#1, cc_call_center_id#2, cc_name#3, cc_manager#4]
-Arguments: [cc_call_center_sk#1, cc_call_center_id#5, cc_name#3, cc_manager#4], [cc_call_center_sk#1, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cc_call_center_id#2, 16, true, false, true) AS cc_call_center_id#5, cc_name#3, cc_manager#4]
+Arguments: [cc_call_center_sk#1, cc_call_center_id#5, cc_name#3, cc_manager#4], [cc_call_center_sk#1, static_invoke(CharVarcharCodegenUtils.readSidePadding(cc_call_center_id#2, 16)) AS cc_call_center_id#5, cc_name#3, cc_manager#4]
 
 (4) CometScan parquet spark_catalog.default.catalog_returns
 Output [4]: [cr_returning_customer_sk#6, cr_call_center_sk#7, cr_net_loss#8, cr_returned_date_sk#9]
@@ -175,11 +175,11 @@ ReadSchema: struct<cd_demo_sk:int,cd_marital_status:string,cd_education_status:s
 
 (27) CometFilter
 Input [3]: [cd_demo_sk#20, cd_marital_status#21, cd_education_status#22]
-Condition : ((((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_marital_status#21, 1, true, false, true) = M) AND (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_education_status#22, 20, true, false, true) = Unknown             )) OR ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_marital_status#21, 1, true, false, true) = W) AND (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_education_status#22, 20, true, false, true) = Advanced Degree     ))) AND isnotnull(cd_demo_sk#20))
+Condition : ((((static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_marital_status#21, 1)) = M) AND (static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_education_status#22, 20)) = Unknown             )) OR ((static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_marital_status#21, 1)) = W) AND (static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_education_status#22, 20)) = Advanced Degree     ))) AND isnotnull(cd_demo_sk#20))
 
 (28) CometProject
 Input [3]: [cd_demo_sk#20, cd_marital_status#21, cd_education_status#22]
-Arguments: [cd_demo_sk#20, cd_marital_status#23, cd_education_status#24], [cd_demo_sk#20, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_marital_status#21, 1, true, false, true) AS cd_marital_status#23, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_education_status#22, 20, true, false, true) AS cd_education_status#24]
+Arguments: [cd_demo_sk#20, cd_marital_status#23, cd_education_status#24], [cd_demo_sk#20, static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_marital_status#21, 1)) AS cd_marital_status#23, static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_education_status#22, 20)) AS cd_education_status#24]
 
 (29) CometBroadcastExchange
 Input [3]: [cd_demo_sk#20, cd_marital_status#23, cd_education_status#24]
@@ -198,12 +198,12 @@ Arguments: [cc_call_center_id#5, cc_name#3, cc_manager#4, cr_net_loss#8, c_curre
 Output [2]: [hd_demo_sk#25, hd_buy_potential#26]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/household_demographics]
-PushedFilters: [IsNotNull(hd_demo_sk)]
+PushedFilters: [IsNotNull(hd_buy_potential), IsNotNull(hd_demo_sk)]
 ReadSchema: struct<hd_demo_sk:int,hd_buy_potential:string>
 
 (33) CometFilter
 Input [2]: [hd_demo_sk#25, hd_buy_potential#26]
-Condition : (StartsWith(staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, hd_buy_potential#26, 15, true, false, true), Unknown) AND isnotnull(hd_demo_sk#25))
+Condition : ((isnotnull(hd_buy_potential#26) AND StartsWith(static_invoke(CharVarcharCodegenUtils.readSidePadding(hd_buy_potential#26, 15)), Unknown)) AND isnotnull(hd_demo_sk#25))
 
 (34) CometProject
 Input [2]: [hd_demo_sk#25, hd_buy_potential#26]

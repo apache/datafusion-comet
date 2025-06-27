@@ -145,7 +145,7 @@ Condition : isnotnull(s_store_sk#12)
 
 (11) CometProject
 Input [2]: [s_store_sk#12, s_store_id#13]
-Arguments: [s_store_sk#12, s_store_id#14], [s_store_sk#12, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_store_id#13, 16, true, false, true) AS s_store_id#14]
+Arguments: [s_store_sk#12, s_store_id#14], [s_store_sk#12, static_invoke(CharVarcharCodegenUtils.readSidePadding(s_store_id#13, 16)) AS s_store_id#14]
 
 (12) CometBroadcastExchange
 Input [2]: [s_store_sk#12, s_store_id#14]
@@ -173,7 +173,7 @@ Condition : isnotnull(i_item_sk#15)
 
 (17) CometProject
 Input [5]: [i_item_sk#15, i_brand#16, i_class#17, i_category#18, i_product_name#19]
-Arguments: [i_item_sk#15, i_brand#20, i_class#21, i_category#22, i_product_name#23], [i_item_sk#15, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_brand#16, 50, true, false, true) AS i_brand#20, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_class#17, 50, true, false, true) AS i_class#21, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#18, 50, true, false, true) AS i_category#22, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_product_name#19, 50, true, false, true) AS i_product_name#23]
+Arguments: [i_item_sk#15, i_brand#20, i_class#21, i_category#22, i_product_name#23], [i_item_sk#15, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_brand#16, 50)) AS i_brand#20, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_class#17, 50)) AS i_class#21, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_category#18, 50)) AS i_category#22, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_product_name#19, 50)) AS i_product_name#23]
 
 (18) CometBroadcastExchange
 Input [5]: [i_item_sk#15, i_brand#20, i_class#21, i_category#22, i_product_name#23]

@@ -86,7 +86,7 @@ Condition : isnotnull(i_item_sk#9)
 
 (11) CometProject
 Input [3]: [i_item_sk#9, i_class#10, i_category#11]
-Arguments: [i_item_sk#9, i_class#12, i_category#13], [i_item_sk#9, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_class#10, 50, true, false, true) AS i_class#12, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#11, 50, true, false, true) AS i_category#13]
+Arguments: [i_item_sk#9, i_class#12, i_category#13], [i_item_sk#9, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_class#10, 50)) AS i_class#12, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_category#11, 50)) AS i_category#13]
 
 (12) CometBroadcastExchange
 Input [3]: [i_item_sk#9, i_class#12, i_category#13]
@@ -105,12 +105,12 @@ Arguments: [ss_store_sk#2, ss_ext_sales_price#3, ss_net_profit#4, i_class#12, i_
 Output [2]: [s_store_sk#14, s_state#15]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store]
-PushedFilters: [IsNotNull(s_store_sk)]
+PushedFilters: [IsNotNull(s_state), IsNotNull(s_store_sk)]
 ReadSchema: struct<s_store_sk:int,s_state:string>
 
 (16) CometFilter
 Input [2]: [s_store_sk#14, s_state#15]
-Condition : ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_state#15, 2, true, false, true) = TN) AND isnotnull(s_store_sk#14))
+Condition : ((isnotnull(s_state#15) AND (static_invoke(CharVarcharCodegenUtils.readSidePadding(s_state#15, 2)) = TN)) AND isnotnull(s_store_sk#14))
 
 (17) CometProject
 Input [2]: [s_store_sk#14, s_state#15]
