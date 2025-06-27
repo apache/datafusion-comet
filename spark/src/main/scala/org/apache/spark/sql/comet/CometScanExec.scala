@@ -74,6 +74,8 @@ case class CometScanExec(
     with ShimCometScanExec
     with CometPlan {
 
+  assert(scanImpl != CometConf.SCAN_AUTO)
+
   // FIXME: ideally we should reuse wrapped.supportsColumnar, however that fails many tests
   override lazy val supportsColumnar: Boolean =
     relation.fileFormat.supportBatch(relation.sparkSession, schema)
