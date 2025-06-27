@@ -2335,10 +2335,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
 
       case SortExec(sortOrder, _, child, _) if CometConf.COMET_EXEC_SORT_ENABLED.get(conf) =>
-        if (!supportedSortType(op, sortOrder)) {
-          return None
-        }
-
         val sortOrders = sortOrder.map(exprToProto(_, child.output))
 
         if (sortOrders.forall(_.isDefined) && childOp.nonEmpty) {
@@ -2937,41 +2933,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case o => o
     }
 
-  }
-
-  // TODO: Remove this constraint when we upgrade to new arrow-rs including
-  // https://github.com/apache/arrow-rs/pull/6225
-  def supportedSortType(op: SparkPlan, sortOrder: Seq[SortOrder]): Boolean = {
-    def canRank(dt: DataType): Boolean = {
-      dt match {
-        case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-            _: DoubleType | _: TimestampType | _: DecimalType | _: DateType =>
-          true
-        case _: BinaryType | _: StringType => true
-        case _ => false
-      }
-    }
-
-    if (sortOrder.length == 1) {
-      val canSort = sortOrder.head.dataType match {
-        case _: BooleanType => true
-        case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-            _: DoubleType | _: TimestampType | _: TimestampNTZType | _: DecimalType |
-            _: DateType =>
-          true
-        case _: BinaryType | _: StringType => true
-        case ArrayType(elementType, _) => canRank(elementType)
-        case _ => false
-      }
-      if (!canSort) {
-        withInfo(op, s"Sort on single column of type ${sortOrder.head.dataType} is not supported")
-        false
-      } else {
-        true
-      }
-    } else {
-      true
-    }
   }
 
   private def validatePartitionAndSortSpecsForWindowFunc(

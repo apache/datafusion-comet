@@ -167,7 +167,7 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  test("Sort on single struct should fallback to Spark") {
+  test("Sort on single struct should work in Comet") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
@@ -180,7 +180,7 @@ class CometExecSuite extends CometTestBase {
       withParquetFile(data1) { file =>
         readParquetFile(file) { df =>
           val sort = df.sort("_1")
-          checkSparkAnswer(sort)
+          checkSparkAnswerAndOperator(sort)
         }
       }
 
@@ -195,7 +195,7 @@ class CometExecSuite extends CometTestBase {
       withParquetFile(data2) { file =>
         readParquetFile(file) { df =>
           val sort = df.sort("_1")
-          checkSparkAnswer(sort)
+          checkSparkAnswerAndOperator(sort)
         }
       }
     }
