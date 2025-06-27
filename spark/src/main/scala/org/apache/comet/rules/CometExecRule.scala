@@ -19,14 +19,16 @@
 
 package org.apache.comet.rules
 
+import scala.collection.mutable.ListBuffer
+
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometCoalesceExec, CometCollectLimitExec, CometExec, CometExpandExec, CometFilterExec, CometGlobalLimitExec, CometHashAggregateExec, CometHashJoinExec, CometLocalLimitExec, CometNativeExec, CometNativeScanExec, CometPlan, CometProjectExec, CometScanExec, CometScanWrapper, CometSinkPlaceHolder, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec, CometUnionExec, CometWindowExec, SerializedPlan}
+import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{CoalesceExec, CollectLimitExec, ExpandExec, FilterExec, GlobalLimitExec, LocalLimitExec, ProjectExec, SortExec, SparkPlan, TakeOrderedAndProjectExec, UnionExec}
+import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
@@ -35,8 +37,8 @@ import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
-import org.apache.comet.CometConf.{COMET_ANSI_MODE_ENABLED, COMET_SHUFFLE_FALLBACK_TO_COLUMNAR}
-import org.apache.comet.CometSparkSessionExtensions.{createMessage, getCometBroadcastNotEnabledReason, getCometShuffleNotEnabledReason, isANSIEnabled, isCometBroadCastForceEnabled, isCometExecEnabled, isCometJVMShuffleMode, isCometLoaded, isCometNativeShuffleMode, isCometScan, isCometShuffleEnabled, isSpark40Plus, shouldApplySparkToColumnar, withInfo}
+import org.apache.comet.CometConf.COMET_ANSI_MODE_ENABLED
+import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
 
@@ -201,18 +203,34 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           op,
           CometGlobalLimitExec(_, op, op.limit, op.child, SerializedPlan(None)))
 
-      case op: CollectLimitExec
-          if isCometNative(op.child) && CometConf.COMET_EXEC_COLLECT_LIMIT_ENABLED.get(conf)
-            && isCometShuffleEnabled(conf)
-            && op.offset == 0 =>
-        QueryPlanSerde
-          .operator2Proto(op)
-          .map { nativeOp =>
-            val cometOp =
-              CometCollectLimitExec(op, op.limit, op.offset, op.child)
-            CometSinkPlaceHolder(nativeOp, op, cometOp)
+      case op: CollectLimitExec =>
+        val fallbackReasons = new ListBuffer[String]()
+        if (!CometConf.COMET_EXEC_COLLECT_LIMIT_ENABLED.get(conf)) {
+          fallbackReasons += s"${CometConf.COMET_EXEC_COLLECT_LIMIT_ENABLED.key} is false"
+        }
+        if (!isCometShuffleEnabled(conf)) {
+          fallbackReasons += "Comet shuffle is not enabled"
+        }
+        if (op.offset != 0) {
+          fallbackReasons += "CollectLimit with non-zero offset is not supported"
+        }
+        if (fallbackReasons.nonEmpty) {
+          withInfos(op, fallbackReasons.toSet)
+        } else {
+          if (!isCometNative(op.child)) {
+            // no reason to report reason if child is not native
+            op
+          } else {
+            QueryPlanSerde
+              .operator2Proto(op)
+              .map { nativeOp =>
+                val cometOp =
+                  CometCollectLimitExec(op, op.limit, op.offset, op.child)
+                CometSinkPlaceHolder(nativeOp, op, cometOp)
+              }
+              .getOrElse(op)
           }
-          .getOrElse(op)
+        }
 
       case op: ExpandExec =>
         newPlanWithProto(
@@ -491,16 +509,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             None
           }
 
-        // this is a temporary workaround because some Spark SQL tests fail
-        // when we enable COMET_SHUFFLE_FALLBACK_TO_COLUMNAR due to valid bugs
-        // that we had not previously seen
-        val tryColumnarNext =
-          !nativePrecondition || (nativePrecondition && nativeShuffle.isEmpty &&
-            COMET_SHUFFLE_FALLBACK_TO_COLUMNAR.get(conf))
-
         val nativeOrColumnarShuffle = if (nativeShuffle.isDefined) {
           nativeShuffle
-        } else if (tryColumnarNext) {
+        } else {
           // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
           // (if configured).
           // If the child of ShuffleExchangeExec is also a ShuffleExchangeExec, we should not
@@ -526,8 +537,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           } else {
             None
           }
-        } else {
-          None
         }
 
         if (nativeOrColumnarShuffle.isDefined) {

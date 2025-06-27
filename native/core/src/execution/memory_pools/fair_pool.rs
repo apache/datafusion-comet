@@ -120,7 +120,7 @@ impl MemoryPool for CometFairMemoryPool {
                 panic!("Failed to release {subtractive} bytes where only {size} bytes reserved")
             }
             self.release(subtractive)
-                .unwrap_or_else(|_| panic!("Failed to release {} bytes", subtractive));
+                .unwrap_or_else(|_| panic!("Failed to release {subtractive} bytes"));
             state.used = state.used.checked_sub(subtractive).unwrap();
         }
     }

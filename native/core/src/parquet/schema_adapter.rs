@@ -278,6 +278,7 @@ mod test {
     use datafusion::common::config::TableParquetOptions;
     use datafusion::common::DataFusionError;
     use datafusion::datasource::listing::PartitionedFile;
+    use datafusion::datasource::physical_plan::FileSource;
     use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::object_store::ObjectStoreUrl;
@@ -344,11 +345,10 @@ mod test {
         let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
         spark_parquet_options.allow_cast_unsigned_ints = true;
 
-        let parquet_source = Arc::new(
-            ParquetSource::new(TableParquetOptions::new()).with_schema_adapter_factory(Arc::new(
-                SparkSchemaAdapterFactory::new(spark_parquet_options, None),
-            )),
-        );
+        let parquet_source =
+            ParquetSource::new(TableParquetOptions::new()).with_schema_adapter_factory(
+                Arc::new(SparkSchemaAdapterFactory::new(spark_parquet_options, None)),
+            )?;
 
         let files = FileGroup::new(vec![PartitionedFile::from_path(filename.to_string())?]);
         let file_scan_config =

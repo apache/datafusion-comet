@@ -86,8 +86,7 @@ impl ArrayInsert {
             DataType::List(field) => Ok(DataType::List(Arc::clone(field))),
             DataType::LargeList(field) => Ok(DataType::LargeList(Arc::clone(field))),
             data_type => Err(DataFusionError::Internal(format!(
-                "Unexpected src array type in ArrayInsert: {:?}",
-                data_type
+                "Unexpected src array type in ArrayInsert: {data_type:?}"
             ))),
         }
     }
@@ -248,8 +247,7 @@ fn array_insert<O: OffsetSizeTrait>(
             let new_array_len = std::cmp::max(end - start + 1, corrected_pos);
             if new_array_len > MAX_ROUNDED_ARRAY_LENGTH {
                 return Err(DataFusionError::Internal(format!(
-                    "Max array length in Spark is {:?}, but got {:?}",
-                    MAX_ROUNDED_ARRAY_LENGTH, new_array_len
+                    "Max array length in Spark is {MAX_ROUNDED_ARRAY_LENGTH:?}, but got {new_array_len:?}"
                 )));
             }
 
@@ -275,8 +273,7 @@ fn array_insert<O: OffsetSizeTrait>(
             let new_array_len = (-pos + base_offset).as_usize();
             if new_array_len > MAX_ROUNDED_ARRAY_LENGTH {
                 return Err(DataFusionError::Internal(format!(
-                    "Max array length in Spark is {:?}, but got {:?}",
-                    MAX_ROUNDED_ARRAY_LENGTH, new_array_len
+                    "Max array length in Spark is {MAX_ROUNDED_ARRAY_LENGTH:?}, but got {new_array_len:?}"
                 )));
             }
             mutable_values.extend(1, row_index, row_index + 1);

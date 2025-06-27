@@ -15,7 +15,7 @@
 # limitations under the License.
 #
 
-FROM apache/spark:3.5.5 AS builder
+FROM apache/spark:3.5.6 AS builder
 
 USER root
 
@@ -24,6 +24,15 @@ RUN apt update \
     && apt install -y curl \
     && apt install -y openjdk-11-jdk \
     && apt clean
+
+RUN apt install -y gcc-10 g++-10 cpp-10 unzip
+ENV CC="gcc-10"
+ENV CXX="g++-10"
+
+RUN PB_REL="https://github.com/protocolbuffers/protobuf/releases" \
+    && curl -LO $PB_REL/download/v30.2/protoc-30.2-linux-x86_64.zip \
+    && unzip protoc-30.2-linux-x86_64.zip -d /root/.local
+ENV PATH="$PATH:/root/.local/bin"
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
@@ -61,7 +70,7 @@ RUN mkdir -p /root/.m2 && \
 RUN cd /comet \
     && JAVA_HOME=$(readlink -f $(which javac) | sed "s/\/bin\/javac//") make release-nogit PROFILES="-Pspark-$SPARK_VERSION -Pscala-$SCALA_VERSION"
 
-FROM apache/spark:3.5.5
+FROM apache/spark:3.5.6
 ENV SPARK_VERSION=3.5
 ENV SCALA_VERSION=2.12
 USER root

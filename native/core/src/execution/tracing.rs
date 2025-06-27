@@ -86,7 +86,7 @@ impl Recorder {
 
     fn get_thread_id() -> u64 {
         let thread_id = std::thread::current().id();
-        format!("{:?}", thread_id)
+        format!("{thread_id:?}")
             .trim_start_matches("ThreadId(")
             .trim_end_matches(")")
             .parse()

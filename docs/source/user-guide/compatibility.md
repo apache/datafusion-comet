@@ -29,13 +29,13 @@ Comet aims to provide consistent results with the version of Apache Spark that i
 
 This guide offers information about areas of functionality where there are known differences.
 
-# Compatibility Guide
+## Parquet
 
-Comet aims to provide consistent results with the version of Apache Spark that is being used.
+### Data Type Support
 
-This guide offers information about areas of functionality where there are known differences.
+Comet does not support reading decimals encoded in binary format.
 
-## Parquet Scans
+### Parquet Scans
 
 Comet currently has three distinct implementations of the Parquet scan operator. The configuration property
 `spark.comet.scan.impl` is used to select an implementation.
@@ -56,6 +56,8 @@ implementation:
 
 The new scans currently have the following limitations:
 
+Issues common to both `native_datafusion` and `native_iceberg_compat`:
+
 - When reading Parquet files written by systems other than Spark that contain columns with the logical types `UINT_8`
 or `UINT_16`, Comet will produce different results than Spark because Spark does not preserve or understand these
 logical types. Arrow-based readers, such as DataFusion and Comet do respect these types and read the data as unsigned
@@ -64,12 +66,21 @@ types (regardless of the logical type). This behavior can be disabled by setting
 `spark.comet.scan.allowIncompatible=true`.
 - There is a known performance issue when pushing filters down to Parquet. See the [Comet Tuning Guide] for more
 information.
+- Reading maps containing complex types can result in errors or incorrect results [#1754]
+- `PARQUET_FIELD_ID_READ_ENABLED` is not respected [#1758]
 - There are failures in the Spark SQL test suite when enabling these new scans (tracking issues: [#1542] and [#1545]).
 - No support for default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
 - Setting Spark configs `ignoreMissingFiles` or `ignoreCorruptFiles` to `true` is not compatible with `native_datafusion` scan.
 
+Issues specific to `native_datafusion`:
+
+- Bucketed scans are not supported
+- No support for row indexes
+
 [#1545]: https://github.com/apache/datafusion-comet/issues/1545
 [#1542]: https://github.com/apache/datafusion-comet/issues/1542
+[#1754]: https://github.com/apache/datafusion-comet/issues/1754
+[#1758]: https://github.com/apache/datafusion-comet/issues/1758
 [Comet Tuning Guide]: tuning.md
 
 ## ANSI mode
@@ -88,6 +99,9 @@ However, one exception is comparison. Spark does not normalize NaN and zero when
 because they are handled well in Spark (e.g., `SQLOrderingUtil.compareFloats`). But the comparison
 functions of arrow-rs used by DataFusion do not normalize NaN and zero (e.g., [arrow::compute::kernels::cmp::eq](https://docs.rs/arrow/latest/arrow/compute/kernels/cmp/fn.eq.html#)).
 So Comet will add additional normalization expression of NaN and zero for comparison.
+
+There is a known bug with using count(distinct) within aggregate queries, where each NaN value will be counted
+separately [#1824](https://github.com/apache/datafusion-comet/issues/1824).
 
 ## Incompatible Expressions
 

@@ -105,8 +105,7 @@ impl PhysicalExpr for CheckOverflow {
                     DataType::Decimal128(p, s) => (p, s),
                     dt => {
                         return Err(DataFusionError::Execution(format!(
-                            "CheckOverflow expects only Decimal128, but got {:?}",
-                            dt
+                            "CheckOverflow expects only Decimal128, but got {dt:?}"
                         )))
                     }
                 };
@@ -147,8 +146,7 @@ impl PhysicalExpr for CheckOverflow {
                 )))
             }
             v => Err(DataFusionError::Execution(format!(
-                "CheckOverflow's child expression should be decimal array, but found {:?}",
-                v
+                "CheckOverflow's child expression should be decimal array, but found {v:?}"
             ))),
         }
     }

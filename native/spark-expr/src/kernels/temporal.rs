@@ -307,8 +307,7 @@ where
                 |dt| as_days_from_unix_epoch(trunc_date_to_week(dt)),
             )),
             _ => Err(SparkError::Internal(format!(
-                "Unsupported format: {:?} for function 'date_trunc'",
-                format
+                "Unsupported format: {format:?} for function 'date_trunc'"
             ))),
         },
         dt => return_compute_error_with!(
@@ -399,8 +398,7 @@ pub(crate) fn date_trunc_array_fmt_dyn(
         )
         .map(|a| Arc::new(a) as ArrayRef),
         (dt, fmt) => Err(SparkError::Internal(format!(
-            "Unsupported datatype: {:}, format: {:?} for function 'date_trunc'",
-            dt, fmt
+            "Unsupported datatype: {dt:}, format: {fmt:?} for function 'date_trunc'"
         ))),
     }
 }
@@ -588,8 +586,7 @@ where
                     })
                 }
                 _ => Err(SparkError::Internal(format!(
-                    "Unsupported format: {:?} for function 'timestamp_trunc'",
-                    format
+                    "Unsupported format: {format:?} for function 'timestamp_trunc'"
                 ))),
             }
         }
@@ -668,8 +665,7 @@ pub(crate) fn timestamp_trunc_array_fmt_dyn(
             )
         }
         (dt, fmt) => Err(SparkError::Internal(format!(
-            "Unsupported datatype: {:}, format: {:?} for function 'timestamp_trunc'",
-            dt, fmt
+            "Unsupported datatype: {dt:}, format: {fmt:?} for function 'timestamp_trunc'"
         ))),
     }
 }

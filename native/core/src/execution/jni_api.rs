@@ -51,7 +51,9 @@ use crate::{
 use datafusion::common::ScalarValue;
 use datafusion::execution::disk_manager::DiskManagerMode;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use datafusion::logical_expr::ScalarUDF;
 use datafusion_comet_proto::spark_operator::Operator;
+use datafusion_spark::function::math::expm1::SparkExpm1;
 use futures::stream::StreamExt;
 use jni::objects::JByteBuffer;
 use jni::sys::JNI_FALSE;
@@ -284,6 +286,12 @@ fn prepare_datafusion_session_context(
 
     datafusion::functions_nested::register_all(&mut session_ctx)?;
 
+    // register UDFs from datafusion-spark crate
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
+
+    // Must be the last one to override existing functions with the same name
+    datafusion_comet_spark_expr::register_all_comet_functions(&mut session_ctx)?;
+
     Ok(session_ctx)
 }
 
@@ -310,31 +318,35 @@ fn prepare_output(
     let results = output_batch.columns();
     let num_rows = output_batch.num_rows();
 
-    if results.len() != num_cols {
-        return Err(CometError::Internal(format!(
-            "Output column count mismatch: expected {num_cols}, got {}",
-            results.len()
-        )));
-    }
-
-    if validate {
-        // Validate the output arrays.
-        for array in results.iter() {
-            let array_data = array.to_data();
-            array_data
-                .validate_full()
-                .expect("Invalid output array data");
+    // there are edge cases where num_cols can be zero due to Spark optimizations
+    // when the results of a query are not used
+    if num_cols > 0 {
+        if results.len() != num_cols {
+            return Err(CometError::Internal(format!(
+                "Output column count mismatch: expected {num_cols}, got {}",
+                results.len()
+            )));
         }
-    }
 
-    let mut i = 0;
-    while i < results.len() {
-        let array_ref = results.get(i).ok_or(CometError::IndexOutOfBounds(i))?;
-        array_ref
-            .to_data()
-            .move_to_spark(array_addrs[i], schema_addrs[i])?;
+        if validate {
+            // Validate the output arrays.
+            for array in results.iter() {
+                let array_data = array.to_data();
+                array_data
+                    .validate_full()
+                    .expect("Invalid output array data");
+            }
+        }
 
-        i += 1;
+        let mut i = 0;
+        while i < results.len() {
+            let array_ref = results.get(i).ok_or(CometError::IndexOutOfBounds(i))?;
+            array_ref
+                .to_data()
+                .move_to_spark(array_addrs[i], schema_addrs[i])?;
+
+            i += 1;
+        }
     }
 
     Ok(num_rows as jlong)
@@ -396,8 +408,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             // query plan, we need to defer stream initialization to first time execution.
             if exec_context.root_op.is_none() {
                 let start = Instant::now();
-                let planner = PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx))
-                    .with_exec_id(exec_context_id);
+                let planner =
+                    PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
+                        .with_exec_id(exec_context_id);
                 let (scans, root_op) = planner.create_plan(
                     &exec_context.spark_plan,
                     &mut exec_context.input_sources.clone(),

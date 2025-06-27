@@ -50,11 +50,11 @@ impl SparkUnsafeArray {
         let num_elements = i64::from_le_bytes(slice.try_into().unwrap());
 
         if num_elements < 0 {
-            panic!("Negative number of elements: {}", num_elements);
+            panic!("Negative number of elements: {num_elements}");
         }
 
         if num_elements > i32::MAX as i64 {
-            panic!("Number of elements should <= i32::MAX: {}", num_elements);
+            panic!("Number of elements should <= i32::MAX: {num_elements}");
         }
 
         Self {
@@ -333,8 +333,7 @@ pub fn append_list_element<T: ArrayBuilder>(
             }
             _ => {
                 return Err(CometError::Internal(format!(
-                    "Unsupported data type in list element: {:?}",
-                    element_dt
+                    "Unsupported data type in list element: {element_dt:?}"
                 )))
             }
         }

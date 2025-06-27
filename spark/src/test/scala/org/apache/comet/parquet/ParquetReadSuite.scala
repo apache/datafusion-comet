@@ -41,6 +41,7 @@ import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
@@ -1745,6 +1746,77 @@ abstract class ParquetReadSuite extends CometTestBase {
       }
     }
   }
+
+  private def withId(id: Int) =
+    new MetadataBuilder().putLong(ParquetUtils.FIELD_ID_METADATA_KEY, id).build()
+
+  // Based on Spark ParquetIOSuite.test("vectorized reader: array of nested struct")
+  test("array of nested struct with and without field id") {
+    val nestedSchema = StructType(
+      Seq(StructField(
+        "_1",
+        StructType(Seq(
+          StructField("_1", StringType, nullable = true, withId(1)), // Field ID 1
+          StructField(
+            "_2",
+            ArrayType(StructType(Seq(
+              StructField("_1", StringType, nullable = true, withId(2)), // Field ID 2
+              StructField("_2", StringType, nullable = true, withId(3)) // Field ID 3
+            ))),
+            nullable = true))),
+        nullable = true)))
+    val nestedSchemaNoId = StructType(
+      Seq(StructField(
+        "_1",
+        StructType(Seq(
+          StructField("_1", StringType, nullable = true),
+          StructField(
+            "_2",
+            ArrayType(StructType(Seq(
+              StructField("_1", StringType, nullable = true),
+              StructField("_2", StringType, nullable = true)))),
+            nullable = true))),
+        nullable = true)))
+    // data matching the schema
+    val data = Seq(
+      Row(Row("a", null)),
+      Row(Row("b", Seq(Row("c", "d")))),
+      Row(null),
+      Row(Row("e", Seq(Row("f", null), Row(null, "g")))),
+      Row(Row(null, null)),
+      Row(Row(null, Seq(null))),
+      Row(Row(null, Seq(Row(null, null), Row("h", null), null))),
+      Row(Row("i", Seq())),
+      Row(null))
+    val answer =
+      Row(Row("a", null)) ::
+        Row(Row("b", Seq(Row("c", "d")))) ::
+        Row(null) ::
+        Row(Row("e", Seq(Row("f", null), Row(null, "g")))) ::
+        Row(Row(null, null)) ::
+        Row(Row(null, Seq(null))) ::
+        Row(Row(null, Seq(Row(null, null), Row("h", null), null))) ::
+        Row(Row("i", Seq())) ::
+        Row(null) ::
+        Nil
+
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+      val df = spark.createDataFrame(spark.sparkContext.parallelize(data), nestedSchema)
+      withTempPath { path =>
+        df.write.parquet(path.getCanonicalPath)
+        readParquetFile(path.getCanonicalPath) { df =>
+          checkAnswer(df, answer)
+        }
+      }
+      val df2 = spark.createDataFrame(spark.sparkContext.parallelize(data), nestedSchemaNoId)
+      withTempPath { path =>
+        df2.write.parquet(path.getCanonicalPath)
+        readParquetFile(path.getCanonicalPath) { df =>
+          checkAnswer(df, answer)
+        }
+      }
+    }
+  }
 }
 
 class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
@@ -1814,7 +1886,12 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
         CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false") {
-        makeParquetFileAllTypes(path, dictionaryEnabled = false, 0, rows, nullEnabled = false)
+        makeParquetFileAllPrimitiveTypes(
+          path,
+          dictionaryEnabled = false,
+          0,
+          rows,
+          nullEnabled = false)
       }
       Seq(
         (CometConf.SCAN_NATIVE_DATAFUSION, "output_rows"),
@@ -1874,6 +1951,51 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
       }
     }
   }
+
+  test("read basic complex types") {
+    Seq(true, false).foreach(dictionaryEnabled => {
+      withTempPath { dir =>
+        val path = new Path(dir.toURI.toString, "complex_types.parquet")
+        makeParquetFileComplexTypes(path, dictionaryEnabled, 10)
+        withParquetTable(path.toUri.toString, "complex_types") {
+          Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach(
+            scanMode => {
+              withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode) {
+                checkSparkAnswerAndOperator(sql("select * from complex_types"))
+                // First level
+                checkSparkAnswerAndOperator(sql(
+                  "select optional_array, array_of_struct, optional_map, complex_map from complex_types"))
+                // second nested level
+                checkSparkAnswerAndOperator(
+                  sql(
+                    "select optional_array[0], " +
+                      "array_of_struct[0].field1, " +
+                      "array_of_struct[0].optional_nested_array, " +
+                      "optional_map.key, " +
+                      "optional_map.value, " +
+                      "map_keys(complex_map), " +
+                      "map_values(complex_map) " +
+                      "from complex_types"))
+                // leaf fields
+                checkSparkAnswerAndOperator(
+                  sql(
+                    "select optional_array[0], " +
+                      "array_of_struct[0].field1, " +
+                      "array_of_struct[0].optional_nested_array[0], " +
+                      "optional_map.key, " +
+                      "optional_map.value, " +
+                      "map_keys(complex_map)[0].key_field1, " +
+                      "map_keys(complex_map)[0].key_field2, " +
+                      "map_values(complex_map)[0].value_field1, " +
+                      "map_values(complex_map)[0].value_field2 " +
+                      "from complex_types"))
+              }
+            })
+        }
+      }
+    })
+  }
+
 }
 
 class ParquetReadV2Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {

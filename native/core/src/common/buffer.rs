@@ -75,14 +75,12 @@ impl CometBuffer {
         assert_eq!(
             capacity % ALIGNMENT,
             0,
-            "input buffer is not aligned to {} bytes",
-            ALIGNMENT
+            "input buffer is not aligned to {ALIGNMENT} bytes"
         );
         Self {
             data: NonNull::new(ptr as *mut u8).unwrap_or_else(|| {
                 panic!(
-                    "cannot create CometBuffer from (ptr: {:?}, len: {}, capacity: {}",
-                    ptr, len, capacity
+                    "cannot create CometBuffer from (ptr: {ptr:?}, len: {len}, capacity: {capacity}"
                 )
             }),
             len,

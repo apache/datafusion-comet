@@ -225,7 +225,7 @@ impl ParquetMutableVector {
             ArrowDataType::FixedSizeBinary(type_length) => *type_length as usize * 8,
             ArrowDataType::Decimal128(..) => 128, // Arrow stores decimal with 16 bytes
             ArrowDataType::Binary | ArrowDataType::Utf8 => 32, // Only count offset size
-            dt => panic!("Unsupported Arrow data type: {:?}", dt),
+            dt => panic!("Unsupported Arrow data type: {dt:?}"),
         }
     }
 

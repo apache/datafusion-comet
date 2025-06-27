@@ -293,7 +293,7 @@ impl ColumnReader {
                                 UInt64DecimalColumnReader,
                                 ArrowDataType::Decimal128(20u8, 0i8)
                             ),
-                            _ => panic!("Unsupported INT64 annotation: {:?}", lt),
+                            _ => panic!("Unsupported INT64 annotation: {lt:?}"),
                         },
                         LogicalType::Decimal {
                             scale: _,
@@ -351,7 +351,7 @@ impl ColumnReader {
                                 }
                             }
                         }
-                        lt => panic!("Unsupported logical type for INT64: {:?}", lt),
+                        lt => panic!("Unsupported logical type for INT64: {lt:?}"),
                     }
                 } else {
                     match promotion_info.physical_type {
@@ -385,7 +385,7 @@ impl ColumnReader {
                 // We support type promotion from float to double
                 PhysicalType::FLOAT => typed_reader!(FloatColumnReader, Float32),
                 PhysicalType::DOUBLE => typed_reader!(FloatToDoubleColumnReader, Float64),
-                t => panic!("Unsupported read physical type: {} for FLOAT", t),
+                t => panic!("Unsupported read physical type: {t} for FLOAT"),
             },
 
             PhysicalType::DOUBLE => typed_reader!(DoubleColumnReader, Float64),
@@ -396,7 +396,7 @@ impl ColumnReader {
                         // https://github.com/apache/parquet-format/blob/master/LogicalTypes.md
                         // "enum type should interpret ENUM annotated field as a UTF-8"
                         LogicalType::Enum => typed_reader!(StringColumnReader, Utf8),
-                        lt => panic!("Unsupported logical type for BYTE_ARRAY: {:?}", lt),
+                        lt => panic!("Unsupported logical type for BYTE_ARRAY: {lt:?}"),
                     }
                 } else {
                     typed_reader!(ByteArrayColumnReader, Binary)
@@ -438,7 +438,7 @@ impl ColumnReader {
                                 ArrowDataType::FixedSizeBinary(type_length)
                             )
                         }
-                        t => panic!("Unsupported logical type for FIXED_LEN_BYTE_ARRAY: {:?}", t),
+                        t => panic!("Unsupported logical type for FIXED_LEN_BYTE_ARRAY: {t:?}"),
                     }
                 } else {
                     let type_length = desc.type_length();
@@ -775,7 +775,7 @@ impl<T: DataType> TypedColumnReader<T> {
         }
 
         if encoding != Encoding::PLAIN_DICTIONARY {
-            panic!("Invalid encoding type for Parquet dictionary: {}", encoding);
+            panic!("Invalid encoding type for Parquet dictionary: {encoding}");
         }
 
         if self.vector.dictionary.is_some() {
@@ -973,8 +973,7 @@ impl<T: DataType> TypedColumnReader<T> {
     fn check_const(&mut self, method_name: &str) {
         assert!(
             self.value_decoder.is_none(),
-            "{} cannot be called after set_page_v1/set_page_v2!",
-            method_name
+            "{method_name} cannot be called after set_page_v1/set_page_v2!"
         );
         assert!(!self.is_const, "can only set constant once!");
         self.is_const = true;

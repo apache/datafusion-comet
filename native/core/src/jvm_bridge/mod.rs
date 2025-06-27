@@ -272,8 +272,7 @@ impl JVMClasses<'_> {
             let java_vm = JAVA_VM.get_unchecked();
             java_vm.attach_current_thread().map_err(|e| {
                 CometError::Internal(format!(
-                    "JVMClasses::get_env() failed to attach current thread: {}",
-                    e
+                    "JVMClasses::get_env() failed to attach current thread: {e}"
                 ))
             })
         }
@@ -361,8 +360,7 @@ fn get_throwable_message(
             let cause_class_name = get_throwable_class_name(env, jvm_classes, &cause)?;
             let cause_message = get_throwable_message(env, jvm_classes, &cause)?;
             Ok(format!(
-                "{}\nCaused by: {}: {}",
-                message_str, cause_class_name, cause_message
+                "{message_str}\nCaused by: {cause_class_name}: {cause_message}"
             ))
         } else {
             Ok(message_str)

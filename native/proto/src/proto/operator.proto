@@ -94,6 +94,13 @@ message NativeScan {
   repeated spark.spark_expression.Expr default_values = 10;
   repeated int64 default_values_indexes = 11;
   bool case_sensitive = 12;
+  // Options for configuring object stores such as AWS S3, GCS, etc. The key-value pairs are taken
+  // from Hadoop configuration for compatibility with Hadoop FileSystem implementations of object
+  // stores.
+  // The configuration values have hadoop. or spark.hadoop. prefix trimmed. For instance, the
+  // configuration value "spark.hadoop.fs.s3a.access.key" will be stored as "fs.s3a.access.key" in
+  // the map.
+  map<string, string> object_store_options = 13;
 }
 
 message Projection {

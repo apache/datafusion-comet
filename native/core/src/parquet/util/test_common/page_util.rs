@@ -288,7 +288,7 @@ pub fn make_pages<T: DataType>(
             Encoding::PLAIN => {
                 pb.add_values::<T>(encoding, &values[value_range]);
             }
-            enc => panic!("Unexpected encoding {}", enc),
+            enc => panic!("Unexpected encoding {enc}"),
         }
 
         let data_page = pb.consume();

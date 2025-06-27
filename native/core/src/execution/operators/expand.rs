@@ -77,7 +77,7 @@ impl DisplayAs for ExpandExec {
                 for projection in &self.projections {
                     write!(f, "[")?;
                     for expr in projection {
-                        write!(f, "{}, ", expr)?;
+                        write!(f, "{expr}, ")?;
                     }
                     write!(f, "], ")?;
                 }
