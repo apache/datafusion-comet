@@ -1605,6 +1605,20 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("from_unixtime") {
+    Seq(false, true).foreach { dictionary =>
+      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+        val table = "test"
+        withTable(table) {
+          sql(s"create table $table(col timestamp) using parquet")
+          sql(s"insert into $table values (now()), (null)")
+          checkSparkAnswerAndOperator(
+            s"SELECT from_unixtime(col), from_unixtime(col, 'America/New_York') FROM $table")
+        }
+      }
+    }
+  }
+
   test("Decimal binary ops multiply is aligned to Spark") {
     Seq(true, false).foreach { allowPrecisionLoss =>
       withSQLConf(
