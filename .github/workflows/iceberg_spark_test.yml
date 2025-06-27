@@ -45,8 +45,8 @@ jobs:
       matrix:
         os: [ubuntu-24.04]
         java-version: [11, 17]
-        iceberg-version: [{short: '1.8', full: '1.8.1'}]
-        spark-version: [{short: '3.5', full: '3.5.6'}]
+        iceberg-version: [{short: '1.8', full: '1.8.1'}, {short: '1.9', full: '1.9.1'}]
+        spark-version: [{short: '3.4', full: '3.4.4'}, {short: '3.5', full: '3.5.6'}]
         scala-version: ['2.13']
       fail-fast: false
     name: iceberg-spark-sql/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}

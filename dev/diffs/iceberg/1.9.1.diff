@@ -1,20 +1,20 @@
 diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
-index 04ffa8f..a235341 100644
+index c50991c..735bdde 100644
 --- a/gradle/libs.versions.toml
 +++ b/gradle/libs.versions.toml
-@@ -80,8 +80,8 @@ scala-collection-compat = "2.13.0"
- slf4j = "2.0.16"
- snowflake-jdbc = "3.22.0"
- spark-hive33 = "3.3.4"
--spark-hive34 = "3.4.4"
--spark-hive35 = "3.5.4"
-+spark-hive34 = "3.4.4-SNAPSHOT"
-+spark-hive35 = "3.5.6-SNAPSHOT"
- sqlite-jdbc = "3.48.0.0"
- testcontainers = "1.20.4"
- tez010 = "0.10.4"
+@@ -79,8 +79,8 @@ roaringbitmap = "1.3.0"
+ scala-collection-compat = "2.13.0"
+ slf4j = "2.0.17"
+ snowflake-jdbc = "3.23.2"
+-spark34 = "3.4.4"
+-spark35 = "3.5.5"
++spark34 = "3.4.4-SNAPSHOT"
++spark35 = "3.5.6-SNAPSHOT"
+ sqlite-jdbc = "3.49.1.0"
+ testcontainers = "1.20.6"
+ tez08 = { strictly = "0.8.4"}  # see rich version usage explanation above
 diff --git a/spark/v3.4/build.gradle b/spark/v3.4/build.gradle
-index 6eb26e8..c288e72 100644
+index 2cd8666..c1893b1 100644
 --- a/spark/v3.4/build.gradle
 +++ b/spark/v3.4/build.gradle
 @@ -75,7 +75,7 @@ project(":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}") {
@@ -26,16 +26,16 @@ index 6eb26e8..c288e72 100644
  
      implementation libs.parquet.column
      implementation libs.parquet.hadoop
-@@ -185,7 +185,7 @@ project(":iceberg-spark:iceberg-spark-extensions-${sparkMajorVersion}_${scalaVer
-     testImplementation libs.avro.avro
+@@ -186,7 +186,7 @@ project(":iceberg-spark:iceberg-spark-extensions-${sparkMajorVersion}_${scalaVer
      testImplementation libs.parquet.hadoop
+     testImplementation libs.awaitility
      testImplementation libs.junit.vintage.engine
 -    testImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.5.0"
 +    testImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.9.0-SNAPSHOT"
  
      // Required because we remove antlr plugin dependencies from the compile configuration, see note above
      runtimeOnly libs.antlr.runtime
-@@ -260,6 +260,8 @@ project(":iceberg-spark:iceberg-spark-runtime-${sparkMajorVersion}_${scalaVersio
+@@ -267,6 +267,8 @@ project(":iceberg-spark:iceberg-spark-runtime-${sparkMajorVersion}_${scalaVersio
      integrationImplementation project(path: ':iceberg-hive-metastore', configuration: 'testArtifacts')
      integrationImplementation project(path: ":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}", configuration: 'testArtifacts')
      integrationImplementation project(path: ":iceberg-spark:iceberg-spark-extensions-${sparkMajorVersion}_${scalaVersion}", configuration: 'testArtifacts')
@@ -44,7 +44,7 @@ index 6eb26e8..c288e72 100644
  
      // runtime dependencies for running Hive Catalog based integration test
      integrationRuntimeOnly project(':iceberg-hive-metastore')
-@@ -297,8 +299,8 @@ project(":iceberg-spark:iceberg-spark-runtime-${sparkMajorVersion}_${scalaVersio
+@@ -304,8 +306,8 @@ project(":iceberg-spark:iceberg-spark-runtime-${sparkMajorVersion}_${scalaVersio
      relocate 'org.apache.avro', 'org.apache.iceberg.shaded.org.apache.avro'
      relocate 'avro.shaded', 'org.apache.iceberg.shaded.org.apache.avro.shaded'
      relocate 'com.thoughtworks.paranamer', 'org.apache.iceberg.shaded.com.thoughtworks.paranamer'
@@ -69,13 +69,13 @@ index 0ca1236..87daef4 100644
    // Controls whether reading/writing timestamps without timezones is allowed
    @Deprecated
 diff --git a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
-index 4794863..8d02f02 100644
+index 16159dc..81b7d83 100644
 --- a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
 +++ b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
-@@ -20,11 +20,11 @@ package org.apache.iceberg.spark.data.vectorized;
+@@ -19,11 +19,11 @@
+ package org.apache.iceberg.spark.data.vectorized;
  
  import java.io.IOException;
- import java.util.Map;
 +import org.apache.comet.CometSchemaImporter;
  import org.apache.comet.parquet.AbstractColumnReader;
  import org.apache.comet.parquet.ColumnReader;
@@ -86,7 +86,7 @@ index 4794863..8d02f02 100644
  import org.apache.iceberg.parquet.VectorizedReader;
  import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 diff --git a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java
-index a361a7f..9021cd5 100644
+index a361a7f..b21859b 100644
 --- a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java
 +++ b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java
 @@ -24,6 +24,7 @@ import java.util.Objects;
@@ -111,10 +111,10 @@ index a361a7f..9021cd5 100644
          caseSensitive());
    }
 +
-+  @Override
-+  public boolean isCometEnabled() {
-+    return true;
-+  }
++   @Override
++   public boolean isCometEnabled() {
++     return true;
++   }
  }
 diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestDataFrameWriterV2.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestDataFrameWriterV2.java
 index 47a0e87..531b7ce 100644
@@ -147,7 +147,7 @@ index 47a0e87..531b7ce 100644
      removeTables();
      sql("CREATE TABLE %s (id double, data string) USING iceberg", tableName);
 diff --git a/spark/v3.5/build.gradle b/spark/v3.5/build.gradle
-index e2d2c7a..8b5bff8 100644
+index 572c32f..88ef87d 100644
 --- a/spark/v3.5/build.gradle
 +++ b/spark/v3.5/build.gradle
 @@ -75,7 +75,7 @@ project(":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}") {
@@ -159,17 +159,16 @@ index e2d2c7a..8b5bff8 100644
  
      implementation libs.parquet.column
      implementation libs.parquet.hadoop
-@@ -182,8 +182,8 @@ project(":iceberg-spark:iceberg-spark-extensions-${sparkMajorVersion}_${scalaVer
- 
+@@ -184,7 +184,7 @@ project(":iceberg-spark:iceberg-spark-extensions-${sparkMajorVersion}_${scalaVer
      testImplementation libs.avro.avro
      testImplementation libs.parquet.hadoop
-+    testImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.9.0-SNAPSHOT"
      testImplementation libs.awaitility
 -    testImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.5.0"
++    testImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.9.0-SNAPSHOT"
  
      // Required because we remove antlr plugin dependencies from the compile configuration, see note above
      runtimeOnly libs.antlr.runtime
-@@ -263,6 +263,7 @@ project(":iceberg-spark:iceberg-spark-runtime-${sparkMajorVersion}_${scalaVersio
+@@ -265,6 +265,7 @@ project(":iceberg-spark:iceberg-spark-runtime-${sparkMajorVersion}_${scalaVersio
      integrationImplementation project(path: ':iceberg-hive-metastore', configuration: 'testArtifacts')
      integrationImplementation project(path: ":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}", configuration: 'testArtifacts')
      integrationImplementation project(path: ":iceberg-spark:iceberg-spark-extensions-${sparkMajorVersion}_${scalaVersion}", configuration: 'testArtifacts')
@@ -177,7 +176,7 @@ index e2d2c7a..8b5bff8 100644
  
      // runtime dependencies for running Hive Catalog based integration test
      integrationRuntimeOnly project(':iceberg-hive-metastore')
-@@ -300,8 +301,8 @@ project(":iceberg-spark:iceberg-spark-runtime-${sparkMajorVersion}_${scalaVersio
+@@ -302,8 +303,8 @@ project(":iceberg-spark:iceberg-spark-runtime-${sparkMajorVersion}_${scalaVersio
      relocate 'org.apache.avro', 'org.apache.iceberg.shaded.org.apache.avro'
      relocate 'avro.shaded', 'org.apache.iceberg.shaded.org.apache.avro.shaded'
      relocate 'com.thoughtworks.paranamer', 'org.apache.iceberg.shaded.com.thoughtworks.paranamer'
@@ -202,13 +201,13 @@ index d6c16bb..123a300 100644
    public static final String CHECK_NULLABILITY = "spark.sql.iceberg.check-nullability";
    public static final boolean CHECK_NULLABILITY_DEFAULT = true;
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
-index 4794863..8d02f02 100644
+index 16159dc..81b7d83 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
-@@ -20,11 +20,11 @@ package org.apache.iceberg.spark.data.vectorized;
+@@ -19,11 +19,11 @@
+ package org.apache.iceberg.spark.data.vectorized;
  
  import java.io.IOException;
- import java.util.Map;
 +import org.apache.comet.CometSchemaImporter;
  import org.apache.comet.parquet.AbstractColumnReader;
  import org.apache.comet.parquet.ColumnReader;
