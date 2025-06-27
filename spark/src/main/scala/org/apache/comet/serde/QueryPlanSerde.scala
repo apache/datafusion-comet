@@ -1179,17 +1179,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
           })
         optExprWithInfo(optExpr, expr, child)
 
-      case FromUnixTime(child, format, timeZoneId) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
+      case FromUnixTime(sec, format, timeZoneId) =>
+        val secExpr = exprToProtoInternal(sec, inputs, binding)
         val formatExpr = exprToProtoInternal(format, inputs, binding)
         val timeZone = exprToProtoInternal(Literal(timeZoneId.orNull), inputs, binding)
 
         // TODO: DataFusion from_unixtime does not support format yet
-        if (childExpr.isDefined && formatExpr.isEmpty) {
-          val optExpr = scalarFunctionExprToProto("from_unixtime", Seq(childExpr, timeZone): _*)
-          optExprWithInfo(optExpr, expr, child)
+        if (secExpr.isDefined && formatExpr.isEmpty) {
+          val optExpr = scalarFunctionExprToProto("from_unixtime", Seq(secExpr, timeZone): _*)
+          optExprWithInfo(optExpr, expr, sec)
         } else {
-          withInfo(expr, child, format)
+          withInfo(expr, sec, format)
           None
         }
 

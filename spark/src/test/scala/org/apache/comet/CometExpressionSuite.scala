@@ -1609,14 +1609,26 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
         val table = "test"
-        withTable(table) {
-          sql(s"create table $table(col timestamp) using parquet")
-          sql(s"insert into $table values (now()), (null)")
-          checkSparkAnswerAndOperator(s"SELECT from_unixtime(col) FROM $table")
-          // checkSparkAnswerAndOperator(s"SELECT from_unixtime(col, 'YYYY') FROM $table")
-          withSQLConf(SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
-            checkSparkAnswerAndOperator(s"SELECT from_unixtime(col) FROM $table")
-            // checkSparkAnswerAndOperator(s"SELECT from_unixtime(col, 'YYYY') FROM $table")
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(
+            path,
+            dictionaryEnabled = dictionary,
+            -128,
+            128,
+            randomSize = 100)
+          withParquetTable(path.toString, table) {
+            checkSparkAnswerAndOperator(s"SELECT from_unixtime(_5) FROM $table")
+            checkSparkAnswerAndOperator(s"SELECT from_unixtime(_8) FROM $table")
+            // TODO: DataFusion from_unixtime does not support format yet
+            // checkSparkAnswerAndOperator(s"SELECT from_unixtime(_5, 'YYYY') FROM $table")
+            // checkSparkAnswerAndOperator(s"SELECT from_unixtime(_8, 'YYYY') FROM $table")
+            withSQLConf(SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
+              checkSparkAnswerAndOperator(s"SELECT from_unixtime(_5) FROM $table")
+              checkSparkAnswerAndOperator(s"SELECT from_unixtime(_8) FROM $table")
+              // checkSparkAnswerAndOperator(s"SELECT from_unixtime(_5, 'YYYY') FROM $table")
+              // checkSparkAnswerAndOperator(s"SELECT from_unixtime(_8, 'YYYY') FROM $table")
+            }
           }
         }
       }
