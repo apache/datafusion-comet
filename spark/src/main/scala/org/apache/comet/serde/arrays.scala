@@ -190,6 +190,15 @@ object CometArrayMax extends CometExpressionSerde {
   }
 }
 
+object CometArrayMin extends CometExpressionSerde {
+  override def convert(expr: Expression, inputs: Seq[Attribute], binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
+
+    val arrayMinScalarExpr = scalarFunctionExprToProto("array_min", arrayExprProto)
+    optExprWithInfo(arrayMinScalarExpr, expr)
+  }
+}
+
 object CometArraysOverlap extends CometExpressionSerde with IncompatExpr {
   override def convert(
       expr: Expression,
