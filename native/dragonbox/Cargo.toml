@@ -16,8 +16,8 @@
 # under the License.
 
 [package]
-name = "datafusion-comet-spark-expr"
-description = "DataFusion expressions that emulate Apache Spark's behavior"
+name = "datafusion-comet-dragonbox"
+description = "Comet dragonbox integration"
 version = { workspace = true }
 homepage = { workspace = true }
 repository = { workspace = true }
@@ -26,50 +26,10 @@ readme = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
 
-[dependencies]
-arrow = { workspace = true }
-chrono = { workspace = true }
-datafusion = { workspace = true }
-chrono-tz = { workspace = true }
-num = { workspace = true }
-regex = { workspace = true }
-thiserror = { workspace = true }
-futures = { workspace = true }
-twox-hash = "2.0.0"
-rand = { workspace = true }
-datafusion-comet-dragonbox = { path = "../dragonbox" }
-
-[dev-dependencies]
-arrow = {workspace = true}
-criterion = "0.5.1"
-rand = { workspace = true}
-tokio = { version = "1", features = ["rt-multi-thread"] }
-
-
-[lib]
-name = "datafusion_comet_spark_expr"
-path = "src/lib.rs"
-
-[[bench]]
-name = "cast_from_string"
-harness = false
-
-[[bench]]
-name = "cast_numeric"
-harness = false
-
-[[bench]]
-name = "conditional"
-harness = false
-
-[[bench]]
-name = "decimal_div"
-harness = false
-
-[[bench]]
-name = "aggregate"
-harness = false
-
-[[test]]
-name = "test_udf_registration"
-path = "tests/spark_expr_reg.rs"
+[package.metadata.docs.rs]
+rustdoc-args = [
+    "--generate-link-to-definition",
+    "--extern-html-root-url=core=https://doc.rust-lang.org",
+    "--extern-html-root-url=alloc=https://doc.rust-lang.org",
+    "--extern-html-root-url=std=https://doc.rust-lang.org",
+]

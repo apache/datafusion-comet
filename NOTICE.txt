@@ -11,3 +11,6 @@ Specifically:
 
 This product includes software developed at
 DataFusion HDFS ObjectStore Contrib Package(https://github.com/datafusion-contrib/datafusion-objectstore-hdfs)
+
+This product includes software developed at
+dragonbox (https://github.com/dtolnay/dragonbox)

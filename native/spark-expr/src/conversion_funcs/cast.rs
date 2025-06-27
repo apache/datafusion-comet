@@ -44,11 +44,13 @@ use datafusion::common::{
 };
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
+use datafusion_comet_dragonbox::to_decimal;
 use num::{
     cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
     ToPrimitive,
 };
 use regex::Regex;
+use std::num::Saturating;
 use std::str::FromStr;
 use std::{
     any::Any,
@@ -1282,17 +1284,31 @@ where
     let input = array.as_any().downcast_ref::<PrimitiveArray<T>>().unwrap();
     let mut cast_array = PrimitiveArray::<Decimal128Type>::builder(input.len());
 
-    let mul = 10_f64.powi(scale as i32);
-
     for i in 0..input.len() {
         if input.is_null(i) {
             cast_array.append_null();
         } else {
             let input_value = input.value(i).as_();
-            let value = (input_value * mul).round().to_i128();
+            let value = if input_value.is_finite() {
+                Some(to_decimal(input_value))
+            } else {
+                None
+            };
 
             match value {
-                Some(v) => {
+                Some(decimal) => {
+                    let mut v = decimal.significand as i128;
+
+                    let k = decimal.exponent + scale as i32;
+                    if k > 0 {
+                        v = v.saturating_mul(Saturating(10_i128).pow(k as u32).0);
+                    } else if k < 0 {
+                        let dk = Saturating(10_i128).pow((-k) as u32).0;
+                        let (div, rem) = if dk < v { v.div_rem(&dk) } else { (0, v) };
+                        v = if rem * 2 >= dk { div + 1 } else { div };
+                    }
+                    v = if input_value < 0. { -v } else { v };
+
                     if Decimal128Type::validate_decimal_precision(v, precision).is_err() {
                         if eval_mode == EvalMode::Ansi {
                             return Err(SparkError::NumericValueOutOfRange {
@@ -1302,6 +1318,7 @@ where
                             });
                         } else {
                             cast_array.append_null();
+                            continue;
                         }
                     }
                     cast_array.append_value(v);

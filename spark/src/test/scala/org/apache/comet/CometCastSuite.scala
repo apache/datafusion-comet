@@ -411,15 +411,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateFloats(), DataTypes.DoubleType)
   }
 
-  ignore("cast FloatType to DecimalType(10,2)") {
-    // // https://github.com/apache/datafusion-comet/issues/1371
+  test("cast FloatType to DecimalType(10,2)") {
     castTest(generateFloats(), DataTypes.createDecimalType(10, 2))
-  }
-
-  test("cast FloatType to DecimalType(10,2) - allow incompat") {
-    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
-      castTest(generateFloats(), DataTypes.createDecimalType(10, 2))
-    }
   }
 
   test("cast FloatType to StringType") {
@@ -471,15 +464,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDoubles(), DataTypes.FloatType)
   }
 
-  ignore("cast DoubleType to DecimalType(10,2)") {
-    // https://github.com/apache/datafusion-comet/issues/1371
+  test("cast DoubleType to DecimalType(10,2)") {
     castTest(generateDoubles(), DataTypes.createDecimalType(10, 2))
-  }
-
-  test("cast DoubleType to DecimalType(10,2) - allow incompat") {
-    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
-      castTest(generateDoubles(), DataTypes.createDecimalType(10, 2))
-    }
   }
 
   test("cast DoubleType to StringType") {
