@@ -34,7 +34,7 @@ Condition : ((isnotnull(d_year#2) AND (d_year#2 = 2000)) AND isnotnull(d_date_sk
 
 (3) CometProject
 Input [3]: [d_date_sk#1, d_year#2, d_day_name#3]
-Arguments: [d_date_sk#1, d_day_name#4], [d_date_sk#1, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, d_day_name#3, 9, true, false, true) AS d_day_name#4]
+Arguments: [d_date_sk#1, d_day_name#4], [d_date_sk#1, static_invoke(CharVarcharCodegenUtils.readSidePadding(d_day_name#3, 9)) AS d_day_name#4]
 
 (4) CometScan parquet spark_catalog.default.store_sales
 Output [3]: [ss_store_sk#5, ss_sales_price#6, ss_sold_date_sk#7]
@@ -74,7 +74,7 @@ Condition : ((isnotnull(s_gmt_offset#11) AND (s_gmt_offset#11 = -5.00)) AND isno
 
 (11) CometProject
 Input [4]: [s_store_sk#8, s_store_id#9, s_store_name#10, s_gmt_offset#11]
-Arguments: [s_store_sk#8, s_store_id#12, s_store_name#10], [s_store_sk#8, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_store_id#9, 16, true, false, true) AS s_store_id#12, s_store_name#10]
+Arguments: [s_store_sk#8, s_store_id#12, s_store_name#10], [s_store_sk#8, static_invoke(CharVarcharCodegenUtils.readSidePadding(s_store_id#9, 16)) AS s_store_id#12, s_store_name#10]
 
 (12) CometBroadcastExchange
 Input [3]: [s_store_sk#8, s_store_id#12, s_store_name#10]

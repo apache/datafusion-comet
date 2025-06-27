@@ -76,11 +76,11 @@ ReadSchema: struct<i_item_sk:int,i_item_id:string>
 
 (4) CometFilter
 Input [2]: [i_item_sk#5, i_item_id#6]
-Condition : (isnotnull(i_item_sk#5) AND isnotnull(staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_item_id#6, 16, true, false, true)))
+Condition : (isnotnull(i_item_sk#5) AND isnotnull(static_invoke(CharVarcharCodegenUtils.readSidePadding(i_item_id#6, 16))))
 
 (5) CometProject
 Input [2]: [i_item_sk#5, i_item_id#6]
-Arguments: [i_item_sk#5, i_item_id#7], [i_item_sk#5, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_item_id#6, 16, true, false, true) AS i_item_id#7]
+Arguments: [i_item_sk#5, i_item_id#7], [i_item_sk#5, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_item_id#6, 16)) AS i_item_id#7]
 
 (6) CometBroadcastExchange
 Input [2]: [i_item_sk#5, i_item_id#7]

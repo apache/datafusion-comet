@@ -133,7 +133,7 @@ Condition : isnotnull(s_store_sk#14)
 
 (17) CometProject
 Input [2]: [s_store_sk#14, s_state#15]
-Arguments: [s_store_sk#14, s_state#16], [s_store_sk#14, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_state#15, 2, true, false, true) AS s_state#16]
+Arguments: [s_store_sk#14, s_state#16], [s_store_sk#14, static_invoke(CharVarcharCodegenUtils.readSidePadding(s_state#15, 2)) AS s_state#16]
 
 (18) CometBroadcastExchange
 Input [2]: [s_store_sk#14, s_state#16]
@@ -209,13 +209,13 @@ Input [1]: [s_state#16]
 Arguments: HashedRelationBroadcastMode(List(input[0, string, true]),false), [plan_id=2]
 
 (35) BroadcastHashJoin [codegen id : 4]
-Left keys [1]: [staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_state#9, 2, true, false, true)]
+Left keys [1]: [static_invoke(CharVarcharCodegenUtils.readSidePadding(s_state#9, 2))]
 Right keys [1]: [s_state#16]
 Join type: LeftSemi
 Join condition: None
 
 (36) Project [codegen id : 4]
-Output [3]: [s_store_sk#7, s_county#8, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_state#9, 2, true, false, true) AS s_state#23]
+Output [3]: [s_store_sk#7, s_county#8, static_invoke(CharVarcharCodegenUtils.readSidePadding(s_state#9, 2)) AS s_state#23]
 Input [3]: [s_store_sk#7, s_county#8, s_state#9]
 
 (37) BroadcastExchange

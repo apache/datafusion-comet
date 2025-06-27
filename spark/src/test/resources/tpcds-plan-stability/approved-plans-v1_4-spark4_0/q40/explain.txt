@@ -100,7 +100,7 @@ Condition : isnotnull(w_warehouse_sk#11)
 
 (14) CometProject
 Input [2]: [w_warehouse_sk#11, w_state#12]
-Arguments: [w_warehouse_sk#11, w_state#13], [w_warehouse_sk#11, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, w_state#12, 2, true, false, true) AS w_state#13]
+Arguments: [w_warehouse_sk#11, w_state#13], [w_warehouse_sk#11, static_invoke(CharVarcharCodegenUtils.readSidePadding(w_state#12, 2)) AS w_state#13]
 
 (15) CometBroadcastExchange
 Input [2]: [w_warehouse_sk#11, w_state#13]
@@ -128,7 +128,7 @@ Condition : (((isnotnull(i_current_price#16) AND (i_current_price#16 >= 0.99)) A
 
 (20) CometProject
 Input [3]: [i_item_sk#14, i_item_id#15, i_current_price#16]
-Arguments: [i_item_sk#14, i_item_id#17], [i_item_sk#14, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_item_id#15, 16, true, false, true) AS i_item_id#17]
+Arguments: [i_item_sk#14, i_item_id#17], [i_item_sk#14, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_item_id#15, 16)) AS i_item_id#17]
 
 (21) CometBroadcastExchange
 Input [2]: [i_item_sk#14, i_item_id#17]

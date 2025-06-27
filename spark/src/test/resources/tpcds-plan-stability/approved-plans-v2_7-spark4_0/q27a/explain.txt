@@ -93,12 +93,12 @@ Condition : ((isnotnull(ss_cdemo_sk#2) AND isnotnull(ss_store_sk#3)) AND isnotnu
 Output [4]: [cd_demo_sk#10, cd_gender#11, cd_marital_status#12, cd_education_status#13]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_demographics]
-PushedFilters: [IsNotNull(cd_demo_sk)]
+PushedFilters: [IsNotNull(cd_gender), IsNotNull(cd_marital_status), IsNotNull(cd_education_status), IsNotNull(cd_demo_sk)]
 ReadSchema: struct<cd_demo_sk:int,cd_gender:string,cd_marital_status:string,cd_education_status:string>
 
 (4) CometFilter
 Input [4]: [cd_demo_sk#10, cd_gender#11, cd_marital_status#12, cd_education_status#13]
-Condition : ((((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_gender#11, 1, true, false, true) = F) AND (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_marital_status#12, 1, true, false, true) = W)) AND (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_education_status#13, 20, true, false, true) = Primary             )) AND isnotnull(cd_demo_sk#10))
+Condition : ((((((isnotnull(cd_gender#11) AND isnotnull(cd_marital_status#12)) AND isnotnull(cd_education_status#13)) AND (static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_gender#11, 1)) = F)) AND (static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_marital_status#12, 1)) = W)) AND (static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_education_status#13, 20)) = Primary             )) AND isnotnull(cd_demo_sk#10))
 
 (5) CometProject
 Input [4]: [cd_demo_sk#10, cd_gender#11, cd_marital_status#12, cd_education_status#13]
@@ -149,16 +149,16 @@ Arguments: [ss_item_sk#1, ss_store_sk#3, ss_quantity#4, ss_list_price#5, ss_sale
 Output [2]: [s_store_sk#16, s_state#17]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store]
-PushedFilters: [IsNotNull(s_store_sk)]
+PushedFilters: [IsNotNull(s_state), IsNotNull(s_store_sk)]
 ReadSchema: struct<s_store_sk:int,s_state:string>
 
 (16) CometFilter
 Input [2]: [s_store_sk#16, s_state#17]
-Condition : ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_state#17, 2, true, false, true) = TN) AND isnotnull(s_store_sk#16))
+Condition : ((isnotnull(s_state#17) AND (static_invoke(CharVarcharCodegenUtils.readSidePadding(s_state#17, 2)) = TN)) AND isnotnull(s_store_sk#16))
 
 (17) CometProject
 Input [2]: [s_store_sk#16, s_state#17]
-Arguments: [s_store_sk#16, s_state#18], [s_store_sk#16, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_state#17, 2, true, false, true) AS s_state#18]
+Arguments: [s_store_sk#16, s_state#18], [s_store_sk#16, static_invoke(CharVarcharCodegenUtils.readSidePadding(s_state#17, 2)) AS s_state#18]
 
 (18) CometBroadcastExchange
 Input [2]: [s_store_sk#16, s_state#18]
@@ -186,7 +186,7 @@ Condition : isnotnull(i_item_sk#19)
 
 (23) CometProject
 Input [2]: [i_item_sk#19, i_item_id#20]
-Arguments: [i_item_sk#19, i_item_id#21], [i_item_sk#19, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_item_id#20, 16, true, false, true) AS i_item_id#21]
+Arguments: [i_item_sk#19, i_item_id#21], [i_item_sk#19, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_item_id#20, 16)) AS i_item_id#21]
 
 (24) CometBroadcastExchange
 Input [2]: [i_item_sk#19, i_item_id#21]
@@ -265,12 +265,12 @@ Arguments: [ss_item_sk#53, ss_store_sk#55, ss_quantity#56, ss_list_price#57, ss_
 Output [2]: [s_store_sk#64, s_state#65]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store]
-PushedFilters: [IsNotNull(s_store_sk)]
+PushedFilters: [IsNotNull(s_state), IsNotNull(s_store_sk)]
 ReadSchema: struct<s_store_sk:int,s_state:string>
 
 (41) CometFilter
 Input [2]: [s_store_sk#64, s_state#65]
-Condition : ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_state#65, 2, true, false, true) = TN) AND isnotnull(s_store_sk#64))
+Condition : ((isnotnull(s_state#65) AND (static_invoke(CharVarcharCodegenUtils.readSidePadding(s_state#65, 2)) = TN)) AND isnotnull(s_store_sk#64))
 
 (42) CometProject
 Input [2]: [s_store_sk#64, s_state#65]

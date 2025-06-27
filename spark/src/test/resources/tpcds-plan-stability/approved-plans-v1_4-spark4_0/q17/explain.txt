@@ -112,12 +112,12 @@ Arguments: [ss_item_sk#1, ss_store_sk#3, ss_quantity#5, ss_sold_date_sk#6, sr_re
 Output [2]: [d_date_sk#19, d_quarter_name#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
-PushedFilters: [IsNotNull(d_date_sk)]
+PushedFilters: [IsNotNull(d_quarter_name), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_quarter_name:string>
 
 (14) CometFilter
 Input [2]: [d_date_sk#19, d_quarter_name#20]
-Condition : ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, d_quarter_name#20, 6, true, false, true) = 2001Q1) AND isnotnull(d_date_sk#19))
+Condition : ((isnotnull(d_quarter_name#20) AND (static_invoke(CharVarcharCodegenUtils.readSidePadding(d_quarter_name#20, 6)) = 2001Q1)) AND isnotnull(d_date_sk#19))
 
 (15) CometProject
 Input [2]: [d_date_sk#19, d_quarter_name#20]
@@ -145,7 +145,7 @@ ReadSchema: struct<d_date_sk:int,d_quarter_name:string>
 
 (20) CometFilter
 Input [2]: [d_date_sk#21, d_quarter_name#22]
-Condition : (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, d_quarter_name#22, 6, true, false, true) IN (2001Q1,2001Q2,2001Q3) AND isnotnull(d_date_sk#21))
+Condition : (static_invoke(CharVarcharCodegenUtils.readSidePadding(d_quarter_name#22, 6)) IN (2001Q1,2001Q2,2001Q3) AND isnotnull(d_date_sk#21))
 
 (21) CometProject
 Input [2]: [d_date_sk#21, d_quarter_name#22]
@@ -189,7 +189,7 @@ Condition : isnotnull(s_store_sk#24)
 
 (30) CometProject
 Input [2]: [s_store_sk#24, s_state#25]
-Arguments: [s_store_sk#24, s_state#26], [s_store_sk#24, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_state#25, 2, true, false, true) AS s_state#26]
+Arguments: [s_store_sk#24, s_state#26], [s_store_sk#24, static_invoke(CharVarcharCodegenUtils.readSidePadding(s_state#25, 2)) AS s_state#26]
 
 (31) CometBroadcastExchange
 Input [2]: [s_store_sk#24, s_state#26]
@@ -217,7 +217,7 @@ Condition : isnotnull(i_item_sk#27)
 
 (36) CometProject
 Input [3]: [i_item_sk#27, i_item_id#28, i_item_desc#29]
-Arguments: [i_item_sk#27, i_item_id#30, i_item_desc#29], [i_item_sk#27, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_item_id#28, 16, true, false, true) AS i_item_id#30, i_item_desc#29]
+Arguments: [i_item_sk#27, i_item_id#30, i_item_desc#29], [i_item_sk#27, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_item_id#28, 16)) AS i_item_id#30, i_item_desc#29]
 
 (37) CometBroadcastExchange
 Input [3]: [i_item_sk#27, i_item_id#30, i_item_desc#29]
@@ -274,12 +274,12 @@ BroadcastExchange (50)
 Output [2]: [d_date_sk#19, d_quarter_name#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
-PushedFilters: [IsNotNull(d_date_sk)]
+PushedFilters: [IsNotNull(d_quarter_name), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_quarter_name:string>
 
 (47) CometFilter
 Input [2]: [d_date_sk#19, d_quarter_name#20]
-Condition : ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, d_quarter_name#20, 6, true, false, true) = 2001Q1) AND isnotnull(d_date_sk#19))
+Condition : ((isnotnull(d_quarter_name#20) AND (static_invoke(CharVarcharCodegenUtils.readSidePadding(d_quarter_name#20, 6)) = 2001Q1)) AND isnotnull(d_date_sk#19))
 
 (48) CometProject
 Input [2]: [d_date_sk#19, d_quarter_name#20]
@@ -309,7 +309,7 @@ ReadSchema: struct<d_date_sk:int,d_quarter_name:string>
 
 (52) CometFilter
 Input [2]: [d_date_sk#21, d_quarter_name#22]
-Condition : (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, d_quarter_name#22, 6, true, false, true) IN (2001Q1,2001Q2,2001Q3) AND isnotnull(d_date_sk#21))
+Condition : (static_invoke(CharVarcharCodegenUtils.readSidePadding(d_quarter_name#22, 6)) IN (2001Q1,2001Q2,2001Q3) AND isnotnull(d_date_sk#21))
 
 (53) CometProject
 Input [2]: [d_date_sk#21, d_quarter_name#22]

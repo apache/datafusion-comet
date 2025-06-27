@@ -101,12 +101,12 @@ Child 1 Input [3]: [sold_date_sk#11, customer_sk#12, item_sk#13]
 Output [3]: [i_item_sk#14, i_class#15, i_category#16]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_item_sk)]
+PushedFilters: [IsNotNull(i_category), IsNotNull(i_class), IsNotNull(i_item_sk)]
 ReadSchema: struct<i_item_sk:int,i_class:string,i_category:string>
 
 (9) CometFilter
 Input [3]: [i_item_sk#14, i_class#15, i_category#16]
-Condition : (((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#16, 50, true, false, true) = Women                                             ) AND (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_class#15, 50, true, false, true) = maternity                                         )) AND isnotnull(i_item_sk#14))
+Condition : ((((isnotnull(i_category#16) AND isnotnull(i_class#15)) AND (static_invoke(CharVarcharCodegenUtils.readSidePadding(i_category#16, 50)) = Women                                             )) AND (static_invoke(CharVarcharCodegenUtils.readSidePadding(i_class#15, 50)) = maternity                                         )) AND isnotnull(i_item_sk#14))
 
 (10) CometProject
 Input [3]: [i_item_sk#14, i_class#15, i_category#16]
@@ -225,11 +225,11 @@ ReadSchema: struct<ca_address_sk:int,ca_county:string,ca_state:string>
 
 (34) CometFilter
 Input [3]: [ca_address_sk#26, ca_county#27, ca_state#28]
-Condition : ((isnotnull(ca_address_sk#26) AND isnotnull(ca_county#27)) AND isnotnull(staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, ca_state#28, 2, true, false, true)))
+Condition : ((isnotnull(ca_address_sk#26) AND isnotnull(ca_county#27)) AND isnotnull(static_invoke(CharVarcharCodegenUtils.readSidePadding(ca_state#28, 2))))
 
 (35) CometProject
 Input [3]: [ca_address_sk#26, ca_county#27, ca_state#28]
-Arguments: [ca_address_sk#26, ca_county#27, ca_state#29], [ca_address_sk#26, ca_county#27, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, ca_state#28, 2, true, false, true) AS ca_state#29]
+Arguments: [ca_address_sk#26, ca_county#27, ca_state#29], [ca_address_sk#26, ca_county#27, static_invoke(CharVarcharCodegenUtils.readSidePadding(ca_state#28, 2)) AS ca_state#29]
 
 (36) CometBroadcastExchange
 Input [3]: [ca_address_sk#26, ca_county#27, ca_state#29]
@@ -253,11 +253,11 @@ ReadSchema: struct<s_county:string,s_state:string>
 
 (40) CometFilter
 Input [2]: [s_county#30, s_state#31]
-Condition : (isnotnull(s_county#30) AND isnotnull(staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_state#31, 2, true, false, true)))
+Condition : (isnotnull(s_county#30) AND isnotnull(static_invoke(CharVarcharCodegenUtils.readSidePadding(s_state#31, 2))))
 
 (41) CometProject
 Input [2]: [s_county#30, s_state#31]
-Arguments: [s_county#30, s_state#32], [s_county#30, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_state#31, 2, true, false, true) AS s_state#32]
+Arguments: [s_county#30, s_state#32], [s_county#30, static_invoke(CharVarcharCodegenUtils.readSidePadding(s_state#31, 2)) AS s_state#32]
 
 (42) CometBroadcastExchange
 Input [2]: [s_county#30, s_state#32]

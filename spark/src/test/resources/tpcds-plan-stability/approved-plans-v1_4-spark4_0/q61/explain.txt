@@ -117,7 +117,7 @@ ReadSchema: struct<p_promo_sk:int,p_channel_dmail:string,p_channel_email:string,
 
 (10) CometFilter
 Input [4]: [p_promo_sk#10, p_channel_dmail#11, p_channel_email#12, p_channel_tv#13]
-Condition : ((((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, p_channel_dmail#11, 1, true, false, true) = Y) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, p_channel_email#12, 1, true, false, true) = Y)) OR (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, p_channel_tv#13, 1, true, false, true) = Y)) AND isnotnull(p_promo_sk#10))
+Condition : ((((static_invoke(CharVarcharCodegenUtils.readSidePadding(p_channel_dmail#11, 1)) = Y) OR (static_invoke(CharVarcharCodegenUtils.readSidePadding(p_channel_email#12, 1)) = Y)) OR (static_invoke(CharVarcharCodegenUtils.readSidePadding(p_channel_tv#13, 1)) = Y)) AND isnotnull(p_promo_sk#10))
 
 (11) CometProject
 Input [4]: [p_promo_sk#10, p_channel_dmail#11, p_channel_email#12, p_channel_tv#13]
@@ -220,12 +220,12 @@ Arguments: [ss_item_sk#1, ss_ext_sales_price#5], [ss_item_sk#1, ss_ext_sales_pri
 Output [2]: [i_item_sk#21, i_category#22]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_item_sk)]
+PushedFilters: [IsNotNull(i_category), IsNotNull(i_item_sk)]
 ReadSchema: struct<i_item_sk:int,i_category:string>
 
 (33) CometFilter
 Input [2]: [i_item_sk#21, i_category#22]
-Condition : ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#22, 50, true, false, true) = Jewelry                                           ) AND isnotnull(i_item_sk#21))
+Condition : ((isnotnull(i_category#22) AND (static_invoke(CharVarcharCodegenUtils.readSidePadding(i_category#22, 50)) = Jewelry                                           )) AND isnotnull(i_item_sk#21))
 
 (34) CometProject
 Input [2]: [i_item_sk#21, i_category#22]

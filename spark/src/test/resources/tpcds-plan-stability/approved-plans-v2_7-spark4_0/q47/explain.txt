@@ -61,11 +61,11 @@ ReadSchema: struct<i_item_sk:int,i_brand:string,i_category:string>
 
 (2) CometFilter
 Input [3]: [i_item_sk#1, i_brand#2, i_category#3]
-Condition : ((isnotnull(i_item_sk#1) AND isnotnull(staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#3, 50, true, false, true))) AND isnotnull(staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_brand#2, 50, true, false, true)))
+Condition : ((isnotnull(i_item_sk#1) AND isnotnull(static_invoke(CharVarcharCodegenUtils.readSidePadding(i_category#3, 50)))) AND isnotnull(static_invoke(CharVarcharCodegenUtils.readSidePadding(i_brand#2, 50))))
 
 (3) CometProject
 Input [3]: [i_item_sk#1, i_brand#2, i_category#3]
-Arguments: [i_item_sk#1, i_brand#4, i_category#5], [i_item_sk#1, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_brand#2, 50, true, false, true) AS i_brand#4, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#3, 50, true, false, true) AS i_category#5]
+Arguments: [i_item_sk#1, i_brand#4, i_category#5], [i_item_sk#1, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_brand#2, 50)) AS i_brand#4, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_category#3, 50)) AS i_category#5]
 
 (4) CometScan parquet spark_catalog.default.store_sales
 Output [4]: [ss_item_sk#6, ss_store_sk#7, ss_sales_price#8, ss_sold_date_sk#9]

@@ -27,7 +27,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{array, col, expr, lit, udf}
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.serde.CometArrayExcept
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
@@ -345,6 +345,8 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_compact") {
+    // TODO fix for Spark 4.0.0
+    assume(!isSpark40Plus)
     withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>

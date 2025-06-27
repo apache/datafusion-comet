@@ -80,7 +80,7 @@ Condition : isnotnull(i_item_sk#7)
 
 (11) CometProject
 Input [5]: [i_item_sk#7, i_brand#8, i_class#9, i_category#10, i_product_name#11]
-Arguments: [i_item_sk#7, i_brand#12, i_class#13, i_category#14, i_product_name#15], [i_item_sk#7, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_brand#8, 50, true, false, true) AS i_brand#12, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_class#9, 50, true, false, true) AS i_class#13, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#10, 50, true, false, true) AS i_category#14, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_product_name#11, 50, true, false, true) AS i_product_name#15]
+Arguments: [i_item_sk#7, i_brand#12, i_class#13, i_category#14, i_product_name#15], [i_item_sk#7, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_brand#8, 50)) AS i_brand#12, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_class#9, 50)) AS i_class#13, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_category#10, 50)) AS i_category#14, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_product_name#11, 50)) AS i_product_name#15]
 
 (12) CometBroadcastExchange
 Input [5]: [i_item_sk#7, i_brand#12, i_class#13, i_category#14, i_product_name#15]

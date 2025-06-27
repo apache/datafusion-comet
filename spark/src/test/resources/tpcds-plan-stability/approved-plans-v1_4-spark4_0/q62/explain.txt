@@ -79,7 +79,7 @@ Condition : isnotnull(sm_ship_mode_sk#8)
 
 (10) CometProject
 Input [2]: [sm_ship_mode_sk#8, sm_type#9]
-Arguments: [sm_ship_mode_sk#8, sm_type#10], [sm_ship_mode_sk#8, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, sm_type#9, 30, true, false, true) AS sm_type#10]
+Arguments: [sm_ship_mode_sk#8, sm_type#10], [sm_ship_mode_sk#8, static_invoke(CharVarcharCodegenUtils.readSidePadding(sm_type#9, 30)) AS sm_type#10]
 
 (11) CometBroadcastExchange
 Input [2]: [sm_ship_mode_sk#8, sm_type#10]

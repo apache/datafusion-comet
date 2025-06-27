@@ -208,7 +208,7 @@ Condition : isnotnull(s_store_sk#27)
 
 (33) CometProject
 Input [3]: [s_store_sk#27, s_store_id#28, s_store_name#29]
-Arguments: [s_store_sk#27, s_store_id#30, s_store_name#29], [s_store_sk#27, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_store_id#28, 16, true, false, true) AS s_store_id#30, s_store_name#29]
+Arguments: [s_store_sk#27, s_store_id#30, s_store_name#29], [s_store_sk#27, static_invoke(CharVarcharCodegenUtils.readSidePadding(s_store_id#28, 16)) AS s_store_id#30, s_store_name#29]
 
 (34) CometBroadcastExchange
 Input [3]: [s_store_sk#27, s_store_id#30, s_store_name#29]
@@ -236,7 +236,7 @@ Condition : isnotnull(i_item_sk#31)
 
 (39) CometProject
 Input [3]: [i_item_sk#31, i_item_id#32, i_item_desc#33]
-Arguments: [i_item_sk#31, i_item_id#34, i_item_desc#33], [i_item_sk#31, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_item_id#32, 16, true, false, true) AS i_item_id#34, i_item_desc#33]
+Arguments: [i_item_sk#31, i_item_id#34, i_item_desc#33], [i_item_sk#31, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_item_id#32, 16)) AS i_item_id#34, i_item_desc#33]
 
 (40) CometBroadcastExchange
 Input [3]: [i_item_sk#31, i_item_id#34, i_item_desc#33]
