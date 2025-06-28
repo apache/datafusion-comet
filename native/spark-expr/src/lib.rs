@@ -53,6 +53,7 @@ mod conditional_funcs;
 mod conversion_funcs;
 mod math_funcs;
 mod nondetermenistic_funcs;
+mod bloom_filter;
 
 pub use array_funcs::*;
 pub use bitwise_funcs::*;

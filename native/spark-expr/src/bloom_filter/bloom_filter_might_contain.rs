@@ -15,7 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::{execution::util::spark_bloom_filter::SparkBloomFilter, parquet::data_type::AsBytes};
+
+use crate::bloom_filter::spark_bloom_filter::SparkBloomFilter;
 use arrow::array::cast::as_primitive_array;
 use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
@@ -70,7 +71,7 @@ fn evaluate_bloom_filter(
     let bloom_filter_bytes = bloom_filter_expr.evaluate(&batch)?;
     match bloom_filter_bytes {
         ColumnarValue::Scalar(ScalarValue::Binary(v)) => {
-            Ok(v.map(|v| SparkBloomFilter::from(v.as_bytes())))
+            Ok(v.map(|v| SparkBloomFilter::from(v.as_slice())))
         }
         _ => internal_err!("Bloom filter expression should be evaluated as a scalar binary value"),
     }

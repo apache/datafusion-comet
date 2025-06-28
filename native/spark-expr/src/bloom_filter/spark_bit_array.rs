@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::common::bit;
+use crate::bloom_filter::bit;
 use arrow::datatypes::ToByteSlice;
 use std::iter::zip;
 
@@ -102,8 +102,10 @@ impl SparkBitArray {
     }
 }
 
+/// Returns the number of 64-bit words needed to store a `num_bits`-bits value
+#[inline]
 pub fn num_words(num_bits: i32) -> i32 {
-    bit::ceil(num_bits as usize, 64) as i32
+    ((num_bits as usize) / 64 + ((num_bits % 64 != 0) as usize)) as i32
 }
 
 #[cfg(test)]
