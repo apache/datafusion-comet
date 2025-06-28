@@ -15,50 +15,35 @@
 // specific language governing permissions and limitations
 // under the License.
 
-
-use crate::bloom_filter::spark_bloom_filter::SparkBloomFilter;
-use arrow::array::cast::as_primitive_array;
+use arrow::array::{Array, Int64Array, RecordBatch};
 use arrow::datatypes::{DataType, Schema};
-use arrow::record_batch::RecordBatch;
 use datafusion::common::{internal_err, Result, ScalarValue};
+use datafusion::error::DataFusionError;
+use datafusion::logical_expr::{ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
-use std::fmt::Formatter;
-use std::hash::Hash;
-use std::{any::Any, fmt::Display, sync::Arc};
+use std::any::Any;
+use std::sync::Arc;
 
-/// A physical expression that checks if a value might be in a bloom filter. It corresponds to the
-/// Spark's `BloomFilterMightContain` expression.
-#[derive(Debug, Eq)]
+use crate::bloom_filter::spark_bloom_filter::SparkBloomFilter;
+
+#[derive(Debug)]
 pub struct BloomFilterMightContain {
-    pub bloom_filter_expr: Arc<dyn PhysicalExpr>,
-    pub value_expr: Arc<dyn PhysicalExpr>,
+    signature: Signature,
     bloom_filter: Option<SparkBloomFilter>,
 }
 
-impl Hash for BloomFilterMightContain {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.bloom_filter_expr.hash(state);
-        self.value_expr.hash(state);
-        self.bloom_filter.hash(state);
-    }
-}
-
-impl PartialEq for BloomFilterMightContain {
-    fn eq(&self, other: &Self) -> bool {
-        self.bloom_filter_expr.eq(&other.bloom_filter_expr)
-            && self.value_expr.eq(&other.value_expr)
-            && self.bloom_filter.eq(&other.bloom_filter)
-    }
-}
-
-impl Display for BloomFilterMightContain {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "BloomFilterMightContain [bloom_filter_expr: {}, value_expr: {}]",
-            self.bloom_filter_expr, self.value_expr
-        )
+impl BloomFilterMightContain {
+    pub fn try_new(bloom_filter_expr: Arc<dyn PhysicalExpr>) -> Result<Self> {
+        // early evaluate the bloom_filter_expr to get the actual bloom filter
+        let bloom_filter = evaluate_bloom_filter(&bloom_filter_expr)?;
+        Ok(Self {
+            bloom_filter,
+            signature: Signature::exact(
+                vec![DataType::Binary, DataType::Int64],
+                Volatility::Immutable,
+            ),
+        })
     }
 }
 
@@ -77,73 +62,135 @@ fn evaluate_bloom_filter(
     }
 }
 
-impl BloomFilterMightContain {
-    pub fn try_new(
-        bloom_filter_expr: Arc<dyn PhysicalExpr>,
-        value_expr: Arc<dyn PhysicalExpr>,
-    ) -> Result<Self> {
-        // early evaluate the bloom_filter_expr to get the actual bloom filter
-        let bloom_filter = evaluate_bloom_filter(&bloom_filter_expr)?;
-        Ok(Self {
-            bloom_filter_expr,
-            value_expr,
-            bloom_filter,
-        })
-    }
-}
-
-impl PhysicalExpr for BloomFilterMightContain {
+impl ScalarUDFImpl for BloomFilterMightContain {
     fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn data_type(&self, _input_schema: &Schema) -> Result<DataType> {
+    fn name(&self) -> &str {
+        "might_contain"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
         Ok(DataType::Boolean)
     }
 
-    fn nullable(&self, _input_schema: &Schema) -> Result<bool> {
-        Ok(true)
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        execute_might_contain(&self.bloom_filter, &args.args)
+    }
+}
+
+fn execute_might_contain(
+    bloom_filter: &Option<SparkBloomFilter>,
+    args: &[ColumnarValue],
+) -> Result<ColumnarValue> {
+    match &args[0] {
+        ColumnarValue::Scalar(ScalarValue::Int64(Some(item))) => {
+            let result = bloom_filter
+                .as_ref()
+                .map(|filter| filter.might_contain_long(*item));
+            Ok(ColumnarValue::Scalar(ScalarValue::Boolean(result)))
+        }
+        ColumnarValue::Array(values_array) => {
+            let values = values_array
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .ok_or_else(|| {
+                    DataFusionError::Execution(
+                        "Expected values Array to be an Int64Array".to_lowercase(),
+                    )
+                })?;
+
+            bloom_filter
+                .as_ref()
+                .map(|filter| {
+                    Ok(ColumnarValue::Array(Arc::new(
+                        filter.might_contain_longs(values),
+                    )))
+                })
+                .unwrap_or_else(|| Ok(ColumnarValue::Scalar(ScalarValue::Boolean(None))))
+        }
+        _ => internal_err!("Expected Int64Array or Int64 Scalar as arguments"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::BooleanArray;
+
+    fn assert_result_eq(result: ColumnarValue, expected: Vec<bool>) {
+        let array = result.to_array(1).unwrap();
+        let booleans = array.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert_eq!(booleans, &BooleanArray::from(expected));
     }
 
-    fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
-        self.bloom_filter
-            .as_ref()
-            .map(|spark_filter| {
-                let values = self.value_expr.evaluate(batch)?;
-                match values {
-                    ColumnarValue::Array(array) => {
-                        let boolean_array =
-                            spark_filter.might_contain_longs(as_primitive_array(&array));
-                        Ok(ColumnarValue::Array(Arc::new(boolean_array)))
-                    }
-                    ColumnarValue::Scalar(ScalarValue::Int64(v)) => {
-                        let result = v.map(|v| spark_filter.might_contain_long(v));
-                        Ok(ColumnarValue::Scalar(ScalarValue::Boolean(result)))
-                    }
-                    _ => internal_err!("value expression should be int64 type"),
-                }
-            })
-            .unwrap_or_else(|| {
-                // when the bloom filter is null, we should return null for all the input
-                Ok(ColumnarValue::Scalar(ScalarValue::Boolean(None)))
-            })
+    fn assert_all_null(result: ColumnarValue) {
+        let array = result.to_array(1).unwrap();
+        let booleans = array.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert_eq!(booleans.null_count(), booleans.len());
     }
 
-    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
-        vec![&self.bloom_filter_expr, &self.value_expr]
+    #[test]
+    fn test_execute_scalar_contained() {
+        let mut filter = SparkBloomFilter::from((4, 64));
+        filter.put_long(123);
+        filter.put_long(456);
+        filter.put_long(789);
+
+        let args = [ColumnarValue::Scalar(ScalarValue::Int64(Some(123)))];
+
+        let result = execute_might_contain(&Some(filter), &args).unwrap();
+        assert_result_eq(result, vec![true]);
     }
 
-    fn with_new_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn PhysicalExpr>>,
-    ) -> Result<Arc<dyn PhysicalExpr>> {
-        Ok(Arc::new(BloomFilterMightContain::try_new(
-            Arc::clone(&children[0]),
-            Arc::clone(&children[1]),
-        )?))
+    #[test]
+    fn test_execute_scalar_not_contained() {
+        let mut filter = SparkBloomFilter::from((4, 64));
+        filter.put_long(123);
+        filter.put_long(456);
+        filter.put_long(789);
+
+        let args = [ColumnarValue::Scalar(ScalarValue::Int64(Some(999)))];
+
+        let result = execute_might_contain(&Some(filter), &args).unwrap();
+        assert_result_eq(result, vec![false]);
     }
 
-    fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
-        unimplemented!()
+    #[test]
+    fn test_execute_array() {
+        let mut filter = SparkBloomFilter::from((4, 64));
+        filter.put_long(123);
+        filter.put_long(456);
+        filter.put_long(789);
+
+        let values = Int64Array::from(vec![123, 999, 789]);
+
+        let args = [ColumnarValue::Array(Arc::new(values))];
+
+        let result = execute_might_contain(&Some(filter), &args).unwrap();
+        assert_result_eq(result, vec![true, false, true]);
+    }
+
+    #[test]
+    fn test_execute_scalar_missing_filter() {
+        let args = [ColumnarValue::Scalar(ScalarValue::Int64(Some(123)))];
+
+        let result = execute_might_contain(&None, &args).unwrap();
+        assert_all_null(result);
+    }
+
+    #[test]
+    fn test_execute_array_missing_filter() {
+        let values = Int64Array::from(vec![123, 999, 789]);
+
+        let args = [ColumnarValue::Array(Arc::new(values))];
+
+        let result = execute_might_contain(&None, &args).unwrap();
+        assert_all_null(result);
     }
 }

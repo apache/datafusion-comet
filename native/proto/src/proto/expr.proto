@@ -74,6 +74,7 @@ message Expr {
     Abs abs = 49;
     Subquery subquery = 50;
     UnboundReference unbound = 51;
+    BloomFilterMightContain bloom_filter_might_contain = 52;
     CreateNamedStruct create_named_struct = 53;
     GetStructField get_struct_field = 54;
     ToJson to_json = 55;
@@ -102,6 +103,7 @@ message AggExpr {
     Variance variance = 13;
     Stddev stddev = 14;
     Correlation correlation = 15;
+    BloomFilterAgg bloomFilterAgg = 16;
   }
 }
 
@@ -190,6 +192,13 @@ message Correlation {
   Expr child1 = 1;
   Expr child2 = 2;
   bool null_on_divide_by_zero = 3;
+  DataType datatype = 4;
+}
+
+message BloomFilterAgg {
+  Expr child = 1;
+  Expr numItems = 2;
+  Expr numBits = 3;
   DataType datatype = 4;
 }
 
@@ -355,6 +364,11 @@ message Abs {
 message Subquery {
   int64 id = 1;
   DataType datatype = 2;
+}
+
+message BloomFilterMightContain {
+  Expr bloom_filter = 1;
+  Expr value = 2;
 }
 
 message CreateNamedStruct {

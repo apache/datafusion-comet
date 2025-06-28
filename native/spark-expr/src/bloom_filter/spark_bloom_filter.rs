@@ -15,12 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::bloom_filter::spark_bit_array::SparkBitArray;
-use crate::bloom_filter::spark_bit_array;
 use arrow::array::{ArrowNativeTypeOp, BooleanArray, Int64Array};
 use arrow::datatypes::ToByteSlice;
 use std::cmp;
 
+use crate::bloom_filter::spark_bit_array;
+use crate::bloom_filter::spark_bit_array::SparkBitArray;
 use crate::hash_funcs::murmur3::spark_compatible_murmur3_hash;
 
 const SPARK_BLOOM_FILTER_VERSION_1: i32 = 1;

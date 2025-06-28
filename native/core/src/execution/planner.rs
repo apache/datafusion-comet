@@ -23,9 +23,7 @@ use crate::execution::operators::FilterExec as CometFilterExec;
 use crate::{
     errors::ExpressionError,
     execution::{
-        expressions::{
-            subquery::Subquery,
-        },
+        expressions::subquery::Subquery,
         operators::{CopyExec, ExecutionError, ExpandExec, ScanExec},
         serde::to_arrow_datatype,
         shuffle::ShuffleWriterExec,
@@ -64,7 +62,8 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{
-    create_comet_physical_fun, create_negate_expr, SparkHour, SparkMinute, SparkSecond,
+    create_comet_physical_fun, create_negate_expr, BloomFilterAgg, BloomFilterMightContain,
+    SparkHour, SparkMinute, SparkSecond,
 };
 
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -706,6 +705,23 @@ impl PhysicalPlanner {
                 let id = expr.id;
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 Ok(Arc::new(Subquery::new(self.exec_context_id, id, data_type)))
+            }
+            ExprStruct::BloomFilterMightContain(expr) => {
+                let bloom_filter_expr = self.create_expr(
+                    expr.bloom_filter.as_ref().unwrap(),
+                    Arc::clone(&input_schema),
+                )?;
+
+                // We only provide the values as argument, the bloom filter is created only in plan time.
+                let value_expr = self.create_expr(expr.value.as_ref().unwrap(), input_schema)?;
+                let args = vec![value_expr];
+                let udf =
+                    ScalarUDF::new_from_impl(BloomFilterMightContain::try_new(bloom_filter_expr)?);
+
+                let field_ref = Arc::new(Field::new("might_contain", DataType::Boolean, true));
+                let expr: ScalarFunctionExpr =
+                    ScalarFunctionExpr::new("might_contain", Arc::new(udf), args, field_ref);
+                Ok(Arc::new(expr))
             }
             ExprStruct::CreateNamedStruct(expr) => {
                 let values = expr
@@ -1970,6 +1986,20 @@ impl PhysicalPlanner {
                     expr.null_on_divide_by_zero,
                 ));
                 Self::create_aggr_func_expr("correlation", schema, vec![child1, child2], func)
+            }
+            AggExprStruct::BloomFilterAgg(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let num_items =
+                    self.create_expr(expr.num_items.as_ref().unwrap(), Arc::clone(&schema))?;
+                let num_bits =
+                    self.create_expr(expr.num_bits.as_ref().unwrap(), Arc::clone(&schema))?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let func = AggregateUDF::new_from_impl(BloomFilterAgg::new(
+                    Arc::clone(&num_items),
+                    Arc::clone(&num_bits),
+                    datatype,
+                ));
+                Self::create_aggr_func_expr("bloom_filter_agg", schema, vec![child], func)
             }
         }
     }

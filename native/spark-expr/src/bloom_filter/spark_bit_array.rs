@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::bloom_filter::bit;
 use arrow::datatypes::ToByteSlice;
 use std::iter::zip;
 
