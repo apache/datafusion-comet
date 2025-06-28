@@ -34,7 +34,7 @@ import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, DataTypeSupport}
+import org.apache.comet.{CometConf, CometSparkSessionExtensions, DataTypeSupport}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
@@ -260,6 +260,10 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
   private def selectScan(scanExec: FileSourceScanExec, partitionSchema: StructType): String = {
 
     val fallbackReasons = new ListBuffer[String]()
+
+    if (CometSparkSessionExtensions.isSpark40Plus) {
+      fallbackReasons += s"$SCAN_NATIVE_ICEBERG_COMPAT  is not implemented for Spark 4.0.0"
+    }
 
     // native_iceberg_compat only supports local filesystem and S3
     if (!scanExec.relation.inputFiles
