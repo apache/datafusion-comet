@@ -2661,6 +2661,13 @@ mod tests {
     }
 
     #[test]
+    // Currently the cast function depending on `f64::powi`, which has unspecified precision according to the doc
+    // https://doc.rust-lang.org/std/primitive.f64.html#unspecified-precision.
+    // Miri deliberately apply random floating-point errors to these operations to expose bugs
+    // https://github.com/rust-lang/miri/issues/4395.
+    // The random errors may interfere with test cases at rounding edge, so we ignore it on miri for now.
+    // Once https://github.com/apache/datafusion-comet/issues/1371 is fixed, this should no longer be an issue.
+    #[cfg_attr(miri, ignore)]
     fn test_cast_float_to_decimal() {
         let a: ArrayRef = Arc::new(Float64Array::from(vec![
             Some(42.),
@@ -2681,7 +2688,7 @@ mod tests {
         assert_eq!(casted.value(0), 42000000);
         // https://github.com/apache/datafusion-comet/issues/1371
         // assert_eq!(casted.value(1), 515313);
-        // assert_eq!(casted.value(2), -42424242);
+        assert_eq!(casted.value(2), -42424242);
         assert_eq!(casted.value(3), 0);
         assert_eq!(casted.value(4), 0);
         assert!(casted.is_null(5));
