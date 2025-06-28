@@ -977,7 +977,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("sum overflow on decimal(38, _)") {
+  test("avg/sum overflow on decimal(38, _)") {
     withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
       val table = "overflow_decimal_38"
       withTable(table) {
@@ -987,7 +987,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         sql(s"insert into $table values(42.00, 2), (99999999999999999999999999999999.99, 2)")
         sql(s"insert into $table values(999999999999999999999999999999999999.99, 3)")
         sql(s"insert into $table values(99999999999999999999999999999999.99, 4)")
-        checkSparkAnswerAndNumOfAggregates(s"select sum(a) from $table group by b order by b", 2)
+        checkSparkAnswerAndNumOfAggregates(
+          s"select avg(a), sum(a) from $table group by b order by b",
+          2)
       }
     }
   }
