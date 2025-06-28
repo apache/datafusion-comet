@@ -78,6 +78,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[ArrayRemove] -> CometArrayRemove,
     classOf[ArrayRepeat] -> CometArrayRepeat,
     classOf[ArraysOverlap] -> CometArraysOverlap,
+    classOf[ArrayUnion] -> CometArrayUnion,
     classOf[Ascii] -> CometAscii,
     classOf[ConcatWs] -> CometConcatWs,
     classOf[Chr] -> CometChr,

@@ -347,3 +347,17 @@ object CometArrayInsert extends CometExpressionSerde with IncompatExpr {
     }
   }
 }
+
+object CometArrayUnion extends CometExpressionSerde with IncompatExpr {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val leftArrayExprProto = exprToProto(expr.children.head, inputs, binding)
+    val rightArrayExprProto = exprToProto(expr.children(1), inputs, binding)
+
+    val arraysUnionScalarExpr =
+      scalarFunctionExprToProto("array_union", leftArrayExprProto, rightArrayExprProto)
+    optExprWithInfo(arraysUnionScalarExpr, expr, expr.children: _*)
+  }
+}
