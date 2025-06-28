@@ -50,8 +50,7 @@ pub fn spark_isnan(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionEr
                 Ok(set_nulls_to_false(is_nan))
             }
             other => Err(DataFusionError::Internal(format!(
-                "Unsupported data type {:?} for function isnan",
-                other,
+                "Unsupported data type {other:?} for function isnan",
             ))),
         },
         ColumnarValue::Scalar(a) => match a {

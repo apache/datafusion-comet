@@ -103,8 +103,18 @@ object CometConf extends ShimCometConf {
     .checkValues(
       Set(SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT, SCAN_AUTO))
     .createWithDefault(sys.env
-      .getOrElse("COMET_PARQUET_SCAN_IMPL", SCAN_NATIVE_COMET)
+      .getOrElse("COMET_PARQUET_SCAN_IMPL", SCAN_AUTO)
       .toLowerCase(Locale.ROOT))
+
+  val COMET_RESPECT_PARQUET_FILTER_PUSHDOWN: ConfigEntry[Boolean] =
+    conf("spark.comet.parquet.respectFilterPushdown")
+      .doc(
+        "Whether to respect Spark's PARQUET_FILTER_PUSHDOWN_ENABLED config. This needs to be " +
+          "respected when running the Spark SQL test suite but the default setting " +
+          "results in poor performance in Comet when using the new native scans, " +
+          "disabled by default")
+      .booleanConf
+      .createWithDefault(false)
 
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.parallel.io.enabled")
@@ -306,6 +316,21 @@ object CometConf extends ShimCometConf {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.replaceSortMergeJoin")
       .doc("Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin " +
         s"for improved performance. This feature is not stable yet. $TUNING_GUIDE.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.native.shuffle.partitioning.hash.enabled")
+      .doc("Whether to enable hash partitioning for Comet native shuffle.")
+      .booleanConf
+      .createWithDefault(true)
+
+  // RangePartitioning contains bugs https://github.com/apache/datafusion-comet/issues/1906
+  val COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.native.shuffle.partitioning.range.enabled")
+      .doc("Experimental feature to enable range partitioning for Comet native shuffle. " +
+        "This feature is experimental while we investigate scenarios that don't partition data " +
+        "correctly.")
       .booleanConf
       .createWithDefault(false)
 
@@ -772,11 +797,13 @@ private[comet] abstract class ConfigEntry[T](
 
   /**
    * Retrieves the config value from the current thread-local [[SQLConf]]
+   *
    * @return
    */
   def get(): T = get(SQLConf.get)
 
   def defaultValue: Option[T] = None
+
   def defaultValueString: String
 
   override def toString: String = {
@@ -795,6 +822,7 @@ private[comet] class ConfigEntryWithDefault[T](
     version: String)
     extends ConfigEntry(key, valueConverter, stringConverter, doc, isPublic, version) {
   override def defaultValue: Option[T] = Some(_defaultValue)
+
   override def defaultValueString: String = stringConverter(_defaultValue)
 
   def get(conf: SQLConf): T = {
@@ -830,6 +858,7 @@ private[comet] class OptionalConfigEntry[T](
 }
 
 private[comet] case class ConfigBuilder(key: String) {
+
   import ConfigHelpers._
 
   var _public = true

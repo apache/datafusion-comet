@@ -126,6 +126,13 @@ public class ColumnReader extends AbstractColumnReader {
     }
   }
 
+  /** This method is called from Apache Iceberg. */
+  public void setRowGroupReader(RowGroupReader rowGroupReader, ParquetColumnSpec columnSpec)
+      throws IOException {
+    ColumnDescriptor descriptor = Utils.buildColumnDescriptor(columnSpec);
+    setPageReader(rowGroupReader.getPageReader(descriptor));
+  }
+
   @Override
   public void readBatch(int total) {
     LOG.debug("Start to batch of size = " + total);

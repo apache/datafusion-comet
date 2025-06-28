@@ -936,7 +936,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
           // primitives
           checkSparkAnswerAndOperator(
@@ -962,7 +962,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
           checkSparkAnswerAndOperator(
             "SELECT CAST(CASE WHEN _1 THEN struct(_1, _2, _3, _4) ELSE null END as " +

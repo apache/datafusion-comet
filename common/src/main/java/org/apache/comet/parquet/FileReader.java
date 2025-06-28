@@ -27,9 +27,11 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -40,6 +42,9 @@ import java.util.zip.CRC32;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.Path;
+import org.apache.parquet.HadoopReadOptions;
 import org.apache.parquet.ParquetReadOptions;
 import org.apache.parquet.Preconditions;
 import org.apache.parquet.bytes.ByteBufferInputStream;
@@ -53,6 +58,7 @@ import org.apache.parquet.column.page.DictionaryPage;
 import org.apache.parquet.column.page.PageReadStore;
 import org.apache.parquet.compression.CompressionCodecFactory;
 import org.apache.parquet.crypto.AesCipher;
+import org.apache.parquet.crypto.EncryptionPropertiesFactory;
 import org.apache.parquet.crypto.FileDecryptionProperties;
 import org.apache.parquet.crypto.InternalColumnDecryptionSetup;
 import org.apache.parquet.crypto.InternalFileDecryptor;
@@ -67,6 +73,7 @@ import org.apache.parquet.format.FileCryptoMetaData;
 import org.apache.parquet.format.PageHeader;
 import org.apache.parquet.format.Util;
 import org.apache.parquet.format.converter.ParquetMetadataConverter;
+import org.apache.parquet.hadoop.ParquetInputFormat;
 import org.apache.parquet.hadoop.metadata.BlockMetaData;
 import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
 import org.apache.parquet.hadoop.metadata.ColumnPath;
@@ -126,6 +133,48 @@ public class FileReader implements Closeable {
   public FileReader(InputFile file, ParquetReadOptions options, ReadOptions cometOptions)
       throws IOException {
     this(file, null, options, cometOptions, null);
+  }
+
+  /** This constructor is called from Apache Iceberg. */
+  public FileReader(
+      Path path,
+      Configuration conf,
+      ReadOptions cometOptions,
+      Map<String, String> properties,
+      Long start,
+      Long length,
+      byte[] fileEncryptionKey,
+      byte[] fileAADPrefix)
+      throws IOException {
+    ParquetReadOptions options =
+        buildParquetReadOptions(conf, properties, start, length, fileEncryptionKey, fileAADPrefix);
+    this.converter = new ParquetMetadataConverter(options);
+    this.file = CometInputFile.fromPath(path, conf);
+    this.f = file.newStream();
+    this.options = options;
+    this.cometOptions = cometOptions;
+    this.metrics = null;
+    try {
+      this.footer = readFooter(file, options, f, converter);
+    } catch (Exception e) {
+      // In case that reading footer throws an exception in the constructor, the new stream
+      // should be closed. Otherwise, there's no way to close this outside.
+      f.close();
+      throw e;
+    }
+    this.fileMetaData = footer.getFileMetaData();
+    this.fileDecryptor = fileMetaData.getFileDecryptor(); // must be called before filterRowGroups!
+    if (null != fileDecryptor && fileDecryptor.plaintextFile()) {
+      this.fileDecryptor = null; // Plaintext file. No need in decryptor
+    }
+
+    this.blocks = footer.getBlocks(); // filter row group in iceberg
+    this.blockIndexStores = listWithNulls(this.blocks.size());
+    this.blockRowRanges = listWithNulls(this.blocks.size());
+    for (ColumnDescriptor col : footer.getFileMetaData().getSchema().getColumns()) {
+      paths.put(ColumnPath.get(col.getPath()), col);
+    }
+    this.crc = options.usePageChecksumVerification() ? new CRC32() : null;
   }
 
   public FileReader(
@@ -209,6 +258,57 @@ public class FileReader implements Closeable {
     }
   }
 
+  /** This method is called from Apache Iceberg. */
+  public void setRequestedSchemaFromSpecs(List<ParquetColumnSpec> specList) {
+    paths.clear();
+    for (ParquetColumnSpec colSpec : specList) {
+      ColumnDescriptor descriptor = Utils.buildColumnDescriptor(colSpec);
+      paths.put(ColumnPath.get(colSpec.getPath()), descriptor);
+    }
+  }
+
+  private static ParquetReadOptions buildParquetReadOptions(
+      Configuration conf,
+      Map<String, String> properties,
+      Long start,
+      Long length,
+      byte[] fileEncryptionKey,
+      byte[] fileAADPrefix) {
+
+    // Iceberg remove these read properties when building the ParquetReadOptions.
+    // We want build the exact same ParquetReadOptions as Iceberg's.
+    Collection<String> readPropertiesToRemove =
+        Set.of(
+            ParquetInputFormat.UNBOUND_RECORD_FILTER,
+            ParquetInputFormat.FILTER_PREDICATE,
+            ParquetInputFormat.READ_SUPPORT_CLASS,
+            EncryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME);
+
+    for (String property : readPropertiesToRemove) {
+      conf.unset(property);
+    }
+
+    ParquetReadOptions.Builder optionsBuilder = HadoopReadOptions.builder(conf);
+    for (Map.Entry<String, String> entry : properties.entrySet()) {
+      optionsBuilder.set(entry.getKey(), entry.getValue());
+    }
+
+    if (start != null && length != null) {
+      optionsBuilder.withRange(start, start + length);
+    }
+
+    if (fileEncryptionKey != null) {
+      FileDecryptionProperties fileDecryptionProperties =
+          FileDecryptionProperties.builder()
+              .withFooterKey(fileEncryptionKey)
+              .withAADPrefix(fileAADPrefix)
+              .build();
+      optionsBuilder.withDecryption(fileDecryptionProperties);
+    }
+
+    return optionsBuilder.build();
+  }
+
   /**
    * Gets the total number of records across all row groups (after applying row group filtering).
    */
@@ -245,7 +345,7 @@ public class FileReader implements Closeable {
    * Returns the next row group to read (after applying row group filtering), or null if there's no
    * more row group.
    */
-  public PageReadStore readNextRowGroup() throws IOException {
+  public RowGroupReader readNextRowGroup() throws IOException {
     if (currentBlock == blocks.size()) {
       return null;
     }
@@ -253,7 +353,7 @@ public class FileReader implements Closeable {
     if (block.getRowCount() == 0) {
       throw new RuntimeException("Illegal row group of 0 rows");
     }
-    this.currentRowGroup = new RowGroupReader(block.getRowCount());
+    this.currentRowGroup = new RowGroupReader(block.getRowCount(), block.getRowIndexOffset());
     // prepare the list of consecutive parts to read them in one scan
     List<ConsecutivePartList> allParts = new ArrayList<>();
     ConsecutivePartList currentParts = null;
@@ -362,7 +462,7 @@ public class FileReader implements Closeable {
     return ciStore;
   }
 
-  private PageReadStore readChunks(
+  private RowGroupReader readChunks(
       BlockMetaData block, List<ConsecutivePartList> allParts, ChunkListBuilder builder)
       throws IOException {
     if (shouldReadParallel()) {

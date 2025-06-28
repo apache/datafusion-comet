@@ -17,14 +17,12 @@
 
 mod date_arithmetic;
 mod date_trunc;
-mod hour;
-mod minute;
-mod second;
+mod extract_date_part;
 mod timestamp_trunc;
 
 pub use date_arithmetic::{spark_date_add, spark_date_sub};
-pub use date_trunc::DateTruncExpr;
-pub use hour::HourExpr;
-pub use minute::MinuteExpr;
-pub use second::SecondExpr;
+pub use date_trunc::SparkDateTrunc;
+pub use extract_date_part::SparkHour;
+pub use extract_date_part::SparkMinute;
+pub use extract_date_part::SparkSecond;
 pub use timestamp_trunc::TimestampTruncExpr;

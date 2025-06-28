@@ -55,8 +55,7 @@ impl GetStructField {
         match self.child.data_type(input_schema)? {
             DataType::Struct(fields) => Ok(Arc::clone(&fields[self.ordinal])),
             data_type => Err(DataFusionError::Plan(format!(
-                "Expect struct field, got {:?}",
-                data_type
+                "Expect struct field, got {data_type:?}"
             ))),
         }
     }
@@ -97,8 +96,7 @@ impl PhysicalExpr for GetStructField {
                 Arc::clone(struct_array.column(self.ordinal)),
             )),
             value => Err(DataFusionError::Execution(format!(
-                "Expected a struct array, got {:?}",
-                value
+                "Expected a struct array, got {value:?}"
             ))),
         }
     }

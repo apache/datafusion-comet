@@ -835,6 +835,23 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("first/last with ignore null") {
+    val data = Range(0, 8192).flatMap(n => Seq((n, 1), (n, 2))).toDF("a", "b")
+    withTempDir { dir =>
+      val filename = s"${dir.getAbsolutePath}/first_last_ignore_null.parquet"
+      data.write.parquet(filename)
+      withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "100") {
+        spark.read.parquet(filename).createOrReplaceTempView("t1")
+        for (expr <- Seq("first", "last")) {
+          // deterministic query that should return one non-null value per group
+          val df = spark.sql(
+            s"SELECT a, $expr(IF(b==1,null,b)) IGNORE NULLS FROM t1 GROUP BY a ORDER BY a")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+    }
+  }
+
   test("all types, with nulls") {
     val numValues = 2048
 
@@ -956,6 +973,21 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             "SELECT MIN(_1), MIN(_2), MAX(_1), MAX(_2), COUNT(_1), COUNT(_2), SUM(_1), SUM(_2) FROM tbl",
             2)
         }
+      }
+    }
+  }
+
+  test("sum overflow on decimal(38, _)") {
+    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      val table = "overflow_decimal_38"
+      withTable(table) {
+        sql(s"create table $table(a decimal(38, 2), b INT) using parquet")
+        sql(s"insert into $table values(42.00, 1), (999999999999999999999999999999999999.99, 1)")
+        checkSparkAnswerAndNumOfAggregates(s"select sum(a) from $table", 2)
+        sql(s"insert into $table values(42.00, 2), (99999999999999999999999999999999.99, 2)")
+        sql(s"insert into $table values(999999999999999999999999999999999999.99, 3)")
+        sql(s"insert into $table values(99999999999999999999999999999999.99, 4)")
+        checkSparkAnswerAndNumOfAggregates(s"select sum(a) from $table group by b order by b", 2)
       }
     }
   }

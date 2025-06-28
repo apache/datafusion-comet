@@ -92,7 +92,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     for num_bytes in (1..=size_of::<u8>()).step_by(3) {
         let x = num_bytes;
         group.bench_with_input(
-            BenchmarkId::new("get_aligned", format!("u8_num_bytes_{}", x)),
+            BenchmarkId::new("get_aligned", format!("u8_num_bytes_{x}")),
             &x,
             |b, &x| {
                 let mut reader: BitReader = BitReader::new_all(buffer.slice(0));
@@ -103,7 +103,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     for num_bytes in (1..=size_of::<u32>()).step_by(3) {
         let x = num_bytes;
         group.bench_with_input(
-            BenchmarkId::new("get_aligned", format!("u32_num_bytes_{}", x)),
+            BenchmarkId::new("get_aligned", format!("u32_num_bytes_{x}")),
             &x,
             |b, &x| {
                 let mut reader: BitReader = BitReader::new_all(buffer.slice(0));
@@ -114,7 +114,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     for num_bytes in (1..=size_of::<i32>()).step_by(3) {
         let x = num_bytes;
         group.bench_with_input(
-            BenchmarkId::new("get_aligned", format!("i32_num_bytes_{}", x)),
+            BenchmarkId::new("get_aligned", format!("i32_num_bytes_{x}")),
             &x,
             |b, &x| {
                 let mut reader: BitReader = BitReader::new_all(buffer.slice(0));
@@ -127,7 +127,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     for num_bytes in (1..=size_of::<i32>()).step_by(3) {
         let x = num_bytes * 8;
         group.bench_with_input(
-            BenchmarkId::new("get_value", format!("i32_num_bits_{}", x)),
+            BenchmarkId::new("get_value", format!("i32_num_bits_{x}")),
             &x,
             |b, &x| {
                 let mut reader: BitReader = BitReader::new_all(buffer.slice(0));
@@ -140,7 +140,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     for num_bytes in (1..=8).step_by(7) {
         let x = num_bytes;
         group.bench_with_input(
-            BenchmarkId::new("read_num_bytes_u64", format!("num_bytes_{}", x)),
+            BenchmarkId::new("read_num_bytes_u64", format!("num_bytes_{x}")),
             &x,
             |b, &x| {
                 b.iter(|| read_num_bytes_u64(black_box(x), black_box(buffer.as_slice())));
@@ -152,7 +152,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     for num_bytes in (1..=4).step_by(3) {
         let x = num_bytes;
         group.bench_with_input(
-            BenchmarkId::new("read_num_bytes_u32", format!("num_bytes_{}", x)),
+            BenchmarkId::new("read_num_bytes_u32", format!("num_bytes_{x}")),
             &x,
             |b, &x| {
                 b.iter(|| read_num_bytes_u32(black_box(x), black_box(buffer.as_slice())));
@@ -164,7 +164,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     for length in (0..=64).step_by(32) {
         let x = length;
         group.bench_with_input(
-            BenchmarkId::new("trailing_bits", format!("num_bits_{}", x)),
+            BenchmarkId::new("trailing_bits", format!("num_bits_{x}")),
             &x,
             |b, &x| {
                 b.iter(|| trailing_bits(black_box(1234567890), black_box(x)));

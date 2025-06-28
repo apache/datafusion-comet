@@ -127,7 +127,7 @@ The following Spark expressions are currently available. Any known compatibility
 | Log10      |                                                                     |
 | Pow        |                                                                     |
 | Round      |                                                                     |
-| Signum     | Signum does not differentiate between `0.0` and `-0.0`              |
+| Signum     |               |
 | Sin        |                                                                     |
 | Sqrt       |                                                                     |
 | Tan        |                                                                     |
@@ -186,16 +186,23 @@ The following Spark expressions are currently available. Any known compatibility
 
 ## Arrays
 
-| Expression        | Notes        |
-|-------------------|--------------|
-| ArrayAppend       | Experimental |
-| ArrayContains     | Experimental |
-| ArrayIntersect    | Experimental |
-| ArrayJoin         | Experimental |
-| ArrayRemove       |              |
-| ArraysOverlap     | Experimental |
-| ElementAt         | Arrays only  |
-| GetArrayItem      |              |
+| Expression     | Notes                                                                                                                                                                                                        |
+|----------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| ArrayAppend    | Experimental                                                                                                                                                                                                 |
+| ArrayCompact   | Experimental                                                                                                                                                                                                 |
+| ArrayContains  | Experimental                                                                                                                                                                                                 |
+| ArrayDistinct  | Experimental: behaves differently than spark. Datafusion first sorts then removes duplicates while spark preserves the original order.                                                                       |
+| ArrayExcept    | Experimental                                                                                                                                                                                                 |
+| ArrayInsert    | Experimental                                                                                                                                                                                                 |
+| ArrayIntersect | Experimental                                                                                                                                                                                                 |
+| ArrayJoin      | Experimental                                                                                                                                                                                                 |
+| ArrayMax       | Experimental                                                                                                                                                                                                 |
+| ArrayRemove    |                                                                                                                                                                                                              |
+| ArrayRepeat    | Experimental                                                                                                                                                                                                 |
+| ArraysOverlap  | Experimental                                                                                                                                                                                                 |
+| ArrayUnion     | Experimental: behaves differently than spark. Datafusion sorts the input arrays before performing the union, while spark preserves the order of the first array and appends unique elements from the second. |
+| ElementAt      | Arrays only                                                                                                                                                                                                  |
+| GetArrayItem   |                                                                                                                                                                                                              |
 
 ## Structs
 
@@ -208,9 +215,10 @@ The following Spark expressions are currently available. Any known compatibility
 ## Other
 
 | Expression              | Notes                                                                           |
-| ----------------------- | ------------------------------------------------------------------------------- |
+|-------------------------| ------------------------------------------------------------------------------- |
 | Cast                    | See compatibility guide for list of supported cast expressions and known issues |
 | BloomFilterMightContain |                                                                                 |
 | ScalarSubquery          |                                                                                 |
 | Coalesce                |                                                                                 |
 | NormalizeNaNAndZero     |                                                                                 |
+| ToPrettyString          |                                                                                 |

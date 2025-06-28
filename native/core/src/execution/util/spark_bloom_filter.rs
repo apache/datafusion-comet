@@ -61,8 +61,7 @@ impl From<&[u8]> for SparkBloomFilter {
         offset += 4;
         assert_eq!(
             version, SPARK_BLOOM_FILTER_VERSION_1,
-            "Unsupported BloomFilter version: {}, expecting version: {}",
-            version, SPARK_BLOOM_FILTER_VERSION_1
+            "Unsupported BloomFilter version: {version}, expecting version: {SPARK_BLOOM_FILTER_VERSION_1}"
         );
         let num_hash_functions = read_num_be_bytes!(i32, 4, buf[offset..]);
         offset += 4;

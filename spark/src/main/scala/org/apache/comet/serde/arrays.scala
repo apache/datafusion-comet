@@ -150,6 +150,19 @@ object CometArrayContains extends CometExpressionSerde with IncompatExpr {
   }
 }
 
+object CometArrayDistinct extends CometExpressionSerde with IncompatExpr {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
+
+    val arrayDistinctScalarExpr =
+      scalarFunctionExprToProto("array_distinct", arrayExprProto)
+    optExprWithInfo(arrayDistinctScalarExpr, expr)
+  }
+}
+
 object CometArrayIntersect extends CometExpressionSerde with IncompatExpr {
   override def convert(
       expr: Expression,
@@ -161,6 +174,19 @@ object CometArrayIntersect extends CometExpressionSerde with IncompatExpr {
     val arraysIntersectScalarExpr =
       scalarFunctionExprToProto("array_intersect", leftArrayExprProto, rightArrayExprProto)
     optExprWithInfo(arraysIntersectScalarExpr, expr, expr.children: _*)
+  }
+}
+
+object CometArrayMax extends CometExpressionSerde {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
+
+    val arrayMaxScalarExpr =
+      scalarFunctionExprToProto("array_max", arrayExprProto)
+    optExprWithInfo(arrayMaxScalarExpr, expr)
   }
 }
 
@@ -319,5 +345,19 @@ object CometArrayInsert extends CometExpressionSerde with IncompatExpr {
         expr.children(2))
       None
     }
+  }
+}
+
+object CometArrayUnion extends CometExpressionSerde with IncompatExpr {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val leftArrayExprProto = exprToProto(expr.children.head, inputs, binding)
+    val rightArrayExprProto = exprToProto(expr.children(1), inputs, binding)
+
+    val arraysUnionScalarExpr =
+      scalarFunctionExprToProto("array_union", leftArrayExprProto, rightArrayExprProto)
+    optExprWithInfo(arraysUnionScalarExpr, expr, expr.children: _*)
   }
 }
