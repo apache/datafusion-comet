@@ -913,10 +913,13 @@ under the License.
 <tr class="row-odd"><td><p>ArraysOverlap</p></td>
 <td><p>Experimental</p></td>
 </tr>
-<tr class="row-even"><td><p>ElementAt</p></td>
+<tr class="row-even"><td><p>ArrayUnion</p></td>
+<td><p>Experimental: behaves differently than spark. Datafusion sorts the input arrays before performing the union, while spark preserves the order of the first array and appends unique elements from the second.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ElementAt</p></td>
 <td><p>Arrays only</p></td>
 </tr>
-<tr class="row-odd"><td><p>GetArrayItem</p></td>
+<tr class="row-even"><td><p>GetArrayItem</p></td>
 <td><p></p></td>
 </tr>
 </tbody>
