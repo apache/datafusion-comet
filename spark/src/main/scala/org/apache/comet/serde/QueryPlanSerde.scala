@@ -68,6 +68,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
   private val exprSerdeMap: Map[Class[_], CometExpressionSerde] = Map(
     classOf[ArrayAppend] -> CometArrayAppend,
     classOf[ArrayContains] -> CometArrayContains,
+    classOf[ArrayDistinct] -> CometArrayDistinct,
     classOf[ArrayExcept] -> CometArrayExcept,
     classOf[ArrayInsert] -> CometArrayInsert,
     classOf[ArrayIntersect] -> CometArrayIntersect,
@@ -1629,69 +1630,27 @@ object QueryPlanSerde extends Logging with CometExprShim {
           binding,
           (builder, binaryExpr) => builder.setBitwiseAnd(binaryExpr))
 
-      case BitwiseNot(child) =>
-        val childProto = exprToProto(child, inputs, binding)
-        val bitNotScalarExpr =
-          scalarFunctionExprToProto("bit_not", childProto)
-        optExprWithInfo(bitNotScalarExpr, expr, expr.children: _*)
+      case _: BitwiseNot =>
+        CometBitwiseNot.convert(expr, inputs, binding)
 
-      case BitwiseOr(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setBitwiseOr(binaryExpr))
+      case _: BitwiseOr =>
+        CometBitwiseOr.convert(expr, inputs, binding)
 
-      case BitwiseXor(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setBitwiseXor(binaryExpr))
+      case _: BitwiseXor =>
+        CometBitwiseXor.convert(expr, inputs, binding)
 
-      case BitwiseCount(child) =>
-        val childProto = exprToProto(child, inputs, binding)
-        val bitCountScalarExpr =
-          scalarFunctionExprToProtoWithReturnType("bit_count", IntegerType, childProto)
-        optExprWithInfo(bitCountScalarExpr, expr, expr.children: _*)
+      case _: ShiftRight =>
+        CometShiftRight.convert(expr, inputs, binding)
 
-      case ShiftRight(left, right) =>
-        // DataFusion bitwise shift right expression requires
-        // same data type between left and right side
-        val rightExpression = if (left.dataType == LongType) {
-          Cast(right, LongType)
-        } else {
-          right
-        }
+      case _: BitwiseCount =>
+        CometBitwiseCount.convert(expr, inputs, binding)
 
-        createBinaryExpr(
-          expr,
-          left,
-          rightExpression,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setBitwiseShiftRight(binaryExpr))
+      case _: ShiftLeft =>
+        CometShiftLeft.convert(expr, inputs, binding)
 
-      case ShiftLeft(left, right) =>
-        // DataFusion bitwise shift right expression requires
-        // same data type between left and right side
-        val rightExpression = if (left.dataType == LongType) {
-          Cast(right, LongType)
-        } else {
-          right
-        }
+      case _: BitwiseGet =>
+        CometBitwiseGet.convert(expr, inputs, binding)
 
-        createBinaryExpr(
-          expr,
-          left,
-          rightExpression,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setBitwiseShiftLeft(binaryExpr))
       case In(value, list) =>
         in(expr, value, list, inputs, binding, negate = false)
 
@@ -1976,6 +1935,15 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
       case _ @ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
         convert(CometArrayCompact)
+      case _: ArrayExcept =>
+        convert(CometArrayExcept)
+      case Rand(child, _) =>
+        createUnaryExpr(
+          expr,
+          child,
+          inputs,
+          binding,
+          (builder, unaryExpr) => builder.setRand(unaryExpr))
       case expr =>
         QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
           case Some(handler) => convert(handler)

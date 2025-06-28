@@ -186,20 +186,22 @@ The following Spark expressions are currently available. Any known compatibility
 
 ## Arrays
 
-| Expression     | Notes        |
-| -------------- | ------------ |
-| ArrayAppend    | Experimental |
-| ArrayExcept    | Experimental |
-| ArrayCompact   | Experimental |
-| ArrayContains  | Experimental |
-| ArrayInsert    | Experimental |
-| ArrayIntersect | Experimental |
-| ArrayJoin      | Experimental |
-| ArrayRemove    |              |
-| ArrayRepeat    | Experimental |
-| ArraysOverlap  | Experimental |
-| ElementAt      | Arrays only  |
-| GetArrayItem   |              |
+| Expression     | Notes                                                                                                                                  |
+|----------------|----------------------------------------------------------------------------------------------------------------------------------------|
+| ArrayAppend    | Experimental                                                                                                                           |
+| ArrayCompact   | Experimental                                                                                                                           |
+| ArrayContains  | Experimental                                                                                                                           |
+| ArrayDistinct  | Experimental: behaves differently than spark. Datafusion first sorts then removes duplicates while spark preserves the original order. |
+| ArrayExcept    | Experimental                                                                                                                           |
+| ArrayInsert    | Experimental                                                                                                                           |
+| ArrayIntersect | Experimental                                                                                                                           |
+| ArrayJoin      | Experimental                                                                                                                           |
+| ArrayMax       | Experimental                                                                                                                           |
+| ArrayRemove    |                                                                                                                                        |
+| ArrayRepeat    | Experimental                                                                                                                           |
+| ArraysOverlap  | Experimental                                                                                                                           |
+| ElementAt      | Arrays only                                                                                                                            |
+| GetArrayItem   |                                                                                                                                        |
 
 ## Structs
 

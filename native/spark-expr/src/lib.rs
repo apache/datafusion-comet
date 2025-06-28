@@ -52,11 +52,13 @@ pub use cast::{spark_cast, Cast, SparkCastOptions};
 mod conditional_funcs;
 mod conversion_funcs;
 mod math_funcs;
+mod nondetermenistic_funcs;
 
 pub use array_funcs::*;
 pub use bitwise_funcs::*;
 pub use conditional_funcs::*;
 pub use conversion_funcs::*;
+pub use nondetermenistic_funcs::*;
 
 pub use comet_scalar_funcs::{create_comet_physical_fun, register_all_comet_functions};
 pub use datetime_funcs::{
