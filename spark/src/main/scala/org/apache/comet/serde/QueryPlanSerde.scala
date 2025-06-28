@@ -1184,8 +1184,15 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val formatExpr = exprToProtoInternal(format, inputs, binding)
         val timeZone = exprToProtoInternal(Literal(timeZoneId.orNull), inputs, binding)
 
-        // TODO: DataFusion from_unixtime does not support format yet
-        // TODO: DataFusion supports only -8334601211038 <= sec <= 8210266876799, Why?
+        // TODO: DataFusion toChar does not support Spark format
+        // https://github.com/apache/datafusion/issues/16577
+        // https://github.com/apache/datafusion/issues/14536
+        // TODO: DataFusion supports only -8334601211038 <= sec <= 8210266876799
+        // https://github.com/apache/datafusion/issues/16594
+        // if (secExpr.isDefined && formatExpr.isDefined) {
+        //   val timestampExpr = scalarFunctionExprToProto("from_unixtime", Seq(secExpr, timeZone): _*)
+        //   val optExpr = scalarFunctionExprToProto("to_char", Seq(timestampExpr, formatExpr): _*)
+        //   optExprWithInfo(optExpr, expr, sec, format)
         if (secExpr.isDefined && formatExpr.isDefined && format == Literal(
             TimestampFormatter.defaultPattern)) {
           val optExpr = scalarFunctionExprToProto("from_unixtime", Seq(secExpr, timeZone): _*)
