@@ -19,7 +19,6 @@ use arrow::array::builder::Int64Builder;
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::datatypes::SchemaRef;
 use arrow::datatypes::{DataType, Field, Schema};
-use comet::execution::expressions::bloom_filter_agg::BloomFilterAgg;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use datafusion::common::ScalarValue;
 use datafusion::datasource::memory::MemorySourceConfig;
@@ -35,6 +34,8 @@ use futures::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
+
+use datafusion_comet_spark_expr::BloomFilterAgg;
 
 fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("bloom_filter_agg");

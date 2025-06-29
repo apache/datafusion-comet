@@ -15,8 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Native DataFusion expressions
+#[macro_use]
+mod bit;
 
-pub mod subquery;
+mod spark_bit_array;
+mod spark_bloom_filter;
 
-pub use datafusion_comet_spark_expr::EvalMode;
+pub mod bloom_filter_agg;
+pub use bloom_filter_might_contain::BloomFilterMightContain;
+
+pub mod bloom_filter_might_contain;
+pub use bloom_filter_agg::BloomFilterAgg;
