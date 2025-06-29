@@ -30,7 +30,6 @@ import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleR
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
-import org.apache.comet.serde.QueryPlanSerde.supportedSortType
 
 /**
  * Comet physical plan node for Spark `TakeOrderedAndProjectExec`.
@@ -134,7 +133,6 @@ object CometTakeOrderedAndProjectExec {
   def isSupported(plan: TakeOrderedAndProjectExec): Boolean = {
     val exprs = plan.projectList.map(exprToProto(_, plan.child.output))
     val sortOrders = plan.sortOrder.map(exprToProto(_, plan.child.output))
-    exprs.forall(_.isDefined) && sortOrders.forall(_.isDefined) && plan.offset == 0 &&
-    supportedSortType(plan, plan.sortOrder)
+    exprs.forall(_.isDefined) && sortOrders.forall(_.isDefined) && plan.offset == 0
   }
 }
