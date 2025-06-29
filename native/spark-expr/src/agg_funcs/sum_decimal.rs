@@ -15,15 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::utils::{is_valid_decimal_precision, unlikely};
+use crate::utils::{build_bool_state, is_valid_decimal_precision, unlikely};
 use arrow::array::{
     cast::AsArray, types::Decimal128Type, Array, ArrayRef, BooleanArray, Decimal128Array,
 };
 use arrow::datatypes::{DataType, Field, FieldRef};
-use arrow::{
-    array::BooleanBufferBuilder,
-    buffer::{BooleanBuffer, NullBuffer},
-};
+use arrow::{array::BooleanBufferBuilder, buffer::NullBuffer};
 use datafusion::common::{DataFusionError, Result as DFResult, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::Volatility::Immutable;
@@ -315,25 +312,6 @@ fn ensure_bit_capacity(builder: &mut BooleanBufferBuilder, capacity: usize) {
     if builder.len() < capacity {
         let additional = capacity - builder.len();
         builder.append_n(additional, true);
-    }
-}
-
-/// Build a boolean buffer from the state and reset the state, based on the emit_to
-/// strategy.
-fn build_bool_state(state: &mut BooleanBufferBuilder, emit_to: &EmitTo) -> BooleanBuffer {
-    let bool_state: BooleanBuffer = state.finish();
-
-    match emit_to {
-        EmitTo::All => bool_state,
-        EmitTo::First(n) => {
-            // split off the first N values in bool_state
-            let first_n_bools: BooleanBuffer = bool_state.iter().take(*n).collect();
-            // reset the existing seen buffer
-            for seen in bool_state.iter().skip(*n) {
-                state.append(seen);
-            }
-            first_n_bools
-        }
     }
 }
 
