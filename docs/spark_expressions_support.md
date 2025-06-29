@@ -175,7 +175,7 @@
  - [ ] dayofweek
  - [ ] dayofyear
  - [x] extract
- - [ ] from_unixtime
+ - [x] from_unixtime
  - [ ] from_utc_timestamp
  - [ ] hour
  - [ ] last_day
