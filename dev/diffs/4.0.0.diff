@@ -3428,10 +3428,10 @@ index 4b27082e188..09f591dfed3 100644
          withUserDefinedFunction(udfInfo.funcName -> false) {
            val sparkClassLoader = Thread.currentThread().getContextClassLoader
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
-index a394d0b7393..8411da928ab 100644
+index a394d0b7393..cee81bab066 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
-@@ -53,24 +53,48 @@ object TestHive
+@@ -53,24 +53,49 @@ object TestHive
      new SparkContext(
        System.getProperty("spark.sql.test.master", "local[1]"),
        "TestSQLContext",
@@ -3470,6 +3470,7 @@ index a394d0b7393..8411da928ab 100644
 +          conf
 +            .set("spark.sql.extensions", "org.apache.comet.CometSparkSessionExtensions")
 +            .set("spark.comet.enabled", "true")
++            .set("spark.comet.parquet.respectFilterPushdown", "true")
 +
 +          val v = System.getenv("ENABLE_COMET_SCAN_ONLY")
 +          if (v == null || !v.toBoolean) {
