@@ -2578,19 +2578,10 @@ index 22839d3f0d2..7e66d100e90 100644
        checkAnswer(
          // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-index bba71f1c48d..a45d3f6e797 100644
+index bba71f1c48d..4f33ce4b3f2 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
-@@ -48,6 +48,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
-   import testImplicits._
- 
-   test("simple select queries") {
-+    println("==== Runtime Classpath ====")
-+    System.getProperty("java.class.path").split(":").foreach(println)
-     withParquetTable((0 until 10).map(i => (i, i.toString)), "t") {
-       checkAnswer(sql("SELECT _1 FROM t where t._1 > 5"), (6 until 10).map(Row.apply(_)))
-       checkAnswer(sql("SELECT _1 FROM t as tmp where tmp._1 < 5"), (0 until 5).map(Row.apply(_)))
-@@ -1060,7 +1062,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1060,7 +1060,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
          checkAnswer(readParquet(schema2, path), df)
        }
  
@@ -2600,7 +2591,7 @@ index bba71f1c48d..a45d3f6e797 100644
          val schema1 = "a DECIMAL(3, 2), b DECIMAL(18, 3), c DECIMAL(37, 3)"
          checkAnswer(readParquet(schema1, path), df)
          val schema2 = "a DECIMAL(3, 0), b DECIMAL(18, 1), c DECIMAL(37, 1)"
-@@ -1084,7 +1087,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
+@@ -1084,7 +1085,8 @@ abstract class ParquetQuerySuite extends QueryTest with ParquetTest with SharedS
        val df = sql(s"SELECT 1 a, 123456 b, ${Int.MaxValue.toLong * 10} c, CAST('1.2' AS BINARY) d")
        df.write.parquet(path.toString)
  
