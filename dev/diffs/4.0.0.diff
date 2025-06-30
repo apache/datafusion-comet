@@ -700,10 +700,10 @@ index 9c529d14221..069b7c5adeb 100644
          }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
 new file mode 100644
-index 00000000000..4b31bea33de
+index 00000000000..5eb3fa17ca8
 --- /dev/null
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,43 @@
 +/*
 + * Licensed to the Apache Software Foundation (ASF) under one or more
 + * contributor license agreements.  See the NOTICE file distributed with
@@ -732,6 +732,7 @@ index 00000000000..4b31bea33de
 + * Tests with this tag will be ignored when Comet is enabled (e.g., via `ENABLE_COMET`).
 + */
 +case class IgnoreComet(reason: String) extends Tag("DisableComet")
++case class IgnoreCometNativeScan(reason: String) extends Tag("DisableComet")
 +
 +/**
 + * Helper trait that disables Comet for all tests regardless of default config values.
@@ -1196,7 +1197,7 @@ index 0df7f806272..52d33d67328 100644
  
    test("non-matching optional group") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 2e33f6505ab..47fa031add5 100644
+index 2e33f6505ab..e1e93ab3bad 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 @@ -23,10 +23,11 @@ import org.apache.spark.SparkRuntimeException
@@ -1234,7 +1235,14 @@ index 2e33f6505ab..47fa031add5 100644
        }
        assert(exchanges.size === 1)
      }
-@@ -2678,18 +2685,26 @@ class SubquerySuite extends QueryTest
+@@ -2674,22 +2681,32 @@ class SubquerySuite extends QueryTest
+     }
+   }
+ 
+-  test("SPARK-43402: FileSourceScanExec supports push down data filter with scalar subquery") {
++  test("SPARK-43402: FileSourceScanExec supports push down data filter with scalar subquery",
++    IgnoreComet("TODO: ignore for first stage of 4.0, " +
++    "https://github.com/apache/datafusion-comet/issues/1948")) {
      def checkFileSourceScan(query: String, answer: Seq[Row]): Unit = {
        val df = sql(query)
        checkAnswer(df, answer)
@@ -2475,7 +2483,7 @@ index cd6f41b4ef4..4b6a17344bc 100644
        ParquetOutputFormat.WRITER_VERSION -> ParquetProperties.WriterVersion.PARQUET_2_0.toString
      )
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
-index 6080a5e8e4b..0a569e35beb 100644
+index 6080a5e8e4b..894434d31b7 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 @@ -1102,7 +1102,11 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
@@ -2491,7 +2499,17 @@ index 6080a5e8e4b..0a569e35beb 100644
          }
        }
      }
-@@ -1587,7 +1591,11 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -1505,7 +1509,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+     }
+   }
+ 
+-  test("Filters should be pushed down for vectorized Parquet reader at row group level") {
++  test("Filters should be pushed down for vectorized Parquet reader at row group level",
++    IgnoreCometNativeScan("Native scans do not support the tested accumulator")) {
+     import testImplicits._
+ 
+     withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true",
+@@ -1587,7 +1592,11 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
            // than the total length but should not be a single record.
            // Note that, if record level filtering is enabled, it should be a single record.
            // If no filter is pushed down to Parquet, it should be the total length of data.
@@ -2504,7 +2522,7 @@ index 6080a5e8e4b..0a569e35beb 100644
          }
        }
      }
-@@ -1614,7 +1622,11 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -1614,7 +1623,11 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
          // than the total length but should not be a single record.
          // Note that, if record level filtering is enabled, it should be a single record.
          // If no filter is pushed down to Parquet, it should be the total length of data.
@@ -2517,7 +2535,16 @@ index 6080a5e8e4b..0a569e35beb 100644
        }
      }
    }
-@@ -1750,7 +1762,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -1706,7 +1719,7 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+       (attr, value) => sources.StringContains(attr, value))
+   }
+ 
+-  test("filter pushdown - StringPredicate") {
++  test("filter pushdown - StringPredicate", IgnoreCometNativeScan("cannot be pushed down")) {
+     import testImplicits._
+     // keep() should take effect on StartsWith/EndsWith/Contains
+     Seq(
+@@ -1750,7 +1763,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
      }
    }
  
@@ -2527,7 +2554,7 @@ index 6080a5e8e4b..0a569e35beb 100644
      val schema = StructType(Seq(
        StructField("a", IntegerType, nullable = false)
      ))
-@@ -1993,7 +2006,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -1993,7 +2007,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
      }
    }
  
@@ -2537,7 +2564,17 @@ index 6080a5e8e4b..0a569e35beb 100644
      // block 1:
      //                      null count  min                                       max
      // page-0                         0  0                                         99
-@@ -2305,7 +2319,11 @@ class ParquetV1FilterSuite extends ParquetFilterSuite {
+@@ -2053,7 +2068,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+     }
+   }
+ 
+-  test("SPARK-34562: Bloom filter push down") {
++  test("SPARK-34562: Bloom filter push down",
++    IgnoreCometNativeScan("Native scans do not support the tested accumulator")) {
+     withTempPath { dir =>
+       val path = dir.getCanonicalPath
+       spark.range(100).selectExpr("id * 2 AS id")
+@@ -2305,7 +2321,11 @@ class ParquetV1FilterSuite extends ParquetFilterSuite {
            assert(pushedParquetFilters.exists(_.getClass === filterClass),
              s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
  
@@ -2550,7 +2587,7 @@ index 6080a5e8e4b..0a569e35beb 100644
          } else {
            assert(selectedFilters.isEmpty, "There is filter pushed down")
          }
-@@ -2368,7 +2386,11 @@ class ParquetV2FilterSuite extends ParquetFilterSuite {
+@@ -2368,7 +2388,11 @@ class ParquetV2FilterSuite extends ParquetFilterSuite {
            assert(pushedParquetFilters.exists(_.getClass === filterClass),
              s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
  
@@ -2627,7 +2664,7 @@ index 30503af0fab..1491f4bc2d5 100644
  
    import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
-index 08fd8a9ecb5..16d1822ff89 100644
+index 08fd8a9ecb5..24baf360234 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 @@ -20,6 +20,7 @@ import java.io.File
@@ -2646,16 +2683,39 @@ index 08fd8a9ecb5..16d1822ff89 100644
  import org.apache.spark.sql.execution.FileSourceScanExec
  import org.apache.spark.sql.execution.datasources.FileFormat
  import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
-@@ -174,6 +176,8 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
+@@ -172,8 +174,31 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
+     testRowIndexGeneration("row index generation", conf)
+   }
  
++  private def shouldSkip(conf: RowIndexTestConf): Boolean = {
++    Set(
++      RowIndexTestConf(useFilter = true, useSmallPages = true, useSmallRowGroups = true,
++        useSmallSplits = true),
++      RowIndexTestConf(useFilter = true, useSmallPages = true, useSmallRowGroups = true),
++      RowIndexTestConf(useFilter = true, useSmallRowGroups = true, useSmallSplits = true),
++      RowIndexTestConf(useFilter = true, useSmallRowGroups = true),
++      RowIndexTestConf(useVectorizedReader = false, useFilter = true, useSmallPages = true,
++        useSmallRowGroups = true, useSmallSplits = true),
++      RowIndexTestConf(useVectorizedReader = false, useFilter = true, useSmallPages = true,
++        useSmallRowGroups = true),
++      RowIndexTestConf(useVectorizedReader = false, useFilter = true, useSmallRowGroups = true,
++        useSmallSplits = true),
++      RowIndexTestConf(useVectorizedReader = false, useFilter = true, useSmallRowGroups = true)
++    ).contains(conf)
++  }
++
    private def testRowIndexGeneration(label: String, conf: RowIndexTestConf): Unit = {
      test (s"$label - ${conf.desc}") {
++
++      assume(!shouldSkip(conf), s"TODO: https://github.com/apache/datafusion-comet/issues/1948 " +
++        s"Skipping failing config: ${conf.desc}")
++
 +      // native_datafusion Parquet scan does not support row index generation.
 +      assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
        withSQLConf(conf.sqlConfs: _*) {
          withTempPath { path =>
            // Read row index using _metadata.row_index if that is supported by the file format.
-@@ -245,6 +249,12 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
+@@ -245,6 +270,12 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
              case f: FileSourceScanExec =>
                numPartitions += f.inputRDD.partitions.length
                numOutputRows += f.metrics("numOutputRows").value
@@ -2668,7 +2728,7 @@ index 08fd8a9ecb5..16d1822ff89 100644
              case _ =>
            }
            assert(numPartitions > 0)
-@@ -303,6 +313,8 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
+@@ -303,6 +334,8 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
      val conf = RowIndexTestConf(useDataSourceV2 = useDataSourceV2)
  
      test(s"invalid row index column type - ${conf.desc}") {
@@ -3427,6 +3487,28 @@ index 4b27082e188..09f591dfed3 100644
        Utils.withContextClassLoader(Utils.getSparkClassLoader) {
          withUserDefinedFunction(udfInfo.funcName -> false) {
            val sparkClassLoader = Thread.currentThread().getContextClassLoader
+diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
+index b67370f6eb9..746b3974b29 100644
+--- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
++++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
+@@ -23,14 +23,15 @@ import java.util.concurrent.{Executors, TimeUnit}
+ import org.scalatest.BeforeAndAfterEach
+ 
+ import org.apache.spark.metrics.source.HiveCatalogMetrics
+-import org.apache.spark.sql.QueryTest
++import org.apache.spark.sql.{IgnoreCometSuite, QueryTest}
+ import org.apache.spark.sql.execution.datasources.FileStatusCache
+ import org.apache.spark.sql.hive.test.TestHiveSingleton
+ import org.apache.spark.sql.internal.SQLConf
+ import org.apache.spark.sql.test.SQLTestUtils
+ 
+ class PartitionedTablePerfStatsSuite
+-  extends QueryTest with TestHiveSingleton with SQLTestUtils with BeforeAndAfterEach {
++  extends QueryTest with TestHiveSingleton with SQLTestUtils with BeforeAndAfterEach
++    with IgnoreCometSuite {
+ 
+   override def beforeEach(): Unit = {
+     super.beforeEach()
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 index a394d0b7393..cee81bab066 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala

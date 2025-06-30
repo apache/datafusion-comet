@@ -611,7 +611,7 @@ public class TestFileReader {
       assertEquals(1, offsetIndex.getFirstRowIndex(1));
       assertEquals(3, offsetIndex.getFirstRowIndex(2));
 
-      if (!isSpark40Plus()) {
+      if (!isSpark40Plus()) { // TODO: https://github.com/apache/datafusion-comet/issues/1948
         assertNull(indexReader.readColumnIndex(footer.getBlocks().get(2).getColumns().get(0)));
       }
     }
