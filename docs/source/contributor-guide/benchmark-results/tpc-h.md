@@ -25,24 +25,24 @@ and we encourage you to run these benchmarks in your own environments.
 
 The tracking issue for improving TPC-H performance is [#391](https://github.com/apache/datafusion-comet/issues/391).
 
-![](../../_static/images/benchmark-results/0.7.0/tpch_allqueries.png)
+![](../../_static/images/benchmark-results/0.9.0/tpch_allqueries.png)
 
 Here is a breakdown showing relative performance of Spark and Comet for each query.
 
-![](../../_static/images/benchmark-results/0.7.0/tpch_queries_compare.png)
+![](../../_static/images/benchmark-results/0.9.0/tpch_queries_compare.png)
 
 The following chart shows how much Comet currently accelerates each query from the benchmark in relative terms.
 
-![](../../_static/images/benchmark-results/0.7.0/tpch_queries_speedup_rel.png)
+![](../../_static/images/benchmark-results/0.9.0/tpch_queries_speedup_rel.png)
 
 The following chart shows how much Comet currently accelerates each query from the benchmark in absolute terms.
 
-![](../../_static/images/benchmark-results/0.7.0/tpch_queries_speedup_abs.png)
+![](../../_static/images/benchmark-results/0.9.0/tpch_queries_speedup_abs.png)
 
 The raw results of these benchmarks in JSON format is available here:
 
-- [Spark](0.7.0/spark-tpch.json)
-- [Comet](0.7.0/comet-tpch.json)
+- [Spark](0.9.0/spark-tpch.json)
+- [Comet](0.9.0/comet-tpch.json)
 
 # Scripts
 
@@ -85,7 +85,7 @@ $SPARK_HOME/bin/spark-submit \
 ## Apache Spark + Comet
 
 ```shell
-export COMET_JAR=local:///opt/spark/jars/comet-spark-spark3.5_2.12-0.7.0.jar
+export COMET_JAR=local:///opt/spark/jars/comet-spark-spark3.5_2.12-0.9.0.jar
 $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
     --conf spark.driver.memory=8G \
