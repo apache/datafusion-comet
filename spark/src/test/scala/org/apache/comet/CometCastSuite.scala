@@ -1213,8 +1213,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       if (testAnsi) {
         // with ANSI enabled, we should produce the same exception as Spark
         withSQLConf(
-          (SQLConf.ANSI_ENABLED.key, "true"),
-          (CometConf.COMET_ANSI_MODE_ENABLED.key, "true")) {
+          (SQLConf.ANSI_ENABLED.key, "true")) {
 
           // cast() should throw exception on invalid inputs when ansi mode is enabled
           val df = data.withColumn("converted", col("a").cast(toType))

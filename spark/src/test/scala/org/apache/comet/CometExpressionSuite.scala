@@ -1258,8 +1258,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
 
     withSQLConf(
-      SQLConf.ANSI_ENABLED.key -> "true",
-      CometConf.COMET_ANSI_MODE_ENABLED.key -> "true") {
+      SQLConf.ANSI_ENABLED.key -> "true") {
       testAbsAnsiOverflow(Seq((Byte.MaxValue, Byte.MinValue)))
       testAbsAnsiOverflow(Seq((Short.MaxValue, Short.MinValue)))
       testAbsAnsiOverflow(Seq((Int.MaxValue, Int.MinValue)))
@@ -1914,7 +1913,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
       withSQLConf(
         SQLConf.ANSI_ENABLED.key -> enabled.toString,
-        CometConf.COMET_ANSI_MODE_ENABLED.key -> enabled.toString,
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true")(f)
     }
@@ -1977,7 +1975,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withSQLConf(
           "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding",
           SQLConf.ANSI_ENABLED.key -> "true",
-          CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
           CometConf.COMET_ENABLED.key -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true") {
           for (n <- Seq("2147483647", "-2147483648")) {
@@ -2560,7 +2557,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         Seq(true, false).foreach { ansiEnabled =>
           withSQLConf(
-            CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
             SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString(),
             // Prevent the optimizer from collapsing an extract value of a create array
             SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> SimplifyExtractValueOps.ruleName) {

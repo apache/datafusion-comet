@@ -37,7 +37,6 @@ import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.types.{DoubleType, FloatType}
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
-import org.apache.comet.CometConf.COMET_ANSI_MODE_ENABLED
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
@@ -639,19 +638,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   private def _apply(plan: SparkPlan): SparkPlan = {
-    // DataFusion doesn't have ANSI mode. For now we just disable CometExec if ANSI mode is
-    // enabled.
-    if (isANSIEnabled(conf)) {
-      if (COMET_ANSI_MODE_ENABLED.get()) {
-        if (!isSpark40Plus) {
-          logWarning("Using Comet's experimental support for ANSI mode.")
-        }
-      } else {
-        logInfo("Comet extension disabled for ANSI mode")
-        return plan
-      }
-    }
-
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) return plan
 
