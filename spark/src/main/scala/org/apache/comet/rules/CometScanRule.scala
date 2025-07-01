@@ -261,10 +261,6 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
 
     val fallbackReasons = new ListBuffer[String]()
 
-    if (CometSparkSessionExtensions.isSpark40Plus) {
-      fallbackReasons += s"$SCAN_NATIVE_ICEBERG_COMPAT  is not implemented for Spark 4.0.0"
-    }
-
     // native_iceberg_compat only supports local filesystem and S3
     if (!scanExec.relation.inputFiles
         .forall(path => path.startsWith("file://") || path.startsWith("s3a://"))) {
