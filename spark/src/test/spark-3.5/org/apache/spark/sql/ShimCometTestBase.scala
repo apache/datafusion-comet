@@ -17,13 +17,34 @@
  * under the License.
  */
 
-package org.apache.spark.sql.comet.shims
+package org.apache.spark.sql
 
-import org.apache.spark.executor.TaskMetrics
-import org.apache.spark.util.AccumulatorV2
+import org.apache.spark.SparkConf
+import org.apache.spark.sql.catalyst.expressions.Expression
+import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 
-object ShimTaskMetrics {
+trait ShimCometTestBase {
+  type SparkSessionType = SparkSession
 
-  def getTaskAccumulator(taskMetrics: TaskMetrics): Option[AccumulatorV2[_, _]] =
-    taskMetrics._externalAccums.lastOption
+  def createSparkSessionWithExtensions(conf: SparkConf): SparkSessionType = {
+    SparkSession
+      .builder()
+      .config(conf)
+      .master("local[1]")
+      .withExtensions(new org.apache.comet.CometSparkSessionExtensions)
+      .getOrCreate()
+  }
+
+  def datasetOfRows(spark: SparkSession, plan: LogicalPlan): DataFrame = {
+    Dataset.ofRows(spark, plan)
+  }
+
+  def getColumnFromExpression(expr: Expression): Column = {
+    new Column(expr)
+  }
+
+  def extractLogicalPlan(df: DataFrame): LogicalPlan = {
+    df.logicalPlan
+  }
+
 }

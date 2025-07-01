@@ -81,7 +81,7 @@ Condition : isnotnull(w_warehouse_sk#9)
 
 (5) CometProject
 Input [7]: [w_warehouse_sk#9, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#14, w_country#15]
-Arguments: [w_warehouse_sk#9, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15], [w_warehouse_sk#9, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, w_state#14, 2, true, false, true) AS w_state#16, w_country#15]
+Arguments: [w_warehouse_sk#9, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15], [w_warehouse_sk#9, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, static_invoke(CharVarcharCodegenUtils.readSidePadding(w_state#14, 2)) AS w_state#16, w_country#15]
 
 (6) CometBroadcastExchange
 Input [7]: [w_warehouse_sk#9, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15]
@@ -157,7 +157,7 @@ ReadSchema: struct<sm_ship_mode_sk:int,sm_carrier:string>
 
 (21) CometFilter
 Input [2]: [sm_ship_mode_sk#22, sm_carrier#23]
-Condition : (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, sm_carrier#23, 20, true, false, true) IN (DHL                 ,BARIAN              ) AND isnotnull(sm_ship_mode_sk#22))
+Condition : (static_invoke(CharVarcharCodegenUtils.readSidePadding(sm_carrier#23, 20)) IN (DHL                 ,BARIAN              ) AND isnotnull(sm_ship_mode_sk#22))
 
 (22) CometProject
 Input [2]: [sm_ship_mode_sk#22, sm_carrier#23]
