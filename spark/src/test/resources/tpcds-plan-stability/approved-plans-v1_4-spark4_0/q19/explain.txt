@@ -91,7 +91,7 @@ Condition : ((isnotnull(i_manager_id#14) AND (i_manager_id#14 = 8)) AND isnotnul
 
 (11) CometProject
 Input [6]: [i_item_sk#9, i_brand_id#10, i_brand#11, i_manufact_id#12, i_manufact#13, i_manager_id#14]
-Arguments: [i_item_sk#9, i_brand_id#10, i_brand#15, i_manufact_id#12, i_manufact#16], [i_item_sk#9, i_brand_id#10, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_brand#11, 50, true, false, true) AS i_brand#15, i_manufact_id#12, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_manufact#13, 50, true, false, true) AS i_manufact#16]
+Arguments: [i_item_sk#9, i_brand_id#10, i_brand#15, i_manufact_id#12, i_manufact#16], [i_item_sk#9, i_brand_id#10, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_brand#11, 50)) AS i_brand#15, i_manufact_id#12, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_manufact#13, 50)) AS i_manufact#16]
 
 (12) CometBroadcastExchange
 Input [5]: [i_item_sk#9, i_brand_id#10, i_brand#15, i_manufact_id#12, i_manufact#16]
@@ -139,11 +139,11 @@ ReadSchema: struct<ca_address_sk:int,ca_zip:string>
 
 (21) CometFilter
 Input [2]: [ca_address_sk#19, ca_zip#20]
-Condition : (isnotnull(ca_address_sk#19) AND isnotnull(staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, ca_zip#20, 10, true, false, true)))
+Condition : (isnotnull(ca_address_sk#19) AND isnotnull(static_invoke(CharVarcharCodegenUtils.readSidePadding(ca_zip#20, 10))))
 
 (22) CometProject
 Input [2]: [ca_address_sk#19, ca_zip#20]
-Arguments: [ca_address_sk#19, ca_zip#21], [ca_address_sk#19, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, ca_zip#20, 10, true, false, true) AS ca_zip#21]
+Arguments: [ca_address_sk#19, ca_zip#21], [ca_address_sk#19, static_invoke(CharVarcharCodegenUtils.readSidePadding(ca_zip#20, 10)) AS ca_zip#21]
 
 (23) CometBroadcastExchange
 Input [2]: [ca_address_sk#19, ca_zip#21]
@@ -167,11 +167,11 @@ ReadSchema: struct<s_store_sk:int,s_zip:string>
 
 (27) CometFilter
 Input [2]: [s_store_sk#22, s_zip#23]
-Condition : (isnotnull(staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_zip#23, 10, true, false, true)) AND isnotnull(s_store_sk#22))
+Condition : (isnotnull(static_invoke(CharVarcharCodegenUtils.readSidePadding(s_zip#23, 10))) AND isnotnull(s_store_sk#22))
 
 (28) CometProject
 Input [2]: [s_store_sk#22, s_zip#23]
-Arguments: [s_store_sk#22, s_zip#24], [s_store_sk#22, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_zip#23, 10, true, false, true) AS s_zip#24]
+Arguments: [s_store_sk#22, s_zip#24], [s_store_sk#22, static_invoke(CharVarcharCodegenUtils.readSidePadding(s_zip#23, 10)) AS s_zip#24]
 
 (29) CometBroadcastExchange
 Input [2]: [s_store_sk#22, s_zip#24]

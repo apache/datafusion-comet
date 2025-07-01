@@ -123,11 +123,11 @@ ReadSchema: struct<cd_demo_sk:int,cd_marital_status:string,cd_education_status:s
 
 (15) CometFilter
 Input [3]: [cd_demo_sk#19, cd_marital_status#20, cd_education_status#21]
-Condition : (((isnotnull(cd_demo_sk#19) AND isnotnull(staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_marital_status#20, 1, true, false, true))) AND isnotnull(staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_education_status#21, 20, true, false, true))) AND ((((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_marital_status#20, 1, true, false, true) = M) AND (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_education_status#21, 20, true, false, true) = Advanced Degree     )) OR ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_marital_status#20, 1, true, false, true) = S) AND (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_education_status#21, 20, true, false, true) = College             ))) OR ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_marital_status#20, 1, true, false, true) = W) AND (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_education_status#21, 20, true, false, true) = 2 yr Degree         ))))
+Condition : (((isnotnull(cd_demo_sk#19) AND isnotnull(static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_marital_status#20, 1)))) AND isnotnull(static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_education_status#21, 20)))) AND ((((static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_marital_status#20, 1)) = M) AND (static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_education_status#21, 20)) = Advanced Degree     )) OR ((static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_marital_status#20, 1)) = S) AND (static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_education_status#21, 20)) = College             ))) OR ((static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_marital_status#20, 1)) = W) AND (static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_education_status#21, 20)) = 2 yr Degree         ))))
 
 (16) CometProject
 Input [3]: [cd_demo_sk#19, cd_marital_status#20, cd_education_status#21]
-Arguments: [cd_demo_sk#19, cd_marital_status#22, cd_education_status#23], [cd_demo_sk#19, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_marital_status#20, 1, true, false, true) AS cd_marital_status#22, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_education_status#21, 20, true, false, true) AS cd_education_status#23]
+Arguments: [cd_demo_sk#19, cd_marital_status#22, cd_education_status#23], [cd_demo_sk#19, static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_marital_status#20, 1)) AS cd_marital_status#22, static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_education_status#21, 20)) AS cd_education_status#23]
 
 (17) CometBroadcastExchange
 Input [3]: [cd_demo_sk#19, cd_marital_status#22, cd_education_status#23]
@@ -151,11 +151,11 @@ ReadSchema: struct<cd_demo_sk:int,cd_marital_status:string,cd_education_status:s
 
 (21) CometFilter
 Input [3]: [cd_demo_sk#24, cd_marital_status#25, cd_education_status#26]
-Condition : ((isnotnull(cd_demo_sk#24) AND isnotnull(staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_marital_status#25, 1, true, false, true))) AND isnotnull(staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_education_status#26, 20, true, false, true)))
+Condition : ((isnotnull(cd_demo_sk#24) AND isnotnull(static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_marital_status#25, 1)))) AND isnotnull(static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_education_status#26, 20))))
 
 (22) CometProject
 Input [3]: [cd_demo_sk#24, cd_marital_status#25, cd_education_status#26]
-Arguments: [cd_demo_sk#24, cd_marital_status#27, cd_education_status#28], [cd_demo_sk#24, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_marital_status#25, 1, true, false, true) AS cd_marital_status#27, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_education_status#26, 20, true, false, true) AS cd_education_status#28]
+Arguments: [cd_demo_sk#24, cd_marital_status#27, cd_education_status#28], [cd_demo_sk#24, static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_marital_status#25, 1)) AS cd_marital_status#27, static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_education_status#26, 20)) AS cd_education_status#28]
 
 (23) CometBroadcastExchange
 Input [3]: [cd_demo_sk#24, cd_marital_status#27, cd_education_status#28]
@@ -179,11 +179,11 @@ ReadSchema: struct<ca_address_sk:int,ca_state:string,ca_country:string>
 
 (27) CometFilter
 Input [3]: [ca_address_sk#29, ca_state#30, ca_country#31]
-Condition : (((isnotnull(ca_country#31) AND (ca_country#31 = United States)) AND isnotnull(ca_address_sk#29)) AND ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, ca_state#30, 2, true, false, true) IN (IN,OH,NJ) OR staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, ca_state#30, 2, true, false, true) IN (WI,CT,KY)) OR staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, ca_state#30, 2, true, false, true) IN (LA,IA,AR)))
+Condition : (((isnotnull(ca_country#31) AND (ca_country#31 = United States)) AND isnotnull(ca_address_sk#29)) AND ((static_invoke(CharVarcharCodegenUtils.readSidePadding(ca_state#30, 2)) IN (IN,OH,NJ) OR static_invoke(CharVarcharCodegenUtils.readSidePadding(ca_state#30, 2)) IN (WI,CT,KY)) OR static_invoke(CharVarcharCodegenUtils.readSidePadding(ca_state#30, 2)) IN (LA,IA,AR)))
 
 (28) CometProject
 Input [3]: [ca_address_sk#29, ca_state#30, ca_country#31]
-Arguments: [ca_address_sk#29, ca_state#32], [ca_address_sk#29, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, ca_state#30, 2, true, false, true) AS ca_state#32]
+Arguments: [ca_address_sk#29, ca_state#32], [ca_address_sk#29, static_invoke(CharVarcharCodegenUtils.readSidePadding(ca_state#30, 2)) AS ca_state#32]
 
 (29) CometBroadcastExchange
 Input [2]: [ca_address_sk#29, ca_state#32]
@@ -239,7 +239,7 @@ Condition : isnotnull(r_reason_sk#35)
 
 (40) CometProject
 Input [2]: [r_reason_sk#35, r_reason_desc#36]
-Arguments: [r_reason_sk#35, r_reason_desc#37], [r_reason_sk#35, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, r_reason_desc#36, 100, true, false, true) AS r_reason_desc#37]
+Arguments: [r_reason_sk#35, r_reason_desc#37], [r_reason_sk#35, static_invoke(CharVarcharCodegenUtils.readSidePadding(r_reason_desc#36, 100)) AS r_reason_desc#37]
 
 (41) CometBroadcastExchange
 Input [2]: [r_reason_sk#35, r_reason_desc#37]

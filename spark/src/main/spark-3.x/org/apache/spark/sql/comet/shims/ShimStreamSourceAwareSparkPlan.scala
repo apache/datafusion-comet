@@ -19,11 +19,5 @@
 
 package org.apache.spark.sql.comet.shims
 
-import org.apache.spark.executor.TaskMetrics
-import org.apache.spark.util.AccumulatorV2
-
-object ShimTaskMetrics {
-
-  def getTaskAccumulator(taskMetrics: TaskMetrics): Option[AccumulatorV2[_, _]] =
-    taskMetrics._externalAccums.lastOption
+trait ShimStreamSourceAwareSparkPlan {
 }
