@@ -1257,8 +1257,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
 
-    withSQLConf(
-      SQLConf.ANSI_ENABLED.key -> "true") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       testAbsAnsiOverflow(Seq((Byte.MaxValue, Byte.MinValue)))
       testAbsAnsiOverflow(Seq((Short.MaxValue, Short.MinValue)))
       testAbsAnsiOverflow(Seq((Int.MaxValue, Int.MinValue)))
