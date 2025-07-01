@@ -28,11 +28,11 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch}
+
 import org.apache.comet.vector.NativeUtil
 import org.apache.comet.CometArrowAllocator
 
 object CometArrowConverters extends Logging {
-
   // This is similar how Spark converts internal row to Arrow format except that it is transforming
   // the result batch to Comet's ColumnarBatch instead of serialized bytes.
   // There's another big difference that Comet may consume the ColumnarBatch by exporting it to
