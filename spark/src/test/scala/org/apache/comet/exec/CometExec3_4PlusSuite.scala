@@ -26,7 +26,7 @@ import scala.util.Random
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
-import org.apache.spark.sql.{Column, CometTestBase}
+import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.FunctionIdentifier
 import org.apache.spark.sql.catalyst.expressions.{BloomFilterMightContain, Expression, ExpressionInfo}
 import org.apache.spark.sql.functions.{col, lit}
@@ -167,9 +167,8 @@ class CometExec3_4PlusSuite extends CometTestBase {
         .toDF("col1", "col2")
         .write
         .insertInto(table)
-      val df = spark
-        .table(table)
-        .select(new Column(BloomFilterMightContain(lit(bfBytes).expr, col("col1").expr)))
+      val expr = BloomFilterMightContain(lit(bfBytes).expr, col("col1").expr)
+      val df = spark.table(table).select(getColumnFromExpression(expr))
       checkSparkAnswerAndOperator(df)
       // check with scalar subquery
       checkSparkAnswerAndOperator(s"""
@@ -188,5 +187,4 @@ class CometExec3_4PlusSuite extends CometTestBase {
     bf.writeTo(os)
     (longs, os.toByteArray)
   }
-
 }

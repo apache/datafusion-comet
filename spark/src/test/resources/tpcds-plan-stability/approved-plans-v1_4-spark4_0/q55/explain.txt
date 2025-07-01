@@ -74,7 +74,7 @@ Condition : ((isnotnull(i_manager_id#10) AND (i_manager_id#10 = 28)) AND isnotnu
 
 (11) CometProject
 Input [4]: [i_item_sk#7, i_brand_id#8, i_brand#9, i_manager_id#10]
-Arguments: [i_item_sk#7, i_brand_id#8, i_brand#11], [i_item_sk#7, i_brand_id#8, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_brand#9, 50, true, false, true) AS i_brand#11]
+Arguments: [i_item_sk#7, i_brand_id#8, i_brand#11], [i_item_sk#7, i_brand_id#8, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_brand#9, 50)) AS i_brand#11]
 
 (12) CometBroadcastExchange
 Input [3]: [i_item_sk#7, i_brand_id#8, i_brand#11]

@@ -614,13 +614,13 @@ under the License.
       <id>spark-4.0</id>
       <properties>
         <!-- Use Scala 2.13 by default -->
-        <scala.version>2.13.14</scala.version>
+        <scala.version>2.13.16</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
-        <spark.version>4.0.0-preview1</spark.version>
+        <spark.version>4.0.0</spark.version>
         <spark.version.short>4.0</spark.version.short>
-        <parquet.version>1.13.1</parquet.version>
-        <semanticdb.version>4.9.5</semanticdb.version>
-        <slf4j.version>2.0.13</slf4j.version>
+        <parquet.version>1.15.2</parquet.version>
+        <semanticdb.version>4.13.6</semanticdb.version>
+        <slf4j.version>2.0.16</slf4j.version>
         <shims.majorVerSrc>spark-4.0</shims.majorVerSrc>
         <shims.minorVerSrc>not-needed-yet</shims.minorVerSrc>
         <!-- Use jdk17 by default -->
@@ -637,9 +637,9 @@ under the License.
     <profile>
       <id>scala-2.13</id>
       <properties>
-        <scala.version>2.13.14</scala.version>
+        <scala.version>2.13.16</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
-        <semanticdb.version>4.9.5</semanticdb.version>
+        <semanticdb.version>4.13.6</semanticdb.version>
       </properties>
     </profile>
 
@@ -1074,9 +1074,19 @@ under the License.
                         <ignoreClass>javax.annotation.meta.TypeQualifierNickname</ignoreClass>
                       </ignoreClasses>
                     </dependency>
+                    <dependency>
+                      <groupId>com.google.guava</groupId>
+                      <artifactId>guava</artifactId>
+                      <ignoreClasses>
+                        <ignoreClass>com.google.thirdparty.publicsuffix.TrieParser</ignoreClass>
+                        <ignoreClass>com.google.thirdparty.publicsuffix.PublicSuffixPatterns</ignoreClass>
+                        <ignoreClass>com.google.thirdparty.publicsuffix.PublicSuffixType</ignoreClass>
+                      </ignoreClasses>
+                    </dependency>
                   </dependencies>
                   <findAllDuplicates>true</findAllDuplicates>
                   <ignoreWhenIdentical>true</ignoreWhenIdentical>
+
                 </banDuplicateClasses>
               </rules>
             </configuration>

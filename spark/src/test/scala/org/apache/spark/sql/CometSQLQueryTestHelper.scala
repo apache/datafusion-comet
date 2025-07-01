@@ -56,7 +56,8 @@ trait CometSQLQueryTestHelper {
       case _: DescribeCommandBase | _: DescribeColumnCommand | _: DescribeRelation |
           _: DescribeColumn =>
         true
-      case PhysicalOperation(_, _, Sort(_, true, _)) => true
+      case PhysicalOperation(_, _, s: Sort) if s.global => true
+
       case _ => plan.children.iterator.exists(isSorted)
     }
 
