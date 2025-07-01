@@ -20,7 +20,7 @@ index 6eb26e8..c288e72 100644
      }
  
 -    compileOnly "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.5.0"
-+    compileOnly "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.9.0-SNAPSHOT"
++    compileOnly "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.10.0-SNAPSHOT"
  
      implementation libs.parquet.column
      implementation libs.parquet.hadoop
@@ -29,7 +29,7 @@ index 6eb26e8..c288e72 100644
      testImplementation libs.parquet.hadoop
      testImplementation libs.junit.vintage.engine
 -    testImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.5.0"
-+    testImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.9.0-SNAPSHOT"
++    testImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.10.0-SNAPSHOT"
  
      // Required because we remove antlr plugin dependencies from the compile configuration, see note above
      runtimeOnly libs.antlr.runtime
@@ -38,7 +38,7 @@ index 6eb26e8..c288e72 100644
      integrationImplementation project(path: ":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}", configuration: 'testArtifacts')
      integrationImplementation project(path: ":iceberg-spark:iceberg-spark-extensions-${sparkMajorVersion}_${scalaVersion}", configuration: 'testArtifacts')
 +    integrationImplementation project(path: ':iceberg-parquet')
-+    integrationImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.9.0-SNAPSHOT"
++    integrationImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.10.0-SNAPSHOT"
  
      // runtime dependencies for running Hive Catalog based integration test
      integrationRuntimeOnly project(':iceberg-hive-metastore')
@@ -153,7 +153,7 @@ index e2d2c7a..8b5bff8 100644
      }
  
 -    compileOnly "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.5.0"
-+    compileOnly "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.9.0-SNAPSHOT"
++    compileOnly "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.10.0-SNAPSHOT"
  
      implementation libs.parquet.column
      implementation libs.parquet.hadoop
@@ -161,7 +161,7 @@ index e2d2c7a..8b5bff8 100644
  
      testImplementation libs.avro.avro
      testImplementation libs.parquet.hadoop
-+    testImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.9.0-SNAPSHOT"
++    testImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.10.0-SNAPSHOT"
      testImplementation libs.awaitility
 -    testImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.5.0"
  
@@ -171,7 +171,7 @@ index e2d2c7a..8b5bff8 100644
      integrationImplementation project(path: ':iceberg-hive-metastore', configuration: 'testArtifacts')
      integrationImplementation project(path: ":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}", configuration: 'testArtifacts')
      integrationImplementation project(path: ":iceberg-spark:iceberg-spark-extensions-${sparkMajorVersion}_${scalaVersion}", configuration: 'testArtifacts')
-+    integrationImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.9.0-SNAPSHOT"
++    integrationImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.10.0-SNAPSHOT"
  
      // runtime dependencies for running Hive Catalog based integration test
      integrationRuntimeOnly project(':iceberg-hive-metastore')

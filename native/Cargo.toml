@@ -21,7 +21,7 @@ members = ["core", "spark-expr", "proto", "hdfs"]
 resolver = "2"
 
 [workspace.package]
-version = "0.9.0-apple"
+version = "0.10.0-apple"
 homepage = "https://datafusion.apache.org/comet"
 repository = "https://github.com/apache/datafusion-comet"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
