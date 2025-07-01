@@ -67,9 +67,9 @@ pub use error::{SparkError, SparkResult};
 pub use hash_funcs::*;
 pub use json_funcs::ToJson;
 pub use math_funcs::{
-    create_negate_expr, spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor,
-    spark_hex, spark_make_decimal, spark_round, spark_unhex, spark_unscaled_value, CheckOverflow,
-    NegativeExpr, NormalizeNaNAndZero,
+    create_modulo_expr, create_negate_expr, spark_ceil, spark_decimal_div,
+    spark_decimal_integral_div, spark_floor, spark_hex, spark_make_decimal, spark_round,
+    spark_unhex, spark_unscaled_value, CheckOverflow, NegativeExpr, NormalizeNaNAndZero,
 };
 pub use string_funcs::*;
 
@@ -96,4 +96,8 @@ pub(crate) fn arithmetic_overflow_error(from_type: &str) -> SparkError {
     SparkError::ArithmeticOverflow {
         from_type: from_type.to_string(),
     }
+}
+
+pub(crate) fn divide_by_zero_error() -> SparkError {
+    SparkError::DivideByZero
 }

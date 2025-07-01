@@ -722,12 +722,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
         None
 
       case rem @ Remainder(left, right, _) if supportedDataType(left.dataType) =>
-        val rightExpr = nullIfWhenPrimitive(right)
-
         createMathExpression(
           expr,
           left,
-          rightExpr,
+          right,
           inputs,
           binding,
           rem.dataType,
