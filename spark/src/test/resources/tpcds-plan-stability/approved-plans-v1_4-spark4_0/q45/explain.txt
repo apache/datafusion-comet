@@ -89,7 +89,7 @@ Condition : isnotnull(ca_address_sk#9)
 
 (10) CometProject
 Input [3]: [ca_address_sk#9, ca_city#10, ca_zip#11]
-Arguments: [ca_address_sk#9, ca_city#10, ca_zip#12], [ca_address_sk#9, ca_city#10, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, ca_zip#11, 10, true, false, true) AS ca_zip#12]
+Arguments: [ca_address_sk#9, ca_city#10, ca_zip#12], [ca_address_sk#9, ca_city#10, static_invoke(CharVarcharCodegenUtils.readSidePadding(ca_zip#11, 10)) AS ca_zip#12]
 
 (11) CometBroadcastExchange
 Input [3]: [ca_address_sk#9, ca_city#10, ca_zip#12]
@@ -145,7 +145,7 @@ Condition : isnotnull(i_item_sk#16)
 
 (22) CometProject
 Input [2]: [i_item_sk#16, i_item_id#17]
-Arguments: [i_item_sk#16, i_item_id#18], [i_item_sk#16, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_item_id#17, 16, true, false, true) AS i_item_id#18]
+Arguments: [i_item_sk#16, i_item_id#18], [i_item_sk#16, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_item_id#17, 16)) AS i_item_id#18]
 
 (23) CometBroadcastExchange
 Input [2]: [i_item_sk#16, i_item_id#18]
@@ -176,7 +176,7 @@ Condition : i_item_sk#19 IN (2,3,5,7,11,13,17,19,23,29)
 
 (29) CometProject
 Input [2]: [i_item_sk#19, i_item_id#20]
-Arguments: [i_item_id#21], [staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_item_id#20, 16, true, false, true) AS i_item_id#21]
+Arguments: [i_item_id#21], [static_invoke(CharVarcharCodegenUtils.readSidePadding(i_item_id#20, 16)) AS i_item_id#21]
 
 (30) CometColumnarToRow [codegen id : 1]
 Input [1]: [i_item_id#21]

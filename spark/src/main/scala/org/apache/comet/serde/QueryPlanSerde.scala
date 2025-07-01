@@ -1501,7 +1501,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
       case s: StringDecode =>
         // Right child is the encoding expression.
-        s.right match {
+        s.charset match {
           case Literal(str, DataTypes.StringType)
               if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
             // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
@@ -1511,7 +1511,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
               expr,
               None,
               DataTypes.StringType,
-              exprToProtoInternal(s.left, inputs, binding).get,
+              exprToProtoInternal(s.bin, inputs, binding).get,
               CometEvalMode.TRY)
           case _ =>
             withInfo(expr, "Comet only supports decoding with 'utf-8'.")

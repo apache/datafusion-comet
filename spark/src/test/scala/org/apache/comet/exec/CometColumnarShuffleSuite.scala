@@ -40,6 +40,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   protected val adaptiveExecutionEnabled: Boolean
@@ -322,54 +323,72 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   }
 
   test("columnar shuffle on map [bool]") {
+    // https://github.com/apache/datafusion-comet/issues/1941
+    assume(!isSpark40Plus)
     // https://github.com/apache/datafusion-comet/issues/1538
     assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     columnarShuffleOnMapTest(50, Seq(true, false))
   }
 
   test("columnar shuffle on map [byte]") {
+    // https://github.com/apache/datafusion-comet/issues/1941
+    assume(!isSpark40Plus)
     // https://github.com/apache/datafusion-comet/issues/1538
     assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     columnarShuffleOnMapTest(50, Seq(0.toByte, 1.toByte))
   }
 
   test("columnar shuffle on map [short]") {
+    // https://github.com/apache/datafusion-comet/issues/1941
+    assume(!isSpark40Plus)
     // https://github.com/apache/datafusion-comet/issues/1538
     assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     columnarShuffleOnMapTest(50, Seq(0.toShort, 1.toShort))
   }
 
   test("columnar shuffle on map [int]") {
+    // https://github.com/apache/datafusion-comet/issues/1941
+    assume(!isSpark40Plus)
     // https://github.com/apache/datafusion-comet/issues/1538
     assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     columnarShuffleOnMapTest(50, Seq(0, 1))
   }
 
   test("columnar shuffle on map [long]") {
+    // https://github.com/apache/datafusion-comet/issues/1941
+    assume(!isSpark40Plus)
     // https://github.com/apache/datafusion-comet/issues/1538
     assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     columnarShuffleOnMapTest(50, Seq(0.toLong, 1.toLong))
   }
 
   test("columnar shuffle on map [float]") {
+    // https://github.com/apache/datafusion-comet/issues/1941
+    assume(!isSpark40Plus)
     // https://github.com/apache/datafusion-comet/issues/1538
     assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     columnarShuffleOnMapTest(50, Seq(0.toFloat, 1.toFloat))
   }
 
   test("columnar shuffle on map [double]") {
+    // https://github.com/apache/datafusion-comet/issues/1941
+    assume(!isSpark40Plus)
     // https://github.com/apache/datafusion-comet/issues/1538
     assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     columnarShuffleOnMapTest(50, Seq(0.toDouble, 1.toDouble))
   }
 
   test("columnar shuffle on map [date]") {
+    // https://github.com/apache/datafusion-comet/issues/1941
+    assume(!isSpark40Plus)
     // https://github.com/apache/datafusion-comet/issues/1538
     assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     columnarShuffleOnMapTest(50, Seq(new java.sql.Date(0.toLong), new java.sql.Date(1.toLong)))
   }
 
   test("columnar shuffle on map [timestamp]") {
+    // https://github.com/apache/datafusion-comet/issues/1941
+    assume(!isSpark40Plus)
     // https://github.com/apache/datafusion-comet/issues/1538
     assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     columnarShuffleOnMapTest(
@@ -378,6 +397,8 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   }
 
   test("columnar shuffle on map [decimal]") {
+    // https://github.com/apache/datafusion-comet/issues/1941
+    assume(!isSpark40Plus)
     // https://github.com/apache/datafusion-comet/issues/1538
     assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     columnarShuffleOnMapTest(
@@ -386,12 +407,16 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   }
 
   test("columnar shuffle on map [string]") {
+    // https://github.com/apache/datafusion-comet/issues/1941
+    assume(!isSpark40Plus)
     // https://github.com/apache/datafusion-comet/issues/1538
     assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     columnarShuffleOnMapTest(50, Seq(0.toString, 1.toString))
   }
 
   test("columnar shuffle on map [binary]") {
+    // https://github.com/apache/datafusion-comet/issues/1941
+    assume(!isSpark40Plus)
     // https://github.com/apache/datafusion-comet/issues/1538
     assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     columnarShuffleOnMapTest(50, Seq(0.toString.getBytes(), 1.toString.getBytes()))
