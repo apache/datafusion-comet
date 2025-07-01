@@ -365,7 +365,7 @@ source rather than using available artifacts in Maven</strong></p>
 </pre></div>
 </div>
 <p>Set <code class="docutils literal notranslate"><span class="pre">COMET_JAR</span></code> env var:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">COMET_JAR</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>/spark/target/comet-spark-spark3.5_2.12-0.9.0-SNAPSHOT.jar
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">COMET_JAR</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>/spark/target/comet-spark-spark3.5_2.12-0.10.0-SNAPSHOT.jar
 </pre></div>
 </div>
 </section>
@@ -377,7 +377,7 @@ source rather than using available artifacts in Maven</strong></p>
 </div>
 <p>It will be necessary to make some small changes to Iceberg:</p>
 <ul class="simple">
-<li><p>Update Gradle files to change Comet version to <code class="docutils literal notranslate"><span class="pre">0.9.0-SNAPSHOT</span></code>.</p></li>
+<li><p>Update Gradle files to change Comet version to <code class="docutils literal notranslate"><span class="pre">0.10.0-SNAPSHOT</span></code>.</p></li>
 <li><p>Replace <code class="docutils literal notranslate"><span class="pre">import</span> <span class="pre">org.apache.comet.shaded.arrow.c.CometSchemaImporter;</span></code> with <code class="docutils literal notranslate"><span class="pre">import</span> <span class="pre">org.apache.comet.CometSchemaImporter;</span></code></p></li>
 <li><p>Modify <code class="docutils literal notranslate"><span class="pre">SparkBatchQueryScan</span></code> so that it implements the <code class="docutils literal notranslate"><span class="pre">SupportsComet</span></code> interface</p></li>
 <li><p>Stop shading Parquet by commenting out the following lines in the iceberg-spark build:</p></li>
