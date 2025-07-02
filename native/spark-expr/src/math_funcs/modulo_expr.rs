@@ -324,12 +324,11 @@ mod tests {
                         error
                             .to_string()
                             .contains("[DIVIDE_BY_ZERO] Division by zero"),
-                        "Error message did not match. Actual message: {}",
-                        error
+                        "Error message did not match. Actual message: {error}"
                     );
                 }
                 Ok(value) => {
-                    panic!("Expected error, but got: {:?}", value);
+                    panic!("Expected error, but got: {value:?}");
                 }
             }
         } else {
@@ -347,22 +346,20 @@ mod tests {
                         assert_eq!(
                             actual_arr.is_null(i),
                             expected_arr.is_null(i),
-                            "Nullity mismatch at index {}",
-                            i
+                            "Nullity mismatch at index {i}"
                         );
                         if !actual_arr.is_null(i) {
                             let actual_value = actual_arr.value(i);
                             let expected_value = expected_arr.value(i);
                             assert_eq!(
                                 actual_value, expected_value,
-                                "Mismatch at index {}, actual {:?}, expected {:?}",
-                                i, actual_value, expected_value
+                                "Mismatch at index {i}, actual {actual_value:?}, expected {expected_value:?}"
                             );
                         }
                     }
                 }
                 (actual, expected) => {
-                    panic!("Actual: {:?}, expected: {:?}", actual, expected);
+                    panic!("Actual: {actual:?}, expected: {expected:?}");
                 }
             }
         }
@@ -378,7 +375,7 @@ mod tests {
 
             let a_array = Arc::new(Int32Array::from(vec![3, 2, i32::MIN]));
             let b_array = Arc::new(Int32Array::from(vec![1, 5, -1]));
-            let batch = RecordBatch::try_new(schema.clone(), vec![a_array, b_array]).unwrap();
+            let batch = RecordBatch::try_new(Arc::clone(&schema), vec![a_array, b_array]).unwrap();
 
             let left_expr = Arc::new(Column::new("a", 0));
             let right_expr = Arc::new(Column::new("b", 1));
@@ -419,7 +416,7 @@ mod tests {
             b_builder.append_value(5000000000000000000);
             let b_array: ArrayRef = Arc::new(b_builder.finish());
 
-            let batch = RecordBatch::try_new(schema.clone(), vec![a_array, b_array]).unwrap();
+            let batch = RecordBatch::try_new(Arc::clone(&schema), vec![a_array, b_array]).unwrap();
 
             let left_expr = Arc::new(Column::new("a", 0));
             let right_expr = Arc::new(Column::new("b", 1));
@@ -453,7 +450,7 @@ mod tests {
 
             let a_array = Arc::new(Int32Array::from(vec![3]));
             let b_array = Arc::new(Int32Array::from(vec![0]));
-            let batch = RecordBatch::try_new(schema.clone(), vec![a_array, b_array]).unwrap();
+            let batch = RecordBatch::try_new(Arc::clone(&schema), vec![a_array, b_array]).unwrap();
 
             let left_expr = Arc::new(Column::new("a", 0));
             let right_expr = Arc::new(Column::new("b", 1));
@@ -486,7 +483,7 @@ mod tests {
             let b_array = Arc::new(Int32Array::from(vec![2, 4]));
             let c_array = Arc::new(Int32Array::from(vec![4, 5]));
             let batch =
-                RecordBatch::try_new(schema.clone(), vec![a_array, b_array, c_array]).unwrap();
+                RecordBatch::try_new(Arc::clone(&schema), vec![a_array, b_array, c_array]).unwrap();
 
             let left_expr = Arc::new(BinaryExpr::new(
                 Arc::new(Column::new("a", 0)),
