@@ -3311,7 +3311,7 @@ index 86c4e49f6f6..2e639e5f38d 100644
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-index f0f3f94b811..31cf48f19ba 100644
+index f0f3f94b811..d64e4e54e22 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 @@ -27,13 +27,14 @@ import scala.jdk.CollectionConverters._
@@ -3330,7 +3330,15 @@ index f0f3f94b811..31cf48f19ba 100644
  import org.apache.spark.sql.catalyst.FunctionIdentifier
  import org.apache.spark.sql.catalyst.analysis.NoSuchTableException
  import org.apache.spark.sql.catalyst.catalog.SessionCatalog.DEFAULT_DATABASE
-@@ -128,7 +129,28 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
+@@ -42,6 +43,7 @@ import org.apache.spark.sql.catalyst.plans.PlanTestBase
+ import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
+ import org.apache.spark.sql.catalyst.util._
+ import org.apache.spark.sql.classic.{ClassicConversions, ColumnConversions, ColumnNodeToExpressionConverter, DataFrame, Dataset, SparkSession, SQLImplicits}
++import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec}
+ import org.apache.spark.sql.execution.FilterExec
+ import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecution
+ import org.apache.spark.sql.execution.datasources.DataSourceUtils
+@@ -128,7 +130,28 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
          }
        }
      } else {
@@ -3360,7 +3368,7 @@ index f0f3f94b811..31cf48f19ba 100644
      }
    }
  
-@@ -248,8 +270,33 @@ private[sql] trait SQLTestUtilsBase
+@@ -248,8 +271,33 @@ private[sql] trait SQLTestUtilsBase
      override protected def converter: ColumnNodeToExpressionConverter = self.spark.converter
    }
  
@@ -3394,7 +3402,7 @@ index f0f3f94b811..31cf48f19ba 100644
      super.withSQLConf(pairs: _*)(f)
    }
  
-@@ -451,6 +498,8 @@ private[sql] trait SQLTestUtilsBase
+@@ -451,6 +499,8 @@ private[sql] trait SQLTestUtilsBase
      val schema = df.schema
      val withoutFilters = df.queryExecution.executedPlan.transform {
        case FilterExec(_, child) => child
