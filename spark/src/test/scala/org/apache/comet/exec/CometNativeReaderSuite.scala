@@ -436,4 +436,12 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         |""".stripMargin,
       "select c0['key1'].b from tbl")
   }
+
+  test("native reader - support ARRAY literal INT fields") {
+    testSingleLineQuery(
+      """
+        |select 1 a
+        |""".stripMargin,
+      "select array(1, 2, 3) from tbl")
+  }
 }
