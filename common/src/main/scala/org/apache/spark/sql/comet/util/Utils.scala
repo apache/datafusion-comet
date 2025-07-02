@@ -39,9 +39,10 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
 
+import org.apache.comet.shims.CometTypeShim
 import org.apache.comet.vector.CometVector
 
-object Utils {
+object Utils extends CometTypeShim {
   def getConfPath(confFileName: String): String = {
     sys.env
       .get("COMET_CONF_DIR")
@@ -125,6 +126,9 @@ object Utils {
       case FloatType => new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE)
       case DoubleType => new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE)
       case StringType => ArrowType.Utf8.INSTANCE
+      case dt if isStringCollationType(dt) =>
+        // TODO collation information is lost with this transformation
+        ArrowType.Utf8.INSTANCE
       case BinaryType => ArrowType.Binary.INSTANCE
       case DecimalType.Fixed(precision, scale) => new ArrowType.Decimal(precision, scale, 128)
       case DateType => new ArrowType.Date(DateUnit.DAY)
