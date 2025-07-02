@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index 443d46a4302..3b8483173f1 100644
+index 443d46a4302..63ec4784625 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -148,6 +148,8 @@
@@ -700,10 +700,10 @@ index 9c529d14221..069b7c5adeb 100644
          }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
 new file mode 100644
-index 00000000000..5eb3fa17ca8
+index 00000000000..5691536c114
 --- /dev/null
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,45 @@
 +/*
 + * Licensed to the Apache Software Foundation (ASF) under one or more
 + * contributor license agreements.  See the NOTICE file distributed with
@@ -732,6 +732,8 @@ index 00000000000..5eb3fa17ca8
 + * Tests with this tag will be ignored when Comet is enabled (e.g., via `ENABLE_COMET`).
 + */
 +case class IgnoreComet(reason: String) extends Tag("DisableComet")
++case class IgnoreCometNativeIcebergCompat(reason: String) extends Tag("DisableComet")
++case class IgnoreCometNativeDataFusion(reason: String) extends Tag("DisableComet")
 +case class IgnoreCometNativeScan(reason: String) extends Tag("DisableComet")
 +
 +/**
@@ -3309,27 +3311,34 @@ index 86c4e49f6f6..2e639e5f38d 100644
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-index f0f3f94b811..486a436afb2 100644
+index f0f3f94b811..d64e4e54e22 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-@@ -33,7 +33,7 @@ import org.scalatest.{BeforeAndAfterAll, Suite, Tag}
+@@ -27,13 +27,14 @@ import scala.jdk.CollectionConverters._
+ import scala.language.implicitConversions
+ import scala.util.control.NonFatal
+ 
++import org.apache.comet.CometConf
+ import org.apache.hadoop.fs.Path
+ import org.scalactic.source.Position
+ import org.scalatest.{BeforeAndAfterAll, Suite, Tag}
  import org.scalatest.concurrent.Eventually
  
  import org.apache.spark.SparkFunSuite
 -import org.apache.spark.sql.{AnalysisException, Row}
-+import org.apache.spark.sql.{AnalysisException, IgnoreComet, Row}
++import org.apache.spark.sql.{AnalysisException, IgnoreComet, IgnoreCometNativeDataFusion, IgnoreCometNativeIcebergCompat, IgnoreCometNativeScan, Row}
  import org.apache.spark.sql.catalyst.FunctionIdentifier
  import org.apache.spark.sql.catalyst.analysis.NoSuchTableException
  import org.apache.spark.sql.catalyst.catalog.SessionCatalog.DEFAULT_DATABASE
-@@ -42,6 +42,7 @@ import org.apache.spark.sql.catalyst.plans.PlanTestBase
+@@ -42,6 +43,7 @@ import org.apache.spark.sql.catalyst.plans.PlanTestBase
  import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
  import org.apache.spark.sql.catalyst.util._
  import org.apache.spark.sql.classic.{ClassicConversions, ColumnConversions, ColumnNodeToExpressionConverter, DataFrame, Dataset, SparkSession, SQLImplicits}
-+import org.apache.spark.sql.comet._
++import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec}
  import org.apache.spark.sql.execution.FilterExec
  import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecution
  import org.apache.spark.sql.execution.datasources.DataSourceUtils
-@@ -128,7 +129,11 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
+@@ -128,7 +130,28 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
          }
        }
      } else {
@@ -3337,12 +3346,29 @@ index f0f3f94b811..486a436afb2 100644
 +      if (isCometEnabled && testTags.exists(_.isInstanceOf[IgnoreComet])) {
 +        ignore(testName + " (disabled when Comet is on)", testTags: _*)(testFun)
 +      } else {
-+        super.test(testName, testTags: _*)(testFun)
++        val cometScanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get(conf)
++        val isNativeIcebergCompat = cometScanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT ||
++          cometScanImpl == CometConf.SCAN_AUTO
++        val isNativeDataFusion = cometScanImpl == CometConf.SCAN_NATIVE_DATAFUSION ||
++          cometScanImpl == CometConf.SCAN_AUTO
++        if (isCometEnabled && isNativeIcebergCompat &&
++          testTags.exists(_.isInstanceOf[IgnoreCometNativeIcebergCompat])) {
++          ignore(testName + " (disabled for NATIVE_ICEBERG_COMPAT)", testTags: _*)(testFun)
++        } else if (isCometEnabled && isNativeDataFusion &&
++          testTags.exists(_.isInstanceOf[IgnoreCometNativeDataFusion])) {
++          ignore(testName + " (disabled for NATIVE_DATAFUSION)", testTags: _*)(testFun)
++        } else if (isCometEnabled && (isNativeDataFusion || isNativeIcebergCompat) &&
++          testTags.exists(_.isInstanceOf[IgnoreCometNativeScan])) {
++          ignore(testName + " (disabled for NATIVE_DATAFUSION and NATIVE_ICEBERG_COMPAT)",
++            testTags: _*)(testFun)
++        } else {
++          super.test(testName, testTags: _*)(testFun)
++        }
 +      }
      }
    }
  
-@@ -248,8 +253,33 @@ private[sql] trait SQLTestUtilsBase
+@@ -248,8 +271,33 @@ private[sql] trait SQLTestUtilsBase
      override protected def converter: ColumnNodeToExpressionConverter = self.spark.converter
    }
  
@@ -3376,7 +3402,7 @@ index f0f3f94b811..486a436afb2 100644
      super.withSQLConf(pairs: _*)(f)
    }
  
-@@ -451,6 +481,8 @@ private[sql] trait SQLTestUtilsBase
+@@ -451,6 +499,8 @@ private[sql] trait SQLTestUtilsBase
      val schema = df.schema
      val withoutFilters = df.queryExecution.executedPlan.transform {
        case FilterExec(_, child) => child
