@@ -22,5 +22,5 @@ import org.apache.spark.sql.internal.types.StringTypeWithCollation
 import org.apache.spark.sql.types.DataType
 
 trait CometTypeShim {
-    def isStringCollationType(dt: DataType): Boolean = dt.instanceOf[StringTypeWithCollation]
+    def isStringCollationType(dt: DataType): Boolean = dt.isInstanceOf[StringTypeWithCollation]
 }
