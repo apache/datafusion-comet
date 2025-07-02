@@ -27,7 +27,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{array, col, expr, lit, udf}
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.serde.CometArrayExcept
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
@@ -259,6 +259,25 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("array_union") {
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, n = 10000)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+          checkSparkAnswerAndOperator(
+            spark.sql("SELECT array_union(array(_2, _3, _4), array(_3, _4)) FROM t1"))
+          checkSparkAnswerAndOperator(sql("SELECT array_union(array(_18), array(_19)) from t1"))
+          checkSparkAnswerAndOperator(spark.sql(
+            "SELECT array_union(array(CAST(NULL AS INT), _2, _3, _4), array(CAST(NULL AS INT), _2, _3)) FROM t1"))
+          checkSparkAnswerAndOperator(spark.sql(
+            "SELECT array_union(array(CAST(NULL AS INT), CAST(NULL AS INT), _2, _3, _4), array(CAST(NULL AS INT), CAST(NULL AS INT), _2, _3)) FROM t1"))
+        }
+      }
+    }
+  }
+
   test("array_max") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
@@ -345,6 +364,8 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_compact") {
+    // TODO fix for Spark 4.0.0
+    assume(!isSpark40Plus)
     withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>

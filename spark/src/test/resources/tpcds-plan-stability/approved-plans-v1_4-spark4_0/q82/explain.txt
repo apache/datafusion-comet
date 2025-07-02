@@ -40,7 +40,7 @@ Condition : ((((isnotnull(i_current_price#4) AND (i_current_price#4 >= 62.00)) A
 
 (3) CometProject
 Input [5]: [i_item_sk#1, i_item_id#2, i_item_desc#3, i_current_price#4, i_manufact_id#5]
-Arguments: [i_item_sk#1, i_item_id#6, i_item_desc#3, i_current_price#4], [i_item_sk#1, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_item_id#2, 16, true, false, true) AS i_item_id#6, i_item_desc#3, i_current_price#4]
+Arguments: [i_item_sk#1, i_item_id#6, i_item_desc#3, i_current_price#4], [i_item_sk#1, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_item_id#2, 16)) AS i_item_id#6, i_item_desc#3, i_current_price#4]
 
 (4) CometScan parquet spark_catalog.default.inventory
 Output [3]: [inv_item_sk#7, inv_quantity_on_hand#8, inv_date_sk#9]

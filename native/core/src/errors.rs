@@ -439,7 +439,7 @@ enum StacktraceError {
 
 fn to_stacktrace_string(msg: String, backtrace_string: String) -> Result<String, StacktraceError> {
     let mut res = String::new();
-    write!(&mut res, "{}", msg).map_err(|error| StacktraceError::Message(error.to_string()))?;
+    write!(&mut res, "{msg}").map_err(|error| StacktraceError::Message(error.to_string()))?;
 
     // Use multi-line mode and named capture groups to identify the following stacktrace fields:
     // - dc = declaredClass
@@ -547,9 +547,9 @@ mod tests {
                 .option("-Xcheck:jni")
                 .option(class_path.as_str())
                 .build()
-                .unwrap_or_else(|e| panic!("{:#?}", e));
+                .unwrap_or_else(|e| panic!("{e:#?}"));
 
-            let jvm = JavaVM::new(jvm_args).unwrap_or_else(|e| panic!("{:#?}", e));
+            let jvm = JavaVM::new(jvm_args).unwrap_or_else(|e| panic!("{e:#?}"));
 
             #[allow(static_mut_refs)]
             unsafe {
@@ -769,7 +769,7 @@ mod tests {
                 .into();
 
             let output = env
-                .new_string(format!("Hello, {}!", input))
+                .new_string(format!("Hello, {input}!"))
                 .expect("Couldn't create java string!");
 
             Ok(output.into_raw())
@@ -869,7 +869,7 @@ mod tests {
             .unwrap();
         let message_string = message.into();
         let msg_rust: String = env.get_string(&message_string).unwrap().into();
-        println!("{}", msg_rust);
+        println!("{msg_rust}");
         // Since panics result in multi-line messages which include the backtrace, just use the
         // first line.
         assert_starts_with!(msg_rust, expected_message);

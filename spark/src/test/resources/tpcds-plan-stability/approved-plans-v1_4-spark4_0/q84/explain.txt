@@ -47,7 +47,7 @@ Condition : ((isnotnull(c_current_addr_sk#4) AND isnotnull(c_current_cdemo_sk#2)
 
 (3) CometProject
 Input [6]: [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_current_addr_sk#4, c_first_name#5, c_last_name#6]
-Arguments: [c_customer_id#7, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_current_addr_sk#4, c_first_name#8, c_last_name#9], [staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, c_customer_id#1, 16, true, false, true) AS c_customer_id#7, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_current_addr_sk#4, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, c_first_name#5, 20, true, false, true) AS c_first_name#8, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, c_last_name#6, 30, true, false, true) AS c_last_name#9]
+Arguments: [c_customer_id#7, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_current_addr_sk#4, c_first_name#8, c_last_name#9], [static_invoke(CharVarcharCodegenUtils.readSidePadding(c_customer_id#1, 16)) AS c_customer_id#7, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_current_addr_sk#4, static_invoke(CharVarcharCodegenUtils.readSidePadding(c_first_name#5, 20)) AS c_first_name#8, static_invoke(CharVarcharCodegenUtils.readSidePadding(c_last_name#6, 30)) AS c_last_name#9]
 
 (4) CometScan parquet spark_catalog.default.customer_address
 Output [2]: [ca_address_sk#10, ca_city#11]

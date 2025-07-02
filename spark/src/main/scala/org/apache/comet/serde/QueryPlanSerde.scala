@@ -22,6 +22,7 @@ package org.apache.comet.serde
 import java.util.Locale
 
 import scala.collection.JavaConverters._
+import scala.collection.mutable.ListBuffer
 import scala.math.min
 
 import org.apache.spark.internal.Logging
@@ -77,6 +78,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[ArrayRemove] -> CometArrayRemove,
     classOf[ArrayRepeat] -> CometArrayRepeat,
     classOf[ArraysOverlap] -> CometArraysOverlap,
+    classOf[ArrayUnion] -> CometArrayUnion,
     classOf[Ascii] -> CometAscii,
     classOf[ConcatWs] -> CometConcatWs,
     classOf[Chr] -> CometChr,
@@ -1500,7 +1502,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
       case s: StringDecode =>
         // Right child is the encoding expression.
-        s.right match {
+        s.charset match {
           case Literal(str, DataTypes.StringType)
               if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
             // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
@@ -1510,7 +1512,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
               expr,
               None,
               DataTypes.StringType,
-              exprToProtoInternal(s.left, inputs, binding).get,
+              exprToProtoInternal(s.bin, inputs, binding).get,
               CometEvalMode.TRY)
           case _ =>
             withInfo(expr, "Comet only supports decoding with 'utf-8'.")
@@ -2193,9 +2195,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
           // Sink operators don't have children
           result.clearChildren()
 
-          if (conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED)) {
-            // TODO remove flatMap and add error handling for unsupported data filters
-            val dataFilters = scan.dataFilters.flatMap(exprToProto(_, scan.output))
+          if (conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED) &&
+            CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.get(conf)) {
+
+            val dataFilters = new ListBuffer[Expr]()
+            for (filter <- scan.dataFilters) {
+              exprToProto(filter, scan.output) match {
+                case Some(proto) => dataFilters += proto
+                case _ =>
+                  logWarning(s"Unsupported data filter $filter")
+              }
+            }
             nativeScanBuilder.addAllDataFilters(dataFilters.asJava)
           }
 
