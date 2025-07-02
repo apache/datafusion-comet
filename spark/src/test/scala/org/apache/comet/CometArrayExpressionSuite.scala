@@ -222,19 +222,15 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     withSQLConf(
       CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
       CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true"
-      // "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding"
     ) {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, n = 10000)
         spark.read.parquet(path.toString).createOrReplaceTempView("t1");
-//        checkSparkAnswerAndOperator(
-//          spark.sql("SELECT array_contains(array(_2, _3, _4), _2) FROM t1"))
-//        checkSparkAnswerAndOperator(
-//          spark.sql("SELECT array_contains((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
         checkSparkAnswerAndOperator(
-          spark.sql(
-            "SELECT array_contains((CASE WHEN _2 =_3 THEN array(1, 2, 3) END), _4) FROM t1"));
+          spark.sql("SELECT array_contains(array(_2, _3, _4), _2) FROM t1"))
+        checkSparkAnswerAndOperator(
+          spark.sql("SELECT array_contains((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
       }
     }
   }
