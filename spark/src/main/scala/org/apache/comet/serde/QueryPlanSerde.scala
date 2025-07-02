@@ -31,7 +31,8 @@ import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
-import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
+import org.apache.spark.sql.catalyst.plans.physical._
+import org.apache.spark.sql.catalyst.util.{CharVarcharCodegenUtils, GenericArrayData}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
@@ -56,6 +57,7 @@ import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType
 import org.apache.comet.serde.ExprOuterClass.DataType._
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.Types.ListLiteral
 import org.apache.comet.shims.CometExprShim
 
 /**
@@ -141,6 +143,52 @@ object QueryPlanSerde extends Logging with CometExprShim {
       emitWarning(s"unsupported Spark data type: $dt")
       false
   }
+
+//  def convertArrayToProtoLiteral(array: Seq[Any], arrayType: ArrayType): Literal = {
+//    val elementType = arrayType.elementType
+//    val listLiteralBuilder = ListLiteral.newBuilder()
+//
+//    elementType match {
+//      case BooleanType =>
+//        listLiteralBuilder.addAllBooleanValues(array.map(_.asInstanceOf[Boolean]).asJava)
+//
+//      case ByteType =>
+//        listLiteralBuilder.addAllByteValues(array.map(_.asInstanceOf[Byte].toInt).asJava)
+//
+//      case ShortType =>
+//        listLiteralBuilder.addAllShortValues(array.map(_.asInstanceOf[Short].toInt).asJava)
+//
+//      case IntegerType =>
+//        listLiteralBuilder.addAllIntValues(array.map(_.asInstanceOf[Int]).asJava)
+//
+//      case LongType =>
+//        listLiteralBuilder.addAllLongValues(array.map(_.asInstanceOf[Long]).asJava)
+//
+//      case FloatType =>
+//        listLiteralBuilder.addAllFloatValues(array.map(_.asInstanceOf[Float]).asJava)
+//
+//      case DoubleType =>
+//        listLiteralBuilder.addAllDoubleValues(array.map(_.asInstanceOf[Double]).asJava)
+//
+//      case StringType =>
+//        listLiteralBuilder.addAllStringValues(array.map(_.asInstanceOf[String]).asJava)
+//
+//      case BinaryType =>
+//        listLiteralBuilder.addAllBytesValues
+  //        (array.map(x => com.google.protobuf
+  //        .ByteString.copyFrom(x.asInstanceOf[Array[Byte]])).asJava)
+//
+//      case nested: ArrayType =>
+//        val nestedListLiterals = array.map {
+//          case null => ListLiteral.newBuilder().build() // or handle nulls appropriately
+//          case seq: Seq[_] => convertArrayToProtoLiteral(seq, nested).getListVal
+//        }
+//        listLiteralBuilder.addAllListValues(nestedListLiterals.asJava)
+//
+//      case _ =>
+//        throw new UnsupportedOperationException(s"Unsupported element type: $elementType")
+//    }
+//  }
 
   /**
    * Serializes Spark datatype to protobuf. Note that, a datatype can be serialized by this method
@@ -837,8 +885,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
           binding,
           (builder, binaryExpr) => builder.setLtEq(binaryExpr))
 
-      case Literal(value, dataType)
-          if supportedDataType(dataType, allowComplex = value == null) =>
+      case Literal(value, dataType) if supportedDataType(dataType, allowComplex = true) =>
         val exprBuilder = ExprOuterClass.Literal.newBuilder()
 
         if (value == null) {
@@ -867,6 +914,28 @@ object QueryPlanSerde extends Logging with CometExprShim {
                 com.google.protobuf.ByteString.copyFrom(value.asInstanceOf[Array[Byte]])
               exprBuilder.setBytesVal(byteStr)
             case _: DateType => exprBuilder.setIntVal(value.asInstanceOf[Int])
+            case a: ArrayType =>
+              val listLiteralBuilder = ListLiteral.newBuilder()
+              val array = value.asInstanceOf[GenericArrayData].array
+              a.elementType match {
+                case BooleanType =>
+                  listLiteralBuilder.addAllBooleanValues(
+                    array.map(_.asInstanceOf[java.lang.Boolean]).toIterable.asJava)
+                case ByteType =>
+                  listLiteralBuilder.addAllByteValues(
+                    array.map(_.asInstanceOf[java.lang.Integer]).toIterable.asJava)
+                case ShortType =>
+                  listLiteralBuilder.addAllShortValues(
+                    array.map(_.asInstanceOf[java.lang.Integer]).toIterable.asJava)
+                case IntegerType =>
+                  listLiteralBuilder.addAllIntValues(
+                    array.map(_.asInstanceOf[java.lang.Integer]).toIterable.asJava)
+                case LongType =>
+                  listLiteralBuilder.addAllLongValues(
+                    array.map(_.asInstanceOf[java.lang.Long]).toIterable.asJava)
+              }
+              exprBuilder.setListVal(listLiteralBuilder.build())
+              exprBuilder.setDatatype(serializeDataType(dataType).get)
             case dt =>
               logWarning(s"Unexpected datatype '$dt' for literal value '$value'")
           }
