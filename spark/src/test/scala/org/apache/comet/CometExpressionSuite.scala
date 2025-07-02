@@ -1622,6 +1622,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           withParquetTable(path.toString, table) {
             // TODO: DataFusion supports only -8334601211038 <= sec <= 8210266876799
             // https://github.com/apache/datafusion/issues/16594
+            // After fixing this issue, remove the where clause below
             val where = "where _5 BETWEEN -8334601211038 AND 8210266876799"
             checkSparkAnswerAndOperator(s"SELECT from_unixtime(_5) FROM $table $where")
             checkSparkAnswerAndOperator(s"SELECT from_unixtime(_8) FROM $table $where")
