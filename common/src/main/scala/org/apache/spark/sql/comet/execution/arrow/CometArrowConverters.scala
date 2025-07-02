@@ -29,8 +29,8 @@ import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch}
 
-import org.apache.comet.vector.NativeUtil
 import org.apache.comet.CometArrowAllocator
+import org.apache.comet.vector.NativeUtil
 
 object CometArrowConverters extends Logging {
   // This is similar how Spark converts internal row to Arrow format except that it is transforming
