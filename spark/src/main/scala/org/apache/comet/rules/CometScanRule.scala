@@ -38,11 +38,12 @@ import org.apache.comet.{CometConf, DataTypeSupport}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
+import org.apache.comet.shims.CometTypeShim
 
 /**
  * Spark physical optimizer rule for replacing Spark scans with Comet scans.
  */
-case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
+case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with CometTypeShim {
 
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
 
@@ -278,21 +279,24 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
       case _ => false
     }
 
-    def hasMapsContainingStructs(dataType: DataType): Boolean = {
+    def hasUnsupportedType(dataType: DataType): Boolean = {
       dataType match {
-        case s: StructType => s.exists(field => hasMapsContainingStructs(field.dataType))
-        case a: ArrayType => hasMapsContainingStructs(a.elementType)
-        case m: MapType => isComplexType(m.keyType) || isComplexType(m.valueType)
+        case s: StructType => s.exists(field => hasUnsupportedType(field.dataType))
+        case a: ArrayType => hasUnsupportedType(a.elementType)
+        case m: MapType =>
+          // maps containing complex types are not supported
+          isComplexType(m.keyType) || isComplexType(m.valueType)
+        case dt => isStringCollationType(dt)
         case _ => false
       }
     }
 
     val knownIssues =
-      scanExec.requiredSchema.exists(field => hasMapsContainingStructs(field.dataType)) ||
-        partitionSchema.exists(field => hasMapsContainingStructs(field.dataType))
+      scanExec.requiredSchema.exists(field => hasUnsupportedType(field.dataType)) ||
+        partitionSchema.exists(field => hasUnsupportedType(field.dataType))
 
     if (knownIssues) {
-      fallbackReasons += "There are known issues with maps containing structs when using " +
+      fallbackReasons += "Schema contains data types that are not supported by " +
         s"$SCAN_NATIVE_ICEBERG_COMPAT"
     }
 
