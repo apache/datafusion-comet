@@ -67,16 +67,16 @@ ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.SlowHiv
 ```
 #### Steps to run individual test suites through SBT
 1. Open SBT with Comet enabled
-```sbt
-ENABLE_COMET=true sbt -Dspark.test.includeSlowTests=true 
+```shell
+ENABLE_COMET=true sbt -J-Xmx4096m -Dspark.test.includeSlowTests=true 
 ```
 2. Run individual tests (Below code runs test named `SPARK-35568` in the `spark-sql` module)
-```sbt
+```shell
  sql/testOnly  org.apache.spark.sql.DynamicPartitionPruningV1SuiteAEOn -- -z "SPARK-35568"
 ```
 #### Steps to run individual test suites in IntelliJ IDE
 1. Add below configuration in VM Options for your test case (apache-spark repository)
-```sbt
+```shell
 -Dspark.comet.enabled=true -Dspark.comet.debug.enabled=true -Dspark.plugins=org.apache.spark.CometPlugin -DXmx4096m -Dspark.executor.heartbeatInterval=20000 -Dspark.network.timeout=10000 --add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED
 ```
 2. Set `ENABLE_COMET=true` in environment variables
@@ -138,8 +138,12 @@ wiggle --replace ./sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.sc
 The diff file can be generated using the `git diff` command. It may be necessary to set the `core.abbrev`
 configuration setting to use 11 digits hashes for consistency with existing diff files.
 
+Note that there is an `IgnoreComet.scala` that is not part of the Spark codebase, and therefore needs to be added 
+using `git add` before generating the diff.
+
 ```shell
 git config core.abbrev 11;
+git add sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
 git diff v3.5.6 > ../datafusion-comet/dev/diffs/3.5.6.diff
 ```
 
