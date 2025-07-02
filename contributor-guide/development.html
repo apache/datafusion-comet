@@ -531,6 +531,12 @@ It is possible to debug both native and JVM code concurrently as described in th
 <h2>Submitting a Pull Request<a class="headerlink" href="#submitting-a-pull-request" title="Link to this heading">¶</a></h2>
 <p>Comet uses <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">fmt</span></code>, <a class="reference external" href="https://github.com/scalacenter/scalafix">Scalafix</a> and <a class="reference external" href="https://github.com/diffplug/spotless/tree/main/plugin-maven">Spotless</a> to
 automatically format the code. Before submitting a pull request, you can simply run <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">format</span></code> to format the code.</p>
+<p>Additionally, it’s strongly recommended to run Clippy locally to catch potential issues before the CI/CD pipeline does. You can run the same Clippy checks used in CI/CD with:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>native
+cargo<span class="w"> </span>clippy<span class="w"> </span>--color<span class="o">=</span>never<span class="w"> </span>--all-targets<span class="w"> </span>--workspace<span class="w"> </span>--<span class="w"> </span>-D<span class="w"> </span>warnings
+</pre></div>
+</div>
+<p>Make sure to resolve any Clippy warnings before submitting your pull request, as the CI/CD pipeline will fail if warnings are present.</p>
 </section>
 </section>
 
