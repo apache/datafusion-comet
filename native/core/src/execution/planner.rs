@@ -478,13 +478,15 @@ impl PhysicalPlanner {
                             }
                         },
                         Value::ListVal(values) => {
-                            dbg!(values);
+                            //dbg!(values);
                             //dbg!(literal.datatype.as_ref().unwrap());
                             //dbg!(data_type);
                             match data_type {
                                 DataType::List(f) if f.data_type().equals_datatype(&DataType::Int32) => {
-                                    SingleRowListArrayBuilder::new(Arc::new(Int32Array::from(values.clone().int_values)))
-                                        .build_list_scalar()
+                                    let vals = values.clone().int_values;
+                                    let len = &vals.len();
+                                    SingleRowListArrayBuilder::new(Arc::new(Int32Array::from(vals)))
+                                        .build_fixed_size_list_scalar(*len)
                                 }
                                 _ => todo!()
                             }
