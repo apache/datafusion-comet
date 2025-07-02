@@ -21,13 +21,13 @@ package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, FromUnixTime, Literal}
 import org.apache.spark.sql.catalyst.util.TimestampFormatter
-import org.apache.spark.sql.types.StringType
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.QueryPlanSerde.{castToProto, exprToProtoInternal, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
-object CometFromUnixTime extends CometExpressionSerde {
+// TODO: DataFusion supports only -8334601211038 <= sec <= 8210266876799
+// https://github.com/apache/datafusion/issues/16594
+object CometFromUnixTime extends CometExpressionSerde with IncompatExpr {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -35,23 +35,21 @@ object CometFromUnixTime extends CometExpressionSerde {
     expr match {
       case FromUnixTime(sec, format, timeZoneId) =>
         val secExpr = exprToProtoInternal(sec, inputs, binding)
-        val formatExpr = exprToProtoInternal(format, inputs, binding)
-        val timeZone = exprToProtoInternal(Literal(timeZoneId.orNull), inputs, binding)
-
-        // TODO: DataFusion toChar does not support Spark format
+        // TODO: DataFusion toChar does not support Spark datetime pattern format
         // https://github.com/apache/datafusion/issues/16577
         // https://github.com/apache/datafusion/issues/14536
-        // TODO: DataFusion supports only -8334601211038 <= sec <= 8210266876799
-        // https://github.com/apache/datafusion/issues/16594
-        // if (secExpr.isDefined && formatExpr.isDefined) {
-        //   val timestampExpr =
-        //     scalarFunctionExprToProto("from_unixtime", Seq(secExpr, timeZone): _*)
-        //   val optExpr = scalarFunctionExprToProto("to_char", Seq(timestampExpr, formatExpr): _*)
-        //   optExprWithInfo(optExpr, expr, sec, format)
-        if (secExpr.isDefined && formatExpr.isDefined && format == Literal(
-            TimestampFormatter.defaultPattern)) {
-          val optExpr = scalarFunctionExprToProto("from_unixtime", Seq(secExpr, timeZone): _*)
-          castToProto(expr, timeZoneId, StringType, optExpr.get, CometEvalMode.LEGACY)
+        // After fixing these issues, use provided `format` instead of the manual replacement below
+        val formatExpr = exprToProtoInternal(Literal("%Y-%m-%d %H:%M:%S"), inputs, binding)
+        val timeZone = exprToProtoInternal(Literal(timeZoneId.orNull), inputs, binding)
+
+        if (format != Literal(TimestampFormatter.defaultPattern)) {
+          withInfo(expr, "Datetime pattern format is unsupported")
+          None
+        } else if (secExpr.isDefined && formatExpr.isDefined) {
+          val timestampExpr =
+            scalarFunctionExprToProto("from_unixtime", Seq(secExpr, timeZone): _*)
+          val optExpr = scalarFunctionExprToProto("to_char", Seq(timestampExpr, formatExpr): _*)
+          optExprWithInfo(optExpr, expr, sec, format)
         } else {
           withInfo(expr, sec, format)
           None
