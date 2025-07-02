@@ -19,7 +19,7 @@
 
 package org.apache.comet.expressions
 
-import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, NullType, StructType}
 
 sealed trait SupportLevel
 
@@ -62,6 +62,7 @@ object CometCast {
     }
 
     (fromType, toType) match {
+      case (dt: ArrayType, _: ArrayType) if dt.elementType == NullType => Compatible()
       case (dt: DataType, _) if dt.typeName == "timestamp_ntz" =>
         // https://github.com/apache/datafusion-comet/issues/378
         toType match {
