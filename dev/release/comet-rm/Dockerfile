@@ -48,6 +48,14 @@ RUN export LC_ALL=C \
         libbz2-dev \
         zlib1g-dev
 
+RUN apt install -y gcc-10 g++-10 cpp-10 unzip
+ENV CC="gcc-10"
+ENV CXX="g++-10"
+
+RUN PB_REL="https://github.com/protocolbuffers/protobuf/releases" \
+    && curl -LO $PB_REL/download/v30.2/protoc-30.2-linux-x86_64.zip \
+    && unzip protoc-30.2-linux-x86_64.zip -d /root/.local
+ENV PATH="$PATH:/root/.local/bin"
 
 # Install rust
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
