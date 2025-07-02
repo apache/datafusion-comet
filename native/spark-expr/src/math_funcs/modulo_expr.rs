@@ -107,7 +107,11 @@ fn null_if_zero_primitive(
         // Create an expression: if (expression == 0) then null else expression.
         // This expression evaluates to null for rows with zero values to prevent divide by zero
         // error.
-        let eq_expr = Arc::new(BinaryExpr::new(Arc::<dyn PhysicalExpr>::clone(&expression), Operator::Eq, lit(zero)));
+        let eq_expr = Arc::new(BinaryExpr::new(
+            Arc::<dyn PhysicalExpr>::clone(&expression),
+            Operator::Eq,
+            lit(zero),
+        ));
         let null_literal = lit(ScalarValue::try_new_null(&expr_data_type)?);
         let exp = Arc::new(IfExpr::new(eq_expr, null_literal, expression));
         Ok(exp)
