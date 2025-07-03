@@ -58,7 +58,7 @@ implementation:
 - Removes the use of reusable mutable-buffers in Comet, which is complex to maintain
 - Improves performance
 
-The `native_datafusion` and `native_iceberg_compat` scans shared the following limitations:
+The `native_datafusion` and `native_iceberg_compat` scans share the following limitations:
 
 - When reading Parquet files written by systems other than Spark that contain columns with the logical types `UINT_8`
   or `UINT_16`, Comet will produce different results than Spark because Spark does not preserve or understand these
@@ -88,7 +88,7 @@ be used in production.
 
 There is an [epic](https://github.com/apache/datafusion-comet/issues/313) where we are tracking the work to fully implement ANSI support.
 
-## Floating number comparison
+## Floating-point Number Comparison
 
 Spark normalizes NaN and zero for floating point numbers for several cases. See `NormalizeFloatingNumbers` optimization rule in Spark.
 However, one exception is comparison. Spark does not normalize NaN and zero when comparing values
