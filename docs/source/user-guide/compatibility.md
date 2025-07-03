@@ -66,13 +66,13 @@ The `native_datafusion` and `native_iceberg_compat` scans share the following li
   rather than signed. By default, Comet will fall back to `native_comet` when scanning Parquet files containing `byte` or `short`
   types (regardless of the logical type). This behavior can be disabled by setting
   `spark.comet.scan.allowIncompatible=true`.
-- `PARQUET_FIELD_ID_READ_ENABLED` is not respected [#1758]
 - No support for default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
 
 The `native_datafusion` scan has some additional limitations:
 
 - Bucketed scans are not supported
 - No support for row indexes
+- `PARQUET_FIELD_ID_READ_ENABLED` is not respected [#1758]
 - There are failures in the Spark SQL test suite [#1545]
 - Setting Spark configs `ignoreMissingFiles` or `ignoreCorruptFiles` to `true` is not compatible with Spark
 
