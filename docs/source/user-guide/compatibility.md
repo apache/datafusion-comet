@@ -79,7 +79,7 @@ The `native_datafusion` scan has some additional limitations:
 [#1545]: https://github.com/apache/datafusion-comet/issues/1545
 [#1758]: https://github.com/apache/datafusion-comet/issues/1758
 
-## ANSI mode
+## ANSI Mode
 
 Comet currently ignores ANSI mode in most cases, and therefore can produce different results than Spark. By default,
 Comet will fall back to Spark if ANSI mode is enabled. To enable Comet to accelerate queries when ANSI mode is enabled,
