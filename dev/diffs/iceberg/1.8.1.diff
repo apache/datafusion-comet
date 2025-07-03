@@ -67,7 +67,7 @@ index 0ca1236..87daef4 100644
    // Controls whether reading/writing timestamps without timezones is allowed
    @Deprecated
 diff --git a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
-index 4794863..8d02f02 100644
+index 4794863..0be31c1 100644
 --- a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
 +++ b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
 @@ -20,11 +20,11 @@ package org.apache.iceberg.spark.data.vectorized;
@@ -83,6 +83,15 @@ index 4794863..8d02f02 100644
  import org.apache.comet.shaded.arrow.memory.RootAllocator;
  import org.apache.iceberg.parquet.VectorizedReader;
  import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+@@ -96,7 +96,7 @@ class CometColumnReader implements VectorizedReader<ColumnVector> {
+     }
+ 
+     this.importer = new CometSchemaImporter(new RootAllocator());
+-    this.delegate = Utils.getColumnReader(sparkType, descriptor, importer, batchSize, false, false);
++    this.delegate = Utils.getColumnReader(sparkType, descriptor, importer, batchSize, true, false);
+     this.initialized = true;
+   }
+ 
 diff --git a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java
 index a361a7f..9021cd5 100644
 --- a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java
