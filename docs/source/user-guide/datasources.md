@@ -28,6 +28,12 @@ in the schema are supported. When this option is not enabled, the scan will fall
 enabling `spark.comet.convert.parquet.enabled` will immediately convert the data into Arrow format, allowing native 
 execution to happen after that, but the process may not be efficient.
 
+### Apache Iceberg
+
+Comet accelerates Iceberg scans of Parquet files. See the [Iceberg Guide] for more information.
+
+[Iceberg Guide]: iceberg.md
+
 ### CSV
 
 Comet does not provide native CSV scan, but when `spark.comet.convert.csv.enabled` is enabled, data is immediately
@@ -88,7 +94,7 @@ root
  |    |-- lastName: string (nullable = true)
  |    |-- ageInYears: integer (nullable = true)
 
-25/01/30 16:50:43 INFO core/src/lib.rs: Comet native library version 0.7.0 initialized
+25/01/30 16:50:43 INFO core/src/lib.rs: Comet native library version 0.9.0 initialized
 == Physical Plan ==
 * CometColumnarToRow (2)
 +- CometNativeScan:  (1)

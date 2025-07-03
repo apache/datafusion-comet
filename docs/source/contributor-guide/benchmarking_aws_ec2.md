@@ -179,8 +179,8 @@ $SPARK_HOME/bin/spark-submit \
 Install Comet JAR from Maven:
 
 ```shell
-wget https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.12/0.7.0/comet-spark-spark3.5_2.12-0.7.0.jar -P $SPARK_HOME/jars
-export COMET_JAR=$SPARK_HOME/jars/comet-spark-spark3.5_2.12-0.7.0.jar
+wget https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.12/0.9.0/comet-spark-spark3.5_2.12-0.9.0.jar -P $SPARK_HOME/jars
+export COMET_JAR=$SPARK_HOME/jars/comet-spark-spark3.5_2.12-0.9.0.jar
 ```
 
 Run the following command (the `--data` parameter will need to be updated to point to your S3 bucket):

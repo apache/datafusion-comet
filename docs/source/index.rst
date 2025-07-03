@@ -43,7 +43,6 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    Comet Overview <user-guide/overview>
    Installing Comet <user-guide/installation>
    Building From Source <user-guide/source>
-   Kubernetes Guide <user-guide/kubernetes>
    Supported Data Sources <user-guide/datasources>
    Supported Data Types <user-guide/datatypes>
    Supported Operators <user-guide/operators>
@@ -52,6 +51,8 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    Compatibility Guide <user-guide/compatibility>
    Tuning Guide <user-guide/tuning>
    Metrics Guide <user-guide/metrics>
+   Iceberg Guide <user-guide/iceberg>
+   Kubernetes Guide <user-guide/kubernetes>
 
 .. _toc.contributor-guide-links:
 .. toctree::

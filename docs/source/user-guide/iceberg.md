@@ -44,22 +44,13 @@ export COMET_JAR=`pwd`/spark/target/comet-spark-spark3.5_2.12-0.10.0-SNAPSHOT.ja
 
 ## Build Iceberg
 
-Clone the Iceberg repository.
+Clone the Iceberg repository and apply code changes needed by Comet
 
 ```shell
 git clone git@github.com:apache/iceberg.git
-```
-
-It will be necessary to make some small changes to Iceberg:
-
-- Update Gradle files to change Comet version to `0.10.0-SNAPSHOT`.
-- Replace `import org.apache.comet.shaded.arrow.c.CometSchemaImporter;` with `import org.apache.comet.CometSchemaImporter;`
-- Modify `SparkBatchQueryScan` so that it implements the `SupportsComet` interface
-- Stop shading Parquet by commenting out the following lines in the iceberg-spark build:
-
-```
-//    relocate 'org.apache.parquet', 'org.apache.iceberg.shaded.org.apache.parquet'
-//    relocate 'shaded.parquet', 'org.apache.iceberg.shaded.org.apache.parquet.shaded'
+cd iceberg
+git checkout apache-iceberg-1.8.1
+git apply ../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
 ```
 
 Perform a clean build
@@ -74,7 +65,7 @@ Perform a clean build
 Set `ICEBERG_JAR` environment variable.
 
 ```shell
-export ICEBERG_JAR=`pwd`/spark/v3.5/spark-runtime/build/libs/iceberg-spark-runtime-3.5_2.12-1.10.0-SNAPSHOT.jar
+export ICEBERG_JAR=`pwd`/spark/v3.5/spark-runtime/build/libs/iceberg-spark-runtime-3.5_2.12-1.9.0-SNAPSHOT.jar
 ```
 
 Launch Spark Shell:
@@ -93,7 +84,7 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.sql.iceberg.parquet.reader-type=COMET \
     --conf spark.comet.explainFallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
-    --conf spark.memory.offHeap.size=16g
+    --conf spark.memory.offHeap.size=2g
 ```
 
 Create an Iceberg table. Note that Comet will not accelerate this part.
@@ -113,12 +104,6 @@ This should produce the following output:
 
 ```
 scala> spark.sql(s"SELECT * from t1").show()
-25/04/28 07:29:37 INFO core/src/lib.rs: Comet native library version 0.9.0 initialized
-25/04/28 07:29:37 WARN CometSparkSessionExtensions$CometExecRule: Comet cannot execute some parts of this plan natively (set spark.comet.explainFallback.enabled=false to disable this logging):
- CollectLimit
-+-  Project [COMET: toprettystring is not supported]
-   +- CometScanWrapper
-
 +---+---+
 | c0| c1|
 +---+---+
@@ -144,4 +129,13 @@ scala> spark.sql(s"SELECT * from t1").show()
 | 19| 19|
 +---+---+
 only showing top 20 rows
+```
+
+Confirm that the query was accelerated by Comet:
+
+```
+scala> spark.sql(s"SELECT * from t1").explain()
+== Physical Plan ==
+*(1) CometColumnarToRow
++- CometBatchScan spark_catalog.default.t1[c0#26, c1#27] spark_catalog.default.t1 (branch=null) [filters=, groupedBy=] RuntimeFilters: []
 ```

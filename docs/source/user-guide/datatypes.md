@@ -39,5 +39,7 @@ The following Spark data types are currently available:
   - Timestamp
   - TimestampNTZ
 - Null
-- Struct
-- Array
+- Complex Types
+  - Struct
+  - Array
+  - Map
