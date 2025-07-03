@@ -44,18 +44,14 @@ export COMET_JAR=`pwd`/spark/target/comet-spark-spark3.5_2.12-0.10.0-SNAPSHOT.ja
 
 ## Build Iceberg
 
-Clone the Iceberg repository.
+Clone the Iceberg repository and apply code changes needed by Comet
 
 ```shell
 git clone git@github.com:apache/iceberg.git
+cd iceberg
+git checkout apache-iceberg-1.8.1
+git apply ../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
 ```
-
-It will be necessary to make some changes to Iceberg.
-
-For Iceberg version 1.8.1, the diff file `dev/diffs/iceberg/1.8.1.diff` can be applied.
-
-See the GitHub workflow `.github/workflows/iceberg_spark_test.yml` for a full example of integrating Comet and 
-Iceberg and running Iceberg's Spark SQL tests with Comet enabled.
 
 Perform a clean build
 
