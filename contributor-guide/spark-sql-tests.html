@@ -432,13 +432,13 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 <ol class="arabic simple">
 <li><p>Open SBT with Comet enabled</p></li>
 </ol>
-<div class="highlight-sbt notranslate"><div class="highlight"><pre><span></span>ENABLE_COMET=true sbt -Dspark.test.includeSlowTests=true 
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>sbt<span class="w"> </span>-J-Xmx4096m<span class="w"> </span>-Dspark.test.includeSlowTests<span class="o">=</span><span class="nb">true</span><span class="w"> </span>
 </pre></div>
 </div>
 <ol class="arabic simple" start="2">
 <li><p>Run individual tests (Below code runs test named <code class="docutils literal notranslate"><span class="pre">SPARK-35568</span></code> in the <code class="docutils literal notranslate"><span class="pre">spark-sql</span></code> module)</p></li>
 </ol>
-<div class="highlight-sbt notranslate"><div class="highlight"><pre><span></span> sql/testOnly  org.apache.spark.sql.DynamicPartitionPruningV1SuiteAEOn -- -z &quot;SPARK-35568&quot;
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="w"> </span>sql/testOnly<span class="w">  </span>org.apache.spark.sql.DynamicPartitionPruningV1SuiteAEOn<span class="w"> </span>--<span class="w"> </span>-z<span class="w"> </span><span class="s2">&quot;SPARK-35568&quot;</span>
 </pre></div>
 </div>
 </section>
@@ -447,7 +447,7 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 <ol class="arabic simple">
 <li><p>Add below configuration in VM Options for your test case (apache-spark repository)</p></li>
 </ol>
-<div class="highlight-sbt notranslate"><div class="highlight"><pre><span></span>-Dspark.comet.enabled=true -Dspark.comet.debug.enabled=true -Dspark.plugins=org.apache.spark.CometPlugin -DXmx4096m -Dspark.executor.heartbeatInterval=20000 -Dspark.network.timeout=10000 --add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>-Dspark.comet.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span>-Dspark.comet.debug.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span>-Dspark.plugins<span class="o">=</span>org.apache.spark.CometPlugin<span class="w"> </span>-DXmx4096m<span class="w"> </span>-Dspark.executor.heartbeatInterval<span class="o">=</span><span class="m">20000</span><span class="w"> </span>-Dspark.network.timeout<span class="o">=</span><span class="m">10000</span><span class="w"> </span>--add-exports<span class="o">=</span>java.base/sun.nio.ch<span class="o">=</span>ALL-UNNAMED<span class="w"> </span>--add-opens<span class="o">=</span>java.base/java.nio<span class="o">=</span>ALL-UNNAMED
 </pre></div>
 </div>
 <ol class="arabic simple" start="2">
@@ -503,7 +503,10 @@ command generated the following files.</p>
 <h2>Generating The Diff File<a class="headerlink" href="#generating-the-diff-file" title="Link to this heading">¶</a></h2>
 <p>The diff file can be generated using the <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">diff</span></code> command. It may be necessary to set the <code class="docutils literal notranslate"><span class="pre">core.abbrev</span></code>
 configuration setting to use 11 digits hashes for consistency with existing diff files.</p>
+<p>Note that there is an <code class="docutils literal notranslate"><span class="pre">IgnoreComet.scala</span></code> that is not part of the Spark codebase, and therefore needs to be added
+using <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">add</span></code> before generating the diff.</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>config<span class="w"> </span>core.abbrev<span class="w"> </span><span class="m">11</span><span class="p">;</span>
+git<span class="w"> </span>add<span class="w"> </span>sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
 git<span class="w"> </span>diff<span class="w"> </span>v3.5.6<span class="w"> </span>&gt;<span class="w"> </span>../datafusion-comet/dev/diffs/3.5.6.diff
 </pre></div>
 </div>
