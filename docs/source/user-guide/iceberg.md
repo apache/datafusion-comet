@@ -65,7 +65,7 @@ Perform a clean build
 Set `ICEBERG_JAR` environment variable.
 
 ```shell
-export ICEBERG_JAR=`pwd`/spark/v3.5/spark-runtime/build/libs/iceberg-spark-runtime-3.5_2.12-1.10.0-SNAPSHOT.jar
+export ICEBERG_JAR=`pwd`/spark/v3.5/spark-runtime/build/libs/iceberg-spark-runtime-3.5_2.12-1.9.0-SNAPSHOT.jar
 ```
 
 Launch Spark Shell:
@@ -104,12 +104,6 @@ This should produce the following output:
 
 ```
 scala> spark.sql(s"SELECT * from t1").show()
-25/04/28 07:29:37 INFO core/src/lib.rs: Comet native library version 0.9.0 initialized
-25/04/28 07:29:37 WARN CometSparkSessionExtensions$CometExecRule: Comet cannot execute some parts of this plan natively (set spark.comet.explainFallback.enabled=false to disable this logging):
- CollectLimit
-+-  Project [COMET: toprettystring is not supported]
-   +- CometScanWrapper
-
 +---+---+
 | c0| c1|
 +---+---+
@@ -135,4 +129,13 @@ scala> spark.sql(s"SELECT * from t1").show()
 | 19| 19|
 +---+---+
 only showing top 20 rows
+```
+
+Confirm that the query was accelerated by Comet:
+
+```shell
+scala> spark.sql(s"SELECT * from t1").explain()
+== Physical Plan ==
+*(1) CometColumnarToRow
++- CometBatchScan spark_catalog.default.t1[c0#26, c1#27] spark_catalog.default.t1 (branch=null) [filters=, groupedBy=] RuntimeFilters: []
 ```
