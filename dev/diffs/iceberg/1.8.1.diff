@@ -12,7 +12,7 @@ index 04ffa8f..d4107be 100644
  testcontainers = "1.20.4"
  tez010 = "0.10.4"
 diff --git a/spark/v3.4/build.gradle b/spark/v3.4/build.gradle
-index 6eb26e8..c288e72 100644
+index 6eb26e8..50cefce 100644
 --- a/spark/v3.4/build.gradle
 +++ b/spark/v3.4/build.gradle
 @@ -75,7 +75,7 @@ project(":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}") {
@@ -145,7 +145,7 @@ index 47a0e87..531b7ce 100644
      removeTables();
      sql("CREATE TABLE %s (id double, data string) USING iceberg", tableName);
 diff --git a/spark/v3.5/build.gradle b/spark/v3.5/build.gradle
-index e2d2c7a..8b5bff8 100644
+index e2d2c7a..d23acef 100644
 --- a/spark/v3.5/build.gradle
 +++ b/spark/v3.5/build.gradle
 @@ -75,7 +75,7 @@ project(":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}") {
@@ -200,7 +200,7 @@ index d6c16bb..123a300 100644
    public static final String CHECK_NULLABILITY = "spark.sql.iceberg.check-nullability";
    public static final boolean CHECK_NULLABILITY_DEFAULT = true;
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
-index 4794863..8d02f02 100644
+index 4794863..0be31c1 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
 @@ -20,11 +20,11 @@ package org.apache.iceberg.spark.data.vectorized;
@@ -216,6 +216,15 @@ index 4794863..8d02f02 100644
  import org.apache.comet.shaded.arrow.memory.RootAllocator;
  import org.apache.iceberg.parquet.VectorizedReader;
  import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+@@ -96,7 +96,7 @@ class CometColumnReader implements VectorizedReader<ColumnVector> {
+     }
+ 
+     this.importer = new CometSchemaImporter(new RootAllocator());
+-    this.delegate = Utils.getColumnReader(sparkType, descriptor, importer, batchSize, false, false);
++    this.delegate = Utils.getColumnReader(sparkType, descriptor, importer, batchSize, true, false);
+     this.initialized = true;
+   }
+ 
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java
 index a361a7f..9021cd5 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java
