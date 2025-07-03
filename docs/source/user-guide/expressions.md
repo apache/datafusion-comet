@@ -222,3 +222,4 @@ The following Spark expressions are currently available. Any known compatibility
 | Coalesce                |                                                                                 |
 | NormalizeNaNAndZero     |                                                                                 |
 | ToPrettyString          |                                                                                 |
+| FromUnixTime            | Does not support format, supports only -8334601211038 <= sec <= 8210266876799   |
