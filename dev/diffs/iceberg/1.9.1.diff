@@ -67,7 +67,7 @@ index 0ca1236..87daef4 100644
    // Controls whether reading/writing timestamps without timezones is allowed
    @Deprecated
 diff --git a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
-index 16159dc..81b7d83 100644
+index 16159dc..f6c6c95 100644
 --- a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
 +++ b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
 @@ -19,11 +19,11 @@
@@ -83,6 +83,15 @@ index 16159dc..81b7d83 100644
  import org.apache.comet.shaded.arrow.memory.RootAllocator;
  import org.apache.iceberg.parquet.VectorizedReader;
  import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+@@ -92,7 +92,7 @@ class CometColumnReader implements VectorizedReader<ColumnVector> {
+     }
+ 
+     this.importer = new CometSchemaImporter(new RootAllocator());
+-    this.delegate = Utils.getColumnReader(sparkType, descriptor, importer, batchSize, false, false);
++    this.delegate = Utils.getColumnReader(sparkType, descriptor, importer, batchSize, true, false);
+     this.initialized = true;
+   }
+ 
 diff --git a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java
 index a361a7f..b21859b 100644
 --- a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java
@@ -199,7 +208,7 @@ index d6c16bb..123a300 100644
    public static final String CHECK_NULLABILITY = "spark.sql.iceberg.check-nullability";
    public static final boolean CHECK_NULLABILITY_DEFAULT = true;
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
-index 16159dc..81b7d83 100644
+index 16159dc..f6c6c95 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
 @@ -19,11 +19,11 @@
@@ -215,6 +224,15 @@ index 16159dc..81b7d83 100644
  import org.apache.comet.shaded.arrow.memory.RootAllocator;
  import org.apache.iceberg.parquet.VectorizedReader;
  import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+@@ -92,7 +92,7 @@ class CometColumnReader implements VectorizedReader<ColumnVector> {
+     }
+ 
+     this.importer = new CometSchemaImporter(new RootAllocator());
+-    this.delegate = Utils.getColumnReader(sparkType, descriptor, importer, batchSize, false, false);
++    this.delegate = Utils.getColumnReader(sparkType, descriptor, importer, batchSize, true, false);
+     this.initialized = true;
+   }
+ 
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java
 index a361a7f..9021cd5 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java
