@@ -41,7 +41,8 @@ Comet currently has three distinct implementations of the Parquet scan operator.
 `spark.comet.scan.impl` is used to select an implementation. The default setting is `spark.comet.scan.impl=auto`, and
 Comet will choose the most appropriate implementation based on the Parquet schema and other Comet configuration
 settings. Most users should not need to change this setting. However, it is possible to force Comet to try and use
-a particular implementation for all scan operations.
+a particular implementation for all scan operations by setting this configuration property to one of the following
+implementations.
 
 | Implementation          | Description                                                                                                                                                                          |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -57,9 +58,7 @@ implementation:
 - Removes the use of reusable mutable-buffers in Comet, which is complex to maintain
 - Improves performance
 
-The new scans currently have the following limitations:
-
-Issues common to both `native_datafusion` and `native_iceberg_compat`:
+The `native_datafusion` and `native_iceberg_compat` scans shared the following limitations:
 
 - When reading Parquet files written by systems other than Spark that contain columns with the logical types `UINT_8`
   or `UINT_16`, Comet will produce different results than Spark because Spark does not preserve or understand these
@@ -70,7 +69,7 @@ Issues common to both `native_datafusion` and `native_iceberg_compat`:
 - `PARQUET_FIELD_ID_READ_ENABLED` is not respected [#1758]
 - No support for default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
 
-Issues specific to `native_datafusion`:
+The `native_datafusion` scan has some additional limitations:
 
 - Bucketed scans are not supported
 - No support for row indexes
