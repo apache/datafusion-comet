@@ -50,17 +50,12 @@ Clone the Iceberg repository.
 git clone git@github.com:apache/iceberg.git
 ```
 
-It will be necessary to make some small changes to Iceberg:
+It will be necessary to make some changes to Iceberg.
 
-- Update Gradle files to change Comet version to `0.10.0-SNAPSHOT`.
-- Replace `import org.apache.comet.shaded.arrow.c.CometSchemaImporter;` with `import org.apache.comet.CometSchemaImporter;`
-- Modify `SparkBatchQueryScan` so that it implements the `SupportsComet` interface
-- Stop shading Parquet by commenting out the following lines in the iceberg-spark build:
+For Iceberg version 1.8.1, the diff file `dev/diffs/iceberg/1.8.1.diff` can be applied.
 
-```
-//    relocate 'org.apache.parquet', 'org.apache.iceberg.shaded.org.apache.parquet'
-//    relocate 'shaded.parquet', 'org.apache.iceberg.shaded.org.apache.parquet.shaded'
-```
+See the GitHub workflow `.github/workflows/iceberg_spark_test.yml` for a full example of integrating Comet and 
+Iceberg and running Iceberg's Spark SQL tests with Comet enabled.
 
 Perform a clean build
 
@@ -93,7 +88,7 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.sql.iceberg.parquet.reader-type=COMET \
     --conf spark.comet.explainFallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
-    --conf spark.memory.offHeap.size=16g
+    --conf spark.memory.offHeap.size=2g
 ```
 
 Create an Iceberg table. Note that Comet will not accelerate this part.
