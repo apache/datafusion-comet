@@ -133,7 +133,7 @@ only showing top 20 rows
 
 Confirm that the query was accelerated by Comet:
 
-```shell
+```
 scala> spark.sql(s"SELECT * from t1").explain()
 == Physical Plan ==
 *(1) CometColumnarToRow
