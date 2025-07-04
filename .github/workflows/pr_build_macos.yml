@@ -109,6 +109,8 @@ jobs:
               org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite
               org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite
               org.apache.spark.sql.comet.CometTaskMetricsSuite
+              org.apache.comet.CometBitwiseExpressionSuite
+              org.apache.comet.CometMapExpressionSuite
       fail-fast: false
     name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ${{ matrix.os }}
