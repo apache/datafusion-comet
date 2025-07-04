@@ -30,7 +30,7 @@ use datafusion::logical_expr::{
 use datafusion::physical_expr::expressions::format_state_name;
 use std::{any::Any, sync::Arc};
 
-use crate::utils::is_valid_decimal_precision;
+use crate::utils::{build_bool_state, is_valid_decimal_precision, unlikely};
 use arrow::array::ArrowNativeTypeOp;
 use arrow::datatypes::{MAX_DECIMAL128_FOR_EACH_PRECISION, MIN_DECIMAL128_FOR_EACH_PRECISION};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
@@ -297,9 +297,6 @@ struct AvgDecimalGroupsAccumulator {
     /// Tracks if the value is null
     is_not_null: BooleanBufferBuilder,
 
-    // Tracks if the value is empty
-    is_empty: BooleanBufferBuilder,
-
     /// The type of the avg return type
     return_data_type: DataType,
     target_precision: u8,
@@ -329,7 +326,6 @@ impl AvgDecimalGroupsAccumulator {
     ) -> Self {
         Self {
             is_not_null: BooleanBufferBuilder::new(0),
-            is_empty: BooleanBufferBuilder::new(0),
             return_data_type: return_data_type.clone(),
             target_precision,
             target_scale,
@@ -341,29 +337,16 @@ impl AvgDecimalGroupsAccumulator {
         }
     }
 
-    fn is_overflow(&self, index: usize) -> bool {
-        !self.is_empty.get_bit(index) && !self.is_not_null.get_bit(index)
-    }
-
+    #[inline]
     fn update_single(&mut self, group_index: usize, value: i128) {
-        if self.is_overflow(group_index) {
-            // This means there's a overflow in decimal, so we will just skip the rest
-            // of the computation
-            return;
-        }
-
-        self.is_empty.set_bit(group_index, false);
         let (new_sum, is_overflow) = self.sums[group_index].overflowing_add(value);
         self.counts[group_index] += 1;
+        self.sums[group_index] = new_sum;
 
-        if is_overflow || !is_valid_decimal_precision(new_sum, self.sum_precision) {
+        if unlikely(is_overflow || !is_valid_decimal_precision(new_sum, self.sum_precision)) {
             // Overflow: set buffer accumulator to null
             self.is_not_null.set_bit(group_index, false);
-            return;
         }
-
-        self.sums[group_index] = new_sum;
-        self.is_not_null.set_bit(group_index, true)
     }
 }
 
@@ -389,7 +372,6 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
         // increment counts, update sums
         self.counts.resize(total_num_groups, 0);
         self.sums.resize(total_num_groups, 0);
-        ensure_bit_capacity(&mut self.is_empty, total_num_groups);
         ensure_bit_capacity(&mut self.is_not_null, total_num_groups);
 
         let iter = group_indices.iter().zip(data.iter());
@@ -434,10 +416,20 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
             *sum = sum.add_wrapping(new_value);
         }
 
+        ensure_bit_capacity(&mut self.is_not_null, total_num_groups);
+        if partial_counts.null_count() != 0 {
+            for (index, &group_index) in group_indices.iter().enumerate() {
+                if partial_counts.is_null(index) {
+                    self.is_not_null.set_bit(group_index, false);
+                }
+            }
+        }
+
         Ok(())
     }
 
     fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
+        let nulls = build_bool_state(&mut self.is_not_null, &emit_to);
         let counts = emit_to.take_needed(&mut self.counts);
         let sums = emit_to.take_needed(&mut self.sums);
 
@@ -449,18 +441,19 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
         let target_min = MIN_DECIMAL128_FOR_EACH_PRECISION[self.target_precision as usize];
         let target_max = MAX_DECIMAL128_FOR_EACH_PRECISION[self.target_precision as usize];
 
-        for (sum, count) in iter {
-            if count != 0 {
-                match avg(sum, count as i128, target_min, target_max, scaler) {
-                    Some(value) => {
-                        builder.append_value(value);
-                    }
-                    _ => {
-                        builder.append_null();
-                    }
-                }
-            } else {
+        for (is_not_null, (sum, count)) in nulls.into_iter().zip(iter) {
+            if !is_not_null || count == 0 {
                 builder.append_null();
+                continue;
+            }
+
+            match avg(sum, count as i128, target_min, target_max, scaler) {
+                Some(value) => {
+                    builder.append_value(value);
+                }
+                _ => {
+                    builder.append_null();
+                }
             }
         }
         let array: PrimitiveArray<Decimal128Type> = builder.finish();
@@ -470,7 +463,7 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
 
     // return arrays for sums and counts
     fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
-        let nulls = self.is_not_null.finish();
+        let nulls = build_bool_state(&mut self.is_not_null, &emit_to);
         let nulls = Some(NullBuffer::new(nulls));
 
         let counts = emit_to.take_needed(&mut self.counts);

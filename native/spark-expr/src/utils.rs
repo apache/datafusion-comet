@@ -15,11 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{
-    cast::as_primitive_array,
-    types::{Int32Type, TimestampMicrosecondType},
-};
 use arrow::datatypes::{DataType, TimeUnit, DECIMAL128_MAX_PRECISION};
+use arrow::{
+    array::{
+        cast::as_primitive_array,
+        types::{Int32Type, TimestampMicrosecondType},
+        BooleanBufferBuilder,
+    },
+    buffer::BooleanBuffer,
+};
+use datafusion::logical_expr::EmitTo;
 use std::sync::Arc;
 
 use crate::timezone::Tz;
@@ -223,6 +228,20 @@ pub fn is_valid_decimal_precision(value: i128, precision: u8) -> bool {
         && value <= MAX_DECIMAL128_FOR_EACH_PRECISION[precision as usize]
 }
 
+/// Build a boolean buffer from the state and reset the state, based on the emit_to
+/// strategy.
+pub fn build_bool_state(state: &mut BooleanBufferBuilder, emit_to: &EmitTo) -> BooleanBuffer {
+    let bool_state: BooleanBuffer = state.finish();
+
+    match emit_to {
+        EmitTo::All => bool_state,
+        EmitTo::First(n) => {
+            state.append_buffer(&bool_state.slice(*n, bool_state.len() - n));
+            bool_state.slice(0, *n)
+        }
+    }
+}
+
 // These are borrowed from hashbrown crate:
 //   https://github.com/rust-lang/hashbrown/blob/master/src/raw/mod.rs
 
@@ -245,4 +264,28 @@ pub fn unlikely(b: bool) -> bool {
         cold();
     }
     b
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_bool_state() {
+        let mut builder = BooleanBufferBuilder::new(0);
+        builder.append_packed_range(0..16, &[0x42u8, 0x39u8]);
+
+        let mut first_nine = BooleanBufferBuilder::new(0);
+        first_nine.append_packed_range(0..9, &[0x42u8, 0x01u8]);
+        let first_nine = first_nine.finish();
+        let mut last = BooleanBufferBuilder::new(0);
+        last.append_packed_range(0..7, &[0x1cu8]);
+        let last = last.finish();
+
+        assert_eq!(
+            first_nine,
+            build_bool_state(&mut builder, &EmitTo::First(9))
+        );
+        assert_eq!(last, build_bool_state(&mut builder, &EmitTo::All));
+    }
 }
