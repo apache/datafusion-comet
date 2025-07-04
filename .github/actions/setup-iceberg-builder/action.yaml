@@ -30,6 +30,11 @@ inputs:
 runs:
   using: "composite"
   steps:
+    - name: Build Comet
+      shell: bash
+      run: |
+        PROFILES="-Pspark-${{inputs.spark-short-version}} -Pscala-${{inputs.scala-version}}" make release
+
     - name: Clone Iceberg repo
       uses: actions/checkout@v4
       with:
@@ -43,8 +48,3 @@ runs:
       run: |
         cd apache-iceberg
         git apply ../dev/diffs/iceberg/${{inputs.iceberg-version}}.diff
-
-    - name: Build Comet
-      shell: bash
-      run: |
-        PROFILES="-Pspark-${{inputs.spark-short-version}} -Pscala-${{inputs.scala-version}}" make release
