@@ -28,3 +28,29 @@ macro_rules! read_num_be_bytes {
         <$ty>::from_be_bytes(buffer)
     }};
 }
+
+/// Returns the ceil of value/divisor
+#[inline]
+pub fn ceil(value: usize, divisor: usize) -> usize {
+    value / divisor + ((value % divisor != 0) as usize)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ceil() {
+        assert_eq!(ceil(0, 1), 0);
+        assert_eq!(ceil(1, 1), 1);
+        assert_eq!(ceil(1, 2), 1);
+        assert_eq!(ceil(1, 8), 1);
+        assert_eq!(ceil(7, 8), 1);
+        assert_eq!(ceil(8, 8), 1);
+        assert_eq!(ceil(9, 8), 2);
+        assert_eq!(ceil(9, 9), 1);
+        assert_eq!(ceil(10000000000, 10), 1000000000);
+        assert_eq!(ceil(10, 10000000000), 1);
+        assert_eq!(ceil(10000000000, 1000000000), 10);
+    }
+}

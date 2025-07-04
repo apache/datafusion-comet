@@ -18,6 +18,8 @@
 use arrow::datatypes::ToByteSlice;
 use std::iter::zip;
 
+use crate::bloom_filter::bit;
+
 /// A simple bit array implementation that simulates the behavior of Spark's BitArray which is
 /// used in the BloomFilter implementation. Some methods are not implemented as they are not
 /// required for the current use case.
@@ -101,10 +103,8 @@ impl SparkBitArray {
     }
 }
 
-/// Returns the number of 64-bit words needed to store a `num_bits`-bits value
-#[inline]
 pub fn num_words(num_bits: i32) -> i32 {
-    ((num_bits as usize) / 64 + ((num_bits % 64 != 0) as usize)) as i32
+    bit::ceil(num_bits as usize, 64) as i32
 }
 
 #[cfg(test)]
