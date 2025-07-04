@@ -2155,7 +2155,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
    */
   private def supportedSortMergeJoinEqualType(dataType: DataType): Boolean = dataType match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-        _: DoubleType | _: StringType | _: DateType | _: DecimalType | _: BooleanType =>
+        _: DoubleType | _: StringType | _: DateType | _: DecimalType | _: BooleanType |
+        _: TimestampType =>
       true
     case TimestampNTZType => true
     case _ => false
@@ -2686,14 +2687,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
         // Checks if the join keys are supported by DataFusion SortMergeJoin.
         val errorMsgs = join.leftKeys.flatMap { key =>
           if (!supportedSortMergeJoinEqualType(key.dataType)) {
-            Some(s"Unsupported join key type ${key.dataType} on key: ${key.sql}")
+            Some(s"Unsupported join key type ${key.dataType} on key ${key.sql}")
           } else {
             None
           }
         }
 
         if (errorMsgs.nonEmpty) {
-          withInfo(op, errorMsgs.flatten.mkString("\n"))
+          withInfo(op, errorMsgs.mkString("\n"))
           return None
         }
 
