@@ -19,8 +19,9 @@ use arrow::datatypes::{Field, FieldRef};
 use datafusion::{arrow::datatypes::DataType, logical_expr::Volatility};
 use std::{any::Any, sync::Arc};
 
-use crate::execution::util::spark_bloom_filter;
-use crate::execution::util::spark_bloom_filter::SparkBloomFilter;
+use crate::bloom_filter::spark_bloom_filter;
+use crate::bloom_filter::spark_bloom_filter::SparkBloomFilter;
+
 use arrow::array::ArrayRef;
 use arrow::array::BinaryArray;
 use datafusion::common::{downcast_value, ScalarValue};

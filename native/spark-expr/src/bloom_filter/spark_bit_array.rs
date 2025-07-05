@@ -15,9 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::common::bit;
 use arrow::datatypes::ToByteSlice;
 use std::iter::zip;
+
+use crate::bloom_filter::bit;
 
 /// A simple bit array implementation that simulates the behavior of Spark's BitArray which is
 /// used in the BloomFilter implementation. Some methods are not implemented as they are not
