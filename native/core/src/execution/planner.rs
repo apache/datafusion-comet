@@ -88,6 +88,8 @@ use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
+use arrow::array::Int32Array;
+use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
@@ -433,6 +435,20 @@ impl PhysicalPlanner {
                                         "Decimal literal's data type should be Decimal128 but got {dt:?}"
                                     )))
                                 }
+                            }
+                        },
+                        Value::ListVal(values) => {
+                            //dbg!(values);
+                            //dbg!(literal.datatype.as_ref().unwrap());
+                            //dbg!(data_type);
+                            match data_type {
+                                DataType::List(f) if f.data_type().equals_datatype(&DataType::Int32) => {
+                                    let vals = values.clone().int_values;
+                                    let len = &vals.len();
+                                    SingleRowListArrayBuilder::new(Arc::new(Int32Array::from(vals)))
+                                        .build_fixed_size_list_scalar(*len)
+                                }
+                                _ => todo!()
                             }
                         }
                     }
@@ -2281,7 +2297,6 @@ impl PhysicalPlanner {
                         other => other,
                     };
                     let func = self.session_ctx.udf(fun_name)?;
-
                     let coerced_types = func
                         .coerce_types(&input_expr_types)
                         .unwrap_or_else(|_| input_expr_types.clone());
