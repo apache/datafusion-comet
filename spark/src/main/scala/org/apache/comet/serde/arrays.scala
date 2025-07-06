@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.annotation.tailrec
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayExcept, ArrayJoin, ArrayRemove, Attribute, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{ArrayExcept, ArrayJoin, ArrayRemove, Attribute, Expression, GetArrayItem, Literal}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -359,5 +359,22 @@ object CometArrayUnion extends CometExpressionSerde with IncompatExpr {
     val arraysUnionScalarExpr =
       scalarFunctionExprToProto("array_union", leftArrayExprProto, rightArrayExprProto)
     optExprWithInfo(arraysUnionScalarExpr, expr, expr.children: _*)
+  }
+}
+
+object CometCreateArray extends CometExpressionSerde {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val children = expr.children
+    val childExprs = children.map(exprToProtoInternal(_, inputs, binding))
+
+    if (childExprs.forall(_.isDefined)) {
+      scalarFunctionExprToProto("make_array", childExprs: _*)
+    } else {
+      withInfo(expr, "unsupported arguments for CreateArray", children: _*)
+      None
+    }
   }
 }
