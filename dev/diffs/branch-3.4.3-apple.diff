@@ -12,8 +12,46 @@ index 82f0ef347f8..5fa014f6719 100644
      withTempView("view") {
        val nan1 = java.lang.Float.intBitsToFloat(0x7f800001)
        val nan2 = java.lang.Float.intBitsToFloat(0x7fffffff)
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
+index 31081fea2e9..1f97fe011b5 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
+@@ -23,8 +23,9 @@ import org.apache.spark.TestUtils.{assertNotSpilled, assertSpilled}
+ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression, Lag, Literal, NonFoldableLiteral}
+ import org.apache.spark.sql.catalyst.optimizer.TransposeWindow
+ import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
++import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+-import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, Exchange, ShuffleExchangeExec}
++import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, Exchange, ShuffleExchangeExec, ShuffleExchangeLike}
+ import org.apache.spark.sql.execution.window.WindowExec
+ import org.apache.spark.sql.expressions.{Aggregator, MutableAggregationBuffer, UserDefinedAggregateFunction, Window}
+ import org.apache.spark.sql.functions._
+@@ -1186,10 +1187,12 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+     }
+ 
+     def isShuffleExecByRequirement(
+-        plan: ShuffleExchangeExec,
++        plan: ShuffleExchangeLike,
+         desiredClusterColumns: Seq[String]): Boolean = plan match {
+       case ShuffleExchangeExec(op: HashPartitioning, _, ENSURE_REQUIREMENTS, _) =>
+         partitionExpressionsColumns(op.expressions) === desiredClusterColumns
++      case CometShuffleExchangeExec(op: HashPartitioning, _, _, ENSURE_REQUIREMENTS, _, _) =>
++        partitionExpressionsColumns(op.expressions) === desiredClusterColumns
+       case _ => false
+     }
+ 
+@@ -1212,7 +1215,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+       val shuffleByRequirement = windowed.queryExecution.executedPlan.exists {
+         case w: WindowExec =>
+           w.child.exists {
+-            case s: ShuffleExchangeExec => isShuffleExecByRequirement(s, Seq("key1", "key2"))
++            case s: ShuffleExchangeLike => isShuffleExecByRequirement(s, Seq("key1", "key2"))
+             case _ => false
+           }
+         case _ => false
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
-index 9e598e7a344..cc5224af735 100644
+index 9e598e7a344..1925aac8d97 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 @@ -669,8 +669,7 @@ abstract class DynamicPartitionPruningSuiteBase
@@ -45,17 +83,16 @@ index 9e598e7a344..cc5224af735 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        withTable("fact", "dim") {
          spark.range(100).select(
-@@ -1034,8 +1032,7 @@ abstract class DynamicPartitionPruningSuiteBase
-     }
+@@ -1035,7 +1033,7 @@ abstract class DynamicPartitionPruningSuiteBase
    }
  
--  test("avoid reordering broadcast join keys to match input hash partitioning",
+   test("avoid reordering broadcast join keys to match input hash partitioning",
 -    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
-+  test("avoid reordering broadcast join keys to match input hash partitioning") {
++    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/1839")) {
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "false",
        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
        withTable("large", "dimTwo", "dimThree") {
-@@ -1195,8 +1192,7 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1195,8 +1193,7 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -65,16 +102,16 @@ index 9e598e7a344..cc5224af735 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        val df = sql(
          """
-@@ -1225,7 +1221,7 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1225,7 +1222,7 @@ abstract class DynamicPartitionPruningSuiteBase
  
    test("SPARK-32509: Unused Dynamic Pruning filter shouldn't affect " +
      "canonicalization and exchange reuse",
 -    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
-+    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #1737")) {
++    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/1839")) {
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
          val df = sql(
-@@ -1248,8 +1244,7 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1248,8 +1245,7 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -84,7 +121,7 @@ index 9e598e7a344..cc5224af735 100644
      Given("dynamic pruning filter on the build side")
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        val df = sql(
-@@ -1290,8 +1285,7 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1290,8 +1286,7 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -94,7 +131,7 @@ index 9e598e7a344..cc5224af735 100644
      Seq(NO_CODEGEN, CODEGEN_ONLY).foreach { mode =>
        Seq(true, false).foreach { pruning =>
          withSQLConf(
-@@ -1323,8 +1317,7 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1323,8 +1318,7 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -104,17 +141,16 @@ index 9e598e7a344..cc5224af735 100644
      withSQLConf(
        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
-@@ -1436,8 +1429,7 @@ abstract class DynamicPartitionPruningSuiteBase
-     }
+@@ -1437,7 +1431,7 @@ abstract class DynamicPartitionPruningSuiteBase
    }
  
--  test("SPARK-34637: DPP side broadcast query stage is created firstly",
+   test("SPARK-34637: DPP side broadcast query stage is created firstly",
 -    IgnoreComet("TODO: Support SubqueryBroadcastExec in Comet: #242")) {
-+  test("SPARK-34637: DPP side broadcast query stage is created firstly") {
++    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/1839")) {
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
        val df = sql(
          """ WITH v as (
-@@ -1484,8 +1476,7 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1484,8 +1478,7 @@ abstract class DynamicPartitionPruningSuiteBase
      checkAnswer(df, Row(3, 2) :: Row(3, 2) :: Row(3, 2) :: Row(3, 2) :: Nil)
    }
  
@@ -124,7 +160,7 @@ index 9e598e7a344..cc5224af735 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
        val df = sql(
          """
-@@ -1500,7 +1491,7 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1500,7 +1493,7 @@ abstract class DynamicPartitionPruningSuiteBase
    }
  
    test("SPARK-38148: Do not add dynamic partition pruning if there exists static partition " +
@@ -133,7 +169,7 @@ index 9e598e7a344..cc5224af735 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
        Seq(
          "f.store_id = 1" -> false,
-@@ -1572,8 +1563,7 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1572,8 +1565,7 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -143,7 +179,7 @@ index 9e598e7a344..cc5224af735 100644
      withTable("duplicate_keys") {
        withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
          Seq[(Int, String)]((1, "NL"), (1, "NL"), (3, "US"), (3, "US"), (3, "US"))
-@@ -1604,8 +1594,7 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1604,8 +1596,7 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -153,7 +189,7 @@ index 9e598e7a344..cc5224af735 100644
      withSQLConf(SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true") {
        val df = sql(
          """
-@@ -1634,8 +1623,7 @@ abstract class DynamicPartitionPruningSuiteBase
+@@ -1634,8 +1625,7 @@ abstract class DynamicPartitionPruningSuiteBase
      }
    }
  
@@ -198,6 +234,18 @@ index d3c0fa9d6ab..618f2856908 100644
  
  /**
   * Helper trait that disables Comet for all tests regardless of default config values.
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
+index 84639f7c87e..7760b02988e 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
+@@ -1441,6 +1441,7 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+             true
+           case WholeStageCodegenExec(ColumnarToRowExec(
+             InputAdapter(CometProjectExec(_, _, _, _, _: CometHashJoinExec, _)))) => true
++          case _: CometHashJoinExec => true
+         }.size === 1)
+         checkAnswer(shjCodegenDF, Seq.empty)
+ 
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
 index 18123a4d6ec..fbe4c766eee 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
@@ -278,6 +326,28 @@ index c95932efee5..24118a767f9 100644
            partitionFilters.exists(ExecSubqueryExpression.hasSubquery) &&
              fs.inputRDDs().forall(
                _.asInstanceOf[FileScanRDD].filePartitions.forall(
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLWindowFunctionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLWindowFunctionSuite.scala
+index eec396b2e39..bf3f1c769d6 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLWindowFunctionSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLWindowFunctionSuite.scala
+@@ -18,7 +18,7 @@
+ package org.apache.spark.sql.execution
+ 
+ import org.apache.spark.TestUtils.assertSpilled
+-import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
++import org.apache.spark.sql.{AnalysisException, IgnoreComet, QueryTest, Row}
+ import org.apache.spark.sql.internal.SQLConf.{WINDOW_EXEC_BUFFER_IN_MEMORY_THRESHOLD, WINDOW_EXEC_BUFFER_SPILL_THRESHOLD}
+ import org.apache.spark.sql.test.SharedSparkSession
+ 
+@@ -470,7 +470,7 @@ class SQLWindowFunctionSuite extends QueryTest with SharedSparkSession {
+       Row(1, 3, null) :: Row(2, null, 4) :: Nil)
+   }
+ 
+-  test("test with low buffer spill threshold") {
++  test("test with low buffer spill threshold", IgnoreComet("Comet does not support spilling")) {
+     val nums = sparkContext.parallelize(1 to 10).map(x => (x, x % 2)).toDF("x", "y")
+     nums.createOrReplaceTempView("nums")
+ 
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
 index baae214c6ee..47795bf6c58 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
