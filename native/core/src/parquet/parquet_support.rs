@@ -44,7 +44,6 @@ use url::Url;
 
 use super::objectstore;
 use super::objectstore::jni::JniObjectStore;
-use datafusion::execution::context::SessionContext;
 
 // This file originates from cast.rs. While developing native scan support and implementing
 // SparkSchemaAdapter we observed that Spark's type conversion logic on Parquet reads does not

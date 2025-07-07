@@ -94,8 +94,6 @@ mod jni_helpers {
 /// # Arguments
 /// * `path` - The filesystem path or URI of the target file
 /// * `configs` - Configuration parameters for the storage backend as key-value pairs.
-///               Common configurations include authentication credentials, region settings,
-///               and timeout values.
 ///
 /// # Returns
 /// Returns `Ok(usize)` with the file size in bytes on success, or an `ObjectStoreError`
@@ -125,7 +123,7 @@ pub fn call_get_length(
             path: path.to_string(),
             source: Box::new(Arc::new(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("File not found or error reading: {}", path),
+                format!("File not found or error reading: {path}"),
             ))),
         })
     } else {
