@@ -104,10 +104,9 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance,
-    CreateNamedStruct, GetArrayStructFields, GetStructField,
-    IfExpr, ListExtract, NormalizeNaNAndZero, RLike, RandExpr,
-    SparkCastOptions, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
+    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
+    GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RLike,
+    RandExpr, SparkCastOptions, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
     TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
 use itertools::Itertools;
