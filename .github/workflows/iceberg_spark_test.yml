@@ -54,8 +54,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
-    env:
-      SPARK_LOCAL_IP: localhost
     steps:
       - uses: actions/checkout@v4
       - name: Setup Rust & Java toolchain
@@ -63,12 +61,6 @@ jobs:
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
-      - name: Setup Iceberg
-        uses: ./.github/actions/setup-iceberg-builder
-        with:
-          iceberg-version: ${{ matrix.iceberg-version.full }}
-          scala-version: ${{ matrix.scala-version }}
-          spark-short-version: ${{ matrix.spark-version.short }}
 
   iceberg-spark:
     needs: [prepare]
@@ -87,8 +79,15 @@ jobs:
     env:
       SPARK_LOCAL_IP: localhost
     steps:
+      - name: Setup Iceberg
+        uses: ./.github/actions/setup-iceberg-builder
+        with:
+          iceberg-version: ${{ matrix.iceberg-version.full }}
+          scala-version: ${{ matrix.scala-version }}
+          spark-short-version: ${{ matrix.spark-version.short }}
       - name: Run Iceberg Spark tests
         run: |
+          cd apache-iceberg
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
           ENABLE_COMET=true ./gradlew -DsparkVersions=${{ matrix.spark-version.short }} -DscalaVersion=${{ matrix.scala-version }} -DflinkVersions= -DkafkaVersions= \
             :iceberg-spark:iceberg-spark-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:check \
@@ -111,8 +110,15 @@ jobs:
     env:
       SPARK_LOCAL_IP: localhost
     steps:
-      - name: Run Iceberg Spark tests
+      - name: Setup Iceberg
+        uses: ./.github/actions/setup-iceberg-builder
+        with:
+          iceberg-version: ${{ matrix.iceberg-version.full }}
+          scala-version: ${{ matrix.scala-version }}
+          spark-short-version: ${{ matrix.spark-version.short }}
+      - name: Run Iceberg Spark extensions tests
         run: |
+          cd apache-iceberg
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
           ENABLE_COMET=true ./gradlew -DsparkVersions=${{ matrix.spark-version.short }} -DscalaVersion=${{ matrix.scala-version }} -DflinkVersions= -DkafkaVersions= \
             :iceberg-spark:iceberg-spark-extensions-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:check \
@@ -135,8 +141,15 @@ jobs:
     env:
       SPARK_LOCAL_IP: localhost
     steps:
-      - name: Run Iceberg Spark tests
+      - name: Setup Iceberg
+        uses: ./.github/actions/setup-iceberg-builder
+        with:
+          iceberg-version: ${{ matrix.iceberg-version.full }}
+          scala-version: ${{ matrix.scala-version }}
+          spark-short-version: ${{ matrix.spark-version.short }}
+      - name: Run Iceberg Spark runtime tests
         run: |
+          cd apache-iceberg
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
           ENABLE_COMET=true ./gradlew -DsparkVersions=${{ matrix.spark-version.short }} -DscalaVersion=${{ matrix.scala-version }} -DflinkVersions= -DkafkaVersions= \
             :iceberg-spark:iceberg-spark-runtime-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:check \
