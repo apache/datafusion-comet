@@ -50,7 +50,7 @@ jobs:
         spark-version: [ { short: '3.5', full: '3.5.6' } ]
         scala-version: [ '2.13' ]
       fail-fast: false
-    name: Build native and patched Iceberg
+    name: Build native
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -61,6 +61,10 @@ jobs:
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
+      - name: Build Comet
+        shell: bash
+        run: |
+          PROFILES="-Pspark-${{matrix.spark-version.short}} -Pscala-${{matrix.scala-version}}" make release
 
   iceberg-spark:
     needs: [prepare]
@@ -84,8 +88,6 @@ jobs:
         uses: ./.github/actions/setup-iceberg-builder
         with:
           iceberg-version: ${{ matrix.iceberg-version.full }}
-          scala-version: ${{ matrix.scala-version }}
-          spark-short-version: ${{ matrix.spark-version.short }}
       - name: Run Iceberg Spark tests
         run: |
           cd apache-iceberg
@@ -116,8 +118,6 @@ jobs:
         uses: ./.github/actions/setup-iceberg-builder
         with:
           iceberg-version: ${{ matrix.iceberg-version.full }}
-          scala-version: ${{ matrix.scala-version }}
-          spark-short-version: ${{ matrix.spark-version.short }}
       - name: Run Iceberg Spark extensions tests
         run: |
           cd apache-iceberg
@@ -148,8 +148,6 @@ jobs:
         uses: ./.github/actions/setup-iceberg-builder
         with:
           iceberg-version: ${{ matrix.iceberg-version.full }}
-          scala-version: ${{ matrix.scala-version }}
-          spark-short-version: ${{ matrix.spark-version.short }}
       - name: Run Iceberg Spark runtime tests
         run: |
           cd apache-iceberg
