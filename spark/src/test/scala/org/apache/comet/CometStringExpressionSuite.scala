@@ -167,7 +167,7 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
-  // based on Spark SQL ParquetFilterSuite test "filter pushdown - StringPredicate"
+  // Simplified version of "filter pushdown - StringPredicate" that does not generate dictionaries
   test("string predicate filter") {
     Seq(false, true).foreach { pushdown =>
       withSQLConf(
@@ -186,11 +186,10 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
-  // This function tests that exactly go through the `keep`, `canDrop` and `inverseCanDrop`.
+  // Modified from Spark test "filter pushdown - StringPredicate"
   private def testStringPredicate(
       dataFrame: DataFrame,
       filter: String,
-      shouldFilterOut: Boolean,
       enableDictionary: Boolean = true): Unit = {
     withTempPath { dir =>
       val path = dir.getCanonicalPath
@@ -208,6 +207,7 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
+  // Modified from Spark test "filter pushdown - StringPredicate"
   test("filter pushdown - StringPredicate") {
     import testImplicits._
     // keep() should take effect on StartsWith/EndsWith/Contains
@@ -219,35 +219,32 @@ class CometStringExpressionSuite extends CometTestBase {
       testStringPredicate(
         // dictionary will be generated since there are duplicated values
         spark.range(1000).map(t => (t % 10).toString).toDF(),
-        filter,
-        true)
+        filter)
     }
 
     // canDrop() should take effect on StartsWith,
     // and has no effect on EndsWith/Contains
     Seq(
-      ("value like 'a%'", true), // StartsWith
-      ("value like '%a'", false), // EndsWith
-      ("value like '%a%'", false) // Contains
-    ).foreach { case (filter, shouldFilterOut) =>
+      "value like 'a%'", // StartsWith
+      "value like '%a'", // EndsWith
+      "value like '%a%'" // Contains
+    ).foreach { filter =>
       testStringPredicate(
         spark.range(1024).map(_.toString).toDF(),
         filter,
-        shouldFilterOut,
         enableDictionary = false)
     }
 
     // inverseCanDrop() should take effect on StartsWith,
     // and has no effect on EndsWith/Contains
     Seq(
-      ("value not like '10%'", true), // StartsWith
-      ("value not like '%10'", false), // EndsWith
-      ("value not like '%10%'", false) // Contains
-    ).foreach { case (filter, shouldFilterOut) =>
+      "value not like '10%'", // StartsWith
+      "value not like '%10'", // EndsWith
+      "value not like '%10%'" // Contains
+    ).foreach { filter =>
       testStringPredicate(
-        spark.range(1024).map(c => "100").toDF(),
+        spark.range(1024).map(_ => "100").toDF(),
         filter,
-        shouldFilterOut,
         enableDictionary = false)
     }
   }

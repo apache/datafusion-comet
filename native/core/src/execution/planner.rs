@@ -961,30 +961,13 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::Filter(filter) => {
-                fn contains_scalar_func(expr: Arc<dyn PhysicalExpr>) -> bool {
-                    let mut contains_scalar_func = false;
-                    // apply recursively visits all nodes in the expression tree
-                    expr.apply(|e| {
-                        if e.as_any().is::<ScalarFunctionExpr>() {
-                            // Found a ScalarFunctionExpr so set our flag to true and return early
-                            contains_scalar_func = true;
-                            return Ok(TreeNodeRecursion::Stop);
-                        }
-                        // The return value controls whether to continue visiting the tree
-                        Ok(TreeNodeRecursion::Continue)
-                    })
-                    .unwrap();
-                    // All subtrees have been visited and literals found
-                    contains_scalar_func
-                }
-
                 assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
                 let child_possibly_copied: Arc<dyn ExecutionPlan> =
-                    if contains_scalar_func(Arc::clone(&predicate)) {
+                    if filter.wrap_child_in_copy_exec {
                         Self::wrap_in_copy_exec(Arc::clone(&child.native_plan))
                     } else {
                         Arc::clone(&child.native_plan)

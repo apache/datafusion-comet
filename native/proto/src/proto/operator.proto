@@ -110,6 +110,7 @@ message Projection {
 message Filter {
   spark.spark_expression.Expr predicate = 1;
   bool use_datafusion_filter = 2;
+  bool wrap_child_in_copy_exec = 3;
 }
 
 message Sort {
