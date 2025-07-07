@@ -77,6 +77,9 @@ use log::info;
 use once_cell::sync::Lazy;
 #[cfg(feature = "jemalloc")]
 use tikv_jemalloc_ctl::{epoch, stats};
+use crate::parquet::objectstore::jni::init_jvm;
+
+
 
 static TOKIO_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
@@ -166,6 +169,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         with_trace("createPlan", tracing_enabled != JNI_FALSE, || {
+            init_jvm(&env);
+
             // Init JVM classes
             JVMClasses::init(&mut env);
 

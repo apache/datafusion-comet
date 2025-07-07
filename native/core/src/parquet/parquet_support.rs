@@ -43,6 +43,8 @@ use std::{fmt::Debug, hash::Hash, sync::Arc};
 use url::Url;
 
 use super::objectstore;
+use super::objectstore::jni::JniObjectStore;
+use datafusion::execution::context::SessionContext;
 
 // This file originates from cast.rs. While developing native scan support and implementing
 // SparkSchemaAdapter we observed that Spark's type conversion logic on Parquet reads does not
@@ -367,8 +369,15 @@ pub(crate) fn prepare_object_store_with_configs(
     url: String,
     object_store_configs: &HashMap<String, String>,
 ) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
+    let use_jni = object_store_configs
+        .get("use_jni")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+
     let mut url = Url::parse(url.as_str())
         .map_err(|e| ExecutionError::GeneralError(format!("Error parsing URL {url}: {e}")))?;
+    let original_scheme = url.scheme().to_string();
+
     let mut scheme = url.scheme();
     if scheme == "s3a" {
         scheme = "s3";
@@ -384,6 +393,17 @@ pub(crate) fn prepare_object_store_with_configs(
 
     let (object_store, object_store_path): (Box<dyn ObjectStore>, Path) = if scheme == "hdfs" {
         parse_hdfs_url(&url)
+    } else if scheme == "s3" && use_jni {
+        let base_uri = format!(
+            "{}://{}",
+            original_scheme,
+            &url[url::Position::BeforeHost..url::Position::AfterPort]
+        );
+        let store = JniObjectStore::new(base_uri, object_store_configs.clone());
+        Ok((
+            Box::new(store) as Box<dyn ObjectStore>,
+            Path::from(url.path()),
+        ))
     } else if scheme == "s3" {
         objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
     } else {

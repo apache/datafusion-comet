@@ -26,7 +26,7 @@ pub mod parquet_support;
 pub mod read;
 pub mod schema_adapter;
 
-mod objectstore;
+pub mod objectstore;
 
 use std::collections::HashMap;
 use std::task::Poll;

@@ -36,6 +36,7 @@ import org.apache.spark.sql.functions.{col, sum}
 
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
+import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.s3.S3Client
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest
@@ -103,19 +104,27 @@ class ParquetReadFromS3Suite extends CometTestBase with AdaptiveSparkPlanHelper 
   }
 
   test("read parquet file from MinIO") {
+    runParquetScanAndAssert()
+  }
 
+  test("Comet uses JNI object store when use_jni is true") {
+    spark.conf.set("spark.comet.use_jni_object_store", "true")
+    runParquetScanAndAssert()
+  }
+
+  private def runParquetScanAndAssert(): Unit = {
     val testFilePath = s"s3a://$testBucketName/data/test-file.parquet"
+
     writeTestParquetFile(testFilePath)
 
     val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
-    val scans = collect(df.queryExecution.executedPlan) {
-      case p: CometScanExec =>
-        p
-      case p: CometNativeScanExec =>
-        p
-    }
-    assert(scans.size == 1)
 
+    val scans = collect(df.queryExecution.executedPlan) {
+      case p: CometScanExec => p
+      case p: CometNativeScanExec => p
+    }
+
+    assert(scans.size == 1)
     assert(df.first().getLong(0) == 499500)
   }
 }

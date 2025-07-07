@@ -65,6 +65,15 @@ object CometConf extends ShimCometConf {
 
   val COMET_EXEC_CONFIG_PREFIX = "spark.comet.exec";
 
+  val COMET_USE_JNI_OBJECT_STORE: ConfigEntry[Boolean] =
+    conf("spark.comet.use_jni_object_store")
+      .doc(
+        "If enabled, Comet will access Hadoop-compatible file systems using the Hadoop FileSystem" +
+          " API via JNI, bypassing the native Rust object store implementations.")
+      .internal()
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.enabled")
     .doc(
       "Whether to enable Comet extension for Spark. When this is turned on, Spark will use " +
