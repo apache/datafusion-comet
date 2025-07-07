@@ -25,13 +25,12 @@ use jni::{
     objects::{JClass, JObject, JValue},
     JNIEnv, JavaVM
 };
-use once_cell::sync::OnceCell;
 use object_store::{
-    path::Path,
-    Attributes, Error as ObjectStoreError, GetOptions, GetRange, GetResult, GetResultPayload,
-    ListResult, MultipartUpload, ObjectMeta, ObjectStore, PutMultipartOpts, PutOptions, PutPayload,
-    PutResult,
+    path::Path, Attributes, Error as ObjectStoreError, GetOptions, GetRange, GetResult,
+    GetResultPayload, ListResult, MultipartUpload, ObjectMeta, ObjectStore, PutMultipartOpts,
+    PutOptions, PutPayload, PutResult,
 };
+use once_cell::sync::OnceCell;
 
 static JVM: OnceCell<JavaVM> = OnceCell::new();
 
@@ -171,11 +170,7 @@ pub fn call_read(
         )
         .map_err(jni_helpers::jni_error)?;
 
-    let byte_array = jni::objects::JByteArray::from(
-        result
-            .l()
-            .map_err(jni_helpers::jni_error)?,
-    );
+    let byte_array = jni::objects::JByteArray::from(result.l().map_err(jni_helpers::jni_error)?);
 
     if byte_array.is_null() {
         return Err(ObjectStoreError::Generic {
@@ -257,10 +252,9 @@ impl ObjectStore for JniObjectStore {
                 path: path_str.clone(),
                 source: format!(
                     "Invalid range {}-{} for file of length {}",
-                    range.start,
-                    range.end,
-                    total_len
-                ).into(),
+                   range.start, range.end, total_len
+                )
+                .into(),
             });
         }
 
@@ -300,10 +294,7 @@ impl ObjectStore for JniObjectStore {
         todo!()
     }
 
-    async fn delete(
-        &self,
-        _location: &Path,
-    ) -> Result<(), ObjectStoreError> {
+    async fn delete(&self, _location: &Path) -> Result<(), ObjectStoreError> {
         todo!()
     }
 
@@ -321,25 +312,15 @@ impl ObjectStore for JniObjectStore {
         todo!()
     }
 
-    async fn copy(
-        &self,
-        _from: &Path,
-        _to: &Path,
-    ) -> Result<(), ObjectStoreError> {
+    async fn copy(&self, _from: &Path, _to: &Path) -> Result<(), ObjectStoreError> {
         todo!()
     }
 
-    async fn copy_if_not_exists(
-        &self,
-        _from: &Path,
-        _to: &Path,
-    ) -> Result<(), ObjectStoreError> {
+    async fn copy_if_not_exists(&self, _from: &Path, _to: &Path) -> Result<(), ObjectStoreError> {
         todo!()
     }
-    async fn head(
-        &self,
-        location: &Path,
-    ) -> Result<ObjectMeta, ObjectStoreError> {
+
+    async fn head(&self, location: &Path) -> Result<ObjectMeta, ObjectStoreError> {
         let path = location.to_string();
         let len = call_get_length(&path, &self.configs)? as usize;
         Ok(ObjectMeta {

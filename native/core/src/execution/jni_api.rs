@@ -79,8 +79,6 @@ use once_cell::sync::Lazy;
 use tikv_jemalloc_ctl::{epoch, stats};
 use crate::parquet::objectstore::jni::init_jvm;
 
-
-
 static TOKIO_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     if let Some(n) = parse_usize_env_var("COMET_WORKER_THREADS") {

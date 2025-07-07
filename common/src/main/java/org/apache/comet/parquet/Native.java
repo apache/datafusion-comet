@@ -364,7 +364,6 @@ public final class Native extends NativeBase {
       inputStream.close();
 
       return totalBytesRead < len ? Arrays.copyOf(buffer, totalBytesRead) : buffer;
-
     } catch (Exception e) {
       System.err.println("Native.read failed: " + e);
       return null;

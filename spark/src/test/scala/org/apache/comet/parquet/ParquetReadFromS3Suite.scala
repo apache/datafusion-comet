@@ -36,7 +36,6 @@ import org.apache.spark.sql.functions.{col, sum}
 
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
-import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.s3.S3Client
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest
@@ -114,7 +113,6 @@ class ParquetReadFromS3Suite extends CometTestBase with AdaptiveSparkPlanHelper 
 
   private def runParquetScanAndAssert(): Unit = {
     val testFilePath = s"s3a://$testBucketName/data/test-file.parquet"
-
     writeTestParquetFile(testFilePath)
 
     val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
