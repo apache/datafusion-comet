@@ -20,6 +20,7 @@
 package org.apache.comet.parquet;
 
 import java.nio.ByteBuffer;
+import java.util.Map;
 
 import org.apache.comet.NativeBase;
 
@@ -258,7 +259,8 @@ public final class Native extends NativeBase {
       byte[] dataSchema,
       String sessionTimezone,
       int batchSize,
-      boolean caseSensitive);
+      boolean caseSensitive,
+      Map<String, String> objectStoreOptions);
 
   // arrow native version of read batch
   /**

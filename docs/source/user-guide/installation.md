@@ -61,12 +61,12 @@ Cloud Service Providers.
 Comet jar files are available in [Maven Central](https://central.sonatype.com/namespace/org.apache.datafusion) for amd64 and arm64 architectures for Linux. For Apple macOS, it
 is currently necessary to build from source.
 
-Here are the direct links for downloading the Comet 0.7.0 jar file.
+Here are the direct links for downloading the Comet 0.9.0 jar file.
 
-- [Comet plugin for Spark 3.4 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.12/0.7.0/comet-spark-spark3.4_2.12-0.7.0.jar)
-- [Comet plugin for Spark 3.4 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.13/0.7.0/comet-spark-spark3.4_2.13-0.7.0.jar)
-- [Comet plugin for Spark 3.5 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.12/0.7.0/comet-spark-spark3.5_2.12-0.7.0.jar)
-- [Comet plugin for Spark 3.5 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.13/0.7.0/comet-spark-spark3.5_2.13-0.7.0.jar)
+- [Comet plugin for Spark 3.4 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.12/0.9.0/comet-spark-spark3.4_2.12-0.9.0.jar)
+- [Comet plugin for Spark 3.4 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.13/0.9.0/comet-spark-spark3.4_2.13-0.9.0.jar)
+- [Comet plugin for Spark 3.5 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.12/0.9.0/comet-spark-spark3.5_2.12-0.9.0.jar)
+- [Comet plugin for Spark 3.5 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.13/0.9.0/comet-spark-spark3.5_2.13-0.9.0.jar)
 
 ## Building from source
 
@@ -84,7 +84,7 @@ See the [Comet Kubernetes Guide](kubernetes.md) guide.
 Make sure `SPARK_HOME` points to the same Spark version as Comet was built for.
 
 ```shell
-export COMET_JAR=spark/target/comet-spark-spark3.5_2.12-0.9.0-SNAPSHOT.jar
+export COMET_JAR=spark/target/comet-spark-spark3.5_2.12-0.10.0-SNAPSHOT.jar
 
 $SPARK_HOME/bin/spark-shell \
     --jars $COMET_JAR \
@@ -140,7 +140,7 @@ explicitly contain Comet otherwise Spark may use a different class-loader for th
 components which will then fail at runtime. For example:
 
 ```
---driver-class-path spark/target/comet-spark-spark3.5_2.12-0.9.0-SNAPSHOT.jar
+--driver-class-path spark/target/comet-spark-spark3.5_2.12-0.10.0-SNAPSHOT.jar
 ```
 
 Some cluster managers may require additional configuration, see <https://spark.apache.org/docs/latest/cluster-overview.html>

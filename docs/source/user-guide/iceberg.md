@@ -39,7 +39,7 @@ make release
 Set `COMET_JAR` env var:
 
 ```shell
-export COMET_JAR=`pwd`/spark/target/comet-spark-spark3.5_2.12-0.9.0-SNAPSHOT.jar
+export COMET_JAR=`pwd`/spark/target/comet-spark-spark3.5_2.12-0.10.0-SNAPSHOT.jar
 ```
 
 ## Build Iceberg
@@ -52,7 +52,7 @@ git clone git@github.com:apache/iceberg.git
 
 It will be necessary to make some small changes to Iceberg:
 
-- Update Gradle files to change Comet version to `0.9.0-SNAPSHOT`.
+- Update Gradle files to change Comet version to `0.10.0-SNAPSHOT`.
 - Replace `import org.apache.comet.shaded.arrow.c.CometSchemaImporter;` with `import org.apache.comet.CometSchemaImporter;`
 - Modify `SparkBatchQueryScan` so that it implements the `SupportsComet` interface
 - Stop shading Parquet by commenting out the following lines in the iceberg-spark build:
@@ -115,7 +115,7 @@ This should produce the following output:
 scala> spark.sql(s"SELECT * from t1").show()
 25/04/28 07:29:37 INFO core/src/lib.rs: Comet native library version 0.9.0 initialized
 25/04/28 07:29:37 WARN CometSparkSessionExtensions$CometExecRule: Comet cannot execute some parts of this plan natively (set spark.comet.explainFallback.enabled=false to disable this logging):
- CollectLimit [COMET: CollectLimit is not supported]
+ CollectLimit
 +-  Project [COMET: toprettystring is not supported]
    +- CometScanWrapper
 

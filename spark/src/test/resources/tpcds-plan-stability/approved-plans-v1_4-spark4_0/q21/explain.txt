@@ -75,7 +75,7 @@ Condition : (((isnotnull(i_current_price#10) AND (i_current_price#10 >= 0.99)) A
 
 (10) CometProject
 Input [3]: [i_item_sk#8, i_item_id#9, i_current_price#10]
-Arguments: [i_item_sk#8, i_item_id#11], [i_item_sk#8, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_item_id#9, 16, true, false, true) AS i_item_id#11]
+Arguments: [i_item_sk#8, i_item_id#11], [i_item_sk#8, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_item_id#9, 16)) AS i_item_id#11]
 
 (11) CometBroadcastExchange
 Input [2]: [i_item_sk#8, i_item_id#11]

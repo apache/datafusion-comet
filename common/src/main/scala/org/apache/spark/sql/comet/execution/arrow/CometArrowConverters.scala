@@ -19,7 +19,7 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
-import org.apache.arrow.memory.{BufferAllocator, RootAllocator}
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.types.pojo.Schema
 import org.apache.spark.TaskContext
@@ -29,12 +29,10 @@ import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch}
 
+import org.apache.comet.CometArrowAllocator
 import org.apache.comet.vector.NativeUtil
 
 object CometArrowConverters extends Logging {
-  // TODO: we should reuse the same root allocator in the comet code base?
-  private val rootAllocator: BufferAllocator = new RootAllocator(Long.MaxValue)
-
   // This is similar how Spark converts internal row to Arrow format except that it is transforming
   // the result batch to Comet's ColumnarBatch instead of serialized bytes.
   // There's another big difference that Comet may consume the ColumnarBatch by exporting it to
@@ -56,7 +54,7 @@ object CometArrowConverters extends Logging {
     protected val arrowSchema: Schema = Utils.toArrowSchema(schema, timeZoneId)
     // Reuse the same root allocator here.
     protected val allocator: BufferAllocator =
-      rootAllocator.newChildAllocator(s"to${this.getClass.getSimpleName}", 0, Long.MaxValue)
+      CometArrowAllocator.newChildAllocator(s"to${this.getClass.getSimpleName}", 0, Long.MaxValue)
     protected val root: VectorSchemaRoot = VectorSchemaRoot.create(arrowSchema, allocator)
     protected val arrowWriter: ArrowWriter = ArrowWriter.create(root)
 

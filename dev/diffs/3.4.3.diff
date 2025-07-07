@@ -7,7 +7,7 @@ index d3544881af1..5cc127f064d 100644
      <ivy.version>2.5.1</ivy.version>
      <oro.version>2.0.8</oro.version>
 +    <spark.version.short>3.4</spark.version.short>
-+    <comet.version>0.9.0-SNAPSHOT</comet.version>
++    <comet.version>0.10.0-SNAPSHOT</comet.version>
      <!--
      If you changes codahale.metrics.version, you also need to change
      the link to metrics.dropwizard.io in docs/monitoring.md.
@@ -1890,7 +1890,7 @@ index 07e2849ce6f..3e73645b638 100644
        ParquetOutputFormat.WRITER_VERSION -> ParquetProperties.WriterVersion.PARQUET_2_0.toString
      )
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
-index 104b4e416cd..0bd2e24e387 100644
+index 104b4e416cd..37ea65081e4 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 @@ -1096,7 +1096,11 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
@@ -1942,7 +1942,17 @@ index 104b4e416cd..0bd2e24e387 100644
        }
      }
    }
-@@ -1985,7 +1998,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -1744,7 +1757,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+     }
+   }
+ 
+-  test("SPARK-17091: Convert IN predicate to Parquet filter push-down") {
++  test("SPARK-17091: Convert IN predicate to Parquet filter push-down",
++    IgnoreCometNativeScan("Comet has different push-down behavior")) {
+     val schema = StructType(Seq(
+       StructField("a", IntegerType, nullable = false)
+     ))
+@@ -1985,7 +1999,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
      }
    }
  
@@ -1952,7 +1962,7 @@ index 104b4e416cd..0bd2e24e387 100644
      // block 1:
      //                      null count  min                                       max
      // page-0                         0  0                                         99
-@@ -2045,7 +2059,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -2045,7 +2060,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
      }
    }
  
@@ -1962,7 +1972,7 @@ index 104b4e416cd..0bd2e24e387 100644
      withTempPath { dir =>
        val path = dir.getCanonicalPath
        spark.range(100).selectExpr("id * 2 AS id")
-@@ -2277,7 +2292,11 @@ class ParquetV1FilterSuite extends ParquetFilterSuite {
+@@ -2277,7 +2293,11 @@ class ParquetV1FilterSuite extends ParquetFilterSuite {
            assert(pushedParquetFilters.exists(_.getClass === filterClass),
              s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
  
@@ -1975,7 +1985,7 @@ index 104b4e416cd..0bd2e24e387 100644
          } else {
            assert(selectedFilters.isEmpty, "There is filter pushed down")
          }
-@@ -2337,7 +2356,11 @@ class ParquetV2FilterSuite extends ParquetFilterSuite {
+@@ -2337,7 +2357,11 @@ class ParquetV2FilterSuite extends ParquetFilterSuite {
            assert(pushedParquetFilters.exists(_.getClass === filterClass),
              s"${pushedParquetFilters.map(_.getClass).toList} did not contain ${filterClass}.")
  
@@ -2690,7 +2700,7 @@ index abe606ad9c1..2d930b64cca 100644
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-index dd55fcfe42c..cdeef29df48 100644
+index dd55fcfe42c..a1d390c93d0 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 @@ -27,6 +27,7 @@ import scala.concurrent.duration._
@@ -2718,7 +2728,7 @@ index dd55fcfe42c..cdeef29df48 100644
      if (testTags.exists(_.isInstanceOf[DisableAdaptiveExecution])) {
        super.test(testName, testTags: _*) {
          withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
-@@ -126,7 +128,26 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
+@@ -126,7 +128,28 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
          }
        }
      } else {
@@ -2727,8 +2737,10 @@ index dd55fcfe42c..cdeef29df48 100644
 +        ignore(testName + " (disabled when Comet is on)", testTags: _*)(testFun)
 +      } else {
 +        val cometScanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get(conf)
-+        val isNativeIcebergCompat = cometScanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT
-+        val isNativeDataFusion = cometScanImpl == CometConf.SCAN_NATIVE_DATAFUSION
++        val isNativeIcebergCompat = cometScanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT ||
++          cometScanImpl == CometConf.SCAN_AUTO
++        val isNativeDataFusion = cometScanImpl == CometConf.SCAN_NATIVE_DATAFUSION ||
++          cometScanImpl == CometConf.SCAN_AUTO
 +        if (isCometEnabled && isNativeIcebergCompat &&
 +          testTags.exists(_.isInstanceOf[IgnoreCometNativeIcebergCompat])) {
 +          ignore(testName + " (disabled for NATIVE_ICEBERG_COMPAT)", testTags: _*)(testFun)
@@ -2746,7 +2758,7 @@ index dd55fcfe42c..cdeef29df48 100644
      }
    }
  
-@@ -242,6 +263,29 @@ private[sql] trait SQLTestUtilsBase
+@@ -242,6 +265,29 @@ private[sql] trait SQLTestUtilsBase
      protected override def _sqlContext: SQLContext = self.spark.sqlContext
    }
  
@@ -2776,7 +2788,7 @@ index dd55fcfe42c..cdeef29df48 100644
    protected override def withSQLConf(pairs: (String, String)*)(f: => Unit): Unit = {
      SparkSession.setActiveSession(spark)
      super.withSQLConf(pairs: _*)(f)
-@@ -434,6 +478,8 @@ private[sql] trait SQLTestUtilsBase
+@@ -434,6 +480,8 @@ private[sql] trait SQLTestUtilsBase
      val schema = df.schema
      val withoutFilters = df.queryExecution.executedPlan.transform {
        case FilterExec(_, child) => child
@@ -2786,10 +2798,10 @@ index dd55fcfe42c..cdeef29df48 100644
  
      spark.internalCreateDataFrame(withoutFilters.execute(), schema)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-index ed2e309fa07..71ba6533c9d 100644
+index ed2e309fa07..a1fb4abe681 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-@@ -74,6 +74,31 @@ trait SharedSparkSessionBase
+@@ -74,6 +74,32 @@ trait SharedSparkSessionBase
        // this rule may potentially block testing of other optimization rules such as
        // ConstantPropagation etc.
        .set(SQLConf.OPTIMIZER_EXCLUDED_RULES.key, ConvertToLocalRelation.ruleName)
@@ -2798,6 +2810,7 @@ index ed2e309fa07..71ba6533c9d 100644
 +      conf
 +        .set("spark.sql.extensions", "org.apache.comet.CometSparkSessionExtensions")
 +        .set("spark.comet.enabled", "true")
++        .set("spark.comet.parquet.respectFilterPushdown", "true")
 +
 +      if (!isCometScanOnly) {
 +        conf
@@ -2856,6 +2869,28 @@ index 52abd248f3a..7a199931a08 100644
        case h: HiveTableScanExec => h.partitionPruningPred.collect {
          case d: DynamicPruningExpression => d.child
        }
+diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
+index de3b1ffccf0..2a76d127093 100644
+--- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
++++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
+@@ -23,14 +23,15 @@ import java.util.concurrent.{Executors, TimeUnit}
+ import org.scalatest.BeforeAndAfterEach
+ 
+ import org.apache.spark.metrics.source.HiveCatalogMetrics
+-import org.apache.spark.sql.QueryTest
++import org.apache.spark.sql.{IgnoreCometSuite, QueryTest}
+ import org.apache.spark.sql.execution.datasources.FileStatusCache
+ import org.apache.spark.sql.hive.test.TestHiveSingleton
+ import org.apache.spark.sql.internal.SQLConf
+ import org.apache.spark.sql.test.SQLTestUtils
+ 
+ class PartitionedTablePerfStatsSuite
+-  extends QueryTest with TestHiveSingleton with SQLTestUtils with BeforeAndAfterEach {
++  extends QueryTest with TestHiveSingleton with SQLTestUtils with BeforeAndAfterEach
++    with IgnoreCometSuite {
+ 
+   override def beforeEach(): Unit = {
+     super.beforeEach()
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala
 index a902cb3a69e..800a3acbe99 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/execution/SQLQuerySuite.scala

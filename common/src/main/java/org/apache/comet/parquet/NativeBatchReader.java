@@ -75,6 +75,7 @@ import org.apache.spark.util.AccumulatorV2;
 
 import org.apache.comet.CometConf;
 import org.apache.comet.CometSchemaImporter;
+import org.apache.comet.objectstore.NativeConfig;
 import org.apache.comet.shims.ShimBatchReader;
 import org.apache.comet.shims.ShimFileFormat;
 import org.apache.comet.vector.CometVector;
@@ -253,6 +254,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     }
     ParquetReadOptions readOptions = builder.build();
 
+    Map<String, String> objectStoreOptions =
+        JavaConverters.mapAsJavaMap(NativeConfig.extractObjectStoreOptions(conf, file.pathUri()));
+
     // TODO: enable off-heap buffer when they are ready
     ReadOptions cometReadOptions = ReadOptions.builder(conf).build();
 
@@ -420,7 +424,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
               serializedDataArrowSchema,
               timeZoneId,
               batchSize,
-              caseSensitive);
+              caseSensitive,
+              objectStoreOptions);
     }
     isInitialized = true;
   }

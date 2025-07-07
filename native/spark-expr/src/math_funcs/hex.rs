@@ -31,7 +31,7 @@ use datafusion::logical_expr::ColumnarValue;
 use std::fmt::Write;
 
 fn hex_int64(num: i64) -> String {
-    format!("{:X}", num)
+    format!("{num:X}")
 }
 
 #[inline(always)]

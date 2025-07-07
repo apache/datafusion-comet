@@ -82,6 +82,8 @@ message Expr {
     GetArrayStructFields get_array_struct_fields = 57;
     ArrayInsert array_insert = 58;
     MathExpr integral_divide = 59;
+    ToPrettyString to_pretty_string = 60;
+    UnaryExpr rand = 61;
   }
 }
 
@@ -280,6 +282,11 @@ message ToJson {
   string timestamp_format = 4;
   string timestamp_ntz_format = 5;
   bool ignore_null_fields = 6;
+}
+
+message ToPrettyString {
+  Expr child = 1;
+  string timezone = 2;
 }
 
 message Hour {
