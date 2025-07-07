@@ -2854,6 +2854,7 @@ mod tests {
             op_struct: Some(OpStruct::Filter(spark_operator::Filter {
                 predicate: Some(expr),
                 use_datafusion_filter: false,
+                wrap_child_in_copy_exec: false,
             })),
         }
     }
