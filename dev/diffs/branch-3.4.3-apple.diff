@@ -1,3 +1,17 @@
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
+index 82f0ef347f8..5fa014f6719 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
+@@ -1101,7 +1101,8 @@ class DataFrameAggregateSuite extends QueryTest
+     }
+   }
+ 
+-  test("SPARK-32038: NormalizeFloatingNumbers should work on distinct aggregate") {
++  test("SPARK-32038: NormalizeFloatingNumbers should work on distinct aggregate",
++    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/1824")) {
+     withTempView("view") {
+       val nan1 = java.lang.Float.intBitsToFloat(0x7f800001)
+       val nan2 = java.lang.Float.intBitsToFloat(0x7fffffff)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
 index 9e598e7a344..cc5224af735 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DynamicPartitionPruningSuite.scala
