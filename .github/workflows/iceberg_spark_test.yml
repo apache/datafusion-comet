@@ -79,6 +79,7 @@ jobs:
     env:
       SPARK_LOCAL_IP: localhost
     steps:
+      - uses: actions/checkout@v4
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-builder
         with:
@@ -110,6 +111,7 @@ jobs:
     env:
       SPARK_LOCAL_IP: localhost
     steps:
+      - uses: actions/checkout@v4
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-builder
         with:
@@ -141,6 +143,7 @@ jobs:
     env:
       SPARK_LOCAL_IP: localhost
     steps:
+      - uses: actions/checkout@v4
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-builder
         with:
