@@ -23,7 +23,7 @@ use chrono::Utc;
 use futures::{stream, stream::BoxStream, StreamExt};
 use jni::{
     objects::{JClass, JObject, JValue},
-    JNIEnv, JavaVM
+    JNIEnv, JavaVM,
 };
 use object_store::{
     path::Path, Attributes, Error as ObjectStoreError, GetOptions, GetRange, GetResult,
@@ -252,7 +252,7 @@ impl ObjectStore for JniObjectStore {
                 path: path_str.clone(),
                 source: format!(
                     "Invalid range {}-{} for file of length {}",
-                   range.start, range.end, total_len
+                    range.start, range.end, total_len
                 )
                 .into(),
             });
