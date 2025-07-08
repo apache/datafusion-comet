@@ -47,6 +47,7 @@ message Operator {
     HashJoin hash_join = 109;
     Window window = 110;
     NativeScan native_scan = 111;
+    Copy copy = 112;
   }
 }
 
@@ -243,4 +244,14 @@ message Window {
   repeated spark.spark_expression.Expr order_by_list = 2;
   repeated spark.spark_expression.Expr partition_by_list = 3;
   Operator child = 4;
+}
+
+
+enum CopyMode {
+  UnpackOrDeepCopy = 0;
+  UnpackOrClone = 1;
+}
+
+message Copy {
+  CopyMode mode = 3;
 }
