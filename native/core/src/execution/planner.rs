@@ -966,24 +966,25 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                let child_possibly_copied: Arc<dyn ExecutionPlan> =
-                    if filter.wrap_child_in_copy_exec {
-                        Self::wrap_in_copy_exec(Arc::clone(&child.native_plan))
-                    } else {
-                        Arc::clone(&child.native_plan)
+                let filter: Arc<dyn ExecutionPlan> =
+                    match (filter.wrap_child_in_copy_exec, filter.use_datafusion_filter) {
+                        (true, true) => Arc::new(DataFusionFilterExec::try_new(
+                            predicate,
+                            Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
+                        )?),
+                        (true, false) => Arc::new(CometFilterExec::try_new(
+                            predicate,
+                            Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
+                        )?),
+                        (false, true) => Arc::new(DataFusionFilterExec::try_new(
+                            predicate,
+                            Arc::clone(&child.native_plan),
+                        )?),
+                        (false, false) => Arc::new(CometFilterExec::try_new(
+                            predicate,
+                            Arc::clone(&child.native_plan),
+                        )?),
                     };
-
-                let filter: Arc<dyn ExecutionPlan> = if filter.use_datafusion_filter {
-                    Arc::new(DataFusionFilterExec::try_new(
-                        predicate,
-                        Arc::clone(&Arc::clone(&child_possibly_copied)),
-                    )?)
-                } else {
-                    Arc::new(CometFilterExec::try_new(
-                        predicate,
-                        Arc::clone(&Arc::clone(&child_possibly_copied)),
-                    )?)
-                };
 
                 Ok((
                     scans,
