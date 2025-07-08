@@ -395,7 +395,7 @@ pub(crate) fn prepare_object_store_with_configs(
         if let Some(scheme) = key
             .strip_prefix("spark.hadoop.fs.")
             .and_then(|k| k.strip_suffix(".impl"))
-       {
+        {
             hadoop_schemes.insert(scheme.to_string());
         }
     }
