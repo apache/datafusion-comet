@@ -142,7 +142,8 @@ object Utils extends CometTypeShim {
       case TimestampNTZType =>
         new ArrowType.Timestamp(TimeUnit.MICROSECOND, null)
       case _ =>
-        throw new UnsupportedOperationException(s"Unsupported data type: ${dt.catalogString}")
+        throw new UnsupportedOperationException(
+          s"Unsupported data type: [${dt.getClass.getName}] ${dt.catalogString}")
     }
 
   /** Maps field from Spark to Arrow. NOTE: timeZoneId required for TimestampType */
