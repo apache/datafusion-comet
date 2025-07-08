@@ -19,6 +19,8 @@
 
 package org.apache.comet.parquet;
 
+import java.util.Map;
+
 public class ParquetColumnSpec {
 
   private final String[] path;
@@ -27,6 +29,8 @@ public class ParquetColumnSpec {
   private final boolean isRepeated;
   private final int maxDefinitionLevel;
   private final int maxRepetitionLevel;
+  private String logicalTypeName;
+  private Map<String, String> logicalTypeParams;
 
   public ParquetColumnSpec(
       String[] path,
@@ -34,13 +38,17 @@ public class ParquetColumnSpec {
       int typeLength,
       boolean isRepeated,
       int maxDefinitionLevel,
-      int maxRepetitionLevel) {
+      int maxRepetitionLevel,
+      String logicalTypeName,
+      Map<String, String> logicalTypeParams) {
     this.path = path;
     this.physicalType = physicalType;
     this.typeLength = typeLength;
     this.isRepeated = isRepeated;
     this.maxDefinitionLevel = maxDefinitionLevel;
     this.maxRepetitionLevel = maxRepetitionLevel;
+    this.logicalTypeName = logicalTypeName;
+    this.logicalTypeParams = logicalTypeParams;
   }
 
   public String[] getPath() {
@@ -65,5 +73,13 @@ public class ParquetColumnSpec {
 
   public int getMaxDefinitionLevel() {
     return maxDefinitionLevel;
+  }
+
+  public String getLogicalTypeName() {
+    return logicalTypeName;
+  }
+
+  public Map<String, String> getLogicalTypeParams() {
+    return logicalTypeParams;
   }
 }
