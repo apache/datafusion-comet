@@ -677,7 +677,13 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
         None
 
-      case div @ IntegralDivide(left, right, _) if supportedDataType(left.dataType) =>
+      case div @ IntegralDivide(leftPrimitive, rightPrimitive, _)
+          if supportedDataType(leftPrimitive.dataType) =>
+        withInfo(
+          div,
+          "Casting to DoubleType to match default Spark behavior and avoid integer overflow ")
+        val left = Cast(leftPrimitive, DoubleType)
+        val right = Cast(rightPrimitive, DoubleType)
         val rightExpr = nullIfWhenPrimitive(right)
 
         val dataType = (left.dataType, right.dataType) match {
