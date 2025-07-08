@@ -73,10 +73,7 @@ use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use datafusion::common::scalar::ScalarStructBuilder;
-use datafusion::common::{
-    tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
-    JoinType as DFJoinType, ScalarValue,
-};
+use datafusion::common::{tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter}, JoinType as DFJoinType, NullEquality, ScalarValue};
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{
@@ -1115,7 +1112,7 @@ impl PhysicalPlanner {
                 let child_copied = Self::wrap_in_copy_exec(Arc::clone(&child.native_plan));
 
                 let sort = Arc::new(
-                    SortExec::new(LexOrdering::new(exprs?), Arc::clone(&child_copied))
+                    SortExec::new(LexOrdering::new(exprs?).expect(""), Arc::clone(&child_copied))
                         .with_fetch(fetch),
                 );
 
@@ -1391,7 +1388,7 @@ impl PhysicalPlanner {
                     sort_options,
                     // null doesn't equal to null in Spark join key. If the join key is
                     // `EqualNullSafe`, Spark will rewrite it during planning.
-                    false,
+                    NullEquality::NullEqualsNull,
                 )?);
 
                 if join.filter.is_some() {
@@ -1459,7 +1456,7 @@ impl PhysicalPlanner {
                     PartitionMode::Partitioned,
                     // null doesn't equal to null in Spark join key. If the join key is
                     // `EqualNullSafe`, Spark will rewrite it during planning.
-                    false,
+                    NullEquality::NullEqualsNull,
                 )?);
 
                 // If the hash join is build right, we need to swap the left and right
@@ -2163,7 +2160,7 @@ impl PhysicalPlanner {
             window_func_name,
             &window_args,
             partition_by,
-            &LexOrdering::new(sort_exprs.to_vec()),
+            &LexOrdering::new(sort_exprs.to_vec()).expect("Cannot create lex ordering"),
             window_frame.into(),
             input_schema.as_ref(),
             false, // TODO: Ignore nulls
@@ -2244,7 +2241,7 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|expr| self.create_sort_expr(expr, Arc::clone(&input_schema)))
                     .collect();
-                let lex_ordering = LexOrdering::from(exprs?);
+                let lex_ordering = LexOrdering::new(exprs?).expect("Failed to creat");
                 Ok(CometPartitioning::RangePartitioning(
                     lex_ordering,
                     range_partition.num_partitions as usize,
@@ -2614,6 +2611,8 @@ mod tests {
     use datafusion::logical_expr::ScalarUDF;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
+    use datafusion::functions_array::make_array::make_array_udf;
+    use datafusion::functions_nested::make_array::MakeArray;
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
@@ -2940,9 +2939,7 @@ mod tests {
     #[test]
     fn test_create_array() {
         let session_ctx = SessionContext::new();
-        session_ctx.register_udf(ScalarUDF::from(
-            datafusion_functions_nested::make_array::MakeArray::new(),
-        ));
+        session_ctx.register_udf(ScalarUDF::from(MakeArray::new()));
         let task_ctx = session_ctx.task_ctx();
         let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
 
