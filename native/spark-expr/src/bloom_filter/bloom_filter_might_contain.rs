@@ -89,10 +89,10 @@ fn execute_might_contain(
     args: &[ColumnarValue],
 ) -> Result<ColumnarValue> {
     match &args[0] {
-        ColumnarValue::Scalar(ScalarValue::Int64(Some(item))) => {
+        ColumnarValue::Scalar(ScalarValue::Int64(optional_value)) => {
             let result = bloom_filter
                 .as_ref()
-                .map(|filter| filter.might_contain_long(*item));
+                .and_then(|filter| optional_value.map(|value| filter.might_contain_long(value)));
             Ok(ColumnarValue::Scalar(ScalarValue::Boolean(result)))
         }
         ColumnarValue::Array(values_array) => {
@@ -159,6 +159,19 @@ mod tests {
 
         let result = execute_might_contain(&Some(filter), &args).unwrap();
         assert_result_eq(result, vec![false]);
+    }
+
+    #[test]
+    fn test_execute_scalar_null() {
+        let mut filter = SparkBloomFilter::from((4, 64));
+        filter.put_long(123);
+        filter.put_long(456);
+        filter.put_long(789);
+
+        let args = [ColumnarValue::Scalar(ScalarValue::Int64(None))];
+
+        let result = execute_might_contain(&Some(filter), &args).unwrap();
+        assert_all_null(result);
     }
 
     #[test]
