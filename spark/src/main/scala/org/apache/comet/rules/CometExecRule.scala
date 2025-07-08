@@ -338,6 +338,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             op.right,
             SerializedPlan(None)))
 
+      case op: CopyExec if op.children.forall(isCometNative) =>
+        newPlanWithProto(op, CometCopyExec(_, op, op.output, op.child, SerializedPlan(None)))
+
       case op: SortMergeJoinExec
           if CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) &&
             !op.children.forall(isCometNative) =>

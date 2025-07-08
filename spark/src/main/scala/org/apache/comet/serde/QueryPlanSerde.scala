@@ -2306,6 +2306,23 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
+      case CopyExec(child, copyMode) => {
+        if (childOp.nonEmpty) {
+          val copyModeBuilder = if (copyMode == UnpackOrDeepCopy) {
+            OperatorOuterClass.CopyMode.UnpackOrClone
+          } else {
+            OperatorOuterClass.CopyMode.UnpackOrDeepCopy
+          }
+          val copyBuilder = OperatorOuterClass.Copy
+            .newBuilder()
+            .setMode(copyModeBuilder)
+          Some(result.setCopy(copyBuilder).build())
+        } else {
+          withInfo(op, child)
+          None
+        }
+      }
+
       case FilterExec(condition, child) if CometConf.COMET_EXEC_FILTER_ENABLED.get(conf) =>
         val cond = exprToProto(condition, child.output)
 
