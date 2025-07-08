@@ -1605,6 +1605,45 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("from_unixtime") {
+    Seq(false, true).foreach { dictionary =>
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary.toString,
+        CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+        val table = "test"
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(
+            path,
+            dictionaryEnabled = dictionary,
+            -128,
+            128,
+            randomSize = 100)
+          withParquetTable(path.toString, table) {
+            // TODO: DataFusion supports only -8334601211038 <= sec <= 8210266876799
+            // https://github.com/apache/datafusion/issues/16594
+            // After fixing this issue, remove the where clause below
+            val where = "where _5 BETWEEN -8334601211038 AND 8210266876799"
+            checkSparkAnswerAndOperator(s"SELECT from_unixtime(_5) FROM $table $where")
+            checkSparkAnswerAndOperator(s"SELECT from_unixtime(_8) FROM $table $where")
+            // TODO: DataFusion toChar does not support Spark datetime pattern format
+            // https://github.com/apache/datafusion/issues/16577
+            // https://github.com/apache/datafusion/issues/14536
+            // After fixing these issues, change checkSparkAnswer to checkSparkAnswerAndOperator
+            checkSparkAnswer(s"SELECT from_unixtime(_5, 'yyyy') FROM $table $where")
+            checkSparkAnswer(s"SELECT from_unixtime(_8, 'yyyy') FROM $table $where")
+            withSQLConf(SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
+              checkSparkAnswerAndOperator(s"SELECT from_unixtime(_5) FROM $table $where")
+              checkSparkAnswerAndOperator(s"SELECT from_unixtime(_8) FROM $table $where")
+              checkSparkAnswer(s"SELECT from_unixtime(_5, 'yyyy') FROM $table $where")
+              checkSparkAnswer(s"SELECT from_unixtime(_8, 'yyyy') FROM $table $where")
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("Decimal binary ops multiply is aligned to Spark") {
     Seq(true, false).foreach { allowPrecisionLoss =>
       withSQLConf(

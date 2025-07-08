@@ -79,11 +79,13 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[ArrayRepeat] -> CometArrayRepeat,
     classOf[ArraysOverlap] -> CometArraysOverlap,
     classOf[ArrayUnion] -> CometArrayUnion,
+    classOf[CreateArray] -> CometCreateArray,
     classOf[Ascii] -> CometAscii,
     classOf[ConcatWs] -> CometConcatWs,
     classOf[Chr] -> CometChr,
     classOf[InitCap] -> CometInitCap,
     classOf[BitLength] -> CometBitLength,
+    classOf[FromUnixTime] -> CometFromUnixTime,
     classOf[Length] -> CometLength,
     classOf[StringInstr] -> CometStringInstr,
     classOf[StringRepeat] -> CometStringRepeat,
@@ -1852,16 +1854,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             .newBuilder()
             .setGetStructField(getStructFieldBuilder)
             .build()
-        }
-
-      case CreateArray(children, _) =>
-        val childExprs = children.map(exprToProtoInternal(_, inputs, binding))
-
-        if (childExprs.forall(_.isDefined)) {
-          scalarFunctionExprToProto("make_array", childExprs: _*)
-        } else {
-          withInfo(expr, "unsupported arguments for CreateArray", children: _*)
-          None
         }
 
       case GetArrayItem(child, ordinal, failOnError) =>
