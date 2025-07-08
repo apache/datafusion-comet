@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use chrono::Utc;
-use futures::{stream, stream::BoxStream, StreamExt};
+use futures::{stream, stream::BoxStream};
 use jni::{
     objects::{JClass, JObject, JValue},
     JNIEnv, JavaVM,

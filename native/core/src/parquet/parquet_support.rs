@@ -392,8 +392,10 @@ pub(crate) fn prepare_object_store_with_configs(
 
     let mut hadoop_schemes = HashSet::new();
     for (key, _) in object_store_configs.iter() {
-        if let Some(scheme) = key.strip_prefix("spark.hadoop.fs.")
-                                 .and_then(|k| k.strip_suffix(".impl")) {
+        if let Some(scheme) = key
+            .strip_prefix("spark.hadoop.fs.")
+            .and_then(|k| k.strip_suffix(".impl"))
+       {
             hadoop_schemes.insert(scheme.to_string());
         }
     }
