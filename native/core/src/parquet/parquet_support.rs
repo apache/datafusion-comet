@@ -37,13 +37,13 @@ use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_spark_expr::EvalMode;
 use object_store::path::Path;
 use object_store::{parse_url, ObjectStore};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use std::{fmt::Debug, hash::Hash, sync::Arc};
 use url::Url;
 
 use super::objectstore;
-use super::objectstore::jni::JniObjectStore;
+use super::objectstore::jni_hdfs::JniObjectStore;
 
 // This file originates from cast.rs. While developing native scan support and implementing
 // SparkSchemaAdapter we observed that Spark's type conversion logic on Parquet reads does not
@@ -390,9 +390,17 @@ pub(crate) fn prepare_object_store_with_configs(
         &url[url::Position::BeforeHost..url::Position::AfterPort],
     );
 
+    let mut hadoop_schemes = HashSet::new();
+    for (key, _) in object_store_configs.iter() {
+        if let Some(scheme) = key.strip_prefix("spark.hadoop.fs.")
+                                 .and_then(|k| k.strip_suffix(".impl")) {
+            hadoop_schemes.insert(scheme.to_string());
+        }
+    }
+
     let (object_store, object_store_path): (Box<dyn ObjectStore>, Path) = if scheme == "hdfs" {
         parse_hdfs_url(&url)
-    } else if scheme == "s3" && use_jni {
+    } else if use_jni && hadoop_schemes.contains(scheme) {
         let base_uri = format!(
             "{}://{}",
             original_scheme,

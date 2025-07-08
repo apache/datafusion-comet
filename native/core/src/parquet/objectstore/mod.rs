@@ -15,5 +15,5 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub mod jni;
+pub mod jni_hdfs;
 pub mod s3;

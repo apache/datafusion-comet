@@ -81,7 +81,7 @@ mod jni_helpers {
     pub fn get_native_class<'local>(
         env: &mut JNIEnv<'local>,
     ) -> Result<JClass<'local>, ObjectStoreError> {
-        env.find_class("org/apache/comet/parquet/Native")
+        env.find_class("org/apache/comet/parquet/JniHDFSBridge")
             .map_err(jni_error)
     }
 }
@@ -98,7 +98,7 @@ mod jni_helpers {
 /// # Returns
 /// Returns `Ok(usize)` with the file size in bytes on success, or an `ObjectStoreError`
 /// if the operation fails.
-pub fn call_get_length(
+pub fn get_length(
     path: &str,
     configs: &HashMap<String, String>,
 ) -> Result<usize, ObjectStoreError> {
@@ -142,7 +142,7 @@ pub fn call_get_length(
 /// # Returns
 /// Returns `Ok(Vec<u8>)` containing the requested bytes on success, or an
 /// `ObjectStoreError` if the operation fails.
-pub fn call_read(
+pub fn read(
     path: &str,
     configs: &HashMap<String, String>,
     offset: usize,
@@ -233,7 +233,7 @@ impl ObjectStore for JniObjectStore {
         options: GetOptions,
     ) -> Result<GetResult, ObjectStoreError> {
         let path_str = self.to_absolute_uri(location);
-        let total_len = call_get_length(&path_str, &self.configs)? as u64;
+        let total_len = get_length(&path_str, &self.configs)? as u64;
 
         let range = match options.range {
             Some(GetRange::Bounded(range)) => range,
@@ -257,7 +257,7 @@ impl ObjectStore for JniObjectStore {
         }
 
         let range_len = (range.end - range.start) as usize;
-        let bytes = call_read(&path_str, &self.configs, range.start as usize, range_len)?;
+        let bytes = read(&path_str, &self.configs, range.start as usize, range_len)?;
 
         Ok(GetResult {
             payload: GetResultPayload::Stream(Box::pin(stream::once(async move {
@@ -300,7 +300,7 @@ impl ObjectStore for JniObjectStore {
         &self,
         _prefix: Option<&Path>,
     ) -> BoxStream<'static, Result<ObjectMeta, ObjectStoreError>> {
-        futures::stream::empty().boxed()
+        todo!()
     }
 
     async fn list_with_delimiter(
@@ -320,7 +320,7 @@ impl ObjectStore for JniObjectStore {
 
     async fn head(&self, location: &Path) -> Result<ObjectMeta, ObjectStoreError> {
         let path = location.to_string();
-        let len = call_get_length(&path, &self.configs)? as usize;
+        let len = get_length(&path, &self.configs)? as usize;
         Ok(ObjectMeta {
             location: location.clone(),
             last_modified: Utc::now(),

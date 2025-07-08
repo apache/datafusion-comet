@@ -36,6 +36,7 @@ publish = false
 
 [dependencies]
 arrow = { workspace = true }
+chrono = { workspace = true }
 parquet = { workspace = true, default-features = false, features = ["experimental"] }
 futures = { workspace = true }
 mimalloc = { version = "*", default-features = false, optional = true }
@@ -50,7 +51,6 @@ lazy_static = "1.4.0"
 prost = "0.13.5"
 jni = "0.21"
 snap = "1.1"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # we disable default features in lz4_flex to force the use of the faster unsafe encoding and decoding implementation
 lz4_flex = { version = "0.11.3", default-features = false }
 zstd = "0.13.3"
