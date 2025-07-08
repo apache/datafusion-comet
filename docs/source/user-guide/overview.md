@@ -30,14 +30,6 @@ The following diagram provides an overview of Comet's architecture.
 
 ![Comet Overview](../_static/images/comet-overview.png)
 
-Comet aims to support:
-
-- a native Parquet implementation, including both reader and writer
-- full implementation of Spark operators, including
-  Filter/Project/Aggregation/Join/Exchange etc.
-- full implementation of Spark built-in expressions.
-- a UDF framework for users to migrate their existing UDF to native
-
 ## Architecture
 
 The following diagram shows how Comet integrates with Apache Spark.
