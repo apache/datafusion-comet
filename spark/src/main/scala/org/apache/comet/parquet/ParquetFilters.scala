@@ -1012,29 +1012,29 @@ class ParquetFilters(
           }
         }
 
-      case sources.StringStartsWith(name, prefix)
-          if pushDownStringPredicate && canMakeFilterOn(name, prefix) =>
-        val arg0 = createNameExpr(name, dataSchema)
-        val arg1 = arg0.flatMap { case (dataType, _) =>
+      case sources.StringStartsWith(attribute, prefix)
+          if pushDownStringPredicate && canMakeFilterOn(attribute, prefix) =>
+        val attributeExpr = createNameExpr(attribute, dataSchema)
+        val prefixExpr = attributeExpr.flatMap { case (dataType, _) =>
           createValueExpr(prefix, dataType)
         }
-        scalarFunctionExprToProto("starts_with", Some(arg0.get._2), arg1)
+        scalarFunctionExprToProto("starts_with", Some(attributeExpr.get._2), prefixExpr)
 
-      case sources.StringEndsWith(name, suffix)
-          if pushDownStringPredicate && canMakeFilterOn(name, suffix) =>
-        val arg0 = createNameExpr(name, dataSchema)
-        val arg1 = arg0.flatMap { case (dataType, _) =>
+      case sources.StringEndsWith(attribute, suffix)
+          if pushDownStringPredicate && canMakeFilterOn(attribute, suffix) =>
+        val attributeExpr = createNameExpr(attribute, dataSchema)
+        val suffixExpr = attributeExpr.flatMap { case (dataType, _) =>
           createValueExpr(suffix, dataType)
         }
-        scalarFunctionExprToProto("ends_with", Some(arg0.get._2), arg1)
+        scalarFunctionExprToProto("ends_with", Some(attributeExpr.get._2), suffixExpr)
 
-      case sources.StringContains(name, value)
-          if pushDownStringPredicate && canMakeFilterOn(name, value) =>
-        val arg0 = createNameExpr(name, dataSchema)
-        val arg1 = arg0.flatMap { case (dataType, _) =>
+      case sources.StringContains(attribute, value)
+          if pushDownStringPredicate && canMakeFilterOn(attribute, value) =>
+        val attributeExpr = createNameExpr(attribute, dataSchema)
+        val valueExpr = attributeExpr.flatMap { case (dataType, _) =>
           createValueExpr(value, dataType)
         }
-        scalarFunctionExprToProto("contains", Some(arg0.get._2), arg1)
+        scalarFunctionExprToProto("contains", Some(attributeExpr.get._2), valueExpr)
 
       case _ => None
     }

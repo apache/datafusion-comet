@@ -1025,20 +1025,20 @@ object QueryPlanSerde extends Logging with CometExprShim {
           binding,
           (builder, binaryExpr) => builder.setRlike(binaryExpr))
 
-      case StartsWith(left, right) =>
-        val arg0 = exprToProtoInternal(left, inputs, binding)
-        val arg1 = exprToProtoInternal(right, inputs, binding)
-        scalarFunctionExprToProto("starts_with", arg0, arg1)
+      case StartsWith(attribute, prefix) =>
+        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
+        val prefixExpr = exprToProtoInternal(prefix, inputs, binding)
+        scalarFunctionExprToProto("starts_with", attributeExpr, prefixExpr)
 
-      case EndsWith(left, right) =>
-        val arg0 = exprToProtoInternal(left, inputs, binding)
-        val arg1 = exprToProtoInternal(right, inputs, binding)
-        scalarFunctionExprToProto("ends_with", arg0, arg1)
+      case EndsWith(attribute, suffix) =>
+        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
+        val suffixExpr = exprToProtoInternal(suffix, inputs, binding)
+        scalarFunctionExprToProto("ends_with", attributeExpr, suffixExpr)
 
-      case Contains(left, right) =>
-        val arg0 = exprToProtoInternal(left, inputs, binding)
-        val arg1 = exprToProtoInternal(right, inputs, binding)
-        scalarFunctionExprToProto("contains", arg0, arg1)
+      case Contains(attribute, value) =>
+        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
+        val valueExpr = exprToProtoInternal(value, inputs, binding)
+        scalarFunctionExprToProto("contains", attributeExpr, valueExpr)
 
       case StringSpace(child) =>
         createUnaryExpr(
