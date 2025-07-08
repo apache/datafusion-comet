@@ -101,8 +101,8 @@ impl SparkBitArray {
     }
 }
 
-pub fn num_words(num_bits: i32) -> i32 {
-    (num_bits as usize).div_ceil(64) as i32
+pub fn num_words(num_bits: usize) -> usize {
+    num_bits.div_ceil(64)
 }
 
 #[cfg(test)]

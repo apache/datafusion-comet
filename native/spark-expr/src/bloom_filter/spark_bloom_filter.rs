@@ -44,8 +44,8 @@ pub fn optimal_num_hash_functions(expected_items: i32, num_bits: i32) -> i32 {
 impl From<(i32, i32)> for SparkBloomFilter {
     /// Creates an empty SparkBloomFilter given number of hash functions and bits.
     fn from((num_hash_functions, num_bits): (i32, i32)) -> Self {
-        let num_words = spark_bit_array::num_words(num_bits);
-        let bits = vec![0u64; num_words as usize];
+        let num_words = spark_bit_array::num_words(num_bits as usize);
+        let bits = vec![0u64; num_words];
         Self {
             bits: SparkBitArray::new(bits),
             num_hash_functions: num_hash_functions as u32,
