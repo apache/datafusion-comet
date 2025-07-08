@@ -279,6 +279,7 @@ impl PhysicalPlanner {
                     expr.return_type.as_ref().map(to_arrow_datatype).unwrap(),
                     input_schema,
                     expr.fail_on_error,
+                    &self.session_ctx.state(),
                 );
                 result.map_err(|e| GeneralError(e.to_string()))
             }
@@ -920,6 +921,7 @@ impl PhysicalPlanner {
                     func_name,
                     data_type.clone(),
                     &self.session_ctx.state(),
+                    None,
                 )?;
                 Ok(Arc::new(ScalarFunctionExpr::new(
                     func_name,
@@ -2320,8 +2322,12 @@ impl PhysicalPlanner {
                 }
             };
 
-        let fun_expr =
-            create_comet_physical_fun(fun_name, data_type.clone(), &self.session_ctx.state())?;
+        let fun_expr = create_comet_physical_fun(
+            fun_name,
+            data_type.clone(),
+            &self.session_ctx.state(),
+            None,
+        )?;
 
         let args = args
             .into_iter()

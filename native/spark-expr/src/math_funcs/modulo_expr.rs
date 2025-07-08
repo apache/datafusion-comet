@@ -15,70 +15,112 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::IfExpr;
+use crate::{create_comet_physical_fun, IfExpr};
 use crate::{divide_by_zero_error, Cast, EvalMode, SparkCastOptions};
-use arrow::array::*;
+use arrow::compute::kernels::numeric::rem;
 use arrow::datatypes::*;
-use datafusion::common::{internal_err, DataFusionError, Result, ScalarValue};
-use datafusion::logical_expr::binary::BinaryTypeCoercer;
-use datafusion::logical_expr::sort_properties::ExprProperties;
-use datafusion::logical_expr::statistics::Distribution::Gaussian;
-use datafusion::logical_expr::statistics::{
-    combine_gaussians, new_generic_from_binary_op, Distribution,
-};
-use datafusion::logical_expr_common::interval_arithmetic::apply_operator;
+use datafusion::common::{exec_err, internal_err, DataFusionError, Result, ScalarValue};
+use datafusion::execution::FunctionRegistry;
 use datafusion::physical_expr::expressions::{lit, BinaryExpr};
-use datafusion::physical_expr::intervals::cp_solver::propagate_arithmetic;
+use datafusion::physical_expr::ScalarFunctionExpr;
 use datafusion::physical_expr_common::datum::{apply, apply_cmp_for_nested};
 use datafusion::{
-    logical_expr::{interval_arithmetic::Interval, ColumnarValue, Operator},
+    logical_expr::{ColumnarValue, Operator},
     physical_expr::PhysicalExpr,
 };
 use std::cmp::max;
-use std::hash::Hash;
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
-#[derive(Debug, Eq)]
-pub struct ModuloExpr {
+/// Spark-compliant modulo function. If `fail_on_error` is true, then this function computes modulo
+/// in ANSI mode and returns an error on division by zero, otherwise it returns `NULL` for such
+/// cases.
+pub fn spark_modulo(args: &[ColumnarValue], fail_on_error: bool) -> Result<ColumnarValue> {
+    if args.len() != 2 {
+        return exec_err!("modulo expects exactly two arguments");
+    }
+
+    let lhs = &args[0];
+    let rhs = &args[1];
+
+    let left_data_type = lhs.data_type();
+    let right_data_type = rhs.data_type();
+
+    if left_data_type.is_nested() {
+        if right_data_type != left_data_type {
+            return internal_err!("Type mismatch for spark modulo operation");
+        }
+        return apply_cmp_for_nested(Operator::Modulo, lhs, rhs);
+    }
+
+    match apply(lhs, rhs, rem) {
+        Ok(result) => Ok(result),
+        Err(e) if e.to_string().contains("Divide by zero") && fail_on_error => {
+            // Return Spark-compliant divide by zero error.
+            Err(divide_by_zero_error().into())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+pub fn create_modulo_expr(
     left: Arc<dyn PhysicalExpr>,
     right: Arc<dyn PhysicalExpr>,
-
-    // Specifies whether the modulo expression should fail on error. If true, the modulo expression
-    // will be ANSI-compliant.
+    data_type: DataType,
+    input_schema: SchemaRef,
     fail_on_error: bool,
-}
+    registry: &dyn FunctionRegistry,
+) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
+    // For non-ANSI mode, wrap the right expression such that any zero value is replaced with `NULL`
+    // to prevent divide by zero error.
+    let right_non_ansi_safe = if !fail_on_error {
+        null_if_zero_primitive(right, &input_schema)?
+    } else {
+        right
+    };
 
-impl PartialEq for ModuloExpr {
-    fn eq(&self, other: &Self) -> bool {
-        self.left.eq(&other.left)
-            && self.right.eq(&other.right)
-            && self.fail_on_error.eq(&other.fail_on_error)
-    }
-}
-impl Hash for ModuloExpr {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.left.hash(state);
-        self.right.hash(state);
-        self.fail_on_error.hash(state);
-    }
-}
+    // If the data type is `Decimal128` and the (scale + integral part) exceeds the maximum allowed
+    // for `Decimal128`, then cast both operands to `Decimal256` before creating the modulo scalar
+    // expression, otherwise, create the modulo scalar expression directly.
+    match (
+        left.data_type(&input_schema),
+        right_non_ansi_safe.data_type(&input_schema),
+    ) {
+        (Ok(DataType::Decimal128(p1, s1)), Ok(DataType::Decimal128(p2, s2)))
+            if max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8) > DECIMAL128_MAX_PRECISION =>
+        {
+            let left_256 = Arc::new(Cast::new(
+                left,
+                DataType::Decimal256(p1, s1),
+                SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+            ));
+            let right_256 = Arc::new(Cast::new(
+                right_non_ansi_safe,
+                DataType::Decimal256(p2, s2),
+                SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+            ));
 
-fn is_primitive_datatype(dt: &DataType) -> bool {
-    matches!(
-        dt,
-        DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::Int64
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32
-            | DataType::UInt64
-            | DataType::Float32
-            | DataType::Float64
-            | DataType::Decimal128(_, _)
-            | DataType::Decimal256(_, _)
-    )
+            let modulo_scalar_func = create_modulo_scalar_function(
+                left_256,
+                right_256,
+                &data_type,
+                registry,
+                fail_on_error,
+            )?;
+
+            Ok(Arc::new(Cast::new(
+                modulo_scalar_func,
+                data_type,
+                SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+            )))
+        }
+        _ => create_modulo_scalar_function(
+            left,
+            right_non_ansi_safe,
+            &data_type,
+            registry,
+            fail_on_error,
+        ),
+    }
 }
 
 fn null_if_zero_primitive(
@@ -104,7 +146,7 @@ fn null_if_zero_primitive(
             _ => return Ok(expression),
         };
 
-        // Create an expression: if (expression == 0) then null else expression.
+        // Create an expression like - `if (eval(expr) == Literal(0)) then NULL else eval(expr)`.
         // This expression evaluates to null for rows with zero values to prevent divide by zero
         // error.
         let eq_expr = Arc::new(BinaryExpr::new(
@@ -113,193 +155,59 @@ fn null_if_zero_primitive(
             lit(zero),
         ));
         let null_literal = lit(ScalarValue::try_new_null(&expr_data_type)?);
-        let exp = Arc::new(IfExpr::new(eq_expr, null_literal, expression));
-        Ok(exp)
+        let if_expr = Arc::new(IfExpr::new(eq_expr, null_literal, expression));
+        Ok(if_expr)
     } else {
         Ok(expression)
     }
 }
 
-pub fn create_modulo_expr(
+fn is_primitive_datatype(dt: &DataType) -> bool {
+    matches!(
+        dt,
+        DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64
+            | DataType::Float32
+            | DataType::Float64
+            | DataType::Decimal128(_, _)
+            | DataType::Decimal256(_, _)
+    )
+}
+
+fn create_modulo_scalar_function(
     left: Arc<dyn PhysicalExpr>,
     right: Arc<dyn PhysicalExpr>,
-    data_type: DataType,
-    input_schema: SchemaRef,
+    data_type: &DataType,
+    registry: &dyn FunctionRegistry,
     fail_on_error: bool,
 ) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
-    // For non-ANSI mode, wrap the right expression with null-if-zero logic
-    let wrapped_right = if !fail_on_error {
-        null_if_zero_primitive(right, &input_schema)?
-    } else {
-        right
-    };
-
-    // If the data type is Decimal128 and the precision/scale exceeds the maximum allowed for
-    // Decimal256, then cast both operands to Decimal256 before creating the modulo expression,
-    // otherwise, create the modulo expression directly.
-    match (
-        left.data_type(&input_schema),
-        wrapped_right.data_type(&input_schema),
-    ) {
-        (Ok(DataType::Decimal128(p1, s1)), Ok(DataType::Decimal128(p2, s2)))
-            if max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8) > DECIMAL128_MAX_PRECISION =>
-        {
-            let left = Arc::new(Cast::new(
-                left,
-                DataType::Decimal256(p1, s1),
-                SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
-            ));
-            let right = Arc::new(Cast::new(
-                wrapped_right,
-                DataType::Decimal256(p2, s2),
-                SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
-            ));
-            let child = Arc::new(ModuloExpr::new(left, right, fail_on_error));
-            Ok(Arc::new(Cast::new(
-                child,
-                data_type,
-                SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
-            )))
-        }
-        _ => Ok(Arc::new(ModuloExpr::new(
-            left,
-            wrapped_right,
-            fail_on_error,
-        ))),
-    }
-}
-
-impl ModuloExpr {
-    pub fn new(
-        left: Arc<dyn PhysicalExpr>,
-        right: Arc<dyn PhysicalExpr>,
-        fail_on_error: bool,
-    ) -> Self {
-        Self {
-            left,
-            right,
-            fail_on_error,
-        }
-    }
-}
-
-impl std::fmt::Display for ModuloExpr {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "({})", self.left.as_ref())?;
-        write!(f, " {} ", &Operator::Modulo)?;
-        write!(f, "({})", self.right.as_ref())?;
-        Ok(())
-    }
-}
-
-impl PhysicalExpr for ModuloExpr {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn data_type(&self, input_schema: &Schema) -> Result<DataType> {
-        BinaryTypeCoercer::new(
-            &self.left.data_type(input_schema)?,
-            &Operator::Modulo,
-            &self.right.data_type(input_schema)?,
-        )
-        .get_result_type()
-    }
-
-    fn nullable(&self, input_schema: &Schema) -> Result<bool> {
-        Ok(self.left.nullable(input_schema)? || self.right.nullable(input_schema)?)
-    }
-
-    fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
-        use arrow::compute::kernels::numeric::*;
-
-        let lhs = self.left.evaluate(batch)?;
-        let rhs = self.right.evaluate(batch)?;
-
-        let left_data_type = lhs.data_type();
-        let right_data_type = rhs.data_type();
-
-        if left_data_type.is_nested() {
-            if right_data_type != left_data_type {
-                return internal_err!("type mismatch for modulo operation");
-            }
-            return apply_cmp_for_nested(Operator::Modulo, &lhs, &rhs);
-        }
-
-        match apply(&lhs, &rhs, rem) {
-            Ok(result) => Ok(result),
-            Err(e) if e.to_string().contains("Divide by zero") && self.fail_on_error => {
-                // Return Spark-compliant divide by zero error.
-                Err(divide_by_zero_error().into())
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
-        vec![&self.left, &self.right]
-    }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn PhysicalExpr>>,
-    ) -> Result<Arc<dyn PhysicalExpr>> {
-        Ok(Arc::new(ModuloExpr::new(
-            Arc::clone(&children[0]),
-            Arc::clone(&children[1]),
-            self.fail_on_error,
-        )))
-    }
-
-    fn evaluate_bounds(&self, children: &[&Interval]) -> Result<Interval> {
-        let left_interval = children[0];
-        let right_interval = children[1];
-        apply_operator(&Operator::Modulo, left_interval, right_interval)
-    }
-
-    fn propagate_constraints(
-        &self,
-        interval: &Interval,
-        children: &[&Interval],
-    ) -> Result<Option<Vec<Interval>>> {
-        let left_interval = children[0];
-        let right_interval = children[1];
-        Ok(
-            propagate_arithmetic(&Operator::Modulo, interval, left_interval, right_interval)?
-                .map(|(left, right)| vec![left, right]),
-        )
-    }
-
-    fn evaluate_statistics(&self, children: &[&Distribution]) -> Result<Distribution> {
-        let (left, right) = (children[0], children[1]);
-
-        if let (Gaussian(left), Gaussian(right)) = (left, right) {
-            if let Some(result) = combine_gaussians(&Operator::Modulo, left, right)? {
-                return Ok(Gaussian(result));
-            }
-        }
-
-        // Fall back to an unknown distribution with only summary statistics.
-        new_generic_from_binary_op(&Operator::Modulo, left, right)
-    }
-
-    fn get_properties(&self, _children: &[ExprProperties]) -> Result<ExprProperties> {
-        Ok(ExprProperties::new_unknown())
-    }
-
-    fn fmt_sql(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.left.as_ref().fmt_sql(f)?;
-        write!(f, " {} ", &Operator::Modulo)?;
-        self.right.as_ref().fmt_sql(f)?;
-        Ok(())
-    }
+    let func_name = "spark_modulo";
+    let modulo_expr =
+        create_comet_physical_fun(func_name, data_type.clone(), registry, Some(fail_on_error))?;
+    Ok(Arc::new(ScalarFunctionExpr::new(
+        func_name,
+        modulo_expr,
+        vec![left, right],
+        Arc::new(Field::new(func_name, data_type.clone(), true)),
+    )))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::{
+        Array, ArrayRef, Decimal128Array, Decimal128Builder, Int32Array, PrimitiveArray,
+        RecordBatch,
+    };
     use datafusion::logical_expr::ColumnarValue;
     use datafusion::physical_expr::expressions::{Column, Literal};
+    use datafusion::prelude::SessionContext;
 
     fn with_fail_on_error<F: Fn(bool)>(test_fn: F) {
         for fail_on_error in [true, false] {
@@ -380,12 +288,14 @@ mod tests {
             let left_expr = Arc::new(Column::new("a", 0));
             let right_expr = Arc::new(Column::new("b", 1));
 
+            let session_ctx = SessionContext::new();
             let modulo_expr = create_modulo_expr(
                 left_expr,
                 right_expr,
                 DataType::Int32,
                 schema,
                 fail_on_error,
+                &session_ctx.state(),
             )
             .unwrap();
 
@@ -421,12 +331,14 @@ mod tests {
             let left_expr = Arc::new(Column::new("a", 0));
             let right_expr = Arc::new(Column::new("b", 1));
 
+            let session_ctx = SessionContext::new();
             let modulo_expr = create_modulo_expr(
                 left_expr,
                 right_expr,
                 DataType::Decimal128(18, 4),
                 schema,
                 fail_on_error,
+                &session_ctx.state(),
             )
             .unwrap();
 
@@ -455,12 +367,14 @@ mod tests {
             let left_expr = Arc::new(Column::new("a", 0));
             let right_expr = Arc::new(Column::new("b", 1));
 
+            let session_ctx = SessionContext::new();
             let modulo_expr = create_modulo_expr(
                 left_expr,
                 right_expr,
                 DataType::Int32,
                 schema,
                 fail_on_error,
+                &session_ctx.state(),
             )
             .unwrap();
 
@@ -497,12 +411,14 @@ mod tests {
             ));
 
             // Computes modulo of (a / b) % (0 / c).
+            let session_ctx = SessionContext::new();
             let modulo_expr = create_modulo_expr(
                 left_expr,
                 right_expr,
                 DataType::Int32,
                 schema,
                 fail_on_error,
+                &session_ctx.state(),
             )
             .unwrap();
 
