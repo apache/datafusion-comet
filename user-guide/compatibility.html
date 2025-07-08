@@ -124,11 +124,6 @@ under the License.
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="kubernetes.html">
-   Kubernetes Guide
-  </a>
- </li>
- <li class="toctree-l1">
   <a class="reference internal" href="datasources.html">
    Supported Data Sources
   </a>
@@ -166,6 +161,16 @@ under the License.
  <li class="toctree-l1">
   <a class="reference internal" href="metrics.html">
    Metrics Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="iceberg.html">
+   Iceberg Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="kubernetes.html">
+   Kubernetes Guide
   </a>
  </li>
 </ul>
@@ -310,12 +315,12 @@ under the License.
  </li>
  <li class="toc-h2 nav-item toc-entry">
   <a class="reference internal nav-link" href="#ansi-mode">
-   ANSI mode
+   ANSI Mode
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#floating-number-comparison">
-   Floating number comparison
+  <a class="reference internal nav-link" href="#floating-point-number-comparison">
+   Floating-point Number Comparison
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
@@ -419,7 +424,11 @@ TO MODIFY THIS CONTENT MAKE SURE THAT YOU MAKE YOUR CHANGES TO THE TEMPLATE FILE
 <section id="parquet-scans">
 <h3>Parquet Scans<a class="headerlink" href="#parquet-scans" title="Link to this heading">¶</a></h3>
 <p>Comet currently has three distinct implementations of the Parquet scan operator. The configuration property
-<code class="docutils literal notranslate"><span class="pre">spark.comet.scan.impl</span></code> is used to select an implementation.</p>
+<code class="docutils literal notranslate"><span class="pre">spark.comet.scan.impl</span></code> is used to select an implementation. The default setting is <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.impl=auto</span></code>, and
+Comet will choose the most appropriate implementation based on the Parquet schema and other Comet configuration
+settings. Most users should not need to change this setting. However, it is possible to force Comet to try and use
+a particular implementation for all scan operations by setting this configuration property to one of the following
+implementations.</p>
 <table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Implementation</p></th>
@@ -428,17 +437,17 @@ TO MODIFY THIS CONTENT MAKE SURE THAT YOU MAKE YOUR CHANGES TO THE TEMPLATE FILE
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">native_comet</span></code></p></td>
-<td><p>This is the default implementation. It provides strong compatibility with Spark but does not support complex types.</p></td>
+<td><p>This implementation provides strong compatibility with Spark but does not support complex types. This is the original scan implementation in Comet and may eventually be removed.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code></p></td>
-<td><p>This implementation delegates to DataFusion’s <code class="docutils literal notranslate"><span class="pre">DataSourceExec</span></code>.</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code></p></td>
+<td><p>This implementation delegates to DataFusion’s <code class="docutils literal notranslate"><span class="pre">DataSourceExec</span></code> but uses a hybrid approach of JVM and native code. This scan is designed to be integrated with Iceberg in the future.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code></p></td>
-<td><p>This implementation also delegates to DataFusion’s <code class="docutils literal notranslate"><span class="pre">DataSourceExec</span></code> but uses a hybrid approach of JVM and native code. This scan is designed to be integrated with Iceberg in the future.</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code></p></td>
+<td><p>This experimental implementation delegates to DataFusion’s <code class="docutils literal notranslate"><span class="pre">DataSourceExec</span></code> for full native execution. There are known compatibility issues when using this scan.</p></td>
 </tr>
 </tbody>
 </table>
-<p>The new (and currently experimental) <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> and <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> scans provide the following benefits over the <code class="docutils literal notranslate"><span class="pre">native_comet</span></code>
+<p>The <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> and <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> scans provide the following benefits over the <code class="docutils literal notranslate"><span class="pre">native_comet</span></code>
 implementation:</p>
 <ul class="simple">
 <li><p>Leverages the DataFusion community’s ongoing improvements to <code class="docutils literal notranslate"><span class="pre">DataSourceExec</span></code></p></li>
@@ -446,40 +455,36 @@ implementation:</p>
 <li><p>Removes the use of reusable mutable-buffers in Comet, which is complex to maintain</p></li>
 <li><p>Improves performance</p></li>
 </ul>
-<p>The new scans currently have the following limitations:</p>
-<p>Issues common to both <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> and <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code>:</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> and <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> scans share the following limitations:</p>
 <ul class="simple">
 <li><p>When reading Parquet files written by systems other than Spark that contain columns with the logical types <code class="docutils literal notranslate"><span class="pre">UINT_8</span></code>
 or <code class="docutils literal notranslate"><span class="pre">UINT_16</span></code>, Comet will produce different results than Spark because Spark does not preserve or understand these
 logical types. Arrow-based readers, such as DataFusion and Comet do respect these types and read the data as unsigned
-rather than signed. By default, Comet will fall back to Spark when scanning Parquet files containing <code class="docutils literal notranslate"><span class="pre">byte</span></code> or <code class="docutils literal notranslate"><span class="pre">short</span></code>
+rather than signed. By default, Comet will fall back to <code class="docutils literal notranslate"><span class="pre">native_comet</span></code> when scanning Parquet files containing <code class="docutils literal notranslate"><span class="pre">byte</span></code> or <code class="docutils literal notranslate"><span class="pre">short</span></code>
 types (regardless of the logical type). This behavior can be disabled by setting
 <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.allowIncompatible=true</span></code>.</p></li>
-<li><p>There is a known performance issue when pushing filters down to Parquet. See the <a class="reference internal" href="tuning.html"><span class="std std-doc">Comet Tuning Guide</span></a> for more
-information.</p></li>
-<li><p>Reading maps containing complex types can result in errors or incorrect results <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1754">#1754</a></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">PARQUET_FIELD_ID_READ_ENABLED</span></code> is not respected <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1758">#1758</a></p></li>
-<li><p>There are failures in the Spark SQL test suite when enabling these new scans (tracking issues: <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1542">#1542</a> and <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1545">#1545</a>).</p></li>
 <li><p>No support for default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.</p></li>
-<li><p>Setting Spark configs <code class="docutils literal notranslate"><span class="pre">ignoreMissingFiles</span></code> or <code class="docutils literal notranslate"><span class="pre">ignoreCorruptFiles</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> is not compatible with <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> scan.</p></li>
 </ul>
-<p>Issues specific to <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code>:</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> scan has some additional limitations:</p>
 <ul class="simple">
 <li><p>Bucketed scans are not supported</p></li>
 <li><p>No support for row indexes</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">PARQUET_FIELD_ID_READ_ENABLED</span></code> is not respected <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1758">#1758</a></p></li>
+<li><p>There are failures in the Spark SQL test suite <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1545">#1545</a></p></li>
+<li><p>Setting Spark configs <code class="docutils literal notranslate"><span class="pre">ignoreMissingFiles</span></code> or <code class="docutils literal notranslate"><span class="pre">ignoreCorruptFiles</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> is not compatible with Spark</p></li>
 </ul>
 </section>
 </section>
 <section id="ansi-mode">
-<h2>ANSI mode<a class="headerlink" href="#ansi-mode" title="Link to this heading">¶</a></h2>
+<h2>ANSI Mode<a class="headerlink" href="#ansi-mode" title="Link to this heading">¶</a></h2>
 <p>Comet currently ignores ANSI mode in most cases, and therefore can produce different results than Spark. By default,
 Comet will fall back to Spark if ANSI mode is enabled. To enable Comet to accelerate queries when ANSI mode is enabled,
 specify <code class="docutils literal notranslate"><span class="pre">spark.comet.ansi.enabled=true</span></code> in the Spark configuration. Comet’s ANSI support is experimental and should not
 be used in production.</p>
 <p>There is an <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/313">epic</a> where we are tracking the work to fully implement ANSI support.</p>
 </section>
-<section id="floating-number-comparison">
-<h2>Floating number comparison<a class="headerlink" href="#floating-number-comparison" title="Link to this heading">¶</a></h2>
+<section id="floating-point-number-comparison">
+<h2>Floating-point Number Comparison<a class="headerlink" href="#floating-point-number-comparison" title="Link to this heading">¶</a></h2>
 <p>Spark normalizes NaN and zero for floating point numbers for several cases. See <code class="docutils literal notranslate"><span class="pre">NormalizeFloatingNumbers</span></code> optimization rule in Spark.
 However, one exception is comparison. Spark does not normalize NaN and zero when comparing values
 because they are handled well in Spark (e.g., <code class="docutils literal notranslate"><span class="pre">SQLOrderingUtil.compareFloats</span></code>). But the comparison

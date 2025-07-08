@@ -53,6 +53,8 @@ under the License.
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Comet Kubernetes Support" href="kubernetes.html" />
+    <link rel="prev" title="Comet Metrics" href="metrics.html" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="docsearch:language" content="en">
     
@@ -105,7 +107,7 @@ under the License.
   User Guide
  </span>
 </p>
-<ul class="nav bd-sidenav">
+<ul class="current nav bd-sidenav">
  <li class="toctree-l1">
   <a class="reference internal" href="overview.html">
    Comet Overview
@@ -119,11 +121,6 @@ under the License.
  <li class="toctree-l1">
   <a class="reference internal" href="source.html">
    Building From Source
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="kubernetes.html">
-   Kubernetes Guide
   </a>
  </li>
  <li class="toctree-l1">
@@ -164,6 +161,16 @@ under the License.
  <li class="toctree-l1">
   <a class="reference internal" href="metrics.html">
    Metrics Guide
+  </a>
+ </li>
+ <li class="toctree-l1 current active">
+  <a class="current reference internal" href="#">
+   Iceberg Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="kubernetes.html">
+   Kubernetes Guide
   </a>
  </li>
 </ul>
@@ -371,19 +378,11 @@ source rather than using available artifacts in Maven</strong></p>
 </section>
 <section id="build-iceberg">
 <h2>Build Iceberg<a class="headerlink" href="#build-iceberg" title="Link to this heading">¶</a></h2>
-<p>Clone the Iceberg repository.</p>
+<p>Clone the Iceberg repository and apply code changes needed by Comet</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>git@github.com:apache/iceberg.git
-</pre></div>
-</div>
-<p>It will be necessary to make some small changes to Iceberg:</p>
-<ul class="simple">
-<li><p>Update Gradle files to change Comet version to <code class="docutils literal notranslate"><span class="pre">0.10.0-SNAPSHOT</span></code>.</p></li>
-<li><p>Replace <code class="docutils literal notranslate"><span class="pre">import</span> <span class="pre">org.apache.comet.shaded.arrow.c.CometSchemaImporter;</span></code> with <code class="docutils literal notranslate"><span class="pre">import</span> <span class="pre">org.apache.comet.CometSchemaImporter;</span></code></p></li>
-<li><p>Modify <code class="docutils literal notranslate"><span class="pre">SparkBatchQueryScan</span></code> so that it implements the <code class="docutils literal notranslate"><span class="pre">SupportsComet</span></code> interface</p></li>
-<li><p>Stop shading Parquet by commenting out the following lines in the iceberg-spark build:</p></li>
-</ul>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">//</span>    <span class="n">relocate</span> <span class="s1">&#39;org.apache.parquet&#39;</span><span class="p">,</span> <span class="s1">&#39;org.apache.iceberg.shaded.org.apache.parquet&#39;</span>
-<span class="o">//</span>    <span class="n">relocate</span> <span class="s1">&#39;shaded.parquet&#39;</span><span class="p">,</span> <span class="s1">&#39;org.apache.iceberg.shaded.org.apache.parquet.shaded&#39;</span>
+<span class="nb">cd</span><span class="w"> </span>iceberg
+git<span class="w"> </span>checkout<span class="w"> </span>apache-iceberg-1.8.1
+git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
 </pre></div>
 </div>
 <p>Perform a clean build</p>
@@ -395,7 +394,7 @@ source rather than using available artifacts in Maven</strong></p>
 <section id="test">
 <h2>Test<a class="headerlink" href="#test" title="Link to this heading">¶</a></h2>
 <p>Set <code class="docutils literal notranslate"><span class="pre">ICEBERG_JAR</span></code> environment variable.</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">ICEBERG_JAR</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>/spark/v3.5/spark-runtime/build/libs/iceberg-spark-runtime-3.5_2.12-1.10.0-SNAPSHOT.jar
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">ICEBERG_JAR</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>/spark/v3.5/spark-runtime/build/libs/iceberg-spark-runtime-3.5_2.12-1.9.0-SNAPSHOT.jar
 </pre></div>
 </div>
 <p>Launch Spark Shell:</p>
@@ -412,7 +411,7 @@ source rather than using available artifacts in Maven</strong></p>
 <span class="w">    </span>--conf<span class="w"> </span>spark.sql.iceberg.parquet.reader-type<span class="o">=</span>COMET<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.explainFallback.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>16g
+<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>2g
 </pre></div>
 </div>
 <p>Create an Iceberg table. Note that Comet will not accelerate this part.</p>
@@ -425,38 +424,39 @@ source rather than using available artifacts in Maven</strong></p>
 </pre></div>
 </div>
 <p>This should produce the following output:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>scala&gt; spark.sql(s&quot;SELECT * from t1&quot;).show()
-25/04/28 07:29:37 INFO core/src/lib.rs: Comet native library version 0.9.0 initialized
-25/04/28 07:29:37 WARN CometSparkSessionExtensions$CometExecRule: Comet cannot execute some parts of this plan natively (set spark.comet.explainFallback.enabled=false to disable this logging):
- CollectLimit
-+-  Project [COMET: toprettystring is not supported]
-   +- CometScanWrapper
-
-+---+---+
-| c0| c1|
-+---+---+
-|  0|  0|
-|  1|  1|
-|  2|  2|
-|  3|  3|
-|  4|  4|
-|  5|  5|
-|  6|  6|
-|  7|  7|
-|  8|  8|
-|  9|  9|
-| 10| 10|
-| 11| 11|
-| 12| 12|
-| 13| 13|
-| 14| 14|
-| 15| 15|
-| 16| 16|
-| 17| 17|
-| 18| 18|
-| 19| 19|
-+---+---+
-only showing top 20 rows
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">&quot;SELECT * from t1&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+<span class="o">+---+---+</span>
+<span class="o">|</span> <span class="n">c0</span><span class="o">|</span> <span class="n">c1</span><span class="o">|</span>
+<span class="o">+---+---+</span>
+<span class="o">|</span>  <span class="mi">0</span><span class="o">|</span>  <span class="mi">0</span><span class="o">|</span>
+<span class="o">|</span>  <span class="mi">1</span><span class="o">|</span>  <span class="mi">1</span><span class="o">|</span>
+<span class="o">|</span>  <span class="mi">2</span><span class="o">|</span>  <span class="mi">2</span><span class="o">|</span>
+<span class="o">|</span>  <span class="mi">3</span><span class="o">|</span>  <span class="mi">3</span><span class="o">|</span>
+<span class="o">|</span>  <span class="mi">4</span><span class="o">|</span>  <span class="mi">4</span><span class="o">|</span>
+<span class="o">|</span>  <span class="mi">5</span><span class="o">|</span>  <span class="mi">5</span><span class="o">|</span>
+<span class="o">|</span>  <span class="mi">6</span><span class="o">|</span>  <span class="mi">6</span><span class="o">|</span>
+<span class="o">|</span>  <span class="mi">7</span><span class="o">|</span>  <span class="mi">7</span><span class="o">|</span>
+<span class="o">|</span>  <span class="mi">8</span><span class="o">|</span>  <span class="mi">8</span><span class="o">|</span>
+<span class="o">|</span>  <span class="mi">9</span><span class="o">|</span>  <span class="mi">9</span><span class="o">|</span>
+<span class="o">|</span> <span class="mi">10</span><span class="o">|</span> <span class="mi">10</span><span class="o">|</span>
+<span class="o">|</span> <span class="mi">11</span><span class="o">|</span> <span class="mi">11</span><span class="o">|</span>
+<span class="o">|</span> <span class="mi">12</span><span class="o">|</span> <span class="mi">12</span><span class="o">|</span>
+<span class="o">|</span> <span class="mi">13</span><span class="o">|</span> <span class="mi">13</span><span class="o">|</span>
+<span class="o">|</span> <span class="mi">14</span><span class="o">|</span> <span class="mi">14</span><span class="o">|</span>
+<span class="o">|</span> <span class="mi">15</span><span class="o">|</span> <span class="mi">15</span><span class="o">|</span>
+<span class="o">|</span> <span class="mi">16</span><span class="o">|</span> <span class="mi">16</span><span class="o">|</span>
+<span class="o">|</span> <span class="mi">17</span><span class="o">|</span> <span class="mi">17</span><span class="o">|</span>
+<span class="o">|</span> <span class="mi">18</span><span class="o">|</span> <span class="mi">18</span><span class="o">|</span>
+<span class="o">|</span> <span class="mi">19</span><span class="o">|</span> <span class="mi">19</span><span class="o">|</span>
+<span class="o">+---+---+</span>
+<span class="n">only</span> <span class="n">showing</span> <span class="n">top</span> <span class="mi">20</span> <span class="n">rows</span>
+</pre></div>
+</div>
+<p>Confirm that the query was accelerated by Comet:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">&quot;SELECT * from t1&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">explain</span><span class="p">()</span>
+<span class="o">==</span> <span class="n">Physical</span> <span class="n">Plan</span> <span class="o">==</span>
+<span class="o">*</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span> <span class="n">CometColumnarToRow</span>
+<span class="o">+-</span> <span class="n">CometBatchScan</span> <span class="n">spark_catalog</span><span class="o">.</span><span class="n">default</span><span class="o">.</span><span class="n">t1</span><span class="p">[</span><span class="n">c0</span><span class="c1">#26, c1#27] spark_catalog.default.t1 (branch=null) [filters=, groupedBy=] RuntimeFilters: []</span>
 </pre></div>
 </div>
 </section>
@@ -468,6 +468,20 @@ only showing top 20 rows
               
               <!-- Previous / next buttons -->
 <div class='prev-next-area'>
+    <a class='left-prev' id="prev-link" href="metrics.html" title="previous page">
+        <i class="fas fa-angle-left"></i>
+        <div class="prev-next-info">
+            <p class="prev-next-subtitle">previous</p>
+            <p class="prev-next-title">Comet Metrics</p>
+        </div>
+    </a>
+    <a class='right-next' id="next-link" href="kubernetes.html" title="next page">
+    <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Comet Kubernetes Support</p>
+    </div>
+    <i class="fas fa-angle-right"></i>
+    </a>
 </div>
               
           </main>

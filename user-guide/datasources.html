@@ -54,7 +54,7 @@ under the License.
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
     <link rel="next" title="Supported Spark Data Types" href="datatypes.html" />
-    <link rel="prev" title="Comet Kubernetes Support" href="kubernetes.html" />
+    <link rel="prev" title="Building Comet From Source" href="source.html" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="docsearch:language" content="en">
     
@@ -123,11 +123,6 @@ under the License.
    Building From Source
   </a>
  </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="kubernetes.html">
-   Kubernetes Guide
-  </a>
- </li>
  <li class="toctree-l1 current active">
   <a class="current reference internal" href="#">
    Supported Data Sources
@@ -166,6 +161,16 @@ under the License.
  <li class="toctree-l1">
   <a class="reference internal" href="metrics.html">
    Metrics Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="iceberg.html">
+   Iceberg Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="kubernetes.html">
+   Kubernetes Guide
   </a>
  </li>
 </ul>
@@ -302,6 +307,11 @@ under the License.
     </a>
    </li>
    <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#apache-iceberg">
+     Apache Iceberg
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
     <a class="reference internal nav-link" href="#csv">
      CSV
     </a>
@@ -319,7 +329,7 @@ under the License.
   </a>
   <ul class="nav section-nav flex-column">
    <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#apache-iceberg">
+    <a class="reference internal nav-link" href="#id1">
      Apache Iceberg
     </a>
    </li>
@@ -457,6 +467,10 @@ in the schema are supported. When this option is not enabled, the scan will fall
 enabling <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.parquet.enabled</span></code> will immediately convert the data into Arrow format, allowing native
 execution to happen after that, but the process may not be efficient.</p>
 </section>
+<section id="apache-iceberg">
+<h3>Apache Iceberg<a class="headerlink" href="#apache-iceberg" title="Link to this heading">¶</a></h3>
+<p>Comet accelerates Iceberg scans of Parquet files. See the <a class="reference internal" href="iceberg.html"><span class="std std-doc">Iceberg Guide</span></a> for more information.</p>
+</section>
 <section id="csv">
 <h3>CSV<a class="headerlink" href="#csv" title="Link to this heading">¶</a></h3>
 <p>Comet does not provide native CSV scan, but when <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.csv.enabled</span></code> is enabled, data is immediately
@@ -470,8 +484,8 @@ converted into Arrow format, allowing native execution to happen after that.</p>
 </section>
 <section id="data-catalogs">
 <h2>Data Catalogs<a class="headerlink" href="#data-catalogs" title="Link to this heading">¶</a></h2>
-<section id="apache-iceberg">
-<h3>Apache Iceberg<a class="headerlink" href="#apache-iceberg" title="Link to this heading">¶</a></h3>
+<section id="id1">
+<h3>Apache Iceberg<a class="headerlink" href="#id1" title="Link to this heading">¶</a></h3>
 <p>See the dedicated <a class="reference internal" href="iceberg.html"><span class="std std-doc">Comet and Iceberg Guide</span></a>.</p>
 </section>
 </section>
@@ -512,7 +526,7 @@ root
 <span class="w"> </span><span class="p">|</span><span class="w">    </span><span class="p">|</span>--<span class="w"> </span>lastName:<span class="w"> </span>string<span class="w"> </span><span class="o">(</span><span class="nv">nullable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="o">)</span>
 <span class="w"> </span><span class="p">|</span><span class="w">    </span><span class="p">|</span>--<span class="w"> </span>ageInYears:<span class="w"> </span>integer<span class="w"> </span><span class="o">(</span><span class="nv">nullable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="o">)</span>
 
-<span class="m">25</span>/01/30<span class="w"> </span><span class="m">16</span>:50:43<span class="w"> </span>INFO<span class="w"> </span>core/src/lib.rs:<span class="w"> </span>Comet<span class="w"> </span>native<span class="w"> </span>library<span class="w"> </span>version<span class="w"> </span><span class="m">0</span>.7.0<span class="w"> </span><span class="nv">initialized</span>
+<span class="m">25</span>/01/30<span class="w"> </span><span class="m">16</span>:50:43<span class="w"> </span>INFO<span class="w"> </span>core/src/lib.rs:<span class="w"> </span>Comet<span class="w"> </span>native<span class="w"> </span>library<span class="w"> </span>version<span class="w"> </span><span class="m">0</span>.9.0<span class="w"> </span><span class="nv">initialized</span>
 <span class="o">==</span><span class="w"> </span>Physical<span class="w"> </span><span class="nv">Plan</span><span class="w"> </span><span class="o">==</span>
 *<span class="w"> </span>CometColumnarToRow<span class="w"> </span><span class="o">(</span><span class="m">2</span><span class="o">)</span>
 +-<span class="w"> </span>CometNativeScan:<span class="w">  </span><span class="o">(</span><span class="m">1</span><span class="o">)</span>
@@ -712,11 +726,11 @@ Input<span class="w"> </span><span class="o">[</span><span class="m">3</span><sp
               
               <!-- Previous / next buttons -->
 <div class='prev-next-area'>
-    <a class='left-prev' id="prev-link" href="kubernetes.html" title="previous page">
+    <a class='left-prev' id="prev-link" href="source.html" title="previous page">
         <i class="fas fa-angle-left"></i>
         <div class="prev-next-info">
             <p class="prev-next-subtitle">previous</p>
-            <p class="prev-next-title">Comet Kubernetes Support</p>
+            <p class="prev-next-title">Building Comet From Source</p>
         </div>
     </a>
     <a class='right-next' id="next-link" href="datatypes.html" title="next page">

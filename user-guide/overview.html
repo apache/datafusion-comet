@@ -124,11 +124,6 @@ under the License.
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="kubernetes.html">
-   Kubernetes Guide
-  </a>
- </li>
- <li class="toctree-l1">
   <a class="reference internal" href="datasources.html">
    Supported Data Sources
   </a>
@@ -166,6 +161,16 @@ under the License.
  <li class="toctree-l1">
   <a class="reference internal" href="metrics.html">
    Metrics Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="iceberg.html">
+   Iceberg Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="kubernetes.html">
+   Kubernetes Guide
   </a>
  </li>
 </ul>
@@ -360,14 +365,6 @@ performance of Apache Spark workloads while leveraging commodity hardware and se
 Spark ecosystem without requiring any code changes.</p>
 <p>The following diagram provides an overview of Comet’s architecture.</p>
 <p><img alt="Comet Overview" src="../_images/comet-overview.png" /></p>
-<p>Comet aims to support:</p>
-<ul class="simple">
-<li><p>a native Parquet implementation, including both reader and writer</p></li>
-<li><p>full implementation of Spark operators, including
-Filter/Project/Aggregation/Join/Exchange etc.</p></li>
-<li><p>full implementation of Spark built-in expressions.</p></li>
-<li><p>a UDF framework for users to migrate their existing UDF to native</p></li>
-</ul>
 <section id="architecture">
 <h2>Architecture<a class="headerlink" href="#architecture" title="Link to this heading">¶</a></h2>
 <p>The following diagram shows how Comet integrates with Apache Spark.</p>

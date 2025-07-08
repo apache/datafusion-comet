@@ -124,11 +124,6 @@ under the License.
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="kubernetes.html">
-   Kubernetes Guide
-  </a>
- </li>
- <li class="toctree-l1">
   <a class="reference internal" href="datasources.html">
    Supported Data Sources
   </a>
@@ -166,6 +161,16 @@ under the License.
  <li class="toctree-l1">
   <a class="reference internal" href="metrics.html">
    Metrics Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="iceberg.html">
+   Iceberg Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="kubernetes.html">
+   Kubernetes Guide
   </a>
  </li>
 </ul>
@@ -291,11 +296,6 @@ under the License.
 
 <nav id="bd-toc-nav">
     <ul class="visible nav section-nav flex-column">
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#parquet-scans">
-   Parquet Scans
-  </a>
- </li>
  <li class="toc-h2 nav-item toc-entry">
   <a class="reference internal nav-link" href="#configuring-tokio-runtime">
    Configuring Tokio Runtime
@@ -445,15 +445,6 @@ under the License.
 <section id="comet-tuning-guide">
 <h1>Comet Tuning Guide<a class="headerlink" href="#comet-tuning-guide" title="Link to this heading">¶</a></h1>
 <p>Comet provides some tuning options to help you get the best performance from your queries.</p>
-<section id="parquet-scans">
-<h2>Parquet Scans<a class="headerlink" href="#parquet-scans" title="Link to this heading">¶</a></h2>
-<p>Comet currently has three distinct implementations of the Parquet scan operator. The configuration property
-<code class="docutils literal notranslate"><span class="pre">spark.comet.scan.impl</span></code> is used to select an implementation. These scans are described in the
-<a class="reference internal" href="compatibility.html"><span class="std std-doc">Compatibility Guide</span></a>.</p>
-<p>When using <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> or <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code>, there are known performance issues when pushing filters
-down to Parquet scans. Until this issue is resolved, performance can be improved by setting
-<code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.filterPushdown=false</span></code>.</p>
-</section>
 <section id="configuring-tokio-runtime">
 <h2>Configuring Tokio Runtime<a class="headerlink" href="#configuring-tokio-runtime" title="Link to this heading">¶</a></h2>
 <p>Comet uses a global tokio runtime per executor process using tokio’s defaults of one worker thread per core and a

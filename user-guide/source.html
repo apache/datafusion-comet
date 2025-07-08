@@ -53,7 +53,7 @@ under the License.
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Comet Kubernetes Support" href="kubernetes.html" />
+    <link rel="next" title="Supported Spark Data Sources" href="datasources.html" />
     <link rel="prev" title="Installing DataFusion Comet" href="installation.html" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="docsearch:language" content="en">
@@ -124,11 +124,6 @@ under the License.
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="kubernetes.html">
-   Kubernetes Guide
-  </a>
- </li>
- <li class="toctree-l1">
   <a class="reference internal" href="datasources.html">
    Supported Data Sources
   </a>
@@ -166,6 +161,16 @@ under the License.
  <li class="toctree-l1">
   <a class="reference internal" href="metrics.html">
    Metrics Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="iceberg.html">
+   Iceberg Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="kubernetes.html">
+   Kubernetes Guide
   </a>
  </li>
 </ul>
@@ -354,7 +359,7 @@ under the License.
 <h2>Using a Published Source Release<a class="headerlink" href="#using-a-published-source-release" title="Link to this heading">¶</a></h2>
 <p>Official source releases can be downloaded from https://dist.apache.org/repos/dist/release/datafusion/</p>
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span>Pick<span class="w"> </span>the<span class="w"> </span>latest<span class="w"> </span>version
-<span class="go">export COMET_VERSION=0.7.0</span>
+<span class="go">export COMET_VERSION=0.9.0</span>
 <span class="gp"># </span>Download<span class="w"> </span>the<span class="w"> </span>tarball
 <span class="go">curl -O &quot;https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-$COMET_VERSION/apache-datafusion-comet-$COMET_VERSION.tar.gz&quot;</span>
 <span class="gp"># </span>Unpack
@@ -402,10 +407,10 @@ under the License.
             <p class="prev-next-title">Installing DataFusion Comet</p>
         </div>
     </a>
-    <a class='right-next' id="next-link" href="kubernetes.html" title="next page">
+    <a class='right-next' id="next-link" href="datasources.html" title="next page">
     <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Comet Kubernetes Support</p>
+        <p class="prev-next-title">Supported Spark Data Sources</p>
     </div>
     <i class="fas fa-angle-right"></i>
     </a>
