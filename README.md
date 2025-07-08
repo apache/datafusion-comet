@@ -37,6 +37,8 @@ Apache DataFusion Comet is a high-performance accelerator for Apache Spark, buil
 performance of Apache Spark workloads while leveraging commodity hardware and seamlessly integrating with the
 Spark ecosystem without requiring any code changes.
 
+Comet also accelerates Apache Iceberg, when performing Parquet scans from Spark. 
+
 [Apache DataFusion]: https://datafusion.apache.org
 
 # Benefits of Using Comet
