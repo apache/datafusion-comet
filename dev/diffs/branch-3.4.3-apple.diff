@@ -570,9 +570,18 @@ index b2e8be41065..b597a244710 100644
      val stateFunc =
        (key: (String, String), values: Iterator[(String, String, Long)],
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/streaming/FlatMapGroupsWithStateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/streaming/FlatMapGroupsWithStateSuite.scala
-index 38523536154..c4f2246f68f 100644
+index 38523536154..ad26ad833e2 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/streaming/FlatMapGroupsWithStateSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/streaming/FlatMapGroupsWithStateSuite.scala
+@@ -25,7 +25,7 @@ import org.scalatest.exceptions.TestFailedException
+ 
+ import org.apache.spark.SparkException
+ import org.apache.spark.api.java.function.FlatMapGroupsWithStateFunction
+-import org.apache.spark.sql.{DataFrame, Encoder, IgnoreCometSuite}
++import org.apache.spark.sql.{DataFrame, Encoder}
+ import org.apache.spark.sql.catalyst.InternalRow
+ import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, UnsafeProjection, UnsafeRow}
+ import org.apache.spark.sql.catalyst.plans.logical.FlatMapGroupsWithState
 @@ -48,7 +48,7 @@ case class Result(key: Long, count: Int)
  
  // TODO: fix Comet to enable this suite
