@@ -21,7 +21,6 @@ package org.apache.comet.parquet;
 
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
-import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType;
 import org.apache.parquet.schema.Type;
 import org.apache.parquet.schema.Types;
@@ -305,13 +304,21 @@ public class Utils {
           Types.primitive(primType, repetition)
               .length(columnSpec.getTypeLength())
               .as(logicalType)
+              .id(columnSpec.getFieldId())
               .named(name);
     } else {
-      primitiveType = Types.primitive(primType, repetition).as(logicalType).named(name);
+      primitiveType =
+          Types.primitive(primType, repetition)
+              .as(logicalType)
+              .id(columnSpec.getFieldId())
+              .named(name);
     }
 
-    MessageType schema = new MessageType("root", primitiveType);
-    return schema.getColumnDescription(columnSpec.getPath());
+    return new ColumnDescriptor(
+        columnSpec.getPath(),
+        primitiveType,
+        columnSpec.getMaxRepetitionLevel(),
+        columnSpec.getMaxDefinitionLevel());
   }
 
   private static LogicalTypeAnnotation reconstructLogicalType(

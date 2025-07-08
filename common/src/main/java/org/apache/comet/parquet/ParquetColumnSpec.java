@@ -23,16 +23,20 @@ import java.util.Map;
 
 public class ParquetColumnSpec {
 
+  private final int fieldId;
   private final String[] path;
   private final String physicalType;
   private final int typeLength;
   private final boolean isRepeated;
   private final int maxDefinitionLevel;
   private final int maxRepetitionLevel;
+
+  // Logical type info
   private String logicalTypeName;
   private Map<String, String> logicalTypeParams;
 
   public ParquetColumnSpec(
+      int fieldId,
       String[] path,
       String physicalType,
       int typeLength,
@@ -41,6 +45,7 @@ public class ParquetColumnSpec {
       int maxRepetitionLevel,
       String logicalTypeName,
       Map<String, String> logicalTypeParams) {
+    this.fieldId = fieldId;
     this.path = path;
     this.physicalType = physicalType;
     this.typeLength = typeLength;
@@ -49,6 +54,10 @@ public class ParquetColumnSpec {
     this.maxRepetitionLevel = maxRepetitionLevel;
     this.logicalTypeName = logicalTypeName;
     this.logicalTypeParams = logicalTypeParams;
+  }
+
+  public int getFieldId() {
+    return fieldId;
   }
 
   public String[] getPath() {
