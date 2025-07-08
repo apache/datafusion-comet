@@ -643,6 +643,18 @@ index 3415a1efde7..23b47b305aa 100644
        }
      }
    }
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
+index 3a1cd75bd62..4c2aae0fe53 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
+@@ -79,6 +79,7 @@ trait SharedSparkSessionBase
+       conf
+         .set("spark.sql.extensions", "org.apache.comet.CometSparkSessionExtensions")
+         .set("spark.comet.enabled", "true")
++        .set("spark.comet.parquet.respectFilterPushdown", "true")
+ 
+       if (!isCometScanOnly) {
+         conf
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
 index de3b1ffccf0..2a76d127093 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
