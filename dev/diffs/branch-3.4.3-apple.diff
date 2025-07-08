@@ -606,7 +606,7 @@ index e3b7b290b3e..2a2a83d35e1 100644
      val initialState: KeyValueGroupedDataset[String, RunningCount] =
        initialStateDS.groupByKey(_._1).mapValues(_._2)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-index 3415a1efde7..bb7dc06ebfd 100644
+index 3415a1efde7..23b47b305aa 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 @@ -27,6 +27,7 @@ import scala.concurrent.duration._
@@ -617,14 +617,16 @@ index 3415a1efde7..bb7dc06ebfd 100644
  import org.apache.hadoop.fs.Path
  import org.scalactic.source.Position
  import org.scalatest.{BeforeAndAfterAll, Suite, Tag}
-@@ -130,7 +131,22 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
+@@ -130,7 +131,24 @@ private[sql] trait SQLTestUtils extends SparkFunSuite with SQLTestUtilsBase with
        if (isCometEnabled && testTags.exists(_.isInstanceOf[IgnoreComet])) {
          ignore(testName + " (disabled when Comet is on)", testTags: _*)(testFun)
        } else {
 -        super.test(testName, testTags: _*)(testFun)
 +        val cometScanImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get(conf)
-+        val isNativeIcebergCompat = cometScanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT
-+        val isNativeDataFusion = cometScanImpl == CometConf.SCAN_NATIVE_DATAFUSION
++        val isNativeIcebergCompat = cometScanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT ||
++          cometScanImpl == CometConf.SCAN_AUTO
++        val isNativeDataFusion = cometScanImpl == CometConf.SCAN_NATIVE_DATAFUSION ||
++          cometScanImpl == CometConf.SCAN_AUTO
 +        if (isCometEnabled && isNativeIcebergCompat &&
 +          testTags.exists(_.isInstanceOf[IgnoreCometNativeIcebergCompat])) {
 +          ignore(testName + " (disabled for NATIVE_ICEBERG_COMPAT)", testTags: _*)(testFun)
