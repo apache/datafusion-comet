@@ -406,7 +406,7 @@ index ab7584e768e..2ada8c28842 100644
      assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
        s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
-index 034f56b6230..0bd2e24e387 100644
+index 034f56b6230..37ea65081e4 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 @@ -1503,7 +1503,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
@@ -419,17 +419,16 @@ index 034f56b6230..0bd2e24e387 100644
      import testImplicits._
  
      withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true",
-@@ -1756,8 +1757,7 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
-     }
+@@ -1757,7 +1758,7 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
    }
  
--  test("SPARK-17091: Convert IN predicate to Parquet filter push-down",
+   test("SPARK-17091: Convert IN predicate to Parquet filter push-down",
 -      IgnoreComet("IN predicate is not yet supported in Comet, see issue #36")) {
-+  test("SPARK-17091: Convert IN predicate to Parquet filter push-down") {
++    IgnoreCometNativeScan("Comet has different push-down behavior")) {
      val schema = StructType(Seq(
        StructField("a", IntegerType, nullable = false)
      ))
-@@ -2059,7 +2059,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
+@@ -2059,7 +2060,8 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
      }
    }
  
