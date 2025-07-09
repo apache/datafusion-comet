@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::common::bit;
 use arrow::datatypes::ToByteSlice;
 use std::iter::zip;
 
@@ -103,7 +102,7 @@ impl SparkBitArray {
 }
 
 pub fn num_words(num_bits: i32) -> i32 {
-    bit::ceil(num_bits as usize, 64) as i32
+    usize::div_ceil(num_bits as usize, 64) as i32
 }
 
 #[cfg(test)]

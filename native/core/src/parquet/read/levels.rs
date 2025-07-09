@@ -218,7 +218,7 @@ impl LevelDecoder {
                 Mode::RLE => {
                     // RLE
                     self.current_count = (indicator_value >> 1) as usize;
-                    let value_width = bit::ceil(self.bit_width as usize, 8);
+                    let value_width = (self.bit_width as usize).div_ceil(8);
                     self.current_value = bit_reader
                         .get_aligned::<i32>(value_width)
                         .expect("current value should be set");

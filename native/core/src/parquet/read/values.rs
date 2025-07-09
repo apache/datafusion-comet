@@ -962,7 +962,7 @@ impl DictDecoder {
                 self.bit_packed_left = ((indicator_value >> 1) * 8) as usize;
             } else {
                 self.rle_left = (indicator_value >> 1) as usize;
-                let value_width = bit::ceil(self.bit_width, 8);
+                let value_width = self.bit_width.div_ceil(8);
                 self.current_value = self.bit_reader.get_aligned::<u32>(value_width).unwrap();
             }
         } else {
