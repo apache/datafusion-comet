@@ -328,18 +328,55 @@ index 18123a4d6ec..fbe4c766eee 100644
  
    test("non-matching optional group") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index c95932efee5..24118a767f9 100644
+index c95932efee5..ab57be55fc9 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-@@ -1545,7 +1545,7 @@ class SubquerySuite extends QueryTest
-               _.asInstanceOf[FileScanRDD].filePartitions.forall(
-                 _.files.forall(_.urlEncodedPath.contains("p=0"))))
-         case WholeStageCodegenExec(ColumnarToRowExec(InputAdapter(
--            fs @ CometScanExec(_, _, _, partitionFilters, _, _, _, _, _, _)))) =>
-+            fs @ CometScanExec(_, _, _, _, partitionFilters, _, _, _, _, _, _)))) =>
-           partitionFilters.exists(ExecSubqueryExpression.hasSubquery) &&
+@@ -1544,9 +1544,8 @@ class SubquerySuite extends QueryTest
              fs.inputRDDs().forall(
                _.asInstanceOf[FileScanRDD].filePartitions.forall(
+                 _.files.forall(_.urlEncodedPath.contains("p=0"))))
+-        case WholeStageCodegenExec(ColumnarToRowExec(InputAdapter(
+-            fs @ CometScanExec(_, _, _, partitionFilters, _, _, _, _, _, _)))) =>
+-          partitionFilters.exists(ExecSubqueryExpression.hasSubquery) &&
++        case WholeStageCodegenExec(ColumnarToRowExec(InputAdapter(fs: CometScanExec))) =>
++          fs.partitionFilters.exists(ExecSubqueryExpression.hasSubquery) &&
+             fs.inputRDDs().forall(
+               _.asInstanceOf[FileScanRDD].filePartitions.forall(
+                 _.files.forall(_.urlEncodedPath.contains("p=0"))))
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/QueryExecutionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/QueryExecutionSuite.scala
+index 57a6b2f1708..6ed92be07e3 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/QueryExecutionSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/QueryExecutionSuite.scala
+@@ -26,10 +26,10 @@ import org.apache.spark.sql.catalyst.plans.QueryPlan
+ import org.apache.spark.sql.catalyst.plans.logical.{CommandResult, LogicalPlan, OneRowRelation, Project, ShowTables, SubqueryAlias}
+ import org.apache.spark.sql.catalyst.trees.TreeNodeTag
+ import org.apache.spark.sql.catalyst.util.StringUtils.PlanStringConcat
++import org.apache.spark.sql.comet.CometSortMergeJoinExec
+ import org.apache.spark.sql.connector.catalog.CatalogManager.SESSION_CATALOG_NAME
+ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
+ import org.apache.spark.sql.execution.datasources.v2.ShowTablesExec
+-import org.apache.spark.sql.execution.joins.SortMergeJoinExec
+ import org.apache.spark.sql.internal.SQLConf
+ import org.apache.spark.sql.test.SharedSparkSession
+ import org.apache.spark.util.Utils
+@@ -314,7 +314,7 @@ class QueryExecutionSuite extends SharedSparkSession {
+       val expected = "\n== Extended Information (Test) ==\n" +
+         "Scan Info: LocalTableScan\n" +
+         "Project Info: Project\n" +
+-        "SMJ Info: SortMergeJoin"
++        "SMJ Info: CometSortMergeJoin"
+       assert(info == expected)
+     }
+   }
+@@ -354,7 +354,7 @@ class ExtendedInfo extends ExtendedExplainGenerator {
+     }
+     actualPlan match {
+       case p : LocalTableScanExec => info += s"Scan Info: ${p.nodeName}"
+-      case p : SortMergeJoinExec => info += s"SMJ Info: ${p.nodeName}"
++      case p : CometSortMergeJoinExec => info += s"SMJ Info: ${p.nodeName}"
+       case p : ProjectExec => info += s"Project Info: ${p.nodeName}"
+       case _ =>
+     }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLWindowFunctionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLWindowFunctionSuite.scala
 index eec396b2e39..bf3f1c769d6 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLWindowFunctionSuite.scala
