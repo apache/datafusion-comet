@@ -249,10 +249,45 @@ index d3c0fa9d6ab..618f2856908 100644
  /**
   * Helper trait that disables Comet for all tests regardless of default config values.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
-index 84639f7c87e..7760b02988e 100644
+index 84639f7c87e..d10c5ddf043 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
-@@ -1441,6 +1441,7 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1374,12 +1374,16 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+     inputDFs.foreach { case (df1, df2, joinExprs) =>
+       val smjDF = df1.hint("SHUFFLE_MERGE").join(df2, joinExprs, "leftouter")
+       assert(collect(smjDF.queryExecution.executedPlan) {
+-        case _: SortMergeJoinExec => true }.size === 1)
++        case _: SortMergeJoinExec => true
++        case _: CometSortMergeJoinExec => true
++      }.size === 1)
+       val smjResult = smjDF.collect()
+ 
++      // scalastyle:off
+       val shjDF = df1.hint("SHUFFLE_HASH").join(df2, joinExprs, "leftouter")
+       assert(collect(shjDF.queryExecution.executedPlan) {
+         case _: ShuffledHashJoinExec => true
++        case _: CometHashJoinExec => true
+       }.size === 1)
+       // Same result between shuffled hash join and sort merge join
+       checkAnswer(shjDF, smjResult)
+@@ -1389,12 +1393,15 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+     inputDFs.foreach { case (df2, df1, joinExprs) =>
+       val smjDF = df2.join(df1.hint("SHUFFLE_MERGE"), joinExprs, "rightouter")
+       assert(collect(smjDF.queryExecution.executedPlan) {
+-        case _: SortMergeJoinExec => true }.size === 1)
++        case _: SortMergeJoinExec => true
++        case _: CometSortMergeJoinExec => true
++      }.size === 1)
+       val smjResult = smjDF.collect()
+ 
+       val shjDF = df2.join(df1.hint("SHUFFLE_HASH"), joinExprs, "rightouter")
+       assert(collect(shjDF.queryExecution.executedPlan) {
+         case _: ShuffledHashJoinExec => true
++        case _: CometHashJoinExec => true
+       }.size === 1)
+       // Same result between shuffled hash join and sort merge join
+       checkAnswer(shjDF, smjResult)
+@@ -1441,6 +1448,7 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
              true
            case WholeStageCodegenExec(ColumnarToRowExec(
              InputAdapter(CometProjectExec(_, _, _, _, _: CometHashJoinExec, _)))) => true
