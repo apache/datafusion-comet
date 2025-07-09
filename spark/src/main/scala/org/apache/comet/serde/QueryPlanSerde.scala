@@ -1026,32 +1026,20 @@ object QueryPlanSerde extends Logging with CometExprShim {
           binding,
           (builder, binaryExpr) => builder.setRlike(binaryExpr))
 
-      case StartsWith(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setStartsWith(binaryExpr))
+      case StartsWith(attribute, prefix) =>
+        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
+        val prefixExpr = exprToProtoInternal(prefix, inputs, binding)
+        scalarFunctionExprToProto("starts_with", attributeExpr, prefixExpr)
 
-      case EndsWith(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setEndsWith(binaryExpr))
+      case EndsWith(attribute, suffix) =>
+        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
+        val suffixExpr = exprToProtoInternal(suffix, inputs, binding)
+        scalarFunctionExprToProto("ends_with", attributeExpr, suffixExpr)
 
-      case Contains(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setContains(binaryExpr))
+      case Contains(attribute, value) =>
+        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
+        val valueExpr = exprToProtoInternal(value, inputs, binding)
+        scalarFunctionExprToProto("contains", attributeExpr, valueExpr)
 
       case StringSpace(child) =>
         createUnaryExpr(
@@ -2326,10 +2314,20 @@ object QueryPlanSerde extends Logging with CometExprShim {
             }
           }
 
+          // Some native expressions do not support operating on dictionary-encoded arrays, so
+          // wrap the child in a CopyExec to unpack dictionaries first.
+          def wrapChildInCopyExec(condition: Expression): Boolean = {
+            condition.exists(expr => {
+              expr.isInstanceOf[StartsWith] || expr.isInstanceOf[EndsWith] || expr
+                .isInstanceOf[Contains]
+            })
+          }
+
           val filterBuilder = OperatorOuterClass.Filter
             .newBuilder()
             .setPredicate(cond.get)
             .setUseDatafusionFilter(!containsNativeCometScan(op))
+            .setWrapChildInCopyExec(wrapChildInCopyExec(condition))
           Some(result.setFilter(filterBuilder).build())
         } else {
           withInfo(op, condition, child)
