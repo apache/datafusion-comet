@@ -123,10 +123,28 @@ mod tests {
     use super::*;
     use arrow::array::BooleanArray;
 
-    fn assert_result_eq(result: ColumnarValue, expected: Vec<bool>) {
+    trait AsOption<T> {
+        fn as_optional(self) -> Option<T>;
+    }
+
+    impl AsOption<bool> for bool {
+        fn as_optional(self) -> Option<bool> {
+            Some(self)
+        }
+    }
+
+    impl AsOption<bool> for Option<bool> {
+        fn as_optional(self) -> Option<bool> {
+            self
+        }
+    }
+
+    fn assert_result_eq<T: AsOption<bool>>(result: ColumnarValue, expected: Vec<T>) {
         let array = result.to_array(1).unwrap();
         let booleans = array.as_any().downcast_ref::<BooleanArray>().unwrap();
-        assert_eq!(booleans, &BooleanArray::from(expected));
+        let expected_optionals: Vec<Option<bool>> =
+            expected.into_iter().map(|b| b.as_optional()).collect();
+        assert_eq!(booleans, &BooleanArray::from(expected_optionals));
     }
 
     fn assert_all_null(result: ColumnarValue) {
@@ -187,6 +205,21 @@ mod tests {
 
         let result = execute_might_contain(&Some(filter), &args).unwrap();
         assert_result_eq(result, vec![true, false, true]);
+    }
+
+    #[test]
+    fn test_execute_array_partially_null() {
+        let mut filter = SparkBloomFilter::from((4, 64));
+        filter.put_long(123);
+        filter.put_long(456);
+        filter.put_long(789);
+
+        let values = Int64Array::from(vec![Some(123), None, Some(555)]);
+
+        let args = [ColumnarValue::Array(Arc::new(values))];
+
+        let result = execute_might_contain(&Some(filter), &args).unwrap();
+        assert_result_eq(result, vec![Some(true), None, Some(false)]);
     }
 
     #[test]
