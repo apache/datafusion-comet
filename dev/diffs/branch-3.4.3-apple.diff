@@ -378,6 +378,129 @@ index c95932efee5..ab57be55fc9 100644
              fs.inputRDDs().forall(
                _.asInstanceOf[FileScanRDD].filePartitions.forall(
                  _.files.forall(_.urlEncodedPath.contains("p=0"))))
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/connector/WriteDistributionAndOrderingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/connector/WriteDistributionAndOrderingSuite.scala
+index 354e80fa51c..aceff39fe88 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/connector/WriteDistributionAndOrderingSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/connector/WriteDistributionAndOrderingSuite.scala
+@@ -21,7 +21,7 @@ package org.apache.spark.sql.connector
+ import java.sql.Date
+ import java.util.Collections
+ 
+-import org.apache.spark.sql.{catalyst, AnalysisException, DataFrame, IgnoreComet, Row}
++import org.apache.spark.sql.{catalyst, AnalysisException, DataFrame, IgnoreCometSuite, Row}
+ import org.apache.spark.sql.catalyst.expressions.{ApplyFunctionExpression, Cast, Literal}
+ import org.apache.spark.sql.catalyst.expressions.objects.Invoke
+ import org.apache.spark.sql.catalyst.plans.physical
+@@ -45,7 +45,8 @@ import org.apache.spark.sql.util.QueryExecutionListener
+ import org.apache.spark.tags.SlowSQLTest
+ 
+ @SlowSQLTest
+-class WriteDistributionAndOrderingSuite extends DistributionAndOrderingSuiteBase {
++class WriteDistributionAndOrderingSuite extends DistributionAndOrderingSuiteBase
++  with IgnoreCometSuite {
+   import testImplicits._
+ 
+   before {
+@@ -74,18 +75,15 @@ class WriteDistributionAndOrderingSuite extends DistributionAndOrderingSuiteBase
+     .add("data", StringType)
+     .add("day", DateType)
+ 
+-  test("ordered distribution and sort with same exprs: append",
+-    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1268")) {
++  test("ordered distribution and sort with same exprs: append") {
+     checkOrderedDistributionAndSortWithSameExprsInVariousCases("append")
+   }
+ 
+-  test("ordered distribution and sort with same exprs: overwrite",
+-    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1268")) {
++  test("ordered distribution and sort with same exprs: overwrite") {
+     checkOrderedDistributionAndSortWithSameExprsInVariousCases("overwrite")
+   }
+ 
+-  test("ordered distribution and sort with same exprs: overwriteDynamic",
+-    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1268")) {
++  test("ordered distribution and sort with same exprs: overwriteDynamic") {
+     checkOrderedDistributionAndSortWithSameExprsInVariousCases("overwriteDynamic")
+   }
+ 
+@@ -547,18 +545,15 @@ class WriteDistributionAndOrderingSuite extends DistributionAndOrderingSuiteBase
+       expectAnalysisException = targetNumPartitions.isDefined)
+   }
+ 
+-  test("ordered distribution and sort with manual global sort: append",
+-    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1268")) {
++  test("ordered distribution and sort with manual global sort: append") {
+     checkOrderedDistributionAndSortWithManualGlobalSortInVariousCases("append")
+   }
+ 
+-  test("ordered distribution and sort with manual global sort: overwrite",
+-    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1268")) {
++  test("ordered distribution and sort with manual global sort: overwrite") {
+     checkOrderedDistributionAndSortWithManualGlobalSortInVariousCases("overwrite")
+   }
+ 
+-  test("ordered distribution and sort with manual global sort: overwriteDynamic",
+-    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1268")) {
++  test("ordered distribution and sort with manual global sort: overwriteDynamic") {
+     checkOrderedDistributionAndSortWithManualGlobalSortInVariousCases("overwriteDynamic")
+   }
+ 
+@@ -635,18 +630,15 @@ class WriteDistributionAndOrderingSuite extends DistributionAndOrderingSuiteBase
+       coalesce = coalesce)
+   }
+ 
+-  test("ordered distribution and sort with incompatible global sort: append",
+-    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1268")) {
++  test("ordered distribution and sort with incompatible global sort: append") {
+     checkOrderedDistributionAndSortWithIncompatibleGlobalSortInVariousCases("append")
+   }
+ 
+-  test("ordered distribution and sort with incompatible global sort: overwrite",
+-    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1268")) {
++  test("ordered distribution and sort with incompatible global sort: overwrite") {
+     checkOrderedDistributionAndSortWithIncompatibleGlobalSortInVariousCases("overwrite")
+   }
+ 
+-  test("ordered distribution and sort with incompatible global sort: overwriteDynamic",
+-    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1268")) {
++  test("ordered distribution and sort with incompatible global sort: overwriteDynamic") {
+     checkOrderedDistributionAndSortWithIncompatibleGlobalSortInVariousCases("overwriteDynamic")
+   }
+ 
+@@ -725,18 +717,15 @@ class WriteDistributionAndOrderingSuite extends DistributionAndOrderingSuiteBase
+       coalesce = coalesce)
+   }
+ 
+-  test("ordered distribution and sort with manual local sort: append",
+-    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1268")) {
++  test("ordered distribution and sort with manual local sort: append") {
+     checkOrderedDistributionAndSortWithManualLocalSortInVariousCases("append")
+   }
+ 
+-  test("ordered distribution and sort with manual local sort: overwrite",
+-    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1268")) {
++  test("ordered distribution and sort with manual local sort: overwrite") {
+     checkOrderedDistributionAndSortWithManualLocalSortInVariousCases("overwrite")
+   }
+ 
+-  test("ordered distribution and sort with manual local sort: overwriteDynamic",
+-    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1268")) {
++  test("ordered distribution and sort with manual local sort: overwriteDynamic") {
+     checkOrderedDistributionAndSortWithManualLocalSortInVariousCases("overwriteDynamic")
+   }
+ 
+@@ -1275,6 +1264,11 @@ class WriteDistributionAndOrderingSuite extends DistributionAndOrderingSuiteBase
+           val read = collect(executedPlan) {
+             case r: AQEShuffleReadExec => r
+           }
++
++          // scalastyle:off
++          println(executedPlan)
++          println(read.head)
++
+           assert(read.size == 1)
+           assert(read.head.partitionSpecs.size == 1)
+           checkPartitioningAndOrdering(
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/QueryExecutionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/QueryExecutionSuite.scala
 index 57a6b2f1708..6ed92be07e3 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/QueryExecutionSuite.scala
