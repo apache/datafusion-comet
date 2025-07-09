@@ -1466,7 +1466,7 @@ mod tests {
         const SIZE: &[usize] = &[1, 31, 32, 33, 128, 129];
         for total in SIZE {
             for num_bits in 1..33 {
-                let num_bytes = (num_bits as usize).div_ceil(8);
+                let num_bytes = usize::div_ceil(num_bits, 8);
                 let mut writer = BitWriter::new(num_bytes * total);
 
                 let values: Vec<u32> = random_numbers::<u32>(*total)
