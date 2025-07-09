@@ -123,27 +123,11 @@ mod tests {
     use super::*;
     use arrow::array::BooleanArray;
 
-    trait AsOption<T> {
-        fn as_optional(self) -> Option<T>;
-    }
-
-    impl AsOption<bool> for bool {
-        fn as_optional(self) -> Option<bool> {
-            Some(self)
-        }
-    }
-
-    impl AsOption<bool> for Option<bool> {
-        fn as_optional(self) -> Option<bool> {
-            self
-        }
-    }
-
-    fn assert_result_eq<T: AsOption<bool>>(result: ColumnarValue, expected: Vec<T>) {
+    fn assert_result_eq<T: Into<Option<bool>>>(result: ColumnarValue, expected: Vec<T>) {
         let array = result.to_array(1).unwrap();
         let booleans = array.as_any().downcast_ref::<BooleanArray>().unwrap();
         let expected_optionals: Vec<Option<bool>> =
-            expected.into_iter().map(|b| b.as_optional()).collect();
+            expected.into_iter().map(|b| b.into()).collect();
         assert_eq!(booleans, &BooleanArray::from(expected_optionals));
     }
 
