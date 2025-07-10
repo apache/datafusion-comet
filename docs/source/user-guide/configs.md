@@ -27,6 +27,8 @@ TO MODIFY THIS CONTENT MAKE SURE THAT YOU MAKE YOUR CHANGES TO THE TEMPLATE FILE
 
 Comet provides the following configuration settings.
 
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->  
+
 <!--BEGIN:CONFIG_TABLE-->
 | Config | Description | Default Value |
 |--------|-------------|---------------|

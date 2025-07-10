@@ -131,6 +131,8 @@ Spark.
 
 The following cast operations are generally compatible with Spark except for the differences noted here.
 
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->  
+
 <!--BEGIN:COMPAT_CAST_TABLE-->
 | From Type | To Type | Notes |
 |-|-|-|
@@ -209,6 +211,8 @@ The following cast operations are generally compatible with Spark except for the
 ### Incompatible Casts
 
 The following cast operations are not compatible with Spark for all inputs and are disabled by default.
+
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->  
 
 <!--BEGIN:INCOMPAT_CAST_TABLE-->
 | From Type | To Type | Notes |
