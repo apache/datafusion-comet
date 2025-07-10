@@ -98,7 +98,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Upper] -> CometUpper,
     classOf[Lower] -> CometLower,
     classOf[Murmur3Hash] -> CometMurmur3Hash,
-    classOf[XxHash64] -> CometXxHash64)
+    classOf[XxHash64] -> CometXxHash64,
+    classOf[MapKeys] -> CometMapKeys,
+    classOf[MapValues] -> CometMapValues,
+    classOf[MapFromArrays] -> CometMapFromArrays,
+    classOf[GetMapValue] -> CometMapExtract)
 
   def emitWarning(reason: String): Unit = {
     logWarning(s"Comet native execution is disabled due to: $reason")
@@ -1922,17 +1926,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           inputs,
           binding,
           (builder, unaryExpr) => builder.setRand(unaryExpr))
-
-      case mk: MapKeys =>
-        val childExpr = exprToProtoInternal(mk.child, inputs, binding)
-        scalarFunctionExprToProto("map_keys", childExpr)
-      case mv: MapValues =>
-        val childExpr = exprToProtoInternal(mv.child, inputs, binding)
-        scalarFunctionExprToProto("map_values", childExpr)
-      case gmv: GetMapValue =>
-        val mapExpr = exprToProtoInternal(gmv.child, inputs, binding)
-        val keyExpr = exprToProtoInternal(gmv.key, inputs, binding)
-        scalarFunctionExprToProto("map_extract", mapExpr, keyExpr)
       case expr =>
         QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
           case Some(handler) => convert(handler)
