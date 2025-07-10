@@ -121,8 +121,7 @@ object GenerateDocs {
       } else if (line.startsWith("<!--END:")) {
         buffer += line
         skipping = false
-      }
-      if (!skipping) {
+      } else if (!skipping) {
         buffer += line
       }
       line = r.readLine()
