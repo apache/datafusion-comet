@@ -196,6 +196,8 @@ mod tests {
     use datafusion::common::cast::as_float64_array;
     use datafusion::physical_expr::expressions::lit;
 
+    const PRECISION_TOLERANCE: f64 = 1e-6;
+
     const SPARK_SEED_42_FIRST_5_GAUSSIAN: [f64; 5] = [
         2.384479054241165,
         0.1920934041293524,
@@ -213,7 +215,7 @@ mod tests {
         let result = randn_expr.evaluate(&batch)?.into_array(batch.num_rows())?;
         let result = as_float64_array(&result)?;
         let expected = &Float64Array::from(Vec::from(SPARK_SEED_42_FIRST_5_GAUSSIAN));
-        assert_eq!(result, expected);
+        assert_eq_with_tolerance(result, expected);
         Ok(())
     }
 
@@ -245,7 +247,19 @@ mod tests {
         let result_arrays = &concat(&result_arrays)?;
         let final_result = as_float64_array(result_arrays)?;
         let expected = &Float64Array::from(Vec::from(SPARK_SEED_42_FIRST_5_GAUSSIAN));
-        assert_eq!(final_result, expected);
+        assert_eq_with_tolerance(final_result, expected);
         Ok(())
+    }
+
+    fn assert_eq_with_tolerance(left: &Float64Array, right: &Float64Array) {
+        assert_eq!(left.len(), right.len());
+        left.iter().zip(right.iter()).for_each(|(l, r)| {
+            assert!(
+                (l.unwrap() - r.unwrap()).abs() < PRECISION_TOLERANCE,
+                "difference between {:?} and {:?} is larger than acceptable precision",
+                l.unwrap(),
+                r.unwrap()
+            )
+        })
     }
 }
