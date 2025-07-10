@@ -36,4 +36,6 @@ message ListLiteral {
   repeated bytes bytes_values = 9;
   repeated bytes decimal_values = 10;
   repeated ListLiteral list_values = 11;
+
+  repeated bool null_mask = 12;
 }

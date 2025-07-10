@@ -85,7 +85,11 @@ use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
-use arrow::array::Int32Array;
+use arrow::array::{
+    BinaryArray, BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Array, Decimal128Builder,
+    Float32Builder, Float64Builder, Int16Builder, Int32Builder, Int64Builder, Int8Builder,
+    NullArray, StringBuilder, TimestampMicrosecondBuilder,
+};
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
@@ -478,17 +482,237 @@ impl PhysicalPlanner {
                             }
                         },
                         Value::ListVal(values) => {
-                            //dbg!(values);
-                            //dbg!(literal.datatype.as_ref().unwrap());
-                            //dbg!(data_type);
-                            match data_type {
-                                DataType::List(f) if f.data_type().equals_datatype(&DataType::Int32) => {
-                                    let vals = values.clone().int_values;
-                                    let len = &vals.len();
-                                    SingleRowListArrayBuilder::new(Arc::new(Int32Array::from(vals)))
-                                        .build_fixed_size_list_scalar(*len)
+                            if let DataType::List(f) = data_type {
+                                match f.data_type() {
+                                    DataType::Null => {
+                                        SingleRowListArrayBuilder::new(Arc::new(NullArray::new(values.clone().null_mask.len())))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Boolean => {
+                                        let vals = values.clone();
+                                        let len = vals.boolean_values.len();
+                                        let mut arr = BooleanBuilder::with_capacity(len);
+
+                                        for i in 0 .. len {
+                                            if !vals.null_mask[i] {
+                                                arr.append_value(vals.boolean_values[i]);
+                                            } else {
+                                                arr.append_null();
+                                            }
+                                        }
+
+                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Int8 => {
+                                        let vals = values.clone();
+                                        let len = vals.byte_values.len();
+                                        let mut arr = Int8Builder::with_capacity(len);
+
+                                        for i in 0 .. len {
+                                            if !vals.null_mask[i] {
+                                                arr.append_value(vals.byte_values[i] as i8);
+                                            } else {
+                                                arr.append_null();
+                                            }
+                                        }
+
+                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Int16 => {
+                                        let vals = values.clone();
+                                        let len = vals.short_values.len();
+                                        let mut arr = Int16Builder::with_capacity(len);
+
+                                        for i in 0 .. len {
+                                            if !vals.null_mask[i] {
+                                                arr.append_value(vals.short_values[i] as i16);
+                                            } else {
+                                                arr.append_null();
+                                            }
+                                        }
+
+                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Int32 => {
+                                        let vals = values.clone();
+                                        let len = vals.int_values.len();
+                                        let mut arr = Int32Builder::with_capacity(len);
+
+                                        for i in 0 .. len {
+                                            if !vals.null_mask[i] {
+                                                arr.append_value(vals.int_values[i]);
+                                            } else {
+                                                arr.append_null();
+                                            }
+                                        }
+
+                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Int64 => {
+                                        let vals = values.clone();
+                                        let len = vals.long_values.len();
+                                        let mut arr = Int64Builder::with_capacity(len);
+
+                                        for i in 0 .. len {
+                                            if !vals.null_mask[i] {
+                                                arr.append_value(vals.long_values[i]);
+                                            } else {
+                                                arr.append_null();
+                                            }
+                                        }
+
+                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Float32 => {
+                                        let vals = values.clone();
+                                        let len = vals.float_values.len();
+                                        let mut arr = Float32Builder::with_capacity(len);
+
+                                        for i in 0 .. len {
+                                            if !vals.null_mask[i] {
+                                                arr.append_value(vals.float_values[i]);
+                                            } else {
+                                                arr.append_null();
+                                            }
+                                        }
+
+                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Float64 => {
+                                        let vals = values.clone();
+                                        let len = vals.double_values.len();
+                                        let mut arr = Float64Builder::with_capacity(len);
+
+                                        for i in 0 .. len {
+                                            if !vals.null_mask[i] {
+                                                arr.append_value(vals.double_values[i]);
+                                            } else {
+                                                arr.append_null();
+                                            }
+                                        }
+
+                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Timestamp(TimeUnit::Microsecond, None) => {
+                                        let vals = values.clone();
+                                        let len = vals.long_values.len();
+                                        let mut arr = TimestampMicrosecondBuilder::with_capacity(len);
+
+                                        for i in 0 .. len {
+                                            if !vals.null_mask[i] {
+                                                arr.append_value(vals.long_values[i]);
+                                            } else {
+                                                arr.append_null();
+                                            }
+                                        }
+
+                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) => {
+                                        let vals = values.clone();
+                                        let len = vals.long_values.len();
+                                        let mut arr = TimestampMicrosecondBuilder::with_capacity(len);
+
+                                        for i in 0 .. len {
+                                            if !vals.null_mask[i] {
+                                                arr.append_value(vals.long_values[i]);
+                                            } else {
+                                                arr.append_null();
+                                            }
+                                        }
+
+                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish().with_timezone(Arc::clone(tz))))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Date32 => {
+                                        let vals = values.clone();
+                                        let len = vals.int_values.len();
+                                        let mut arr = Date32Builder::with_capacity(len);
+
+                                        for i in 0 .. len {
+                                            if !vals.null_mask[i] {
+                                                arr.append_value(vals.int_values[i]);
+                                            } else {
+                                                arr.append_null();
+                                            }
+                                        }
+
+                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Binary => {
+                                        let vals = values.clone();
+                                        let mut arr = BinaryBuilder::new();
+
+                                        for (i, v) in vals.bytes_values.into_iter().enumerate() {
+                                            if !vals.null_mask[i] {
+                                                arr.append_value(v);
+                                            } else {
+                                                arr.append_null();
+                                            }
+                                        }
+
+                                        let binary_array: BinaryArray = arr.finish();
+                                        SingleRowListArrayBuilder::new(Arc::new(binary_array))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Utf8 => {
+                                        let vals = values.clone();
+                                        let len = vals.string_values.len();
+                                        let mut arr = StringBuilder::with_capacity(len, len);
+
+                                        for (i, v) in vals.string_values.into_iter().enumerate() {
+                                            if !vals.null_mask[i] {
+                                                arr.append_value(v);
+                                            } else {
+                                                arr.append_null();
+                                            }
+                                        }
+
+                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Decimal128(p, s) => {
+                                        let vals = values.clone();
+                                        let mut arr = Decimal128Builder::new().with_precision_and_scale(*p, *s)?;
+
+                                        for (i, v) in vals.decimal_values.into_iter().enumerate() {
+                                            if !vals.null_mask[i] {
+                                                let big_integer = BigInt::from_signed_bytes_be(&v);
+                                                let integer = big_integer.to_i128().ok_or_else(|| {
+                                                    GeneralError(format!(
+                                                        "Cannot parse {big_integer:?} as i128 for Decimal literal"
+                                                    ))
+                                                })?;
+                                                arr.append_value(integer);
+                                            } else {
+                                                arr.append_null();
+                                            }
+                                        }
+
+                                        let decimal_array: Decimal128Array = arr.finish();
+                                        SingleRowListArrayBuilder::new(Arc::new(decimal_array))
+                                            .build_list_scalar()
+                                    }
+                                    dt => {
+                                        return Err(GeneralError(format!(
+                                            "DataType::List literal does not support {dt:?} type"
+                                        )))
+                                    }
                                 }
-                                _ => todo!()
+
+                            } else {
+                                return Err(GeneralError(format!(
+                                    "Expected DataType::List but got {data_type:?}"
+                                )))
                             }
                         }
                     }
