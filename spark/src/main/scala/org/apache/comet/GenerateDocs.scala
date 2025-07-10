@@ -19,13 +19,12 @@
 
 package org.apache.comet
 
-import java.io.{BufferedOutputStream, FileOutputStream}
-
+import java.io.{BufferedOutputStream, BufferedReader, FileOutputStream, FileReader}
 import scala.io.Source
-
 import org.apache.spark.sql.catalyst.expressions.Cast
-
 import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incompatible}
+
+import scala.collection.mutable.ListBuffer
 
 /**
  * Utility for generating markdown documentation from the configs.
@@ -110,9 +109,14 @@ object GenerateDocs {
 
   /** Read file into memory */
   private def readFile(filename: String): Seq[String] = {
-    val source = Source.fromFile(filename)
-    val lines = source.getLines().toSeq
-    source.close()
-    lines
+    val r = new BufferedReader(new FileReader(filename))
+    val buffer = new ListBuffer[String]()
+    var line = r.readLine()
+    while (line != null) {
+      buffer += line.trim
+      line = r.readLine()
+    }
+    r.close()
+    buffer
   }
 }
