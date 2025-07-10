@@ -556,4 +556,12 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         |""".stripMargin,
       "select array(cast('a' as binary), cast('bc' as binary), cast('def' as binary), null) from tbl")
   }
+
+  test("native reader - array equality") {
+    testSingleLineQuery(
+      """
+        | select array(1) a union all select array(2)
+        |""".stripMargin,
+      "select * from tbl where a = array(1L)")
+  }
 }
