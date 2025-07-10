@@ -41,7 +41,7 @@ object GenerateDocs {
 
   private def generateConfigReference(): Unit = {
     val filename = "docs/source/user-guide/configs.md"
-    val lines = Source.fromFile(filename).getLines().toSeq
+    val lines = readFile(filename)
     val w = new BufferedOutputStream(new FileOutputStream(filename))
     for (line <- lines) {
       w.write(s"${line.trim}\n".getBytes)
@@ -64,7 +64,7 @@ object GenerateDocs {
 
   private def generateCompatibilityGuide(): Unit = {
     val filename = "docs/source/user-guide/compatibility.md"
-    val lines = Source.fromFile(filename).getLines().toSeq
+    val lines = readFile(filename)
     val w = new BufferedOutputStream(new FileOutputStream(filename))
     for (line <- lines) {
       w.write(s"${line.trim}\n".getBytes)
@@ -106,5 +106,13 @@ object GenerateDocs {
       }
     }
     w.close()
+  }
+
+  /** Read file into memory */
+  private def readFile(filename: String): Seq[String] = {
+    val source = Source.fromFile(filename)
+    val lines = source.getLines().toSeq
+    source.close()
+    lines
   }
 }
