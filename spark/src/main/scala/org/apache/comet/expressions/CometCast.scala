@@ -63,6 +63,8 @@ object CometCast {
 
     (fromType, toType) match {
       case (dt: ArrayType, _: ArrayType) if dt.elementType == NullType => Compatible()
+      case (dt: ArrayType, dt1: ArrayType) =>
+        isSupported(dt.elementType, dt1.elementType, timeZoneId, evalMode)
       case (dt: DataType, _) if dt.typeName == "timestamp_ntz" =>
         // https://github.com/apache/datafusion-comet/issues/378
         toType match {
