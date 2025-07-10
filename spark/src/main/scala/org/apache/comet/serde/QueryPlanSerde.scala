@@ -207,52 +207,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
       false
   }
 
-//  def convertArrayToProtoLiteral(array: Seq[Any], arrayType: ArrayType): Literal = {
-//    val elementType = arrayType.elementType
-//    val listLiteralBuilder = ListLiteral.newBuilder()
-//
-//    elementType match {
-//      case BooleanType =>
-//        listLiteralBuilder.addAllBooleanValues(array.map(_.asInstanceOf[Boolean]).asJava)
-//
-//      case ByteType =>
-//        listLiteralBuilder.addAllByteValues(array.map(_.asInstanceOf[Byte].toInt).asJava)
-//
-//      case ShortType =>
-//        listLiteralBuilder.addAllShortValues(array.map(_.asInstanceOf[Short].toInt).asJava)
-//
-//      case IntegerType =>
-//        listLiteralBuilder.addAllIntValues(array.map(_.asInstanceOf[Int]).asJava)
-//
-//      case LongType =>
-//        listLiteralBuilder.addAllLongValues(array.map(_.asInstanceOf[Long]).asJava)
-//
-//      case FloatType =>
-//        listLiteralBuilder.addAllFloatValues(array.map(_.asInstanceOf[Float]).asJava)
-//
-//      case DoubleType =>
-//        listLiteralBuilder.addAllDoubleValues(array.map(_.asInstanceOf[Double]).asJava)
-//
-//      case StringType =>
-//        listLiteralBuilder.addAllStringValues(array.map(_.asInstanceOf[String]).asJava)
-//
-//      case BinaryType =>
-//        listLiteralBuilder.addAllBytesValues
-  //        (array.map(x => com.google.protobuf
-  //        .ByteString.copyFrom(x.asInstanceOf[Array[Byte]])).asJava)
-//
-//      case nested: ArrayType =>
-//        val nestedListLiterals = array.map {
-//          case null => ListLiteral.newBuilder().build() // or handle nulls appropriately
-//          case seq: Seq[_] => convertArrayToProtoLiteral(seq, nested).getListVal
-//        }
-//        listLiteralBuilder.addAllListValues(nestedListLiterals.asJava)
-//
-//      case _ =>
-//        throw new UnsupportedOperationException(s"Unsupported element type: $elementType")
-//    }
-//  }
-
   /**
    * Serializes Spark datatype to protobuf. Note that, a datatype can be serialized by this method
    * doesn't mean it is supported by Comet native execution, i.e., `supportedDataType` may return
