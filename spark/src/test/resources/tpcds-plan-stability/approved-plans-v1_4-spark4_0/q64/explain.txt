@@ -361,11 +361,11 @@ ReadSchema: struct<s_store_sk:int,s_store_name:string,s_zip:string>
 
 (38) CometFilter
 Input [3]: [s_store_sk#39, s_store_name#40, s_zip#41]
-Condition : ((isnotnull(s_store_sk#39) AND isnotnull(s_store_name#40)) AND isnotnull(staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_zip#41, 10, true, false, true)))
+Condition : ((isnotnull(s_store_sk#39) AND isnotnull(s_store_name#40)) AND isnotnull(static_invoke(CharVarcharCodegenUtils.readSidePadding(s_zip#41, 10))))
 
 (39) CometProject
 Input [3]: [s_store_sk#39, s_store_name#40, s_zip#41]
-Arguments: [s_store_sk#39, s_store_name#40, s_zip#42], [s_store_sk#39, s_store_name#40, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_zip#41, 10, true, false, true) AS s_zip#42]
+Arguments: [s_store_sk#39, s_store_name#40, s_zip#42], [s_store_sk#39, s_store_name#40, static_invoke(CharVarcharCodegenUtils.readSidePadding(s_zip#41, 10)) AS s_zip#42]
 
 (40) CometColumnarToRow [codegen id : 5]
 Input [3]: [s_store_sk#39, s_store_name#40, s_zip#42]
@@ -462,11 +462,11 @@ ReadSchema: struct<cd_demo_sk:int,cd_marital_status:string>
 
 (60) CometFilter
 Input [2]: [cd_demo_sk#53, cd_marital_status#54]
-Condition : (isnotnull(cd_demo_sk#53) AND isnotnull(staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_marital_status#54, 1, true, false, true)))
+Condition : (isnotnull(cd_demo_sk#53) AND isnotnull(static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_marital_status#54, 1))))
 
 (61) CometProject
 Input [2]: [cd_demo_sk#53, cd_marital_status#54]
-Arguments: [cd_demo_sk#53, cd_marital_status#55], [cd_demo_sk#53, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_marital_status#54, 1, true, false, true) AS cd_marital_status#55]
+Arguments: [cd_demo_sk#53, cd_marital_status#55], [cd_demo_sk#53, static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_marital_status#54, 1)) AS cd_marital_status#55]
 
 (62) CometColumnarToRow [codegen id : 9]
 Input [2]: [cd_demo_sk#53, cd_marital_status#55]
@@ -580,7 +580,7 @@ Condition : isnotnull(ca_address_sk#63)
 
 (86) CometProject
 Input [5]: [ca_address_sk#63, ca_street_number#64, ca_street_name#65, ca_city#66, ca_zip#67]
-Arguments: [ca_address_sk#63, ca_street_number#68, ca_street_name#65, ca_city#66, ca_zip#69], [ca_address_sk#63, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, ca_street_number#64, 10, true, false, true) AS ca_street_number#68, ca_street_name#65, ca_city#66, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, ca_zip#67, 10, true, false, true) AS ca_zip#69]
+Arguments: [ca_address_sk#63, ca_street_number#68, ca_street_name#65, ca_city#66, ca_zip#69], [ca_address_sk#63, static_invoke(CharVarcharCodegenUtils.readSidePadding(ca_street_number#64, 10)) AS ca_street_number#68, ca_street_name#65, ca_city#66, static_invoke(CharVarcharCodegenUtils.readSidePadding(ca_zip#67, 10)) AS ca_zip#69]
 
 (87) CometColumnarToRow [codegen id : 14]
 Input [5]: [ca_address_sk#63, ca_street_number#68, ca_street_name#65, ca_city#66, ca_zip#69]
@@ -662,11 +662,11 @@ ReadSchema: struct<i_item_sk:int,i_current_price:decimal(7,2),i_color:string,i_p
 
 (104) CometFilter
 Input [4]: [i_item_sk#77, i_current_price#78, i_color#79, i_product_name#80]
-Condition : ((((((isnotnull(i_current_price#78) AND staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_color#79, 20, true, false, true) IN (purple              ,burlywood           ,indian              ,spring              ,floral              ,medium              )) AND (i_current_price#78 >= 64.00)) AND (i_current_price#78 <= 74.00)) AND (i_current_price#78 >= 65.00)) AND (i_current_price#78 <= 79.00)) AND isnotnull(i_item_sk#77))
+Condition : ((((((isnotnull(i_current_price#78) AND static_invoke(CharVarcharCodegenUtils.readSidePadding(i_color#79, 20)) IN (purple              ,burlywood           ,indian              ,spring              ,floral              ,medium              )) AND (i_current_price#78 >= 64.00)) AND (i_current_price#78 <= 74.00)) AND (i_current_price#78 >= 65.00)) AND (i_current_price#78 <= 79.00)) AND isnotnull(i_item_sk#77))
 
 (105) CometProject
 Input [4]: [i_item_sk#77, i_current_price#78, i_color#79, i_product_name#80]
-Arguments: [i_item_sk#77, i_product_name#81], [i_item_sk#77, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_product_name#80, 50, true, false, true) AS i_product_name#81]
+Arguments: [i_item_sk#77, i_product_name#81], [i_item_sk#77, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_product_name#80, 50)) AS i_product_name#81]
 
 (106) CometColumnarToRow [codegen id : 18]
 Input [2]: [i_item_sk#77, i_product_name#81]
