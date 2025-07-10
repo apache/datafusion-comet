@@ -69,6 +69,10 @@ harness = false
 name = "aggregate"
 harness = false
 
+[[bench]]
+name = "bloom_filter_agg"
+harness = false
+
 [[test]]
 name = "test_udf_registration"
 path = "tests/spark_expr_reg.rs"

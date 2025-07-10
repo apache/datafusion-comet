@@ -49,6 +49,10 @@ mod datetime_funcs;
 pub use agg_funcs::*;
 
 pub use cast::{spark_cast, Cast, SparkCastOptions};
+
+mod bloom_filter;
+pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain};
+
 mod conditional_funcs;
 mod conversion_funcs;
 mod math_funcs;

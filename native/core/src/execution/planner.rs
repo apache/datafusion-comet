@@ -23,10 +23,7 @@ use crate::execution::operators::FilterExec as CometFilterExec;
 use crate::{
     errors::ExpressionError,
     execution::{
-        expressions::{
-            bloom_filter_agg::BloomFilterAgg, bloom_filter_might_contain::BloomFilterMightContain,
-            subquery::Subquery,
-        },
+        expressions::subquery::Subquery,
         operators::{CopyExec, ExecutionError, ExpandExec, ScanExec},
         serde::to_arrow_datatype,
         shuffle::ShuffleWriterExec,
@@ -65,7 +62,8 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{
-    create_comet_physical_fun, create_negate_expr, SparkHour, SparkMinute, SparkSecond,
+    create_comet_physical_fun, create_negate_expr, BloomFilterAgg, BloomFilterMightContain,
+    SparkHour, SparkMinute, SparkSecond,
 };
 
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -692,11 +690,17 @@ impl PhysicalPlanner {
                     expr.bloom_filter.as_ref().unwrap(),
                     Arc::clone(&input_schema),
                 )?;
+
+                // We only provide the values as argument, the bloom filter is created only in plan time.
                 let value_expr = self.create_expr(expr.value.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(BloomFilterMightContain::try_new(
-                    bloom_filter_expr,
-                    value_expr,
-                )?))
+                let args = vec![value_expr];
+                let udf =
+                    ScalarUDF::new_from_impl(BloomFilterMightContain::try_new(bloom_filter_expr)?);
+
+                let field_ref = Arc::new(Field::new("might_contain", DataType::Boolean, true));
+                let expr: ScalarFunctionExpr =
+                    ScalarFunctionExpr::new("might_contain", Arc::new(udf), args, field_ref);
+                Ok(Arc::new(expr))
             }
             ExprStruct::CreateNamedStruct(expr) => {
                 let values = expr
