@@ -1005,6 +1005,7 @@ case class CometCopyExec(
     override val nativeOp: Operator,
     override val originalPlan: SparkPlan,
     override val output: Seq[Attribute],
+    copyMode: CopyMode,
     child: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
     extends CometUnaryExec {
