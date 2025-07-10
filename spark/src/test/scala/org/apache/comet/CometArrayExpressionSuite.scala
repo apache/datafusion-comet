@@ -219,9 +219,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_contains") {
-    withSQLConf(
-      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
-      CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, n = 10000)
