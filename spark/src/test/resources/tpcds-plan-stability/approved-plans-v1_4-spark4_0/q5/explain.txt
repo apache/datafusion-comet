@@ -155,7 +155,7 @@ Condition : isnotnull(s_store_sk#24)
 
 (16) CometProject
 Input [2]: [s_store_sk#24, s_store_id#25]
-Arguments: [s_store_sk#24, s_store_id#26], [s_store_sk#24, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, s_store_id#25, 16, true, false, true) AS s_store_id#26]
+Arguments: [s_store_sk#24, s_store_id#26], [s_store_sk#24, static_invoke(CharVarcharCodegenUtils.readSidePadding(s_store_id#25, 16)) AS s_store_id#26]
 
 (17) CometBroadcastExchange
 Input [2]: [s_store_sk#24, s_store_id#26]
@@ -255,7 +255,7 @@ Condition : isnotnull(cp_catalog_page_sk#66)
 
 (37) CometProject
 Input [2]: [cp_catalog_page_sk#66, cp_catalog_page_id#67]
-Arguments: [cp_catalog_page_sk#66, cp_catalog_page_id#68], [cp_catalog_page_sk#66, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cp_catalog_page_id#67, 16, true, false, true) AS cp_catalog_page_id#68]
+Arguments: [cp_catalog_page_sk#66, cp_catalog_page_id#68], [cp_catalog_page_sk#66, static_invoke(CharVarcharCodegenUtils.readSidePadding(cp_catalog_page_id#67, 16)) AS cp_catalog_page_id#68]
 
 (38) CometBroadcastExchange
 Input [2]: [cp_catalog_page_sk#66, cp_catalog_page_id#68]
@@ -374,7 +374,7 @@ Condition : isnotnull(web_site_sk#113)
 
 (62) CometProject
 Input [2]: [web_site_sk#113, web_site_id#114]
-Arguments: [web_site_sk#113, web_site_id#115], [web_site_sk#113, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, web_site_id#114, 16, true, false, true) AS web_site_id#115]
+Arguments: [web_site_sk#113, web_site_id#115], [web_site_sk#113, static_invoke(CharVarcharCodegenUtils.readSidePadding(web_site_id#114, 16)) AS web_site_id#115]
 
 (63) CometBroadcastExchange
 Input [2]: [web_site_sk#113, web_site_id#115]

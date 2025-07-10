@@ -161,3 +161,12 @@ It is possible to debug both native and JVM code concurrently as described in th
 
 Comet uses `cargo fmt`, [Scalafix](https://github.com/scalacenter/scalafix) and [Spotless](https://github.com/diffplug/spotless/tree/main/plugin-maven) to
 automatically format the code. Before submitting a pull request, you can simply run `make format` to format the code.
+
+Additionally, it's strongly recommended to run Clippy locally to catch potential issues before the CI/CD pipeline does. You can run the same Clippy checks used in CI/CD with:
+
+```bash
+cd native
+cargo clippy --color=never --all-targets --workspace -- -D warnings
+```
+
+Make sure to resolve any Clippy warnings before submitting your pull request, as the CI/CD pipeline will fail if warnings are present.

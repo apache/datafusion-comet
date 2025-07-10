@@ -123,7 +123,3 @@ harness = false
 [[bench]]
 name = "filter"
 harness = false
-
-[[bench]]
-name = "bloom_filter_agg"
-harness = false

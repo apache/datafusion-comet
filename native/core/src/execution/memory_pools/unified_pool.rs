@@ -80,7 +80,7 @@ impl Drop for CometMemoryPool {
     fn drop(&mut self) {
         let used = self.used.load(Relaxed);
         if used != 0 {
-            log::warn!("CometMemoryPool dropped with {} bytes still reserved", used);
+            log::warn!("CometMemoryPool dropped with {used} bytes still reserved");
         }
     }
 }
@@ -95,7 +95,7 @@ impl MemoryPool for CometMemoryPool {
 
     fn shrink(&self, _: &MemoryReservation, size: usize) {
         self.release(size)
-            .unwrap_or_else(|_| panic!("Failed to release {} bytes", size));
+            .unwrap_or_else(|_| panic!("Failed to release {size} bytes"));
         self.used.fetch_sub(size, Relaxed);
     }
 

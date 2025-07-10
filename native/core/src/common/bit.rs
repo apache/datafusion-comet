@@ -141,17 +141,6 @@ pub fn read_u32(src: &[u8]) -> u32 {
     unsafe { in_ptr.read_unaligned() }
 }
 
-/// Similar to the `read_num_bytes` but read nums from bytes in big-endian order
-/// This is used to read bytes from Java's OutputStream which writes bytes in big-endian
-macro_rules! read_num_be_bytes {
-    ($ty:ty, $size:expr, $src:expr) => {{
-        debug_assert!($size <= $src.len());
-        let mut buffer = <$ty as $crate::common::bit::FromBytes>::Buffer::default();
-        buffer.as_mut()[..$size].copy_from_slice(&$src[..$size]);
-        <$ty>::from_be_bytes(buffer)
-    }};
-}
-
 #[inline]
 pub fn memcpy(source: &[u8], target: &mut [u8]) {
     debug_assert!(target.len() >= source.len(), "Copying from source to target is not possible. Source has {} bytes but target has {} bytes", source.len(), target.len());
@@ -172,12 +161,6 @@ where
         num_bytes
     );
     memcpy(&source.as_bytes()[..num_bytes], target)
-}
-
-/// Returns the ceil of value/divisor
-#[inline]
-pub fn ceil(value: usize, divisor: usize) -> usize {
-    value / divisor + ((value % divisor != 0) as usize)
 }
 
 /// Returns ceil(log2(x))
@@ -354,7 +337,7 @@ impl BitWriter {
     /// Flushes the internal buffered bits and the align the buffer to the next byte.
     #[inline]
     pub fn flush(&mut self) {
-        let num_bytes = ceil(self.bit_offset, 8);
+        let num_bytes = self.bit_offset.div_ceil(8);
         debug_assert!(self.byte_offset + num_bytes <= self.max_bytes);
         memcpy_value(
             &self.buffered_values,
@@ -401,7 +384,7 @@ impl BitWriter {
 
     #[inline]
     pub fn bytes_written(&self) -> usize {
-        self.byte_offset - self.start + ceil(self.bit_offset, 8)
+        self.byte_offset - self.start + self.bit_offset.div_ceil(8)
     }
 
     #[inline]
@@ -598,7 +581,7 @@ impl BitReader {
     /// Gets the current byte offset
     #[inline]
     pub fn get_byte_offset(&self) -> usize {
-        self.byte_offset + ceil(self.bit_offset, 8)
+        self.byte_offset + self.bit_offset.div_ceil(8)
     }
 
     /// Reads a value of type `T` and of size `num_bits`.
@@ -724,7 +707,7 @@ impl BitReader {
         v >>= 8 - offset_r;
 
         // Read the rest of the bytes
-        ((offset_i + 1)..(offset_i + ceil(n + offset_r, 8))).for_each(|i| {
+        ((offset_i + 1)..(offset_i + usize::div_ceil(n + offset_r, 8))).for_each(|i| {
             dst[i] |= v as u8;
             v >>= 8;
         });
@@ -907,7 +890,7 @@ impl BitReader {
         debug_assert!(8 >= size_of::<T>());
         debug_assert!(num_bytes <= size_of::<T>());
 
-        let bytes_read = ceil(self.bit_offset, 8);
+        let bytes_read = self.bit_offset.div_ceil(8);
         if unlikely(self.byte_offset + bytes_read + num_bytes > self.total_bytes) {
             return None;
         }
@@ -954,8 +937,7 @@ impl BitReader {
             shift += 7;
             debug_assert!(
                 shift <= MAX_VLQ_BYTE_LEN * 7,
-                "Num of bytes exceed MAX_VLQ_BYTE_LEN ({})",
-                MAX_VLQ_BYTE_LEN
+                "Num of bytes exceed MAX_VLQ_BYTE_LEN ({MAX_VLQ_BYTE_LEN})"
             );
             if likely(byte & 0x80 == 0) {
                 return Some(v);
@@ -1051,21 +1033,6 @@ mod tests {
     fn test_read_u32() {
         let buffer: Vec<u8> = vec![0, 1, 2, 3];
         assert_eq!(read_u32(&buffer), read_num_bytes!(u32, 4, &buffer),);
-    }
-
-    #[test]
-    fn test_ceil() {
-        assert_eq!(ceil(0, 1), 0);
-        assert_eq!(ceil(1, 1), 1);
-        assert_eq!(ceil(1, 2), 1);
-        assert_eq!(ceil(1, 8), 1);
-        assert_eq!(ceil(7, 8), 1);
-        assert_eq!(ceil(8, 8), 1);
-        assert_eq!(ceil(9, 8), 2);
-        assert_eq!(ceil(9, 9), 1);
-        assert_eq!(ceil(10000000000, 10), 1000000000);
-        assert_eq!(ceil(10, 10000000000), 1);
-        assert_eq!(ceil(10000000000, 1000000000), 10);
     }
 
     #[test]
@@ -1317,7 +1284,7 @@ mod tests {
 
     fn test_put_value_rand_numbers(total: usize, num_bits: usize) {
         assert!(num_bits < 64);
-        let num_bytes = ceil(num_bits, 8);
+        let num_bytes = num_bits.div_ceil(8);
         let mut writer = BitWriter::new(num_bytes * total);
         let values: Vec<u64> = random_numbers::<u64>(total)
             .iter()
@@ -1326,8 +1293,7 @@ mod tests {
         (0..total).for_each(|i| {
             assert!(
                 writer.put_value(values[i], num_bits),
-                "[{}]: put_value() failed",
-                i
+                "[{i}]: put_value() failed"
             );
         });
 
@@ -1456,7 +1422,7 @@ mod tests {
         T: FromBytes + Default + Clone + Debug + Eq,
     {
         assert!(num_bits <= 32);
-        let num_bytes = ceil(num_bits, 8);
+        let num_bytes = num_bits.div_ceil(8);
         let mut writer = BitWriter::new(num_bytes * total);
 
         let values: Vec<u32> = random_numbers::<u32>(total)
@@ -1479,8 +1445,7 @@ mod tests {
         for i in 0..batch.len() {
             assert_eq!(
                 batch[i], expected_values[i],
-                "num_bits = {}, index = {}",
-                num_bits, i
+                "num_bits = {num_bits}, index = {i}"
             );
         }
     }
@@ -1490,7 +1455,7 @@ mod tests {
         const SIZE: &[usize] = &[1, 31, 32, 33, 128, 129];
         for total in SIZE {
             for num_bits in 1..33 {
-                let num_bytes = ceil(num_bits, 8);
+                let num_bytes = usize::div_ceil(num_bits, 8);
                 let mut writer = BitWriter::new(num_bytes * total);
 
                 let values: Vec<u32> = random_numbers::<u32>(*total)
@@ -1509,11 +1474,7 @@ mod tests {
                     reader.get_u32_batch(batch.as_mut_ptr(), *total, num_bits);
                 }
                 for i in 0..batch.len() {
-                    assert_eq!(
-                        batch[i], values[i],
-                        "num_bits = {}, index = {}",
-                        num_bits, i
-                    );
+                    assert_eq!(batch[i], values[i], "num_bits = {num_bits}, index = {i}");
                 }
             }
         }
@@ -1540,7 +1501,7 @@ mod tests {
         assert_eq!(total % 2, 0);
 
         let aligned_value_byte_width = std::mem::size_of::<T>();
-        let value_byte_width = ceil(num_bits, 8);
+        let value_byte_width = num_bits.div_ceil(8);
         let mut writer =
             BitWriter::new((total / 2) * (aligned_value_byte_width + value_byte_width));
         let values: Vec<u32> = random_numbers::<u32>(total / 2)
@@ -1554,14 +1515,12 @@ mod tests {
             if i % 2 == 0 {
                 assert!(
                     writer.put_value(values[j] as u64, num_bits),
-                    "[{}]: put_value() failed",
-                    i
+                    "[{i}]: put_value() failed"
                 );
             } else {
                 assert!(
                     writer.put_aligned::<T>(aligned_values[j], aligned_value_byte_width),
-                    "[{}]: put_aligned() failed",
-                    i
+                    "[{i}]: put_aligned() failed"
                 );
             }
         }
@@ -1599,8 +1558,7 @@ mod tests {
         (0..total).for_each(|i| {
             assert!(
                 writer.put_vlq_int(values[i] as u64),
-                "[{}]; put_vlq_int() failed",
-                i
+                "[{i}]; put_vlq_int() failed"
             );
         });
 
@@ -1625,8 +1583,7 @@ mod tests {
         (0..total).for_each(|i| {
             assert!(
                 writer.put_zigzag_vlq_int(values[i] as i64),
-                "[{}]; put_zigzag_vlq_int() failed",
-                i
+                "[{i}]; put_zigzag_vlq_int() failed"
             );
         });
 

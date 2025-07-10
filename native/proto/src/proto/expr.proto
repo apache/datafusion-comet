@@ -51,9 +51,6 @@ message Expr {
     Second second = 24;
     CheckOverflow check_overflow = 25;
     BinaryExpr like = 26;
-    BinaryExpr startsWith = 27;
-    BinaryExpr endsWith = 28;
-    BinaryExpr contains = 29;
     BinaryExpr rlike = 30;
     ScalarFunc scalarFunc = 31;
     BinaryExpr eqNullSafe = 32;
@@ -83,6 +80,7 @@ message Expr {
     ArrayInsert array_insert = 58;
     MathExpr integral_divide = 59;
     ToPrettyString to_pretty_string = 60;
+    UnaryExpr rand = 61;
   }
 }
 

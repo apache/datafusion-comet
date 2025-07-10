@@ -22,10 +22,7 @@ use crate::execution::operators::FilterExec as CometFilterExec;
 use crate::{
     errors::ExpressionError,
     execution::{
-        expressions::{
-            bloom_filter_agg::BloomFilterAgg, bloom_filter_might_contain::BloomFilterMightContain,
-            subquery::Subquery,
-        },
+        expressions::subquery::Subquery,
         operators::{CopyExec, ExecutionError, ExpandExec, ScanExec},
         serde::to_arrow_datatype,
         shuffle::ShuffleWriterExec,
@@ -48,7 +45,7 @@ use datafusion::{
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
         expressions::{
-            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNotNullExpr, IsNullExpr,
+            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNotNullExpr, IsNullExpr, LikeExpr,
             Literal as DataFusionLiteral, NotExpr,
         },
         PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
@@ -64,8 +61,8 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{
-    create_comet_physical_fun, create_modulo_expr, create_negate_expr, EvalMode, SparkHour,
-    SparkMinute, SparkSecond,
+    create_comet_physical_fun, create_modulo_expr, create_negate_expr, BloomFilterAgg,
+    BloomFilterMightContain, EvalMode, SparkHour, SparkMinute, SparkSecond,
 };
 
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -104,10 +101,10 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Contains, Correlation, Covariance,
-    CreateNamedStruct, EndsWith, GetArrayStructFields, GetStructField, IfExpr, Like, ListExtract,
-    NormalizeNaNAndZero, RLike, SparkCastOptions, StartsWith, Stddev, StringSpaceExpr,
-    SubstringExpr, SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn, Variance,
+    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
+    GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RLike,
+    RandExpr, SparkCastOptions, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
+    TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
 use itertools::Itertools;
 use jni::objects::GlobalRef;
@@ -141,26 +138,29 @@ pub const TEST_EXEC_CONTEXT_ID: i64 = -1;
 pub struct PhysicalPlanner {
     // The execution context id of this planner.
     exec_context_id: i64,
+    partition: i32,
     session_ctx: Arc<SessionContext>,
 }
 
 impl Default for PhysicalPlanner {
     fn default() -> Self {
-        Self::new(Arc::new(SessionContext::new()))
+        Self::new(Arc::new(SessionContext::new()), 0)
     }
 }
 
 impl PhysicalPlanner {
-    pub fn new(session_ctx: Arc<SessionContext>) -> Self {
+    pub fn new(session_ctx: Arc<SessionContext>, partition: i32) -> Self {
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,
+            partition,
         }
     }
 
     pub fn with_exec_id(self, exec_context_id: i64) -> Self {
         Self {
             exec_context_id,
+            partition: self.partition,
             session_ctx: Arc::clone(&self.session_ctx),
         }
     }
@@ -329,8 +329,7 @@ impl PhysicalPlanner {
                 let idx = bound.index as usize;
                 if idx >= input_schema.fields().len() {
                     return Err(GeneralError(format!(
-                        "Column index {} is out of bound. Schema: {}",
-                        idx, input_schema
+                        "Column index {idx} is out of bound. Schema: {input_schema}"
                     )));
                 }
                 let field = input_schema.field(idx);
@@ -388,7 +387,7 @@ impl PhysicalPlanner {
                         DataType::List(f) => DataType::List(f).try_into()?,
                         DataType::Null => ScalarValue::Null,
                         dt => {
-                            return Err(GeneralError(format!("{:?} is not supported in Comet", dt)))
+                            return Err(GeneralError(format!("{dt:?} is not supported in Comet")))
                         }
                     }
                 } else {
@@ -401,8 +400,7 @@ impl PhysicalPlanner {
                             DataType::Date32 => ScalarValue::Date32(Some(*value)),
                             dt => {
                                 return Err(GeneralError(format!(
-                                    "Expected either 'Int32' or 'Date32' for IntVal, but found {:?}",
-                                    dt
+                                    "Expected either 'Int32' or 'Date32' for IntVal, but found {dt:?}"
                                 )))
                             }
                         },
@@ -416,8 +414,7 @@ impl PhysicalPlanner {
                             }
                             dt => {
                                 return Err(GeneralError(format!(
-                                    "Expected either 'Int64' or 'Timestamp' for LongVal, but found {:?}",
-                                    dt
+                                    "Expected either 'Int64' or 'Timestamp' for LongVal, but found {dt:?}"
                                 )))
                             }
                         },
@@ -429,8 +426,7 @@ impl PhysicalPlanner {
                             let big_integer = BigInt::from_signed_bytes_be(value);
                             let integer = big_integer.to_i128().ok_or_else(|| {
                                 GeneralError(format!(
-                                    "Cannot parse {:?} as i128 for Decimal literal",
-                                    big_integer
+                                    "Cannot parse {big_integer:?} as i128 for Decimal literal"
                                 ))
                             })?;
 
@@ -440,8 +436,7 @@ impl PhysicalPlanner {
                                 }
                                 dt => {
                                     return Err(GeneralError(format!(
-                                        "Decimal literal's data type should be Decimal128 but got {:?}",
-                                        dt
+                                        "Decimal literal's data type should be Decimal128 but got {dt:?}"
                                     )))
                                 }
                             }
@@ -522,33 +517,12 @@ impl PhysicalPlanner {
 
                 Ok(Arc::new(StringSpaceExpr::new(child)))
             }
-            ExprStruct::Contains(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-
-                Ok(Arc::new(Contains::new(left, right)))
-            }
-            ExprStruct::StartsWith(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-
-                Ok(Arc::new(StartsWith::new(left, right)))
-            }
-            ExprStruct::EndsWith(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-
-                Ok(Arc::new(EndsWith::new(left, right)))
-            }
             ExprStruct::Like(expr) => {
                 let left =
                     self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
 
-                Ok(Arc::new(Like::new(left, right)))
+                Ok(Arc::new(LikeExpr::new(false, false, left, right)))
             }
             ExprStruct::Rlike(expr) => {
                 let left =
@@ -724,11 +698,17 @@ impl PhysicalPlanner {
                     expr.bloom_filter.as_ref().unwrap(),
                     Arc::clone(&input_schema),
                 )?;
+
+                // We only provide the values as argument, the bloom filter is created only in plan time.
                 let value_expr = self.create_expr(expr.value.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(BloomFilterMightContain::try_new(
-                    bloom_filter_expr,
-                    value_expr,
-                )?))
+                let args = vec![value_expr];
+                let udf =
+                    ScalarUDF::new_from_impl(BloomFilterMightContain::try_new(bloom_filter_expr)?);
+
+                let field_ref = Arc::new(Field::new("might_contain", DataType::Boolean, true));
+                let expr: ScalarFunctionExpr =
+                    ScalarFunctionExpr::new("might_contain", Arc::new(udf), args, field_ref);
+                Ok(Arc::new(expr))
             }
             ExprStruct::CreateNamedStruct(expr) => {
                 let values = expr
@@ -810,7 +790,11 @@ impl PhysicalPlanner {
                     expr.legacy_negative_index,
                 )))
             }
-            expr => Err(GeneralError(format!("Not implemented: {:?}", expr))),
+            ExprStruct::Rand(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
+                Ok(Arc::new(RandExpr::new(child, self.partition)))
+            }
+            expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
         }
     }
 
@@ -836,7 +820,7 @@ impl PhysicalPlanner {
                     options,
                 })
             }
-            expr => Err(GeneralError(format!("{:?} isn't a SortOrder", expr))),
+            expr => Err(GeneralError(format!("{expr:?} isn't a SortOrder"))),
         }
     }
 
@@ -971,7 +955,7 @@ impl PhysicalPlanner {
                     .enumerate()
                     .map(|(idx, expr)| {
                         self.create_expr(expr, child.schema())
-                            .map(|r| (r, format!("col_{}", idx)))
+                            .map(|r| (r, format!("col_{idx}")))
                     })
                     .collect();
                 let projection = Arc::new(ProjectionExec::try_new(
@@ -989,17 +973,25 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                let filter: Arc<dyn ExecutionPlan> = if filter.use_datafusion_filter {
-                    Arc::new(DataFusionFilterExec::try_new(
-                        predicate,
-                        Arc::clone(&child.native_plan),
-                    )?)
-                } else {
-                    Arc::new(CometFilterExec::try_new(
-                        predicate,
-                        Arc::clone(&child.native_plan),
-                    )?)
-                };
+                let filter: Arc<dyn ExecutionPlan> =
+                    match (filter.wrap_child_in_copy_exec, filter.use_datafusion_filter) {
+                        (true, true) => Arc::new(DataFusionFilterExec::try_new(
+                            predicate,
+                            Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
+                        )?),
+                        (true, false) => Arc::new(CometFilterExec::try_new(
+                            predicate,
+                            Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
+                        )?),
+                        (false, true) => Arc::new(DataFusionFilterExec::try_new(
+                            predicate,
+                            Arc::clone(&child.native_plan),
+                        )?),
+                        (false, false) => Arc::new(CometFilterExec::try_new(
+                            predicate,
+                            Arc::clone(&child.native_plan),
+                        )?),
+                    };
 
                 Ok((
                     scans,
@@ -1016,7 +1008,7 @@ impl PhysicalPlanner {
                     .enumerate()
                     .map(|(idx, expr)| {
                         self.create_expr(expr, child.schema())
-                            .map(|r| (r, format!("col_{}", idx)))
+                            .map(|r| (r, format!("col_{idx}")))
                     })
                     .collect();
                 let group_by = PhysicalGroupBy::new_single(group_exprs?);
@@ -1052,7 +1044,7 @@ impl PhysicalPlanner {
                     .enumerate()
                     .map(|(idx, expr)| {
                         self.create_expr(expr, aggregate.schema())
-                            .map(|r| (r, format!("col_{}", idx)))
+                            .map(|r| (r, format!("col_{idx}")))
                     })
                     .collect();
 
@@ -1335,7 +1327,7 @@ impl PhysicalPlanner {
                 let fields: Vec<Field> = datatypes
                     .iter()
                     .enumerate()
-                    .map(|(idx, dt)| Field::new(format!("col_{}", idx), dt.clone(), true))
+                    .map(|(idx, dt)| Field::new(format!("col_{idx}"), dt.clone(), true))
                     .collect();
                 let schema = Arc::new(Schema::new(fields));
 
@@ -1577,13 +1569,10 @@ impl PhysicalPlanner {
             Ok(JoinType::RightOuter) => DFJoinType::Right,
             Ok(JoinType::FullOuter) => DFJoinType::Full,
             Ok(JoinType::LeftSemi) => DFJoinType::LeftSemi,
-            Ok(JoinType::RightSemi) => DFJoinType::RightSemi,
             Ok(JoinType::LeftAnti) => DFJoinType::LeftAnti,
-            Ok(JoinType::RightAnti) => DFJoinType::RightAnti,
             Err(_) => {
                 return Err(GeneralError(format!(
-                    "Unsupported join type: {:?}",
-                    join_type
+                    "Unsupported join type: {join_type:?}"
                 )));
             }
         };
@@ -1911,8 +1900,7 @@ impl PhysicalPlanner {
                         )
                     }
                     stats_type => Err(GeneralError(format!(
-                        "Unknown StatisticsType {:?} for Variance",
-                        stats_type
+                        "Unknown StatisticsType {stats_type:?} for Variance"
                     ))),
                 }
             }
@@ -1941,8 +1929,7 @@ impl PhysicalPlanner {
                         Self::create_aggr_func_expr("variance_pop", schema, vec![child], func)
                     }
                     stats_type => Err(GeneralError(format!(
-                        "Unknown StatisticsType {:?} for Variance",
-                        stats_type
+                        "Unknown StatisticsType {stats_type:?} for Variance"
                     ))),
                 }
             }
@@ -1971,8 +1958,7 @@ impl PhysicalPlanner {
                         Self::create_aggr_func_expr("stddev_pop", schema, vec![child], func)
                     }
                     stats_type => Err(GeneralError(format!(
-                        "Unknown StatisticsType {:?} for stddev",
-                        stats_type
+                        "Unknown StatisticsType {stats_type:?} for stddev"
                     ))),
                 }
             }
@@ -2878,6 +2864,7 @@ mod tests {
             op_struct: Some(OpStruct::Filter(spark_operator::Filter {
                 predicate: Some(expr),
                 use_datafusion_filter: false,
+                wrap_child_in_copy_exec: false,
             })),
         }
     }
@@ -2954,7 +2941,7 @@ mod tests {
             datafusion_functions_nested::make_array::MakeArray::new(),
         ));
         let task_ctx = session_ctx.task_ctx();
-        let planner = PhysicalPlanner::new(Arc::from(session_ctx));
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
 
         // Create a plan for
         // ProjectionExec: expr=[make_array(col_0@0) as col_0]
@@ -3070,7 +3057,7 @@ mod tests {
     fn test_array_repeat() {
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
-        let planner = PhysicalPlanner::new(Arc::from(session_ctx));
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
 
         // Mock scan operator with 3 INT32 columns
         let op_scan = Operator {

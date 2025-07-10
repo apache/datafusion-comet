@@ -71,8 +71,7 @@ pub(crate) fn parse_memory_pool_config(
             }
             _ => {
                 return Err(CometError::Config(format!(
-                    "Unsupported memory pool type for off-heap mode: {}",
-                    memory_pool_type
+                    "Unsupported memory pool type for off-heap mode: {memory_pool_type}"
                 )))
             }
         }
@@ -95,8 +94,7 @@ pub(crate) fn parse_memory_pool_config(
             "unbounded" => MemoryPoolConfig::new(MemoryPoolType::Unbounded, 0),
             _ => {
                 return Err(CometError::Config(format!(
-                    "Unsupported memory pool type for on-heap mode: {}",
-                    memory_pool_type
+                    "Unsupported memory pool type for on-heap mode: {memory_pool_type}"
                 )))
             }
         }

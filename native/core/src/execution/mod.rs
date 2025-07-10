@@ -25,7 +25,6 @@ pub mod serde;
 pub mod shuffle;
 pub(crate) mod sort;
 pub(crate) mod spark_plan;
-pub(crate) mod util;
 pub use datafusion_comet_spark_expr::timezone;
 mod memory_pools;
 pub(crate) mod tracing;
