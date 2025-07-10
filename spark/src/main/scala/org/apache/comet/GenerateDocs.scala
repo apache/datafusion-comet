@@ -127,6 +127,6 @@ object GenerateDocs {
       line = r.readLine()
     }
     r.close()
-    buffer
+    buffer.toSeq
   }
 }
