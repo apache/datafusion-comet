@@ -44,7 +44,7 @@ object GenerateDocs {
     val lines = readFile(filename)
     val w = new BufferedOutputStream(new FileOutputStream(filename))
     for (line <- lines) {
-      w.write(s"${line.trim}\n".getBytes)
+      w.write(s"${line.stripTrailing()}\n".getBytes)
       if (line.trim == "<!--BEGIN:CONFIG_TABLE-->") {
         val publicConfigs = CometConf.allConfs.filter(_.isPublic)
         val confs = publicConfigs.sortBy(_.key)
@@ -67,7 +67,7 @@ object GenerateDocs {
     val lines = readFile(filename)
     val w = new BufferedOutputStream(new FileOutputStream(filename))
     for (line <- lines) {
-      w.write(s"${line.trim}\n".getBytes)
+      w.write(s"${line.stripTrailing()}\n".getBytes)
       if (line.trim == "<!--BEGIN:COMPAT_CAST_TABLE-->") {
         w.write("| From Type | To Type | Notes |\n".getBytes)
         w.write("|-|-|-|\n".getBytes)

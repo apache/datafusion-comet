@@ -61,11 +61,11 @@ implementation:
 The `native_datafusion` and `native_iceberg_compat` scans share the following limitations:
 
 - When reading Parquet files written by systems other than Spark that contain columns with the logical types `UINT_8`
-or `UINT_16`, Comet will produce different results than Spark because Spark does not preserve or understand these
-logical types. Arrow-based readers, such as DataFusion and Comet do respect these types and read the data as unsigned
-rather than signed. By default, Comet will fall back to `native_comet` when scanning Parquet files containing `byte` or `short`
-types (regardless of the logical type). This behavior can be disabled by setting
-`spark.comet.scan.allowIncompatible=true`.
+  or `UINT_16`, Comet will produce different results than Spark because Spark does not preserve or understand these
+  logical types. Arrow-based readers, such as DataFusion and Comet do respect these types and read the data as unsigned
+  rather than signed. By default, Comet will fall back to `native_comet` when scanning Parquet files containing `byte` or `short`
+  types (regardless of the logical type). This behavior can be disabled by setting
+  `spark.comet.scan.allowIncompatible=true`.
 - No support for default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
 
 The `native_datafusion` scan has some additional limitations:
@@ -121,11 +121,11 @@ Cast operations in Comet fall into three levels of support:
 
 - **Compatible**: The results match Apache Spark
 - **Incompatible**: The results may match Apache Spark for some inputs, but there are known issues where some inputs
-will result in incorrect results or exceptions. The query stage will fall back to Spark by default. Setting
-`spark.comet.cast.allowIncompatible=true` will allow all incompatible casts to run natively in Comet, but this is not
-recommended for production use.
+  will result in incorrect results or exceptions. The query stage will fall back to Spark by default. Setting
+  `spark.comet.cast.allowIncompatible=true` will allow all incompatible casts to run natively in Comet, but this is not
+  recommended for production use.
 - **Unsupported**: Comet does not provide a native version of this cast expression and the query stage will fall back to
-Spark.
+  Spark.
 
 ### Compatible Casts
 
