@@ -1922,7 +1922,13 @@ object QueryPlanSerde extends Logging with CometExprShim {
           inputs,
           binding,
           (builder, unaryExpr) => builder.setRand(unaryExpr))
-
+      case Randn(child, _) =>
+        createUnaryExpr(
+          expr,
+          child,
+          inputs,
+          binding,
+          (builder, unaryExpr) => builder.setRandn(unaryExpr))
       case mk: MapKeys =>
         val childExpr = exprToProtoInternal(mk.child, inputs, binding)
         scalarFunctionExprToProto("map_keys", childExpr)

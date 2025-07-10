@@ -179,6 +179,20 @@ abstract class CometTestBase
     checkSparkAnswer(df)
   }
 
+  protected def checkSparkAnswerAndOperatorWithTol(df: => DataFrame, tol: Double = 1e-6): Unit = {
+    checkSparkAnswerAndOperatorWithTol(df, tol, Seq.empty)
+  }
+
+  protected def checkSparkAnswerAndOperatorWithTol(
+      df: => DataFrame,
+      tol: Double,
+      includeClasses: Seq[Class[_]],
+      excludedClasses: Class[_]*): Unit = {
+    checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan), excludedClasses: _*)
+    checkPlanContains(stripAQEPlan(df.queryExecution.executedPlan), includeClasses: _*)
+    checkSparkAnswerWithTol(df, tol)
+  }
+
   protected def checkCometOperators(plan: SparkPlan, excludedClasses: Class[_]*): Unit = {
     val wrapped = wrapCometSparkToColumnar(plan)
     wrapped.foreach {

@@ -351,6 +351,8 @@
  - [ ] input_file_name
  - [ ] monotonically_increasing_id
  - [ ] raise_error
+ - [x] rand
+ - [x] randn
  - [ ] spark_partition_id
  - [ ] typeof
  - [x] user

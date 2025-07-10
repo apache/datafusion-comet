@@ -16,10 +16,11 @@
 // under the License.
 
 use crate::hash_funcs::murmur3::spark_compatible_murmur3_hash;
-use arrow::array::{Float64Array, Float64Builder, RecordBatch};
+
+use crate::internal::{evaluate_batch_for_rand, StatefulSeedValueGenerator};
+use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Schema};
 use datafusion::common::Result;
-use datafusion::common::ScalarValue;
 use datafusion::error::DataFusionError;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
@@ -42,21 +43,11 @@ const DOUBLE_UNIT: f64 = 1.1102230246251565e-16;
 const SPARK_MURMUR_ARRAY_SEED: u32 = 0x3c074a61;
 
 #[derive(Debug, Clone)]
-struct XorShiftRandom {
-    seed: i64,
+pub(crate) struct XorShiftRandom {
+    pub(crate) seed: i64,
 }
 
 impl XorShiftRandom {
-    fn from_init_seed(init_seed: i64) -> Self {
-        XorShiftRandom {
-            seed: Self::init_seed(init_seed),
-        }
-    }
-
-    fn from_stored_seed(stored_seed: i64) -> Self {
-        XorShiftRandom { seed: stored_seed }
-    }
-
     fn next(&mut self, bits: u8) -> i32 {
         let mut next_seed = self.seed ^ (self.seed << 21);
         next_seed ^= ((next_seed as u64) >> 35) as i64;
@@ -70,12 +61,27 @@ impl XorShiftRandom {
         let b = self.next(27) as i64;
         ((a << 27) + b) as f64 * DOUBLE_UNIT
     }
+}
 
-    fn init_seed(init: i64) -> i64 {
-        let bytes_repr = init.to_be_bytes();
+impl StatefulSeedValueGenerator<i64, f64> for XorShiftRandom {
+    fn from_init_seed(init_seed: i64) -> Self {
+        let bytes_repr = init_seed.to_be_bytes();
         let low_bits = spark_compatible_murmur3_hash(bytes_repr, SPARK_MURMUR_ARRAY_SEED);
         let high_bits = spark_compatible_murmur3_hash(bytes_repr, low_bits);
-        ((high_bits as i64) << 32) | (low_bits as i64 & 0xFFFFFFFFi64)
+        let init_seed = ((high_bits as i64) << 32) | (low_bits as i64 & 0xFFFFFFFFi64);
+        XorShiftRandom { seed: init_seed }
+    }
+
+    fn from_stored_state(stored_state: i64) -> Self {
+        XorShiftRandom { seed: stored_state }
+    }
+
+    fn next_value(&mut self) -> f64 {
+        self.next_f64()
+    }
+
+    fn get_current_state(&self) -> i64 {
+        self.seed
     }
 }
 
@@ -93,36 +99,6 @@ impl RandExpr {
             init_seed_shift,
             state_holder: Arc::new(Mutex::new(None::<i64>)),
         }
-    }
-
-    fn extract_init_state(seed: ScalarValue) -> Result<i64> {
-        if let ScalarValue::Int64(seed_opt) = seed.cast_to(&DataType::Int64)? {
-            Ok(seed_opt.unwrap_or(0))
-        } else {
-            Err(DataFusionError::Internal(
-                "unexpected execution branch".to_string(),
-            ))
-        }
-    }
-    fn evaluate_batch(&self, seed: ScalarValue, num_rows: usize) -> Result<ColumnarValue> {
-        let mut seed_state = self.state_holder.lock().unwrap();
-        let mut rnd = if seed_state.is_none() {
-            let init_seed = RandExpr::extract_init_state(seed)?;
-            let init_seed = init_seed.wrapping_add(self.init_seed_shift as i64);
-            *seed_state = Some(init_seed);
-            XorShiftRandom::from_init_seed(init_seed)
-        } else {
-            let stored_seed = seed_state.unwrap();
-            XorShiftRandom::from_stored_seed(stored_seed)
-        };
-
-        let mut arr_builder = Float64Builder::with_capacity(num_rows);
-        std::iter::repeat_with(|| rnd.next_f64())
-            .take(num_rows)
-            .for_each(|v| arr_builder.append_value(v));
-        let array_ref = Arc::new(Float64Array::from(arr_builder.finish()));
-        *seed_state = Some(rnd.seed);
-        Ok(ColumnarValue::Array(array_ref))
     }
 }
 
@@ -161,7 +137,12 @@ impl PhysicalExpr for RandExpr {
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
         match self.seed.evaluate(batch)? {
-            ColumnarValue::Scalar(seed) => self.evaluate_batch(seed, batch.num_rows()),
+            ColumnarValue::Scalar(seed) => evaluate_batch_for_rand::<XorShiftRandom, i64>(
+                &self.state_holder,
+                seed,
+                self.init_seed_shift as i64,
+                batch.num_rows(),
+            ),
             ColumnarValue::Array(_arr) => Err(DataFusionError::NotImplemented(format!(
                 "Only literal seeds are supported for {self}"
             ))),
@@ -194,7 +175,7 @@ pub fn rand(seed: Arc<dyn PhysicalExpr>, init_seed_shift: i32) -> Result<Arc<dyn
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, BooleanArray, Int64Array};
+    use arrow::array::{Array, BooleanArray, Float64Array, Int64Array};
     use arrow::{array::StringArray, compute::concat, datatypes::*};
     use datafusion::common::cast::as_float64_array;
     use datafusion::physical_expr::expressions::lit;
