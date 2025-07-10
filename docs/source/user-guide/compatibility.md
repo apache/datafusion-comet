@@ -61,11 +61,11 @@ implementation:
 The `native_datafusion` and `native_iceberg_compat` scans share the following limitations:
 
 - When reading Parquet files written by systems other than Spark that contain columns with the logical types `UINT_8`
-  or `UINT_16`, Comet will produce different results than Spark because Spark does not preserve or understand these
-  logical types. Arrow-based readers, such as DataFusion and Comet do respect these types and read the data as unsigned
-  rather than signed. By default, Comet will fall back to `native_comet` when scanning Parquet files containing `byte` or `short`
-  types (regardless of the logical type). This behavior can be disabled by setting
-  `spark.comet.scan.allowIncompatible=true`.
+or `UINT_16`, Comet will produce different results than Spark because Spark does not preserve or understand these
+logical types. Arrow-based readers, such as DataFusion and Comet do respect these types and read the data as unsigned
+rather than signed. By default, Comet will fall back to `native_comet` when scanning Parquet files containing `byte` or `short`
+types (regardless of the logical type). This behavior can be disabled by setting
+`spark.comet.scan.allowIncompatible=true`.
 - No support for default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
 
 The `native_datafusion` scan has some additional limitations:
@@ -121,17 +121,89 @@ Cast operations in Comet fall into three levels of support:
 
 - **Compatible**: The results match Apache Spark
 - **Incompatible**: The results may match Apache Spark for some inputs, but there are known issues where some inputs
-  will result in incorrect results or exceptions. The query stage will fall back to Spark by default. Setting
-  `spark.comet.cast.allowIncompatible=true` will allow all incompatible casts to run natively in Comet, but this is not
-  recommended for production use.
+will result in incorrect results or exceptions. The query stage will fall back to Spark by default. Setting
+`spark.comet.cast.allowIncompatible=true` will allow all incompatible casts to run natively in Comet, but this is not
+recommended for production use.
 - **Unsupported**: Comet does not provide a native version of this cast expression and the query stage will fall back to
-  Spark.
+Spark.
 
 ### Compatible Casts
 
 The following cast operations are generally compatible with Spark except for the differences noted here.
 
 <!--BEGIN:COMPAT_CAST_TABLE-->
+| From Type | To Type | Notes |
+|-|-|-|
+| boolean | byte |  |
+| boolean | short |  |
+| boolean | integer |  |
+| boolean | long |  |
+| boolean | float |  |
+| boolean | double |  |
+| boolean | string |  |
+| byte | boolean |  |
+| byte | short |  |
+| byte | integer |  |
+| byte | long |  |
+| byte | float |  |
+| byte | double |  |
+| byte | decimal |  |
+| byte | string |  |
+| short | boolean |  |
+| short | byte |  |
+| short | integer |  |
+| short | long |  |
+| short | float |  |
+| short | double |  |
+| short | decimal |  |
+| short | string |  |
+| integer | boolean |  |
+| integer | byte |  |
+| integer | short |  |
+| integer | long |  |
+| integer | float |  |
+| integer | double |  |
+| integer | string |  |
+| long | boolean |  |
+| long | byte |  |
+| long | short |  |
+| long | integer |  |
+| long | float |  |
+| long | double |  |
+| long | string |  |
+| float | boolean |  |
+| float | byte |  |
+| float | short |  |
+| float | integer |  |
+| float | long |  |
+| float | double |  |
+| float | string | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
+| double | boolean |  |
+| double | byte |  |
+| double | short |  |
+| double | integer |  |
+| double | long |  |
+| double | float |  |
+| double | string | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
+| decimal | byte |  |
+| decimal | short |  |
+| decimal | integer |  |
+| decimal | long |  |
+| decimal | float |  |
+| decimal | double |  |
+| decimal | decimal |  |
+| decimal | string | There can be formatting differences in some case due to Spark using scientific notation where Comet does not |
+| string | boolean |  |
+| string | byte |  |
+| string | short |  |
+| string | integer |  |
+| string | long |  |
+| string | binary |  |
+| string | date | Only supports years between 262143 BC and 262142 AD |
+| date | string |  |
+| timestamp | long |  |
+| timestamp | string |  |
+| timestamp | date |  |
 <!--END:COMPAT_CAST_TABLE-->
 
 ### Incompatible Casts
@@ -139,6 +211,17 @@ The following cast operations are generally compatible with Spark except for the
 The following cast operations are not compatible with Spark for all inputs and are disabled by default.
 
 <!--BEGIN:INCOMPAT_CAST_TABLE-->
+| From Type | To Type | Notes |
+|-|-|-|
+| integer | decimal  | No overflow check |
+| long | decimal  | No overflow check |
+| float | decimal  | There can be rounding differences |
+| double | decimal  | There can be rounding differences |
+| string | float  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. |
+| string | double  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. |
+| string | decimal  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. Returns 0.0 instead of null if input contains no digits |
+| string | timestamp  | Not all valid formats are supported |
+| binary | string  | Only works for binary data representing valid UTF-8 strings |
 <!--END:INCOMPAT_CAST_TABLE-->
 
 ### Unsupported Casts
