@@ -56,6 +56,7 @@ import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType._
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 import org.apache.comet.shims.CometExprShim
 
 /**
@@ -84,9 +85,26 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[ConcatWs] -> CometConcatWs,
     classOf[Chr] -> CometChr,
     classOf[InitCap] -> CometInitCap,
+    classOf[BitwiseNot] -> CometBitwiseNot,
+    classOf[BitwiseOr] -> CometBitwiseOr,
+    classOf[BitwiseXor] -> CometBitwiseXor,
+    classOf[BitwiseCount] -> CometBitwiseCount,
     classOf[BitLength] -> CometBitLength,
     classOf[FromUnixTime] -> CometFromUnixTime,
     classOf[Length] -> CometLength,
+    classOf[Acos] -> UnaryScalarFuncSerde("acos"),
+    classOf[Cos] -> UnaryScalarFuncSerde("cos"),
+    classOf[Asin] -> UnaryScalarFuncSerde("asin"),
+    classOf[Sin] -> UnaryScalarFuncSerde("sin"),
+    classOf[Atan] -> UnaryScalarFuncSerde("atan"),
+    classOf[Tan] -> UnaryScalarFuncSerde("tan"),
+    classOf[Exp] -> UnaryScalarFuncSerde("exp"),
+    classOf[Expm1] -> UnaryScalarFuncSerde("expm1"),
+    classOf[Sqrt] -> UnaryScalarFuncSerde("sqrt"),
+    classOf[Signum] -> UnaryScalarFuncSerde("signum"),
+    classOf[Md5] -> UnaryScalarFuncSerde("md5"),
+    classOf[ShiftLeft] -> CometShiftLeft,
+    classOf[ShiftRight] -> CometShiftRight,
     classOf[StringInstr] -> CometStringInstr,
     classOf[StringRepeat] -> CometStringRepeat,
     classOf[StringReplace] -> CometStringReplace,
@@ -1331,21 +1349,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
 //            None
 //          }
 
-      case Acos(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("acos", childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
-      case Asin(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("asin", childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
-      case Atan(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("atan", childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
       case Atan2(left, right) =>
         val leftExpr = exprToProtoInternal(left, inputs, binding)
         val rightExpr = exprToProtoInternal(right, inputs, binding)
@@ -1381,16 +1384,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             val optExpr = scalarFunctionExprToProtoWithReturnType("ceil", e.dataType, childExpr)
             optExprWithInfo(optExpr, expr, child)
         }
-
-      case Cos(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("cos", childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
-      case Exp(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("exp", childExpr)
-        optExprWithInfo(optExpr, expr, child)
 
       case e @ Floor(child) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
@@ -1467,31 +1460,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
               scalarFunctionExprToProtoWithReturnType("round", r.dataType, childExpr, scaleExpr)
             optExprWithInfo(optExpr, expr, r.child)
         }
-
-      case Signum(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("signum", childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
-      case Sin(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("sin", childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
-      case Sqrt(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("sqrt", childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
-      case Tan(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("tan", childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
-      case Expm1(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("expm1", childExpr)
-        optExprWithInfo(optExpr, expr, child)
 
       case s: StringDecode =>
         // Right child is the encoding expression.
@@ -1596,11 +1564,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case Md5(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("md5", childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
       case OctetLength(child) =>
         val castExpr = Cast(child, StringType)
         val childExpr = exprToProtoInternal(castExpr, inputs, binding)
@@ -1621,27 +1584,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           inputs,
           binding,
           (builder, binaryExpr) => builder.setBitwiseAnd(binaryExpr))
-
-      case _: BitwiseNot =>
-        CometBitwiseNot.convert(expr, inputs, binding)
-
-      case _: BitwiseOr =>
-        CometBitwiseOr.convert(expr, inputs, binding)
-
-      case _: BitwiseXor =>
-        CometBitwiseXor.convert(expr, inputs, binding)
-
-      case _: ShiftRight =>
-        CometShiftRight.convert(expr, inputs, binding)
-
-      case _: BitwiseCount =>
-        CometBitwiseCount.convert(expr, inputs, binding)
-
-      case _: ShiftLeft =>
-        CometShiftLeft.convert(expr, inputs, binding)
-
-      case _: BitwiseGet =>
-        CometBitwiseGet.convert(expr, inputs, binding)
 
       case In(value, list) =>
         in(expr, value, list, inputs, binding, negate = false)
@@ -3106,3 +3048,16 @@ trait CometAggregateExpressionSerde {
 
 /** Marker trait for an expression that is not guaranteed to be 100% compatible with Spark */
 trait IncompatExpr {}
+
+/** Serde for single-argument scalar function. */
+case class UnaryScalarFuncSerde(name: String) extends CometExpressionSerde {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val child = expr.children.head
+    val childExpr = exprToProtoInternal(child, inputs, binding)
+    val optExpr = scalarFunctionExprToProto(name, childExpr)
+    optExprWithInfo(optExpr, expr, child)
+  }
+}
