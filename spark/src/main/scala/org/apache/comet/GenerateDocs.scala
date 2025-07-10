@@ -20,11 +20,12 @@
 package org.apache.comet
 
 import java.io.{BufferedOutputStream, BufferedReader, FileOutputStream, FileReader}
-import scala.io.Source
-import org.apache.spark.sql.catalyst.expressions.Cast
-import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incompatible}
 
 import scala.collection.mutable.ListBuffer
+
+import org.apache.spark.sql.catalyst.expressions.Cast
+
+import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incompatible}
 
 /**
  * Utility for generating markdown documentation from the configs.
@@ -85,7 +86,7 @@ object GenerateDocs {
             }
           }
         }
-      } else if (line.trim == "<!--END:INCOMPAT_CAST_TABLE-->") {
+      } else if (line.trim == "<!--BEGIN:INCOMPAT_CAST_TABLE-->") {
         w.write("| From Type | To Type | Notes |\n".getBytes)
         w.write("|-|-|-|\n".getBytes)
         for (fromType <- CometCast.supportedTypes) {
