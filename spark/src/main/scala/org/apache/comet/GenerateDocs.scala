@@ -114,7 +114,7 @@ object GenerateDocs {
     val buffer = new ListBuffer[String]()
     var line = r.readLine()
     while (line != null) {
-      buffer += line.trim
+      buffer += line
       line = r.readLine()
     }
     r.close()
