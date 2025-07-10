@@ -81,6 +81,7 @@ message Expr {
     MathExpr integral_divide = 59;
     ToPrettyString to_pretty_string = 60;
     UnaryExpr rand = 61;
+    UnaryExpr randn = 62;
   }
 }
 

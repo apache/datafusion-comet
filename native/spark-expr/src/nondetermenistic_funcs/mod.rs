@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+pub mod internal;
 pub mod rand;
+pub mod randn;
 
 pub use rand::RandExpr;
+pub use randn::RandnExpr;
