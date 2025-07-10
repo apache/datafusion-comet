@@ -113,8 +113,18 @@ object GenerateDocs {
     val r = new BufferedReader(new FileReader(filename))
     val buffer = new ListBuffer[String]()
     var line = r.readLine()
+    var skipping = false
     while (line != null) {
-      buffer += line
+      if (line.startsWith("<!--BEGIN:")) {
+        buffer += line
+        skipping = true
+      } else if (line.startsWith("<!--END:")) {
+        buffer += line
+        skipping = false
+      }
+      if (!skipping) {
+        buffer += line
+      }
       line = r.readLine()
     }
     r.close()
