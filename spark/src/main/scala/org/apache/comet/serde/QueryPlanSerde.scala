@@ -22,6 +22,7 @@ package org.apache.comet.serde
 import java.util.Locale
 
 import scala.collection.JavaConverters._
+import scala.collection.mutable.ListBuffer
 import scala.math.min
 
 import org.apache.spark.internal.Logging
@@ -77,11 +78,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[ArrayRemove] -> CometArrayRemove,
     classOf[ArrayRepeat] -> CometArrayRepeat,
     classOf[ArraysOverlap] -> CometArraysOverlap,
+    classOf[ArrayUnion] -> CometArrayUnion,
+    classOf[CreateArray] -> CometCreateArray,
     classOf[Ascii] -> CometAscii,
     classOf[ConcatWs] -> CometConcatWs,
     classOf[Chr] -> CometChr,
     classOf[InitCap] -> CometInitCap,
     classOf[BitLength] -> CometBitLength,
+    classOf[FromUnixTime] -> CometFromUnixTime,
     classOf[Length] -> CometLength,
     classOf[StringInstr] -> CometStringInstr,
     classOf[StringRepeat] -> CometStringRepeat,
@@ -94,7 +98,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Upper] -> CometUpper,
     classOf[Lower] -> CometLower,
     classOf[Murmur3Hash] -> CometMurmur3Hash,
-    classOf[XxHash64] -> CometXxHash64)
+    classOf[XxHash64] -> CometXxHash64,
+    classOf[MapKeys] -> CometMapKeys,
+    classOf[MapValues] -> CometMapValues,
+    classOf[MapFromArrays] -> CometMapFromArrays,
+    classOf[GetMapValue] -> CometMapExtract)
 
   def emitWarning(reason: String): Unit = {
     logWarning(s"Comet native execution is disabled due to: $reason")
@@ -1022,32 +1030,20 @@ object QueryPlanSerde extends Logging with CometExprShim {
           binding,
           (builder, binaryExpr) => builder.setRlike(binaryExpr))
 
-      case StartsWith(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setStartsWith(binaryExpr))
+      case StartsWith(attribute, prefix) =>
+        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
+        val prefixExpr = exprToProtoInternal(prefix, inputs, binding)
+        scalarFunctionExprToProto("starts_with", attributeExpr, prefixExpr)
 
-      case EndsWith(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setEndsWith(binaryExpr))
+      case EndsWith(attribute, suffix) =>
+        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
+        val suffixExpr = exprToProtoInternal(suffix, inputs, binding)
+        scalarFunctionExprToProto("ends_with", attributeExpr, suffixExpr)
 
-      case Contains(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setContains(binaryExpr))
+      case Contains(attribute, value) =>
+        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
+        val valueExpr = exprToProtoInternal(value, inputs, binding)
+        scalarFunctionExprToProto("contains", attributeExpr, valueExpr)
 
       case StringSpace(child) =>
         createUnaryExpr(
@@ -1499,7 +1495,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
       case s: StringDecode =>
         // Right child is the encoding expression.
-        s.right match {
+        s.charset match {
           case Literal(str, DataTypes.StringType)
               if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
             // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
@@ -1509,7 +1505,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
               expr,
               None,
               DataTypes.StringType,
-              exprToProtoInternal(s.left, inputs, binding).get,
+              exprToProtoInternal(s.bin, inputs, binding).get,
               CometEvalMode.TRY)
           case _ =>
             withInfo(expr, "Comet only supports decoding with 'utf-8'.")
@@ -1852,16 +1848,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             .build()
         }
 
-      case CreateArray(children, _) =>
-        val childExprs = children.map(exprToProtoInternal(_, inputs, binding))
-
-        if (childExprs.forall(_.isDefined)) {
-          scalarFunctionExprToProto("make_array", childExprs: _*)
-        } else {
-          withInfo(expr, "unsupported arguments for CreateArray", children: _*)
-          None
-        }
-
       case GetArrayItem(child, ordinal, failOnError) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
         val ordinalExpr = exprToProtoInternal(ordinal, inputs, binding)
@@ -1940,17 +1926,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           inputs,
           binding,
           (builder, unaryExpr) => builder.setRand(unaryExpr))
-
-      case mk: MapKeys =>
-        val childExpr = exprToProtoInternal(mk.child, inputs, binding)
-        scalarFunctionExprToProto("map_keys", childExpr)
-      case mv: MapValues =>
-        val childExpr = exprToProtoInternal(mv.child, inputs, binding)
-        scalarFunctionExprToProto("map_values", childExpr)
-      case gmv: GetMapValue =>
-        val mapExpr = exprToProtoInternal(gmv.child, inputs, binding)
-        val keyExpr = exprToProtoInternal(gmv.key, inputs, binding)
-        scalarFunctionExprToProto("map_extract", mapExpr, keyExpr)
       case expr =>
         QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
           case Some(handler) => convert(handler)
@@ -2192,9 +2167,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
           // Sink operators don't have children
           result.clearChildren()
 
-          if (conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED)) {
-            // TODO remove flatMap and add error handling for unsupported data filters
-            val dataFilters = scan.dataFilters.flatMap(exprToProto(_, scan.output))
+          if (conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED) &&
+            CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.get(conf)) {
+
+            val dataFilters = new ListBuffer[Expr]()
+            for (filter <- scan.dataFilters) {
+              exprToProto(filter, scan.output) match {
+                case Some(proto) => dataFilters += proto
+                case _ =>
+                  logWarning(s"Unsupported data filter $filter")
+              }
+            }
             nativeScanBuilder.addAllDataFilters(dataFilters.asJava)
           }
 
@@ -2324,10 +2307,20 @@ object QueryPlanSerde extends Logging with CometExprShim {
             }
           }
 
+          // Some native expressions do not support operating on dictionary-encoded arrays, so
+          // wrap the child in a CopyExec to unpack dictionaries first.
+          def wrapChildInCopyExec(condition: Expression): Boolean = {
+            condition.exists(expr => {
+              expr.isInstanceOf[StartsWith] || expr.isInstanceOf[EndsWith] || expr
+                .isInstanceOf[Contains]
+            })
+          }
+
           val filterBuilder = OperatorOuterClass.Filter
             .newBuilder()
             .setPredicate(cond.get)
             .setUseDatafusionFilter(!containsNativeCometScan(op))
+            .setWrapChildInCopyExec(wrapChildInCopyExec(condition))
           Some(result.setFilter(filterBuilder).build())
         } else {
           withInfo(op, condition, child)

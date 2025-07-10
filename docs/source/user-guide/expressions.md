@@ -186,22 +186,23 @@ The following Spark expressions are currently available. Any known compatibility
 
 ## Arrays
 
-| Expression     | Notes                                                                                                                                  |
-|----------------|----------------------------------------------------------------------------------------------------------------------------------------|
-| ArrayAppend    | Experimental                                                                                                                           |
-| ArrayCompact   | Experimental                                                                                                                           |
-| ArrayContains  | Experimental                                                                                                                           |
-| ArrayDistinct  | Experimental: behaves differently than spark. Datafusion first sorts then removes duplicates while spark preserves the original order. |
-| ArrayExcept    | Experimental                                                                                                                           |
-| ArrayInsert    | Experimental                                                                                                                           |
-| ArrayIntersect | Experimental                                                                                                                           |
-| ArrayJoin      | Experimental                                                                                                                           |
-| ArrayMax       | Experimental                                                                                                                           |
-| ArrayRemove    |                                                                                                                                        |
-| ArrayRepeat    | Experimental                                                                                                                           |
-| ArraysOverlap  | Experimental                                                                                                                           |
-| ElementAt      | Arrays only                                                                                                                            |
-| GetArrayItem   |                                                                                                                                        |
+| Expression     | Notes                                                                                                                                                                                                        |
+|----------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| ArrayAppend    | Experimental                                                                                                                                                                                                 |
+| ArrayCompact   | Experimental                                                                                                                                                                                                 |
+| ArrayContains  | Experimental                                                                                                                                                                                                 |
+| ArrayDistinct  | Experimental: behaves differently than spark. Datafusion first sorts then removes duplicates while spark preserves the original order.                                                                       |
+| ArrayExcept    | Experimental                                                                                                                                                                                                 |
+| ArrayInsert    | Experimental                                                                                                                                                                                                 |
+| ArrayIntersect | Experimental                                                                                                                                                                                                 |
+| ArrayJoin      | Experimental                                                                                                                                                                                                 |
+| ArrayMax       | Experimental                                                                                                                                                                                                 |
+| ArrayRemove    |                                                                                                                                                                                                              |
+| ArrayRepeat    | Experimental                                                                                                                                                                                                 |
+| ArraysOverlap  | Experimental                                                                                                                                                                                                 |
+| ArrayUnion     | Experimental: behaves differently than spark. Datafusion sorts the input arrays before performing the union, while spark preserves the order of the first array and appends unique elements from the second. |
+| ElementAt      | Arrays only                                                                                                                                                                                                  |
+| GetArrayItem   |                                                                                                                                                                                                              |
 
 ## Structs
 
@@ -221,3 +222,4 @@ The following Spark expressions are currently available. Any known compatibility
 | Coalesce                |                                                                                 |
 | NormalizeNaNAndZero     |                                                                                 |
 | ToPrettyString          |                                                                                 |
+| FromUnixTime            | Does not support format, supports only -8334601211038 <= sec <= 8210266876799   |

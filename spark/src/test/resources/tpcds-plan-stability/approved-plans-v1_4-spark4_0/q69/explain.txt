@@ -182,7 +182,7 @@ ReadSchema: struct<ca_address_sk:int,ca_state:string>
 
 (29) CometFilter
 Input [2]: [ca_address_sk#18, ca_state#19]
-Condition : (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, ca_state#19, 2, true, false, true) IN (KY,GA,NM) AND isnotnull(ca_address_sk#18))
+Condition : (static_invoke(CharVarcharCodegenUtils.readSidePadding(ca_state#19, 2)) IN (KY,GA,NM) AND isnotnull(ca_address_sk#18))
 
 (30) CometProject
 Input [2]: [ca_address_sk#18, ca_state#19]
@@ -218,7 +218,7 @@ Condition : isnotnull(cd_demo_sk#20)
 
 (37) CometProject
 Input [6]: [cd_demo_sk#20, cd_gender#21, cd_marital_status#22, cd_education_status#23, cd_purchase_estimate#24, cd_credit_rating#25]
-Arguments: [cd_demo_sk#20, cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_purchase_estimate#24, cd_credit_rating#29], [cd_demo_sk#20, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_gender#21, 1, true, false, true) AS cd_gender#26, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_marital_status#22, 1, true, false, true) AS cd_marital_status#27, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_education_status#23, 20, true, false, true) AS cd_education_status#28, cd_purchase_estimate#24, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_credit_rating#25, 10, true, false, true) AS cd_credit_rating#29]
+Arguments: [cd_demo_sk#20, cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_purchase_estimate#24, cd_credit_rating#29], [cd_demo_sk#20, static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_gender#21, 1)) AS cd_gender#26, static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_marital_status#22, 1)) AS cd_marital_status#27, static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_education_status#23, 20)) AS cd_education_status#28, cd_purchase_estimate#24, static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_credit_rating#25, 10)) AS cd_credit_rating#29]
 
 (38) CometColumnarToRow [codegen id : 4]
 Input [6]: [cd_demo_sk#20, cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_purchase_estimate#24, cd_credit_rating#29]

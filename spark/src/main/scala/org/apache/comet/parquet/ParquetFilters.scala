@@ -46,6 +46,7 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.parquet.SourceFilterSerde.{createBinaryExpr, createNameExpr, createUnaryExpr, createValueExpr}
 import org.apache.comet.serde.ExprOuterClass
+import org.apache.comet.serde.QueryPlanSerde.scalarFunctionExprToProto
 import org.apache.comet.shims.ShimSQLConf
 
 /**
@@ -1011,23 +1012,29 @@ class ParquetFilters(
           }
         }
 
-      case sources.StringStartsWith(name, prefix)
-          if pushDownStringPredicate && canMakeFilterOn(name, prefix) =>
-        nameValueBinaryExpr(name, prefix) { (builder, binaryExpr) =>
-          builder.setStartsWith(binaryExpr)
+      case sources.StringStartsWith(attribute, prefix)
+          if pushDownStringPredicate && canMakeFilterOn(attribute, prefix) =>
+        val attributeExpr = createNameExpr(attribute, dataSchema)
+        val prefixExpr = attributeExpr.flatMap { case (dataType, _) =>
+          createValueExpr(prefix, dataType)
         }
+        scalarFunctionExprToProto("starts_with", Some(attributeExpr.get._2), prefixExpr)
 
-      case sources.StringEndsWith(name, suffix)
-          if pushDownStringPredicate && canMakeFilterOn(name, suffix) =>
-        nameValueBinaryExpr(name, suffix) { (builder, binaryExpr) =>
-          builder.setEndsWith(binaryExpr)
+      case sources.StringEndsWith(attribute, suffix)
+          if pushDownStringPredicate && canMakeFilterOn(attribute, suffix) =>
+        val attributeExpr = createNameExpr(attribute, dataSchema)
+        val suffixExpr = attributeExpr.flatMap { case (dataType, _) =>
+          createValueExpr(suffix, dataType)
         }
+        scalarFunctionExprToProto("ends_with", Some(attributeExpr.get._2), suffixExpr)
 
-      case sources.StringContains(name, value)
-          if pushDownStringPredicate && canMakeFilterOn(name, value) =>
-        nameValueBinaryExpr(name, value) { (builder, binaryExpr) =>
-          builder.setContains(binaryExpr)
+      case sources.StringContains(attribute, value)
+          if pushDownStringPredicate && canMakeFilterOn(attribute, value) =>
+        val attributeExpr = createNameExpr(attribute, dataSchema)
+        val valueExpr = attributeExpr.flatMap { case (dataType, _) =>
+          createValueExpr(value, dataType)
         }
+        scalarFunctionExprToProto("contains", Some(attributeExpr.get._2), valueExpr)
 
       case _ => None
     }

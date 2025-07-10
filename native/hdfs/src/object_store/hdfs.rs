@@ -470,7 +470,7 @@ fn check_modified(
         if last_modified <= date {
             return Err(Error::NotModified {
                 path: location.to_string(),
-                source: format!("{} >= {}", date, last_modified).into(),
+                source: format!("{date} >= {last_modified}").into(),
             });
         }
     }
@@ -479,7 +479,7 @@ fn check_modified(
         if last_modified > date {
             return Err(Error::Precondition {
                 path: location.to_string(),
-                source: format!("{} < {}", date, last_modified).into(),
+                source: format!("{date} < {last_modified}").into(),
             });
         }
     }

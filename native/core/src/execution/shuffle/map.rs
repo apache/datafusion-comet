@@ -42,19 +42,16 @@ impl SparkUnsafeMap {
         let key_array_size = i64::from_le_bytes(slice.try_into().unwrap());
 
         if key_array_size < 0 {
-            panic!("Negative key size in bytes of map: {}", key_array_size);
+            panic!("Negative key size in bytes of map: {key_array_size}");
         }
 
         if key_array_size > i32::MAX as i64 {
-            panic!(
-                "Number of key size in bytes should <= i32::MAX: {}",
-                key_array_size
-            );
+            panic!("Number of key size in bytes should <= i32::MAX: {key_array_size}");
         }
 
         let value_array_size = size - key_array_size as i32 - 8;
         if value_array_size < 0 {
-            panic!("Negative value size in bytes of map: {}", value_array_size);
+            panic!("Negative value size in bytes of map: {value_array_size}");
         }
 
         let keys = SparkUnsafeArray::new(addr + 8);

@@ -44,7 +44,7 @@ pub fn get_decoder<T: DataType>(
         }
         // This is for dictionary indices
         Encoding::RLE_DICTIONARY => Box::new(DictDecoder::new(value_data)),
-        _ => panic!("Unsupported encoding: {}", encoding),
+        _ => panic!("Unsupported encoding: {encoding}"),
     };
     decoder
 }
@@ -325,11 +325,10 @@ impl PlainDecoding for Int64TimestampMillisType {
                     // efficient
                     if unlikely(v < JULIAN_GREGORIAN_SWITCH_OFF_TS) {
                         panic!(
-                            "Encountered timestamp value {}, which is before 1582-10-15 (counting \
+                            "Encountered timestamp value {v}, which is before 1582-10-15 (counting \
                          backwards from Unix epoch date 1970-01-01), and could be ambigous \
                          depending on whether a legacy Julian/Gregorian hybrid calendar is used, \
-                         or a Proleptic Gregorian calendar is used.",
-                            v
+                         or a Proleptic Gregorian calendar is used."
                         );
                     }
 
@@ -842,11 +841,10 @@ impl PlainDecoding for Int96TimestampMicrosType {
 
                 if unlikely(micros < JULIAN_GREGORIAN_SWITCH_OFF_TS) {
                     panic!(
-                        "Encountered timestamp value {}, which is before 1582-10-15 (counting \
+                        "Encountered timestamp value {micros}, which is before 1582-10-15 (counting \
                          backwards from Unix epoch date 1970-01-01), and could be ambigous \
                          depending on whether a legacy Julian/Gregorian hybrid calendar is used, \
-                         or a Proleptic Gregorian calendar is used.",
-                        micros
+                         or a Proleptic Gregorian calendar is used."
                     );
                 }
 
@@ -964,7 +962,7 @@ impl DictDecoder {
                 self.bit_packed_left = ((indicator_value >> 1) * 8) as usize;
             } else {
                 self.rle_left = (indicator_value >> 1) as usize;
-                let value_width = bit::ceil(self.bit_width, 8);
+                let value_width = self.bit_width.div_ceil(8);
                 self.current_value = self.bit_reader.get_aligned::<u32>(value_width).unwrap();
             }
         } else {

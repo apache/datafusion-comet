@@ -23,7 +23,7 @@ import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.spark.SparkException
-import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -121,7 +121,7 @@ abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
       val previousPropertyValue = Option.apply(System.getProperty(SPARK_TESTING))
       System.setProperty(SPARK_TESTING, "true")
 
-      val dfSpark = Dataset.ofRows(spark, df.logicalPlan)
+      val dfSpark = datasetOfRows(spark, extractLogicalPlan(df))
       expected = dfSpark.collect()
 
       previousPropertyValue match {
@@ -130,7 +130,7 @@ abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
       }
     }
 
-    val dfComet = Dataset.ofRows(spark, df.logicalPlan)
+    val dfComet = datasetOfRows(spark, extractLogicalPlan(df))
     checkAnswer(dfComet, expected)
   }
 }

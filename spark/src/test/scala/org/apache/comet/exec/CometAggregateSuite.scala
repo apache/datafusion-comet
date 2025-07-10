@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.{count_distinct, sum}
+import org.apache.spark.sql.functions.{avg, count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -273,6 +273,25 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           withParquetTable(path.toUri.toString, "tbl") {
             checkSparkAnswerAndOperator(
               sql("SELECT * FROM tbl").sort("_g1").groupBy("_g1").agg(sum("_8")))
+          }
+        }
+      }
+    }
+  }
+
+  test("AVG decimal supports emit.first") {
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> EliminateSorts.ruleName,
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test")
+          makeParquetFile(path, 10000, 10, dictionaryEnabled)
+          withParquetTable(path.toUri.toString, "tbl") {
+            checkSparkAnswerAndOperator(
+              sql("SELECT * FROM tbl").sort("_g1").groupBy("_g1").agg(avg("_8")))
           }
         }
       }
@@ -954,6 +973,23 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             "SELECT MIN(_1), MIN(_2), MAX(_1), MAX(_2), COUNT(_1), COUNT(_2), SUM(_1), SUM(_2) FROM tbl",
             2)
         }
+      }
+    }
+  }
+
+  test("avg/sum overflow on decimal(38, _)") {
+    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      val table = "overflow_decimal_38"
+      withTable(table) {
+        sql(s"create table $table(a decimal(38, 2), b INT) using parquet")
+        sql(s"insert into $table values(42.00, 1), (999999999999999999999999999999999999.99, 1)")
+        checkSparkAnswerAndNumOfAggregates(s"select sum(a) from $table", 2)
+        sql(s"insert into $table values(42.00, 2), (99999999999999999999999999999999.99, 2)")
+        sql(s"insert into $table values(999999999999999999999999999999999999.99, 3)")
+        sql(s"insert into $table values(99999999999999999999999999999999.99, 4)")
+        checkSparkAnswerAndNumOfAggregates(
+          s"select avg(a), sum(a) from $table group by b order by b",
+          2)
       }
     }
   }
