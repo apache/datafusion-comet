@@ -677,7 +677,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
         None
 
-      case div @ IntegralDivide(left, right, _) if supportedDataType(left.dataType) =>
+      case div @ IntegralDivide(leftInt, rightInt, _) if supportedDataType(leftInt.dataType) =>
+        val left =
+          if (leftInt.dataType.isInstanceOf[DecimalType]) leftInt else Cast(leftInt, DoubleType)
+        val right =
+          if (rightInt.dataType.isInstanceOf[DecimalType]) rightInt
+          else Cast(rightInt, DoubleType)
+        withInfo(div, s"left data type ${left.dataType} casted to ${leftInt.dataType}")
+        withInfo(div, s"right data type ${right.dataType} casted to ${rightInt.dataType}")
         val rightExpr = nullIfWhenPrimitive(right)
 
         val dataType = (left.dataType, right.dataType) match {
