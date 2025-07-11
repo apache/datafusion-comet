@@ -271,12 +271,10 @@ object CometRemainder extends CometExpressionSerde with MathBase {
       return None
     }
 
-    val rightExpr = nullIfWhenPrimitive(remainder.right)
-
     createMathExpression(
       expr,
       remainder.left,
-      rightExpr,
+      remainder.right,
       inputs,
       binding,
       remainder.dataType,

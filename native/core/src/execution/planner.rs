@@ -17,7 +17,6 @@
 
 //! Converts Spark physical plan to DataFusion physical plan
 
-use super::expressions::EvalMode;
 use crate::execution::operators::CopyMode;
 use crate::execution::operators::FilterExec as CometFilterExec;
 use crate::{
@@ -62,8 +61,8 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{
-    create_comet_physical_fun, create_negate_expr, BloomFilterAgg, BloomFilterMightContain,
-    SparkHour, SparkMinute, SparkSecond,
+    create_comet_physical_fun, create_modulo_expr, create_negate_expr, BloomFilterAgg,
+    BloomFilterMightContain, EvalMode, SparkHour, SparkMinute, SparkSecond,
 };
 
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -230,6 +229,7 @@ impl PhysicalPlanner {
         input_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         match spark_expr.expr_struct.as_ref().unwrap() {
+<<<<<<< HEAD
             ExprStruct::Add(expr) => {
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 // TODO add support for other eval modes
@@ -304,6 +304,61 @@ impl PhysicalPlanner {
                     DataFusionOperator::Modulo,
                     input_schema,
                 )
+=======
+            ExprStruct::Add(expr) => self.create_binary_expr(
+                expr.left.as_ref().unwrap(),
+                expr.right.as_ref().unwrap(),
+                expr.return_type.as_ref(),
+                DataFusionOperator::Plus,
+                input_schema,
+            ),
+            ExprStruct::Subtract(expr) => self.create_binary_expr(
+                expr.left.as_ref().unwrap(),
+                expr.right.as_ref().unwrap(),
+                expr.return_type.as_ref(),
+                DataFusionOperator::Minus,
+                input_schema,
+            ),
+            ExprStruct::Multiply(expr) => self.create_binary_expr(
+                expr.left.as_ref().unwrap(),
+                expr.right.as_ref().unwrap(),
+                expr.return_type.as_ref(),
+                DataFusionOperator::Multiply,
+                input_schema,
+            ),
+            ExprStruct::Divide(expr) => self.create_binary_expr(
+                expr.left.as_ref().unwrap(),
+                expr.right.as_ref().unwrap(),
+                expr.return_type.as_ref(),
+                DataFusionOperator::Divide,
+                input_schema,
+            ),
+            ExprStruct::IntegralDivide(expr) => self.create_binary_expr_with_options(
+                expr.left.as_ref().unwrap(),
+                expr.right.as_ref().unwrap(),
+                expr.return_type.as_ref(),
+                DataFusionOperator::Divide,
+                input_schema,
+                BinaryExprOptions {
+                    is_integral_div: true,
+                },
+            ),
+            ExprStruct::Remainder(expr) => {
+                let left =
+                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let right =
+                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
+
+                let result = create_modulo_expr(
+                    left,
+                    right,
+                    expr.return_type.as_ref().map(to_arrow_datatype).unwrap(),
+                    input_schema,
+                    expr.fail_on_error,
+                    &self.session_ctx.state(),
+                );
+                result.map_err(|e| GeneralError(e.to_string()))
+>>>>>>> apache/main
             }
             ExprStruct::Eq(expr) => {
                 let left =
@@ -881,19 +936,13 @@ impl PhysicalPlanner {
             right.data_type(&input_schema),
         ) {
             (
-                DataFusionOperator::Plus
-                | DataFusionOperator::Minus
-                | DataFusionOperator::Multiply
-                | DataFusionOperator::Modulo,
+                DataFusionOperator::Plus | DataFusionOperator::Minus | DataFusionOperator::Multiply,
                 Ok(DataType::Decimal128(p1, s1)),
                 Ok(DataType::Decimal128(p2, s2)),
             ) if ((op == DataFusionOperator::Plus || op == DataFusionOperator::Minus)
                 && max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8)
                     >= DECIMAL128_MAX_PRECISION)
-                || (op == DataFusionOperator::Multiply && p1 + p2 >= DECIMAL128_MAX_PRECISION)
-                || (op == DataFusionOperator::Modulo
-                    && max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8)
-                        > DECIMAL128_MAX_PRECISION) =>
+                || (op == DataFusionOperator::Multiply && p1 + p2 >= DECIMAL128_MAX_PRECISION) =>
             {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
                 // For some Decimal128 operations, we need wider internal digits.
@@ -933,6 +982,7 @@ impl PhysicalPlanner {
                     func_name,
                     data_type.clone(),
                     &self.session_ctx.state(),
+                    None,
                 )?;
                 Ok(Arc::new(ScalarFunctionExpr::new(
                     func_name,
@@ -2335,8 +2385,12 @@ impl PhysicalPlanner {
                 }
             };
 
-        let fun_expr =
-            create_comet_physical_fun(fun_name, data_type.clone(), &self.session_ctx.state())?;
+        let fun_expr = create_comet_physical_fun(
+            fun_name,
+            data_type.clone(),
+            &self.session_ctx.state(),
+            None,
+        )?;
 
         let args = args
             .into_iter()
