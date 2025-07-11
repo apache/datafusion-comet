@@ -24,7 +24,7 @@ under the License.
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Comet Overview &#8212; Apache DataFusion Comet  documentation</title>
+    <title>Comparison of Comet and Gluten &#8212; Apache DataFusion Comet  documentation</title>
     
     <link href="../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
 <link href="../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
@@ -53,8 +53,6 @@ under the License.
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Installing DataFusion Comet" href="installation.html" />
-    <link rel="prev" title="Apache DataFusion Comet" href="../index.html" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="docsearch:language" content="en">
     
@@ -107,9 +105,9 @@ under the License.
   User Guide
  </span>
 </p>
-<ul class="current nav bd-sidenav">
- <li class="toctree-l1 current active">
-  <a class="current reference internal" href="#">
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="overview.html">
    Comet Overview
   </a>
  </li>
@@ -302,18 +300,40 @@ under the License.
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#feature-parity-with-apache-spark">
-   Feature Parity with Apache Spark
+  <a class="reference internal nav-link" href="#underlying-execution-engine-datafusion-vs-velox">
+   Underlying Execution Engine: DataFusion vs Velox
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#comparison-with-other-open-source-spark-accelerators">
-   Comparison with other open-source Spark accelerators
+  <a class="reference internal nav-link" href="#compatibility">
+   Compatibility
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#getting-started">
-   Getting Started
+  <a class="reference internal nav-link" href="#performance">
+   Performance
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#ease-of-development">
+   Ease of Development
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#comet-lines-of-code">
+     Comet Lines of Code
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#gluten-lines-of-code">
+     Gluten Lines of Code
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#summary">
+   Summary
   </a>
  </li>
 </ul>
@@ -325,7 +345,7 @@ under the License.
                 
 
 <div class="tocsection editthispage">
-    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/user-guide/overview.md">
+    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/user-guide/gluten_comparison.md">
         <i class="fas fa-pencil-alt"></i> Edit this page
     </a>
 </div>
@@ -362,41 +382,82 @@ under the License.
   specific language governing permissions and limitations
   under the License.
 -->
-<section id="comet-overview">
-<h1>Comet Overview<a class="headerlink" href="#comet-overview" title="Link to this heading">¶</a></h1>
-<p>Apache DataFusion Comet is a high-performance accelerator for Apache Spark, built on top of the powerful
-<a class="reference external" href="https://datafusion.apache.org">Apache DataFusion</a> query engine. Comet is designed to significantly enhance the
-performance of Apache Spark workloads while leveraging commodity hardware and seamlessly integrating with the
-Spark ecosystem without requiring any code changes.</p>
-<p>The following diagram provides an overview of Comet’s architecture.</p>
-<p><img alt="Comet Overview" src="../_images/comet-overview.png" /></p>
+<section id="comparison-of-comet-and-gluten">
+<h1>Comparison of Comet and Gluten<a class="headerlink" href="#comparison-of-comet-and-gluten" title="Link to this heading">¶</a></h1>
+<p>This document provides a comparison of the Comet and Gluten projects to help guide users who are looking to choose
+between them. This document is likely biased because it is maintained by the Comet community.</p>
+<p>We recommend trying out both Comet and Gluten to see which is the best fit for your needs.</p>
+<p>This document is based on Comet 0.9.0 and Gluten 1.4.0.</p>
 <section id="architecture">
 <h2>Architecture<a class="headerlink" href="#architecture" title="Link to this heading">¶</a></h2>
-<p>The following diagram shows how Comet integrates with Apache Spark.</p>
-<p><img alt="Comet System Diagram" src="../_images/comet-system-diagram.png" /></p>
+<p>Comet and Gluten have very similar architectures. Both are Spark plugins that translate Spark physical plans to
+a serialized representation and pass them to native code for execution.</p>
+<p>Gluten serializes the plans using the Substrait format and has an extensible architecture that supports execution
+against multiple engines. Velox and Clickhouse are currently supported, but Velox is more widely used.</p>
+<p>Comet serializes the plans in a proprietary Protocol Buffer format. Execution is delegated to Apache DataFusion. Comet
+does not plan to support multiple engines, but rather focus on a tight integration between Spark and DataFusion.</p>
 </section>
-<section id="feature-parity-with-apache-spark">
-<h2>Feature Parity with Apache Spark<a class="headerlink" href="#feature-parity-with-apache-spark" title="Link to this heading">¶</a></h2>
-<p>The project strives to keep feature parity with Apache Spark, that is,
-users should expect the same behavior (w.r.t features, configurations,
-query results, etc) with Comet turned on or turned off in their Spark
-jobs. In addition, Comet extension should automatically detect unsupported
-features and fallback to Spark engine.</p>
+<section id="underlying-execution-engine-datafusion-vs-velox">
+<h2>Underlying Execution Engine: DataFusion vs Velox<a class="headerlink" href="#underlying-execution-engine-datafusion-vs-velox" title="Link to this heading">¶</a></h2>
+<p>One of the main differences between Comet and Gluten is the choice of native execution engine.</p>
+<p>Gluten uses Velox, which is a vectorized query engine implemented in C++ and is maintained by Meta.</p>
+<p>Comet uses DataFusion, which is a vectorized query engine implemented in Rust and is maintained by the
+Apache Software Foundation.</p>
+<p>Velox and DataFusion are both mature query engines that are growing in popularity.</p>
+<p>Comet may be a better choice for users with plans for integrating with other Rust software in the future, and
+Gluten+Velox may be a better choice for users with plans for integrating with other C++ code.</p>
+<p><img alt="github-stars-datafusion-velox.png" src="../_images/github-stars-datafusion-velox.png" /></p>
 </section>
-<section id="comparison-with-other-open-source-spark-accelerators">
-<h2>Comparison with other open-source Spark accelerators<a class="headerlink" href="#comparison-with-other-open-source-spark-accelerators" title="Link to this heading">¶</a></h2>
-<p>There are two other major open-source Spark accelerators:</p>
-<ul class="simple">
-<li><p><a class="reference external" href="https://github.com/apache/incubator-gluten">Apache Gluten (incubating)</a></p></li>
-<li><p><a class="reference external" href="https://github.com/NVIDIA/spark-rapids">NVIDIA Spark RAPIDS</a></p></li>
-</ul>
-<p>We have a detailed guide <a class="reference internal" href="gluten_comparison.html"><span class="std std-doc">comparing Apache DataFusion Comet with Apache Gluten</span></a>.</p>
-<p>Spark RAPIDS is a solution that provides hardware acceleration on NVIDIA GPUs. Comet does not require specialized
-hardware.</p>
+<section id="compatibility">
+<h2>Compatibility<a class="headerlink" href="#compatibility" title="Link to this heading">¶</a></h2>
+<p>Comet relies on the full Spark SQL test suite (consisting of more than 24,000 tests) as well its own unit and
+integration tests to ensure compatibility with Spark. Features that are known to have compatibility differences with
+Spark are disabled by default, but users can opt in. See the <a class="reference internal" href="compatibility.html"><span class="std std-doc">Comet Compatibility Guide</span></a> for more information.</p>
+<p>Gluten also aims to provide compatibility with Spark, and includes a subset of the Spark SQL tests in its own test
+suite. See the <a class="reference external" href="https://apache.github.io/incubator-gluten-site/archives/v1.3.0/velox-backend/limitations/">Gluten Compatibility Guide</a> for more information.</p>
 </section>
-<section id="getting-started">
-<h2>Getting Started<a class="headerlink" href="#getting-started" title="Link to this heading">¶</a></h2>
-<p>Refer to the <a class="reference internal" href="installation.html"><span class="std std-doc">Comet Installation Guide</span></a> to get started.</p>
+<section id="performance">
+<h2>Performance<a class="headerlink" href="#performance" title="Link to this heading">¶</a></h2>
+<p>When running a benchmark derived from TPC-H on a single node against local Parquet files, we see that both Comet
+and Gluten provide a good speedup when compared to Spark. Gluten is currently slightly faster than Comet, but we
+expect to close that gap over time.</p>
+<p><img alt="tpch_allqueries_comet_gluten.png" src="../_images/tpch_allqueries_comet_gluten.png" /></p>
+</section>
+<section id="ease-of-development">
+<h2>Ease of Development<a class="headerlink" href="#ease-of-development" title="Link to this heading">¶</a></h2>
+<p>Comet has a much smaller codebase than Gluten. A fresh clone of the respective repositories shows that Comet has ~41k
+lines of Scala+Java code and ~40k lines of Rust code. Gluten has ~207k lines of Scala+Java code and ~89k lines of C++
+code.</p>
+<p>Setting up a local development environment with Comet is generally easier than with Gluten due to Rust’s package
+management capabilities vs the complexities around installing C++ dependencies.</p>
+<section id="comet-lines-of-code">
+<h3>Comet Lines of Code<a class="headerlink" href="#comet-lines-of-code" title="Link to this heading">¶</a></h3>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">-------------------------------------------------------------------------------</span>
+<span class="n">Language</span>                     <span class="n">files</span>          <span class="n">blank</span>        <span class="n">comment</span>           <span class="n">code</span>
+<span class="o">-------------------------------------------------------------------------------</span>
+<span class="n">Rust</span>                           <span class="mi">159</span>           <span class="mi">4870</span>           <span class="mi">5388</span>          <span class="mi">39989</span>
+<span class="n">Scala</span>                          <span class="mi">171</span>           <span class="mi">4849</span>           <span class="mi">6277</span>          <span class="mi">32538</span>
+<span class="n">Java</span>                            <span class="mi">66</span>           <span class="mi">1556</span>           <span class="mi">2619</span>           <span class="mi">8724</span>
+</pre></div>
+</div>
+</section>
+<section id="gluten-lines-of-code">
+<h3>Gluten Lines of Code<a class="headerlink" href="#gluten-lines-of-code" title="Link to this heading">¶</a></h3>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--------------------------------------------------------------------------------</span>
+<span class="n">Language</span>                      <span class="n">files</span>          <span class="n">blank</span>        <span class="n">comment</span>           <span class="n">code</span>
+<span class="o">--------------------------------------------------------------------------------</span>
+<span class="n">Scala</span>                          <span class="mi">1312</span>          <span class="mi">23264</span>          <span class="mi">37534</span>         <span class="mi">179664</span>
+<span class="n">C</span><span class="o">++</span>                             <span class="mi">421</span>           <span class="mi">9841</span>          <span class="mi">10245</span>          <span class="mi">64554</span>
+<span class="n">Java</span>                            <span class="mi">328</span>           <span class="mi">5063</span>           <span class="mi">6726</span>          <span class="mi">26520</span>
+<span class="n">C</span><span class="o">/</span><span class="n">C</span><span class="o">++</span> <span class="n">Header</span>                    <span class="mi">304</span>           <span class="mi">4875</span>           <span class="mi">6255</span>          <span class="mi">23527</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="summary">
+<h2>Summary<a class="headerlink" href="#summary" title="Link to this heading">¶</a></h2>
+<p>Comet and Gluten are both good solutions for accelerating Spark jobs. We recommend trying both to see which is the
+best fit for your needs.</p>
 </section>
 </section>
 
@@ -406,20 +467,6 @@ hardware.</p>
               
               <!-- Previous / next buttons -->
 <div class='prev-next-area'>
-    <a class='left-prev' id="prev-link" href="../index.html" title="previous page">
-        <i class="fas fa-angle-left"></i>
-        <div class="prev-next-info">
-            <p class="prev-next-subtitle">previous</p>
-            <p class="prev-next-title">Apache DataFusion Comet</p>
-        </div>
-    </a>
-    <a class='right-next' id="next-link" href="installation.html" title="next page">
-    <div class="prev-next-info">
-        <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Installing DataFusion Comet</p>
-    </div>
-    <i class="fas fa-angle-right"></i>
-    </a>
 </div>
               
           </main>
