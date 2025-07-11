@@ -22,11 +22,10 @@ package org.apache.comet.serde
 import scala.math.min
 
 import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, Divide, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Subtract}
-import org.apache.spark.sql.types.{BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, TimestampType}
-
+import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, NullType, ShortType, StringType, TimestampNTZType, TimestampType}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.QueryPlanSerde.{castToProto, evalModeToProto, exprToProtoInternal, serializeDataType, supportedDataType}
+import org.apache.comet.serde.QueryPlanSerde.{castToProto, evalModeToProto, exprToProtoInternal, serializeDataType}
 import org.apache.comet.shims.CometEvalModeUtil
 
 trait MathBase {
@@ -83,6 +82,15 @@ trait MathBase {
         _: DoubleType | _: TimestampType | _: DateType | _: BooleanType | _: DecimalType =>
       true
     case _ => false
+  }
+
+  def supportedDataType(dt: DataType): Boolean = dt match {
+    case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
+         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
+         _: DecimalType | _: DateType | _: BooleanType | _: NullType =>
+      true
+    case _ =>
+      false
   }
 
 }

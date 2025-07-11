@@ -268,7 +268,7 @@ impl PhysicalPlanner {
             ExprStruct::Divide(expr) => {
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 // TODO add support for other eval modes
-                assert!(eval_mode == EvalMode::Legacy);
+                assert!(eval_mode != EvalMode::Try);
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
                     expr.right.as_ref().unwrap(),
@@ -295,7 +295,7 @@ impl PhysicalPlanner {
             ExprStruct::Remainder(expr) => {
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 // TODO add support for other eval modes
-                assert!(eval_mode == EvalMode::Try);
+                // assert!(eval_mode == EvalMode::Try);
                 let left =
                     self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let right =

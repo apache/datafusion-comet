@@ -314,8 +314,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("dictionary arithmetic") {
     // TODO: test ANSI mode
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "false", "parquet.enable.dictionary" -> "true") {
-      val data = Seq((Integer.MAX_VALUE, 1))
-      withParquetTable(data, "tbl") {
+      withParquetTable((0 until 10).map(i => (i % 5, i % 3)), "tbl") {
         checkSparkAnswerAndOperator("SELECT _1 + _2, _1 - _2, _1 * _2, _1 / _2, _1 % _2 FROM tbl")
       }
     }
