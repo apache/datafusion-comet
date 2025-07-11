@@ -17,12 +17,6 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-<!--
-TO MODIFY THIS CONTENT MAKE SURE THAT YOU MAKE YOUR CHANGES TO THE TEMPLATE FILE
-(docs/templates/compatibility-template.md) AND NOT THE GENERATED FILE
-(docs/source/user-guide/compatibility.md) OTHERWISE YOUR CHANGES MAY BE LOST
--->
-
 # Compatibility Guide
 
 Comet aims to provide consistent results with the version of Apache Spark that is being used.

@@ -17,12 +17,6 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-<!--
-TO MODIFY THIS CONTENT MAKE SURE THAT YOU MAKE YOUR CHANGES TO THE TEMPLATE FILE
-(docs/templates/configs-template.md) AND NOT THE GENERATED FILE
-(docs/source/user-guide/configs.md) OTHERWISE YOUR CHANGES MAY BE LOST
--->
-
 # Comet Configuration Settings
 
 Comet provides the following configuration settings.
