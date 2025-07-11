@@ -87,8 +87,8 @@ trait MathBase {
 
   def supportedDataType(dt: DataType): Boolean = dt match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
-         _: DecimalType | _: DateType | _: BooleanType | _: NullType =>
+        _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
+        _: DecimalType | _: DateType | _: BooleanType | _: NullType =>
       true
     case _ =>
       false
