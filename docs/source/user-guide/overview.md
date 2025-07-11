@@ -44,9 +44,19 @@ query results, etc) with Comet turned on or turned off in their Spark
 jobs. In addition, Comet extension should automatically detect unsupported
 features and fallback to Spark engine.
 
-To achieve this, besides unit tests within Comet itself, we also re-use
-Spark SQL tests and make sure they all pass with Comet extension
-enabled.
+## Comparison with other open-source Spark accelerators
+
+There are two other major open-source Spark accelerators:
+
+- [Apache Gluten (incubating)](https://github.com/apache/incubator-gluten)
+- [NVIDIA Spark RAPIDS](https://github.com/NVIDIA/spark-rapids)
+
+We have a detailed guide [comparing Apache DataFusion Comet with Apache Gluten].
+
+Spark RAPIDS is a solution that provides hardware acceleration on NVIDIA GPUs. Comet does not require specialized 
+hardware.
+
+[comparing Apache DataFusion Comet with Apache Gluten]: gluten_comparison.md
 
 ## Getting Started
 
