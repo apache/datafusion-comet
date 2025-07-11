@@ -232,6 +232,7 @@ impl PhysicalPlanner {
             ExprStruct::Add(expr) => {
                 // TODO respect eval mode
                 // https://github.com/apache/datafusion-comet/issues/2021
+                // https://github.com/apache/datafusion-comet/issues/536
                 let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
@@ -244,6 +245,7 @@ impl PhysicalPlanner {
             ExprStruct::Subtract(expr) => {
                 // TODO respect eval mode
                 // https://github.com/apache/datafusion-comet/issues/2021
+                // https://github.com/apache/datafusion-comet/issues/535
                 let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
@@ -256,6 +258,7 @@ impl PhysicalPlanner {
             ExprStruct::Multiply(expr) => {
                 // TODO respect eval mode
                 // https://github.com/apache/datafusion-comet/issues/2021
+                // https://github.com/apache/datafusion-comet/issues/534
                 let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
@@ -268,6 +271,7 @@ impl PhysicalPlanner {
             ExprStruct::Divide(expr) => {
                 // TODO respect eval mode
                 // https://github.com/apache/datafusion-comet/issues/2021
+                // https://github.com/apache/datafusion-comet/issues/533
                 let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
@@ -280,6 +284,7 @@ impl PhysicalPlanner {
             ExprStruct::IntegralDivide(expr) => {
                 // TODO respect eval mode
                 // https://github.com/apache/datafusion-comet/issues/2021
+                // https://github.com/apache/datafusion-comet/issues/533
                 let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr_with_options(
                     expr.left.as_ref().unwrap(),
