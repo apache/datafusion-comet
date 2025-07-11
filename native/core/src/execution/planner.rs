@@ -230,51 +230,81 @@ impl PhysicalPlanner {
         input_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         match spark_expr.expr_struct.as_ref().unwrap() {
-            ExprStruct::Add(expr) => self.create_binary_expr(
-                expr.left.as_ref().unwrap(),
-                expr.right.as_ref().unwrap(),
-                expr.return_type.as_ref(),
-                DataFusionOperator::Plus,
-                input_schema,
-            ),
-            ExprStruct::Subtract(expr) => self.create_binary_expr(
-                expr.left.as_ref().unwrap(),
-                expr.right.as_ref().unwrap(),
-                expr.return_type.as_ref(),
-                DataFusionOperator::Minus,
-                input_schema,
-            ),
-            ExprStruct::Multiply(expr) => self.create_binary_expr(
-                expr.left.as_ref().unwrap(),
-                expr.right.as_ref().unwrap(),
-                expr.return_type.as_ref(),
-                DataFusionOperator::Multiply,
-                input_schema,
-            ),
-            ExprStruct::Divide(expr) => self.create_binary_expr(
-                expr.left.as_ref().unwrap(),
-                expr.right.as_ref().unwrap(),
-                expr.return_type.as_ref(),
-                DataFusionOperator::Divide,
-                input_schema,
-            ),
-            ExprStruct::IntegralDivide(expr) => self.create_binary_expr_with_options(
-                expr.left.as_ref().unwrap(),
-                expr.right.as_ref().unwrap(),
-                expr.return_type.as_ref(),
-                DataFusionOperator::Divide,
-                input_schema,
-                BinaryExprOptions {
-                    is_integral_div: true,
-                },
-            ),
-            ExprStruct::Remainder(expr) => self.create_binary_expr(
-                expr.left.as_ref().unwrap(),
-                expr.right.as_ref().unwrap(),
-                expr.return_type.as_ref(),
-                DataFusionOperator::Modulo,
-                input_schema,
-            ),
+            ExprStruct::Add(expr) => {
+                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                // TODO add support for other eval modes
+                assert!(eval_mode == EvalMode::Legacy);
+                self.create_binary_expr(
+                    expr.left.as_ref().unwrap(),
+                    expr.right.as_ref().unwrap(),
+                    expr.return_type.as_ref(),
+                    DataFusionOperator::Plus,
+                    input_schema,
+                )
+            }
+            ExprStruct::Subtract(expr) => {
+                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                // TODO add support for other eval modes
+                assert!(eval_mode == EvalMode::Legacy);
+                self.create_binary_expr(
+                    expr.left.as_ref().unwrap(),
+                    expr.right.as_ref().unwrap(),
+                    expr.return_type.as_ref(),
+                    DataFusionOperator::Minus,
+                    input_schema,
+                )
+            }
+            ExprStruct::Multiply(expr) => {
+                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                // TODO add support for other eval modes
+                assert!(eval_mode == EvalMode::Legacy);
+                self.create_binary_expr(
+                    expr.left.as_ref().unwrap(),
+                    expr.right.as_ref().unwrap(),
+                    expr.return_type.as_ref(),
+                    DataFusionOperator::Multiply,
+                    input_schema,
+                )
+            }
+            ExprStruct::Divide(expr) => {
+                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                // TODO add support for other eval modes
+                assert!(eval_mode == EvalMode::Legacy);
+                self.create_binary_expr(
+                    expr.left.as_ref().unwrap(),
+                    expr.right.as_ref().unwrap(),
+                    expr.return_type.as_ref(),
+                    DataFusionOperator::Divide,
+                    input_schema,
+                )
+            }
+            ExprStruct::IntegralDivide(expr) => {
+                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                // TODO add support for other eval modes
+                assert!(eval_mode == EvalMode::Legacy);
+                self.create_binary_expr_with_options(
+                    expr.left.as_ref().unwrap(),
+                    expr.right.as_ref().unwrap(),
+                    expr.return_type.as_ref(),
+                    DataFusionOperator::Divide,
+                    input_schema,
+                    BinaryExprOptions {
+                        is_integral_div: true,
+                    },
+                )
+            }
+            ExprStruct::Remainder(expr) => {
+                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                // TODO add support for other eval modes
+                assert!(eval_mode == EvalMode::Legacy);
+                self.create_binary_expr(
+                    expr.left.as_ref().unwrap(),
+                    expr.right.as_ref().unwrap(),
+                    expr.return_type.as_ref(),
+                    DataFusionOperator::Modulo,
+                    input_schema,
+                )
+            }
             ExprStruct::Eq(expr) => {
                 let left =
                     self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;

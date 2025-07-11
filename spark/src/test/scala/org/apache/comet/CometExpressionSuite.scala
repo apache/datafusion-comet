@@ -302,10 +302,20 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("try_add") {
+    // TODO: we need to implement more comprehensive tests for all try_ arithmetic functions
+    // https://github.com/apache/datafusion-comet/issues/2021
+    val data = Seq((Integer.MAX_VALUE, 1))
+    withParquetTable(data, "tbl") {
+      checkSparkAnswer("SELECT try_add(_1, _2) FROM tbl")
+    }
+  }
+
   test("dictionary arithmetic") {
     // TODO: test ANSI mode
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "false", "parquet.enable.dictionary" -> "true") {
-      withParquetTable((0 until 10).map(i => (i % 5, i % 3)), "tbl") {
+      val data = Seq((Integer.MAX_VALUE, 1))
+      withParquetTable(data, "tbl") {
         checkSparkAnswerAndOperator("SELECT _1 + _2, _1 - _2, _1 * _2, _1 / _2, _1 % _2 FROM tbl")
       }
     }
