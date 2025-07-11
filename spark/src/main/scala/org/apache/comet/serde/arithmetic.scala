@@ -207,7 +207,7 @@ object CometIntegralDivide extends CometExpressionSerde with MathBase {
       rightExpr,
       inputs,
       binding,
-      div.dataType,
+      dataType,
       div.evalMode == EvalMode.ANSI,
       (builder, mathExpr) => builder.setIntegralDivide(mathExpr))
 
