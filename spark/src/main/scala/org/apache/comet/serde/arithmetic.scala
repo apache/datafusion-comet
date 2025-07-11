@@ -113,19 +113,19 @@ object CometSubtract extends CometExpressionSerde with MathBase {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val add = expr.asInstanceOf[Subtract]
-    if (!supportedDataType(add.left.dataType)) {
-      withInfo(add, s"Unsupported datatype ${add.left.dataType}")
+    val sub = expr.asInstanceOf[Subtract]
+    if (!supportedDataType(sub.left.dataType)) {
+      withInfo(sub, s"Unsupported datatype ${sub.left.dataType}")
       return None
     }
     createMathExpression(
       expr,
-      add.left,
-      add.right,
+      sub.left,
+      sub.right,
       inputs,
       binding,
-      add.dataType,
-      add.evalMode == EvalMode.ANSI,
+      sub.dataType,
+      sub.evalMode == EvalMode.ANSI,
       (builder, mathExpr) => builder.setSubtract(mathExpr))
   }
 }
@@ -246,7 +246,7 @@ object CometRemainder extends CometExpressionSerde with MathBase {
       return None
     }
 
-    val rightExpr = nullIfWhenPrimitive(remainder)
+    val rightExpr = nullIfWhenPrimitive(remainder.right)
 
     createMathExpression(
       expr,
