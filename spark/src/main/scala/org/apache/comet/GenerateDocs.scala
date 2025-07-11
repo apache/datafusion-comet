@@ -19,9 +19,9 @@
 
 package org.apache.comet
 
-import java.io.{BufferedOutputStream, FileOutputStream}
+import java.io.{BufferedOutputStream, BufferedReader, FileOutputStream, FileReader}
 
-import scala.io.Source
+import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.catalyst.expressions.Cast
 
@@ -40,11 +40,12 @@ object GenerateDocs {
   }
 
   private def generateConfigReference(): Unit = {
-    val templateFilename = "docs/templates/configs-template.md"
-    val outputFilename = "docs/source/user-guide/configs.md"
-    val w = new BufferedOutputStream(new FileOutputStream(outputFilename))
-    for (line <- Source.fromFile(templateFilename).getLines()) {
-      if (line.trim == "<!--CONFIG_TABLE-->") {
+    val filename = "docs/source/user-guide/configs.md"
+    val lines = readFile(filename)
+    val w = new BufferedOutputStream(new FileOutputStream(filename))
+    for (line <- lines) {
+      w.write(s"${line.stripTrailing()}\n".getBytes)
+      if (line.trim == "<!--BEGIN:CONFIG_TABLE-->") {
         val publicConfigs = CometConf.allConfs.filter(_.isPublic)
         val confs = publicConfigs.sortBy(_.key)
         w.write("| Config | Description | Default Value |\n".getBytes)
@@ -56,19 +57,18 @@ object GenerateDocs {
             w.write(s"| ${conf.key} | ${conf.doc.trim} | ${conf.defaultValueString} |\n".getBytes)
           }
         }
-      } else {
-        w.write(s"${line.trim}\n".getBytes)
       }
     }
     w.close()
   }
 
   private def generateCompatibilityGuide(): Unit = {
-    val templateFilename = "docs/templates/compatibility-template.md"
-    val outputFilename = "docs/source/user-guide/compatibility.md"
-    val w = new BufferedOutputStream(new FileOutputStream(outputFilename))
-    for (line <- Source.fromFile(templateFilename).getLines()) {
-      if (line.trim == "<!--COMPAT_CAST_TABLE-->") {
+    val filename = "docs/source/user-guide/compatibility.md"
+    val lines = readFile(filename)
+    val w = new BufferedOutputStream(new FileOutputStream(filename))
+    for (line <- lines) {
+      w.write(s"${line.stripTrailing()}\n".getBytes)
+      if (line.trim == "<!--BEGIN:COMPAT_CAST_TABLE-->") {
         w.write("| From Type | To Type | Notes |\n".getBytes)
         w.write("|-|-|-|\n".getBytes)
         for (fromType <- CometCast.supportedTypes) {
@@ -86,7 +86,7 @@ object GenerateDocs {
             }
           }
         }
-      } else if (line.trim == "<!--INCOMPAT_CAST_TABLE-->") {
+      } else if (line.trim == "<!--BEGIN:INCOMPAT_CAST_TABLE-->") {
         w.write("| From Type | To Type | Notes |\n".getBytes)
         w.write("|-|-|-|\n".getBytes)
         for (fromType <- CometCast.supportedTypes) {
@@ -103,10 +103,30 @@ object GenerateDocs {
             }
           }
         }
-      } else {
-        w.write(s"${line.trim}\n".getBytes)
       }
     }
     w.close()
+  }
+
+  /** Read file into memory */
+  private def readFile(filename: String): Seq[String] = {
+    val r = new BufferedReader(new FileReader(filename))
+    val buffer = new ListBuffer[String]()
+    var line = r.readLine()
+    var skipping = false
+    while (line != null) {
+      if (line.startsWith("<!--BEGIN:")) {
+        buffer += line
+        skipping = true
+      } else if (line.startsWith("<!--END:")) {
+        buffer += line
+        skipping = false
+      } else if (!skipping) {
+        buffer += line
+      }
+      line = r.readLine()
+    }
+    r.close()
+    buffer.toSeq
   }
 }
