@@ -230,9 +230,9 @@ impl PhysicalPlanner {
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         match spark_expr.expr_struct.as_ref().unwrap() {
             ExprStruct::Add(expr) => {
-                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                // TODO add support for other eval modes
-                assert!(eval_mode == EvalMode::Legacy);
+                // TODO respect eval mode
+                // https://github.com/apache/datafusion-comet/issues/2021
+                let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
                     expr.right.as_ref().unwrap(),
@@ -242,9 +242,9 @@ impl PhysicalPlanner {
                 )
             }
             ExprStruct::Subtract(expr) => {
-                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                // TODO add support for other eval modes
-                assert!(eval_mode == EvalMode::Legacy);
+                // TODO respect eval mode
+                // https://github.com/apache/datafusion-comet/issues/2021
+                let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
                     expr.right.as_ref().unwrap(),
@@ -254,9 +254,9 @@ impl PhysicalPlanner {
                 )
             }
             ExprStruct::Multiply(expr) => {
-                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                // TODO add support for other eval modes
-                assert!(eval_mode == EvalMode::Legacy);
+                // TODO respect eval mode
+                // https://github.com/apache/datafusion-comet/issues/2021
+                let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
                     expr.right.as_ref().unwrap(),
@@ -266,9 +266,9 @@ impl PhysicalPlanner {
                 )
             }
             ExprStruct::Divide(expr) => {
-                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                // TODO add support for other eval modes
-                assert!(eval_mode != EvalMode::Try);
+                // TODO respect eval mode
+                // https://github.com/apache/datafusion-comet/issues/2021
+                let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
                     expr.right.as_ref().unwrap(),
@@ -278,9 +278,9 @@ impl PhysicalPlanner {
                 )
             }
             ExprStruct::IntegralDivide(expr) => {
-                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                // TODO add support for other eval modes
-                assert!(eval_mode == EvalMode::Legacy);
+                // TODO respect eval mode
+                // https://github.com/apache/datafusion-comet/issues/2021
+                let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr_with_options(
                     expr.left.as_ref().unwrap(),
                     expr.right.as_ref().unwrap(),
@@ -294,8 +294,8 @@ impl PhysicalPlanner {
             }
             ExprStruct::Remainder(expr) => {
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                // TODO add support for other eval modes
-                // assert!(eval_mode == EvalMode::Try);
+                // TODO add support for EvalMode::TRY
+                // https://github.com/apache/datafusion-comet/issues/2021
                 let left =
                     self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let right =
