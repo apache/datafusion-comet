@@ -1868,6 +1868,80 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("remainder function") {
+    def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> enabled.toString,
+        CometConf.COMET_ANSI_MODE_ENABLED.key -> enabled.toString,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true")(f)
+    }
+
+    def verifyResult(query: String): Unit = {
+      val expectedDivideByZeroError =
+        "[DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead."
+
+      checkSparkMaybeThrows(sql(query)) match {
+        case (Some(sparkException), Some(cometException)) =>
+          assert(sparkException.getMessage.contains(expectedDivideByZeroError))
+          assert(cometException.getMessage.contains(expectedDivideByZeroError))
+        case (None, None) => checkSparkAnswerAndOperator(sql(query))
+        case (None, Some(ex)) =>
+          fail("Comet threw an exception but Spark did not. Comet exception: " + ex.getMessage)
+        case (Some(sparkException), None) =>
+          fail(
+            "Spark threw an exception but Comet did not. Spark exception: " +
+              sparkException.getMessage)
+      }
+    }
+
+    val tableName = "remainder_table"
+    withTable(tableName) {
+      sql(s"""
+          |create table $tableName (
+          |a_int int,
+          |b_int int,
+          |a_float float,
+          |b_float float,
+          |a_decimal decimal(18,4),
+          |b_decimal decimal(18,4)
+          |) using parquet
+          """.stripMargin)
+
+      val minInt = Int.MinValue
+
+      sql(s"""
+          |insert into $tableName values
+          |(3, 0, 3.0, 0.0, cast(3 as decimal(18,4)), cast(0 as decimal(18,4))),
+          |(10, 3, 10.5, 3.0, cast(10 as decimal(18,4)), cast(3 as decimal(18,4))),
+          |(-10, 3, -10.5, 3.0, cast(-10 as decimal(18,4)), cast(3 as decimal(18,4))),
+          |($minInt, -1, $minInt, -1.0, cast($minInt as decimal(18,4)), cast(-1 as decimal(18,4))),
+          |(null, 3, null, 3.0, null, cast(3 as decimal(18,4))),
+          |(3, null, 3.0, null, cast(3 as decimal(18,4)), null)
+          """.stripMargin)
+
+      Seq(true, false).foreach(enabled => {
+        withAnsiMode(enabled = enabled) {
+          verifyResult(s"""
+          |select
+          |a_int, b_int, a_float, b_float, a_decimal, b_decimal,
+          |a_int % b_int as int_int_modulo,
+          |a_int % b_float as int_float_modulo,
+          |mod(a_int, b_int) as int_int_mod,
+          |mod(a_int, b_float) as int_float_mod,
+          |a_float % b_float as float_float_modulo,
+          |a_float % b_decimal as float_decimal_modulo,
+          |mod(a_float, b_float) as float_float_mod,
+          |mod(a_float, b_decimal) as float_decimal_mod,
+          |a_decimal % b_decimal as decimal_decimal_modulo,
+          |mod(a_decimal, b_decimal) as decimal_decimal_mod
+          |from $tableName
+          """.stripMargin)
+        }
+      })
+    }
+  }
+
   test("hash functions with random input") {
     val dataGen = DataGenerator.DEFAULT
     // sufficient number of rows to create dictionary encoded ArrowArray.
