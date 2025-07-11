@@ -131,94 +131,102 @@ Cast operations in Comet fall into three levels of support:
 
 The following cast operations are generally compatible with Spark except for the differences noted here.
 
-| From Type | To Type | Notes                                                                                                           |
-| --------- | ------- | --------------------------------------------------------------------------------------------------------------- |
-| boolean   | byte    |                                                                                                                 |
-| boolean   | short   |                                                                                                                 |
-| boolean   | integer |                                                                                                                 |
-| boolean   | long    |                                                                                                                 |
-| boolean   | float   |                                                                                                                 |
-| boolean   | double  |                                                                                                                 |
-| boolean   | string  |                                                                                                                 |
-| byte      | boolean |                                                                                                                 |
-| byte      | short   |                                                                                                                 |
-| byte      | integer |                                                                                                                 |
-| byte      | long    |                                                                                                                 |
-| byte      | float   |                                                                                                                 |
-| byte      | double  |                                                                                                                 |
-| byte      | decimal |                                                                                                                 |
-| byte      | string  |                                                                                                                 |
-| short     | boolean |                                                                                                                 |
-| short     | byte    |                                                                                                                 |
-| short     | integer |                                                                                                                 |
-| short     | long    |                                                                                                                 |
-| short     | float   |                                                                                                                 |
-| short     | double  |                                                                                                                 |
-| short     | decimal |                                                                                                                 |
-| short     | string  |                                                                                                                 |
-| integer   | boolean |                                                                                                                 |
-| integer   | byte    |                                                                                                                 |
-| integer   | short   |                                                                                                                 |
-| integer   | long    |                                                                                                                 |
-| integer   | float   |                                                                                                                 |
-| integer   | double  |                                                                                                                 |
-| integer   | string  |                                                                                                                 |
-| long      | boolean |                                                                                                                 |
-| long      | byte    |                                                                                                                 |
-| long      | short   |                                                                                                                 |
-| long      | integer |                                                                                                                 |
-| long      | float   |                                                                                                                 |
-| long      | double  |                                                                                                                 |
-| long      | string  |                                                                                                                 |
-| float     | boolean |                                                                                                                 |
-| float     | byte    |                                                                                                                 |
-| float     | short   |                                                                                                                 |
-| float     | integer |                                                                                                                 |
-| float     | long    |                                                                                                                 |
-| float     | double  |                                                                                                                 |
-| float     | string  | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
-| double    | boolean |                                                                                                                 |
-| double    | byte    |                                                                                                                 |
-| double    | short   |                                                                                                                 |
-| double    | integer |                                                                                                                 |
-| double    | long    |                                                                                                                 |
-| double    | float   |                                                                                                                 |
-| double    | string  | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
-| decimal   | byte    |                                                                                                                 |
-| decimal   | short   |                                                                                                                 |
-| decimal   | integer |                                                                                                                 |
-| decimal   | long    |                                                                                                                 |
-| decimal   | float   |                                                                                                                 |
-| decimal   | double  |                                                                                                                 |
-| decimal   | decimal |                                                                                                                 |
-| decimal   | string  | There can be formatting differences in some case due to Spark using scientific notation where Comet does not    |
-| string    | boolean |                                                                                                                 |
-| string    | byte    |                                                                                                                 |
-| string    | short   |                                                                                                                 |
-| string    | integer |                                                                                                                 |
-| string    | long    |                                                                                                                 |
-| string    | binary  |                                                                                                                 |
-| string    | date    | Only supports years between 262143 BC and 262142 AD                                                             |
-| date      | string  |                                                                                                                 |
-| timestamp | long    |                                                                                                                 |
-| timestamp | string  |                                                                                                                 |
-| timestamp | date    |                                                                                                                 |
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
+
+<!--BEGIN:COMPAT_CAST_TABLE-->
+| From Type | To Type | Notes |
+|-|-|-|
+| boolean | byte |  |
+| boolean | short |  |
+| boolean | integer |  |
+| boolean | long |  |
+| boolean | float |  |
+| boolean | double |  |
+| boolean | string |  |
+| byte | boolean |  |
+| byte | short |  |
+| byte | integer |  |
+| byte | long |  |
+| byte | float |  |
+| byte | double |  |
+| byte | decimal |  |
+| byte | string |  |
+| short | boolean |  |
+| short | byte |  |
+| short | integer |  |
+| short | long |  |
+| short | float |  |
+| short | double |  |
+| short | decimal |  |
+| short | string |  |
+| integer | boolean |  |
+| integer | byte |  |
+| integer | short |  |
+| integer | long |  |
+| integer | float |  |
+| integer | double |  |
+| integer | string |  |
+| long | boolean |  |
+| long | byte |  |
+| long | short |  |
+| long | integer |  |
+| long | float |  |
+| long | double |  |
+| long | string |  |
+| float | boolean |  |
+| float | byte |  |
+| float | short |  |
+| float | integer |  |
+| float | long |  |
+| float | double |  |
+| float | string | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
+| double | boolean |  |
+| double | byte |  |
+| double | short |  |
+| double | integer |  |
+| double | long |  |
+| double | float |  |
+| double | string | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
+| decimal | byte |  |
+| decimal | short |  |
+| decimal | integer |  |
+| decimal | long |  |
+| decimal | float |  |
+| decimal | double |  |
+| decimal | decimal |  |
+| decimal | string | There can be formatting differences in some case due to Spark using scientific notation where Comet does not |
+| string | boolean |  |
+| string | byte |  |
+| string | short |  |
+| string | integer |  |
+| string | long |  |
+| string | binary |  |
+| string | date | Only supports years between 262143 BC and 262142 AD |
+| date | string |  |
+| timestamp | long |  |
+| timestamp | string |  |
+| timestamp | date |  |
+<!--END:COMPAT_CAST_TABLE-->
 
 ### Incompatible Casts
 
 The following cast operations are not compatible with Spark for all inputs and are disabled by default.
 
-| From Type | To Type   | Notes                                                                                                                                                       |
-| --------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| integer   | decimal   | No overflow check                                                                                                                                           |
-| long      | decimal   | No overflow check                                                                                                                                           |
-| float     | decimal   | There can be rounding differences                                                                                                                           |
-| double    | decimal   | There can be rounding differences                                                                                                                           |
-| string    | float     | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode.                                                         |
-| string    | double    | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode.                                                         |
-| string    | decimal   | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. Returns 0.0 instead of null if input contains no digits |
-| string    | timestamp | Not all valid formats are supported                                                                                                                         |
-| binary    | string    | Only works for binary data representing valid UTF-8 strings                                                                                                 |
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
+
+<!--BEGIN:INCOMPAT_CAST_TABLE-->
+| From Type | To Type | Notes |
+|-|-|-|
+| integer | decimal  | No overflow check |
+| long | decimal  | No overflow check |
+| float | decimal  | There can be rounding differences |
+| double | decimal  | There can be rounding differences |
+| string | float  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. |
+| string | double  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. |
+| string | decimal  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. Returns 0.0 instead of null if input contains no digits |
+| string | timestamp  | Not all valid formats are supported |
+| binary | string  | Only works for binary data representing valid UTF-8 strings |
+<!--END:INCOMPAT_CAST_TABLE-->
 
 ### Unsupported Casts
 
