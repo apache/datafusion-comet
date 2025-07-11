@@ -51,6 +51,9 @@ pub enum SparkError {
     #[error("[ARITHMETIC_OVERFLOW] {from_type} overflow. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
     ArithmeticOverflow { from_type: String },
 
+    #[error("[DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
+    DivideByZero,
+
     #[error("ArrowError: {0}.")]
     Arrow(ArrowError),
 
