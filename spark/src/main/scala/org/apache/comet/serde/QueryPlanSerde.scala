@@ -121,7 +121,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[MapKeys] -> CometMapKeys,
     classOf[MapValues] -> CometMapValues,
     classOf[MapFromArrays] -> CometMapFromArrays,
-    classOf[GetMapValue] -> CometMapExtract)
+    classOf[GetMapValue] -> CometMapExtract,
+    classOf[GetArrayItem] -> CometGetArrayItem,
+    classOf[ElementAt] -> CometElementAt,
+    classOf[GetArrayStructFields] -> CometGetArrayStructFields)
 
   def emitWarning(reason: String): Unit = {
     logWarning(s"Comet native execution is disabled due to: $reason")
@@ -1789,92 +1792,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             .newBuilder()
             .setGetStructField(getStructFieldBuilder)
             .build()
-        }
-
-      case GetArrayItem(child, ordinal, failOnError) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val ordinalExpr = exprToProtoInternal(ordinal, inputs, binding)
-
-        if (childExpr.isDefined && ordinalExpr.isDefined) {
-          val listExtractBuilder = ExprOuterClass.ListExtract
-            .newBuilder()
-            .setChild(childExpr.get)
-            .setOrdinal(ordinalExpr.get)
-            .setOneBased(false)
-            .setFailOnError(failOnError)
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setListExtract(listExtractBuilder)
-              .build())
-        } else {
-          withInfo(expr, "unsupported arguments for GetArrayItem", child, ordinal)
-          None
-        }
-
-      case ElementAt(child, ordinal, defaultValue, failOnError)
-          if child.dataType.isInstanceOf[ArrayType] =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val ordinalExpr = exprToProtoInternal(ordinal, inputs, binding)
-        val defaultExpr = defaultValue.flatMap(exprToProtoInternal(_, inputs, binding))
-
-        if (childExpr.isDefined && ordinalExpr.isDefined &&
-          defaultExpr.isDefined == defaultValue.isDefined) {
-          val arrayExtractBuilder = ExprOuterClass.ListExtract
-            .newBuilder()
-            .setChild(childExpr.get)
-            .setOrdinal(ordinalExpr.get)
-            .setOneBased(true)
-            .setFailOnError(failOnError)
-
-          defaultExpr.foreach(arrayExtractBuilder.setDefaultValue(_))
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setListExtract(arrayExtractBuilder)
-              .build())
-        } else {
-          withInfo(expr, "unsupported arguments for ElementAt", child, ordinal)
-          None
-        }
-
-      case GetArrayStructFields(child, _, ordinal, _, _) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-
-        if (childExpr.isDefined) {
-          val arrayStructFieldsBuilder = ExprOuterClass.GetArrayStructFields
-            .newBuilder()
-            .setChild(childExpr.get)
-            .setOrdinal(ordinal)
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setGetArrayStructFields(arrayStructFieldsBuilder)
-              .build())
-        } else {
-          withInfo(expr, "unsupported arguments for GetArrayStructFields", child)
-          None
-        }
-      case _ @ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
-        convert(CometArrayCompact)
-      case _: ArrayExcept =>
-        convert(CometArrayExcept)
-      case Rand(child, _) =>
-        createUnaryExpr(
-          expr,
-          child,
-          inputs,
-          binding,
-          (builder, unaryExpr) => builder.setRand(unaryExpr))
-      case expr =>
-        QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
-          case Some(handler) => convert(handler)
-          case _ =>
-            withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
-            None
         }
     }
   }

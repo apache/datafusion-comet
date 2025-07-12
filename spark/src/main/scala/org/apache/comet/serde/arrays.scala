@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.annotation.tailrec
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayExcept, ArrayJoin, ArrayRemove, Attribute, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{ArrayExcept, ArrayJoin, ArrayRemove, Attribute, ElementAt, Expression, GetArrayItem, GetArrayStructFields, Literal}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -374,6 +374,104 @@ object CometCreateArray extends CometExpressionSerde {
       scalarFunctionExprToProto("make_array", childExprs: _*)
     } else {
       withInfo(expr, "unsupported arguments for CreateArray", children: _*)
+      None
+    }
+  }
+}
+
+object CometGetArrayItem extends CometExpressionSerde with IncompatExpr {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val getArrayItem = expr.asInstanceOf[GetArrayItem]
+    val child = getArrayItem.child
+    val ordinal = getArrayItem.ordinal
+    val failOnError = getArrayItem.failOnError
+    val childExpr = exprToProtoInternal(child, inputs, binding)
+    val ordinalExpr = exprToProtoInternal(ordinal, inputs, binding)
+
+    if (childExpr.isDefined && ordinalExpr.isDefined) {
+      val listExtractBuilder = ExprOuterClass.ListExtract
+        .newBuilder()
+        .setChild(childExpr.get)
+        .setOrdinal(ordinalExpr.get)
+        .setOneBased(false)
+        .setFailOnError(failOnError)
+
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setListExtract(listExtractBuilder)
+          .build())
+    } else {
+      withInfo(expr, "unsupported arguments for GetArrayItem", child, ordinal)
+      None
+    }
+  }
+}
+
+object CometElementAt extends CometExpressionSerde with IncompatExpr {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val elementAt = expr.asInstanceOf[ElementAt]
+    val child = elementAt.left
+    val ordinal = elementAt.right
+    val defaultValue = elementAt.defaultValueOutOfBound
+    val failOnError = elementAt.failOnError
+
+    val childExpr = exprToProtoInternal(child, inputs, binding)
+    val ordinalExpr = exprToProtoInternal(ordinal, inputs, binding)
+    val defaultExpr = defaultValue.flatMap(exprToProtoInternal(_, inputs, binding))
+
+    if (childExpr.isDefined && ordinalExpr.isDefined &&
+      defaultExpr.isDefined == defaultValue.isDefined) {
+      val arrayExtractBuilder = ExprOuterClass.ListExtract
+        .newBuilder()
+        .setChild(childExpr.get)
+        .setOrdinal(ordinalExpr.get)
+        .setOneBased(true)
+        .setFailOnError(failOnError)
+
+      defaultExpr.foreach(arrayExtractBuilder.setDefaultValue(_))
+
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setListExtract(arrayExtractBuilder)
+          .build())
+    } else {
+      withInfo(expr, "unsupported arguments for ElementAt", child, ordinal)
+      None
+    }
+  }
+}
+
+object CometGetArrayStructFields extends CometExpressionSerde with IncompatExpr {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val getArrayStructFields = expr.asInstanceOf[GetArrayStructFields]
+    val child = getArrayStructFields.child
+    val ordinal = getArrayStructFields.ordinal
+    val childExpr = exprToProtoInternal(child, inputs, binding)
+
+    if (childExpr.isDefined) {
+      val arrayStructFieldsBuilder = ExprOuterClass.GetArrayStructFields
+        .newBuilder()
+        .setChild(childExpr.get)
+        .setOrdinal(ordinal)
+
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setGetArrayStructFields(arrayStructFieldsBuilder)
+          .build())
+    } else {
+      withInfo(expr, "unsupported arguments for GetArrayStructFields", child)
       None
     }
   }
