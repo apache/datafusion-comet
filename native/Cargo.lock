@@ -1370,6 +1370,7 @@ dependencies = [
  "aws-config",
  "aws-credential-types",
  "bytes",
+ "chrono",
  "crc32fast",
  "criterion",
  "datafusion",
