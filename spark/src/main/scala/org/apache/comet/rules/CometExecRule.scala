@@ -19,6 +19,7 @@
 
 package org.apache.comet.rules
 
+import scala.annotation.tailrec
 import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
@@ -340,6 +341,11 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             op.left,
             op.right,
             SerializedPlan(None)))
+
+      case op: CopyExec if op.children.forall(isCometNative) =>
+        newPlanWithProto(
+          op,
+          CometCopyExec(_, op, op.output, op.copyMode, op.child, SerializedPlan(None)))
 
       case op: SortMergeJoinExec
           if CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) &&
@@ -668,7 +674,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         normalizePlan(plan)
       }
 
-      var newPlan = transform(normalizedPlan)
+      // FIXME: Should we move to separate Rule
+      var newPlan = transformAndAddCopyExec(normalizedPlan)
+      newPlan = transform(normalizedPlan)
 
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)
@@ -745,6 +753,40 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           firstNativeOp = true
           op
       }
+    }
+  }
+
+  private def transformAndAddCopyExec(plan: SparkPlan) = plan.transform {
+    case shj: ShuffledHashJoinExec =>
+      val newLeft = wrapInCopyExec(shj.left)
+      val newRight = wrapInCopyExec(shj.right)
+      shj.copy(left = newLeft, right = newRight)
+    case se: SortExec =>
+      val newChild = wrapInCopyExec(se.child)
+      se.copy(child = newChild)
+    case ee: ExpandExec =>
+      val newChild = wrapInCopyExec(ee.child)
+      ee.copy(child = newChild)
+  }
+
+  /// Returns true if given operator can return input array as output array without
+  /// modification. This is used to determine if we need to copy the input batch to avoid
+  /// data corruption from reusing the input batch.
+  @tailrec
+  private def canReuseInputBatch(plan: SparkPlan): Boolean = {
+    if (plan.isInstanceOf[ProjectExec] || plan.isInstanceOf[LocalLimitExec]) {
+      canReuseInputBatch(plan.children.head)
+    } else {
+      // FIXME
+      plan.isInstanceOf[CometScanExec]
+    }
+  }
+
+  private def wrapInCopyExec(plan: SparkPlan): SparkPlan = {
+    if (canReuseInputBatch(plan)) {
+      CopyExec(plan, UnpackOrDeepCopy)
+    } else {
+      CopyExec(plan, UnpackOrClone)
     }
   }
 
