@@ -42,6 +42,7 @@ Run Spark benchmark:
 
 ```shell
 export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+./spark-tpch.sh
 ```
 
 Run Comet benchmark:
@@ -49,6 +50,7 @@ Run Comet benchmark:
 ```shell
 export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 export COMET_JAR=/opt/comet/comet-spark-spark3.5_2.12-0.9.0.jar
+./comet-tpch.sh
 ```
 
 Run Gluten benchmark:
@@ -56,4 +58,5 @@ Run Gluten benchmark:
 ```shell
 export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
 export GLUTEN_JAR=/opt/gluten/gluten-velox-bundle-spark3.5_2.12-linux_amd64-1.4.0.jar
+./gluten-tpch.sh
 ```
