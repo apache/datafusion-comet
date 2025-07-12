@@ -1793,6 +1793,24 @@ object QueryPlanSerde extends Logging with CometExprShim {
             .setGetStructField(getStructFieldBuilder)
             .build()
         }
+      case _ @ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
+        convert(CometArrayCompact)
+      case _: ArrayExcept =>
+        convert(CometArrayExcept)
+      case Rand(child, _) =>
+        createUnaryExpr(
+          expr,
+          child,
+          inputs,
+          binding,
+          (builder, unaryExpr) => builder.setRand(unaryExpr))
+      case expr =>
+        QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
+          case Some(handler) => convert(handler)
+          case _ =>
+            withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
+            None
+        }
     }
   }
 
