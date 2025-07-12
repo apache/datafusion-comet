@@ -42,6 +42,7 @@ Run Spark benchmark:
 
 ```shell
 export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+sudo ./drop-caches.sh
 ./spark-tpch.sh
 ```
 
@@ -50,6 +51,7 @@ Run Comet benchmark:
 ```shell
 export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 export COMET_JAR=/opt/comet/comet-spark-spark3.5_2.12-0.9.0.jar
+sudo ./drop-caches.sh
 ./comet-tpch.sh
 ```
 
@@ -58,5 +60,12 @@ Run Gluten benchmark:
 ```shell
 export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
 export GLUTEN_JAR=/opt/gluten/gluten-velox-bundle-spark3.5_2.12-linux_amd64-1.4.0.jar
+sudo ./drop-caches.sh
 ./gluten-tpch.sh
+```
+
+Generating charts:
+
+```shell
+python3 generate-comparison.py --benchmark tpch --labels "Spark 3.5.3" "Comet 0.9.0" "Gluten 1.4.0" --title "TPC-H @ 100 GB (single executor, 8 cores, local Parquet files)" spark-tpch-1752338506381.json comet-tpch-1752337818039.json gluten-tpch-1752337474344.json
 ```

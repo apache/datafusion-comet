@@ -72,7 +72,7 @@ When running a benchmark derived from TPC-H on a single node against local Parqu
 and Gluten provide a good speedup when compared to Spark. Gluten is currently slightly faster than Comet, but we
 expect to close that gap over time.
 
-![tpch_allqueries_comet_gluten.png](../_static/images/tpch_allqueries_comet_gluten.png)
+![tpch_allqueries_comet_gluten.png](../_static/images//benchmark-results/0.9.0/tpch_spark_comet_gluten.png)
 
 ## Ease of Development
 
