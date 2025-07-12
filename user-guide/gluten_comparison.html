@@ -419,9 +419,11 @@ suite. See the <a class="reference external" href="https://apache.github.io/incu
 <section id="performance">
 <h2>Performance<a class="headerlink" href="#performance" title="Link to this heading">¶</a></h2>
 <p>When running a benchmark derived from TPC-H on a single node against local Parquet files, we see that both Comet
-and Gluten provide a good speedup when compared to Spark. Gluten is currently slightly faster than Comet, but we
-expect to close that gap over time.</p>
-<p><img alt="tpch_allqueries_comet_gluten.png" src="../_images/tpch_allqueries_comet_gluten.png" /></p>
+and Gluten provide a good speedup when compared to Spark. Comet provides a 2.4x speedup compares to a 2.8x speedup
+with Gluten.</p>
+<p>Gluten is currently slightly faster than Comet, but we expect to close that gap over time.</p>
+<p><img alt="tpch_allqueries_comet_gluten.png" src="../_images/tpch_spark_comet_gluten.png" /></p>
+<p>The scripts that were used to generate these results can be found <a class="reference external" href="https://github.com/apache/datafusion-comet/tree/main/dev/benchmarks">here</a>.</p>
 </section>
 <section id="ease-of-development">
 <h2>Ease of Development<a class="headerlink" href="#ease-of-development" title="Link to this heading">¶</a></h2>
