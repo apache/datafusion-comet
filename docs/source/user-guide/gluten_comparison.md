@@ -69,10 +69,14 @@ suite. See the [Gluten Compatibility Guide] for more information.
 ## Performance
 
 When running a benchmark derived from TPC-H on a single node against local Parquet files, we see that both Comet
-and Gluten provide a good speedup when compared to Spark. Gluten is currently slightly faster than Comet, but we
-expect to close that gap over time.
+and Gluten provide a good speedup when compared to Spark. Comet provides a 2.4x speedup compares to a 2.8x speedup 
+with Gluten.
+
+Gluten is currently slightly faster than Comet, but we expect to close that gap over time.
 
 ![tpch_allqueries_comet_gluten.png](../_static/images//benchmark-results/0.9.0/tpch_spark_comet_gluten.png)
+
+The scripts that were used to generate these results can be found [here](https://github.com/apache/datafusion-comet/tree/main/dev/benchmarks).
 
 ## Ease of Development
 

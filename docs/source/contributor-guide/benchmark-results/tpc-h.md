@@ -44,4 +44,4 @@ The raw results of these benchmarks in JSON format is available here:
 - [Spark](0.9.0/spark-tpch.json)
 - [Comet](0.9.0/comet-tpch.json)
 
-The scripts that were used to generate these results can be found [here](https://github.com/apache/datafusion-comet/tree/main/dev/benchmarks)
+The scripts that were used to generate these results can be found [here](https://github.com/apache/datafusion-comet/tree/main/dev/benchmarks).
