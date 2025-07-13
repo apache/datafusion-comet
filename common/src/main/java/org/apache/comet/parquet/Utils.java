@@ -347,6 +347,10 @@ public class Utils {
 
         // DECIMAL
       case "DecimalLogicalTypeAnnotation":
+        if (!params.containsKey("scale") || !params.containsKey("precision")) {
+          throw new IllegalArgumentException(
+              "Missing required parameters for DecimalLogicalTypeAnnotation: " + params);
+        }
         int scale = Integer.parseInt(params.get("scale"));
         int precision = Integer.parseInt(params.get("precision"));
         return LogicalTypeAnnotation.decimalType(scale, precision);
@@ -357,8 +361,13 @@ public class Utils {
 
         // TIME
       case "TimeLogicalTypeAnnotation":
-        boolean isUTC = Boolean.parseBoolean(params.getOrDefault("isAdjustedToUTC", "true"));
-        String timeUnitStr = params.getOrDefault("unit", "MICROS");
+        if (!params.containsKey("isAdjustedToUTC") || !params.containsKey("unit")) {
+          throw new IllegalArgumentException(
+              "Missing required parameters for TimeLogicalTypeAnnotation: " + params);
+        }
+
+        boolean isUTC = Boolean.parseBoolean(params.get("isAdjustedToUTC"));
+        String timeUnitStr = params.get("unit");
 
         LogicalTypeAnnotation.TimeUnit timeUnit;
         switch (timeUnitStr) {
@@ -372,14 +381,18 @@ public class Utils {
             timeUnit = LogicalTypeAnnotation.TimeUnit.NANOS;
             break;
           default:
-            timeUnit = LogicalTypeAnnotation.TimeUnit.MICROS;
+            throw new IllegalArgumentException("Unknown time unit: " + timeUnitStr);
         }
         return LogicalTypeAnnotation.timeType(isUTC, timeUnit);
 
         // TIMESTAMP
       case "TimestampLogicalTypeAnnotation":
+        if (!params.containsKey("isAdjustedToUTC") || !params.containsKey("unit")) {
+          throw new IllegalArgumentException(
+              "Missing required parameters for TimestampLogicalTypeAnnotation: " + params);
+        }
         boolean isAdjustedToUTC = Boolean.parseBoolean(params.get("isAdjustedToUTC"));
-        String unitStr = params.getOrDefault("unit", "MICROS");
+        String unitStr = params.get("unit");
 
         LogicalTypeAnnotation.TimeUnit unit;
         switch (unitStr) {
@@ -393,12 +406,16 @@ public class Utils {
             unit = LogicalTypeAnnotation.TimeUnit.NANOS;
             break;
           default:
-            unit = LogicalTypeAnnotation.TimeUnit.MICROS;
+            throw new IllegalArgumentException("Unknown timestamp unit: " + unitStr);
         }
         return LogicalTypeAnnotation.timestampType(isAdjustedToUTC, unit);
 
         // INTEGER
       case "IntLogicalTypeAnnotation":
+        if (!params.containsKey("isSigned") || !params.containsKey("bitWidth")) {
+          throw new IllegalArgumentException(
+              "Missing required parameters for IntLogicalTypeAnnotation: " + params);
+        }
         boolean isSigned = Boolean.parseBoolean(params.get("isSigned"));
         int bitWidth = Integer.parseInt(params.get("bitWidth"));
         return LogicalTypeAnnotation.intType(bitWidth, isSigned);
