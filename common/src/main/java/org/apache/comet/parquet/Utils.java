@@ -21,9 +21,9 @@ package org.apache.comet.parquet;
 
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
-import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType;
 import org.apache.parquet.schema.Type;
+import org.apache.parquet.schema.Types;
 import org.apache.spark.sql.types.*;
 
 import org.apache.comet.CometSchemaImporter;
@@ -290,15 +290,154 @@ public class Utils {
     }
 
     String name = columnSpec.getPath()[columnSpec.getPath().length - 1];
+    // Reconstruct the logical type from parameters
+    LogicalTypeAnnotation logicalType = null;
+    if (columnSpec.getLogicalTypeName() != null) {
+      logicalType =
+          reconstructLogicalType(
+              columnSpec.getLogicalTypeName(), columnSpec.getLogicalTypeParams());
+    }
 
     PrimitiveType primitiveType;
     if (primType == PrimitiveType.PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY) {
-      primitiveType = new PrimitiveType(repetition, primType, columnSpec.getTypeLength(), name);
+      primitiveType =
+          Types.primitive(primType, repetition)
+              .length(columnSpec.getTypeLength())
+              .as(logicalType)
+              .id(columnSpec.getFieldId())
+              .named(name);
     } else {
-      primitiveType = new PrimitiveType(repetition, primType, name);
+      primitiveType =
+          Types.primitive(primType, repetition)
+              .as(logicalType)
+              .id(columnSpec.getFieldId())
+              .named(name);
     }
 
-    MessageType schema = new MessageType("root", primitiveType);
-    return schema.getColumnDescription(columnSpec.getPath());
+    return new ColumnDescriptor(
+        columnSpec.getPath(),
+        primitiveType,
+        columnSpec.getMaxRepetitionLevel(),
+        columnSpec.getMaxDefinitionLevel());
+  }
+
+  private static LogicalTypeAnnotation reconstructLogicalType(
+      String logicalTypeName, java.util.Map<String, String> params) {
+
+    switch (logicalTypeName) {
+        // MAP
+      case "MapLogicalTypeAnnotation":
+        return LogicalTypeAnnotation.mapType();
+
+        // LIST
+      case "ListLogicalTypeAnnotation":
+        return LogicalTypeAnnotation.listType();
+
+        // STRING
+      case "StringLogicalTypeAnnotation":
+        return LogicalTypeAnnotation.stringType();
+
+        // MAP_KEY_VALUE
+      case "MapKeyValueLogicalTypeAnnotation":
+        return LogicalTypeAnnotation.MapKeyValueTypeAnnotation.getInstance();
+
+        // ENUM
+      case "EnumLogicalTypeAnnotation":
+        return LogicalTypeAnnotation.enumType();
+
+        // DECIMAL
+      case "DecimalLogicalTypeAnnotation":
+        if (!params.containsKey("scale") || !params.containsKey("precision")) {
+          throw new IllegalArgumentException(
+              "Missing required parameters for DecimalLogicalTypeAnnotation: " + params);
+        }
+        int scale = Integer.parseInt(params.get("scale"));
+        int precision = Integer.parseInt(params.get("precision"));
+        return LogicalTypeAnnotation.decimalType(scale, precision);
+
+        // DATE
+      case "DateLogicalTypeAnnotation":
+        return LogicalTypeAnnotation.dateType();
+
+        // TIME
+      case "TimeLogicalTypeAnnotation":
+        if (!params.containsKey("isAdjustedToUTC") || !params.containsKey("unit")) {
+          throw new IllegalArgumentException(
+              "Missing required parameters for TimeLogicalTypeAnnotation: " + params);
+        }
+
+        boolean isUTC = Boolean.parseBoolean(params.get("isAdjustedToUTC"));
+        String timeUnitStr = params.get("unit");
+
+        LogicalTypeAnnotation.TimeUnit timeUnit;
+        switch (timeUnitStr) {
+          case "MILLIS":
+            timeUnit = LogicalTypeAnnotation.TimeUnit.MILLIS;
+            break;
+          case "MICROS":
+            timeUnit = LogicalTypeAnnotation.TimeUnit.MICROS;
+            break;
+          case "NANOS":
+            timeUnit = LogicalTypeAnnotation.TimeUnit.NANOS;
+            break;
+          default:
+            throw new IllegalArgumentException("Unknown time unit: " + timeUnitStr);
+        }
+        return LogicalTypeAnnotation.timeType(isUTC, timeUnit);
+
+        // TIMESTAMP
+      case "TimestampLogicalTypeAnnotation":
+        if (!params.containsKey("isAdjustedToUTC") || !params.containsKey("unit")) {
+          throw new IllegalArgumentException(
+              "Missing required parameters for TimestampLogicalTypeAnnotation: " + params);
+        }
+        boolean isAdjustedToUTC = Boolean.parseBoolean(params.get("isAdjustedToUTC"));
+        String unitStr = params.get("unit");
+
+        LogicalTypeAnnotation.TimeUnit unit;
+        switch (unitStr) {
+          case "MILLIS":
+            unit = LogicalTypeAnnotation.TimeUnit.MILLIS;
+            break;
+          case "MICROS":
+            unit = LogicalTypeAnnotation.TimeUnit.MICROS;
+            break;
+          case "NANOS":
+            unit = LogicalTypeAnnotation.TimeUnit.NANOS;
+            break;
+          default:
+            throw new IllegalArgumentException("Unknown timestamp unit: " + unitStr);
+        }
+        return LogicalTypeAnnotation.timestampType(isAdjustedToUTC, unit);
+
+        // INTEGER
+      case "IntLogicalTypeAnnotation":
+        if (!params.containsKey("isSigned") || !params.containsKey("bitWidth")) {
+          throw new IllegalArgumentException(
+              "Missing required parameters for IntLogicalTypeAnnotation: " + params);
+        }
+        boolean isSigned = Boolean.parseBoolean(params.get("isSigned"));
+        int bitWidth = Integer.parseInt(params.get("bitWidth"));
+        return LogicalTypeAnnotation.intType(bitWidth, isSigned);
+
+        // JSON
+      case "JsonLogicalTypeAnnotation":
+        return LogicalTypeAnnotation.jsonType();
+
+        // BSON
+      case "BsonLogicalTypeAnnotation":
+        return LogicalTypeAnnotation.bsonType();
+
+        // UUID
+      case "UUIDLogicalTypeAnnotation":
+        return LogicalTypeAnnotation.uuidType();
+
+        // INTERVAL
+      case "IntervalLogicalTypeAnnotation":
+        return LogicalTypeAnnotation.IntervalLogicalTypeAnnotation.getInstance();
+
+      default:
+        throw new IllegalArgumentException("Unknown logical type: " + logicalTypeName);
+    }
   }
 }
