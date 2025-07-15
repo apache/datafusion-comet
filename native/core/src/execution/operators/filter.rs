@@ -216,17 +216,13 @@ impl FilterExec {
                             binary.right(),
                             input_eqs.is_expr_constant(binary.right()).unwrap(),
                         );
-                        res_constants.push(
-                            ConstExpr::new(Arc::clone(expr), across_parts),
-                        );
+                        res_constants.push(ConstExpr::new(Arc::clone(expr), across_parts));
                     } else if input_eqs.is_expr_constant(binary.right()).is_some() {
                         let (expr, across_parts) = (
                             binary.left(),
                             input_eqs.is_expr_constant(binary.left()).unwrap(),
                         );
-                        res_constants.push(
-                            ConstExpr::new(Arc::clone(expr), across_parts),
-                        );
+                        res_constants.push(ConstExpr::new(Arc::clone(expr), across_parts));
                     }
                 }
             }

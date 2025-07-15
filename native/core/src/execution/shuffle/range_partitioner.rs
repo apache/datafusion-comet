@@ -243,7 +243,8 @@ mod test {
 
         let lex_ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(
             col("a", input_batch.schema().as_ref()).unwrap(),
-        )]);
+        )])
+        .unwrap();
 
         let (rows, row_converter) = RangePartitioner::generate_bounds(
             input_batch.columns().to_vec().as_ref(),
