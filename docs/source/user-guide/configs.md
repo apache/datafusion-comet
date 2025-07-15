@@ -17,16 +17,13 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-<!--
-TO MODIFY THIS CONTENT MAKE SURE THAT YOU MAKE YOUR CHANGES TO THE TEMPLATE FILE
-(docs/templates/configs-template.md) AND NOT THE GENERATED FILE
-(docs/source/user-guide/configs.md) OTHERWISE YOUR CHANGES MAY BE LOST
--->
-
 # Comet Configuration Settings
 
 Comet provides the following configuration settings.
 
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
+
+<!--BEGIN:CONFIG_TABLE-->
 | Config | Description | Default Value |
 |--------|-------------|---------------|
 | spark.comet.batchSize | The columnar batch size, i.e., the maximum number of rows that a batch can contain. | 8192 |
@@ -93,3 +90,4 @@ Comet provides the following configuration settings.
 | spark.comet.shuffle.preferDictionary.ratio | The ratio of total values to distinct values in a string column to decide whether to prefer dictionary encoding when shuffling the column. If the ratio is higher than this config, dictionary encoding will be used on shuffling string column. This config is effective if it is higher than 1.0. Note that this config is only used when `spark.comet.exec.shuffle.mode` is `jvm`. | 10.0 |
 | spark.comet.shuffle.sizeInBytesMultiplier | Comet reports smaller sizes for shuffle due to using Arrow's columnar memory format and this can result in Spark choosing a different join strategy due to the estimated size of the exchange being smaller. Comet will multiple sizeInBytes by this amount to avoid regressions in join strategy. | 1.0 |
 | spark.comet.sparkToColumnar.supportedOperatorList | A comma-separated list of operators that will be converted to Arrow columnar format when 'spark.comet.sparkToColumnar.enabled' is true | Range,InMemoryTableScan |
+<!--END:CONFIG_TABLE-->

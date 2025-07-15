@@ -101,8 +101,8 @@ impl SparkBitArray {
     }
 }
 
-pub fn num_words(num_bits: i32) -> i32 {
-    usize::div_ceil(num_bits as usize, 64) as i32
+pub fn num_words(num_bits: usize) -> usize {
+    num_bits.div_ceil(64)
 }
 
 #[cfg(test)]
@@ -232,5 +232,30 @@ mod test {
             assert!(array1.get(n));
         }
         assert_eq!(array1.cardinality(), 60);
+    }
+
+    #[test]
+    fn test_num_words() {
+        let cases = [
+            (0, 0),
+            (32, 1),
+            (63, 1),
+            (64, 1),
+            (96, 2),
+            (127, 2),
+            (128, 2),
+            (129, 3),
+            (639, 10),
+            (640, 10),
+            (653, 11),
+        ];
+
+        for (num_bits, expected) in cases.into_iter() {
+            let actual = num_words(num_bits);
+            assert!(
+                actual == expected,
+                "num_words({num_bits}) = {actual} but expected to equal {expected}"
+            );
+        }
     }
 }

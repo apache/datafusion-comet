@@ -21,7 +21,6 @@ package org.apache.comet
 
 import java.time.{Duration, Period}
 
-import scala.collection.immutable.Seq
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 import scala.util.Random
@@ -40,7 +39,7 @@ import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
-import org.apache.spark.sql.types.{Decimal, DecimalType, IntegerType, StringType, StructType}
+import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
@@ -1869,6 +1868,80 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("remainder function") {
+    def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> enabled.toString,
+        CometConf.COMET_ANSI_MODE_ENABLED.key -> enabled.toString,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true")(f)
+    }
+
+    def verifyResult(query: String): Unit = {
+      val expectedDivideByZeroError =
+        "[DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead."
+
+      checkSparkMaybeThrows(sql(query)) match {
+        case (Some(sparkException), Some(cometException)) =>
+          assert(sparkException.getMessage.contains(expectedDivideByZeroError))
+          assert(cometException.getMessage.contains(expectedDivideByZeroError))
+        case (None, None) => checkSparkAnswerAndOperator(sql(query))
+        case (None, Some(ex)) =>
+          fail("Comet threw an exception but Spark did not. Comet exception: " + ex.getMessage)
+        case (Some(sparkException), None) =>
+          fail(
+            "Spark threw an exception but Comet did not. Spark exception: " +
+              sparkException.getMessage)
+      }
+    }
+
+    val tableName = "remainder_table"
+    withTable(tableName) {
+      sql(s"""
+          |create table $tableName (
+          |a_int int,
+          |b_int int,
+          |a_float float,
+          |b_float float,
+          |a_decimal decimal(18,4),
+          |b_decimal decimal(18,4)
+          |) using parquet
+          """.stripMargin)
+
+      val minInt = Int.MinValue
+
+      sql(s"""
+          |insert into $tableName values
+          |(3, 0, 3.0, 0.0, cast(3 as decimal(18,4)), cast(0 as decimal(18,4))),
+          |(10, 3, 10.5, 3.0, cast(10 as decimal(18,4)), cast(3 as decimal(18,4))),
+          |(-10, 3, -10.5, 3.0, cast(-10 as decimal(18,4)), cast(3 as decimal(18,4))),
+          |($minInt, -1, $minInt, -1.0, cast($minInt as decimal(18,4)), cast(-1 as decimal(18,4))),
+          |(null, 3, null, 3.0, null, cast(3 as decimal(18,4))),
+          |(3, null, 3.0, null, cast(3 as decimal(18,4)), null)
+          """.stripMargin)
+
+      Seq(true, false).foreach(enabled => {
+        withAnsiMode(enabled = enabled) {
+          verifyResult(s"""
+          |select
+          |a_int, b_int, a_float, b_float, a_decimal, b_decimal,
+          |a_int % b_int as int_int_modulo,
+          |a_int % b_float as int_float_modulo,
+          |mod(a_int, b_int) as int_int_mod,
+          |mod(a_int, b_float) as int_float_mod,
+          |a_float % b_float as float_float_modulo,
+          |a_float % b_decimal as float_decimal_modulo,
+          |mod(a_float, b_float) as float_float_mod,
+          |mod(a_float, b_decimal) as float_decimal_mod,
+          |a_decimal % b_decimal as decimal_decimal_modulo,
+          |mod(a_decimal, b_decimal) as decimal_decimal_mod
+          |from $tableName
+          """.stripMargin)
+        }
+      })
+    }
+  }
+
   test("hash functions with random input") {
     val dataGen = DataGenerator.DEFAULT
     // sufficient number of rows to create dictionary encoded ArrowArray.
@@ -2454,78 +2527,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           } else {
             checkSparkAnswerAndOperator(df.select("nested1"))
           }
-        }
-      }
-    }
-  }
-
-  test("read map[int, int] from parquet") {
-    assume(usingDataSourceExec(conf))
-
-    withTempPath { dir =>
-// create input file with Comet disabled
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val df = spark
-          .range(5)
-// Spark does not allow null as a key but does allow null as a
-// value, and the entire map be null
-          .select(
-            when(col("id") > 1, map(col("id"), when(col("id") > 2, col("id")))).alias("map1"))
-        df.write.parquet(dir.toString())
-      }
-
-      Seq("", "parquet").foreach { v1List =>
-        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
-          val df = spark.read.parquet(dir.toString())
-          if (v1List.isEmpty) {
-            checkSparkAnswer(df.select("map1"))
-          } else {
-            checkSparkAnswerAndOperator(df.select("map1"))
-          }
-          // we fall back to Spark for map_keys and map_values
-          checkSparkAnswer(df.select(map_keys(col("map1"))))
-          checkSparkAnswer(df.select(map_values(col("map1"))))
-        }
-      }
-    }
-  }
-
-  // repro for https://github.com/apache/datafusion-comet/issues/1754
-  test("read map[struct, struct] from parquet") {
-    assume(usingDataSourceExec(conf))
-
-    withTempPath { dir =>
-      // create input file with Comet disabled
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val df = spark
-          .range(5)
-          .withColumn("id2", col("id"))
-          .withColumn("id3", col("id"))
-          // Spark does not allow null as a key but does allow null as a
-          // value, and the entire map be null
-          .select(
-            when(
-              col("id") > 1,
-              map(
-                struct(col("id"), col("id2"), col("id3")),
-                when(col("id") > 2, struct(col("id"), col("id2"), col("id3"))))).alias("map1"))
-        df.write.parquet(dir.toString())
-      }
-
-      Seq("", "parquet").foreach { v1List =>
-        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
-          val df = spark.read.parquet(dir.toString())
-          df.createOrReplaceTempView("tbl")
-          if (v1List.isEmpty) {
-            checkSparkAnswer(df.select("map1"))
-          } else {
-            checkSparkAnswerAndOperator(df.select("map1"))
-          }
-          // we fall back to Spark for map_keys and map_values
-          checkSparkAnswer(df.select(map_keys(col("map1"))))
-          checkSparkAnswer(df.select(map_values(col("map1"))))
-          checkSparkAnswer(spark.sql("SELECT map_keys(map1).id2 FROM tbl"))
-          checkSparkAnswer(spark.sql("SELECT map_values(map1).id2 FROM tbl"))
         }
       }
     }
