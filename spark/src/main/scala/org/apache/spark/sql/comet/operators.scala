@@ -1000,3 +1000,22 @@ case class CometSinkPlaceHolder(
 
   override def stringArgs: Iterator[Any] = Iterator(originalPlan.output, child)
 }
+
+case class CometCopyExec(
+    override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
+    copyMode: CopyMode,
+    child: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometUnaryExec {
+  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
+    this.copy(child = newChild)
+
+  override def verboseStringWithOperatorId(): String = {
+    s"""
+       |$formattedNodeName
+       |${ExplainUtils.generateFieldString("Input", child.output)}
+       |""".stripMargin
+  }
+}
