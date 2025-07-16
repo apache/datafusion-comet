@@ -91,14 +91,29 @@ impl HadoopFileSystem {
         let mut total_read = 0u64;
         let mut buf = vec![0; to_read];
         while total_read < to_read as u64 {
-            let read =
-             file
-                .read_with_pos((range.start + total_read) as i64, buf[total_read as usize..].as_mut())
+            let read = file
+                .read_with_pos(
+                    (range.start + total_read) as i64,
+                    buf[total_read as usize..].as_mut(),
+                )
                 .map_err(to_error)?;
-            if read == -1 {
+            if read <= 0 {
                 break;
             }
             total_read = total_read + read as u64;
+        }
+
+        if total_read != to_read as u64 {
+            return Err(Error::Generic {
+                store: "HadoopFileSystem",
+                source: Box::new(HdfsErr::Generic(format!(
+                    "Error reading path {} at position {} with expected size {} and actual size {}",
+                    file.path(),
+                    range.start,
+                    to_read,
+                    total_read
+                ))),
+            });
         }
         Ok(buf.into())
     }
@@ -144,10 +159,22 @@ impl ObjectStore for HadoopFileSystem {
             let mut buf = vec![0; to_read];
             while total_read < to_read as u64 {
                 let read = file.read(buf.as_mut_slice()).map_err(to_error)?;
-                if read == -1 {
+                if read <= 0 {
                     break;
                 }
                 total_read = total_read + read as u64;
+            }
+
+            if total_read != to_read as u64 {
+                return Err(Error::Generic {
+                    store: "HadoopFileSystem",
+                    source: Box::new(HdfsErr::Generic(format!(
+                        "Error reading path {} with expected size {} and actual size {}",
+                        file.path(),
+                        to_read,
+                        total_read
+                    ))),
+                });
             }
 
             file.close().map_err(to_error)?;
