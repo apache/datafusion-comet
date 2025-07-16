@@ -215,14 +215,12 @@ impl FilterExec {
                         let across = input_eqs
                             .is_expr_constant(binary.right())
                             .unwrap_or_default();
-                        res_constants
-                            .push(ConstExpr::new(Arc::clone(binary.right()), across));
+                        res_constants.push(ConstExpr::new(Arc::clone(binary.right()), across));
                     } else if input_eqs.is_expr_constant(binary.right()).is_some() {
                         let across = input_eqs
                             .is_expr_constant(binary.left())
                             .unwrap_or_default();
-                        res_constants
-                            .push(ConstExpr::new(Arc::clone(binary.left()), across));
+                        res_constants.push(ConstExpr::new(Arc::clone(binary.left()), across));
                     }
                 }
             }
