@@ -183,9 +183,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     this.taskContext = TaskContext$.MODULE$.get();
   }
 
-  public BatchReader(AbstractColumnReader[] columnReaders) {
-    // Todo: set useDecimal128 and useLazyMaterialization
-    int numColumns = columnReaders.length;
+  public BatchReader(int numColumns) {
     this.columnReaders = new AbstractColumnReader[numColumns];
     vectors = new CometVector[numColumns];
     currentBatch = new ColumnarBatch(vectors);

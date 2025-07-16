@@ -32,28 +32,23 @@ public class Utils {
 
   /** This method is called from Apache Iceberg. */
   public static ColumnReader getColumnReader(
-      DataType type,
-      ParquetColumnSpec columnSpec,
-      CometSchemaImporter importer,
-      int batchSize,
-      boolean useDecimal128,
-      boolean useLazyMaterialization) {
+          DataType type,
+          ParquetColumnSpec columnSpec,
+          CometSchemaImporter importer,
+          int batchSize,
+          boolean useDecimal128,
+          boolean useLazyMaterialization,
+          boolean useLegacyTimestamp) {
 
     ColumnDescriptor descriptor = buildColumnDescriptor(columnSpec);
     return getColumnReader(
-        type, descriptor, importer, batchSize, useDecimal128, useLazyMaterialization, true);
-  }
-
-  public static ColumnReader getColumnReader(
-      DataType type,
-      ColumnDescriptor descriptor,
-      CometSchemaImporter importer,
-      int batchSize,
-      boolean useDecimal128,
-      boolean useLazyMaterialization) {
-    // TODO: support `useLegacyDateTimestamp` for Iceberg
-    return getColumnReader(
-        type, descriptor, importer, batchSize, useDecimal128, useLazyMaterialization, true);
+            type,
+            descriptor,
+            importer,
+            batchSize,
+            useDecimal128,
+            useLazyMaterialization,
+            useLegacyTimestamp);
   }
 
   public static ColumnReader getColumnReader(
