@@ -32,23 +32,23 @@ public class Utils {
 
   /** This method is called from Apache Iceberg. */
   public static ColumnReader getColumnReader(
-          DataType type,
-          ParquetColumnSpec columnSpec,
-          CometSchemaImporter importer,
-          int batchSize,
-          boolean useDecimal128,
-          boolean useLazyMaterialization,
-          boolean useLegacyTimestamp) {
+      DataType type,
+      ParquetColumnSpec columnSpec,
+      CometSchemaImporter importer,
+      int batchSize,
+      boolean useDecimal128,
+      boolean useLazyMaterialization,
+      boolean useLegacyTimestamp) {
 
     ColumnDescriptor descriptor = buildColumnDescriptor(columnSpec);
     return getColumnReader(
-            type,
-            descriptor,
-            importer,
-            batchSize,
-            useDecimal128,
-            useLazyMaterialization,
-            useLegacyTimestamp);
+        type,
+        descriptor,
+        importer,
+        batchSize,
+        useDecimal128,
+        useLazyMaterialization,
+        useLegacyTimestamp);
   }
 
   public static ColumnReader getColumnReader(
