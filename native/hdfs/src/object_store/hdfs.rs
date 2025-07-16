@@ -100,7 +100,7 @@ impl HadoopFileSystem {
             if read <= 0 {
                 break;
             }
-            total_read = total_read + read as u64;
+            total_read += read as u64;
         }
 
         if total_read != to_read as u64 {
@@ -162,7 +162,7 @@ impl ObjectStore for HadoopFileSystem {
                 if read <= 0 {
                     break;
                 }
-                total_read = total_read + read as u64;
+                total_read += read as u64;
             }
 
             if total_read != to_read as u64 {
