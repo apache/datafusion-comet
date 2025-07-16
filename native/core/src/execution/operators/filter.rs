@@ -212,17 +212,17 @@ impl FilterExec {
                 if binary.op() == &Operator::Eq {
                     // Filter evaluates to single value for all partitions
                     if input_eqs.is_expr_constant(binary.left()).is_some() {
-                        let (expr, across_parts) = (
-                            binary.right(),
-                            input_eqs.is_expr_constant(binary.right()).unwrap(),
-                        );
-                        res_constants.push(ConstExpr::new(Arc::clone(expr), across_parts));
+                        let across = input_eqs
+                            .is_expr_constant(binary.right())
+                            .unwrap_or_default();
+                        res_constants
+                            .push(ConstExpr::new(Arc::clone(binary.right()), across));
                     } else if input_eqs.is_expr_constant(binary.right()).is_some() {
-                        let (expr, across_parts) = (
-                            binary.left(),
-                            input_eqs.is_expr_constant(binary.left()).unwrap(),
-                        );
-                        res_constants.push(ConstExpr::new(Arc::clone(expr), across_parts));
+                        let across = input_eqs
+                            .is_expr_constant(binary.left())
+                            .unwrap_or_default();
+                        res_constants
+                            .push(ConstExpr::new(Arc::clone(binary.left()), across));
                     }
                 }
             }
@@ -242,7 +242,7 @@ impl FilterExec {
         let mut eq_properties = input.equivalence_properties().clone();
         let (equal_pairs, _) = collect_columns_from_predicate(predicate);
         for (lhs, rhs) in equal_pairs {
-            eq_properties.add_equal_conditions(lhs.clone(), rhs.clone())?
+            eq_properties.add_equal_conditions(Arc::clone(lhs), Arc::clone(rhs))?;
         }
         // Add the columns that have only one viable value (singleton) after
         // filtering to constants.
