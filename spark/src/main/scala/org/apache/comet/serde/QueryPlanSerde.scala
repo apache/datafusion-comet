@@ -1881,16 +1881,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             .newBuilder()
             .setRandn(ExprOuterClass.Randn.newBuilder().setSeed(seed))
             .build())
-      case mk: MapKeys =>
-        val childExpr = exprToProtoInternal(mk.child, inputs, binding)
-        scalarFunctionExprToProto("map_keys", childExpr)
-      case mv: MapValues =>
-        val childExpr = exprToProtoInternal(mv.child, inputs, binding)
-        scalarFunctionExprToProto("map_values", childExpr)
-      case gmv: GetMapValue =>
-        val mapExpr = exprToProtoInternal(gmv.child, inputs, binding)
-        val keyExpr = exprToProtoInternal(gmv.key, inputs, binding)
-        scalarFunctionExprToProto("map_extract", mapExpr, keyExpr)
       case expr =>
         QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
           case Some(handler) => convert(handler)
