@@ -18,11 +18,15 @@
  */
 
 package org.apache.comet.serde
-import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GreaterThan}
 
 import scala.collection.JavaConverters._
+
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GreaterThan, GreaterThanOrEqual, In, IsNaN, IsNotNull, IsNull, LessThan, LessThanOrEqual}
+import org.apache.spark.sql.types.BooleanType
+
+import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.serde.ExprOuterClass.Expr
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProtoWithReturnType}
 
 object CometGreaterThan extends CometExpressionSerde with ComparisonBase {
   override def convert(
@@ -38,6 +42,112 @@ object CometGreaterThan extends CometExpressionSerde with ComparisonBase {
       inputs,
       binding,
       (builder, binaryExpr) => builder.setGt(binaryExpr))
+  }
+}
+
+object CometGreaterThanOrEqual extends CometExpressionSerde with ComparisonBase {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val greaterThanOrEqual = expr.asInstanceOf[GreaterThanOrEqual]
+
+    createBinaryExpr(
+      expr,
+      greaterThanOrEqual.left,
+      greaterThanOrEqual.right,
+      inputs,
+      binding,
+      (builder, binaryExpr) => builder.setGtEq(binaryExpr))
+  }
+}
+
+object CometLessThan extends CometExpressionSerde with ComparisonBase {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val lessThan = expr.asInstanceOf[LessThan]
+
+    createBinaryExpr(
+      expr,
+      lessThan.left,
+      lessThan.right,
+      inputs,
+      binding,
+      (builder, binaryExpr) => builder.setLt(binaryExpr))
+  }
+}
+
+object CometLessThanOrEqual extends CometExpressionSerde with ComparisonBase {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val lessThanOrEqual = expr.asInstanceOf[LessThanOrEqual]
+
+    createBinaryExpr(
+      expr,
+      lessThanOrEqual.left,
+      lessThanOrEqual.right,
+      inputs,
+      binding,
+      (builder, binaryExpr) => builder.setLtEq(binaryExpr))
+  }
+}
+
+object CometIsNull extends CometExpressionSerde with ComparisonBase {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val isNull = expr.asInstanceOf[IsNull]
+
+    createUnaryExpr(
+      expr,
+      isNull.child,
+      inputs,
+      binding,
+      (builder, unaryExpr) => builder.setIsNull(unaryExpr))
+  }
+}
+
+object CometIsNotNull extends CometExpressionSerde with ComparisonBase {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val isNotNull = expr.asInstanceOf[IsNotNull]
+
+    createUnaryExpr(
+      expr,
+      isNotNull.child,
+      inputs,
+      binding,
+      (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
+  }
+}
+
+object CometIsNaN extends CometExpressionSerde with ComparisonBase {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val isNaN = expr.asInstanceOf[IsNaN]
+    val childExpr = exprToProtoInternal(isNaN.child, inputs, binding)
+    val optExpr = scalarFunctionExprToProtoWithReturnType("isnan", BooleanType, childExpr)
+
+    optExprWithInfo(optExpr, expr, isNaN.child)
+  }
+}
+
+object CometIn extends CometExpressionSerde with ComparisonBase {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val inExpr = expr.asInstanceOf[In]
+    in(expr, inExpr.value, inExpr.list, inputs, binding, negate = false)
   }
 }
 
@@ -110,6 +220,45 @@ sealed trait ComparisonBase {
           inner).build())
     } else {
       withInfo(expr, left, right)
+      None
+    }
+  }
+
+  // Utility method. Adds explain info if the result of calling exprToProto is None
+  def optExprWithInfo(
+      optExpr: Option[Expr],
+      expr: Expression,
+      childExpr: Expression*): Option[Expr] = {
+    optExpr match {
+      case None =>
+        withInfo(expr, childExpr: _*)
+        None
+      case o => o
+    }
+  }
+
+  def in(
+      expr: Expression,
+      value: Expression,
+      list: Seq[Expression],
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      negate: Boolean): Option[Expr] = {
+    val valueExpr = exprToProtoInternal(value, inputs, binding)
+    val listExprs = list.map(exprToProtoInternal(_, inputs, binding))
+    if (valueExpr.isDefined && listExprs.forall(_.isDefined)) {
+      val builder = ExprOuterClass.In.newBuilder()
+      builder.setInValue(valueExpr.get)
+      builder.addAllLists(listExprs.map(_.get).asJava)
+      builder.setNegated(negate)
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setIn(builder)
+          .build())
+    } else {
+      val allExprs = list ++ Seq(value)
+      withInfo(expr, allExprs: _*)
       None
     }
   }

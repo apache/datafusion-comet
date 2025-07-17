@@ -121,7 +121,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[MapValues] -> CometMapValues,
     classOf[MapFromArrays] -> CometMapFromArrays,
     classOf[GetMapValue] -> CometMapExtract,
-    classOf[GreaterThan] -> CometGreaterThan)
+    classOf[GreaterThan] -> CometGreaterThan,
+    classOf[GreaterThanOrEqual] -> CometGreaterThanOrEqual,
+    classOf[LessThan] -> CometLessThan,
+    classOf[LessThanOrEqual] -> CometLessThanOrEqual,
+    classOf[IsNull] -> CometIsNull,
+    classOf[IsNotNull] -> CometIsNotNull,
+    classOf[IsNaN] -> CometIsNaN,
+    classOf[In] -> CometIn)
 
   def emitWarning(reason: String): Unit = {
     logWarning(s"Comet native execution is disabled due to: $reason")
@@ -802,33 +809,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           binding,
           (builder, binaryExpr) => builder.setNeqNullSafe(binaryExpr))
 
-      case GreaterThanOrEqual(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setGtEq(binaryExpr))
-
-      case LessThan(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setLt(binaryExpr))
-
-      case LessThanOrEqual(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setLtEq(binaryExpr))
-
       case Literal(value, dataType)
           if supportedDataType(dataType, allowComplex = value == null) =>
         val exprBuilder = ExprOuterClass.Literal.newBuilder()
@@ -1181,29 +1161,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
                   .build())
               .build()
           })
-        optExprWithInfo(optExpr, expr, child)
-
-      case IsNull(child) =>
-        createUnaryExpr(
-          expr,
-          child,
-          inputs,
-          binding,
-          (builder, unaryExpr) => builder.setIsNull(unaryExpr))
-
-      case IsNotNull(child) =>
-        createUnaryExpr(
-          expr,
-          child,
-          inputs,
-          binding,
-          (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
-
-      case IsNaN(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr =
-          scalarFunctionExprToProtoWithReturnType("isnan", BooleanType, childExpr)
-
         optExprWithInfo(optExpr, expr, child)
 
       case SortOrder(child, direction, nullOrdering, _) =>
@@ -1574,9 +1531,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           inputs,
           binding,
           (builder, binaryExpr) => builder.setBitwiseAnd(binaryExpr))
-
-      case In(value, list) =>
-        in(expr, value, list, inputs, binding, negate = false)
 
       case InSet(value, hset) =>
         val valueDataType = value.dataType
