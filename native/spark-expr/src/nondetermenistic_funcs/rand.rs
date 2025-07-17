@@ -21,7 +21,6 @@ use crate::internal::{evaluate_batch_for_rand, StatefulSeedValueGenerator};
 use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Schema};
 use datafusion::common::Result;
-use datafusion::error::DataFusionError;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::any::Any;
@@ -87,16 +86,14 @@ impl StatefulSeedValueGenerator<i64, f64> for XorShiftRandom {
 
 #[derive(Debug)]
 pub struct RandExpr {
-    seed: Arc<dyn PhysicalExpr>,
-    init_seed_shift: i32,
+    seed: i64,
     state_holder: Arc<Mutex<Option<i64>>>,
 }
 
 impl RandExpr {
-    pub fn new(seed: Arc<dyn PhysicalExpr>, init_seed_shift: i32) -> Self {
+    pub fn new(seed: i64) -> Self {
         Self {
             seed,
-            init_seed_shift,
             state_holder: Arc::new(Mutex::new(None::<i64>)),
         }
     }
@@ -110,7 +107,7 @@ impl Display for RandExpr {
 
 impl PartialEq for RandExpr {
     fn eq(&self, other: &Self) -> bool {
-        self.seed.eq(&other.seed) && self.init_seed_shift == other.init_seed_shift
+        self.seed.eq(&other.seed)
     }
 }
 
@@ -136,21 +133,15 @@ impl PhysicalExpr for RandExpr {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
-        match self.seed.evaluate(batch)? {
-            ColumnarValue::Scalar(seed) => evaluate_batch_for_rand::<XorShiftRandom, i64>(
-                &self.state_holder,
-                seed,
-                self.init_seed_shift as i64,
-                batch.num_rows(),
-            ),
-            ColumnarValue::Array(_arr) => Err(DataFusionError::NotImplemented(format!(
-                "Only literal seeds are supported for {self}"
-            ))),
-        }
+        evaluate_batch_for_rand::<XorShiftRandom, i64>(
+            &self.state_holder,
+            self.seed,
+            batch.num_rows(),
+        )
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
-        vec![&self.seed]
+        vec![]
     }
 
     fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
@@ -159,26 +150,22 @@ impl PhysicalExpr for RandExpr {
 
     fn with_new_children(
         self: Arc<Self>,
-        children: Vec<Arc<dyn PhysicalExpr>>,
+        _children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
-        Ok(Arc::new(RandExpr::new(
-            Arc::clone(&children[0]),
-            self.init_seed_shift,
-        )))
+        Ok(Arc::new(RandExpr::new(self.seed)))
     }
 }
 
-pub fn rand(seed: Arc<dyn PhysicalExpr>, init_seed_shift: i32) -> Result<Arc<dyn PhysicalExpr>> {
-    Ok(Arc::new(RandExpr::new(seed, init_seed_shift)))
+pub fn rand(seed: i64) -> Arc<dyn PhysicalExpr> {
+    Arc::new(RandExpr::new(seed))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, BooleanArray, Float64Array, Int64Array};
+    use arrow::array::{Array, Float64Array, Int64Array};
     use arrow::{array::StringArray, compute::concat, datatypes::*};
     use datafusion::common::cast::as_float64_array;
-    use datafusion::physical_expr::expressions::lit;
 
     const SPARK_SEED_42_FIRST_5: [f64; 5] = [
         0.619189370225301,
@@ -193,7 +180,7 @@ mod tests {
         let schema = Schema::new(vec![Field::new("a", DataType::Utf8, true)]);
         let data = StringArray::from(vec![Some("foo"), None, None, Some("bar"), None]);
         let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(data)])?;
-        let rand_expr = rand(lit(42), 0)?;
+        let rand_expr = rand(42);
         let result = rand_expr.evaluate(&batch)?.into_array(batch.num_rows())?;
         let result = as_float64_array(&result)?;
         let expected = &Float64Array::from(Vec::from(SPARK_SEED_42_FIRST_5));
@@ -207,7 +194,7 @@ mod tests {
         let first_batch_data = Int64Array::from(vec![Some(42), None]);
         let second_batch_schema = first_batch_schema.clone();
         let second_batch_data = Int64Array::from(vec![None, Some(-42), None]);
-        let rand_expr = rand(lit(42), 0)?;
+        let rand_expr = rand(42);
         let first_batch = RecordBatch::try_new(
             Arc::new(first_batch_schema),
             vec![Arc::new(first_batch_data)],
@@ -230,25 +217,6 @@ mod tests {
         let final_result = as_float64_array(result_arrays)?;
         let expected = &Float64Array::from(Vec::from(SPARK_SEED_42_FIRST_5));
         assert_eq!(final_result, expected);
-        Ok(())
-    }
-
-    #[test]
-    fn test_overflow_shift_seed() -> Result<()> {
-        let schema = Schema::new(vec![Field::new("a", DataType::Boolean, false)]);
-        let data = BooleanArray::from(vec![Some(true), Some(false)]);
-        let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(data)])?;
-        let max_seed_and_shift_expr = rand(lit(i64::MAX), 1)?;
-        let min_seed_no_shift_expr = rand(lit(i64::MIN), 0)?;
-        let first_expr_result = max_seed_and_shift_expr
-            .evaluate(&batch)?
-            .into_array(batch.num_rows())?;
-        let first_expr_result = as_float64_array(&first_expr_result)?;
-        let second_expr_result = min_seed_no_shift_expr
-            .evaluate(&batch)?
-            .into_array(batch.num_rows())?;
-        let second_expr_result = as_float64_array(&second_expr_result)?;
-        assert_eq!(first_expr_result, second_expr_result);
         Ok(())
     }
 }

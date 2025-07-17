@@ -791,12 +791,12 @@ impl PhysicalPlanner {
                 )))
             }
             ExprStruct::Rand(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(RandExpr::new(child, self.partition)))
+                let seed = expr.seed.wrapping_add(self.partition.into());
+                Ok(Arc::new(RandExpr::new(seed)))
             }
             ExprStruct::Randn(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(RandnExpr::new(child, self.partition)))
+                let seed = expr.seed.wrapping_add(self.partition.into());
+                Ok(Arc::new(RandnExpr::new(seed)))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
         }

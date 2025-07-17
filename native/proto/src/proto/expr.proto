@@ -80,8 +80,8 @@ message Expr {
     ArrayInsert array_insert = 58;
     MathExpr integral_divide = 59;
     ToPrettyString to_pretty_string = 60;
-    UnaryExpr rand = 61;
-    UnaryExpr randn = 62;
+    Rand rand = 61;
+    Randn randn = 62;
   }
 }
 
@@ -415,6 +415,15 @@ message ArrayJoin {
   Expr delimiter_expr = 2;
   Expr null_replacement_expr = 3;
 }
+
+message Rand {
+  int64 seed = 1;
+}
+
+message Randn {
+  int64 seed = 1;
+}
+
 
 message DataType {
   enum DataTypeId {

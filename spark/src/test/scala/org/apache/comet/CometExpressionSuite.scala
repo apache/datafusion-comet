@@ -2745,43 +2745,54 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
   }
 
-  test("rand expression with random parameters") {
+  private def testOnShuffledRangeWithRandomParameters(testLogic: DataFrame => Unit): Unit = {
     val partitionsNumber = Random.nextInt(10) + 1
     val rowsNumber = Random.nextInt(500)
-    val seed = Random.nextLong()
     // use this value to have both single-batch and multi-batch partitions
     val cometBatchSize = math.max(1, math.floor(rowsNumber.toDouble / partitionsNumber).toInt)
     withSQLConf("spark.comet.batchSize" -> cometBatchSize.toString) {
       withParquetDataFrame((0 until rowsNumber).map(Tuple1.apply)) { df =>
-        val dfWithRandParameters = df.repartition(partitionsNumber).withColumn("rnd", rand(seed))
-        checkSparkAnswerAndOperator(dfWithRandParameters)
-        val dfWithOverflowSeed =
-          df.repartition(partitionsNumber).withColumn("rnd", rand(Long.MaxValue))
-        checkSparkAnswerAndOperator(dfWithOverflowSeed)
-        val dfWithNullSeed =
-          df.repartition(partitionsNumber).selectExpr("_1", "rand(null) as rnd")
-        checkSparkAnswerAndOperator(dfWithNullSeed)
+        testLogic(df.repartition(partitionsNumber))
       }
     }
   }
 
+  test("rand expression with random parameters") {
+    testOnShuffledRangeWithRandomParameters { df =>
+      val seed = Random.nextLong()
+      val dfWithRandParameters = df.withColumn("rnd", rand(seed))
+      checkSparkAnswerAndOperator(dfWithRandParameters)
+      val dfWithOverflowSeed = df.withColumn("rnd", rand(Long.MaxValue))
+      checkSparkAnswerAndOperator(dfWithOverflowSeed)
+      val dfWithNullSeed = df.selectExpr("_1", "rand(null) as rnd")
+      checkSparkAnswerAndOperator(dfWithNullSeed)
+    }
+  }
+
   test("randn expression with random parameters") {
-    val partitionsNumber = Random.nextInt(10) + 1
-    val rowsNumber = Random.nextInt(500)
-    val seed = Random.nextLong()
-    val cometBatchSize = math.max(1, math.floor(rowsNumber.toDouble / partitionsNumber).toInt)
-    withSQLConf("spark.comet.batchSize" -> cometBatchSize.toString) {
-      withParquetDataFrame((0 until rowsNumber).map(Tuple1.apply)) { df =>
-        val dfWithRandParameters =
-          df.repartition(partitionsNumber).withColumn("randn", randn(seed))
-        checkSparkAnswerAndOperatorWithTol(dfWithRandParameters)
-        val dfWithOverflowSeed =
-          df.repartition(partitionsNumber).withColumn("randn", randn(Long.MaxValue))
-        checkSparkAnswerAndOperatorWithTol(dfWithOverflowSeed)
-        val dfWithNullSeed =
-          df.repartition(partitionsNumber).selectExpr("_1", "randn(null) as randn")
-        checkSparkAnswerAndOperatorWithTol(dfWithNullSeed)
-      }
+    testOnShuffledRangeWithRandomParameters { df =>
+      val seed = Random.nextLong()
+      val dfWithRandParameters = df.withColumn("randn", randn(seed))
+      checkSparkAnswerAndOperatorWithTol(dfWithRandParameters)
+      val dfWithOverflowSeed = df.withColumn("randn", randn(Long.MaxValue))
+      checkSparkAnswerAndOperatorWithTol(dfWithOverflowSeed)
+      val dfWithNullSeed = df.selectExpr("_1", "randn(null) as randn")
+      checkSparkAnswerAndOperatorWithTol(dfWithNullSeed)
+    }
+  }
+
+  test("multiple nondetermenistic expressions with shuffle") {
+    testOnShuffledRangeWithRandomParameters { df =>
+      val seed1 = Random.nextLong()
+      val seed2 = Random.nextLong()
+      val complexRandDf = df
+        .withColumn("rand1", rand(seed1))
+        .withColumn("randn1", randn(seed1))
+        .repartition(2, col("_1"))
+        .sortWithinPartitions("_1")
+        .withColumn("rand2", rand(seed2))
+        .withColumn("randn2", randn(seed2))
+      checkSparkAnswerAndOperator(complexRandDf)
     }
   }
 

@@ -16,26 +16,13 @@
 // under the License.
 
 use arrow::array::{Float64Array, Float64Builder};
-use arrow::datatypes::DataType;
-use datafusion::common::{DataFusionError, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 
-fn extract_seed_from_scalar_value(seed: &ScalarValue) -> datafusion::common::Result<i64> {
-    if let ScalarValue::Int64(seed_opt) = seed.cast_to(&DataType::Int64)? {
-        Ok(seed_opt.unwrap_or(0))
-    } else {
-        Err(DataFusionError::Internal(
-            "unexpected execution branch".to_string(),
-        ))
-    }
-}
-
 pub fn evaluate_batch_for_rand<R, S>(
     state_holder: &Arc<Mutex<Option<S>>>,
-    seed: ScalarValue,
-    init_seed_shift: i64,
+    seed: i64,
     num_rows: usize,
 ) -> datafusion::common::Result<ColumnarValue>
 where
@@ -43,8 +30,7 @@ where
     S: Copy,
 {
     let seed_state = state_holder.lock().unwrap();
-    let init = extract_seed_from_scalar_value(&seed)?.wrapping_add(init_seed_shift);
-    let mut rnd = R::from_state_ref(seed_state, init);
+    let mut rnd = R::from_state_ref(seed_state, seed);
     let mut arr_builder = Float64Builder::with_capacity(num_rows);
     std::iter::repeat_with(|| rnd.next_value())
         .take(num_rows)

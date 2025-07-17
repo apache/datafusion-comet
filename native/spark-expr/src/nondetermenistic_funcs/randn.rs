@@ -20,7 +20,6 @@ use crate::nondetermenistic_funcs::rand::XorShiftRandom;
 use crate::internal::{evaluate_batch_for_rand, StatefulSeedValueGenerator};
 use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Schema};
-use datafusion::common::DataFusionError;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::any::Any;
@@ -98,16 +97,14 @@ impl StatefulSeedValueGenerator<RandomGaussianState, f64> for XorShiftRandomForG
 
 #[derive(Debug, Clone)]
 pub struct RandnExpr {
-    seed: Arc<dyn PhysicalExpr>,
-    init_seed_shift: i32,
+    seed: i64,
     state_holder: Arc<Mutex<Option<RandomGaussianState>>>,
 }
 
 impl RandnExpr {
-    pub fn new(seed: Arc<dyn PhysicalExpr>, init_seed_shift: i32) -> Self {
+    pub fn new(seed: i64) -> Self {
         Self {
             seed,
-            init_seed_shift,
             state_holder: Arc::new(Mutex::new(None)),
         }
     }
@@ -121,7 +118,7 @@ impl Display for RandnExpr {
 
 impl PartialEq for RandnExpr {
     fn eq(&self, other: &Self) -> bool {
-        self.seed.eq(&other.seed) && self.init_seed_shift == other.init_seed_shift
+        self.seed.eq(&other.seed)
     }
 }
 
@@ -147,23 +144,15 @@ impl PhysicalExpr for RandnExpr {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
-        match self.seed.evaluate(batch)? {
-            ColumnarValue::Scalar(seed) => {
-                evaluate_batch_for_rand::<XorShiftRandomForGaussian, RandomGaussianState>(
-                    &self.state_holder,
-                    seed,
-                    self.init_seed_shift as i64,
-                    batch.num_rows(),
-                )
-            }
-            ColumnarValue::Array(_arr) => Err(DataFusionError::NotImplemented(format!(
-                "Only literal seeds are supported for {self}"
-            ))),
-        }
+        evaluate_batch_for_rand::<XorShiftRandomForGaussian, RandomGaussianState>(
+            &self.state_holder,
+            self.seed,
+            batch.num_rows(),
+        )
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
-        vec![&self.seed]
+        vec![]
     }
 
     fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
@@ -172,20 +161,14 @@ impl PhysicalExpr for RandnExpr {
 
     fn with_new_children(
         self: Arc<Self>,
-        children: Vec<Arc<dyn PhysicalExpr>>,
+        _children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> datafusion::common::Result<Arc<dyn PhysicalExpr>> {
-        Ok(Arc::new(RandnExpr::new(
-            Arc::clone(&children[0]),
-            self.init_seed_shift,
-        )))
+        Ok(Arc::new(RandnExpr::new(self.seed)))
     }
 }
 
-pub fn randn(
-    seed: Arc<dyn PhysicalExpr>,
-    init_seed_shift: i32,
-) -> datafusion::common::Result<Arc<dyn PhysicalExpr>> {
-    Ok(Arc::new(RandnExpr::new(seed, init_seed_shift)))
+pub fn randn(seed: i64) -> Arc<dyn PhysicalExpr> {
+    Arc::new(RandnExpr::new(seed))
 }
 
 #[cfg(test)]
@@ -194,7 +177,6 @@ mod tests {
     use arrow::array::{Array, Float64Array, Int64Array};
     use arrow::{array::StringArray, compute::concat, datatypes::*};
     use datafusion::common::cast::as_float64_array;
-    use datafusion::physical_expr::expressions::lit;
 
     const PRECISION_TOLERANCE: f64 = 1e-6;
 
@@ -211,7 +193,7 @@ mod tests {
         let schema = Schema::new(vec![Field::new("a", DataType::Utf8, true)]);
         let data = StringArray::from(vec![Some("foo"), None, None, Some("bar"), None]);
         let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(data)])?;
-        let randn_expr = randn(lit(42), 0)?;
+        let randn_expr = randn(42);
         let result = randn_expr.evaluate(&batch)?.into_array(batch.num_rows())?;
         let result = as_float64_array(&result)?;
         let expected = &Float64Array::from(Vec::from(SPARK_SEED_42_FIRST_5_GAUSSIAN));
@@ -225,7 +207,7 @@ mod tests {
         let first_batch_data = Int64Array::from(vec![Some(24), None, None]);
         let second_batch_schema = first_batch_schema.clone();
         let second_batch_data = Int64Array::from(vec![None, Some(22)]);
-        let randn_expr = randn(lit(42), 0)?;
+        let randn_expr = randn(42);
         let first_batch = RecordBatch::try_new(
             Arc::new(first_batch_schema),
             vec![Arc::new(first_batch_data)],
