@@ -2180,7 +2180,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
     op match {
 
       // Fully native scan for V1
-      case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
+      case scan: CometScanExec
+          if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION
+            || scan.scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
         val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
         nativeScanBuilder.setSource(op.simpleStringWithNodeId())
 
