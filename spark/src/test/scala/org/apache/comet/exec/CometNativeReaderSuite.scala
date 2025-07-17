@@ -24,6 +24,7 @@ import org.scalatest.Tag
 
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.functions.{array, col}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
 
@@ -253,18 +254,11 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
   }
 
   test("native reader - read a STRUCT subfield - field from second") {
-    withSQLConf(
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion") {
-      testSingleLineQuery(
-        """
+    testSingleLineQuery(
+      """
           |select 1 a, named_struct('a', 1, 'b', 'n') c0
           |""".stripMargin,
-        "select c0.b from tbl")
-    }
+      "select c0.b from tbl")
   }
 
   test("native reader - read a STRUCT subfield from ARRAY of STRUCTS - field from first") {
@@ -557,11 +551,10 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       "select array(cast('a' as binary), cast('bc' as binary), cast('def' as binary), null) from tbl")
   }
 
-  test("native reader - array equality") {
-    testSingleLineQuery(
-      """
-        | select array(1) a union all select array(2)
-        |""".stripMargin,
-      "select * from tbl where a = array(1L)")
+  test("SPARK-18053: ARRAY equality is broken") {
+    withTable("array_tbl") {
+      spark.range(10).select(array(col("id")).as("arr")).write.saveAsTable("array_tbl")
+      assert(sql("SELECT * FROM array_tbl where arr = ARRAY(1L)").count == 1)
+    }
   }
 }
