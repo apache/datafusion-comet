@@ -88,22 +88,22 @@ impl HadoopFileSystem {
 
     fn read_range(range: &Range<u64>, file: &HdfsFile) -> Result<Bytes> {
         let to_read = (range.end - range.start) as usize;
-        let mut total_read = 0u64;
+        let mut total_read = 0;
         let mut buf = vec![0; to_read];
-        while total_read < to_read as u64 {
+        while total_read < to_read {
             let read = file
                 .read_with_pos(
-                    (range.start + total_read) as i64,
-                    buf[total_read as usize..].as_mut(),
+                    (range.start + total_read as u64) as i64,
+                    buf[total_read..].as_mut(),
                 )
                 .map_err(to_error)?;
             if read <= 0 {
                 break;
             }
-            total_read += read as u64;
+            total_read += read as usize;
         }
 
-        if total_read != to_read as u64 {
+        if total_read != to_read {
             return Err(Error::Generic {
                 store: "HadoopFileSystem",
                 source: Box::new(HdfsErr::Generic(format!(
@@ -155,17 +155,17 @@ impl ObjectStore for HadoopFileSystem {
             let file_status = file.get_file_status().map_err(to_error)?;
 
             let to_read = file_status.len();
-            let mut total_read = 0u64;
+            let mut total_read = 0;
             let mut buf = vec![0; to_read];
-            while total_read < to_read as u64 {
+            while total_read < to_read {
                 let read = file.read(buf.as_mut_slice()).map_err(to_error)?;
                 if read <= 0 {
                     break;
                 }
-                total_read += read as u64;
+                total_read += read as usize;
             }
 
-            if total_read != to_read as u64 {
+            if total_read != to_read {
                 return Err(Error::Generic {
                     store: "HadoopFileSystem",
                     source: Box::new(HdfsErr::Generic(format!(
