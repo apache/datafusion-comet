@@ -1879,7 +1879,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         seed.map(seed =>
           ExprOuterClass.Expr
             .newBuilder()
-            .setRandn(ExprOuterClass.Randn.newBuilder().setSeed(seed))
+            .setRandn(ExprOuterClass.Rand.newBuilder().setSeed(seed))
             .build())
       case expr =>
         QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {

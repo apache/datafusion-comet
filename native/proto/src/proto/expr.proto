@@ -81,7 +81,7 @@ message Expr {
     MathExpr integral_divide = 59;
     ToPrettyString to_pretty_string = 60;
     Rand rand = 61;
-    Randn randn = 62;
+    Rand randn = 62;
   }
 }
 
@@ -419,11 +419,6 @@ message ArrayJoin {
 message Rand {
   int64 seed = 1;
 }
-
-message Randn {
-  int64 seed = 1;
-}
-
 
 message DataType {
   enum DataTypeId {
