@@ -15,9 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub mod internal;
-pub mod rand;
-pub mod randn;
+mod rand_utils;
 
-pub use rand::RandExpr;
-pub use randn::RandnExpr;
+pub use rand_utils::evaluate_batch_for_rand;
+pub use rand_utils::StatefulSeedValueGenerator;

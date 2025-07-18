@@ -103,7 +103,7 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
     GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RLike,
-    RandExpr, SparkCastOptions, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
+    RandExpr, RandnExpr, SparkCastOptions, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
     TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
 use itertools::Itertools;
@@ -791,8 +791,12 @@ impl PhysicalPlanner {
                 )))
             }
             ExprStruct::Rand(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(RandExpr::new(child, self.partition)))
+                let seed = expr.seed.wrapping_add(self.partition.into());
+                Ok(Arc::new(RandExpr::new(seed)))
+            }
+            ExprStruct::Randn(expr) => {
+                let seed = expr.seed.wrapping_add(self.partition.into());
+                Ok(Arc::new(RandnExpr::new(seed)))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
         }
