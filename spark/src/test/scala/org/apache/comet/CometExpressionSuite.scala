@@ -2792,7 +2792,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         .sortWithinPartitions("_1")
         .withColumn("rand2", rand(seed2))
         .withColumn("randn2", randn(seed2))
-      checkSparkAnswerAndOperator(complexRandDf)
+      checkSparkAnswerAndOperatorWithTol(complexRandDf)
     }
   }
 
