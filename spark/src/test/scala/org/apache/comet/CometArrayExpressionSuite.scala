@@ -295,7 +295,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         table.createOrReplaceTempView("t1")
         for (field <- table.schema.fields) {
           val fieldName = field.name
-          val typeName = field.dataType.typeName
           sql(s"SELECT array($fieldName, $fieldName) as a, $fieldName as b FROM t1")
             .createOrReplaceTempView("t2")
           checkSparkAnswer(sql("SELECT array_contains(a, b) FROM t2"))
