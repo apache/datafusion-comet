@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.math.min
 
 import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, Divide, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Subtract}
-import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, NullType, ShortType, StringType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.CometEvalMode
@@ -66,29 +66,18 @@ trait MathBase {
     }
   }
 
-  def nullIfWhenPrimitive(expression: Expression): Expression =
-    if (isPrimitive(expression)) {
-      val zero = Literal.default(expression.dataType)
-      expression match {
-        case _: Literal if expression != zero => expression
-        case _ =>
-          If(EqualTo(expression, zero), Literal.create(null, expression.dataType), expression)
-      }
-    } else {
-      expression
+  def nullIfWhenPrimitive(expression: Expression): Expression = {
+    val zero = Literal.default(expression.dataType)
+    expression match {
+      case _: Literal if expression != zero => expression
+      case _ =>
+        If(EqualTo(expression, zero), Literal.create(null, expression.dataType), expression)
     }
-
-  private def isPrimitive(expression: Expression): Boolean = expression.dataType match {
-    case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-        _: DoubleType | _: TimestampType | _: DateType | _: BooleanType | _: DecimalType =>
-      true
-    case _ => false
   }
 
   def supportedDataType(dt: DataType): Boolean = dt match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-        _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
-        _: DecimalType | _: DateType | _: BooleanType | _: NullType =>
+        _: DoubleType | _: DecimalType =>
       true
     case _ =>
       false
