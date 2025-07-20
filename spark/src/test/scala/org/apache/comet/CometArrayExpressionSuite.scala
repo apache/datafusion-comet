@@ -219,16 +219,14 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_contains - int values") {
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, n = 10000)
-        spark.read.parquet(path.toString).createOrReplaceTempView("t1");
-        checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_contains(array(_2, _3, _4), _2) FROM t1"))
-        checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_contains((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
-      }
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, n = 10000)
+      spark.read.parquet(path.toString).createOrReplaceTempView("t1");
+      checkSparkAnswerAndOperator(
+        spark.sql("SELECT array_contains(array(_2, _3, _4), _2) FROM t1"))
+      checkSparkAnswerAndOperator(
+        spark.sql("SELECT array_contains((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
     }
   }
 
@@ -260,6 +258,32 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         checkSparkAnswerAndOperator(sql("SELECT array_contains(a, b) FROM t2"))
         checkSparkAnswerAndOperator(
           sql(s"SELECT array_contains(a, cast(null as $typeName)) FROM t2"))
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/1929
+  ignore("array_contains - array literals") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          100,
+          DataGenOptions(
+            allowNull = true,
+            generateNegativeZero = true,
+            generateArray = false,
+            generateStruct = false,
+            generateMap = false))
+      }
+      val table = spark.read.parquet(filename)
+      for (field <- table.schema.fields) {
+        val typeName = field.dataType.typeName
         checkSparkAnswerAndOperator(
           sql(s"SELECT array_contains(cast(null as array<$typeName>), b) FROM t2"))
         checkSparkAnswerAndOperator(sql(
