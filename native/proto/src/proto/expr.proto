@@ -220,17 +220,17 @@ message Literal {
    bool is_null = 12;
 }
 
-message MathExpr {
-  Expr left = 1;
-  Expr right = 2;
-  bool fail_on_error = 3;
-  DataType return_type = 4;
-}
-
 enum EvalMode {
   LEGACY = 0;
   TRY = 1;
   ANSI = 2;
+}
+
+message MathExpr {
+  Expr left = 1;
+  Expr right = 2;
+  DataType return_type = 4;
+  EvalMode eval_mode = 5;
 }
 
 message Cast {
