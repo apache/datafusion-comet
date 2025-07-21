@@ -183,13 +183,12 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     this.taskContext = TaskContext$.MODULE$.get();
   }
 
+  // This constructor is used by Iceberg only. The Iceberg side will also call
+  // initByIceberg to initialize the columnReaders
   public BatchReader(int numColumns) {
     this.columnReaders = new AbstractColumnReader[numColumns];
     vectors = new CometVector[numColumns];
     currentBatch = new ColumnarBatch(vectors);
-    // This constructor is used by Iceberg only. The columnReaders are
-    // initialized in Iceberg, so no need to call the init()
-    isInitialized = true;
     this.taskContext = TaskContext$.MODULE$.get();
     this.metrics = new HashMap<>();
   }
@@ -375,12 +374,15 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     }
   }
 
-  public void setSparkSchema(StructType schema) {
-    this.sparkSchema = schema;
+  // Used by Iceberg only.
+  public void initByIceberg(AbstractColumnReader[] columnReaders) {
+    this.columnReaders = columnReaders;
+    this.isInitialized = true;
   }
 
-  public AbstractColumnReader[] getColumnReaders() {
-    return columnReaders;
+  // Used by Iceberg only.
+  public void setSparkSchema(StructType schema) {
+    this.sparkSchema = schema;
   }
 
   @Override
