@@ -2781,6 +2781,26 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("spark_partition_id expression on random dataset") {
+    testOnShuffledRangeWithRandomParameters { df =>
+      val dfWithRandParameters =
+        df.withColumn("pid1", spark_partition_id())
+          .repartition(3)
+          .withColumn("pid2", spark_partition_id())
+      checkSparkAnswerAndOperator(dfWithRandParameters)
+    }
+  }
+
+  test("monotonically_increasing_id expression on random dataset") {
+    testOnShuffledRangeWithRandomParameters { df =>
+      val dfWithRandParameters =
+        df.withColumn("mid1", monotonically_increasing_id())
+          .repartition(3)
+          .withColumn("mid2", monotonically_increasing_id())
+      checkSparkAnswerAndOperator(dfWithRandParameters)
+    }
+  }
+
   test("multiple nondetermenistic expressions with shuffle") {
     testOnShuffledRangeWithRandomParameters { df =>
       val seed1 = Random.nextLong()
