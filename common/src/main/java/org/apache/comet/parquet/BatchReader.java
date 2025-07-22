@@ -99,20 +99,20 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
   private StructType partitionSchema;
   private InternalRow partitionValues;
   private PartitionedFile file;
-  private final Map<String, SQLMetric> metrics;
+  protected Map<String, SQLMetric> metrics;
 
   private long rowsRead;
-  private StructType sparkSchema;
+  protected StructType sparkSchema;
   private MessageType requestedSchema;
-  private CometVector[] vectors;
-  private AbstractColumnReader[] columnReaders;
+  protected CometVector[] vectors;
+  protected AbstractColumnReader[] columnReaders;
   private CometSchemaImporter importer;
-  private ColumnarBatch currentBatch;
+  protected ColumnarBatch currentBatch;
   private Future<Option<Throwable>> prefetchTask;
   private LinkedBlockingQueue<Pair<PageReadStore, Long>> prefetchQueue;
   private FileReader fileReader;
   private boolean[] missingColumns;
-  private boolean isInitialized;
+  protected boolean isInitialized;
   private ParquetMetadata footer;
 
   /** The total number of rows across all row groups of the input split. */
@@ -143,7 +143,9 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
   private boolean useLegacyDateTimestamp;
 
   /** The TaskContext object for executing this task. */
-  private final TaskContext taskContext;
+  protected TaskContext taskContext;
+
+  public BatchReader() {}
 
   // Only for testing
   public BatchReader(String file, int capacity) {
@@ -183,12 +185,18 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     this.taskContext = TaskContext$.MODULE$.get();
   }
 
-  // This constructor is used by Iceberg only. The Iceberg side will also call
-  // initByIceberg to initialize the columnReaders
-  public BatchReader(int numColumns) {
+  /**
+   * @deprecated since 0.9.1, will be removed in 0.10.0.
+   */
+  public BatchReader(AbstractColumnReader[] columnReaders) {
+    // Todo: set useDecimal128 and useLazyMaterialization
+    int numColumns = columnReaders.length;
     this.columnReaders = new AbstractColumnReader[numColumns];
     vectors = new CometVector[numColumns];
     currentBatch = new ColumnarBatch(vectors);
+    // This constructor is used by Iceberg only. The columnReaders are
+    // initialized in Iceberg, so no need to call the init()
+    isInitialized = true;
     this.taskContext = TaskContext$.MODULE$.get();
     this.metrics = new HashMap<>();
   }
@@ -374,15 +382,18 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     }
   }
 
-  // Used by Iceberg only.
-  public void initByIceberg(AbstractColumnReader[] columnReaders) {
-    this.columnReaders = columnReaders;
-    this.isInitialized = true;
-  }
-
-  // Used by Iceberg only.
+  /**
+   * @deprecated since 0.9.1, will be removed in 0.10.0.
+   */
   public void setSparkSchema(StructType schema) {
     this.sparkSchema = schema;
+  }
+
+  /**
+   * @deprecated since 0.9.1, will be removed in 0.10.0.
+   */
+  public AbstractColumnReader[] getColumnReaders() {
+    return columnReaders;
   }
 
   @Override

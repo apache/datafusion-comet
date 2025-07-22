@@ -51,6 +51,24 @@ public class Utils {
         useLegacyTimestamp);
   }
 
+  /**
+   * This method is called from Apache Iceberg.
+   *
+   * @deprecated since 0.9.1, will be removed in 0.10.0; use getColumnReader with ParquetColumnSpec
+   *     instead.
+   */
+  public static ColumnReader getColumnReader(
+      DataType type,
+      ColumnDescriptor descriptor,
+      CometSchemaImporter importer,
+      int batchSize,
+      boolean useDecimal128,
+      boolean useLazyMaterialization) {
+    // TODO: support `useLegacyDateTimestamp` for Iceberg
+    return getColumnReader(
+        type, descriptor, importer, batchSize, useDecimal128, useLazyMaterialization, true);
+  }
+
   public static ColumnReader getColumnReader(
       DataType type,
       ColumnDescriptor descriptor,
