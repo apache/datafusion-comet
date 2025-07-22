@@ -98,7 +98,7 @@
  - [x] arrays_overlap
  - [ ] arrays_zip
  - [x] element_at
- - [ ] flatten
+ - [x] flatten
  - [x] get
  - [ ] sequence
  - [ ] shuffle
