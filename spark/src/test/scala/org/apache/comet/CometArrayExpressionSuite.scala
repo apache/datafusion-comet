@@ -25,10 +25,10 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.{array, col, expr, lit, udf}
+import org.apache.spark.sql.functions._
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
-import org.apache.comet.serde.CometArrayExcept
+import org.apache.comet.serde.{CometArrayExcept, CometFlatten}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -494,6 +494,71 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             sql("SELECT array_repeat(_3, _4) from t1 where _3 is not null"))
           checkSparkAnswerAndOperator(sql("SELECT array_repeat(cast(_3 as string), 2) from t1"))
           checkSparkAnswerAndOperator(sql("SELECT array_repeat(array(_2, _3, _4), 2) from t1"))
+        }
+      }
+    }
+  }
+
+  test("flatten - test all types (native Parquet reader)") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          100,
+          DataGenOptions(
+            allowNull = true,
+            generateNegativeZero = true,
+            generateArray = false,
+            generateStruct = false,
+            generateMap = false))
+      }
+      val table = spark.read.parquet(filename)
+      table.createOrReplaceTempView("t1")
+      val fieldNames =
+        table.schema.fields
+          .filter(field => CometFlatten.isTypeSupported(field.dataType))
+          .map(_.name)
+      for (fieldName <- fieldNames) {
+        sql(s"SELECT array(array($fieldName, $fieldName), array($fieldName)) as a FROM t1")
+          .createOrReplaceTempView("t2")
+        checkSparkAnswerAndOperator(sql(s"SELECT flatten(a) FROM t2"))
+      }
+    }
+  }
+
+  test("flatten - test all types (convert from Parquet)") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val options = DataGenOptions(
+          allowNull = true,
+          generateNegativeZero = true,
+          generateArray = true,
+          generateStruct = true,
+          generateMap = false)
+        ParquetGenerator.makeParquetFile(random, spark, filename, 100, options)
+      }
+      withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
+        val table = spark.read.parquet(filename)
+        table.createOrReplaceTempView("t1")
+        val fieldNames =
+          table.schema.fields
+            .filter(field => CometFlatten.isTypeSupported(field.dataType))
+            .map(_.name)
+        for (fieldName <- fieldNames) {
+          sql(s"SELECT array(array($fieldName, $fieldName), array($fieldName)) as a FROM t1")
+            .createOrReplaceTempView("t2")
+          checkSparkAnswer(sql(s"SELECT flatten(a) FROM t2"))
         }
       }
     }

@@ -125,7 +125,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[MapKeys] -> CometMapKeys,
     classOf[MapValues] -> CometMapValues,
     classOf[MapFromArrays] -> CometMapFromArrays,
-    classOf[GetMapValue] -> CometMapExtract)
+    classOf[GetMapValue] -> CometMapExtract,
+    classOf[Flatten] -> CometFlatten)
 
   def emitWarning(reason: String): Unit = {
     logWarning(s"Comet native execution is disabled due to: $reason")
