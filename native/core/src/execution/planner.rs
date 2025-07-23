@@ -2193,13 +2193,15 @@ impl PhysicalPlanner {
         };
 
         let window_frame = WindowFrame::new_bounds(units, lower_bound, upper_bound);
+        let lex_orderings = LexOrdering::new(sort_exprs.to_vec());
+        let sort_phy_exprs = lex_orderings.as_deref().unwrap_or(&[]);
 
         datafusion::physical_plan::windows::create_window_expr(
             &window_func,
             window_func_name,
             &window_args,
             partition_by,
-            &LexOrdering::new(sort_exprs.to_vec()).unwrap(),
+            sort_phy_exprs,
             window_frame.into(),
             input_schema.as_ref(),
             false, // TODO: Ignore nulls
