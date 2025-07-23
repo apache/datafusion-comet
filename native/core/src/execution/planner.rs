@@ -594,6 +594,14 @@ impl PhysicalPlanner {
                         true,
                         false,
                     ))),
+                    // DataFusion 49 hardcodes return type for MD5 built in function as UTF8View
+                    // which is not yet supported in Comet
+                    // Converting forcibly to UTF8. To be removed after UTF8View supported
+                    "md5" => Ok(Arc::new(Cast::new(
+                        func?,
+                        DataType::Utf8,
+                        SparkCastOptions::new_without_timezone(EvalMode::Try, true),
+                    ))),
                     _ => func,
                 }
             }
