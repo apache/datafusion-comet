@@ -247,7 +247,7 @@ mod test {
 
         let (rows, row_converter) = RangePartitioner::generate_bounds(
             input_batch.columns().to_vec().as_ref(),
-            &lex_ordering,
+            &lex_ordering.unwrap(),
             10,
             input_batch.num_rows(),
             1000,

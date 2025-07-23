@@ -1409,7 +1409,8 @@ mod test {
             CometPartitioning::RangePartitioning(
                 LexOrdering::new(vec![PhysicalSortExpr::new_default(
                     col("a", batch.schema().as_ref()).unwrap(),
-                )]),
+                )])
+                .unwrap(),
                 num_partitions,
                 100,
             ),
