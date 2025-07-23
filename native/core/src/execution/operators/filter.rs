@@ -212,17 +212,15 @@ impl FilterExec {
                 if binary.op() == &Operator::Eq {
                     // Filter evaluates to single value for all partitions
                     if input_eqs.is_expr_constant(binary.left()).is_some() {
-                        let (expr, across_parts) = (
-                            binary.right(),
-                            input_eqs.get_expr_constant_value(binary.right()),
-                        );
-                        res_constants.push(ConstExpr::new(Arc::clone(expr), across_parts));
+                        let across = input_eqs
+                            .is_expr_constant(binary.right())
+                            .unwrap_or_default();
+                        res_constants.push(ConstExpr::new(Arc::clone(binary.right()), across));
                     } else if input_eqs.is_expr_constant(binary.right()).is_some() {
-                        let (expr, across_parts) = (
-                            binary.left(),
-                            input_eqs.get_expr_constant_value(binary.left()),
-                        );
-                        res_constants.push(ConstExpr::new(Arc::clone(expr), across_parts));
+                        let across = input_eqs
+                            .is_expr_constant(binary.left())
+                            .unwrap_or_default();
+                        res_constants.push(ConstExpr::new(Arc::clone(binary.left()), across));
                     }
                 }
             }
