@@ -1256,9 +1256,11 @@ impl PhysicalPlanner {
             }
             OpStruct::Filter(filter) => {
                 assert_eq!(children.len(), 1);
+                dbg!(filter);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
+                dbg!(&predicate);
 
                 let filter: Arc<dyn ExecutionPlan> =
                     match (filter.wrap_child_in_copy_exec, filter.use_datafusion_filter) {
@@ -1270,7 +1272,7 @@ impl PhysicalPlanner {
                             predicate,
                             Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
                         )?),
-                        (false, true) => Arc::new(DataFusionFilterExec::try_new(
+                        (false, true) => Arc::new(CometFilterExec::try_new(
                             predicate,
                             Arc::clone(&child.native_plan),
                         )?),
@@ -1279,6 +1281,8 @@ impl PhysicalPlanner {
                             Arc::clone(&child.native_plan),
                         )?),
                     };
+
+                dbg!(&filter);
 
                 Ok((
                     scans,
@@ -1410,6 +1414,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::NativeScan(scan) => {
+                dbg!(scan);
                 let data_schema = convert_spark_types_to_arrow_schema(scan.data_schema.as_slice());
                 let required_schema: SchemaRef =
                     convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
@@ -1540,6 +1545,7 @@ impl PhysicalPlanner {
                 // The `ScanExec` operator will take actual arrays from Spark during execution
                 let scan =
                     ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?;
+
                 Ok((
                     vec![scan.clone()],
                     Arc::new(SparkPlan::new(spark_plan.plan_id, Arc::new(scan), vec![])),
