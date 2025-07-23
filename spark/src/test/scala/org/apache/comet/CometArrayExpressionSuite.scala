@@ -28,7 +28,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
-import org.apache.comet.serde.{CometArrayExcept, CometFlatten}
+import org.apache.comet.serde.{CometArrayExcept, CometArrayRemove, CometFlatten}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -70,7 +70,11 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       val table = spark.read.parquet(filename)
       table.createOrReplaceTempView("t1")
       // test with array of each column
-      for (fieldName <- table.schema.fieldNames) {
+      val fieldNames =
+        table.schema.fields
+          .filter(field => CometArrayRemove.isTypeSupported(field.dataType))
+          .map(_.name)
+      for (fieldName <- fieldNames) {
         sql(s"SELECT array($fieldName, $fieldName) as a, $fieldName as b FROM t1")
           .createOrReplaceTempView("t2")
         val df = sql("SELECT array_remove(a, b) FROM t2")
@@ -558,7 +562,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         for (fieldName <- fieldNames) {
           sql(s"SELECT array(array($fieldName, $fieldName), array($fieldName)) as a FROM t1")
             .createOrReplaceTempView("t2")
-          checkSparkAnswer(sql(s"SELECT flatten(a) FROM t2"))
+          checkSparkAnswer(sql("SELECT flatten(a) FROM t2"))
         }
       }
     }
