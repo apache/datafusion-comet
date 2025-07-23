@@ -934,7 +934,7 @@ impl SinglePartitionShufflePartitioner {
                     Ok(Some(concatenated))
                 }
                 Err(e) => Err(DataFusionError::ArrowError(
-                    e,
+                    Box::from(e),
                     Some(DataFusionError::get_back_trace()),
                 )),
             }
@@ -1122,7 +1122,7 @@ impl Iterator for PartitionedBatchIterator<'_> {
                 Some(Ok(batch))
             }
             Err(e) => Some(Err(DataFusionError::ArrowError(
-                e,
+                Box::from(e),
                 Some(DataFusionError::get_back_trace()),
             ))),
         }
