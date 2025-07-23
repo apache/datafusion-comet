@@ -143,7 +143,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
   private boolean useLegacyDateTimestamp;
 
   /** The TaskContext object for executing this task. */
-  protected TaskContext taskContext;
+  private TaskContext taskContext;
 
   public BatchReader() {}
 

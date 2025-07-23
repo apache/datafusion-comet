@@ -21,7 +21,6 @@ package org.apache.comet.parquet;
 
 import java.util.HashMap;
 
-import org.apache.spark.TaskContext$;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 
@@ -32,7 +31,6 @@ public class IcebergCometBatchReader extends BatchReader {
     this.columnReaders = new AbstractColumnReader[numColumns];
     this.vectors = new CometVector[numColumns];
     this.currentBatch = new ColumnarBatch(vectors);
-    this.taskContext = TaskContext$.MODULE$.get();
     this.metrics = new HashMap<>();
     this.sparkSchema = schema;
   }
