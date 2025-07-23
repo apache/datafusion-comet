@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.annotation.tailrec
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayExcept, ArrayJoin, ArrayRemove, Attribute, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{ArrayExcept, ArrayJoin, ArrayRemove, Attribute, Expression, Flatten, Literal}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -29,24 +29,7 @@ import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde._
 import org.apache.comet.shims.CometExprShim
 
-object CometArrayRemove extends CometExpressionSerde with CometExprShim {
-
-  /** Exposed for unit testing */
-  @tailrec
-  def isTypeSupported(dt: DataType): Boolean = {
-    import DataTypes._
-    dt match {
-      case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-          _: DecimalType | DateType | TimestampType | TimestampNTZType | StringType |
-          BinaryType =>
-        true
-      case ArrayType(elementType, _) => isTypeSupported(elementType)
-      case _: StructType =>
-        // https://github.com/apache/datafusion-comet/issues/1307
-        false
-      case _ => false
-    }
-  }
+object CometArrayRemove extends CometExpressionSerde with CometExprShim with ArraysBase {
 
   override def convert(
       expr: Expression,
@@ -241,22 +224,11 @@ object CometArrayCompact extends CometExpressionSerde with IncompatExpr {
   }
 }
 
-object CometArrayExcept extends CometExpressionSerde with CometExprShim with IncompatExpr {
-
-  @tailrec
-  def isTypeSupported(dt: DataType): Boolean = {
-    import DataTypes._
-    dt match {
-      case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-          _: DecimalType | DateType | TimestampType | TimestampNTZType | StringType =>
-        true
-      case BinaryType => false
-      case ArrayType(elementType, _) => isTypeSupported(elementType)
-      case _: StructType =>
-        false
-      case _ => false
-    }
-  }
+object CometArrayExcept
+    extends CometExpressionSerde
+    with CometExprShim
+    with IncompatExpr
+    with ArraysBase {
 
   override def convert(
       expr: Expression,
@@ -375,6 +347,44 @@ object CometCreateArray extends CometExpressionSerde {
     } else {
       withInfo(expr, "unsupported arguments for CreateArray", children: _*)
       None
+    }
+  }
+}
+
+object CometFlatten extends CometExpressionSerde with ArraysBase {
+
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val flattenExpr = expr.asInstanceOf[Flatten]
+    val inputTypes = flattenExpr.children.map(_.dataType).toSet
+    for (dt <- inputTypes) {
+      if (!isTypeSupported(dt)) {
+        withInfo(expr, s"data type not supported: $dt")
+        return None
+      }
+    }
+    val flattenExprProto = exprToProto(flattenExpr.child, inputs, binding)
+    val flattenScalarExpr = scalarFunctionExprToProto("flatten", flattenExprProto)
+    optExprWithInfo(flattenScalarExpr, expr, expr.children: _*)
+  }
+}
+
+trait ArraysBase {
+
+  def isTypeSupported(dt: DataType): Boolean = {
+    import DataTypes._
+    dt match {
+      case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
+          _: DecimalType | DateType | TimestampType | TimestampNTZType | StringType =>
+        true
+      case BinaryType => false
+      case ArrayType(elementType, _) => isTypeSupported(elementType)
+      case _: StructType =>
+        // https://github.com/apache/datafusion-comet/issues/1307
+        false
+      case _ => false
     }
   }
 }
