@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.math.min
 
-import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, Divide, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Subtract}
+import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, Cast, Divide, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Subtract}
 import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -201,7 +201,6 @@ object CometIntegralDivide extends CometExpressionSerde with MathBase {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val div = expr.asInstanceOf[IntegralDivide]
-    val rightExpr = nullIfWhenPrimitive(div.right)
 
     if (!supportedDataType(div.left.dataType)) {
       withInfo(div, s"Unsupported datatype ${div.left.dataType}")
@@ -212,7 +211,16 @@ object CometIntegralDivide extends CometExpressionSerde with MathBase {
       return None
     }
 
-    val dataType = (div.left.dataType, div.right.dataType) match {
+    val left =
+      if (div.left.dataType.isInstanceOf[DecimalType]) div.left
+      else Cast(div.left, DecimalType(DecimalType.MAX_PRECISION, DecimalType.MAX_SCALE))
+    val right =
+      if (div.right.dataType.isInstanceOf[DecimalType]) div.right
+      else Cast(div.right, DecimalType(DecimalType.MAX_PRECISION, DecimalType.MAX_SCALE))
+
+    val rightExpr = nullIfWhenPrimitive(right)
+
+    val dataType = (left.dataType, right.dataType) match {
       case (l: DecimalType, r: DecimalType) =>
         // copy from IntegralDivide.resultDecimalType
         val intDig = l.precision - l.scale + r.scale
@@ -222,7 +230,7 @@ object CometIntegralDivide extends CometExpressionSerde with MathBase {
 
     val divideExpr = createMathExpression(
       expr,
-      div.left,
+      left,
       rightExpr,
       inputs,
       binding,
