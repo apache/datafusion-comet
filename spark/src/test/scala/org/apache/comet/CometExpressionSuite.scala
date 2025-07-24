@@ -113,6 +113,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("Integral Division Overflow Handling Matches Spark Behavior") {
+    withTable("t1") {
+      val value = Long.MinValue
+      sql(s"create table t1(c1 long, c2 short) using parquet")
+      sql(s"insert into t1 values($value, -1)")
+      val res = sql("select c1 div c2 from t1 order by c1")
+      checkSparkAnswer(res)
+    }
+  }
+
   test("basic data type support") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
