@@ -26,9 +26,9 @@ import org.apache.spark.sql.types.BooleanType
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, createUnaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProtoWithReturnType}
 
-object CometGreaterThan extends CometExpressionSerde with ComparisonBase {
+object CometGreaterThan extends CometExpressionSerde {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -45,7 +45,7 @@ object CometGreaterThan extends CometExpressionSerde with ComparisonBase {
   }
 }
 
-object CometGreaterThanOrEqual extends CometExpressionSerde with ComparisonBase {
+object CometGreaterThanOrEqual extends CometExpressionSerde {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -62,7 +62,7 @@ object CometGreaterThanOrEqual extends CometExpressionSerde with ComparisonBase 
   }
 }
 
-object CometLessThan extends CometExpressionSerde with ComparisonBase {
+object CometLessThan extends CometExpressionSerde {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -79,7 +79,7 @@ object CometLessThan extends CometExpressionSerde with ComparisonBase {
   }
 }
 
-object CometLessThanOrEqual extends CometExpressionSerde with ComparisonBase {
+object CometLessThanOrEqual extends CometExpressionSerde {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -96,7 +96,7 @@ object CometLessThanOrEqual extends CometExpressionSerde with ComparisonBase {
   }
 }
 
-object CometIsNull extends CometExpressionSerde with ComparisonBase {
+object CometIsNull extends CometExpressionSerde {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -112,7 +112,7 @@ object CometIsNull extends CometExpressionSerde with ComparisonBase {
   }
 }
 
-object CometIsNotNull extends CometExpressionSerde with ComparisonBase {
+object CometIsNotNull extends CometExpressionSerde {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -128,7 +128,7 @@ object CometIsNotNull extends CometExpressionSerde with ComparisonBase {
   }
 }
 
-object CometIsNaN extends CometExpressionSerde with ComparisonBase {
+object CometIsNaN extends CometExpressionSerde {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -141,100 +141,13 @@ object CometIsNaN extends CometExpressionSerde with ComparisonBase {
   }
 }
 
-object CometIn extends CometExpressionSerde with ComparisonBase {
+object CometIn extends CometExpressionSerde {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val inExpr = expr.asInstanceOf[In]
     in(expr, inExpr.value, inExpr.list, inputs, binding, negate = false)
-  }
-}
-
-sealed trait ComparisonBase {
-
-  /**
-   * Creates a UnaryExpr by calling exprToProtoInternal for the provided child expression and then
-   * invokes the supplied function to wrap this UnaryExpr in a top-level Expr.
-   *
-   * @param child
-   *   Spark expression
-   * @param inputs
-   *   Inputs to the expression
-   * @param f
-   *   Function that accepts an Expr.Builder and a UnaryExpr and builds the specific top-level
-   *   Expr
-   * @return
-   *   Some(Expr) or None if not supported
-   */
-  def createUnaryExpr(
-      expr: Expression,
-      child: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean,
-      f: (ExprOuterClass.Expr.Builder, ExprOuterClass.UnaryExpr) => ExprOuterClass.Expr.Builder)
-      : Option[ExprOuterClass.Expr] = {
-    val childExpr = exprToProtoInternal(child, inputs, binding) // TODO review
-    if (childExpr.isDefined) {
-      // create the generic UnaryExpr message
-      val inner = ExprOuterClass.UnaryExpr
-        .newBuilder()
-        .setChild(childExpr.get)
-        .build()
-      // call the user-supplied function to wrap UnaryExpr in a top-level Expr
-      // such as Expr.IsNull or Expr.IsNotNull
-      Some(
-        f(
-          ExprOuterClass.Expr
-            .newBuilder(),
-          inner).build())
-    } else {
-      withInfo(expr, child)
-      None
-    }
-  }
-
-  def createBinaryExpr(
-      expr: Expression,
-      left: Expression,
-      right: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean,
-      f: (ExprOuterClass.Expr.Builder, ExprOuterClass.BinaryExpr) => ExprOuterClass.Expr.Builder)
-      : Option[ExprOuterClass.Expr] = {
-    val leftExpr = exprToProtoInternal(left, inputs, binding)
-    val rightExpr = exprToProtoInternal(right, inputs, binding)
-    if (leftExpr.isDefined && rightExpr.isDefined) {
-      // create the generic BinaryExpr message
-      val inner = ExprOuterClass.BinaryExpr
-        .newBuilder()
-        .setLeft(leftExpr.get)
-        .setRight(rightExpr.get)
-        .build()
-      // call the user-supplied function to wrap BinaryExpr in a top-level Expr
-      // such as Expr.And or Expr.Or
-      Some(
-        f(
-          ExprOuterClass.Expr
-            .newBuilder(),
-          inner).build())
-    } else {
-      withInfo(expr, left, right)
-      None
-    }
-  }
-
-  // Utility method. Adds explain info if the result of calling exprToProto is None
-  def optExprWithInfo(
-      optExpr: Option[Expr],
-      expr: Expression,
-      childExpr: Expression*): Option[Expr] = {
-    optExpr match {
-      case None =>
-        withInfo(expr, childExpr: _*)
-        None
-      case o => o
-    }
   }
 
   def in(
