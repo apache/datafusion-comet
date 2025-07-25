@@ -852,6 +852,23 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  // Temp ignore until https://github.com/apache/datafusion/pull/16918 fixed
+  ignore("first/last with ignore null1") {
+    val data = Range(0, 3).flatMap(n => Seq((n, 1), (n, 2))).toDF("a", "b")
+    withTempDir { dir =>
+      val filename = s"${dir.getAbsolutePath}/first_last_ignore_null.parquet"
+      data.repartition(2).write.parquet(filename)
+      withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "1") {
+        spark.read.parquet(filename).createOrReplaceTempView("t1")
+        for (expr <- Seq("first", "last")) {
+          // deterministic query that should return one non-null value per group
+          val df = spark.sql(s"SELECT a, $expr(IF(b==1,null,b)) IGNORE NULLS FROM t1 GROUP BY a")
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+    }
+  }
+
   test("all types, with nulls") {
     val numValues = 2048
 
