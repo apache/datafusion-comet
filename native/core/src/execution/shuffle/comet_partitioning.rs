@@ -24,7 +24,7 @@ pub enum CometPartitioning {
     /// Allocate rows based on a hash of one of more expressions and the specified number of
     /// partitions
     Hash(Vec<Arc<dyn PhysicalExpr>>, usize),
-    /// Allocate rows based on lexical order of one of more expressions and the specified number of
+    /// Allocate rows based on the lexical order of one of more expressions and the specified number of
     /// partitions
     RangePartitioning(LexOrdering, usize, usize),
 }

@@ -72,7 +72,7 @@ use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
-    JoinType as DFJoinType, ScalarValue,
+    JoinType as DFJoinType, NullEquality, ScalarValue,
 };
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
@@ -592,6 +592,14 @@ impl PhysicalPlanner {
                         None,
                         true,
                         false,
+                    ))),
+                    // DataFusion 49 hardcodes return type for MD5 built in function as UTF8View
+                    // which is not yet supported in Comet
+                    // Converting forcibly to UTF8. To be removed after UTF8View supported
+                    "md5" => Ok(Arc::new(Cast::new(
+                        func?,
+                        DataType::Utf8,
+                        SparkCastOptions::new_without_timezone(EvalMode::Try, true),
                     ))),
                     _ => func,
                 }
@@ -1146,7 +1154,7 @@ impl PhysicalPlanner {
                 let child_copied = Self::wrap_in_copy_exec(Arc::clone(&child.native_plan));
 
                 let sort = Arc::new(
-                    SortExec::new(LexOrdering::new(exprs?), Arc::clone(&child_copied))
+                    SortExec::new(LexOrdering::new(exprs?).unwrap(), Arc::clone(&child_copied))
                         .with_fetch(fetch),
                 );
 
@@ -1422,7 +1430,7 @@ impl PhysicalPlanner {
                     sort_options,
                     // null doesn't equal to null in Spark join key. If the join key is
                     // `EqualNullSafe`, Spark will rewrite it during planning.
-                    false,
+                    NullEquality::NullEqualsNothing,
                 )?);
 
                 if join.filter.is_some() {
@@ -1490,7 +1498,7 @@ impl PhysicalPlanner {
                     PartitionMode::Partitioned,
                     // null doesn't equal to null in Spark join key. If the join key is
                     // `EqualNullSafe`, Spark will rewrite it during planning.
-                    false,
+                    NullEquality::NullEqualsNothing,
                 )?);
 
                 // If the hash join is build right, we need to swap the left and right
@@ -2186,13 +2194,15 @@ impl PhysicalPlanner {
         };
 
         let window_frame = WindowFrame::new_bounds(units, lower_bound, upper_bound);
+        let lex_orderings = LexOrdering::new(sort_exprs.to_vec());
+        let sort_phy_exprs = lex_orderings.as_deref().unwrap_or(&[]);
 
         datafusion::physical_plan::windows::create_window_expr(
             &window_func,
             window_func_name,
             &window_args,
             partition_by,
-            &LexOrdering::new(sort_exprs.to_vec()),
+            sort_phy_exprs,
             window_frame.into(),
             input_schema.as_ref(),
             false, // TODO: Ignore nulls
@@ -2273,7 +2283,7 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|expr| self.create_sort_expr(expr, Arc::clone(&input_schema)))
                     .collect();
-                let lex_ordering = LexOrdering::from(exprs?);
+                let lex_ordering = LexOrdering::new(exprs?).unwrap();
                 Ok(CometPartitioning::RangePartitioning(
                     lex_ordering,
                     range_partition.num_partitions as usize,

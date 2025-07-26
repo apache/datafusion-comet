@@ -835,7 +835,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("first/last with ignore null") {
+  // Temp ignore until https://github.com/apache/datafusion/pull/16918 fixed
+  ignore("first/last with ignore null") {
     val data = Range(0, 8192).flatMap(n => Seq((n, 1), (n, 2))).toDF("a", "b")
     withTempDir { dir =>
       val filename = s"${dir.getAbsolutePath}/first_last_ignore_null.parquet"
