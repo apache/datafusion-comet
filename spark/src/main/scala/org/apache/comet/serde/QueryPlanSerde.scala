@@ -125,7 +125,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[MapKeys] -> CometMapKeys,
     classOf[MapValues] -> CometMapValues,
     classOf[MapFromArrays] -> CometMapFromArrays,
-    classOf[GetMapValue] -> CometMapExtract)
+    classOf[GetMapValue] -> CometMapExtract,
+    classOf[StringSpace] -> UnaryScalarFuncSerde("string_space"))
 
   def emitWarning(reason: String): Unit = {
     logWarning(s"Comet native execution is disabled due to: $reason")
@@ -930,14 +931,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
         val valueExpr = exprToProtoInternal(value, inputs, binding)
         scalarFunctionExprToProto("contains", attributeExpr, valueExpr)
-
-      case StringSpace(child) =>
-        createUnaryExpr(
-          expr,
-          child,
-          inputs,
-          binding,
-          (builder, unaryExpr) => builder.setStringSpace(unaryExpr))
 
       case Hour(child, timeZoneId) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
