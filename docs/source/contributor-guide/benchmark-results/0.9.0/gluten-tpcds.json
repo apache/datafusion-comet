@@ -1,0 +1,347 @@
+{
+    "engine": "datafusion-comet",
+    "benchmark": "tpcds",
+    "data_path": "/mnt/bigdata/tpcds/sf100",
+    "query_path": "/mnt/bigdata/tpcds/queries",
+    "spark_conf": {
+        "spark.eventLog.enabled": "true",
+        "spark.gluten.sql.session.timeZone.default": "UTC",
+        "spark.plugins": "org.apache.gluten.GlutenPlugin",
+        "spark.app.name": "gluten benchmark derived from tpcds",
+        "spark.cores.max": "16",
+        "spark.gluten.memoryOverhead.size.in.bytes": "5153751040",
+        "spark.memory.offHeap.enabled": "true",
+        "spark.repl.local.jars": "file:///opt/gluten/gluten-velox-bundle-spark3.5_2.12-linux_amd64-1.4.0.jar",
+        "spark.executor.extraClassPath": "/opt/gluten/gluten-velox-bundle-spark3.5_2.12-linux_amd64-1.4.0.jar",
+        "spark.executor.instances": "2",
+        "spark.executor.memory": "16G",
+        "spark.driver.extraClassPath": "/opt/gluten/gluten-velox-bundle-spark3.5_2.12-linux_amd64-1.4.0.jar",
+        "spark.driver.port": "38403",
+        "spark.driver.host": "10.0.0.118",
+        "spark.serializer.objectStreamReset": "100",
+        "spark.app.submitTime": "1753671747082",
+        "spark.submit.deployMode": "client",
+        "spark.app.id": "app-20250728030228-0000",
+        "spark.executor.cores": "8",
+        "spark.app.initial.jar.urls": "spark://10.0.0.118:38403/jars/gluten-velox-bundle-spark3.5_2.12-linux_amd64-1.4.0.jar",
+        "spark.jars": "file:///opt/gluten/gluten-velox-bundle-spark3.5_2.12-linux_amd64-1.4.0.jar",
+        "spark.driver.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
+        "spark.gluten.memory.offHeap.size.in.bytes": "17179869184",
+        "spark.shuffle.manager": "org.apache.spark.shuffle.sort.ColumnarShuffleManager",
+        "spark.executor.id": "driver",
+        "spark.master": "spark://woody:7077",
+        "spark.executor.memoryOverhead": "4915",
+        "spark.sql.extensions": "org.apache.gluten.extension.GlutenSessionExtensions",
+        "spark.gluten.numTaskSlotsPerExecutor": "8",
+        "spark.driver.memory": "8G",
+        "spark.gluten.memory.task.offHeap.size.in.bytes": "2147483648",
+        "spark.memory.offHeap.size": "17179869184",
+        "spark.rdd.compress": "True",
+        "spark.executor.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
+        "spark.app.startTime": "1753671747382",
+        "spark.gluten.memory.conservative.task.offHeap.size.in.bytes": "1073741824",
+        "spark.gluten.sql.columnar.forceShuffledHashJoin": "true",
+        "spark.sql.adaptive.customCostEvaluatorClass": "org.apache.spark.sql.execution.adaptive.GlutenCostEvaluator",
+        "spark.submit.pyFiles": "",
+        "spark.gluten.memory.dynamic.offHeap.sizing.enabled": "false",
+        "spark.sql.session.timeZone": "UTC",
+        "spark.sql.warehouse.dir": "file:/home/andy/git/apache/datafusion-comet/dev/benchmarks/spark-warehouse"
+    },
+    "1": [
+        3.0712015628814697
+    ],
+    "2": [
+        3.0666799545288086
+    ],
+    "3": [
+        1.0671255588531494
+    ],
+    "4": [
+        17.276039361953735
+    ],
+    "5": [
+        4.336325407028198
+    ],
+    "6": [
+        2.240464925765991
+    ],
+    "7": [
+        2.1070384979248047
+    ],
+    "8": [
+        2.2761263847351074
+    ],
+    "9": [
+        3.4592885971069336
+    ],
+    "10": [
+        2.2161333560943604
+    ],
+    "11": [
+        8.601247549057007
+    ],
+    "12": [
+        1.3066213130950928
+    ],
+    "13": [
+        2.623806953430176
+    ],
+    "14": [
+        23.665879487991333
+    ],
+    "15": [
+        2.3319854736328125
+    ],
+    "16": [
+        6.435860633850098
+    ],
+    "17": [
+        3.3381738662719727
+    ],
+    "18": [
+        2.4940454959869385
+    ],
+    "19": [
+        3.214183807373047
+    ],
+    "20": [
+        0.8629763126373291
+    ],
+    "21": [
+        1.1388742923736572
+    ],
+    "22": [
+        13.283171892166138
+    ],
+    "23": [
+        33.25598192214966
+    ],
+    "24": [
+        13.960798025131226
+    ],
+    "25": [
+        3.493340492248535
+    ],
+    "26": [
+        1.003934383392334
+    ],
+    "27": [
+        1.8391008377075195
+    ],
+    "28": [
+        4.88685941696167
+    ],
+    "29": [
+        3.245540142059326
+    ],
+    "30": [
+        1.6746954917907715
+    ],
+    "31": [
+        7.37675404548645
+    ],
+    "32": [
+        1.4505951404571533
+    ],
+    "33": [
+        2.6308183670043945
+    ],
+    "34": [
+        1.872574806213379
+    ],
+    "35": [
+        2.4917962551116943
+    ],
+    "36": [
+        2.046686887741089
+    ],
+    "37": [
+        0.798964262008667
+    ],
+    "38": [
+        3.3161089420318604
+    ],
+    "39": [
+        4.972580671310425
+    ],
+    "40": [
+        3.0317022800445557
+    ],
+    "41": [
+        0.292935848236084
+    ],
+    "42": [
+        0.9157257080078125
+    ],
+    "43": [
+        1.17030668258667
+    ],
+    "44": [
+        0.5907480716705322
+    ],
+    "45": [
+        1.6078379154205322
+    ],
+    "46": [
+        3.1738409996032715
+    ],
+    "47": [
+        3.6137521266937256
+    ],
+    "48": [
+        2.1740095615386963
+    ],
+    "49": [
+        4.5014050006866455
+    ],
+    "50": [
+        3.800581216812134
+    ],
+    "51": [
+        5.458707571029663
+    ],
+    "52": [
+        0.9787416458129883
+    ],
+    "53": [
+        1.2668261528015137
+    ],
+    "54": [
+        4.599064111709595
+    ],
+    "55": [
+        0.9526393413543701
+    ],
+    "56": [
+        2.744847059249878
+    ],
+    "57": [
+        2.3258957862854004
+    ],
+    "58": [
+        2.707801580429077
+    ],
+    "59": [
+        2.9688880443573
+    ],
+    "60": [
+        2.8286445140838623
+    ],
+    "61": [
+        7.713818073272705
+    ],
+    "62": [
+        1.3007659912109375
+    ],
+    "63": [
+        1.6228349208831787
+    ],
+    "64": [
+        10.753086805343628
+    ],
+    "65": [
+        5.098642826080322
+    ],
+    "66": [
+        1.919985055923462
+    ],
+    "67": [
+        31.3416805267334
+    ],
+    "68": [
+        2.760091781616211
+    ],
+    "69": [
+        2.1082839965820312
+    ],
+    "70": [
+        3.231919050216675
+    ],
+    "71": [
+        3.1762571334838867
+    ],
+    "72": [
+        811.9890258312225
+    ],
+    "73": [
+        1.1076979637145996
+    ],
+    "74": [
+        6.423391580581665
+    ],
+    "75": [
+        6.315303325653076
+    ],
+    "76": [
+        3.0667858123779297
+    ],
+    "77": [
+        2.4472310543060303
+    ],
+    "78": [
+        9.947726488113403
+    ],
+    "79": [
+        2.0369961261749268
+    ],
+    "80": [
+        7.902697801589966
+    ],
+    "81": [
+        1.4782285690307617
+    ],
+    "82": [
+        1.0187582969665527
+    ],
+    "83": [
+        1.3076961040496826
+    ],
+    "84": [
+        0.7356717586517334
+    ],
+    "85": [
+        2.1237404346466064
+    ],
+    "86": [
+        1.196605920791626
+    ],
+    "87": [
+        3.310823917388916
+    ],
+    "88": [
+        5.557470083236694
+    ],
+    "89": [
+        1.4879262447357178
+    ],
+    "90": [
+        1.3077824115753174
+    ],
+    "91": [
+        1.2596931457519531
+    ],
+    "92": [
+        1.1216387748718262
+    ],
+    "93": [
+        3.8458316326141357
+    ],
+    "94": [
+        3.957663059234619
+    ],
+    "95": [
+        18.828344583511353
+    ],
+    "96": [
+        0.8511285781860352
+    ],
+    "97": [
+        3.0931687355041504
+    ],
+    "98": [
+        2.2251434326171875
+    ],
+    "99": [
+        1.0991463661193848
+    ]
+}
