@@ -225,7 +225,7 @@ object CometIntegralDivide extends CometExpressionSerde with MathBase {
         // copy from IntegralDivide.resultDecimalType
         val intDig = l.precision - l.scale + r.scale
         DecimalType(min(if (intDig == 0) 1 else intDig, DecimalType.MAX_PRECISION), 0)
-      case _ => div.left.dataType
+      case _ => left.dataType
     }
 
     val divideExpr = createMathExpression(
