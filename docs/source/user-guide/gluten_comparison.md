@@ -41,9 +41,9 @@ does not plan to support multiple engines, but rather focus on a tight integrati
 
 One of the main differences between Comet and Gluten is the choice of native execution engine.
 
-Gluten uses Velox, which is a vectorized query engine implemented in C++ and is maintained by Meta.
+Gluten uses Velox, which is an open-source vectorized query engine implemented in C++ and is governed by Meta.
 
-Comet uses DataFusion, which is a vectorized query engine implemented in Rust and is maintained by the
+Comet uses Apache DataFusion, which is an open-source vectorized query engine implemented in Rust and is governed by the
 Apache Software Foundation.
 
 Velox and DataFusion are both mature query engines that are growing in popularity.
