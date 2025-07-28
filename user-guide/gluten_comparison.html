@@ -400,8 +400,8 @@ does not plan to support multiple engines, but rather focus on a tight integrati
 <section id="underlying-execution-engine-datafusion-vs-velox">
 <h2>Underlying Execution Engine: DataFusion vs Velox<a class="headerlink" href="#underlying-execution-engine-datafusion-vs-velox" title="Link to this heading">¶</a></h2>
 <p>One of the main differences between Comet and Gluten is the choice of native execution engine.</p>
-<p>Gluten uses Velox, which is a vectorized query engine implemented in C++ and is maintained by Meta.</p>
-<p>Comet uses DataFusion, which is a vectorized query engine implemented in Rust and is maintained by the
+<p>Gluten uses Velox, which is an open-source C++ vectorized query engine created by Meta.</p>
+<p>Comet uses Apache DataFusion, which is an open-source vectorized query engine implemented in Rust and is governed by the
 Apache Software Foundation.</p>
 <p>Velox and DataFusion are both mature query engines that are growing in popularity.</p>
 <p>Comet may be a better choice for users with plans for integrating with other Rust software in the future, and
