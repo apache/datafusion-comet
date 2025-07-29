@@ -803,8 +803,7 @@ impl PhysicalPlanner {
                 ScalarValue::Int32(Some(self.partition)),
             ))),
             ExprStruct::MonotonicallyIncreasingId(_) => {
-                let offset = (self.partition as i64) << 33;
-                Ok(Arc::new(MonotonicallyIncreasingId::new(offset)))
+                Ok(Arc::new(MonotonicallyIncreasingId::new(self.partition)))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
         }

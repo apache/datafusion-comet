@@ -33,16 +33,13 @@ pub struct MonotonicallyIncreasingId {
 }
 
 impl MonotonicallyIncreasingId {
-    pub fn new(offset: i64) -> Self {
+    pub fn new(partition: i32) -> Self {
+        let offset = (partition as i64) << 33;
         Self {
             initial_offset: offset,
             current_offset: AtomicI64::new(offset),
         }
     }
-}
-
-pub fn monotonically_increasing_id(offset: i64) -> Arc<dyn PhysicalExpr> {
-    Arc::new(MonotonicallyIncreasingId::new(offset))
 }
 
 impl Display for MonotonicallyIncreasingId {
@@ -61,7 +58,7 @@ impl Eq for MonotonicallyIncreasingId {}
 
 impl Hash for MonotonicallyIncreasingId {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.children().hash(state);
+        self.initial_offset.hash(state);
     }
 }
 
@@ -71,11 +68,11 @@ impl PhysicalExpr for MonotonicallyIncreasingId {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
-        let start = self.current_offset.load(Ordering::Relaxed);
+        let start = self
+            .current_offset
+            .fetch_add(batch.num_rows() as i64, Ordering::Relaxed);
         let end = start + batch.num_rows() as i64;
         let array_ref = Arc::new(Int64Array::from_iter_values(start..end));
-        self.current_offset
-            .fetch_add(batch.num_rows() as i64, Ordering::Relaxed);
         Ok(ColumnarValue::Array(array_ref))
     }
 
@@ -87,9 +84,7 @@ impl PhysicalExpr for MonotonicallyIncreasingId {
         self: Arc<Self>,
         _: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
-        Ok(Arc::new(MonotonicallyIncreasingId::new(
-            self.initial_offset,
-        )))
+        Ok(self)
     }
 
     fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
@@ -113,6 +108,12 @@ mod tests {
     use arrow::{array::StringArray, datatypes::*};
     use datafusion::common::cast::as_int64_array;
 
+    fn monotonically_increasing_id(offset: i64) -> Arc<dyn PhysicalExpr> {
+        Arc::new(MonotonicallyIncreasingId {
+            initial_offset: offset,
+            current_offset: AtomicI64::new(offset),
+        })
+    }
     #[test]
     fn test_monotonically_increasing_id_single_batch() -> Result<()> {
         let schema = Schema::new(vec![Field::new("a", DataType::Utf8, true)]);
