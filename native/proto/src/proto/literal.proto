@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package spark.spark_expression;
+
+import "datatype.proto";
+
+option java_package = "org.apache.comet.serde";
+
+message Literal {
+  oneof value {
+    bool bool_val = 1;
+    // Protobuf doesn't provide int8 and int16, we put them into int32 and convert
+    // to int8 and int16 when deserializing.
+    int32 byte_val = 2;
+    int32 short_val = 3;
+    int32 int_val = 4;
+    int64 long_val = 5;
+    float float_val = 6;
+    double double_val = 7;
+    string string_val = 8;
+    bytes bytes_val = 9;
+    bytes decimal_val = 10;
+  }
+
+  DataType datatype = 11;
+  bool is_null = 12;
+}

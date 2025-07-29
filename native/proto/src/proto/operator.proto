@@ -21,6 +21,7 @@ syntax = "proto3";
 
 package spark.spark_operator;
 
+import "datatype.proto";
 import "expr.proto";
 import "partitioning.proto";
 

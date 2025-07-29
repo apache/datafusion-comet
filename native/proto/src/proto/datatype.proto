@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package spark.spark_expression;
+
+//import "expr.proto";
+
+option java_package = "org.apache.comet.serde";
+
+message DataType {
+  enum DataTypeId {
+    BOOL = 0;
+    INT8 = 1;
+    INT16 = 2;
+    INT32 = 3;
+    INT64 = 4;
+    FLOAT = 5;
+    DOUBLE = 6;
+    STRING = 7;
+    BYTES = 8;
+    TIMESTAMP = 9;
+    DECIMAL = 10;
+    TIMESTAMP_NTZ = 11;
+    DATE = 12;
+    NULL = 13;
+    LIST = 14;
+    MAP = 15;
+    STRUCT = 16;
+  }
+  DataTypeId type_id = 1;
+
+  message DataTypeInfo {
+    oneof datatype_struct {
+      DecimalInfo decimal = 2;
+      ListInfo list = 3;
+      MapInfo map = 4;
+      StructInfo struct = 5;
+    }
+  }
+
+  message DecimalInfo {
+    int32 precision = 1;
+    int32 scale = 2;
+  }
+
+  message ListInfo {
+    DataType element_type = 1;
+    bool contains_null = 2;
+  }
+
+  message MapInfo {
+    DataType key_type = 1;
+    DataType value_type = 2;
+    bool value_contains_null = 3;
+  }
+
+  message StructInfo {
+    repeated string field_names = 1;
+    repeated DataType field_datatypes = 2;
+    repeated bool field_nullable = 3;
+  }
+
+  DataTypeInfo type_info = 2;
+}

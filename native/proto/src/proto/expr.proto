@@ -21,6 +21,9 @@ syntax = "proto3";
 
 package spark.spark_expression;
 
+import "datatype.proto";
+import "literal.proto";
+
 option java_package = "org.apache.comet.serde";
 
 // The basic message representing a Spark expression.
@@ -198,26 +201,6 @@ message BloomFilterAgg {
   Expr numItems = 2;
   Expr numBits = 3;
   DataType datatype = 4;
-}
-
-message Literal {
-  oneof value {
-    bool bool_val = 1;
-    // Protobuf doesn't provide int8 and int16, we put them into int32 and convert
-    // to int8 and int16 when deserializing.
-    int32 byte_val = 2;
-    int32 short_val = 3;
-    int32 int_val = 4;
-    int64 long_val = 5;
-    float float_val = 6;
-    double double_val = 7;
-    string string_val = 8;
-    bytes bytes_val = 9;
-    bytes decimal_val = 10;
-   }
-
-   DataType datatype = 11;
-   bool is_null = 12;
 }
 
 enum EvalMode {
@@ -420,59 +403,4 @@ message Rand {
   int64 seed = 1;
 }
 
-message DataType {
-  enum DataTypeId {
-    BOOL = 0;
-    INT8 = 1;
-    INT16 = 2;
-    INT32 = 3;
-    INT64 = 4;
-    FLOAT = 5;
-    DOUBLE = 6;
-    STRING = 7;
-    BYTES = 8;
-    TIMESTAMP = 9;
-    DECIMAL = 10;
-    TIMESTAMP_NTZ = 11;
-    DATE = 12;
-    NULL = 13;
-    LIST = 14;
-    MAP = 15;
-    STRUCT = 16;
-  }
-  DataTypeId type_id = 1;
-
-  message DataTypeInfo {
-    oneof datatype_struct {
-      DecimalInfo decimal = 2;
-      ListInfo list = 3;
-      MapInfo map = 4;
-      StructInfo struct = 5;
-    }
-  }
-
-  message DecimalInfo {
-    int32 precision = 1;
-    int32 scale = 2;
-  }
-
-  message ListInfo {
-    DataType element_type = 1;
-    bool contains_null = 2;
-  }
-
-  message MapInfo {
-    DataType key_type = 1;
-    DataType value_type = 2;
-    bool value_contains_null = 3;
-  }
-
-  message StructInfo {
-    repeated string field_names = 1;
-    repeated DataType field_datatypes = 2;
-    repeated bool field_nullable = 3;
-  }
-
-  DataTypeInfo type_info = 2;
-}
 
