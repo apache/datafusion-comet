@@ -802,9 +802,9 @@ impl PhysicalPlanner {
             ExprStruct::SparkPartitionId(_) => Ok(Arc::new(DataFusionLiteral::new(
                 ScalarValue::Int32(Some(self.partition)),
             ))),
-            ExprStruct::MonotonicallyIncreasingId(_) => {
-                Ok(Arc::new(MonotonicallyIncreasingId::new(self.partition)))
-            }
+            ExprStruct::MonotonicallyIncreasingId(_) => Ok(Arc::new(
+                MonotonicallyIncreasingId::from_partition_id(self.partition),
+            )),
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
         }
     }

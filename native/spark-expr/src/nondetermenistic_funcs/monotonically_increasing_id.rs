@@ -33,12 +33,15 @@ pub struct MonotonicallyIncreasingId {
 }
 
 impl MonotonicallyIncreasingId {
-    pub fn new(partition: i32) -> Self {
-        let offset = (partition as i64) << 33;
+    pub fn from_offset(offset: i64) -> Self {
         Self {
             initial_offset: offset,
             current_offset: AtomicI64::new(offset),
         }
+    }
+
+    pub fn from_partition_id(partition: i32) -> Self {
+        Self::from_offset((partition as i64) << 33)
     }
 }
 
@@ -108,18 +111,12 @@ mod tests {
     use arrow::{array::StringArray, datatypes::*};
     use datafusion::common::cast::as_int64_array;
 
-    fn monotonically_increasing_id(offset: i64) -> Arc<dyn PhysicalExpr> {
-        Arc::new(MonotonicallyIncreasingId {
-            initial_offset: offset,
-            current_offset: AtomicI64::new(offset),
-        })
-    }
     #[test]
     fn test_monotonically_increasing_id_single_batch() -> Result<()> {
         let schema = Schema::new(vec![Field::new("a", DataType::Utf8, true)]);
         let data = StringArray::from(vec![Some("foo"), None, None, Some("bar"), None]);
         let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(data)])?;
-        let mid_expr = monotonically_increasing_id(0);
+        let mid_expr = MonotonicallyIncreasingId::from_offset(0);
         let result = mid_expr.evaluate(&batch)?.into_array(batch.num_rows())?;
         let result = as_int64_array(&result)?;
         let expected = &Int64Array::from_iter_values(0..batch.num_rows() as i64);
@@ -134,7 +131,7 @@ mod tests {
         let second_batch_schema = first_batch_schema.clone();
         let second_batch_data = Int64Array::from(vec![None, Some(-42), None]);
         let starting_offset: i64 = 100;
-        let mid_expr = monotonically_increasing_id(starting_offset);
+        let mid_expr = MonotonicallyIncreasingId::from_offset(starting_offset);
         let first_batch = RecordBatch::try_new(
             Arc::new(first_batch_schema),
             vec![Arc::new(first_batch_data)],
