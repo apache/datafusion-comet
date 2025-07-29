@@ -23,19 +23,20 @@ use datafusion::physical_expr::PhysicalExpr;
 use std::any::Any;
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct MonotonicallyIncreasingId {
     initial_offset: i64,
-    current_offset: Arc<Mutex<i64>>,
+    current_offset: AtomicI64,
 }
 
 impl MonotonicallyIncreasingId {
     pub fn new(offset: i64) -> Self {
         Self {
             initial_offset: offset,
-            current_offset: Arc::new(Mutex::new(offset)),
+            current_offset: AtomicI64::new(offset),
         }
     }
 }
@@ -70,11 +71,11 @@ impl PhysicalExpr for MonotonicallyIncreasingId {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
-        let mut current_offset = self.current_offset.lock().unwrap();
-        let start = *current_offset;
-        let end = *current_offset + batch.num_rows() as i64;
+        let start = self.current_offset.load(Ordering::Relaxed);
+        let end = start + batch.num_rows() as i64;
         let array_ref = Arc::new(Int64Array::from_iter_values(start..end));
-        *current_offset = start + batch.num_rows() as i64;
+        self.current_offset
+            .fetch_add(batch.num_rows() as i64, Ordering::Relaxed);
         Ok(ColumnarValue::Array(array_ref))
     }
 
