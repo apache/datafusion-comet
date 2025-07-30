@@ -81,7 +81,8 @@ Gluten is currently faster than Comet for this particular benchmark, but we expe
 
 Although TPC-H is a good benchmark for operators such as joins and aggregates, it doesn't necessarily represent 
 real-world queries, especially for ETL use cases. For example, there are no complex types involved and no string 
-manipulation, regular expressions, or other advanced expressions.  
+manipulation, regular expressions, or other advanced expressions. We recommend running your own benchmarks based
+on your existing Spark jobs. 
 
 ![tpch_allqueries_comet_gluten.png](../_static/images//benchmark-results/0.9.0/tpch_spark_comet_gluten.png)
 
