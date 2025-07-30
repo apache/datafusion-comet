@@ -68,7 +68,7 @@ ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.SlowHiv
 #### Steps to run individual test suites through SBT
 1. Open SBT with Comet enabled
 ```shell
-ENABLE_COMET=true sbt -J-Xmx4096m -Dspark.test.includeSlowTests=true 
+ENABLE_COMET=true arch -x86_64 sbt -J-Xmx4096m -Dspark.test.includeSlowTests=true
 ```
 2. Run individual tests (Below code runs test named `SPARK-35568` in the `spark-sql` module)
 ```shell
