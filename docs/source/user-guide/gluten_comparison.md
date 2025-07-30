@@ -29,7 +29,7 @@ This document is based on Comet 0.9.0 and Gluten 1.4.0.
 ## Architecture
 
 Comet and Gluten have very similar architectures. Both are Spark plugins that translate Spark physical plans to
-a serialized representation which is then passed to native code for execution.
+a serialized representation and pass the serialized plan to native code for execution.
 
 Gluten serializes the plans using the Substrait format and has an extensible architecture that supports execution
 against multiple engines. Velox and Clickhouse are currently supported, but Velox is more widely used.
