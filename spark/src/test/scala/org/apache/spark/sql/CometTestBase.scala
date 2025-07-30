@@ -44,7 +44,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal._
 import org.apache.spark.sql.test._
-import org.apache.spark.sql.types._
+import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, MapType, StructType}
 
 import org.apache.comet._
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
