@@ -315,21 +315,9 @@ under the License.
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#ease-of-development">
-   Ease of Development
+  <a class="reference internal nav-link" href="#ease-of-development-contributing">
+   Ease of Development &amp; Contributing
   </a>
-  <ul class="nav section-nav flex-column">
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#comet-lines-of-code">
-     Comet Lines of Code
-    </a>
-   </li>
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#gluten-lines-of-code">
-     Gluten Lines of Code
-    </a>
-   </li>
-  </ul>
  </li>
  <li class="toc-h2 nav-item toc-entry">
   <a class="reference internal nav-link" href="#summary">
@@ -385,13 +373,13 @@ under the License.
 <section id="comparison-of-comet-and-gluten">
 <h1>Comparison of Comet and Gluten<a class="headerlink" href="#comparison-of-comet-and-gluten" title="Link to this heading">¶</a></h1>
 <p>This document provides a comparison of the Comet and Gluten projects to help guide users who are looking to choose
-between them. This document is likely biased because it is maintained by the Comet community.</p>
+between them. This document is likely biased because the Comet community maintains it.</p>
 <p>We recommend trying out both Comet and Gluten to see which is the best fit for your needs.</p>
 <p>This document is based on Comet 0.9.0 and Gluten 1.4.0.</p>
 <section id="architecture">
 <h2>Architecture<a class="headerlink" href="#architecture" title="Link to this heading">¶</a></h2>
 <p>Comet and Gluten have very similar architectures. Both are Spark plugins that translate Spark physical plans to
-a serialized representation and pass them to native code for execution.</p>
+a serialized representation and pass the serialized plan to native code for execution.</p>
 <p>Gluten serializes the plans using the Substrait format and has an extensible architecture that supports execution
 against multiple engines. Velox and Clickhouse are currently supported, but Velox is more widely used.</p>
 <p>Comet serializes the plans in a proprietary Protocol Buffer format. Execution is delegated to Apache DataFusion. Comet
@@ -404,8 +392,12 @@ does not plan to support multiple engines, but rather focus on a tight integrati
 <p>Comet uses Apache DataFusion, which is an open-source vectorized query engine implemented in Rust and is governed by the
 Apache Software Foundation.</p>
 <p>Velox and DataFusion are both mature query engines that are growing in popularity.</p>
-<p>Comet may be a better choice for users with plans for integrating with other Rust software in the future, and
-Gluten+Velox may be a better choice for users with plans for integrating with other C++ code.</p>
+<p>From the point of view of the usage of these query engines in Gluten and Comet, the most significant difference is
+the choice of implementation language (Rust vs C++) and this may be the main factor that users should consider when
+choosing a solution. For users wishing to implement UDFs in Rust, Comet would likely be a better choice. For users
+wishing to implement UDFs in C++, Gluten would likely be a better choice.</p>
+<p>If users are just interested in speeding up their existing Spark jobs and do not need to implement UDFs in native
+code, then we suggest benchmarking with both solutions and choosing the fastest one for your use case.</p>
 <p><img alt="github-stars-datafusion-velox.png" src="../_images/github-stars-datafusion-velox.png" /></p>
 </section>
 <section id="compatibility">
@@ -419,42 +411,20 @@ suite. See the <a class="reference external" href="https://apache.github.io/incu
 <section id="performance">
 <h2>Performance<a class="headerlink" href="#performance" title="Link to this heading">¶</a></h2>
 <p>When running a benchmark derived from TPC-H on a single node against local Parquet files, we see that both Comet
-and Gluten provide a good speedup when compared to Spark. Comet provides a 2.4x speedup compares to a 2.8x speedup
+and Gluten provide an impressive speedup when compared to Spark. Comet provides a 2.4x speedup compares to a 2.8x speedup
 with Gluten.</p>
-<p>Gluten is currently slightly faster than Comet, but we expect to close that gap over time.</p>
+<p>Gluten is currently faster than Comet for this particular benchmark, but we expect to close that gap over time.</p>
+<p>Although TPC-H is a good benchmark for operators such as joins and aggregates, it doesn’t necessarily represent
+real-world queries, especially for ETL use cases. For example, there are no complex types involved and no string
+manipulation, regular expressions, or other advanced expressions. We recommend running your own benchmarks based
+on your existing Spark jobs.</p>
 <p><img alt="tpch_allqueries_comet_gluten.png" src="../_images/tpch_spark_comet_gluten.png" /></p>
 <p>The scripts that were used to generate these results can be found <a class="reference external" href="https://github.com/apache/datafusion-comet/tree/main/dev/benchmarks">here</a>.</p>
 </section>
-<section id="ease-of-development">
-<h2>Ease of Development<a class="headerlink" href="#ease-of-development" title="Link to this heading">¶</a></h2>
-<p>Comet has a much smaller codebase than Gluten. A fresh clone of the respective repositories shows that Comet has ~41k
-lines of Scala+Java code and ~40k lines of Rust code. Gluten has ~207k lines of Scala+Java code and ~89k lines of C++
-code.</p>
+<section id="ease-of-development-contributing">
+<h2>Ease of Development &amp; Contributing<a class="headerlink" href="#ease-of-development-contributing" title="Link to this heading">¶</a></h2>
 <p>Setting up a local development environment with Comet is generally easier than with Gluten due to Rust’s package
 management capabilities vs the complexities around installing C++ dependencies.</p>
-<section id="comet-lines-of-code">
-<h3>Comet Lines of Code<a class="headerlink" href="#comet-lines-of-code" title="Link to this heading">¶</a></h3>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">-------------------------------------------------------------------------------</span>
-<span class="n">Language</span>                     <span class="n">files</span>          <span class="n">blank</span>        <span class="n">comment</span>           <span class="n">code</span>
-<span class="o">-------------------------------------------------------------------------------</span>
-<span class="n">Rust</span>                           <span class="mi">159</span>           <span class="mi">4870</span>           <span class="mi">5388</span>          <span class="mi">39989</span>
-<span class="n">Scala</span>                          <span class="mi">171</span>           <span class="mi">4849</span>           <span class="mi">6277</span>          <span class="mi">32538</span>
-<span class="n">Java</span>                            <span class="mi">66</span>           <span class="mi">1556</span>           <span class="mi">2619</span>           <span class="mi">8724</span>
-</pre></div>
-</div>
-</section>
-<section id="gluten-lines-of-code">
-<h3>Gluten Lines of Code<a class="headerlink" href="#gluten-lines-of-code" title="Link to this heading">¶</a></h3>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--------------------------------------------------------------------------------</span>
-<span class="n">Language</span>                      <span class="n">files</span>          <span class="n">blank</span>        <span class="n">comment</span>           <span class="n">code</span>
-<span class="o">--------------------------------------------------------------------------------</span>
-<span class="n">Scala</span>                          <span class="mi">1312</span>          <span class="mi">23264</span>          <span class="mi">37534</span>         <span class="mi">179664</span>
-<span class="n">C</span><span class="o">++</span>                             <span class="mi">421</span>           <span class="mi">9841</span>          <span class="mi">10245</span>          <span class="mi">64554</span>
-<span class="n">Java</span>                            <span class="mi">328</span>           <span class="mi">5063</span>           <span class="mi">6726</span>          <span class="mi">26520</span>
-<span class="n">C</span><span class="o">/</span><span class="n">C</span><span class="o">++</span> <span class="n">Header</span>                    <span class="mi">304</span>           <span class="mi">4875</span>           <span class="mi">6255</span>          <span class="mi">23527</span>
-</pre></div>
-</div>
-</section>
 </section>
 <section id="summary">
 <h2>Summary<a class="headerlink" href="#summary" title="Link to this heading">¶</a></h2>
