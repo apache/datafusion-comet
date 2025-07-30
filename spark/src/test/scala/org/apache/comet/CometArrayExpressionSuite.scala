@@ -244,13 +244,17 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           DataGenOptions(
             allowNull = true,
             generateNegativeZero = true,
-            generateArray = false,
-            generateStruct = false,
+            generateArray = true,
+            generateStruct = true,
             generateMap = false))
       }
       val table = spark.read.parquet(filename)
       table.createOrReplaceTempView("t1")
-      for (field <- table.schema.fields) {
+      val complexTypeFields =
+        table.schema.fields.filter(field => isComplexType(field.dataType))
+      val primitiveTypeFields =
+        table.schema.fields.filterNot(field => isComplexType(field.dataType))
+      for (field <- primitiveTypeFields) {
         val fieldName = field.name
         val typeName = field.dataType.typeName
         sql(s"SELECT array($fieldName, $fieldName) as a, $fieldName as b FROM t1")
@@ -258,6 +262,12 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         checkSparkAnswerAndOperator(sql("SELECT array_contains(a, b) FROM t2"))
         checkSparkAnswerAndOperator(
           sql(s"SELECT array_contains(a, cast(null as $typeName)) FROM t2"))
+      }
+      for (field <- complexTypeFields) {
+        val fieldName = field.name
+        sql(s"SELECT array($fieldName, $fieldName) as a, $fieldName as b FROM t1")
+          .createOrReplaceTempView("t3")
+        checkSparkAnswer(sql("SELECT array_contains(a, b) FROM t3"))
       }
     }
   }
