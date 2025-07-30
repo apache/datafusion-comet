@@ -25,7 +25,6 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Greater
 import org.apache.spark.sql.types.BooleanType
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, createUnaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProtoWithReturnType}
 
 object CometGreaterThan extends CometExpressionSerde {
@@ -147,30 +146,20 @@ object CometIn extends CometExpressionSerde {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val inExpr = expr.asInstanceOf[In]
-    in(expr, inExpr.value, inExpr.list, inputs, binding, negate = false)
-  }
-
-  def in(
-      expr: Expression,
-      value: Expression,
-      list: Seq[Expression],
-      inputs: Seq[Attribute],
-      binding: Boolean,
-      negate: Boolean): Option[Expr] = {
-    val valueExpr = exprToProtoInternal(value, inputs, binding)
-    val listExprs = list.map(exprToProtoInternal(_, inputs, binding))
+    val valueExpr = exprToProtoInternal(inExpr.value, inputs, binding)
+    val listExprs = inExpr.list.map(exprToProtoInternal(_, inputs, binding))
     if (valueExpr.isDefined && listExprs.forall(_.isDefined)) {
       val builder = ExprOuterClass.In.newBuilder()
       builder.setInValue(valueExpr.get)
       builder.addAllLists(listExprs.map(_.get).asJava)
-      builder.setNegated(negate)
+      builder.setNegated(false)
       Some(
         ExprOuterClass.Expr
           .newBuilder()
           .setIn(builder)
           .build())
     } else {
-      val allExprs = list ++ Seq(value)
+      val allExprs = inExpr.list ++ Seq(inExpr.value)
       withInfo(expr, allExprs: _*)
       None
     }
