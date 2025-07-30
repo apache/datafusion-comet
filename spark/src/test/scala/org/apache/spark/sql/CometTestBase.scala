@@ -44,7 +44,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal._
 import org.apache.spark.sql.test._
-import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, MapType, StructType}
+import org.apache.spark.sql.types._
 
 import org.apache.comet._
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
@@ -158,20 +158,6 @@ abstract class CometTestBase
     val dfComet = datasetOfRows(spark, df.logicalPlan)
     checkAnswer(dfComet, expected)
     (sparkPlan, dfComet.queryExecution.executedPlan)
-  }
-
-  protected def checkSparkAnswerKmn(df: => DataFrame): Unit = {
-    var expected: Array[Row] = Array.empty
-    var sparkPlan = null.asInstanceOf[SparkPlan]
-    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      val dfSpark = datasetOfRows(spark, df.logicalPlan)
-      expected = dfSpark.collect()
-      sparkPlan = dfSpark.queryExecution.executedPlan
-    }
-    val dfComet = datasetOfRows(spark, df.logicalPlan)
-    println(s"Comet: ${dfComet.collect().mkString("Array(", ", ", ")")}")
-    println(s"Spark: ${expected}")
-    checkAnswer(dfComet, expected)
   }
 
   protected def checkSparkAnswerAndOperator(query: String, excludedClasses: Class[_]*): Unit = {
