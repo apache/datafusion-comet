@@ -213,10 +213,10 @@ object CometIntegralDivide extends CometExpressionSerde with MathBase {
 
     val left =
       if (div.left.dataType.isInstanceOf[DecimalType]) div.left
-      else Cast(div.left, DecimalType(DecimalType.MAX_PRECISION, DecimalType.MAX_SCALE))
+      else Cast(div.left, DecimalType(19, 0))
     val right =
       if (div.right.dataType.isInstanceOf[DecimalType]) div.right
-      else Cast(div.right, DecimalType(DecimalType.MAX_PRECISION, DecimalType.MAX_SCALE))
+      else Cast(div.right, DecimalType(19, 0))
 
     val rightExpr = nullIfWhenPrimitive(right)
 
