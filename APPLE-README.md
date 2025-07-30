@@ -59,6 +59,51 @@ it based on `spark.comet.memory.overhead.factor`.
 - If both `spark.comet.memoryOverhead` and `spark.comet.memory.overhead.factor` are set, the former will be used.
 - Comet will allocate at least `spark.comet.memory.overhead.min` memory per pool.
 
+## Process for keeping this repo up-to-date with OSS Comet
+
+There is a [Rio pipeline] that attempts to cherry-pick commits from the OSS project into this repo. This process stops 
+and requires manual intervention if there are merge conflicts or if the Spark 3.4.3 diff is updated. The failed 
+pipeline provides instructions for manually cherry-picking and updating the tag that the pipeline relies on to 
+determine the last commit that was cherry-picked. In the case where the Spark 3.4.3 diff was updated, it will be 
+necessary to make equivalent changes to `dev/diffs/branch-3.4.3-diff`.
+
+[Rio pipeline]: https://rio.apple.com/projects/aci-ipr-apache-arrow-datafusion-comet/pipeline-specs/aci-ipr-apache-arrow-datafusion-comet-sync-main-apple-build/pipelines
+
+## Testing Locally
+
+Install Comet, compiled for Apple Spark 3.4.3.
+
+```shell
+make release PROFILES="-Pspark-3.4-apple"
+```
+
+Checkout `main-apple` branch of Spark IPR repo and:
+
+- Update the Comet version in the root `pom.xml` to point to the snapshot that was installed in the previous step 
+- Apply Comet diffs to Spark using the following command
+
+```shell
+git apply ../apache-datafusion-comet/dev/diffs/branch-3.4.3-apple.diff
+```
+
+Check that Spark compiles.
+
+```shell
+./build/mvn package -DskipTests
+```
+
+Run tests.
+
+```shell
+ENABLE_COMET=true build/sbt catalyst/test
+ENABLE_COMET=true build/sbt "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest"
+ENABLE_COMET=true build/sbt "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest"
+ENABLE_COMET=true build/sbt "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest"
+ENABLE_COMET=true build/sbt "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"
+ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"
+ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"
+```
+
 ## Release Notes 
 
 Release notes are available at [https://github.pie.apple.com/IPR/apache-arrow-datafusion-comet/releases](https://github.pie.apple.com/IPR/apache-arrow-datafusion-comet/releases).
