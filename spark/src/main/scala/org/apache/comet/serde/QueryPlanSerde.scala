@@ -126,6 +126,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[MapValues] -> CometMapValues,
     classOf[MapFromArrays] -> CometMapFromArrays,
     classOf[GetMapValue] -> CometMapExtract,
+    classOf[Rand] -> CometRand,
+    classOf[Randn] -> CometRandn,
+    classOf[SparkPartitionID] -> CometSparkPartitionId,
+    classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
     classOf[StringSpace] -> UnaryScalarFuncSerde("string_space"))
 
   def emitWarning(reason: String): Unit = {
@@ -1722,28 +1726,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         convert(CometArrayCompact)
       case _: ArrayExcept =>
         convert(CometArrayExcept)
-      case Rand(child, _) =>
-        val seed = child match {
-          case Literal(seed: Long, _) => Some(seed)
-          case Literal(null, _) => Some(0L)
-          case _ => None
-        }
-        seed.map(seed =>
-          ExprOuterClass.Expr
-            .newBuilder()
-            .setRand(ExprOuterClass.Rand.newBuilder().setSeed(seed))
-            .build())
-      case Randn(child, _) =>
-        val seed = child match {
-          case Literal(seed: Long, _) => Some(seed)
-          case Literal(null, _) => Some(0L)
-          case _ => None
-        }
-        seed.map(seed =>
-          ExprOuterClass.Expr
-            .newBuilder()
-            .setRandn(ExprOuterClass.Rand.newBuilder().setSeed(seed))
-            .build())
       case expr =>
         QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
           case Some(handler) => convert(handler)

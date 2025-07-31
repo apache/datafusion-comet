@@ -81,6 +81,8 @@ message Expr {
     ToPrettyString to_pretty_string = 60;
     Rand rand = 61;
     Rand randn = 62;
+    EmptyExpr spark_partition_id = 63;
+    EmptyExpr monotonically_increasing_id = 64;
   }
 }
 
@@ -247,6 +249,9 @@ message BinaryExpr {
 
 message UnaryExpr {
   Expr child = 1;
+}
+
+message EmptyExpr {
 }
 
 // Bound to a particular vector array in input batch.

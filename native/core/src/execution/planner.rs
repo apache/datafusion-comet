@@ -100,6 +100,7 @@ use datafusion_comet_proto::{
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
+use datafusion_comet_spark_expr::monotonically_increasing_id::MonotonicallyIncreasingId;
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
     GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RLike,
@@ -826,6 +827,12 @@ impl PhysicalPlanner {
                 let seed = expr.seed.wrapping_add(self.partition.into());
                 Ok(Arc::new(RandnExpr::new(seed)))
             }
+            ExprStruct::SparkPartitionId(_) => Ok(Arc::new(DataFusionLiteral::new(
+                ScalarValue::Int32(Some(self.partition)),
+            ))),
+            ExprStruct::MonotonicallyIncreasingId(_) => Ok(Arc::new(
+                MonotonicallyIncreasingId::from_partition_id(self.partition),
+            )),
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
         }
     }
