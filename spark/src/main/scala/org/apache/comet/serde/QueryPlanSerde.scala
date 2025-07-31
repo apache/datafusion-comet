@@ -134,7 +134,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[IsNotNull] -> CometIsNotNull,
     classOf[IsNaN] -> CometIsNaN,
     classOf[In] -> CometIn,
-    classOf[GetMapValue] -> CometMapExtract,
     classOf[Rand] -> CometRand,
     classOf[Randn] -> CometRandn,
     classOf[SparkPartitionID] -> CometSparkPartitionId,
