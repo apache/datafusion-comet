@@ -72,6 +72,7 @@ use crate::execution::spark_plan::SparkPlan;
 
 use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end, with_trace};
 
+use crate::parquet::objectstore::jni_hdfs::init_jvm;
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::info;
 use once_cell::sync::Lazy;
@@ -166,6 +167,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         with_trace("createPlan", tracing_enabled != JNI_FALSE, || {
+            init_jvm(&env);
+
             // Init JVM classes
             JVMClasses::init(&mut env);
 

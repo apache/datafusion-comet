@@ -36,6 +36,7 @@ publish = false
 
 [dependencies]
 arrow = { workspace = true }
+chrono = { workspace = true }
 parquet = { workspace = true, default-features = false, features = ["experimental"] }
 futures = { workspace = true }
 mimalloc = { version = "*", default-features = false, optional = true }
