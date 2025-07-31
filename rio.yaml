@@ -1743,7 +1743,7 @@ builds:
     finally:
       tag:
         enabled: true
-        expression: "0.9.0.0-apple"
+        expression: "0.10.0.0-apple"
       pipelineChain:
         - pipeline: build-main-apple-release-publish-3.4_2.12
           buildArguments:
