@@ -20,7 +20,8 @@ use arrow::array::{ArrayRef, RecordBatch};
 use arrow::compute::filter_record_batch;
 use arrow::datatypes::{DataType, Field, Schema};
 use comet::execution::operators::comet_filter_record_batch;
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
+use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Duration;
 

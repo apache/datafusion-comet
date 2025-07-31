@@ -24,7 +24,8 @@ use comet::common::bit::{
     log2, read_num_bytes_u32, read_num_bytes_u64, read_u32, read_u64, set_bits, trailing_bits,
     BitReader, BitWriter,
 };
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use std::hint::black_box;
 
 /// Benchmark to measure bit_util performance.
 /// To run this benchmark:
