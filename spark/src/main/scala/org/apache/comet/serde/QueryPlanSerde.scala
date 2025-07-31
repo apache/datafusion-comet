@@ -23,7 +23,6 @@ import java.util.Locale
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ListBuffer
-import scala.math.min
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
@@ -67,6 +66,12 @@ object QueryPlanSerde extends Logging with CometExprShim {
    * Mapping of Spark expression class to Comet expression handler.
    */
   private val exprSerdeMap: Map[Class[_], CometExpressionSerde] = Map(
+    classOf[Add] -> CometAdd,
+    classOf[Subtract] -> CometSubtract,
+    classOf[Multiply] -> CometMultiply,
+    classOf[Divide] -> CometDivide,
+    classOf[IntegralDivide] -> CometIntegralDivide,
+    classOf[Remainder] -> CometRemainder,
     classOf[ArrayAppend] -> CometArrayAppend,
     classOf[ArrayContains] -> CometArrayContains,
     classOf[ArrayDistinct] -> CometArrayDistinct,
@@ -129,6 +134,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[IsNotNull] -> CometIsNotNull,
     classOf[IsNaN] -> CometIsNaN,
     classOf[In] -> CometIn)
+    classOf[GetMapValue] -> CometMapExtract,
+    classOf[Rand] -> CometRand,
+    classOf[Randn] -> CometRandn,
+    classOf[SparkPartitionID] -> CometSparkPartitionId,
+    classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId)
 
   def emitWarning(reason: String): Unit = {
     logWarning(s"Comet native execution is disabled due to: $reason")
@@ -637,141 +647,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
       case c @ Cast(child, dt, timeZoneId, _) =>
         handleCast(expr, child, inputs, binding, dt, timeZoneId, evalMode(c))
-
-      case add @ Add(left, right, _) if supportedDataType(left.dataType) =>
-        createMathExpression(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          add.dataType,
-          add.evalMode == EvalMode.ANSI,
-          (builder, mathExpr) => builder.setAdd(mathExpr))
-
-      case add @ Add(left, _, _) if !supportedDataType(left.dataType) =>
-        withInfo(add, s"Unsupported datatype ${left.dataType}")
-        None
-
-      case sub @ Subtract(left, right, _) if supportedDataType(left.dataType) =>
-        createMathExpression(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          sub.dataType,
-          sub.evalMode == EvalMode.ANSI,
-          (builder, mathExpr) => builder.setSubtract(mathExpr))
-
-      case sub @ Subtract(left, _, _) if !supportedDataType(left.dataType) =>
-        withInfo(sub, s"Unsupported datatype ${left.dataType}")
-        None
-
-      case mul @ Multiply(left, right, _) if supportedDataType(left.dataType) =>
-        createMathExpression(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          mul.dataType,
-          mul.evalMode == EvalMode.ANSI,
-          (builder, mathExpr) => builder.setMultiply(mathExpr))
-
-      case mul @ Multiply(left, _, _) =>
-        if (!supportedDataType(left.dataType)) {
-          withInfo(mul, s"Unsupported datatype ${left.dataType}")
-        }
-        None
-
-      case div @ Divide(left, right, _) if supportedDataType(left.dataType) =>
-        // Datafusion now throws an exception for dividing by zero
-        // See https://github.com/apache/arrow-datafusion/pull/6792
-        // For now, use NullIf to swap zeros with nulls.
-        val rightExpr = nullIfWhenPrimitive(right)
-
-        createMathExpression(
-          expr,
-          left,
-          rightExpr,
-          inputs,
-          binding,
-          div.dataType,
-          div.evalMode == EvalMode.ANSI,
-          (builder, mathExpr) => builder.setDivide(mathExpr))
-
-      case div @ Divide(left, _, _) =>
-        if (!supportedDataType(left.dataType)) {
-          withInfo(div, s"Unsupported datatype ${left.dataType}")
-        }
-        None
-
-      case div @ IntegralDivide(left, right, _) if supportedDataType(left.dataType) =>
-        val rightExpr = nullIfWhenPrimitive(right)
-
-        val dataType = (left.dataType, right.dataType) match {
-          case (l: DecimalType, r: DecimalType) =>
-            // copy from IntegralDivide.resultDecimalType
-            val intDig = l.precision - l.scale + r.scale
-            DecimalType(min(if (intDig == 0) 1 else intDig, DecimalType.MAX_PRECISION), 0)
-          case _ => left.dataType
-        }
-
-        val divideExpr = createMathExpression(
-          expr,
-          left,
-          rightExpr,
-          inputs,
-          binding,
-          dataType,
-          div.evalMode == EvalMode.ANSI,
-          (builder, mathExpr) => builder.setIntegralDivide(mathExpr))
-
-        if (divideExpr.isDefined) {
-          val childExpr = if (dataType.isInstanceOf[DecimalType]) {
-            // check overflow for decimal type
-            val builder = ExprOuterClass.CheckOverflow.newBuilder()
-            builder.setChild(divideExpr.get)
-            builder.setFailOnError(div.evalMode == EvalMode.ANSI)
-            builder.setDatatype(serializeDataType(dataType).get)
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setCheckOverflow(builder)
-                .build())
-          } else {
-            divideExpr
-          }
-
-          // cast result to long
-          castToProto(expr, None, LongType, childExpr.get, CometEvalMode.LEGACY)
-        } else {
-          None
-        }
-
-      case div @ IntegralDivide(left, _, _) =>
-        if (!supportedDataType(left.dataType)) {
-          withInfo(div, s"Unsupported datatype ${left.dataType}")
-        }
-        None
-
-      case rem @ Remainder(left, right, _) if supportedDataType(left.dataType) =>
-        createMathExpression(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          rem.dataType,
-          rem.evalMode == EvalMode.ANSI,
-          (builder, mathExpr) => builder.setRemainder(mathExpr))
-
-      case rem @ Remainder(left, _, _) =>
-        if (!supportedDataType(left.dataType)) {
-          withInfo(rem, s"Unsupported datatype ${left.dataType}")
-        }
-        None
 
       case EqualTo(left, right) =>
         createBinaryExpr(
@@ -1805,13 +1680,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         convert(CometArrayCompact)
       case _: ArrayExcept =>
         convert(CometArrayExcept)
-      case Rand(child, _) =>
-        createUnaryExpr(
-          expr,
-          child,
-          inputs,
-          binding,
-          (builder, unaryExpr) => builder.setRand(unaryExpr))
       case expr =>
         QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
           case Some(handler) => convert(handler)
@@ -1893,42 +1761,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     }
   }
 
-  private def createMathExpression(
-      expr: Expression,
-      left: Expression,
-      right: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean,
-      dataType: DataType,
-      failOnError: Boolean,
-      f: (ExprOuterClass.Expr.Builder, ExprOuterClass.MathExpr) => ExprOuterClass.Expr.Builder)
-      : Option[ExprOuterClass.Expr] = {
-    val leftExpr = exprToProtoInternal(left, inputs, binding)
-    val rightExpr = exprToProtoInternal(right, inputs, binding)
-
-    if (leftExpr.isDefined && rightExpr.isDefined) {
-      // create the generic MathExpr message
-      val builder = ExprOuterClass.MathExpr.newBuilder()
-      builder.setLeft(leftExpr.get)
-      builder.setRight(rightExpr.get)
-      builder.setFailOnError(failOnError)
-      serializeDataType(dataType).foreach { t =>
-        builder.setReturnType(t)
-      }
-      val inner = builder.build()
-      // call the user-supplied function to wrap MathExpr in a top-level Expr
-      // such as Expr.Add or Expr.Divide
-      Some(
-        f(
-          ExprOuterClass.Expr
-            .newBuilder(),
-          inner).build())
-    } else {
-      withInfo(expr, left, right)
-      None
-    }
-  }
-
   def in(
       expr: Expression,
       value: Expression,
@@ -1983,25 +1815,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     }
     Some(ExprOuterClass.Expr.newBuilder().setScalarFunc(builder).build())
   }
-
-  private def isPrimitive(expression: Expression): Boolean = expression.dataType match {
-    case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-        _: DoubleType | _: TimestampType | _: DateType | _: BooleanType | _: DecimalType =>
-      true
-    case _ => false
-  }
-
-  private def nullIfWhenPrimitive(expression: Expression): Expression =
-    if (isPrimitive(expression)) {
-      val zero = Literal.default(expression.dataType)
-      expression match {
-        case _: Literal if expression != zero => expression
-        case _ =>
-          If(EqualTo(expression, zero), Literal.create(null, expression.dataType), expression)
-      }
-    } else {
-      expression
-    }
 
   private def nullIfNegative(expression: Expression): Expression = {
     val zero = Literal.default(expression.dataType)
