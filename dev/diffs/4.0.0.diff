@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index 443d46a4302..3b8483173f1 100644
+index a4b1b2c3c9f..63ec4784625 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -148,6 +148,8 @@
@@ -1732,14 +1732,14 @@ index aed11badb71..ab7e9456e26 100644
            spark.range(1).foreach { _ =>
              columnarToRowExec.canonicalized
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
-index a3cfdc5a240..f4afc393ba0 100644
+index a3cfdc5a240..1b08a1f42ee 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
 @@ -22,6 +22,7 @@ import org.apache.spark.rdd.MapPartitionsWithEvaluatorRDD
  import org.apache.spark.sql.{Dataset, QueryTest, Row, SaveMode}
  import org.apache.spark.sql.catalyst.expressions.CodegenObjectFactoryMode
  import org.apache.spark.sql.catalyst.expressions.codegen.{ByteCodeStats, CodeAndComment, CodeGenerator}
-+import org.apache.spark.sql.comet.{CometHashJoinExec, CometSortExec, CometSortMergeJoinExec}
++import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometHashJoinExec, CometSortExec, CometSortMergeJoinExec}
  import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecutionSuite
  import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, SortAggregateExec}
  import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
@@ -1952,6 +1952,16 @@ index a3cfdc5a240..f4afc393ba0 100644
            val projection = Seq.tabulate(columnNum)(i => s"c$i + c$i as newC$i")
            val df = spark.read.parquet(path).selectExpr(projection: _*)
  
+@@ -815,6 +852,9 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+       assert(distinctWithId.queryExecution.executedPlan.exists {
+         case WholeStageCodegenExec(
+           ProjectExec(_, BroadcastHashJoinExec(_, _, _, _, _, _: HashAggregateExec, _, _))) => true
++        case WholeStageCodegenExec(
++          ProjectExec(_, BroadcastHashJoinExec(_, _, _, _, _, _: CometColumnarToRowExec, _, _))) =>
++            true
+         case _ => false
+       })
+       checkAnswer(distinctWithId, Seq(Row(1, 0), Row(1, 0)))
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 index 272be70f9fe..06957694002 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala

@@ -222,16 +222,121 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  test("array_contains") {
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, n = 10000)
-        spark.read.parquet(path.toString).createOrReplaceTempView("t1");
+  test("array_contains - int values") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, n = 10000)
+      spark.read.parquet(path.toString).createOrReplaceTempView("t1");
+      checkSparkAnswerAndOperator(
+        spark.sql("SELECT array_contains(array(_2, _3, _4), _2) FROM t1"))
+      checkSparkAnswerAndOperator(
+        spark.sql("SELECT array_contains((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
+    }
+  }
+
+  test("array_contains - test all types (native Parquet reader)") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          100,
+          DataGenOptions(
+            allowNull = true,
+            generateNegativeZero = true,
+            generateArray = true,
+            generateStruct = true,
+            generateMap = false))
+      }
+      val table = spark.read.parquet(filename)
+      table.createOrReplaceTempView("t1")
+      val complexTypeFields =
+        table.schema.fields.filter(field => isComplexType(field.dataType))
+      val primitiveTypeFields =
+        table.schema.fields.filterNot(field => isComplexType(field.dataType))
+      for (field <- primitiveTypeFields) {
+        val fieldName = field.name
+        val typeName = field.dataType.typeName
+        sql(s"SELECT array($fieldName, $fieldName) as a, $fieldName as b FROM t1")
+          .createOrReplaceTempView("t2")
+        checkSparkAnswerAndOperator(sql("SELECT array_contains(a, b) FROM t2"))
         checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_contains(array(_2, _3, _4), _2) FROM t1"))
+          sql(s"SELECT array_contains(a, cast(null as $typeName)) FROM t2"))
+      }
+      for (field <- complexTypeFields) {
+        val fieldName = field.name
+        sql(s"SELECT array($fieldName, $fieldName) as a, $fieldName as b FROM t1")
+          .createOrReplaceTempView("t3")
+        checkSparkAnswer(sql("SELECT array_contains(a, b) FROM t3"))
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/1929
+  ignore("array_contains - array literals") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          100,
+          DataGenOptions(
+            allowNull = true,
+            generateNegativeZero = true,
+            generateArray = false,
+            generateStruct = false,
+            generateMap = false))
+      }
+      val table = spark.read.parquet(filename)
+      for (field <- table.schema.fields) {
+        val typeName = field.dataType.typeName
         checkSparkAnswerAndOperator(
-          spark.sql("SELECT array_contains((CASE WHEN _2 =_3 THEN array(_4) END), _4) FROM t1"));
+          sql(s"SELECT array_contains(cast(null as array<$typeName>), b) FROM t2"))
+        checkSparkAnswerAndOperator(sql(
+          s"SELECT array_contains(cast(array() as array<$typeName>), cast(null as $typeName)) FROM t2"))
+        checkSparkAnswerAndOperator(sql("SELECT array_contains(array(), 1) FROM t2"))
+      }
+    }
+  }
+
+  test("array_contains - test all types (convert from Parquet)") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          100,
+          DataGenOptions(
+            allowNull = true,
+            generateNegativeZero = true,
+            generateArray = true,
+            generateStruct = true,
+            generateMap = false))
+      }
+      withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
+        val table = spark.read.parquet(filename)
+        table.createOrReplaceTempView("t1")
+        for (field <- table.schema.fields) {
+          val fieldName = field.name
+          sql(s"SELECT array($fieldName, $fieldName) as a, $fieldName as b FROM t1")
+            .createOrReplaceTempView("t2")
+          checkSparkAnswer(sql("SELECT array_contains(a, b) FROM t2"))
+        }
       }
     }
   }

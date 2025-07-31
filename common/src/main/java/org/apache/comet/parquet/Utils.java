@@ -37,13 +37,26 @@ public class Utils {
       CometSchemaImporter importer,
       int batchSize,
       boolean useDecimal128,
-      boolean useLazyMaterialization) {
+      boolean useLazyMaterialization,
+      boolean useLegacyTimestamp) {
 
     ColumnDescriptor descriptor = buildColumnDescriptor(columnSpec);
     return getColumnReader(
-        type, descriptor, importer, batchSize, useDecimal128, useLazyMaterialization, true);
+        type,
+        descriptor,
+        importer,
+        batchSize,
+        useDecimal128,
+        useLazyMaterialization,
+        useLegacyTimestamp);
   }
 
+  /**
+   * This method is called from Apache Iceberg.
+   *
+   * @deprecated since 0.9.1, will be removed in 0.10.0; use getColumnReader with ParquetColumnSpec
+   *     instead.
+   */
   public static ColumnReader getColumnReader(
       DataType type,
       ColumnDescriptor descriptor,
