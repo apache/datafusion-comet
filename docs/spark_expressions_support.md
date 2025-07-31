@@ -349,9 +349,11 @@
  - [ ] input_file_block_length
  - [ ] input_file_block_start
  - [ ] input_file_name
- - [ ] monotonically_increasing_id
+ - [x] monotonically_increasing_id
  - [ ] raise_error
- - [ ] spark_partition_id
+ - [x] rand
+ - [x] randn
+ - [x] spark_partition_id
  - [ ] typeof
  - [x] user
  - [ ] uuid

@@ -302,6 +302,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("try_add") {
+    // TODO: we need to implement more comprehensive tests for all try_ arithmetic functions
+    // https://github.com/apache/datafusion-comet/issues/2021
+    val data = Seq((Integer.MAX_VALUE, 1))
+    withParquetTable(data, "tbl") {
+      checkSparkAnswer("SELECT try_add(_1, _2) FROM tbl")
+    }
+  }
+
   test("dictionary arithmetic") {
     // TODO: test ANSI mode
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "false", "parquet.enable.dictionary" -> "true") {
@@ -2745,23 +2754,74 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
   }
 
-  test("rand expression with random parameters") {
+  private def testOnShuffledRangeWithRandomParameters(testLogic: DataFrame => Unit): Unit = {
     val partitionsNumber = Random.nextInt(10) + 1
     val rowsNumber = Random.nextInt(500)
-    val seed = Random.nextLong()
     // use this value to have both single-batch and multi-batch partitions
-    val cometBatchSize = math.max(1, math.ceil(rowsNumber.toDouble / partitionsNumber).toInt)
+    val cometBatchSize = math.max(1, math.floor(rowsNumber.toDouble / partitionsNumber).toInt)
     withSQLConf("spark.comet.batchSize" -> cometBatchSize.toString) {
       withParquetDataFrame((0 until rowsNumber).map(Tuple1.apply)) { df =>
-        val dfWithRandParameters = df.repartition(partitionsNumber).withColumn("rnd", rand(seed))
-        checkSparkAnswerAndOperator(dfWithRandParameters)
-        val dfWithOverflowSeed =
-          df.repartition(partitionsNumber).withColumn("rnd", rand(Long.MaxValue))
-        checkSparkAnswerAndOperator(dfWithOverflowSeed)
-        val dfWithNullSeed =
-          df.repartition(partitionsNumber).selectExpr("_1", "rand(null) as rnd")
-        checkSparkAnswerAndOperator(dfWithNullSeed)
+        testLogic(df.repartition(partitionsNumber))
       }
+    }
+  }
+
+  test("rand expression with random parameters") {
+    testOnShuffledRangeWithRandomParameters { df =>
+      val seed = Random.nextLong()
+      val dfWithRandParameters = df.withColumn("rnd", rand(seed))
+      checkSparkAnswerAndOperator(dfWithRandParameters)
+      val dfWithOverflowSeed = df.withColumn("rnd", rand(Long.MaxValue))
+      checkSparkAnswerAndOperator(dfWithOverflowSeed)
+      val dfWithNullSeed = df.selectExpr("_1", "rand(null) as rnd")
+      checkSparkAnswerAndOperator(dfWithNullSeed)
+    }
+  }
+
+  test("randn expression with random parameters") {
+    testOnShuffledRangeWithRandomParameters { df =>
+      val seed = Random.nextLong()
+      val dfWithRandParameters = df.withColumn("randn", randn(seed))
+      checkSparkAnswerAndOperatorWithTol(dfWithRandParameters)
+      val dfWithOverflowSeed = df.withColumn("randn", randn(Long.MaxValue))
+      checkSparkAnswerAndOperatorWithTol(dfWithOverflowSeed)
+      val dfWithNullSeed = df.selectExpr("_1", "randn(null) as randn")
+      checkSparkAnswerAndOperatorWithTol(dfWithNullSeed)
+    }
+  }
+
+  test("spark_partition_id expression on random dataset") {
+    testOnShuffledRangeWithRandomParameters { df =>
+      val dfWithRandParameters =
+        df.withColumn("pid1", spark_partition_id())
+          .repartition(3)
+          .withColumn("pid2", spark_partition_id())
+      checkSparkAnswerAndOperator(dfWithRandParameters)
+    }
+  }
+
+  test("monotonically_increasing_id expression on random dataset") {
+    testOnShuffledRangeWithRandomParameters { df =>
+      val dfWithRandParameters =
+        df.withColumn("mid1", monotonically_increasing_id())
+          .repartition(3)
+          .withColumn("mid2", monotonically_increasing_id())
+      checkSparkAnswerAndOperator(dfWithRandParameters)
+    }
+  }
+
+  test("multiple nondetermenistic expressions with shuffle") {
+    testOnShuffledRangeWithRandomParameters { df =>
+      val seed1 = Random.nextLong()
+      val seed2 = Random.nextLong()
+      val complexRandDf = df
+        .withColumn("rand1", rand(seed1))
+        .withColumn("randn1", randn(seed1))
+        .repartition(2, col("_1"))
+        .sortWithinPartitions("_1")
+        .withColumn("rand2", rand(seed2))
+        .withColumn("randn2", randn(seed2))
+      checkSparkAnswerAndOperatorWithTol(complexRandDf)
     }
   }
 
