@@ -41,7 +41,7 @@ The following chart shows how much Comet currently accelerates each query from t
 
 The raw results of these benchmarks in JSON format is available here:
 
-- [Spark](0.9.0/spark-tpcds.json)
-- [Comet](0.9.0/comet-tpcds.json)
+- [Spark](spark-3.5.3-tpcds.json)
+- [Comet](comet-0.9.0-tpcds.json)
 
 The scripts that were used to generate these results can be found [here](https://github.com/apache/datafusion-comet/tree/main/dev/benchmarks).
