@@ -345,16 +345,15 @@ fn prepare_output(
             if array_ref.offset() != 0 {
                 // https://github.com/apache/datafusion-comet/issues/2051
                 // Bug with non-zero offset FFI, so take to a new array which will have an offset of 0.
+                // We expect this to be a cold code path, hence the check_bounds: true and assert_eq.
                 let indices = UInt32Array::from((0..num_rows as u32).collect::<Vec<u32>>());
                 let new_array = take(
                     array_ref,
                     &indices,
-                    Some(TakeOptions {
-                        check_bounds: false,
-                    }),
+                    Some(TakeOptions { check_bounds: true }),
                 )?;
 
-                debug_assert!(new_array.offset() == 0);
+                assert_eq!(new_array.offset(), 0);
 
                 new_array
                     .to_data()
