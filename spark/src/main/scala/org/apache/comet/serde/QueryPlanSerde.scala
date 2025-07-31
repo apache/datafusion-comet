@@ -133,7 +133,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[IsNull] -> CometIsNull,
     classOf[IsNotNull] -> CometIsNotNull,
     classOf[IsNaN] -> CometIsNaN,
-    classOf[In] -> CometIn)
+    classOf[In] -> CometIn,
     classOf[GetMapValue] -> CometMapExtract,
     classOf[Rand] -> CometRand,
     classOf[Randn] -> CometRandn,
