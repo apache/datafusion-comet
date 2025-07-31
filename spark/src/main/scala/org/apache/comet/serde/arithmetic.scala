@@ -211,6 +211,9 @@ object CometIntegralDivide extends CometExpressionSerde with MathBase {
       return None
     }
 
+//    https://github.com/apache/datafusion-comet/issues/1477
+//    Precision is set to 19 (max precision for a numerical data type except DecimalType)
+
     val left =
       if (div.left.dataType.isInstanceOf[DecimalType]) div.left
       else Cast(div.left, DecimalType(19, 0))
