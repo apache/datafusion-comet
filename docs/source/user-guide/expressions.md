@@ -35,14 +35,14 @@ The following Spark expressions are currently available. Any known compatibility
 
 ## Binary Arithmetic
 
-| Expression             | Notes                                                                                                                   |
-|------------------------|-------------------------------------------------------------------------------------------------------------------------|
-| Add (`+`)              |                                                                                                                         |
-| Subtract (`-`)         |                                                                                                                         |
-| Multiply (`*`)         |                                                                                                                         |
-| Divide (`/`)           |                                                                                                                         |
-| IntegralDivide (`div`) | Set `spark.comet.cast.allowIncompatible` to `true` in Scala to rely on DataFusion’s cast operation for LongType inputs. |
-| Remainder (`%`)        |                                                                                                                         |
+| Expression             | Notes                                                                                                                  |
+|------------------------|------------------------------------------------------------------------------------------------------------------------|
+| Add (`+`)              |                                                                                                                        |
+| Subtract (`-`)         |                                                                                                                        |
+| Multiply (`*`)         |                                                                                                                        |
+| Divide (`/`)           |                                                                                                                        |
+| IntegralDivide (`div`) | Set `spark.comet.cast.allowIncompatible` to `true` to rely on DataFusion’s cast operation for LongType inputs. |
+| Remainder (`%`)        |                                                                                                                        |
 
 ## Conditional Expressions
 
