@@ -2698,7 +2698,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("test integral divide") {
     // this test requires native_comet scan due to unsigned u8/u16 issue
-    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,  CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path1 = new Path(dir.toURI.toString, "test1.parquet")
@@ -2717,7 +2717,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             randomSize = 10000)
           withParquetTable(path1.toString, "tbl1") {
             withParquetTable(path2.toString, "tbl2") {
-              checkSparkAnswer("""
+              checkSparkAnswerAndOperator("""
                   |select
                   | t1._2 div t2._2, div(t1._2, t2._2),
                   | t1._3 div t2._3, div(t1._3, t2._3),
@@ -2729,7 +2729,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
                   | order by t1._id""".stripMargin)
 
-              checkSparkAnswer("""
+              checkSparkAnswerAndOperator("""
                   |select
                   | t1._12 div t2._12, div(t1._12, t2._12),
                   | t1._15 div t2._15, div(t1._15, t2._15),
