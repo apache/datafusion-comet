@@ -29,6 +29,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.serde.ExprOuterClass
 import org.apache.comet.serde.ExprOuterClass.Expr
+import org.apache.comet.serde.Datatype.DataType
 import org.apache.comet.serde.QueryPlanSerde.serializeDataType
 
 object SourceFilterSerde extends Logging {

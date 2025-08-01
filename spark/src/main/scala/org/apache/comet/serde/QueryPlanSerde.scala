@@ -51,8 +51,10 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
 import org.apache.comet.expressions._
 import org.apache.comet.objectstore.NativeConfig
-import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
-import org.apache.comet.serde.ExprOuterClass.DataType._
+import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
+import org.apache.comet.serde.Datatype.{ DataType => ProtoDataType }
+import org.apache.comet.serde.Datatype.DataType._
+import org.apache.comet.serde.LiteralOuterClass._
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 import org.apache.comet.shims.CometExprShim
@@ -152,7 +154,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
    * doesn't mean it is supported by Comet native execution, i.e., `supportedDataType` may return
    * false for it.
    */
-  def serializeDataType(dt: DataType): Option[ExprOuterClass.DataType] = {
+  def serializeDataType(dt: org.apache.spark.sql.types.DataType): Option[Datatype.DataType] = {
     val typeId = dt match {
       case _: BooleanType => 0
       case _: ByteType => 1
@@ -709,7 +711,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
       case Literal(value, dataType)
           if supportedDataType(dataType, allowComplex = value == null) =>
-        val exprBuilder = ExprOuterClass.Literal.newBuilder()
+        val exprBuilder = Literal.newBuilder()
 
         if (value == null) {
           exprBuilder.setIsNull(true)
@@ -1888,8 +1890,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
   }
 
   private def nullIfNegative(expression: Expression): Expression = {
-    val zero = Literal.default(expression.dataType)
-    If(LessThanOrEqual(expression, zero), Literal.create(null, expression.dataType), expression)
+    val zero = LiteralOuterClass.Literal.default(expression.dataType)
+    If(LessThanOrEqual(expression, zero), LiteralOuterClass.Literal.create(null, expression.dataType), expression)
   }
 
   /**
