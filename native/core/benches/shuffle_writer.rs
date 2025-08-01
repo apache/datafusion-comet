@@ -89,7 +89,8 @@ fn criterion_benchmark(c: &mut Criterion) {
         CometPartitioning::RangePartitioning(
             LexOrdering::new(vec![PhysicalSortExpr::new_default(
                 col("c0", batch.schema().as_ref()).unwrap(),
-            )]),
+            )])
+            .unwrap(),
             16,
             100,
         ),
