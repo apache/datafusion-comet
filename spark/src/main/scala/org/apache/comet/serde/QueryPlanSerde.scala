@@ -131,6 +131,29 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[SparkPartitionID] -> CometSparkPartitionId,
     classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId)
 
+  /**
+   * Mapping of Spark aggregate expression class to Comet expression handler.
+   */
+  private val aggrSerdeMap: Map[Class[_], CometAggregateExpressionSerde] = Map(
+    classOf[Sum] -> CometSum,
+    classOf[Average] -> CometAverage,
+    classOf[Count] -> CometCount,
+    classOf[Min] -> CometMin,
+    classOf[Max] -> CometMax,
+    classOf[First] -> CometFirst,
+    classOf[Last] -> CometLast,
+    classOf[BitAndAgg] -> CometBitAndAgg,
+    classOf[BitOrAgg] -> CometBitOrAgg,
+    classOf[BitXorAgg] -> CometBitXOrAgg,
+    classOf[CovSample] -> CometCovSample,
+    classOf[CovPopulation] -> CometCovPopulation,
+    classOf[VarianceSamp] -> CometVarianceSamp,
+    classOf[VariancePop] -> CometVariancePop,
+    classOf[StddevSamp] -> CometStddevSamp,
+    classOf[StddevPop] -> CometStddevPop,
+    classOf[Corr] -> CometCorr,
+    classOf[BloomFilterAggregate] -> CometBloomFilterAggregate)
+
   def emitWarning(reason: String): Unit = {
     logWarning(s"Comet native execution is disabled due to: $reason")
   }
@@ -436,33 +459,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
       return None
     }
 
-    val cometExpr: CometAggregateExpressionSerde = aggExpr.aggregateFunction match {
-      case _: Sum => CometSum
-      case _: Average => CometAverage
-      case _: Count => CometCount
-      case _: Min => CometMin
-      case _: Max => CometMax
-      case _: First => CometFirst
-      case _: Last => CometLast
-      case _: BitAndAgg => CometBitAndAgg
-      case _: BitOrAgg => CometBitOrAgg
-      case _: BitXorAgg => CometBitXOrAgg
-      case _: CovSample => CometCovSample
-      case _: CovPopulation => CometCovPopulation
-      case _: VarianceSamp => CometVarianceSamp
-      case _: VariancePop => CometVariancePop
-      case _: StddevSamp => CometStddevSamp
-      case _: StddevPop => CometStddevPop
-      case _: Corr => CometCorr
-      case _: BloomFilterAggregate => CometBloomFilterAggregate
-      case fn =>
+    val fn = aggExpr.aggregateFunction
+    val cometExpr = aggrSerdeMap.get(fn.getClass)
+    cometExpr match {
+      case Some(handler) =>
+        handler.convert(aggExpr, fn, inputs, binding, conf)
+      case _ =>
         val msg = s"unsupported Spark aggregate function: ${fn.prettyName}"
         emitWarning(msg)
         withInfo(aggExpr, msg, fn.children: _*)
-        return None
-
+        None
     }
-    cometExpr.convert(aggExpr, aggExpr.aggregateFunction, inputs, binding, conf)
   }
 
   def evalModeToProto(evalMode: CometEvalMode.Value): ExprOuterClass.EvalMode = {
