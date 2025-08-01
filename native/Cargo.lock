@@ -574,7 +574,7 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "tracing",
- "uuid",
+ "uuid 1.17.0",
 ]
 
 [[package]]
@@ -1430,7 +1430,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "url",
- "uuid",
+ "uuid 1.17.0",
 ]
 
 [[package]]
@@ -1539,7 +1539,7 @@ dependencies = [
  "bytes",
  "chrono",
  "fs-hdfs",
- "fs-hdfs3",
+ "fs-hdfs3 0.1.12 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures",
  "object_store",
  "tokio",
@@ -1803,7 +1803,7 @@ dependencies = [
  "regex",
  "sha2",
  "unicode-segmentation",
- "uuid",
+ "uuid 1.17.0",
 ]
 
 [[package]]
@@ -2101,7 +2101,7 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bef552e6f588e446098f6ba40d89ac146c8c7b64aade83c051ee00bb5d2bc18d"
 dependencies = [
- "uuid",
+ "uuid 1.17.0",
 ]
 
 [[package]]
@@ -2305,6 +2305,21 @@ dependencies = [
  "libc",
  "log",
  "url",
+]
+
+[[package]]
+name = "fs-hdfs3"
+version = "0.1.12"
+dependencies = [
+ "bindgen 0.64.0",
+ "cc",
+ "java-locator",
+ "lazy_static",
+ "libc",
+ "log",
+ "tempfile",
+ "url",
+ "uuid 0.8.2",
 ]
 
 [[package]]
@@ -4483,7 +4498,7 @@ dependencies = [
  "debugid",
  "memmap2",
  "stable_deref_trait",
- "uuid",
+ "uuid 1.17.0",
 ]
 
 [[package]]
@@ -4939,6 +4954,15 @@ name = "utf8_iter"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
+
+[[package]]
+name = "uuid"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc5cf98d8186244414c848017f0e2676b3fcb46807f6668a97dfe67359a3c4b7"
+dependencies = [
+ "getrandom 0.2.16",
+]
 
 [[package]]
 name = "uuid"
