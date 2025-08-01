@@ -93,7 +93,7 @@ public class ColumnReader extends AbstractColumnReader {
   private ArrowArray array = null;
   private ArrowSchema schema = null;
 
-  public ColumnReader(
+  ColumnReader(
       DataType type,
       ColumnDescriptor descriptor,
       CometSchemaImporter importer,
@@ -112,7 +112,7 @@ public class ColumnReader extends AbstractColumnReader {
    *
    * @param pageReader the page reader for the new column chunk
    */
-  public void setPageReader(PageReader pageReader) throws IOException {
+  void setPageReader(PageReader pageReader) throws IOException {
     this.pageReader = pageReader;
 
     DictionaryPage dictionaryPage = pageReader.readDictionaryPage();

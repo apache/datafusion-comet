@@ -21,6 +21,12 @@ package org.apache.comet.parquet;
 
 import java.util.Map;
 
+/**
+ * Parquet ColumnSpec encapsulates the information withing a Parquet ColumnDescriptor. Utility
+ * methods can convert from and to a ColumnDescriptor The only purpose of this class is to allow
+ * passing of Column descriptors between Comet and Iceberg. This is required because Iceberg shades
+ * Parquet, changing the package of Parquet classes and making then incompatible with Comet.
+ */
 public class ParquetColumnSpec {
 
   private final int fieldId;

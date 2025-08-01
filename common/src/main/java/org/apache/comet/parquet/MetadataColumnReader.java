@@ -42,10 +42,19 @@ public class MetadataColumnReader extends AbstractColumnReader {
 
   private boolean isConstant;
 
-  public MetadataColumnReader(
+  MetadataColumnReader(
       DataType type, ColumnDescriptor descriptor, boolean useDecimal128, boolean isConstant) {
     // TODO: should we handle legacy dates & timestamps for metadata columns?
     super(type, descriptor, useDecimal128, false);
+
+    this.isConstant = isConstant;
+  }
+
+  // Used by Iceberg
+  public MetadataColumnReader(
+      DataType type, ParquetColumnSpec spec, boolean useDecimal128, boolean isConstant) {
+    // TODO: should we handle legacy dates & timestamps for metadata columns?
+    super(type, Utils.buildColumnDescriptor(spec), useDecimal128, false);
 
     this.isConstant = isConstant;
   }

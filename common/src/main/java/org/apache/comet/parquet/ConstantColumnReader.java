@@ -38,7 +38,7 @@ public class ConstantColumnReader extends MetadataColumnReader {
   /** The constant value in the format of Object that are used to initialize this column reader. */
   private Object value;
 
-  public ConstantColumnReader(StructField field, int batchSize, boolean useDecimal128) {
+  ConstantColumnReader(StructField field, int batchSize, boolean useDecimal128) {
     this(field.dataType(), TypeUtil.convertToParquet(field), batchSize, useDecimal128);
     this.value =
         ResolveDefaultColumns.getExistenceDefaultValues(new StructType(new StructField[] {field}))[
@@ -46,15 +46,16 @@ public class ConstantColumnReader extends MetadataColumnReader {
     init(value);
   }
 
-  public ConstantColumnReader(
+  ConstantColumnReader(
       StructField field, int batchSize, InternalRow values, int index, boolean useDecimal128) {
     this(field.dataType(), TypeUtil.convertToParquet(field), batchSize, useDecimal128);
     init(values, index);
   }
 
+  // Used by Iceberg
   public ConstantColumnReader(
-      DataType type, ColumnDescriptor descriptor, Object value, boolean useDecimal128) {
-    super(type, descriptor, useDecimal128, true);
+      DataType type, ParquetColumnSpec spec, Object value, boolean useDecimal128) {
+    super(type, spec, useDecimal128, true);
     this.value = value;
   }
 

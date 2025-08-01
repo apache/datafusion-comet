@@ -31,10 +31,12 @@ import org.apache.spark.sql.types.*;
 
 import org.apache.comet.CometConf;
 
+import static org.apache.comet.parquet.Utils.descriptorToParquetColumnSpec;
+
 public class TypeUtil {
 
   /** Converts the input Spark 'field' into a Parquet column descriptor. */
-  public static ColumnDescriptor convertToParquet(StructField field) {
+  static ColumnDescriptor convertToParquet(StructField field) {
     Type.Repetition repetition;
     int maxDefinitionLevel;
     if (field.nullable()) {
@@ -103,6 +105,10 @@ public class TypeUtil {
     }
 
     return new ColumnDescriptor(path, builder.named(field.name()), 0, maxDefinitionLevel);
+  }
+
+  public static ParquetColumnSpec convertToParquetSpec(StructField field) {
+    return descriptorToParquetColumnSpec(convertToParquet(field));
   }
 
   /**
