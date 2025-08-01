@@ -32,7 +32,7 @@ use hdfs::walkdir::HdfsWalkDir;
 use object_store::{
     path::{self, Path},
     Error, GetOptions, GetRange, GetResult, GetResultPayload, ListResult, MultipartUpload,
-    ObjectMeta, ObjectStore, PutMultipartOpts, PutOptions, PutPayload, PutResult, Result,
+    ObjectMeta, ObjectStore, PutMultipartOptions, PutOptions, PutPayload, PutResult, Result,
 };
 
 /// scheme for HDFS File System
@@ -139,7 +139,7 @@ impl ObjectStore for HadoopFileSystem {
     async fn put_multipart_opts(
         &self,
         _location: &Path,
-        _opts: PutMultipartOpts,
+        _opts: PutMultipartOptions,
     ) -> object_store::Result<Box<dyn MultipartUpload>> {
         unimplemented!()
     }
