@@ -37,6 +37,19 @@ object CometMapKeys extends CometExpressionSerde {
   }
 }
 
+object CometMapEntries extends CometExpressionSerde {
+
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val mk = expr.asInstanceOf[MapEntries]
+    val childExpr = exprToProtoInternal(mk.child, inputs, binding)
+    val mapEntriesScalarExpr = scalarFunctionExprToProto("map_entries", childExpr)
+    optExprWithInfo(mapEntriesScalarExpr, expr, expr.children: _*)
+  }
+}
+
 object CometMapValues extends CometExpressionSerde {
 
   override def convert(

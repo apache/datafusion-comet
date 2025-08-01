@@ -1970,6 +1970,7 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
                       "optional_map.key, " +
                       "optional_map.value, " +
                       "map_keys(complex_map), " +
+                      "map_entries(complex_map), " +
                       "map_values(complex_map) " +
                       "from complex_types"))
                 // leaf fields
@@ -1982,6 +1983,8 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
                       "optional_map.value, " +
                       "map_keys(complex_map)[0].key_field1, " +
                       "map_keys(complex_map)[0].key_field2, " +
+                      "map_entries(complex_map)[0].key, " +
+                      "map_entries(complex_map)[0].value, " +
                       "map_values(complex_map)[0].value_field1, " +
                       "map_values(complex_map)[0].value_field2 " +
                       "from complex_types"))
