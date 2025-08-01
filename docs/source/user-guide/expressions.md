@@ -41,7 +41,7 @@ The following Spark expressions are currently available. Any known compatibility
 | Subtract (`-`)         |                                                                                                                                                                                                                                               |
 | Multiply (`*`)         |                                                                                                                                                                                                                                               |
 | Divide (`/`)           |                                                                                                                                                                                                                                               |
-| IntegralDivide (`div`) | All operands are cast to DecimalType (in case the input type is not already decima type) with precision 19 and scale 0. Please set `spark.comet.cast.allowIncompatible` to `true` to rely on DataFusion’s cast operation for LongType inputs. |
+| IntegralDivide (`div`) | All operands are cast to DecimalType (in case the input type is not already decima type) with precision 19 and scale 0. Please set `spark.comet.cast.allowIncompatible` to `true` to enable DataFusion’s cast operation for LongType inputs. |
 | Remainder (`%`)        |                                                                                                                                                                                                                                               |
 
 ## Conditional Expressions
