@@ -64,9 +64,8 @@ builds:
         - cargo test --release
 
         # Perform the same build as the future "publish" step to catch multi-target errors
-        # TODO Restore multi-target build
         - cd ..
-        - make clean core
+        - make clean core-${RIO_ARCH}
   - <<: *test-comet-rust
     build:
       <<: *test-comet-rust-build
@@ -88,8 +87,8 @@ builds:
     build: &test_comet_java_build
       template: freestyle:v4:build
       steps:
-        # TODO Restore multi-target build
-        -  make clean core
+        # NOTE: Don't publish multi-arch native libraries by using core-${RIO_ARCH}
+        - make clean core
         - ./mvnw ${PROFILES} compile test-compile scalafix:scalafix -Psemanticdb -Dscalafix.mode=CHECK && SPARK_HOME=`pwd` ./mvnw ${PROFILES} clean install -DtagsToExclude=org.apache.spark.tags.DockerTest
     reports: &reports
       junit:
@@ -1138,8 +1137,7 @@ builds:
         - if [ $(grep '^strip = "debuginfo"$' native/Cargo.toml | wc -l) -ne 1 ]; then echo "ERROR Debug Info must be stripped"; exit 1; fi
 
         # Build Comet
-        # TODO Restore multi-target build
-        - make clean core
+        - make clean core-${RIO_ARCH}
         - ci stage-lib --many-many-artifacts "$LOCAL_REPO/**/*" --exclude "**/*.xml" --exclude "**/*.md5" --exclude "**/*.sha1"
     package:
       release: false
@@ -1710,8 +1708,7 @@ builds:
         - if [ $(grep '^strip = "debuginfo"$' native/Cargo.toml | wc -l) -ne 1 ]; then echo "ERROR Debug Info must be stripped"; exit 1; fi
 
         # Build Comet
-        # TODO Restore multi-target build
-        - make clean core
+        - make clean core-${RIO_ARCH}
         - ci stage-lib --many-many-artifacts "$LOCAL_REPO/**/*" --exclude "**/*.xml" --exclude "**/*.md5" --exclude "**/*.sha1"
     package:
       release: true
@@ -2180,8 +2177,7 @@ builds:
         - if [ "${BUILD_PARAM_STRIP}" != "debuginfo" ]; then sed -i.bak "s/strip = \"debuginfo\"/strip = \"${BUILD_PARAM_STRIP}\"/" native/Cargo.toml; fi
 
         # Build Comet
-        # TODO Restore multi-target build
-        - make clean core
+        - make clean core-${RIO_ARCH}
         - ci stage-lib --many-many-artifacts "$LOCAL_REPO/**/*" --exclude "**/*.xml" --exclude "**/*.md5" --exclude "**/*.sha1"
     package:
       release: false

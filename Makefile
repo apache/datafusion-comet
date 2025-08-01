@@ -66,10 +66,12 @@ ifdef HAS_OSXCROSS
 endif
 
 core-amd64:
+	mkdir -p common/target/classes/org/apache/comet/darwin/x86_64
+ifdef HAS_OSXCROSS
 	rustup target add x86_64-apple-darwin
 	cd native && RUSTFLAGS="-Ctarget-cpu=skylake -Ctarget-feature=-prefer-256-bit" CC=x86_64-apple-darwin21.4-clang cargo build --target x86_64-apple-darwin --release
-	mkdir -p common/target/classes/org/apache/comet/darwin/x86_64
 	cp native/target/x86_64-apple-darwin/release/libcomet.dylib common/target/classes/org/apache/comet/darwin/x86_64
+endif
 	cd native && RUSTFLAGS="-Ctarget-cpu=haswell -Ctarget-feature=-prefer-256-bit" cargo build --release
 	mkdir -p common/target/classes/org/apache/comet/linux/amd64
 	cp native/target/release/libcomet.so common/target/classes/org/apache/comet/linux/amd64
@@ -79,10 +81,12 @@ core-amd64:
 	./dev/deploy-file common/target/comet-native-x86_64.jar comet-native-x86_64 jar
 
 core-arm64:
+	mkdir -p common/target/classes/org/apache/comet/darwin/aarch64
+ifdef HAS_OSXCROSS
 	rustup target add aarch64-apple-darwin
 	cd native && RUSTFLAGS="-Ctarget-cpu=apple-m1" CC=arm64-apple-darwin21.4-clang CXX=arm64-apple-darwin21.4-clang++ CARGO_FEATURE_NEON=1 cargo build --target aarch64-apple-darwin --release
-	mkdir -p common/target/classes/org/apache/comet/darwin/aarch64
 	cp native/target/aarch64-apple-darwin/release/libcomet.dylib common/target/classes/org/apache/comet/darwin/aarch64
+endif
 	cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo build --release
 	mkdir -p common/target/classes/org/apache/comet/linux/aarch64
 	cp native/target/release/libcomet.so common/target/classes/org/apache/comet/linux/aarch64
