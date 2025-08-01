@@ -123,6 +123,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Murmur3Hash] -> CometMurmur3Hash,
     classOf[XxHash64] -> CometXxHash64,
     classOf[MapKeys] -> CometMapKeys,
+    classOf[MapEntries] -> CometMapEntries,
     classOf[MapValues] -> CometMapValues,
     classOf[MapFromArrays] -> CometMapFromArrays,
     classOf[GetMapValue] -> CometMapExtract,
