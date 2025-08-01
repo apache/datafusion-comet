@@ -72,6 +72,26 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
         })
       }
 
+      def isIcebergMetadataTable(scanExec: BatchScanExec): Boolean = {
+        // List of Iceberg metadata tables:
+        // https://iceberg.apache.org/docs/latest/spark-queries/#inspecting-tables
+        val metadataTableSuffix = Set(
+          "history",
+          "metadata_log_entries",
+          "snapshots",
+          "entries",
+          "files",
+          "manifests",
+          "partitions",
+          "position_deletes",
+          "all_data_files",
+          "all_delete_files",
+          "all_entries",
+          "all_manifests")
+
+        metadataTableSuffix.exists(suffix => scanExec.table.name().endsWith(suffix))
+      }
+
       plan.transform {
         case scan if hasMetadataCol(scan) =>
           withInfo(scan, "Metadata column is not supported")
@@ -82,7 +102,11 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
 
         // data source V2
         case scanExec: BatchScanExec =>
-          transformV2Scan(scanExec)
+          if (isIcebergMetadataTable(scanExec)) {
+            withInfo(scanExec, "Iceberg Metadata tables are not supported")
+          } else {
+            transformV2Scan(scanExec)
+          }
       }
     }
   }
