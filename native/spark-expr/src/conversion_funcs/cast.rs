@@ -20,6 +20,7 @@ use crate::utils::array_with_timezone;
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::builder::StringBuilder;
 use arrow::array::{DictionaryArray, StringArray, StructArray};
+use arrow::compute::can_cast_types;
 use arrow::datatypes::{DataType, Schema};
 use arrow::{
     array::{
@@ -968,6 +969,9 @@ fn cast_array(
             to_type,
             cast_options,
         )?),
+        (List(_), List(_)) if can_cast_types(from_type, to_type) => {
+            Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
+        }
         (UInt8 | UInt16 | UInt32 | UInt64, Int8 | Int16 | Int32 | Int64)
             if cast_options.allow_cast_unsigned_ints =>
         {
@@ -1018,7 +1022,7 @@ fn is_datafusion_spark_compatible(
         DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
             // note that the cast from Int32/Int64 -> Decimal128 here is actually
             // not compatible with Spark (no overflow checks) but we have tests that
-            // rely on this cast working so we have to leave it here for now
+            // rely on this cast working, so we have to leave it here for now
             matches!(
                 to_type,
                 DataType::Boolean
