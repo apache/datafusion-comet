@@ -129,7 +129,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Rand] -> CometRand,
     classOf[Randn] -> CometRandn,
     classOf[SparkPartitionID] -> CometSparkPartitionId,
-    classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId)
+    classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
+    classOf[StringSpace] -> CometStringSpace,
+    classOf[StartsWith] -> CometStartsWith,
+    classOf[EndsWith] -> CometEndsWith,
+    classOf[Contains] -> CometContains,
+    classOf[Substring] -> CometSubstring,
+    classOf[Like] -> CometLike,
+    classOf[RLike] -> CometRLike,
+    classOf[OctetLength] -> CometOctetLength,
+    classOf[Reverse] -> CometReverse,
+    classOf[StringRPad] -> CometStringRPad)
 
   def emitWarning(reason: String): Unit = {
     logWarning(s"Comet native execution is disabled due to: $reason")
@@ -764,25 +774,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         withInfo(expr, s"Unsupported datatype $dataType")
         None
 
-      case Substring(str, Literal(pos, _), Literal(len, _)) =>
-        val strExpr = exprToProtoInternal(str, inputs, binding)
-
-        if (strExpr.isDefined) {
-          val builder = ExprOuterClass.Substring.newBuilder()
-          builder.setChild(strExpr.get)
-          builder.setStart(pos.asInstanceOf[Int])
-          builder.setLen(len.asInstanceOf[Int])
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setSubstring(builder)
-              .build())
-        } else {
-          withInfo(expr, str)
-          None
-        }
-
       // ToPrettyString is new in Spark 3.5
       case _
           if expr.getClass.getSimpleName == "ToPrettyString" && expr
@@ -878,70 +869,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             None
           }
         }
-
-      case Like(left, right, escapeChar) =>
-        if (escapeChar == '\\') {
-          createBinaryExpr(
-            expr,
-            left,
-            right,
-            inputs,
-            binding,
-            (builder, binaryExpr) => builder.setLike(binaryExpr))
-        } else {
-          // TODO custom escape char
-          withInfo(expr, s"custom escape character $escapeChar not supported in LIKE")
-          None
-        }
-
-      case RLike(left, right) =>
-        // we currently only support scalar regex patterns
-        right match {
-          case Literal(pattern, DataTypes.StringType) =>
-            if (!RegExp.isSupportedPattern(pattern.toString) &&
-              !CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
-              withInfo(
-                expr,
-                s"Regexp pattern $pattern is not compatible with Spark. " +
-                  s"Set ${CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key}=true " +
-                  "to allow it anyway.")
-              return None
-            }
-          case _ =>
-            withInfo(expr, "Only scalar regexp patterns are supported")
-            return None
-        }
-
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setRlike(binaryExpr))
-
-      case StartsWith(attribute, prefix) =>
-        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
-        val prefixExpr = exprToProtoInternal(prefix, inputs, binding)
-        scalarFunctionExprToProto("starts_with", attributeExpr, prefixExpr)
-
-      case EndsWith(attribute, suffix) =>
-        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
-        val suffixExpr = exprToProtoInternal(suffix, inputs, binding)
-        scalarFunctionExprToProto("ends_with", attributeExpr, suffixExpr)
-
-      case Contains(attribute, value) =>
-        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
-        val valueExpr = exprToProtoInternal(value, inputs, binding)
-        scalarFunctionExprToProto("contains", attributeExpr, valueExpr)
-
-      case StringSpace(child) =>
-        createUnaryExpr(
-          expr,
-          child,
-          inputs,
-          binding,
-          (builder, unaryExpr) => builder.setStringSpace(unaryExpr))
 
       case Hour(child, timeZoneId) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
@@ -1436,18 +1363,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case OctetLength(child) =>
-        val castExpr = Cast(child, StringType)
-        val childExpr = exprToProtoInternal(castExpr, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("octet_length", childExpr)
-        optExprWithInfo(optExpr, expr, castExpr)
-
-      case Reverse(child) =>
-        val castExpr = Cast(child, StringType)
-        val childExpr = exprToProtoInternal(castExpr, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("reverse", childExpr)
-        optExprWithInfo(optExpr, expr, castExpr)
-
       case BitwiseAnd(left, right) =>
         createBinaryExpr(
           expr,
@@ -1522,24 +1437,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         } else {
           withInfo(expr, s.arguments: _*)
           None
-        }
-
-      // read-side padding in Spark 3.5.2+ is represented by rpad function
-      case StringRPad(srcStr, size, chars) =>
-        chars match {
-          case Literal(str, DataTypes.StringType) if str.toString == " " =>
-            val arg0 = exprToProtoInternal(srcStr, inputs, binding)
-            val arg1 = exprToProtoInternal(size, inputs, binding)
-            if (arg0.isDefined && arg1.isDefined) {
-              scalarFunctionExprToProto("rpad", arg0, arg1)
-            } else {
-              withInfo(expr, "rpad unsupported arguments", srcStr, size)
-              None
-            }
-
-          case _ =>
-            withInfo(expr, "rpad only supports padding with spaces")
-            None
         }
 
       case KnownFloatingPointNormalized(NormalizeNaNAndZero(expr)) =>

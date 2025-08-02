@@ -21,13 +21,13 @@ package org.apache.comet.serde
 
 import scala.util.Try
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression}
-import org.apache.spark.sql.types.{LongType, StringType}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Contains, EndsWith, Expression, Like, Literal, OctetLength, Reverse, RLike, StartsWith, StringRPad, StringSpace, Substring}
+import org.apache.spark.sql.types.{DataTypes, LongType, StringType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, createUnaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
 object CometAscii extends CometExpressionSerde {
 
@@ -306,5 +306,234 @@ object CometConcatWs extends CometExpressionSerde {
     })
     val optExpr = scalarFunctionExprToProto("concat_ws", exprs: _*)
     optExprWithInfo(optExpr, expr, childExprs: _*)
+  }
+}
+
+object CometStringSpace extends CometExpressionSerde {
+
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    expr match {
+      case StringSpace(child) =>
+        createUnaryExpr(
+          expr,
+          child,
+          inputs,
+          binding,
+          (builder, unaryExpr) => builder.setStringSpace(unaryExpr))
+      case _ =>
+        withInfo(expr, s"Unexpected expression type for CometStringSpace: ${expr.getClass}")
+        None
+    }
+  }
+}
+
+object CometStartsWith extends CometExpressionSerde {
+
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    expr match {
+      case StartsWith(attribute, prefix) =>
+        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
+        val prefixExpr = exprToProtoInternal(prefix, inputs, binding)
+        scalarFunctionExprToProto("starts_with", attributeExpr, prefixExpr)
+      case _ =>
+        withInfo(expr, s"Unexpected expression type for CometStartsWith: ${expr.getClass}")
+        None
+    }
+  }
+}
+
+object CometEndsWith extends CometExpressionSerde {
+
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    expr match {
+      case EndsWith(attribute, suffix) =>
+        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
+        val suffixExpr = exprToProtoInternal(suffix, inputs, binding)
+        scalarFunctionExprToProto("ends_with", attributeExpr, suffixExpr)
+      case _ =>
+        withInfo(expr, s"Unexpected expression type for CometEndsWith: ${expr.getClass}")
+        None
+    }
+  }
+}
+
+object CometContains extends CometExpressionSerde {
+
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    expr match {
+      case Contains(attribute, value) =>
+        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
+        val valueExpr = exprToProtoInternal(value, inputs, binding)
+        scalarFunctionExprToProto("contains", attributeExpr, valueExpr)
+      case _ =>
+        withInfo(expr, s"Unexpected expression type for CometContains: ${expr.getClass}")
+        None
+    }
+  }
+}
+
+object CometSubstring extends CometExpressionSerde {
+
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    expr match {
+      case Substring(str, Literal(pos, _), Literal(len, _)) =>
+        val strExpr = exprToProtoInternal(str, inputs, binding)
+        if (strExpr.isDefined) {
+          val builder = ExprOuterClass.Substring.newBuilder()
+          builder.setChild(strExpr.get)
+          builder.setStart(pos.asInstanceOf[Int])
+          builder.setLen(len.asInstanceOf[Int])
+
+          Some(
+            ExprOuterClass.Expr
+              .newBuilder()
+              .setSubstring(builder)
+              .build())
+        } else {
+          withInfo(expr, str)
+          None
+        }
+      case _ =>
+        withInfo(expr, s"Unexpected expression type for CometSubstring: ${expr.getClass}")
+        None
+    }
+  }
+}
+
+object CometLike extends CometExpressionSerde {
+
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    expr match {
+      case Like(left, right, escapeChar) =>
+        if (escapeChar == '\\') {
+          createBinaryExpr(
+            expr,
+            left,
+            right,
+            inputs,
+            binding,
+            (builder, binaryExpr) => builder.setLike(binaryExpr))
+        } else {
+          withInfo(expr, s"custom escape character $escapeChar not supported in LIKE")
+          None
+        }
+      case _ =>
+        withInfo(expr, s"Unexpected expression type for CometLike: ${expr.getClass}")
+        None
+    }
+  }
+}
+
+object CometRLike extends CometExpressionSerde {
+
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    expr match {
+      case RLike(left, right) =>
+        right match {
+          case Literal(pattern, DataTypes.StringType) =>
+            val regex = pattern.toString
+            if (regex.contains("(?i)") || regex.contains("(?-i)")) {
+              withInfo(expr, "Regex flag (?i) and (?-i) are not supported")
+              None
+            } else {
+              createBinaryExpr(
+                expr,
+                left,
+                right,
+                inputs,
+                binding,
+                (builder, binaryExpr) => builder.setRlike(binaryExpr))
+            }
+          case _ =>
+            withInfo(expr, "Only literal regex patterns are supported")
+            None
+        }
+      case _ =>
+        withInfo(expr, s"Unexpected expression type for CometRLike: ${expr.getClass}")
+        None
+    }
+  }
+}
+
+object CometOctetLength extends CometExpressionSerde {
+
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    expr match {
+      case OctetLength(child) =>
+        val castExpr = Cast(child, StringType)
+        val childExpr = exprToProtoInternal(castExpr, inputs, binding)
+        val optExpr = scalarFunctionExprToProto("octet_length", childExpr)
+        optExprWithInfo(optExpr, expr, castExpr)
+      case _ =>
+        withInfo(expr, s"Unexpected expression type for CometOctetLength: ${expr.getClass}")
+        None
+    }
+  }
+}
+
+object CometReverse extends CometExpressionSerde {
+
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    expr match {
+      case Reverse(child) =>
+        val castExpr = Cast(child, StringType)
+        val childExpr = exprToProtoInternal(castExpr, inputs, binding)
+        val optExpr = scalarFunctionExprToProto("reverse", childExpr)
+        optExprWithInfo(optExpr, expr, castExpr)
+      case _ =>
+        withInfo(expr, s"Unexpected expression type for CometReverse: ${expr.getClass}")
+        None
+    }
+  }
+}
+
+object CometStringRPad extends CometExpressionSerde {
+
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    expr match {
+      case StringRPad(srcStr, size, chars) =>
+        chars match {
+          case Literal(str, DataTypes.StringType) if str.toString == " " =>
+            val arg0 = exprToProtoInternal(srcStr, inputs, binding)
+            val arg1 = exprToProtoInternal(size, inputs, binding)
+            scalarFunctionExprToProto("rpad", arg0, arg1)
+          case _ =>
+            withInfo(expr, "StringRPad with non-space characters is not supported")
+            None
+        }
+      case _ =>
+        withInfo(expr, s"Unexpected expression type for CometStringRPad: ${expr.getClass}")
+        None
+    }
   }
 }
