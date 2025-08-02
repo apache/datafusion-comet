@@ -820,7 +820,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             None
         }
 
-
       case Like(left, right, escapeChar) =>
         if (escapeChar == '\\') {
           createBinaryExpr(

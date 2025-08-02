@@ -23,7 +23,6 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Structs
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.ExprOuterClass
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
 object CometStructsToJson extends CometExpressionSerde {
