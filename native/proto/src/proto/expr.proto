@@ -45,7 +45,6 @@ message Expr {
     BinaryExpr or = 18;
     SortOrder sort_order = 19;
     Substring substring = 20;
-    UnaryExpr string_space = 21;
     Hour hour = 22;
     Minute minute = 23;
     Second second = 24;
