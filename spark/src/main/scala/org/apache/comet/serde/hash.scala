@@ -19,8 +19,8 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Murmur3Hash, XxHash64}
-import org.apache.spark.sql.types.{DecimalType, IntegerType, LongType}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Murmur3Hash, Sha2, XxHash64}
+import org.apache.spark.sql.types.{DecimalType, IntegerType, LongType, StringType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProtoWithReturnType, serializeDataType, supportedDataType}
@@ -62,6 +62,29 @@ object CometMurmur3Hash extends CometExpressionSerde {
     val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
     // the seed is put at the end of the arguments
     scalarFunctionExprToProtoWithReturnType("murmur3_hash", IntegerType, exprs :+ seedExpr: _*)
+  }
+}
+
+object CometSha2 extends CometExpressionSerde {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (!HashUtils.isSupportedType(expr)) {
+      return None
+    }
+
+    // It's possible for spark to dynamically compute the number of bits from input
+    // expression, however DataFusion does not support that yet.
+    val sha2Expr = expr.asInstanceOf[Sha2]
+    if (!sha2Expr.right.foldable) {
+      withInfo(expr, "For Sha2, non-foldable right argument is not supported")
+      return None
+    }
+
+    val leftExpr = exprToProtoInternal(sha2Expr.left, inputs, binding)
+    val numBitsExpr = exprToProtoInternal(sha2Expr.right, inputs, binding)
+    scalarFunctionExprToProtoWithReturnType("sha2", StringType, leftExpr, numBitsExpr)
   }
 }
 
