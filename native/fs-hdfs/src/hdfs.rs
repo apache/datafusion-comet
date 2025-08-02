@@ -175,8 +175,7 @@ impl HdfsFs {
     fn new_hdfs_file(&self, path: &str, file: hdfsFile) -> Result<HdfsFile, HdfsErr> {
         if file.is_null() {
             Err(HdfsErr::FileNotFound(format!(
-                "Fail to create/open file {}",
-                path
+                "Fail to create/open file {path}"
             )))
         } else {
             Ok(HdfsFile {
@@ -224,8 +223,7 @@ impl HdfsFs {
 
         if ptr.is_null() {
             Err(HdfsErr::FileNotFound(format!(
-                "Fail to get file status for {}",
-                path
+                "Fail to get file status for {path}"
             )))
         } else {
             Ok(FileStatus::new(ptr))
@@ -280,8 +278,7 @@ impl HdfsFs {
             Ok(block_sz as usize)
         } else {
             Err(HdfsErr::Generic(format!(
-                "Fail to get block size for file {}",
-                path
+                "Fail to get block size for file {path}"
             )))
         }
     }
@@ -340,8 +337,7 @@ impl HdfsFs {
             Ok(BlockHosts { ptr })
         } else {
             Err(HdfsErr::Generic(format!(
-                "Fail to get block hosts for file {} from {} with length {}",
-                path, start, length
+                "Fail to get block hosts for file {path} from {start} with length {length}"
             )))
         }
     }
@@ -433,8 +429,7 @@ impl HdfsFs {
             Ok(true)
         } else {
             Err(HdfsErr::Generic(format!(
-                "Fail to create directory for {}",
-                path
+                "Fail to create directory for {path}"
             )))
         }
     }
@@ -463,8 +458,7 @@ impl HdfsFs {
             Ok(true)
         } else {
             Err(HdfsErr::Generic(format!(
-                "Fail to rename {} to {}",
-                old_path, new_path
+                "Fail to rename {old_path} to {new_path}"
             )))
         }
     }
@@ -479,8 +473,7 @@ impl HdfsFs {
             Ok(true)
         } else {
             Err(HdfsErr::Generic(format!(
-                "Fail to set replication {} for {}",
-                num, path
+                "Fail to set replication {num} for {path}"
             )))
         }
     }
@@ -495,8 +488,7 @@ impl HdfsFs {
             Ok(true)
         } else {
             Err(HdfsErr::Generic(format!(
-                "Fail to delete {} with recursive mode {}",
-                path, recursive
+                "Fail to delete {path} with recursive mode {recursive}"
             )))
         }
     }
@@ -626,9 +618,8 @@ impl HdfsFile {
             Ok(read_len)
         } else {
             Err(HdfsErr::Generic(format!(
-                "Fail to read contents from {} with return code {}",
-                self.path(),
-                read_len
+                "Fail to read contents from {} with return code {read_len}",
+                self.path()
             )))
         }
     }
@@ -652,10 +643,8 @@ impl HdfsFile {
             Ok(read_len)
         } else {
             Err(HdfsErr::Generic(format!(
-                "Fail to read contents from {} with offset {} and return code {}",
-                self.path(),
-                pos,
-                read_len
+                "Fail to read contents from {} with offset {pos} and return code {read_len}",
+                self.path()
             )))
         }
     }
@@ -862,7 +851,7 @@ fn get_namenode_uri(path: &str) -> Result<String, HdfsErr> {
                     write!(&mut uri_builder, "{}://{}", url.scheme(), host).unwrap();
 
                     if let Some(port) = url.port() {
-                        write!(&mut uri_builder, ":{}", port).unwrap();
+                        write!(&mut uri_builder, ":{port}").unwrap();
                     }
                     Ok(uri_builder)
                 } else {
@@ -878,7 +867,7 @@ fn get_namenode_uri(path: &str) -> Result<String, HdfsErr> {
 #[inline]
 pub fn get_uri(path: &str) -> Result<String, HdfsErr> {
     let path = if path.starts_with('/') {
-        format!("{}://{}", LOCAL_FS_SCHEME, path)
+        format!("{LOCAL_FS_SCHEME}://{path}")
     } else {
         path.to_string()
     };
@@ -945,16 +934,16 @@ mod test {
             // Test directory
             {
                 let uuid = Uuid::new_v4().to_string();
-                let test_dir = format!("/{}", uuid);
+                let test_dir = format!("/{uuid}");
 
                 match fs.mkdir(&test_dir) {
-                    Ok(_) => println!("{} created", test_dir),
-                    Err(_) => panic!("Couldn't create {} directory", test_dir),
+                    Ok(_) => println!("{test_dir} created"),
+                    Err(_) => panic!("Couldn't create {test_dir} directory"),
                 };
 
                 let file_info = fs.get_file_status(&test_dir).ok().unwrap();
 
-                let expected_path = format!("{}{}", minidfs_addr, test_dir);
+                let expected_path = format!("{minidfs_addr}{test_dir}");
                 assert_eq!(&expected_path, file_info.name());
                 assert!(!file_info.is_file());
                 assert!(file_info.is_directory());
@@ -962,12 +951,12 @@ mod test {
                 let sub_dir_num = 3;
                 let mut expected_list = Vec::new();
                 for x in 0..sub_dir_num {
-                    let filename = format!("{}/{}", test_dir, x);
-                    expected_list.push(format!("{}{}/{}", minidfs_addr, test_dir, x));
+                    let filename = format!("{test_dir}/{x}");
+                    expected_list.push(format!("{minidfs_addr}{test_dir}/{x}"));
 
                     match fs.mkdir(&filename) {
-                        Ok(_) => println!("{} created", filename),
-                        Err(_) => panic!("Couldn't create {} directory", filename),
+                        Ok(_) => println!("{filename} created"),
+                        Err(_) => panic!("Couldn't create {filename} directory"),
                     };
                 }
 
@@ -997,23 +986,23 @@ mod test {
             // Test list status with empty directory
             {
                 let uuid = Uuid::new_v4().to_string();
-                let test_dir = format!("/{}", uuid);
-                let empty_dir = format!("/{}", "_empty");
+                let test_dir = format!("/{uuid}",);
+                let empty_dir = "/_empty".to_string();
 
                 match fs.mkdir(&test_dir) {
-                    Ok(_) => println!("{} created", test_dir),
-                    Err(_) => panic!("Couldn't create {} directory", test_dir),
+                    Ok(_) => println!("{test_dir} created"),
+                    Err(_) => panic!("Couldn't create {test_dir} directory"),
                 };
 
                 match fs.mkdir(&empty_dir) {
-                    Ok(_) => println!("{} created", test_dir),
-                    Err(_) => panic!("Couldn't create {} directory", test_dir),
+                    Ok(_) => println!("{test_dir} created"),
+                    Err(_) => panic!("Couldn't create {test_dir} directory"),
                 };
 
-                let test_file = format!("{}/{}", &test_dir, "test.txt");
+                let test_file = format!("{test_dir}/test.txt");
                 match fs.create(&test_file) {
-                    Ok(_) => println!("{} created", test_file),
-                    Err(_) => panic!("Couldn't create {} ", test_file),
+                    Ok(_) => println!("{test_file} created"),
+                    Err(_) => panic!("Couldn't create {test_file}"),
                 }
 
                 let file_info = fs.list_status(&test_dir).ok().unwrap();

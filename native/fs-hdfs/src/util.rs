@@ -109,8 +109,7 @@ impl HdfsUtil {
             Ok(true)
         } else {
             Err(HdfsErr::Generic(format!(
-                "Fail to copy file from {} to {}",
-                src, dst
+                "Fail to copy file from {src} to {dst}"
             )))
         }
     }
@@ -143,8 +142,7 @@ impl HdfsUtil {
             Ok(true)
         } else {
             Err(HdfsErr::Generic(format!(
-                "Fail to move file from {} to {}",
-                src, dst
+                "Fail to move file from {src} to {dst}"
             )))
         }
     }
@@ -173,7 +171,7 @@ mod test {
             let src_fs = hdfs::get_hdfs_by_full_path(&src_file_uri).ok().unwrap();
 
             // Destination
-            let dst_file = format!("/{}", src_file_name);
+            let dst_file = format!("/{src_file_name}");
             let dst_fs = dfs.get_hdfs().ok().unwrap();
 
             // Test copy
@@ -214,12 +212,12 @@ mod test {
         let dfs = get_dfs();
         {
             // Source
-            let src_file = format!("/{}", file_name);
+            let src_file = format!("/{file_name}");
             let src_fs = dfs.get_hdfs().ok().unwrap();
             src_fs.create(&src_file).ok().unwrap();
 
             // Destination
-            let dst_file_uri = format!("file://{}", dst_file);
+            let dst_file_uri = format!("file://{dst_file}");
             let dst_fs = hdfs::get_hdfs_by_full_path(&dst_file_uri).ok().unwrap();
 
             // Test copy

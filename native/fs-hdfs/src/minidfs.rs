@@ -91,7 +91,7 @@ impl MiniDFS {
 
     pub fn namenode_addr(&self) -> String {
         if let Some(port) = self.namenode_port() {
-            format!("hdfs://localhost:{}", port)
+            format!("hdfs://localhost:{port}")
         } else {
             "hdfs://localhost".to_string()
         }

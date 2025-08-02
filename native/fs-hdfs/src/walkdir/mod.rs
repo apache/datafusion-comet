@@ -43,7 +43,7 @@ impl HdfsWalkDir {
             root,
             opts: IterOptions {
                 min_depth: 0,
-                max_depth: ::std::usize::MAX,
+                max_depth: usize::MAX,
             },
         }
     }

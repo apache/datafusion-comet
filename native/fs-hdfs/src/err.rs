@@ -35,15 +35,15 @@ pub enum HdfsErr {
 impl Display for HdfsErr {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            HdfsErr::FileNotFound(path) => write!(f, "Hdfs file {} not found", path),
+            HdfsErr::FileNotFound(path) => write!(f, "Hdfs file {path} not found"),
             HdfsErr::FileAlreadyExists(path) => {
-                write!(f, "Hdfs file {} already exists", path)
+                write!(f, "Hdfs file {path} already exists")
             }
-            HdfsErr::InvalidUrl(path) => write!(f, "Hdfs url {} is not valid", path),
+            HdfsErr::InvalidUrl(path) => write!(f, "Hdfs url {path} is not valid"),
             HdfsErr::CannotConnectToNameNode(namenode_uri) => {
-                write!(f, "Cannot connect to name node {}", namenode_uri)
+                write!(f, "Cannot connect to name node {namenode_uri}")
             }
-            HdfsErr::Generic(err_str) => write!(f, "Generic error with msg: {}", err_str),
+            HdfsErr::Generic(err_str) => write!(f, "Generic error with msg: {err_str}"),
         }
     }
 }
