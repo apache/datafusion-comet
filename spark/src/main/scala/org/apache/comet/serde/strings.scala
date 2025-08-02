@@ -47,26 +47,27 @@ object CometStartsWith extends CometBinaryStringFunction("starts_with")
 object CometEndsWith extends CometBinaryStringFunction("ends_with")
 object CometContains extends CometBinaryStringFunction("contains")
 
-class CometStringExpr(functionName: String) extends CometExpressionSerde {
+class CometStringExprWithStringChildren(functionName: String) extends CometExpressionSerde {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val cast = expr.children.map(child => Cast(child, StringType))
-    val proto: Seq[Option[Expr]] = cast.map(cast => exprToProtoInternal(cast, inputs, binding))
+    val cast = expr.children.map(Cast(_, StringType))
+    val proto: Seq[Option[Expr]] = cast.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProto(functionName, proto: _*)
     optExprWithInfo(optExpr, expr, cast: _*)
   }
 }
 
-object CometAscii extends CometStringExpr("ascii")
-object CometBitLength extends CometStringExpr("bit_length")
-object CometStringInstr extends CometStringExpr("strpos")
-object CometStringReplace extends CometStringExpr("replace")
-object CometStringTranslate extends CometStringExpr("translate")
-object CometLength extends CometStringExpr("length")
-object CometOctetLength extends CometStringExpr("octet_length")
-object CometReverse extends CometStringExpr("reverse")
+object CometAscii extends CometStringExprWithStringChildren("ascii")
+object CometBitLength extends CometStringExprWithStringChildren("bit_length")
+object CometConcatWs extends CometStringExprWithStringChildren("concat_ws")
+object CometStringInstr extends CometStringExprWithStringChildren("strpos")
+object CometStringReplace extends CometStringExprWithStringChildren("replace")
+object CometStringTranslate extends CometStringExprWithStringChildren("translate")
+object CometLength extends CometStringExprWithStringChildren("length")
+object CometOctetLength extends CometStringExprWithStringChildren("octet_length")
+object CometReverse extends CometStringExprWithStringChildren("reverse")
 
 object CometStringRepeat extends CometExpressionSerde {
 
@@ -107,7 +108,7 @@ class CometTrimBase(trimType: String) extends CometExpressionSerde {
   }
 }
 
-object CometTrim extends CometTrimBase("trim")
+object CometStringTrim extends CometTrimBase("trim")
 object CometStringTrimLeft extends CometTrimBase("ltrim")
 object CometStringTrimRight extends CometTrimBase("rtrim")
 object CometStringTrimBoth extends CometTrimBase("btrim")
@@ -170,23 +171,6 @@ object CometChr extends CometExpressionSerde {
     val childExpr = exprToProtoInternal(child, inputs, binding)
     val optExpr = scalarFunctionExprToProto("chr", childExpr)
     optExprWithInfo(optExpr, expr, child)
-  }
-}
-
-object CometConcatWs extends CometExpressionSerde {
-
-  override def convert(
-      expr: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    var childExprs: Seq[Expression] = Seq()
-    val exprs = expr.children.map(e => {
-      val castExpr = Cast(e, StringType)
-      childExprs = childExprs :+ castExpr
-      exprToProtoInternal(castExpr, inputs, binding)
-    })
-    val optExpr = scalarFunctionExprToProto("concat_ws", exprs: _*)
-    optExprWithInfo(optExpr, expr, childExprs: _*)
   }
 }
 
