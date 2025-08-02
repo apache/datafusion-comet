@@ -31,7 +31,7 @@ fn main() {
 fn build_ffi(flags: &[String]) {
     let (header, output) = ("c_src/wrapper.h", "hdfs-native.rs");
     // Tell cargo to invalidate the built crate whenever the wrapper changes
-    println!("cargo:rerun-if-changed={}", header);
+    println!("cargo:rerun-if-changed={header}");
     println!("cargo:rerun-if-changed={}", get_hdfs_file_path("hdfs.h"));
     println!(
         "cargo:rerun-if-changed={}",
@@ -131,7 +131,7 @@ fn get_java_dependency() -> Vec<String> {
 
     // libjvm link
     let jvm_lib_location = java_locator::locate_jvm_dyn_library().unwrap();
-    println!("cargo:rustc-link-search=native={}", jvm_lib_location);
+    println!("cargo:rustc-link-search=native={jvm_lib_location}");
     println!("cargo:rustc-link-lib=jvm");
 
     // For tests, add libjvm path to rpath, this does not propagate upwards,

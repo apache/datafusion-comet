@@ -1532,6 +1532,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-comet-fs-hdfs3"
+version = "0.1.12"
+dependencies = [
+ "bindgen 0.64.0",
+ "cc",
+ "java-locator",
+ "lazy_static",
+ "libc",
+ "log",
+ "tempfile",
+ "url",
+ "uuid 0.8.2",
+]
+
+[[package]]
 name = "datafusion-comet-objectstore-hdfs"
 version = "0.10.0"
 dependencies = [
@@ -1539,7 +1554,7 @@ dependencies = [
  "bytes",
  "chrono",
  "fs-hdfs",
- "fs-hdfs3 0.1.12 (registry+https://github.com/rust-lang/crates.io-index)",
+ "fs-hdfs3",
  "futures",
  "object_store",
  "tokio",
@@ -2305,21 +2320,6 @@ dependencies = [
  "libc",
  "log",
  "url",
-]
-
-[[package]]
-name = "fs-hdfs3"
-version = "0.1.12"
-dependencies = [
- "bindgen 0.64.0",
- "cc",
- "java-locator",
- "lazy_static",
- "libc",
- "log",
- "tempfile",
- "url",
- "uuid 0.8.2",
 ]
 
 [[package]]

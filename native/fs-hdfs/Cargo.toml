@@ -16,7 +16,7 @@
 # under the License.
 
 [package]
-name = "fs-hdfs3"
+name = "datafusion-comet-fs-hdfs3"
 version = "0.1.12"
 edition = "2021"
 
