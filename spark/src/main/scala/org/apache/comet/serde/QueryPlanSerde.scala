@@ -134,6 +134,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[IsNotNull] -> CometIsNotNull,
     classOf[IsNaN] -> CometIsNaN,
     classOf[In] -> CometIn,
+    classOf[InSet] -> CometInSet,
     classOf[Rand] -> CometRand,
     classOf[Randn] -> CometRandn,
     classOf[SparkPartitionID] -> CometSparkPartitionId,
@@ -1406,17 +1407,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
           binding,
           (builder, binaryExpr) => builder.setBitwiseAnd(binaryExpr))
 
-      case InSet(value, hset) =>
-        val valueDataType = value.dataType
-        val list = hset.map { setVal =>
-          Literal(setVal, valueDataType)
-        }.toSeq
-        // Change `InSet` to `In` expression
-        // We do Spark `InSet` optimization in native (DataFusion) side.
-        in(expr, value, list, inputs, binding, negate = false)
-
-      case Not(In(value, list)) =>
-        in(expr, value, list, inputs, binding, negate = true)
+      case Not(In(_, _)) =>
+        CometNotIn.convert(expr, inputs, binding)
 
       case Not(child) =>
         createUnaryExpr(
@@ -1756,32 +1748,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           inner).build())
     } else {
       withInfo(expr, left, right)
-      None
-    }
-  }
-
-  def in(
-      expr: Expression,
-      value: Expression,
-      list: Seq[Expression],
-      inputs: Seq[Attribute],
-      binding: Boolean,
-      negate: Boolean): Option[Expr] = {
-    val valueExpr = exprToProtoInternal(value, inputs, binding)
-    val listExprs = list.map(exprToProtoInternal(_, inputs, binding))
-    if (valueExpr.isDefined && listExprs.forall(_.isDefined)) {
-      val builder = ExprOuterClass.In.newBuilder()
-      builder.setInValue(valueExpr.get)
-      builder.addAllLists(listExprs.map(_.get).asJava)
-      builder.setNegated(negate)
-      Some(
-        ExprOuterClass.Expr
-          .newBuilder()
-          .setIn(builder)
-          .build())
-    } else {
-      val allExprs = list ++ Seq(value)
-      withInfo(expr, allExprs: _*)
       None
     }
   }

@@ -21,11 +21,12 @@ package org.apache.comet.serde
 
 import scala.collection.JavaConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GreaterThan, GreaterThanOrEqual, In, IsNaN, IsNotNull, IsNull, LessThan, LessThanOrEqual}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GreaterThan, GreaterThanOrEqual, In, InSet, IsNaN, IsNotNull, IsNull, LessThan, LessThanOrEqual, Literal, Not}
 import org.apache.spark.sql.types.BooleanType
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, createUnaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.ExprOuterClass.Expr
+import org.apache.comet.serde.QueryPlanSerde._
 
 object CometGreaterThan extends CometExpressionSerde {
   override def convert(
@@ -146,20 +147,60 @@ object CometIn extends CometExpressionSerde {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val inExpr = expr.asInstanceOf[In]
-    val valueExpr = exprToProtoInternal(inExpr.value, inputs, binding)
-    val listExprs = inExpr.list.map(exprToProtoInternal(_, inputs, binding))
+    ComparisonUtils.in(expr, inExpr.value, inExpr.list, inputs, binding, negate = false)
+  }
+}
+
+object CometNotIn extends CometExpressionSerde {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val notExpr = expr.asInstanceOf[Not]
+    val inExpr = notExpr.child.asInstanceOf[In]
+    ComparisonUtils.in(expr, inExpr.value, inExpr.list, inputs, binding, negate = true)
+  }
+}
+
+object CometInSet extends CometExpressionSerde {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val inSetExpr = expr.asInstanceOf[InSet]
+    val valueDataType = inSetExpr.child.dataType
+    val list = inSetExpr.hset.map { setVal =>
+      Literal(setVal, valueDataType)
+    }.toSeq
+    // Change `InSet` to `In` expression
+    // We do Spark `InSet` optimization in native (DataFusion) side.
+    ComparisonUtils.in(expr, inSetExpr.child, list, inputs, binding, negate = false)
+  }
+}
+
+object ComparisonUtils {
+
+  def in(
+      expr: Expression,
+      value: Expression,
+      list: Seq[Expression],
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      negate: Boolean): Option[Expr] = {
+    val valueExpr = exprToProtoInternal(value, inputs, binding)
+    val listExprs = list.map(exprToProtoInternal(_, inputs, binding))
     if (valueExpr.isDefined && listExprs.forall(_.isDefined)) {
       val builder = ExprOuterClass.In.newBuilder()
       builder.setInValue(valueExpr.get)
       builder.addAllLists(listExprs.map(_.get).asJava)
-      builder.setNegated(false)
+      builder.setNegated(negate)
       Some(
         ExprOuterClass.Expr
           .newBuilder()
           .setIn(builder)
           .build())
     } else {
-      val allExprs = inExpr.list ++ Seq(inExpr.value)
+      val allExprs = list ++ Seq(value)
       withInfo(expr, allExprs: _*)
       None
     }
