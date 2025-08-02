@@ -36,8 +36,6 @@ import com.google.common.base.Objects
  *
  * Similar to `CometTakeOrderedAndProjectExec`, it contains two native executions seperated by a
  * Comet shuffle.
- *
- * TODO: support offset semantics
  */
 case class CometCollectLimitExec(
     override val originalPlan: SparkPlan,
@@ -64,7 +62,11 @@ case class CometCollectLimitExec(
     new UnsafeRowSerializer(child.output.size, longMetric("dataSize"))
 
   override def executeCollect(): Array[InternalRow] = {
-    ColumnarToRowExec(child).executeTake(limit)
+    if (limit >= 0) {
+      ColumnarToRowExec(child).executeTake(limit).drop(offset)
+    } else {
+      ColumnarToRowExec(child).executeCollect().drop(offset)
+    }
   }
 
   protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
@@ -91,7 +93,7 @@ case class CometCollectLimitExec(
 
         new CometShuffledBatchRDD(dep, readMetrics)
       }
-      CometExecUtils.getNativeLimitRDD(singlePartitionRDD, output, limit)
+      CometExecUtils.getNativeLimitRDD(singlePartitionRDD, output, limit, offset)
     }
   }
 
