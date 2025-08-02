@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.util.Try
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Contains, EndsWith, Expression, Like, Literal, OctetLength, Reverse, RLike, StartsWith, StringRPad, StringSpace, Substring}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, BinaryExpression, Cast, Expression, Like, Literal, OctetLength, Reverse, RLike, StringRPad, StringSpace, Substring}
 import org.apache.spark.sql.types.{DataTypes, LongType, StringType}
 
 import org.apache.comet.CometConf
@@ -324,47 +324,23 @@ object CometStringSpace extends CometExpressionSerde {
   }
 }
 
-object CometStartsWith extends CometExpressionSerde {
+class CometBinaryStringFunction(functionName: String) extends CometExpressionSerde {
 
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    val startsWith = expr.asInstanceOf[StartsWith]
+    val binaryExpr = expr.asInstanceOf[BinaryExpression]
     scalarFunctionExprToProto(
-      "starts_with",
-      exprToProtoInternal(startsWith.left, inputs, binding),
-      exprToProtoInternal(startsWith.right, inputs, binding))
+      functionName,
+      exprToProtoInternal(binaryExpr.left, inputs, binding),
+      exprToProtoInternal(binaryExpr.right, inputs, binding))
   }
 }
 
-object CometEndsWith extends CometExpressionSerde {
-
-  override def convert(
-      expr: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    val endsWith = expr.asInstanceOf[EndsWith]
-    scalarFunctionExprToProto(
-      "ends_with",
-      exprToProtoInternal(endsWith.left, inputs, binding),
-      exprToProtoInternal(endsWith.right, inputs, binding))
-  }
-}
-
-object CometContains extends CometExpressionSerde {
-
-  override def convert(
-      expr: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    val contains = expr.asInstanceOf[Contains]
-    scalarFunctionExprToProto(
-      "contains",
-      exprToProtoInternal(contains.left, inputs, binding),
-      exprToProtoInternal(contains.right, inputs, binding))
-  }
-}
+object CometStartsWith extends CometBinaryStringFunction("starts_with")
+object CometEndsWith extends CometBinaryStringFunction("ends_with")
+object CometContains extends CometBinaryStringFunction("contains")
 
 object CometSubstring extends CometExpressionSerde {
 
