@@ -315,12 +315,7 @@ object CometStringSpace extends CometExpressionSerde {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    val stringSpace = expr.asInstanceOf[StringSpace]
-    createUnaryExpr(
-      expr,
-      stringSpace.child,
-      inputs,
-      binding,
+    createUnaryExpr(expr, expr.asInstanceOf[StringSpace].child, inputs, binding,
       (builder, unaryExpr) => builder.setStringSpace(unaryExpr))
   }
 }
@@ -332,9 +327,9 @@ object CometStartsWith extends CometExpressionSerde {
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     val startsWith = expr.asInstanceOf[StartsWith]
-    val attributeExpr = exprToProtoInternal(startsWith.left, inputs, binding)
-    val prefixExpr = exprToProtoInternal(startsWith.right, inputs, binding)
-    scalarFunctionExprToProto("starts_with", attributeExpr, prefixExpr)
+    scalarFunctionExprToProto("starts_with", 
+      exprToProtoInternal(startsWith.left, inputs, binding),
+      exprToProtoInternal(startsWith.right, inputs, binding))
   }
 }
 
@@ -345,9 +340,9 @@ object CometEndsWith extends CometExpressionSerde {
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     val endsWith = expr.asInstanceOf[EndsWith]
-    val attributeExpr = exprToProtoInternal(endsWith.left, inputs, binding)
-    val suffixExpr = exprToProtoInternal(endsWith.right, inputs, binding)
-    scalarFunctionExprToProto("ends_with", attributeExpr, suffixExpr)
+    scalarFunctionExprToProto("ends_with", 
+      exprToProtoInternal(endsWith.left, inputs, binding),
+      exprToProtoInternal(endsWith.right, inputs, binding))
   }
 }
 
@@ -358,9 +353,9 @@ object CometContains extends CometExpressionSerde {
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     val contains = expr.asInstanceOf[Contains]
-    val attributeExpr = exprToProtoInternal(contains.left, inputs, binding)
-    val valueExpr = exprToProtoInternal(contains.right, inputs, binding)
-    scalarFunctionExprToProto("contains", attributeExpr, valueExpr)
+    scalarFunctionExprToProto("contains", 
+      exprToProtoInternal(contains.left, inputs, binding),
+      exprToProtoInternal(contains.right, inputs, binding))
   }
 }
 
@@ -371,32 +366,21 @@ object CometSubstring extends CometExpressionSerde {
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     val substring = expr.asInstanceOf[Substring]
-    substring.pos match {
-      case Literal(pos, _) =>
-        substring.len match {
-          case Literal(len, _) =>
-            val strExpr = exprToProtoInternal(substring.str, inputs, binding)
-            if (strExpr.isDefined) {
-              val builder = ExprOuterClass.Substring.newBuilder()
-              builder.setChild(strExpr.get)
-              builder.setStart(pos.asInstanceOf[Int])
-              builder.setLen(len.asInstanceOf[Int])
-
-              Some(
-                ExprOuterClass.Expr
-                  .newBuilder()
-                  .setSubstring(builder)
-                  .build())
-            } else {
-              withInfo(expr, substring.str)
-              None
-            }
-          case _ =>
-            withInfo(expr, "Substring len must be literal")
+    (substring.pos, substring.len) match {
+      case (Literal(pos, _), Literal(len, _)) =>
+        exprToProtoInternal(substring.str, inputs, binding) match {
+          case Some(strExpr) =>
+            val builder = ExprOuterClass.Substring.newBuilder()
+            builder.setChild(strExpr)
+            builder.setStart(pos.asInstanceOf[Int])
+            builder.setLen(len.asInstanceOf[Int])
+            Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
+          case None =>
+            withInfo(expr, substring.str)
             None
         }
       case _ =>
-        withInfo(expr, "Substring pos must be literal")
+        withInfo(expr, "Substring pos and len must be literals")
         None
     }
   }
@@ -410,12 +394,7 @@ object CometLike extends CometExpressionSerde {
       binding: Boolean): Option[Expr] = {
     val like = expr.asInstanceOf[Like]
     if (like.escapeChar == '\\') {
-      createBinaryExpr(
-        expr,
-        like.left,
-        like.right,
-        inputs,
-        binding,
+      createBinaryExpr(expr, like.left, like.right, inputs, binding,
         (builder, binaryExpr) => builder.setLike(binaryExpr))
     } else {
       withInfo(expr, s"custom escape character ${like.escapeChar} not supported in LIKE")
@@ -438,12 +417,7 @@ object CometRLike extends CometExpressionSerde {
           withInfo(expr, "Regex flag (?i) and (?-i) are not supported")
           None
         } else {
-          createBinaryExpr(
-            expr,
-            rlike.left,
-            rlike.right,
-            inputs,
-            binding,
+          createBinaryExpr(expr, rlike.left, rlike.right, inputs, binding,
             (builder, binaryExpr) => builder.setRlike(binaryExpr))
         }
       case _ =>
@@ -459,11 +433,10 @@ object CometOctetLength extends CometExpressionSerde {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    val octetLength = expr.asInstanceOf[OctetLength]
-    val castExpr = Cast(octetLength.child, StringType)
-    val childExpr = exprToProtoInternal(castExpr, inputs, binding)
-    val optExpr = scalarFunctionExprToProto("octet_length", childExpr)
-    optExprWithInfo(optExpr, expr, castExpr)
+    val castExpr = Cast(expr.asInstanceOf[OctetLength].child, StringType)
+    optExprWithInfo(
+      scalarFunctionExprToProto("octet_length", exprToProtoInternal(castExpr, inputs, binding)),
+      expr, castExpr)
   }
 }
 
@@ -473,11 +446,10 @@ object CometReverse extends CometExpressionSerde {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    val reverse = expr.asInstanceOf[Reverse]
-    val castExpr = Cast(reverse.child, StringType)
-    val childExpr = exprToProtoInternal(castExpr, inputs, binding)
-    val optExpr = scalarFunctionExprToProto("reverse", childExpr)
-    optExprWithInfo(optExpr, expr, castExpr)
+    val castExpr = Cast(expr.asInstanceOf[Reverse].child, StringType)
+    optExprWithInfo(
+      scalarFunctionExprToProto("reverse", exprToProtoInternal(castExpr, inputs, binding)),
+      expr, castExpr)
   }
 }
 
@@ -490,9 +462,9 @@ object CometStringRPad extends CometExpressionSerde {
     val stringRPad = expr.asInstanceOf[StringRPad]
     stringRPad.pad match {
       case Literal(str, DataTypes.StringType) if str.toString == " " =>
-        val arg0 = exprToProtoInternal(stringRPad.str, inputs, binding)
-        val arg1 = exprToProtoInternal(stringRPad.len, inputs, binding)
-        scalarFunctionExprToProto("rpad", arg0, arg1)
+        scalarFunctionExprToProto("rpad", 
+          exprToProtoInternal(stringRPad.str, inputs, binding),
+          exprToProtoInternal(stringRPad.len, inputs, binding))
       case _ =>
         withInfo(expr, "StringRPad with non-space characters is not supported")
         None
