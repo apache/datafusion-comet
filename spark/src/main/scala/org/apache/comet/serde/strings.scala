@@ -22,108 +22,31 @@ package org.apache.comet.serde
 import scala.util.Try
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, BinaryExpression, Cast, Expression, Like, Literal, OctetLength, Reverse, RLike, StringRPad, StringSpace, Substring}
-import org.apache.spark.sql.types.{DataTypes, LongType, StringType}
+import org.apache.spark.sql.types.{DataTypes, StringType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, createUnaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
-object CometAscii extends CometExpressionSerde {
-
+class CometStringExpr(functionName: String) extends CometExpressionSerde {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val child = expr.children.head
-    val castExpr = Cast(child, StringType)
-    val childExpr = exprToProtoInternal(castExpr, inputs, binding)
-    val optExpr = scalarFunctionExprToProto("ascii", childExpr)
-    optExprWithInfo(optExpr, expr, castExpr)
+    val cast = expr.children.map(child => Cast(child, StringType))
+    val proto: Seq[Option[Expr]] = cast.map(cast => exprToProtoInternal(cast, inputs, binding))
+    val optExpr = scalarFunctionExprToProto(functionName, proto: _*)
+    optExprWithInfo(optExpr, expr, cast: _*)
   }
 }
 
-object CometBitLength extends CometExpressionSerde {
-
-  override def convert(
-      expr: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val child = expr.children.head
-    val castExpr = Cast(child, StringType)
-    val childExpr = exprToProtoInternal(castExpr, inputs, binding)
-    val optExpr = scalarFunctionExprToProto("bit_length", childExpr)
-    optExprWithInfo(optExpr, expr, castExpr)
-  }
-}
-
-object CometStringInstr extends CometExpressionSerde {
-
-  override def convert(
-      expr: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val children = expr.children
-    val leftCast = Cast(children(0), StringType)
-    val rightCast = Cast(children(1), StringType)
-    val leftExpr = exprToProtoInternal(leftCast, inputs, binding)
-    val rightExpr = exprToProtoInternal(rightCast, inputs, binding)
-    val optExpr = scalarFunctionExprToProto("strpos", leftExpr, rightExpr)
-    optExprWithInfo(optExpr, expr, leftCast, rightCast)
-  }
-}
-
-object CometStringRepeat extends CometExpressionSerde {
-
-  override def convert(
-      expr: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val children = expr.children
-    val leftCast = Cast(children(0), StringType)
-    val rightCast = Cast(children(1), LongType)
-    val leftExpr = exprToProtoInternal(leftCast, inputs, binding)
-    val rightExpr = exprToProtoInternal(rightCast, inputs, binding)
-    val optExpr = scalarFunctionExprToProto("repeat", leftExpr, rightExpr)
-    optExprWithInfo(optExpr, expr, leftCast, rightCast)
-  }
-}
-
-object CometStringReplace extends CometExpressionSerde {
-
-  override def convert(
-      expr: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val children = expr.children
-    val srcCast = Cast(children(0), StringType)
-    val searchCast = Cast(children(1), StringType)
-    val replaceCast = Cast(children(2), StringType)
-    val srcExpr = exprToProtoInternal(srcCast, inputs, binding)
-    val searchExpr = exprToProtoInternal(searchCast, inputs, binding)
-    val replaceExpr = exprToProtoInternal(replaceCast, inputs, binding)
-    val optExpr = scalarFunctionExprToProto("replace", srcExpr, searchExpr, replaceExpr)
-    optExprWithInfo(optExpr, expr, srcCast, searchCast, replaceCast)
-  }
-}
-
-object CometStringTranslate extends CometExpressionSerde {
-
-  override def convert(
-      expr: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val children = expr.children
-    val srcCast = Cast(children(0), StringType)
-    val matchingCast = Cast(children(1), StringType)
-    val replaceCast = Cast(children(2), StringType)
-    val srcExpr = exprToProtoInternal(srcCast, inputs, binding)
-    val matchingExpr = exprToProtoInternal(matchingCast, inputs, binding)
-    val replaceExpr = exprToProtoInternal(replaceCast, inputs, binding)
-    val optExpr = scalarFunctionExprToProto("translate", srcExpr, matchingExpr, replaceExpr)
-    optExprWithInfo(optExpr, expr, srcCast, matchingCast, replaceCast)
-  }
-}
+object CometAscii extends CometStringExpr("ascii")
+object CometBitLength extends CometStringExpr("bit_length")
+object CometStringInstr extends CometStringExpr("strpos")
+object CometStringRepeat extends CometStringExpr("repeat")
+object CometStringReplace extends CometStringExpr("replace")
+object CometStringTranslate extends CometStringExpr("translate")
 
 object CometTrim extends CometExpressionSerde {
 
@@ -414,7 +337,7 @@ object CometRLike extends CometExpressionSerde {
             (builder, binaryExpr) => builder.setRlike(binaryExpr))
         }
       case _ =>
-        withInfo(expr, "Only literal regex patterns are supported")
+        withInfo(expr, "Only scalar regexp patterns are supported")
         None
     }
   }
