@@ -17,7 +17,7 @@
 
 [workspace]
 default-members = ["core", "spark-expr", "proto"]
-members = ["core", "spark-expr", "proto", "hdfs"]
+members = ["core", "spark-expr", "proto", "hdfs", "fs-hdfs"]
 resolver = "2"
 
 [workspace.package]
