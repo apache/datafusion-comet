@@ -59,14 +59,17 @@ class TestPyArrowUDFFallback:
         expected = [(1, 2, 3), (3, 4, 7), (5, 6, 11)]
         assert result == expected
         
-        # # Verify that this falls back to Spark (not using Comet native execution)
-        # # We can check the execution plan to ensure it doesn't contain Comet operators
-        # plan = result_df.queryExecution.executedPlan
-        # plan_str = str(plan)
-        #
-        # # The plan should not contain CometProject or other Comet operators for PyArrow UDFs
-        # assert "CometProject" not in plan_str
-        # assert "CometScan" not in plan_str  # Should fallback completely
+        # Display and verify the execution plan
+        print("\n=== Simple PyArrow UDF Addition - Query Plan ===")
+        result_df.explain(True)
+        
+        # Verify that this falls back to Spark (not using Comet native execution)
+        plan_str = result_df._jdf.queryExecution().executedPlan().toString()
+        print(f"Executed Plan String: {plan_str}")
+        
+        # The plan should not contain CometProject or other Comet operators for PyArrow UDFs
+        assert "CometProject" not in plan_str
+        assert "CometScan" not in plan_str  # Should fallback completely
 
 
     def test_string_pyarrow_udf(self, spark):
@@ -90,10 +93,14 @@ class TestPyArrowUDFFallback:
         expected = [("hello", "world", "hello-world"), ("foo", "bar", "foo-bar")]
         assert result == expected
         
+        # Display and verify the execution plan
+        print("\n=== String PyArrow UDF - Query Plan ===")
+        result_df.explain(True)
+        
         # Verify fallback to Spark
-        # plan = result_df.queryExecution.executedPlan
-        # plan_str = str(plan)
-        # assert "CometProject" not in plan_str
+        plan_str = result_df._jdf.queryExecution().executedPlan().toString()
+        print(f"Executed Plan String: {plan_str}")
+        assert "CometProject" not in plan_str
 
 
     def test_array_processing_pyarrow_udf(self, spark):
@@ -116,10 +123,14 @@ class TestPyArrowUDFFallback:
         expected = [([1, 2, 3], 6), ([4, 5, 6], 15)]
         assert result == expected
         
+        # Display and verify the execution plan
+        print("\n=== Array Processing PyArrow UDF - Query Plan ===")
+        result_df.explain(True)
+        
         # Verify fallback to Spark
-        # plan = result_df.queryExecution.executedPlan
-        # plan_str = str(plan)
-        # assert "CometProject" not in plan_str
+        plan_str = result_df._jdf.queryExecution().executedPlan().toString()
+        print(f"Executed Plan String: {plan_str}")
+        assert "CometProject" not in plan_str
 
 
     def test_mixed_expressions_with_pyarrow_udf(self, spark):
@@ -148,10 +159,14 @@ class TestPyArrowUDFFallback:
         expected = [(1, 2, 3, 3, 2), (4, 5, 6, 9, 20)]
         assert result == expected
         
+        # Display and verify the execution plan
+        print("\n=== Mixed Expressions with PyArrow UDF - Query Plan ===")
+        result_df.explain(True)
+        
         # The entire query should fallback to Spark due to the PyArrow UDF
-        # plan = result_df.queryExecution.executedPlan
-        # plan_str = str(plan)
-        # assert "CometProject" not in plan_str
+        plan_str = result_df._jdf.queryExecution().executedPlan().toString()
+        print(f"Executed Plan String: {plan_str}")
+        assert "CometProject" not in plan_str
 
 
     def test_pyarrow_udf_with_null_values(self, spark):
@@ -176,10 +191,14 @@ class TestPyArrowUDFFallback:
         expected = [(1, 2, 3), (None, 4, None), (5, None, None), (None, None, None)]
         assert result == expected
         
+        # Display and verify the execution plan
+        print("\n=== PyArrow UDF with Null Values - Query Plan ===")
+        result_df.explain(True)
+        
         # Verify fallback to Spark
-        # plan = result_df.queryExecution.executedPlan
-        # plan_str = str(plan)
-        # assert "CometProject" not in plan_str
+        plan_str = result_df._jdf.queryExecution().executedPlan().toString()
+        print(f"Executed Plan String: {plan_str}")
+        assert "CometProject" not in plan_str
 
 
 if __name__ == "__main__":
