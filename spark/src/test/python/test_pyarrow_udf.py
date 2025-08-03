@@ -65,7 +65,7 @@ class TestPyArrowUDFFallback:
         
         with tempfile.TemporaryDirectory() as temp_dir:
             parquet_path = os.path.join(temp_dir, "test_data.parquet")
-            temp_df.write.mode("overwrite").parquet(parquet_path)
+            temp_df.coalesce(1).write.mode("overwrite").parquet(parquet_path)
             
             # Read from Parquet (this should use Comet for scanning)
             df = spark.read.parquet(parquet_path)
@@ -95,7 +95,7 @@ class TestPyArrowUDFFallback:
             
             # The plan should not contain CometProject for PyArrow UDFs, but may contain CometScan for Parquet reading
             assert "CometProject" not in plan_str  # UDF should cause fallback
-            # Note: CometScan might still be present for the Parquet scan part
+            assert "CometScan" in plan_str
 
 
     def test_string_pyarrow_udf(self, spark):
@@ -106,7 +106,7 @@ class TestPyArrowUDFFallback:
         
         with tempfile.TemporaryDirectory() as temp_dir:
             parquet_path = os.path.join(temp_dir, "string_test_data.parquet")
-            temp_df.write.mode("overwrite").parquet(parquet_path)
+            temp_df.coalesce(1).write.mode("overwrite").parquet(parquet_path)
             
             # Read from Parquet (this should use Comet for scanning)
             df = spark.read.parquet(parquet_path)
@@ -135,6 +135,7 @@ class TestPyArrowUDFFallback:
             plan_str = result_df._jdf.queryExecution().executedPlan().toString()
             print(f"Executed Plan String: {plan_str}")
             assert "CometProject" not in plan_str
+            assert "CometScan" in plan_str
 
 
     def test_array_processing_pyarrow_udf(self, spark):
@@ -145,7 +146,7 @@ class TestPyArrowUDFFallback:
         
         with tempfile.TemporaryDirectory() as temp_dir:
             parquet_path = os.path.join(temp_dir, "array_test_data.parquet")
-            temp_df.write.mode("overwrite").parquet(parquet_path)
+            temp_df.coalesce(1).write.mode("overwrite").parquet(parquet_path)
             
             # Read from Parquet (this should use Comet for scanning)
             df = spark.read.parquet(parquet_path)
@@ -173,6 +174,7 @@ class TestPyArrowUDFFallback:
             plan_str = result_df._jdf.queryExecution().executedPlan().toString()
             print(f"Executed Plan String: {plan_str}")
             assert "CometProject" not in plan_str
+            assert "CometScan" in plan_str
 
 
     def test_mixed_expressions_with_pyarrow_udf(self, spark):
@@ -183,7 +185,7 @@ class TestPyArrowUDFFallback:
         
         with tempfile.TemporaryDirectory() as temp_dir:
             parquet_path = os.path.join(temp_dir, "mixed_test_data.parquet")
-            temp_df.write.mode("overwrite").parquet(parquet_path)
+            temp_df.coalesce(1).write.mode("overwrite").parquet(parquet_path)
             
             # Read from Parquet (this should use Comet for scanning)
             df = spark.read.parquet(parquet_path)
@@ -217,6 +219,7 @@ class TestPyArrowUDFFallback:
             plan_str = result_df._jdf.queryExecution().executedPlan().toString()
             print(f"Executed Plan String: {plan_str}")
             assert "CometProject" not in plan_str
+            assert "CometScan" in plan_str
 
 
     def test_pyarrow_udf_with_null_values(self, spark):
@@ -227,7 +230,7 @@ class TestPyArrowUDFFallback:
         
         with tempfile.TemporaryDirectory() as temp_dir:
             parquet_path = os.path.join(temp_dir, "null_test_data.parquet")
-            temp_df.write.mode("overwrite").parquet(parquet_path)
+            temp_df.coalesce(1).write.mode("overwrite").parquet(parquet_path)
             
             # Read from Parquet (this should use Comet for scanning)
             df = spark.read.parquet(parquet_path)
@@ -257,6 +260,7 @@ class TestPyArrowUDFFallback:
             plan_str = result_df._jdf.queryExecution().executedPlan().toString()
             print(f"Executed Plan String: {plan_str}")
             assert "CometProject" not in plan_str
+            assert "CometScan" in plan_str
 
 
 if __name__ == "__main__":
