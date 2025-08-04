@@ -438,7 +438,7 @@ object CometRLike extends CometExpressionSerde {
             (builder, binaryExpr) => builder.setRlike(binaryExpr))
         }
       case _ =>
-        withInfo(expr, "Only literal regex patterns are supported")
+        withInfo(expr, "Only scalar regexp patterns are supported")
         None
     }
   }
