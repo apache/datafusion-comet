@@ -21,13 +21,13 @@ package org.apache.comet.serde
 
 import scala.util.Try
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Contains, EndsWith, Expression, Like, Literal, OctetLength, Reverse, RLike, StartsWith, StringRPad, StringSpace, Substring}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Contains, EndsWith, Expression, Like, Literal, OctetLength, Reverse, RLike, StartsWith, StringRPad, Substring}
 import org.apache.spark.sql.types.{DataTypes, LongType, StringType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, createUnaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
 object CometAscii extends CometExpressionSerde {
 
