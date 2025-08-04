@@ -131,6 +131,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Randn] -> CometRandn,
     classOf[SparkPartitionID] -> CometSparkPartitionId,
     classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId)
+    classOf[Flatten] -> CometFlatten)
 
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
