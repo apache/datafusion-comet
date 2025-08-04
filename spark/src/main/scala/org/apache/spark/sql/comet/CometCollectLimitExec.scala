@@ -63,7 +63,11 @@ case class CometCollectLimitExec(
 
   override def executeCollect(): Array[InternalRow] = {
     if (limit >= 0) {
-      ColumnarToRowExec(child).executeTake(limit).drop(offset)
+      if (offset > 0) {
+        ColumnarToRowExec(child).executeTake(limit).drop(offset)
+      } else {
+        ColumnarToRowExec(child).executeTake(limit)
+      }
     } else {
       ColumnarToRowExec(child).executeCollect().drop(offset)
     }

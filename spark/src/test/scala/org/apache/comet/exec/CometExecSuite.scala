@@ -1013,7 +1013,7 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  test("CollectLimitExec with positive offset - executeCollect() code path") {
+  test("CollectLimitExec with positive offset") {
     withParquetTable((0 until 50).map(i => (i, i + 12)), "tbl") {
       // disable top-k sort to switch from TakeProjectExec to CollectLimitExec in the execution plan
       withSQLConf(SQLConf.TOP_K_SORT_FALLBACK_THRESHOLD.key -> "0") {
@@ -1022,23 +1022,6 @@ class CometExecSuite extends CometTestBase {
         val dfWithOffsetOnly = sql("SELECT _1, _2 FROM tbl order by _2 OFFSET 15")
         checkSparkAnswerAndOperator(dfWithOffsetOnly)
         val incompleteDf = sql("SELECT _1, _2 FROM tbl order by _1 LIMIT 25 OFFSET 40")
-        checkSparkAnswerAndOperator(incompleteDf)
-        val emptyDf = sql("SELECT _1, _2 FROM tbl order by _1 LIMIT 50 OFFSET 1000")
-        checkSparkAnswerAndOperator(emptyDf)
-      }
-    }
-  }
-
-  test("CollectLimitExec with positive offset - execute() code path") {
-    withParquetTable((0 until 50).map(i => (i, i + 22)), "tbl") {
-      // use persist to make CollectLimitExec non-terminal operation to enforce execute() call instead of executeCollect()
-      withSQLConf(SQLConf.TOP_K_SORT_FALLBACK_THRESHOLD.key -> "0") {
-        val regularDfWithOffset =
-          sql("SELECT _1, _2 FROM tbl order by _2 LIMIT 12 OFFSET 4").persist()
-        checkSparkAnswerAndOperator(regularDfWithOffset)
-        val dfWithOffsetOnly = sql("SELECT _1, _2 FROM tbl order by _2 OFFSET 15").persist()
-        checkSparkAnswerAndOperator(dfWithOffsetOnly)
-        val incompleteDf = sql("SELECT _1, _2 FROM tbl order by _1 LIMIT 125 OFFSET 35")
         checkSparkAnswerAndOperator(incompleteDf)
         val emptyDf = sql("SELECT _1, _2 FROM tbl order by _1 LIMIT 50 OFFSET 1000")
         checkSparkAnswerAndOperator(emptyDf)
