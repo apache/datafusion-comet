@@ -123,6 +123,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Murmur3Hash] -> CometMurmur3Hash,
     classOf[XxHash64] -> CometXxHash64,
     classOf[MapKeys] -> CometMapKeys,
+    classOf[MapEntries] -> CometMapEntries,
     classOf[MapValues] -> CometMapValues,
     classOf[MapFromArrays] -> CometMapFromArrays,
     classOf[GetMapValue] -> CometMapExtract,
@@ -140,6 +141,29 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[OctetLength] -> CometOctetLength,
     classOf[Reverse] -> CometReverse,
     classOf[StringRPad] -> CometStringRPad)
+
+  /**
+   * Mapping of Spark aggregate expression class to Comet expression handler.
+   */
+  private val aggrSerdeMap: Map[Class[_], CometAggregateExpressionSerde] = Map(
+    classOf[Sum] -> CometSum,
+    classOf[Average] -> CometAverage,
+    classOf[Count] -> CometCount,
+    classOf[Min] -> CometMin,
+    classOf[Max] -> CometMax,
+    classOf[First] -> CometFirst,
+    classOf[Last] -> CometLast,
+    classOf[BitAndAgg] -> CometBitAndAgg,
+    classOf[BitOrAgg] -> CometBitOrAgg,
+    classOf[BitXorAgg] -> CometBitXOrAgg,
+    classOf[CovSample] -> CometCovSample,
+    classOf[CovPopulation] -> CometCovPopulation,
+    classOf[VarianceSamp] -> CometVarianceSamp,
+    classOf[VariancePop] -> CometVariancePop,
+    classOf[StddevSamp] -> CometStddevSamp,
+    classOf[StddevPop] -> CometStddevPop,
+    classOf[Corr] -> CometCorr,
+    classOf[BloomFilterAggregate] -> CometBloomFilterAggregate)
 
   def emitWarning(reason: String): Unit = {
     logWarning(s"Comet native execution is disabled due to: $reason")
@@ -446,33 +470,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
       return None
     }
 
-    val cometExpr: CometAggregateExpressionSerde = aggExpr.aggregateFunction match {
-      case _: Sum => CometSum
-      case _: Average => CometAverage
-      case _: Count => CometCount
-      case _: Min => CometMin
-      case _: Max => CometMax
-      case _: First => CometFirst
-      case _: Last => CometLast
-      case _: BitAndAgg => CometBitAndAgg
-      case _: BitOrAgg => CometBitOrAgg
-      case _: BitXorAgg => CometBitXOrAgg
-      case _: CovSample => CometCovSample
-      case _: CovPopulation => CometCovPopulation
-      case _: VarianceSamp => CometVarianceSamp
-      case _: VariancePop => CometVariancePop
-      case _: StddevSamp => CometStddevSamp
-      case _: StddevPop => CometStddevPop
-      case _: Corr => CometCorr
-      case _: BloomFilterAggregate => CometBloomFilterAggregate
-      case fn =>
+    val fn = aggExpr.aggregateFunction
+    val cometExpr = aggrSerdeMap.get(fn.getClass)
+    cometExpr match {
+      case Some(handler) =>
+        handler.convert(aggExpr, fn, inputs, binding, conf)
+      case _ =>
         val msg = s"unsupported Spark aggregate function: ${fn.prettyName}"
         emitWarning(msg)
         withInfo(aggExpr, msg, fn.children: _*)
-        return None
-
+        None
     }
-    cometExpr.convert(aggExpr, aggExpr.aggregateFunction, inputs, binding, conf)
   }
 
   def evalModeToProto(evalMode: CometEvalMode.Value): ExprOuterClass.EvalMode = {
@@ -869,6 +877,62 @@ object QueryPlanSerde extends Logging with CometExprShim {
             None
           }
         }
+
+      case Like(left, right, escapeChar) =>
+        if (escapeChar == '\\') {
+          createBinaryExpr(
+            expr,
+            left,
+            right,
+            inputs,
+            binding,
+            (builder, binaryExpr) => builder.setLike(binaryExpr))
+        } else {
+          // TODO custom escape char
+          withInfo(expr, s"custom escape character $escapeChar not supported in LIKE")
+          None
+        }
+
+      case RLike(left, right) =>
+        // we currently only support scalar regex patterns
+        right match {
+          case Literal(pattern, DataTypes.StringType) =>
+            if (!RegExp.isSupportedPattern(pattern.toString) &&
+              !CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
+              withInfo(
+                expr,
+                s"Regexp pattern $pattern is not compatible with Spark. " +
+                  s"Set ${CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key}=true " +
+                  "to allow it anyway.")
+              return None
+            }
+          case _ =>
+            withInfo(expr, "Only scalar regexp patterns are supported")
+            return None
+        }
+
+        createBinaryExpr(
+          expr,
+          left,
+          right,
+          inputs,
+          binding,
+          (builder, binaryExpr) => builder.setRlike(binaryExpr))
+
+      case StartsWith(attribute, prefix) =>
+        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
+        val prefixExpr = exprToProtoInternal(prefix, inputs, binding)
+        scalarFunctionExprToProto("starts_with", attributeExpr, prefixExpr)
+
+      case EndsWith(attribute, suffix) =>
+        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
+        val suffixExpr = exprToProtoInternal(suffix, inputs, binding)
+        scalarFunctionExprToProto("ends_with", attributeExpr, suffixExpr)
+
+      case Contains(attribute, value) =>
+        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
+        val valueExpr = exprToProtoInternal(value, inputs, binding)
+        scalarFunctionExprToProto("contains", attributeExpr, valueExpr)
 
       case Hour(child, timeZoneId) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)

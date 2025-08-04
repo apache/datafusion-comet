@@ -249,4 +249,20 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
+  test("string_space") {
+    withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT space(_1), space(_2) FROM tbl")
+    }
+  }
+
+  test("string_space with dictionary") {
+    val data = (0 until 1000).map(i => Tuple1(i % 5))
+
+    withSQLConf("parquet.enable.dictionary" -> "true") {
+      withParquetTable(data, "tbl") {
+        checkSparkAnswerAndOperator("SELECT space(_1) FROM tbl")
+      }
+    }
+  }
+
 }

@@ -108,8 +108,9 @@ class CometStringExpressionSerdeSuite extends CometTestBase {
   test("CometStringSpace") {
     val stringSpace = StringSpace(Literal(5))
     val proto = CometStringSpace.convert(stringSpace, Seq.empty, binding = true)
-    val expected = """string_space {
-                     |  child {
+    val expected = """scalarFunc {
+                     |  func: "string_space"
+                     |  args {
                      |    literal {
                      |      int_val: 5
                      |      datatype {

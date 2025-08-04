@@ -309,20 +309,7 @@ object CometConcatWs extends CometExpressionSerde {
   }
 }
 
-object CometStringSpace extends CometExpressionSerde {
-
-  override def convert(
-      expr: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    createUnaryExpr(
-      expr,
-      expr.asInstanceOf[StringSpace].child,
-      inputs,
-      binding,
-      (builder, unaryExpr) => builder.setStringSpace(unaryExpr))
-  }
-}
+object CometStringSpace extends UnaryScalarFuncSerde("string_space")
 
 object CometStartsWith extends CometExpressionSerde {
 
