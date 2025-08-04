@@ -28,6 +28,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.CometArrayExcept
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
@@ -272,8 +273,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  // https://github.com/apache/datafusion-comet/issues/1929
-  ignore("array_contains - array literals") {
+  test("array_contains - array literals") {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
       val filename = path.toString
