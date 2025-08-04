@@ -104,8 +104,8 @@ use datafusion_comet_spark_expr::monotonically_increasing_id::MonotonicallyIncre
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
     GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RLike,
-    RandExpr, RandnExpr, SparkCastOptions, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
-    TimestampTruncExpr, ToJson, UnboundColumn, Variance,
+    RandExpr, RandnExpr, SparkCastOptions, Stddev, SubstringExpr, SumDecimal, TimestampTruncExpr,
+    ToJson, UnboundColumn, Variance,
 };
 use itertools::Itertools;
 use jni::objects::GlobalRef;
@@ -545,11 +545,6 @@ impl PhysicalPlanner {
                     start as i64,
                     len as u64,
                 )))
-            }
-            ExprStruct::StringSpace(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-
-                Ok(Arc::new(StringSpaceExpr::new(child)))
             }
             ExprStruct::Like(expr) => {
                 let left =

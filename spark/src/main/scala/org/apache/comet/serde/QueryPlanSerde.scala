@@ -130,7 +130,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Rand] -> CometRand,
     classOf[Randn] -> CometRandn,
     classOf[SparkPartitionID] -> CometSparkPartitionId,
-    classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId)
+    classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
+    classOf[StringSpace] -> UnaryScalarFuncSerde("string_space"))
 
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
@@ -942,14 +943,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
         val valueExpr = exprToProtoInternal(value, inputs, binding)
         scalarFunctionExprToProto("contains", attributeExpr, valueExpr)
-
-      case StringSpace(child) =>
-        createUnaryExpr(
-          expr,
-          child,
-          inputs,
-          binding,
-          (builder, unaryExpr) => builder.setStringSpace(unaryExpr))
 
       case Hour(child, timeZoneId) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
