@@ -177,7 +177,7 @@ Functions [4]: [avg(ss_quantity#4), avg(UnscaledValue(ss_list_price#5)), avg(Uns
 
 (31) CometTakeOrderedAndProject
 Input [7]: [i_item_id#22, s_state#23, g_state#33, agg1#34, agg2#35, agg3#36, agg4#37]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_item_id#22 ASC NULLS FIRST,s_state#23 ASC NULLS FIRST], output=[i_item_id#22,s_state#23,g_state#33,agg1#34,agg2#35,agg3#36,agg4#37]), [i_item_id#22, s_state#23, g_state#33, agg1#34, agg2#35, agg3#36, agg4#37], 100, [i_item_id#22 ASC NULLS FIRST, s_state#23 ASC NULLS FIRST], [i_item_id#22, s_state#23, g_state#33, agg1#34, agg2#35, agg3#36, agg4#37]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_item_id#22 ASC NULLS FIRST,s_state#23 ASC NULLS FIRST], output=[i_item_id#22,s_state#23,g_state#33,agg1#34,agg2#35,agg3#36,agg4#37]), [i_item_id#22, s_state#23, g_state#33, agg1#34, agg2#35, agg3#36, agg4#37], 100, 0, [i_item_id#22 ASC NULLS FIRST, s_state#23 ASC NULLS FIRST], [i_item_id#22, s_state#23, g_state#33, agg1#34, agg2#35, agg3#36, agg4#37]
 
 (32) CometColumnarToRow [codegen id : 1]
 Input [7]: [i_item_id#22, s_state#23, g_state#33, agg1#34, agg2#35, agg3#36, agg4#37]

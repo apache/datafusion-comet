@@ -411,7 +411,7 @@ Arguments: [customer_preferred_cust_flag#42], [customer_preferred_cust_flag#42]
 
 (72) CometTakeOrderedAndProject
 Input [1]: [customer_preferred_cust_flag#42]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[customer_preferred_cust_flag#42 ASC NULLS FIRST], output=[customer_preferred_cust_flag#42]), [customer_preferred_cust_flag#42], 100, [customer_preferred_cust_flag#42 ASC NULLS FIRST], [customer_preferred_cust_flag#42]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[customer_preferred_cust_flag#42 ASC NULLS FIRST], output=[customer_preferred_cust_flag#42]), [customer_preferred_cust_flag#42], 100, 0, [customer_preferred_cust_flag#42 ASC NULLS FIRST], [customer_preferred_cust_flag#42]
 
 (73) CometColumnarToRow [codegen id : 1]
 Input [1]: [customer_preferred_cust_flag#42]

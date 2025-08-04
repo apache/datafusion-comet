@@ -222,7 +222,7 @@ Condition : (cnt#25 >= 10)
 
 (39) CometTakeOrderedAndProject
 Input [2]: [state#24, cnt#25]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[cnt#25 ASC NULLS FIRST], output=[state#24,cnt#25]), [state#24, cnt#25], 100, [cnt#25 ASC NULLS FIRST], [state#24, cnt#25]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[cnt#25 ASC NULLS FIRST], output=[state#24,cnt#25]), [state#24, cnt#25], 100, 0, [cnt#25 ASC NULLS FIRST], [state#24, cnt#25]
 
 (40) CometColumnarToRow [codegen id : 1]
 Input [2]: [state#24, cnt#25]
