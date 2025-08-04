@@ -125,7 +125,7 @@ object CometStringTranslate extends CometExpressionSerde {
   }
 }
 
-object CometTrim extends CometExpressionSerde {
+object CometStringTrim extends CometExpressionSerde {
 
   override def convert(
       expr: Expression,
