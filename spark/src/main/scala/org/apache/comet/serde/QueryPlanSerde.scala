@@ -127,6 +127,15 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[MapValues] -> CometMapValues,
     classOf[MapFromArrays] -> CometMapFromArrays,
     classOf[GetMapValue] -> CometMapExtract,
+    classOf[GreaterThan] -> CometGreaterThan,
+    classOf[GreaterThanOrEqual] -> CometGreaterThanOrEqual,
+    classOf[LessThan] -> CometLessThan,
+    classOf[LessThanOrEqual] -> CometLessThanOrEqual,
+    classOf[IsNull] -> CometIsNull,
+    classOf[IsNotNull] -> CometIsNotNull,
+    classOf[IsNaN] -> CometIsNaN,
+    classOf[In] -> CometIn,
+    classOf[InSet] -> CometInSet,
     classOf[Rand] -> CometRand,
     classOf[Randn] -> CometRandn,
     classOf[SparkPartitionID] -> CometSparkPartitionId,
@@ -684,42 +693,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           binding,
           (builder, binaryExpr) => builder.setNeqNullSafe(binaryExpr))
 
-      case GreaterThan(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setGt(binaryExpr))
-
-      case GreaterThanOrEqual(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setGtEq(binaryExpr))
-
-      case LessThan(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setLt(binaryExpr))
-
-      case LessThanOrEqual(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setLtEq(binaryExpr))
-
       case Literal(value, dataType)
           if supportedDataType(dataType, allowComplex = value == null) =>
         val exprBuilder = ExprOuterClass.Literal.newBuilder()
@@ -1064,29 +1037,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
                   .build())
               .build()
           })
-        optExprWithInfo(optExpr, expr, child)
-
-      case IsNull(child) =>
-        createUnaryExpr(
-          expr,
-          child,
-          inputs,
-          binding,
-          (builder, unaryExpr) => builder.setIsNull(unaryExpr))
-
-      case IsNotNull(child) =>
-        createUnaryExpr(
-          expr,
-          child,
-          inputs,
-          binding,
-          (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
-
-      case IsNaN(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr =
-          scalarFunctionExprToProtoWithReturnType("isnan", BooleanType, childExpr)
-
         optExprWithInfo(optExpr, expr, child)
 
       case SortOrder(child, direction, nullOrdering, _) =>
@@ -1458,20 +1408,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
           binding,
           (builder, binaryExpr) => builder.setBitwiseAnd(binaryExpr))
 
-      case In(value, list) =>
-        in(expr, value, list, inputs, binding, negate = false)
-
-      case InSet(value, hset) =>
-        val valueDataType = value.dataType
-        val list = hset.map { setVal =>
-          Literal(setVal, valueDataType)
-        }.toSeq
-        // Change `InSet` to `In` expression
-        // We do Spark `InSet` optimization in native (DataFusion) side.
-        in(expr, value, list, inputs, binding, negate = false)
-
-      case Not(In(value, list)) =>
-        in(expr, value, list, inputs, binding, negate = true)
+      case Not(In(_, _)) =>
+        CometNotIn.convert(expr, inputs, binding)
 
       case Not(child) =>
         createUnaryExpr(
@@ -1811,32 +1749,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           inner).build())
     } else {
       withInfo(expr, left, right)
-      None
-    }
-  }
-
-  def in(
-      expr: Expression,
-      value: Expression,
-      list: Seq[Expression],
-      inputs: Seq[Attribute],
-      binding: Boolean,
-      negate: Boolean): Option[Expr] = {
-    val valueExpr = exprToProtoInternal(value, inputs, binding)
-    val listExprs = list.map(exprToProtoInternal(_, inputs, binding))
-    if (valueExpr.isDefined && listExprs.forall(_.isDefined)) {
-      val builder = ExprOuterClass.In.newBuilder()
-      builder.setInValue(valueExpr.get)
-      builder.addAllLists(listExprs.map(_.get).asJava)
-      builder.setNegated(negate)
-      Some(
-        ExprOuterClass.Expr
-          .newBuilder()
-          .setIn(builder)
-          .build())
-    } else {
-      val allExprs = list ++ Seq(value)
-      withInfo(expr, allExprs: _*)
       None
     }
   }
