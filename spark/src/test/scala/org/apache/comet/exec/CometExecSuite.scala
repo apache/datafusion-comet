@@ -1738,7 +1738,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("TakeOrderedAndProjectExec with offset") {
-    Seq("true").foreach(aqeEnabled =>
+    Seq("true", "false").foreach(aqeEnabled =>
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
         withTable("t1") {
           val numRows = 10
