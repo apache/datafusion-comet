@@ -67,7 +67,7 @@ Note: if there is no `$SPARK_HOME/sbin/start-master.sh` on your machine it is po
 ```
 
 Look for output like 
-```commandline
+```shell
 INFO Master: Starting Spark master at spark://192.168.4.142:7078
 ```
 
