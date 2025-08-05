@@ -472,7 +472,7 @@ under the License.
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>IntegralDivide (<code class="docutils literal notranslate"><span class="pre">div</span></code>)</p></td>
-<td><p></p></td>
+<td><p>All operands are cast to DecimalType (in case the input type is not already decima type) with precision 19 and scale 0. Please set <code class="docutils literal notranslate"><span class="pre">spark.comet.cast.allowIncompatible</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> to enable DataFusion’s cast operation for LongType inputs.</p></td>
 </tr>
 <tr class="row-odd"><td><p>Remainder (<code class="docutils literal notranslate"><span class="pre">%</span></code>)</p></td>
 <td><p></p></td>
