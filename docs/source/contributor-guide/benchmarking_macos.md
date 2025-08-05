@@ -62,7 +62,7 @@ $SPARK_HOME/sbin/start-master.sh
 ```
 
 Note: if there is no `$SPARK_HOME/sbin/start-master.sh` on your machine it is possible to start master by running 
-```
+```shell
 /bin/spark-class org.apache.spark.deploy.master.Master
 ```
 
