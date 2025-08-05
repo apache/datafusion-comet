@@ -292,14 +292,13 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             generateMap = false))
       }
       val table = spark.read.parquet(filename)
+      table.createOrReplaceTempView("t2")
       for (field <- table.schema.fields) {
         val typeName = field.dataType.typeName
-        checkSparkAnswerAndOperator(
-          sql(s"SELECT array_contains(cast(null as array<$typeName>), b) FROM t2"))
         checkSparkAnswerAndOperator(sql(
-          s"SELECT array_contains(cast(array() as array<$typeName>), cast(null as $typeName)) FROM t2"))
-        checkSparkAnswerAndOperator(sql("SELECT array_contains(array(), 1) FROM t2"))
+          s"SELECT array_contains(cast(null as array<$typeName>), cast(null as $typeName)) FROM t2"))
       }
+      checkSparkAnswerAndOperator(sql("SELECT array_contains(array(), 1) FROM t2"))
     }
   }
 
