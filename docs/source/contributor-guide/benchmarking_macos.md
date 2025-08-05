@@ -61,6 +61,16 @@ Start Spark in standalone mode:
 $SPARK_HOME/sbin/start-master.sh
 ```
 
+Note: if there is no `$SPARK_HOME/sbin/start-master.sh` on your machine it is possible to start master by running 
+```
+/bin/spark-class org.apache.spark.deploy.master.Master
+```
+
+Look for output like 
+```commandline
+INFO Master: Starting Spark master at spark://192.168.4.142:7078
+```
+
 Set `SPARK_MASTER` env var (host name will need to be edited):
 
 ```shell
