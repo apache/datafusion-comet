@@ -19,6 +19,7 @@
 package org.apache.comet.shims
 
 import org.apache.comet.expressions.CometEvalMode
+import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.spark.sql.catalyst.expressions._
 
 /**
@@ -34,6 +35,11 @@ trait CometExprShim {
 
     protected def evalMode(c: Cast): CometEvalMode.Value =
         CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
+
+    def versionSpecificExprToProtoInternal(
+        expr: Expression,
+        inputs: Seq[Attribute],
+        binding: Boolean): Option[Expr] = None
 }
 
 object CometEvalModeUtil {

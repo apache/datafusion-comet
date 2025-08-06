@@ -630,7 +630,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       }
     }
 
-    expr match {
+    versionSpecificExprToProtoInternal(expr, inputs, binding).orElse(expr match {
       case a @ Alias(_, _) =>
         val r = exprToProtoInternal(a.child, inputs, binding)
         if (r.isEmpty) {
@@ -1679,7 +1679,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
             withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
             None
         }
-    }
+    })
   }
 
   /**

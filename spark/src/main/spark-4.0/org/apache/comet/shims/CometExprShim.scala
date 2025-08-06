@@ -18,8 +18,16 @@
  */
 package org.apache.comet.shims
 
+import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.CometEvalMode
+import org.apache.comet.serde.ExprOuterClass.Expr
+import org.apache.comet.serde.QueryPlanSerde.{castToProto, exprToProtoInternal}
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
+import org.apache.spark.sql.internal.types.StringTypeWithCollation
+import org.apache.spark.sql.types.{BinaryType, BooleanType, DataTypes, StringType}
+
+import java.util.Locale
 
 /**
  * `CometExprShim` acts as a shim for for parsing expressions from different Spark versions.
@@ -34,6 +42,42 @@ trait CometExprShim {
 
     protected def evalMode(c: Cast): CometEvalMode.Value =
         CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
+
+    def versionSpecificExprToProtoInternal(
+        expr: Expression,
+        inputs: Seq[Attribute],
+        binding: Boolean): Option[Expr] = {
+      expr match {
+        case s: StaticInvoke
+            if s.staticObject == classOf[StringDecode] &&
+              s.dataType.isInstanceOf[StringType] &&
+              s.functionName == "decode" &&
+              s.arguments.size == 4 &&
+              s.inputTypes == Seq(
+                  BinaryType,
+                  StringTypeWithCollation(supportsTrimCollation = true),
+                  BooleanType,
+                  BooleanType) =>
+          val Seq(bin, charset, _, _) = s.arguments
+          charset match {
+            case Literal(str, DataTypes.StringType)
+                if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
+              // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
+              // for invalid strings.
+              // Left child is the binary expression.
+              castToProto(
+                expr,
+                None,
+                DataTypes.StringType,
+                exprToProtoInternal(bin, inputs, binding).get,
+                CometEvalMode.TRY)
+            case _ =>
+              withInfo(expr, "Comet only supports decoding with 'utf-8'.")
+              None
+          }
+        case _ => None
+      }
+    }
 }
 
 object CometEvalModeUtil {
