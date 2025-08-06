@@ -92,35 +92,61 @@ index 4794863..0be31c1 100644
      this.initialized = true;
    }
  
-diff --git a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java
-index a361a7f..9021cd5 100644
---- a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java
-+++ b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java
-@@ -24,6 +24,7 @@ import java.util.Objects;
- import java.util.Set;
+diff --git a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java
+index 11f054b..108de81 100644
+--- a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java
++++ b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java
+@@ -148,7 +148,7 @@ class SparkBatch implements Batch {
+   // - Parquet vectorization is enabled
+   // - only primitives or metadata columns are projected
+   // - all tasks are of FileScanTask type and read only Parquet files
+-  private boolean useParquetBatchReads() {
++  protected boolean useParquetBatchReads() {
+     return readConf.parquetVectorizationEnabled()
+         && expectedSchema.columns().stream().allMatch(this::supportsParquetBatchReads)
+         && taskGroups.stream().allMatch(this::supportsParquetBatchReads);
+diff --git a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkScan.java b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkScan.java
+index 019f391..298c25f 100644
+--- a/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkScan.java
++++ b/spark/v3.4/spark/src/main/java/org/apache/iceberg/spark/source/SparkScan.java
+@@ -23,6 +23,7 @@ import java.util.List;
+ import java.util.Map;
  import java.util.function.Supplier;
  import java.util.stream.Collectors;
 +import org.apache.comet.parquet.SupportsComet;
- import org.apache.iceberg.DeleteFile;
- import org.apache.iceberg.FileContent;
- import org.apache.iceberg.FileScanTask;
-@@ -63,7 +64,7 @@ import org.slf4j.Logger;
+ import org.apache.iceberg.BlobMetadata;
+ import org.apache.iceberg.ScanTask;
+ import org.apache.iceberg.ScanTaskGroup;
+@@ -36,6 +37,7 @@ import org.apache.iceberg.metrics.ScanReport;
+ import org.apache.iceberg.relocated.com.google.common.base.Strings;
+ import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
++import org.apache.iceberg.spark.ParquetReaderType;
+ import org.apache.iceberg.spark.Spark3Util;
+ import org.apache.iceberg.spark.SparkReadConf;
+ import org.apache.iceberg.spark.SparkSchemaUtil;
+@@ -94,7 +96,7 @@ import org.apache.spark.sql.types.StructType;
+ import org.slf4j.Logger;
  import org.slf4j.LoggerFactory;
  
- class SparkBatchQueryScan extends SparkPartitioningAwareScan<PartitionScanTask>
--    implements SupportsRuntimeV2Filtering {
-+    implements SupportsRuntimeV2Filtering, SupportsComet {
+-abstract class SparkScan implements Scan, SupportsReportStatistics {
++abstract class SparkScan implements Scan, SupportsReportStatistics, SupportsComet {
+   private static final Logger LOG = LoggerFactory.getLogger(SparkScan.class);
+   private static final String NDV_KEY = "ndv";
  
-   private static final Logger LOG = LoggerFactory.getLogger(SparkBatchQueryScan.class);
- 
-@@ -290,4 +291,9 @@ class SparkBatchQueryScan extends SparkPartitioningAwareScan<PartitionScanTask>
-         runtimeFilterExpressions,
-         caseSensitive());
+@@ -348,4 +350,14 @@ abstract class SparkScan implements Scan, SupportsReportStatistics {
+       return splitSize;
+     }
    }
 +
 +  @Override
 +  public boolean isCometEnabled() {
-+    return true;
++    if (readConf.parquetReaderType() == ParquetReaderType.COMET) {
++      SparkBatch batch = (SparkBatch) this.toBatch();
++      return batch.useParquetBatchReads();
++    }
++
++    return false;
 +  }
  }
 diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestDataFrameWriterV2.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/TestDataFrameWriterV2.java
@@ -328,35 +354,61 @@ index 4794863..0be31c1 100644
      this.initialized = true;
    }
  
-diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java
-index a361a7f..9021cd5 100644
---- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java
-+++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatchQueryScan.java
-@@ -24,6 +24,7 @@ import java.util.Objects;
- import java.util.Set;
+diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java
+index 11f054b..a646d86 100644
+--- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java
++++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java
+@@ -148,7 +148,7 @@ class SparkBatch implements Batch {
+   // - Parquet vectorization is enabled
+   // - only primitives or metadata columns are projected
+   // - all tasks are of FileScanTask type and read only Parquet files
+-  private boolean useParquetBatchReads() {
++  boolean useParquetBatchReads() {
+     return readConf.parquetVectorizationEnabled()
+         && expectedSchema.columns().stream().allMatch(this::supportsParquetBatchReads)
+         && taskGroups.stream().allMatch(this::supportsParquetBatchReads);
+diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkScan.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkScan.java
+index 019f391..298c25f 100644
+--- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkScan.java
++++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkScan.java
+@@ -23,6 +23,7 @@ import java.util.List;
+ import java.util.Map;
  import java.util.function.Supplier;
  import java.util.stream.Collectors;
 +import org.apache.comet.parquet.SupportsComet;
- import org.apache.iceberg.DeleteFile;
- import org.apache.iceberg.FileContent;
- import org.apache.iceberg.FileScanTask;
-@@ -63,7 +64,7 @@ import org.slf4j.Logger;
+ import org.apache.iceberg.BlobMetadata;
+ import org.apache.iceberg.ScanTask;
+ import org.apache.iceberg.ScanTaskGroup;
+@@ -36,6 +37,7 @@ import org.apache.iceberg.metrics.ScanReport;
+ import org.apache.iceberg.relocated.com.google.common.base.Strings;
+ import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
++import org.apache.iceberg.spark.ParquetReaderType;
+ import org.apache.iceberg.spark.Spark3Util;
+ import org.apache.iceberg.spark.SparkReadConf;
+ import org.apache.iceberg.spark.SparkSchemaUtil;
+@@ -94,7 +96,7 @@ import org.apache.spark.sql.types.StructType;
+ import org.slf4j.Logger;
  import org.slf4j.LoggerFactory;
  
- class SparkBatchQueryScan extends SparkPartitioningAwareScan<PartitionScanTask>
--    implements SupportsRuntimeV2Filtering {
-+    implements SupportsRuntimeV2Filtering, SupportsComet {
+-abstract class SparkScan implements Scan, SupportsReportStatistics {
++abstract class SparkScan implements Scan, SupportsReportStatistics, SupportsComet {
+   private static final Logger LOG = LoggerFactory.getLogger(SparkScan.class);
+   private static final String NDV_KEY = "ndv";
  
-   private static final Logger LOG = LoggerFactory.getLogger(SparkBatchQueryScan.class);
- 
-@@ -290,4 +291,9 @@ class SparkBatchQueryScan extends SparkPartitioningAwareScan<PartitionScanTask>
-         runtimeFilterExpressions,
-         caseSensitive());
+@@ -348,4 +350,14 @@ abstract class SparkScan implements Scan, SupportsReportStatistics {
+       return splitSize;
+     }
    }
 +
 +  @Override
 +  public boolean isCometEnabled() {
-+    return true;
++    if (readConf.parquetReaderType() == ParquetReaderType.COMET) {
++      SparkBatch batch = (SparkBatch) this.toBatch();
++      return batch.useParquetBatchReads();
++    }
++
++    return false;
 +  }
  }
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java
