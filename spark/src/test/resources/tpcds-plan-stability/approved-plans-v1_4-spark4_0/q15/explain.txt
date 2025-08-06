@@ -75,7 +75,7 @@ Condition : isnotnull(ca_address_sk#7)
 
 (10) CometProject
 Input [3]: [ca_address_sk#7, ca_state#8, ca_zip#9]
-Arguments: [ca_address_sk#7, ca_state#10, ca_zip#11], [ca_address_sk#7, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, ca_state#8, 2, true, false, true) AS ca_state#10, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, ca_zip#9, 10, true, false, true) AS ca_zip#11]
+Arguments: [ca_address_sk#7, ca_state#10, ca_zip#11], [ca_address_sk#7, static_invoke(CharVarcharCodegenUtils.readSidePadding(ca_state#8, 2)) AS ca_state#10, static_invoke(CharVarcharCodegenUtils.readSidePadding(ca_zip#9, 10)) AS ca_zip#11]
 
 (11) CometBroadcastExchange
 Input [3]: [ca_address_sk#7, ca_state#10, ca_zip#11]

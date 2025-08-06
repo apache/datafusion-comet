@@ -21,18 +21,6 @@ under the License.
 
 Comet provides some tuning options to help you get the best performance from your queries.
 
-## Parquet Scans
-
-Comet currently has three distinct implementations of the Parquet scan operator. The configuration property
-`spark.comet.scan.impl` is used to select an implementation. These scans are described in the
-[Compatibility Guide].
-
-[Compatibility Guide]: compatibility.md
-
-When using `native_datafusion` or `native_iceberg_compat`, there are known performance issues when pushing filters
-down to Parquet scans. Until this issue is resolved, performance can be improved by setting
-`spark.sql.parquet.filterPushdown=false`.
-
 ## Configuring Tokio Runtime
 
 Comet uses a global tokio runtime per executor process using tokio's defaults of one worker thread per core and a

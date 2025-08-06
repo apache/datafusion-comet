@@ -16,11 +16,13 @@
 // under the License.
 
 use crate::hash_funcs::*;
+use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::{
     spark_array_repeat, spark_ceil, spark_date_add, spark_date_sub, spark_decimal_div,
     spark_decimal_integral_div, spark_floor, spark_hex, spark_isnan, spark_make_decimal,
     spark_read_side_padding, spark_round, spark_rpad, spark_unhex, spark_unscaled_value,
     SparkBitwiseCount, SparkBitwiseGet, SparkBitwiseNot, SparkChrFunc, SparkDateTrunc,
+    SparkStringSpace,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -53,6 +55,15 @@ macro_rules! make_comet_scalar_udf {
         );
         Ok(Arc::new(ScalarUDF::new_from_impl(scalar_func)))
     }};
+    ($name:expr, $func:ident, without $data_type:ident, $fail_on_error:ident) => {{
+        let scalar_func = CometScalarFunction::new(
+            $name.to_string(),
+            Signature::variadic_any(Volatility::Immutable),
+            $data_type,
+            Arc::new(move |args| $func(args, $fail_on_error)),
+        );
+        Ok(Arc::new(ScalarUDF::new_from_impl(scalar_func)))
+    }};
 }
 
 /// Create a physical scalar function.
@@ -60,6 +71,7 @@ pub fn create_comet_physical_fun(
     fun_name: &str,
     data_type: DataType,
     registry: &dyn FunctionRegistry,
+    fail_on_error: Option<bool>,
 ) -> Result<Arc<ScalarUDF>, DataFusionError> {
     match fun_name {
         "ceil" => {
@@ -116,22 +128,6 @@ pub fn create_comet_physical_fun(
             let func = Arc::new(spark_isnan);
             make_comet_scalar_udf!("isnan", func, without data_type)
         }
-        "sha224" => {
-            let func = Arc::new(spark_sha224);
-            make_comet_scalar_udf!("sha224", func, without data_type)
-        }
-        "sha256" => {
-            let func = Arc::new(spark_sha256);
-            make_comet_scalar_udf!("sha256", func, without data_type)
-        }
-        "sha384" => {
-            let func = Arc::new(spark_sha384);
-            make_comet_scalar_udf!("sha384", func, without data_type)
-        }
-        "sha512" => {
-            let func = Arc::new(spark_sha512);
-            make_comet_scalar_udf!("sha512", func, without data_type)
-        }
         "date_add" => {
             let func = Arc::new(spark_date_add);
             make_comet_scalar_udf!("date_add", func, without data_type)
@@ -143,6 +139,11 @@ pub fn create_comet_physical_fun(
         "array_repeat" => {
             let func = Arc::new(spark_array_repeat);
             make_comet_scalar_udf!("array_repeat", func, without data_type)
+        }
+        "spark_modulo" => {
+            let func = Arc::new(spark_modulo);
+            let fail_on_error = fail_on_error.unwrap_or(false);
+            make_comet_scalar_udf!("spark_modulo", func, without data_type, fail_on_error)
         }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
@@ -159,6 +160,7 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         Arc::new(ScalarUDF::new_from_impl(SparkBitwiseCount::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkBitwiseGet::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateTrunc::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkStringSpace::default())),
     ]
 }
 

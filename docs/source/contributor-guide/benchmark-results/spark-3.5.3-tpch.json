@@ -1,0 +1,97 @@
+{
+    "engine": "datafusion-comet",
+    "benchmark": "tpch",
+    "data_path": "/mnt/bigdata/tpch/sf100/",
+    "query_path": "/mnt/bigdata/tpch/queries/",
+    "spark_conf": {
+        "spark.app.id": "app-20250712103052-0000",
+        "spark.app.submitTime": "1752337851292",
+        "spark.eventLog.enabled": "true",
+        "spark.driver.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
+        "spark.app.startTime": "1752337851720",
+        "spark.master": "spark://woody:7077",
+        "spark.executor.id": "driver",
+        "spark.driver.memory": "8G",
+        "spark.driver.port": "35021",
+        "spark.memory.offHeap.enabled": "true",
+        "spark.executor.memory": "16g",
+        "spark.rdd.compress": "True",
+        "spark.app.name": "spark benchmark derived from tpch",
+        "spark.executor.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
+        "spark.serializer.objectStreamReset": "100",
+        "spark.driver.host": "10.0.0.118",
+        "spark.executor.instances": "1",
+        "spark.cores.max": "8",
+        "spark.submit.pyFiles": "",
+        "spark.submit.deployMode": "client",
+        "spark.sql.warehouse.dir": "file:/home/andy/git/apache/datafusion-comet/dev/benchmarks/spark-warehouse",
+        "spark.executor.cores": "8",
+        "spark.memory.offHeap.size": "16g"
+    },
+    "1": [
+        80.9024965763092
+    ],
+    "2": [
+        12.814885139465332
+    ],
+    "3": [
+        25.574663162231445
+    ],
+    "4": [
+        21.571399927139282
+    ],
+    "5": [
+        51.63549518585205
+    ],
+    "6": [
+        3.3588881492614746
+    ],
+    "7": [
+        22.072340488433838
+    ],
+    "8": [
+        34.160672426223755
+    ],
+    "9": [
+        73.69656896591187
+    ],
+    "10": [
+        19.581801891326904
+    ],
+    "11": [
+        13.093697786331177
+    ],
+    "12": [
+        14.19110631942749
+    ],
+    "13": [
+        23.505231857299805
+    ],
+    "14": [
+        5.690527439117432
+    ],
+    "15": [
+        14.76661491394043
+    ],
+    "16": [
+        7.469503402709961
+    ],
+    "17": [
+        61.36024451255798
+    ],
+    "18": [
+        73.62648725509644
+    ],
+    "19": [
+        6.714325666427612
+    ],
+    "20": [
+        10.012639284133911
+    ],
+    "21": [
+        66.69512009620667
+    ],
+    "22": [
+        9.485117673873901
+    ]
+}

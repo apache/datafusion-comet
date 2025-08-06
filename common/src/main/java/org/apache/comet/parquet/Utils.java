@@ -22,6 +22,8 @@ package org.apache.comet.parquet;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.PrimitiveType;
+import org.apache.parquet.schema.Type;
+import org.apache.parquet.schema.Types;
 import org.apache.spark.sql.types.*;
 
 import org.apache.comet.CometSchemaImporter;
@@ -29,6 +31,32 @@ import org.apache.comet.CometSchemaImporter;
 public class Utils {
 
   /** This method is called from Apache Iceberg. */
+  public static ColumnReader getColumnReader(
+      DataType type,
+      ParquetColumnSpec columnSpec,
+      CometSchemaImporter importer,
+      int batchSize,
+      boolean useDecimal128,
+      boolean useLazyMaterialization,
+      boolean useLegacyTimestamp) {
+
+    ColumnDescriptor descriptor = buildColumnDescriptor(columnSpec);
+    return getColumnReader(
+        type,
+        descriptor,
+        importer,
+        batchSize,
+        useDecimal128,
+        useLazyMaterialization,
+        useLegacyTimestamp);
+  }
+
+  /**
+   * This method is called from Apache Iceberg.
+   *
+   * @deprecated since 0.9.1, will be removed in 0.10.0; use getColumnReader with ParquetColumnSpec
+   *     instead.
+   */
   public static ColumnReader getColumnReader(
       DataType type,
       ColumnDescriptor descriptor,
@@ -258,6 +286,171 @@ public class Utils {
         return 2;
       default:
         throw new UnsupportedOperationException("Unsupported TimeUnit " + tu);
+    }
+  }
+
+  public static ColumnDescriptor buildColumnDescriptor(ParquetColumnSpec columnSpec) {
+    PrimitiveType.PrimitiveTypeName primType =
+        PrimitiveType.PrimitiveTypeName.valueOf(columnSpec.getPhysicalType());
+
+    Type.Repetition repetition;
+    if (columnSpec.getMaxRepetitionLevel() > 0) {
+      repetition = Type.Repetition.REPEATED;
+    } else if (columnSpec.getMaxDefinitionLevel() > 0) {
+      repetition = Type.Repetition.OPTIONAL;
+    } else {
+      repetition = Type.Repetition.REQUIRED;
+    }
+
+    String name = columnSpec.getPath()[columnSpec.getPath().length - 1];
+    // Reconstruct the logical type from parameters
+    LogicalTypeAnnotation logicalType = null;
+    if (columnSpec.getLogicalTypeName() != null) {
+      logicalType =
+          reconstructLogicalType(
+              columnSpec.getLogicalTypeName(), columnSpec.getLogicalTypeParams());
+    }
+
+    PrimitiveType primitiveType;
+    if (primType == PrimitiveType.PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY) {
+      primitiveType =
+          Types.primitive(primType, repetition)
+              .length(columnSpec.getTypeLength())
+              .as(logicalType)
+              .id(columnSpec.getFieldId())
+              .named(name);
+    } else {
+      primitiveType =
+          Types.primitive(primType, repetition)
+              .as(logicalType)
+              .id(columnSpec.getFieldId())
+              .named(name);
+    }
+
+    return new ColumnDescriptor(
+        columnSpec.getPath(),
+        primitiveType,
+        columnSpec.getMaxRepetitionLevel(),
+        columnSpec.getMaxDefinitionLevel());
+  }
+
+  private static LogicalTypeAnnotation reconstructLogicalType(
+      String logicalTypeName, java.util.Map<String, String> params) {
+
+    switch (logicalTypeName) {
+        // MAP
+      case "MapLogicalTypeAnnotation":
+        return LogicalTypeAnnotation.mapType();
+
+        // LIST
+      case "ListLogicalTypeAnnotation":
+        return LogicalTypeAnnotation.listType();
+
+        // STRING
+      case "StringLogicalTypeAnnotation":
+        return LogicalTypeAnnotation.stringType();
+
+        // MAP_KEY_VALUE
+      case "MapKeyValueLogicalTypeAnnotation":
+        return LogicalTypeAnnotation.MapKeyValueTypeAnnotation.getInstance();
+
+        // ENUM
+      case "EnumLogicalTypeAnnotation":
+        return LogicalTypeAnnotation.enumType();
+
+        // DECIMAL
+      case "DecimalLogicalTypeAnnotation":
+        if (!params.containsKey("scale") || !params.containsKey("precision")) {
+          throw new IllegalArgumentException(
+              "Missing required parameters for DecimalLogicalTypeAnnotation: " + params);
+        }
+        int scale = Integer.parseInt(params.get("scale"));
+        int precision = Integer.parseInt(params.get("precision"));
+        return LogicalTypeAnnotation.decimalType(scale, precision);
+
+        // DATE
+      case "DateLogicalTypeAnnotation":
+        return LogicalTypeAnnotation.dateType();
+
+        // TIME
+      case "TimeLogicalTypeAnnotation":
+        if (!params.containsKey("isAdjustedToUTC") || !params.containsKey("unit")) {
+          throw new IllegalArgumentException(
+              "Missing required parameters for TimeLogicalTypeAnnotation: " + params);
+        }
+
+        boolean isUTC = Boolean.parseBoolean(params.get("isAdjustedToUTC"));
+        String timeUnitStr = params.get("unit");
+
+        LogicalTypeAnnotation.TimeUnit timeUnit;
+        switch (timeUnitStr) {
+          case "MILLIS":
+            timeUnit = LogicalTypeAnnotation.TimeUnit.MILLIS;
+            break;
+          case "MICROS":
+            timeUnit = LogicalTypeAnnotation.TimeUnit.MICROS;
+            break;
+          case "NANOS":
+            timeUnit = LogicalTypeAnnotation.TimeUnit.NANOS;
+            break;
+          default:
+            throw new IllegalArgumentException("Unknown time unit: " + timeUnitStr);
+        }
+        return LogicalTypeAnnotation.timeType(isUTC, timeUnit);
+
+        // TIMESTAMP
+      case "TimestampLogicalTypeAnnotation":
+        if (!params.containsKey("isAdjustedToUTC") || !params.containsKey("unit")) {
+          throw new IllegalArgumentException(
+              "Missing required parameters for TimestampLogicalTypeAnnotation: " + params);
+        }
+        boolean isAdjustedToUTC = Boolean.parseBoolean(params.get("isAdjustedToUTC"));
+        String unitStr = params.get("unit");
+
+        LogicalTypeAnnotation.TimeUnit unit;
+        switch (unitStr) {
+          case "MILLIS":
+            unit = LogicalTypeAnnotation.TimeUnit.MILLIS;
+            break;
+          case "MICROS":
+            unit = LogicalTypeAnnotation.TimeUnit.MICROS;
+            break;
+          case "NANOS":
+            unit = LogicalTypeAnnotation.TimeUnit.NANOS;
+            break;
+          default:
+            throw new IllegalArgumentException("Unknown timestamp unit: " + unitStr);
+        }
+        return LogicalTypeAnnotation.timestampType(isAdjustedToUTC, unit);
+
+        // INTEGER
+      case "IntLogicalTypeAnnotation":
+        if (!params.containsKey("isSigned") || !params.containsKey("bitWidth")) {
+          throw new IllegalArgumentException(
+              "Missing required parameters for IntLogicalTypeAnnotation: " + params);
+        }
+        boolean isSigned = Boolean.parseBoolean(params.get("isSigned"));
+        int bitWidth = Integer.parseInt(params.get("bitWidth"));
+        return LogicalTypeAnnotation.intType(bitWidth, isSigned);
+
+        // JSON
+      case "JsonLogicalTypeAnnotation":
+        return LogicalTypeAnnotation.jsonType();
+
+        // BSON
+      case "BsonLogicalTypeAnnotation":
+        return LogicalTypeAnnotation.bsonType();
+
+        // UUID
+      case "UUIDLogicalTypeAnnotation":
+        return LogicalTypeAnnotation.uuidType();
+
+        // INTERVAL
+      case "IntervalLogicalTypeAnnotation":
+        return LogicalTypeAnnotation.IntervalLogicalTypeAnnotation.getInstance();
+
+      default:
+        throw new IllegalArgumentException("Unknown logical type: " + logicalTypeName);
     }
   }
 }

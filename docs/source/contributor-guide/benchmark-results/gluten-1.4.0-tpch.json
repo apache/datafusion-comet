@@ -1,0 +1,116 @@
+{
+    "engine": "datafusion-comet",
+    "benchmark": "tpch",
+    "data_path": "/mnt/bigdata/tpch/sf100/",
+    "query_path": "/mnt/bigdata/tpch/queries/",
+    "spark_conf": {
+        "spark.eventLog.enabled": "true",
+        "spark.gluten.sql.session.timeZone.default": "UTC",
+        "spark.app.submitTime": "1752337239601",
+        "spark.plugins": "org.apache.gluten.GlutenPlugin",
+        "spark.gluten.memoryOverhead.size.in.bytes": "5153751040",
+        "spark.memory.offHeap.enabled": "true",
+        "spark.repl.local.jars": "file:///opt/gluten/gluten-velox-bundle-spark3.5_2.12-linux_amd64-1.4.0.jar",
+        "spark.executor.extraClassPath": "/opt/gluten/gluten-velox-bundle-spark3.5_2.12-linux_amd64-1.4.0.jar",
+        "spark.driver.port": "46545",
+        "spark.executor.memory": "16G",
+        "spark.driver.extraClassPath": "/opt/gluten/gluten-velox-bundle-spark3.5_2.12-linux_amd64-1.4.0.jar",
+        "spark.serializer.objectStreamReset": "100",
+        "spark.driver.host": "10.0.0.118",
+        "spark.submit.deployMode": "client",
+        "spark.executor.cores": "8",
+        "spark.jars": "file:///opt/gluten/gluten-velox-bundle-spark3.5_2.12-linux_amd64-1.4.0.jar",
+        "spark.driver.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
+        "spark.gluten.memory.offHeap.size.in.bytes": "17179869184",
+        "spark.shuffle.manager": "org.apache.spark.shuffle.sort.ColumnarShuffleManager",
+        "spark.app.id": "app-20250712162041-0000",
+        "spark.executor.id": "driver",
+        "spark.master": "spark://woody:7077",
+        "spark.app.name": "gluten benchmark derived from tpch",
+        "spark.executor.memoryOverhead": "4915",
+        "spark.app.startTime": "1752337239956",
+        "spark.sql.extensions": "org.apache.gluten.extension.GlutenSessionExtensions",
+        "spark.gluten.numTaskSlotsPerExecutor": "8",
+        "spark.driver.memory": "8G",
+        "spark.gluten.memory.task.offHeap.size.in.bytes": "2147483648",
+        "spark.memory.offHeap.size": "17179869184",
+        "spark.app.initial.jar.urls": "spark://10.0.0.118:46545/jars/gluten-velox-bundle-spark3.5_2.12-linux_amd64-1.4.0.jar",
+        "spark.rdd.compress": "True",
+        "spark.executor.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
+        "spark.gluten.memory.conservative.task.offHeap.size.in.bytes": "1073741824",
+        "spark.gluten.sql.columnar.forceShuffledHashJoin": "true",
+        "spark.sql.adaptive.customCostEvaluatorClass": "org.apache.spark.sql.execution.adaptive.GlutenCostEvaluator",
+        "spark.submit.pyFiles": "",
+        "spark.executor.instances": "1",
+        "spark.cores.max": "8",
+        "spark.sql.session.timeZone": "UTC",
+        "spark.sql.warehouse.dir": "file:/home/andy/git/apache/datafusion-comet/dev/benchmarks/spark-warehouse",
+        "spark.gluten.memory.dynamic.offHeap.sizing.enabled": "false"
+    },
+    "1": [
+        7.653544187545776
+    ],
+    "2": [
+        4.837377309799194
+    ],
+    "3": [
+        7.874017000198364
+    ],
+    "4": [
+        7.201406717300415
+    ],
+    "5": [
+        15.82085108757019
+    ],
+    "6": [
+        1.7845516204833984
+    ],
+    "7": [
+        10.334960460662842
+    ],
+    "8": [
+        16.844615697860718
+    ],
+    "9": [
+        24.79072380065918
+    ],
+    "10": [
+        8.695719480514526
+    ],
+    "11": [
+        3.6076815128326416
+    ],
+    "12": [
+        4.583712339401245
+    ],
+    "13": [
+        7.016078233718872
+    ],
+    "14": [
+        3.003683567047119
+    ],
+    "15": [
+        7.852885007858276
+    ],
+    "16": [
+        3.1703848838806152
+    ],
+    "17": [
+        19.128700017929077
+    ],
+    "18": [
+        20.703757524490356
+    ],
+    "19": [
+        3.294731378555298
+    ],
+    "20": [
+        6.121671199798584
+    ],
+    "21": [
+        41.27772641181946
+    ],
+    "22": [
+        3.542634963989258
+    ]
+}

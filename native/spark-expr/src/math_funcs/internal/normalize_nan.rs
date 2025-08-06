@@ -87,7 +87,7 @@ impl PhysicalExpr for NormalizeNaNAndZero {
                 let new_array = Float64Array::from(v);
                 Ok(ColumnarValue::Array(Arc::new(new_array)))
             }
-            dt => panic!("Unexpected data type {:?}", dt),
+            dt => panic!("Unexpected data type {dt:?}"),
         }
     }
 

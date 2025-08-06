@@ -19,7 +19,8 @@
 
 package org.apache.comet
 
-import org.apache.spark.sql.CometTestBase
+import org.apache.parquet.hadoop.ParquetOutputFormat
+import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.internal.SQLConf
 
 class CometStringExpressionSuite extends CometTestBase {
@@ -166,7 +167,7 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
-  // based on Spark SQL ParquetFilterSuite test "filter pushdown - StringPredicate"
+  // Simplified version of "filter pushdown - StringPredicate" that does not generate dictionaries
   test("string predicate filter") {
     Seq(false, true).foreach { pushdown =>
       withSQLConf(
@@ -181,6 +182,85 @@ class CometStringExpressionSuite extends CometTestBase {
           checkSparkAnswerAndOperator(s"SELECT * FROM $table WHERE name LIKE '%a'")
           checkSparkAnswerAndOperator(s"SELECT * FROM $table WHERE name LIKE '%a%'")
         }
+      }
+    }
+  }
+
+  // Modified from Spark test "filter pushdown - StringPredicate"
+  private def testStringPredicate(
+      dataFrame: DataFrame,
+      filter: String,
+      enableDictionary: Boolean = true): Unit = {
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      dataFrame.write
+        .option("parquet.block.size", 512)
+        .option(ParquetOutputFormat.ENABLE_DICTIONARY, enableDictionary)
+        .parquet(path)
+      Seq(true, false).foreach { pushDown =>
+        withSQLConf(
+          SQLConf.PARQUET_FILTER_PUSHDOWN_STRING_PREDICATE_ENABLED.key -> pushDown.toString) {
+          val df = spark.read.parquet(path).filter(filter)
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+    }
+  }
+
+  // Modified from Spark test "filter pushdown - StringPredicate"
+  test("filter pushdown - StringPredicate") {
+    import testImplicits._
+    // keep() should take effect on StartsWith/EndsWith/Contains
+    Seq(
+      "value like 'a%'", // StartsWith
+      "value like '%a'", // EndsWith
+      "value like '%a%'" // Contains
+    ).foreach { filter =>
+      testStringPredicate(
+        // dictionary will be generated since there are duplicated values
+        spark.range(1000).map(t => (t % 10).toString).toDF(),
+        filter)
+    }
+
+    // canDrop() should take effect on StartsWith,
+    // and has no effect on EndsWith/Contains
+    Seq(
+      "value like 'a%'", // StartsWith
+      "value like '%a'", // EndsWith
+      "value like '%a%'" // Contains
+    ).foreach { filter =>
+      testStringPredicate(
+        spark.range(1024).map(_.toString).toDF(),
+        filter,
+        enableDictionary = false)
+    }
+
+    // inverseCanDrop() should take effect on StartsWith,
+    // and has no effect on EndsWith/Contains
+    Seq(
+      "value not like '10%'", // StartsWith
+      "value not like '%10'", // EndsWith
+      "value not like '%10%'" // Contains
+    ).foreach { filter =>
+      testStringPredicate(
+        spark.range(1024).map(_ => "100").toDF(),
+        filter,
+        enableDictionary = false)
+    }
+  }
+
+  test("string_space") {
+    withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT space(_1), space(_2) FROM tbl")
+    }
+  }
+
+  test("string_space with dictionary") {
+    val data = (0 until 1000).map(i => Tuple1(i % 5))
+
+    withSQLConf("parquet.enable.dictionary" -> "true") {
+      withParquetTable(data, "tbl") {
+        checkSparkAnswerAndOperator("SELECT space(_1) FROM tbl")
       }
     }
   }

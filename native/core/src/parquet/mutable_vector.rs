@@ -69,7 +69,7 @@ impl ParquetMutableVector {
         arrow_type: ArrowDataType,
         bit_width: usize,
     ) -> Self {
-        let validity_len = bit::ceil(capacity, 8);
+        let validity_len = capacity.div_ceil(8);
         let validity_buffer = CometBuffer::new(validity_len);
 
         let mut value_capacity = capacity;
@@ -78,7 +78,7 @@ impl ParquetMutableVector {
             value_capacity += 1;
         }
         // Make sure the capacity is positive
-        let len = bit::ceil(value_capacity * bit_width, 8);
+        let len = usize::div_ceil(value_capacity * bit_width, 8);
         let mut value_buffer = CometBuffer::new(len);
 
         let mut children = Vec::new();
@@ -225,7 +225,7 @@ impl ParquetMutableVector {
             ArrowDataType::FixedSizeBinary(type_length) => *type_length as usize * 8,
             ArrowDataType::Decimal128(..) => 128, // Arrow stores decimal with 16 bytes
             ArrowDataType::Binary | ArrowDataType::Utf8 => 32, // Only count offset size
-            dt => panic!("Unsupported Arrow data type: {:?}", dt),
+            dt => panic!("Unsupported Arrow data type: {dt:?}"),
         }
     }
 

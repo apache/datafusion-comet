@@ -99,20 +99,20 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
   private StructType partitionSchema;
   private InternalRow partitionValues;
   private PartitionedFile file;
-  private final Map<String, SQLMetric> metrics;
+  protected Map<String, SQLMetric> metrics;
 
   private long rowsRead;
-  private StructType sparkSchema;
+  protected StructType sparkSchema;
   private MessageType requestedSchema;
-  private CometVector[] vectors;
-  private AbstractColumnReader[] columnReaders;
+  protected CometVector[] vectors;
+  protected AbstractColumnReader[] columnReaders;
   private CometSchemaImporter importer;
-  private ColumnarBatch currentBatch;
+  protected ColumnarBatch currentBatch;
   private Future<Option<Throwable>> prefetchTask;
   private LinkedBlockingQueue<Pair<PageReadStore, Long>> prefetchQueue;
   private FileReader fileReader;
   private boolean[] missingColumns;
-  private boolean isInitialized;
+  protected boolean isInitialized;
   private ParquetMetadata footer;
 
   /** The total number of rows across all row groups of the input split. */
@@ -143,7 +143,9 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
   private boolean useLegacyDateTimestamp;
 
   /** The TaskContext object for executing this task. */
-  private final TaskContext taskContext;
+  private TaskContext taskContext;
+
+  public BatchReader() {}
 
   // Only for testing
   public BatchReader(String file, int capacity) {
@@ -183,6 +185,9 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     this.taskContext = TaskContext$.MODULE$.get();
   }
 
+  /**
+   * @deprecated since 0.9.1, will be removed in 0.10.0.
+   */
   public BatchReader(AbstractColumnReader[] columnReaders) {
     // Todo: set useDecimal128 and useLazyMaterialization
     int numColumns = columnReaders.length;
@@ -377,10 +382,16 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     }
   }
 
+  /**
+   * @deprecated since 0.9.1, will be removed in 0.10.0.
+   */
   public void setSparkSchema(StructType schema) {
     this.sparkSchema = schema;
   }
 
+  /**
+   * @deprecated since 0.9.1, will be removed in 0.10.0.
+   */
   public AbstractColumnReader[] getColumnReaders() {
     return columnReaders;
   }

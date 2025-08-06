@@ -58,7 +58,8 @@ abstract class CometTestBase
     with SQLTestUtils
     with BeforeAndAfterEach
     with AdaptiveSparkPlanHelper
-    with ShimCometSparkSessionExtensions {
+    with ShimCometSparkSessionExtensions
+    with ShimCometTestBase {
   import testImplicits._
 
   protected val shuffleManager: String =
@@ -78,6 +79,7 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
+    conf.set(CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.key, "true")
     conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
     // set the scan impl to SCAN_NATIVE_COMET because many tests are implemented
@@ -149,11 +151,11 @@ abstract class CometTestBase
     var expected: Array[Row] = Array.empty
     var sparkPlan = null.asInstanceOf[SparkPlan]
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      val dfSpark = Dataset.ofRows(spark, df.logicalPlan)
+      val dfSpark = datasetOfRows(spark, df.logicalPlan)
       expected = dfSpark.collect()
       sparkPlan = dfSpark.queryExecution.executedPlan
     }
-    val dfComet = Dataset.ofRows(spark, df.logicalPlan)
+    val dfComet = datasetOfRows(spark, df.logicalPlan)
     checkAnswer(dfComet, expected)
     (sparkPlan, dfComet.queryExecution.executedPlan)
   }
@@ -175,6 +177,20 @@ abstract class CometTestBase
     checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan), excludedClasses: _*)
     checkPlanContains(stripAQEPlan(df.queryExecution.executedPlan), includeClasses: _*)
     checkSparkAnswer(df)
+  }
+
+  protected def checkSparkAnswerAndOperatorWithTol(df: => DataFrame, tol: Double = 1e-6): Unit = {
+    checkSparkAnswerAndOperatorWithTol(df, tol, Seq.empty)
+  }
+
+  protected def checkSparkAnswerAndOperatorWithTol(
+      df: => DataFrame,
+      tol: Double,
+      includeClasses: Seq[Class[_]],
+      excludedClasses: Class[_]*): Unit = {
+    checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan), excludedClasses: _*)
+    checkPlanContains(stripAQEPlan(df.queryExecution.executedPlan), includeClasses: _*)
+    checkSparkAnswerWithTol(df, tol)
   }
 
   protected def checkCometOperators(plan: SparkPlan, excludedClasses: Class[_]*): Unit = {
@@ -229,10 +245,10 @@ abstract class CometTestBase
   protected def checkSparkAnswerWithTol(df: => DataFrame, absTol: Double): DataFrame = {
     var expected: Array[Row] = Array.empty
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      val dfSpark = Dataset.ofRows(spark, df.logicalPlan)
+      val dfSpark = datasetOfRows(spark, df.logicalPlan)
       expected = dfSpark.collect()
     }
-    val dfComet = Dataset.ofRows(spark, df.logicalPlan)
+    val dfComet = datasetOfRows(spark, df.logicalPlan)
     checkAnswerWithTol(dfComet, expected, absTol: Double)
     dfComet
   }
@@ -241,9 +257,9 @@ abstract class CometTestBase
       df: => DataFrame): (Option[Throwable], Option[Throwable]) = {
     var expected: Option[Throwable] = None
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      expected = Try(Dataset.ofRows(spark, df.logicalPlan).collect()).failed.toOption
+      expected = Try(datasetOfRows(spark, df.logicalPlan).collect()).failed.toOption
     }
-    val actual = Try(Dataset.ofRows(spark, df.logicalPlan).collect()).failed.toOption
+    val actual = Try(datasetOfRows(spark, df.logicalPlan).collect()).failed.toOption
     (expected, actual)
   }
 
@@ -254,10 +270,10 @@ abstract class CometTestBase
     var expected: Array[Row] = Array.empty
     var dfSpark: Dataset[Row] = null
     withSQLConf(CometConf.COMET_ENABLED.key -> "false", EXTENDED_EXPLAIN_PROVIDERS_KEY -> "") {
-      dfSpark = Dataset.ofRows(spark, df.logicalPlan)
+      dfSpark = datasetOfRows(spark, df.logicalPlan)
       expected = dfSpark.collect()
     }
-    val dfComet = Dataset.ofRows(spark, df.logicalPlan)
+    val dfComet = datasetOfRows(spark, df.logicalPlan)
     checkAnswer(dfComet, expected)
     if (checkExplainString) {
       val diff = StringUtils.difference(
@@ -279,8 +295,8 @@ abstract class CometTestBase
     }
   }
 
-  private var _spark: SparkSession = _
-  protected implicit def spark: SparkSession = _spark
+  private var _spark: SparkSessionType = _
+  override protected implicit def spark: SparkSessionType = _spark
   protected implicit def sqlContext: SQLContext = _spark.sqlContext
 
   override protected def sparkContext: SparkContext = {
@@ -299,8 +315,9 @@ abstract class CometTestBase
     SparkContext.getOrCreate(conf)
   }
 
-  protected def createSparkSession: SparkSession = {
-    SparkSession.cleanupAnyExistingSession()
+  protected def createSparkSession: SparkSessionType = {
+    SparkSession.clearActiveSession()
+    SparkSession.clearDefaultSession()
 
     SparkSession
       .builder()

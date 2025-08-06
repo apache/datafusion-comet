@@ -152,15 +152,16 @@ Condition : isnotnull(i_item_sk#11)
 Output [2]: [i_item_id#13, i_category#14]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
+PushedFilters: [IsNotNull(i_category)]
 ReadSchema: struct<i_item_id:string,i_category:string>
 
 (18) CometFilter
 Input [2]: [i_item_id#13, i_category#14]
-Condition : (staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#14, 50, true, false, true) = Music                                             )
+Condition : (isnotnull(i_category#14) AND (static_invoke(CharVarcharCodegenUtils.readSidePadding(i_category#14, 50)) = Music                                             ))
 
 (19) CometProject
 Input [2]: [i_item_id#13, i_category#14]
-Arguments: [i_item_id#15], [staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_item_id#13, 16, true, false, true) AS i_item_id#15]
+Arguments: [i_item_id#15], [static_invoke(CharVarcharCodegenUtils.readSidePadding(i_item_id#13, 16)) AS i_item_id#15]
 
 (20) CometBroadcastExchange
 Input [1]: [i_item_id#15]
@@ -169,11 +170,11 @@ Arguments: [i_item_id#15]
 (21) CometBroadcastHashJoin
 Left output [2]: [i_item_sk#11, i_item_id#12]
 Right output [1]: [i_item_id#15]
-Arguments: [staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_item_id#12, 16, true, false, true)], [i_item_id#15], LeftSemi, BuildRight
+Arguments: [static_invoke(CharVarcharCodegenUtils.readSidePadding(i_item_id#12, 16))], [i_item_id#15], LeftSemi, BuildRight
 
 (22) CometProject
 Input [2]: [i_item_sk#11, i_item_id#12]
-Arguments: [i_item_sk#11, i_item_id#16], [i_item_sk#11, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_item_id#12, 16, true, false, true) AS i_item_id#16]
+Arguments: [i_item_sk#11, i_item_id#16], [i_item_sk#11, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_item_id#12, 16)) AS i_item_id#16]
 
 (23) CometBroadcastExchange
 Input [2]: [i_item_sk#11, i_item_id#16]

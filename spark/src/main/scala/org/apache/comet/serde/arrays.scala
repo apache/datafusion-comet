@@ -136,7 +136,7 @@ object CometArrayAppend extends CometExpressionSerde with IncompatExpr {
   }
 }
 
-object CometArrayContains extends CometExpressionSerde with IncompatExpr {
+object CometArrayContains extends CometExpressionSerde {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -352,6 +352,37 @@ object CometArrayInsert extends CometExpressionSerde with IncompatExpr {
         expr.children.head,
         expr.children(1),
         expr.children(2))
+      None
+    }
+  }
+}
+
+object CometArrayUnion extends CometExpressionSerde with IncompatExpr {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val leftArrayExprProto = exprToProto(expr.children.head, inputs, binding)
+    val rightArrayExprProto = exprToProto(expr.children(1), inputs, binding)
+
+    val arraysUnionScalarExpr =
+      scalarFunctionExprToProto("array_union", leftArrayExprProto, rightArrayExprProto)
+    optExprWithInfo(arraysUnionScalarExpr, expr, expr.children: _*)
+  }
+}
+
+object CometCreateArray extends CometExpressionSerde {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val children = expr.children
+    val childExprs = children.map(exprToProtoInternal(_, inputs, binding))
+
+    if (childExprs.forall(_.isDefined)) {
+      scalarFunctionExprToProto("make_array", childExprs: _*)
+    } else {
+      withInfo(expr, "unsupported arguments for CreateArray", children: _*)
       None
     }
   }

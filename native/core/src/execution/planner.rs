@@ -17,16 +17,12 @@
 
 //! Converts Spark physical plan to DataFusion physical plan
 
-use super::expressions::EvalMode;
 use crate::execution::operators::CopyMode;
 use crate::execution::operators::FilterExec as CometFilterExec;
 use crate::{
     errors::ExpressionError,
     execution::{
-        expressions::{
-            bloom_filter_agg::BloomFilterAgg, bloom_filter_might_contain::BloomFilterMightContain,
-            subquery::Subquery,
-        },
+        expressions::subquery::Subquery,
         operators::{CopyExec, ExecutionError, ExpandExec, ScanExec},
         serde::to_arrow_datatype,
         shuffle::ShuffleWriterExec,
@@ -49,7 +45,7 @@ use datafusion::{
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
         expressions::{
-            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNotNullExpr, IsNullExpr,
+            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNotNullExpr, IsNullExpr, LikeExpr,
             Literal as DataFusionLiteral, NotExpr,
         },
         PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
@@ -65,7 +61,8 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{
-    create_comet_physical_fun, create_negate_expr, SparkHour, SparkMinute, SparkSecond,
+    create_comet_physical_fun, create_modulo_expr, create_negate_expr, BloomFilterAgg,
+    BloomFilterMightContain, EvalMode, SparkHour, SparkMinute, SparkSecond,
 };
 
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -75,7 +72,7 @@ use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
-    JoinType as DFJoinType, ScalarValue,
+    JoinType as DFJoinType, NullEquality, ScalarValue,
 };
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
@@ -103,11 +100,12 @@ use datafusion_comet_proto::{
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
+use datafusion_comet_spark_expr::monotonically_increasing_id::MonotonicallyIncreasingId;
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Contains, Correlation, Covariance,
-    CreateNamedStruct, EndsWith, GetArrayStructFields, GetStructField, IfExpr, Like, ListExtract,
-    NormalizeNaNAndZero, RLike, RandExpr, SparkCastOptions, StartsWith, Stddev, StringSpaceExpr,
-    SubstringExpr, SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn, Variance,
+    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
+    GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RLike,
+    RandExpr, RandnExpr, SparkCastOptions, Stddev, SubstringExpr, SumDecimal, TimestampTruncExpr,
+    ToJson, UnboundColumn, Variance,
 };
 use itertools::Itertools;
 use jni::objects::GlobalRef;
@@ -232,51 +230,93 @@ impl PhysicalPlanner {
         input_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         match spark_expr.expr_struct.as_ref().unwrap() {
-            ExprStruct::Add(expr) => self.create_binary_expr(
-                expr.left.as_ref().unwrap(),
-                expr.right.as_ref().unwrap(),
-                expr.return_type.as_ref(),
-                DataFusionOperator::Plus,
-                input_schema,
-            ),
-            ExprStruct::Subtract(expr) => self.create_binary_expr(
-                expr.left.as_ref().unwrap(),
-                expr.right.as_ref().unwrap(),
-                expr.return_type.as_ref(),
-                DataFusionOperator::Minus,
-                input_schema,
-            ),
-            ExprStruct::Multiply(expr) => self.create_binary_expr(
-                expr.left.as_ref().unwrap(),
-                expr.right.as_ref().unwrap(),
-                expr.return_type.as_ref(),
-                DataFusionOperator::Multiply,
-                input_schema,
-            ),
-            ExprStruct::Divide(expr) => self.create_binary_expr(
-                expr.left.as_ref().unwrap(),
-                expr.right.as_ref().unwrap(),
-                expr.return_type.as_ref(),
-                DataFusionOperator::Divide,
-                input_schema,
-            ),
-            ExprStruct::IntegralDivide(expr) => self.create_binary_expr_with_options(
-                expr.left.as_ref().unwrap(),
-                expr.right.as_ref().unwrap(),
-                expr.return_type.as_ref(),
-                DataFusionOperator::Divide,
-                input_schema,
-                BinaryExprOptions {
-                    is_integral_div: true,
-                },
-            ),
-            ExprStruct::Remainder(expr) => self.create_binary_expr(
-                expr.left.as_ref().unwrap(),
-                expr.right.as_ref().unwrap(),
-                expr.return_type.as_ref(),
-                DataFusionOperator::Modulo,
-                input_schema,
-            ),
+            ExprStruct::Add(expr) => {
+                // TODO respect eval mode
+                // https://github.com/apache/datafusion-comet/issues/2021
+                // https://github.com/apache/datafusion-comet/issues/536
+                let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                self.create_binary_expr(
+                    expr.left.as_ref().unwrap(),
+                    expr.right.as_ref().unwrap(),
+                    expr.return_type.as_ref(),
+                    DataFusionOperator::Plus,
+                    input_schema,
+                )
+            }
+            ExprStruct::Subtract(expr) => {
+                // TODO respect eval mode
+                // https://github.com/apache/datafusion-comet/issues/2021
+                // https://github.com/apache/datafusion-comet/issues/535
+                let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                self.create_binary_expr(
+                    expr.left.as_ref().unwrap(),
+                    expr.right.as_ref().unwrap(),
+                    expr.return_type.as_ref(),
+                    DataFusionOperator::Minus,
+                    input_schema,
+                )
+            }
+            ExprStruct::Multiply(expr) => {
+                // TODO respect eval mode
+                // https://github.com/apache/datafusion-comet/issues/2021
+                // https://github.com/apache/datafusion-comet/issues/534
+                let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                self.create_binary_expr(
+                    expr.left.as_ref().unwrap(),
+                    expr.right.as_ref().unwrap(),
+                    expr.return_type.as_ref(),
+                    DataFusionOperator::Multiply,
+                    input_schema,
+                )
+            }
+            ExprStruct::Divide(expr) => {
+                // TODO respect eval mode
+                // https://github.com/apache/datafusion-comet/issues/2021
+                // https://github.com/apache/datafusion-comet/issues/533
+                let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                self.create_binary_expr(
+                    expr.left.as_ref().unwrap(),
+                    expr.right.as_ref().unwrap(),
+                    expr.return_type.as_ref(),
+                    DataFusionOperator::Divide,
+                    input_schema,
+                )
+            }
+            ExprStruct::IntegralDivide(expr) => {
+                // TODO respect eval mode
+                // https://github.com/apache/datafusion-comet/issues/2021
+                // https://github.com/apache/datafusion-comet/issues/533
+                let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                self.create_binary_expr_with_options(
+                    expr.left.as_ref().unwrap(),
+                    expr.right.as_ref().unwrap(),
+                    expr.return_type.as_ref(),
+                    DataFusionOperator::Divide,
+                    input_schema,
+                    BinaryExprOptions {
+                        is_integral_div: true,
+                    },
+                )
+            }
+            ExprStruct::Remainder(expr) => {
+                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                // TODO add support for EvalMode::TRY
+                // https://github.com/apache/datafusion-comet/issues/2021
+                let left =
+                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let right =
+                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
+
+                let result = create_modulo_expr(
+                    left,
+                    right,
+                    expr.return_type.as_ref().map(to_arrow_datatype).unwrap(),
+                    input_schema,
+                    eval_mode == EvalMode::Ansi,
+                    &self.session_ctx.state(),
+                );
+                result.map_err(|e| GeneralError(e.to_string()))
+            }
             ExprStruct::Eq(expr) => {
                 let left =
                     self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
@@ -323,8 +363,7 @@ impl PhysicalPlanner {
                 let idx = bound.index as usize;
                 if idx >= input_schema.fields().len() {
                     return Err(GeneralError(format!(
-                        "Column index {} is out of bound. Schema: {}",
-                        idx, input_schema
+                        "Column index {idx} is out of bound. Schema: {input_schema}"
                     )));
                 }
                 let field = input_schema.field(idx);
@@ -382,7 +421,7 @@ impl PhysicalPlanner {
                         DataType::List(f) => DataType::List(f).try_into()?,
                         DataType::Null => ScalarValue::Null,
                         dt => {
-                            return Err(GeneralError(format!("{:?} is not supported in Comet", dt)))
+                            return Err(GeneralError(format!("{dt:?} is not supported in Comet")))
                         }
                     }
                 } else {
@@ -395,8 +434,7 @@ impl PhysicalPlanner {
                             DataType::Date32 => ScalarValue::Date32(Some(*value)),
                             dt => {
                                 return Err(GeneralError(format!(
-                                    "Expected either 'Int32' or 'Date32' for IntVal, but found {:?}",
-                                    dt
+                                    "Expected either 'Int32' or 'Date32' for IntVal, but found {dt:?}"
                                 )))
                             }
                         },
@@ -410,8 +448,7 @@ impl PhysicalPlanner {
                             }
                             dt => {
                                 return Err(GeneralError(format!(
-                                    "Expected either 'Int64' or 'Timestamp' for LongVal, but found {:?}",
-                                    dt
+                                    "Expected either 'Int64' or 'Timestamp' for LongVal, but found {dt:?}"
                                 )))
                             }
                         },
@@ -423,8 +460,7 @@ impl PhysicalPlanner {
                             let big_integer = BigInt::from_signed_bytes_be(value);
                             let integer = big_integer.to_i128().ok_or_else(|| {
                                 GeneralError(format!(
-                                    "Cannot parse {:?} as i128 for Decimal literal",
-                                    big_integer
+                                    "Cannot parse {big_integer:?} as i128 for Decimal literal"
                                 ))
                             })?;
 
@@ -434,8 +470,7 @@ impl PhysicalPlanner {
                                 }
                                 dt => {
                                     return Err(GeneralError(format!(
-                                        "Decimal literal's data type should be Decimal128 but got {:?}",
-                                        dt
+                                        "Decimal literal's data type should be Decimal128 but got {dt:?}"
                                     )))
                                 }
                             }
@@ -511,38 +546,12 @@ impl PhysicalPlanner {
                     len as u64,
                 )))
             }
-            ExprStruct::StringSpace(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-
-                Ok(Arc::new(StringSpaceExpr::new(child)))
-            }
-            ExprStruct::Contains(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-
-                Ok(Arc::new(Contains::new(left, right)))
-            }
-            ExprStruct::StartsWith(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-
-                Ok(Arc::new(StartsWith::new(left, right)))
-            }
-            ExprStruct::EndsWith(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-
-                Ok(Arc::new(EndsWith::new(left, right)))
-            }
             ExprStruct::Like(expr) => {
                 let left =
                     self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
 
-                Ok(Arc::new(Like::new(left, right)))
+                Ok(Arc::new(LikeExpr::new(false, false, left, right)))
             }
             ExprStruct::Rlike(expr) => {
                 let left =
@@ -579,6 +588,14 @@ impl PhysicalPlanner {
                         None,
                         true,
                         false,
+                    ))),
+                    // DataFusion 49 hardcodes return type for MD5 built in function as UTF8View
+                    // which is not yet supported in Comet
+                    // Converting forcibly to UTF8. To be removed after UTF8View supported
+                    "md5" => Ok(Arc::new(Cast::new(
+                        func?,
+                        DataType::Utf8,
+                        SparkCastOptions::new_without_timezone(EvalMode::Try, true),
                     ))),
                     _ => func,
                 }
@@ -718,11 +735,17 @@ impl PhysicalPlanner {
                     expr.bloom_filter.as_ref().unwrap(),
                     Arc::clone(&input_schema),
                 )?;
+
+                // We only provide the values as argument, the bloom filter is created only in plan time.
                 let value_expr = self.create_expr(expr.value.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(BloomFilterMightContain::try_new(
-                    bloom_filter_expr,
-                    value_expr,
-                )?))
+                let args = vec![value_expr];
+                let udf =
+                    ScalarUDF::new_from_impl(BloomFilterMightContain::try_new(bloom_filter_expr)?);
+
+                let field_ref = Arc::new(Field::new("might_contain", DataType::Boolean, true));
+                let expr: ScalarFunctionExpr =
+                    ScalarFunctionExpr::new("might_contain", Arc::new(udf), args, field_ref);
+                Ok(Arc::new(expr))
             }
             ExprStruct::CreateNamedStruct(expr) => {
                 let values = expr
@@ -805,10 +828,20 @@ impl PhysicalPlanner {
                 )))
             }
             ExprStruct::Rand(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(RandExpr::new(child, self.partition)))
+                let seed = expr.seed.wrapping_add(self.partition.into());
+                Ok(Arc::new(RandExpr::new(seed)))
             }
-            expr => Err(GeneralError(format!("Not implemented: {:?}", expr))),
+            ExprStruct::Randn(expr) => {
+                let seed = expr.seed.wrapping_add(self.partition.into());
+                Ok(Arc::new(RandnExpr::new(seed)))
+            }
+            ExprStruct::SparkPartitionId(_) => Ok(Arc::new(DataFusionLiteral::new(
+                ScalarValue::Int32(Some(self.partition)),
+            ))),
+            ExprStruct::MonotonicallyIncreasingId(_) => Ok(Arc::new(
+                MonotonicallyIncreasingId::from_partition_id(self.partition),
+            )),
+            expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
         }
     }
 
@@ -834,7 +867,7 @@ impl PhysicalPlanner {
                     options,
                 })
             }
-            expr => Err(GeneralError(format!("{:?} isn't a SortOrder", expr))),
+            expr => Err(GeneralError(format!("{expr:?} isn't a SortOrder"))),
         }
     }
 
@@ -873,19 +906,13 @@ impl PhysicalPlanner {
             right.data_type(&input_schema),
         ) {
             (
-                DataFusionOperator::Plus
-                | DataFusionOperator::Minus
-                | DataFusionOperator::Multiply
-                | DataFusionOperator::Modulo,
+                DataFusionOperator::Plus | DataFusionOperator::Minus | DataFusionOperator::Multiply,
                 Ok(DataType::Decimal128(p1, s1)),
                 Ok(DataType::Decimal128(p2, s2)),
             ) if ((op == DataFusionOperator::Plus || op == DataFusionOperator::Minus)
                 && max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8)
                     >= DECIMAL128_MAX_PRECISION)
-                || (op == DataFusionOperator::Multiply && p1 + p2 >= DECIMAL128_MAX_PRECISION)
-                || (op == DataFusionOperator::Modulo
-                    && max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8)
-                        > DECIMAL128_MAX_PRECISION) =>
+                || (op == DataFusionOperator::Multiply && p1 + p2 >= DECIMAL128_MAX_PRECISION) =>
             {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
                 // For some Decimal128 operations, we need wider internal digits.
@@ -925,6 +952,7 @@ impl PhysicalPlanner {
                     func_name,
                     data_type.clone(),
                     &self.session_ctx.state(),
+                    None,
                 )?;
                 Ok(Arc::new(ScalarFunctionExpr::new(
                     func_name,
@@ -974,7 +1002,7 @@ impl PhysicalPlanner {
                     .enumerate()
                     .map(|(idx, expr)| {
                         self.create_expr(expr, child.schema())
-                            .map(|r| (r, format!("col_{}", idx)))
+                            .map(|r| (r, format!("col_{idx}")))
                     })
                     .collect();
                 let projection = Arc::new(ProjectionExec::try_new(
@@ -992,17 +1020,25 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                let filter: Arc<dyn ExecutionPlan> = if filter.use_datafusion_filter {
-                    Arc::new(DataFusionFilterExec::try_new(
-                        predicate,
-                        Arc::clone(&child.native_plan),
-                    )?)
-                } else {
-                    Arc::new(CometFilterExec::try_new(
-                        predicate,
-                        Arc::clone(&child.native_plan),
-                    )?)
-                };
+                let filter: Arc<dyn ExecutionPlan> =
+                    match (filter.wrap_child_in_copy_exec, filter.use_datafusion_filter) {
+                        (true, true) => Arc::new(DataFusionFilterExec::try_new(
+                            predicate,
+                            Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
+                        )?),
+                        (true, false) => Arc::new(CometFilterExec::try_new(
+                            predicate,
+                            Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
+                        )?),
+                        (false, true) => Arc::new(DataFusionFilterExec::try_new(
+                            predicate,
+                            Arc::clone(&child.native_plan),
+                        )?),
+                        (false, false) => Arc::new(CometFilterExec::try_new(
+                            predicate,
+                            Arc::clone(&child.native_plan),
+                        )?),
+                    };
 
                 Ok((
                     scans,
@@ -1019,7 +1055,7 @@ impl PhysicalPlanner {
                     .enumerate()
                     .map(|(idx, expr)| {
                         self.create_expr(expr, child.schema())
-                            .map(|r| (r, format!("col_{}", idx)))
+                            .map(|r| (r, format!("col_{idx}")))
                     })
                     .collect();
                 let group_by = PhysicalGroupBy::new_single(group_exprs?);
@@ -1055,7 +1091,7 @@ impl PhysicalPlanner {
                     .enumerate()
                     .map(|(idx, expr)| {
                         self.create_expr(expr, aggregate.schema())
-                            .map(|r| (r, format!("col_{}", idx)))
+                            .map(|r| (r, format!("col_{idx}")))
                     })
                     .collect();
 
@@ -1120,7 +1156,7 @@ impl PhysicalPlanner {
                 let child_copied = Self::wrap_in_copy_exec(Arc::clone(&child.native_plan));
 
                 let sort = Arc::new(
-                    SortExec::new(LexOrdering::new(exprs?), Arc::clone(&child_copied))
+                    SortExec::new(LexOrdering::new(exprs?).unwrap(), Arc::clone(&child_copied))
                         .with_fetch(fetch),
                 );
 
@@ -1338,7 +1374,7 @@ impl PhysicalPlanner {
                 let fields: Vec<Field> = datatypes
                     .iter()
                     .enumerate()
-                    .map(|(idx, dt)| Field::new(format!("col_{}", idx), dt.clone(), true))
+                    .map(|(idx, dt)| Field::new(format!("col_{idx}"), dt.clone(), true))
                     .collect();
                 let schema = Arc::new(Schema::new(fields));
 
@@ -1396,7 +1432,7 @@ impl PhysicalPlanner {
                     sort_options,
                     // null doesn't equal to null in Spark join key. If the join key is
                     // `EqualNullSafe`, Spark will rewrite it during planning.
-                    false,
+                    NullEquality::NullEqualsNothing,
                 )?);
 
                 if join.filter.is_some() {
@@ -1464,7 +1500,7 @@ impl PhysicalPlanner {
                     PartitionMode::Partitioned,
                     // null doesn't equal to null in Spark join key. If the join key is
                     // `EqualNullSafe`, Spark will rewrite it during planning.
-                    false,
+                    NullEquality::NullEqualsNothing,
                 )?);
 
                 // If the hash join is build right, we need to swap the left and right
@@ -1580,13 +1616,10 @@ impl PhysicalPlanner {
             Ok(JoinType::RightOuter) => DFJoinType::Right,
             Ok(JoinType::FullOuter) => DFJoinType::Full,
             Ok(JoinType::LeftSemi) => DFJoinType::LeftSemi,
-            Ok(JoinType::RightSemi) => DFJoinType::RightSemi,
             Ok(JoinType::LeftAnti) => DFJoinType::LeftAnti,
-            Ok(JoinType::RightAnti) => DFJoinType::RightAnti,
             Err(_) => {
                 return Err(GeneralError(format!(
-                    "Unsupported join type: {:?}",
-                    join_type
+                    "Unsupported join type: {join_type:?}"
                 )));
             }
         };
@@ -1914,8 +1947,7 @@ impl PhysicalPlanner {
                         )
                     }
                     stats_type => Err(GeneralError(format!(
-                        "Unknown StatisticsType {:?} for Variance",
-                        stats_type
+                        "Unknown StatisticsType {stats_type:?} for Variance"
                     ))),
                 }
             }
@@ -1944,8 +1976,7 @@ impl PhysicalPlanner {
                         Self::create_aggr_func_expr("variance_pop", schema, vec![child], func)
                     }
                     stats_type => Err(GeneralError(format!(
-                        "Unknown StatisticsType {:?} for Variance",
-                        stats_type
+                        "Unknown StatisticsType {stats_type:?} for Variance"
                     ))),
                 }
             }
@@ -1974,8 +2005,7 @@ impl PhysicalPlanner {
                         Self::create_aggr_func_expr("stddev_pop", schema, vec![child], func)
                     }
                     stats_type => Err(GeneralError(format!(
-                        "Unknown StatisticsType {:?} for stddev",
-                        stats_type
+                        "Unknown StatisticsType {stats_type:?} for stddev"
                     ))),
                 }
             }
@@ -2166,13 +2196,15 @@ impl PhysicalPlanner {
         };
 
         let window_frame = WindowFrame::new_bounds(units, lower_bound, upper_bound);
+        let lex_orderings = LexOrdering::new(sort_exprs.to_vec());
+        let sort_phy_exprs = lex_orderings.as_deref().unwrap_or(&[]);
 
         datafusion::physical_plan::windows::create_window_expr(
             &window_func,
             window_func_name,
             &window_args,
             partition_by,
-            &LexOrdering::new(sort_exprs.to_vec()),
+            sort_phy_exprs,
             window_frame.into(),
             input_schema.as_ref(),
             false, // TODO: Ignore nulls
@@ -2253,7 +2285,7 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|expr| self.create_sort_expr(expr, Arc::clone(&input_schema)))
                     .collect();
-                let lex_ordering = LexOrdering::from(exprs?);
+                let lex_ordering = LexOrdering::new(exprs?).unwrap();
                 Ok(CometPartitioning::RangePartitioning(
                     lex_ordering,
                     range_partition.num_partitions as usize,
@@ -2325,8 +2357,12 @@ impl PhysicalPlanner {
                 }
             };
 
-        let fun_expr =
-            create_comet_physical_fun(fun_name, data_type.clone(), &self.session_ctx.state())?;
+        let fun_expr = create_comet_physical_fun(
+            fun_name,
+            data_type.clone(),
+            &self.session_ctx.state(),
+            None,
+        )?;
 
         let args = args
             .into_iter()
@@ -2877,6 +2913,7 @@ mod tests {
             op_struct: Some(OpStruct::Filter(spark_operator::Filter {
                 predicate: Some(expr),
                 use_datafusion_filter: false,
+                wrap_child_in_copy_exec: false,
             })),
         }
     }

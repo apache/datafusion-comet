@@ -26,7 +26,7 @@ import java.time.{ZoneId, ZoneOffset}
 import scala.collection.mutable.ListBuffer
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
-import scala.util.control.Breaks.{break, breakable}
+import scala.util.control.Breaks.breakable
 
 import org.scalactic.source.Position
 import org.scalatest.Tag
@@ -1902,10 +1902,6 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
               withSQLConf(
                 CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode,
                 SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> pushDown.toString) {
-                if (scanMode == CometConf.SCAN_NATIVE_DATAFUSION && !pushDown) {
-                  // FIXME: native_datafusion always pushdown data filters
-                  break()
-                }
                 Seq(
                   ("_1 = true", Math.ceil(rows.toDouble / 2)), // Boolean
                   ("_2 = 1", Math.ceil(rows.toDouble / 256)), // Byte
@@ -1974,6 +1970,7 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
                       "optional_map.key, " +
                       "optional_map.value, " +
                       "map_keys(complex_map), " +
+                      "map_entries(complex_map), " +
                       "map_values(complex_map) " +
                       "from complex_types"))
                 // leaf fields
@@ -1986,6 +1983,8 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
                       "optional_map.value, " +
                       "map_keys(complex_map)[0].key_field1, " +
                       "map_keys(complex_map)[0].key_field2, " +
+                      "map_entries(complex_map)[0].key, " +
+                      "map_entries(complex_map)[0].value, " +
                       "map_values(complex_map)[0].value_field1, " +
                       "map_values(complex_map)[0].value_field2 " +
                       "from complex_types"))

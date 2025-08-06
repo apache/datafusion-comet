@@ -21,35 +21,10 @@ use std::sync::Arc;
 
 use arrow::{
     array::*,
-    buffer::MutableBuffer,
     compute::kernels::substring::{substring as arrow_substring, substring_by_char},
     datatypes::{DataType, Int32Type},
 };
 use datafusion::common::DataFusionError;
-
-/// Returns an ArrayRef with a string consisting of `length` spaces.
-///
-/// # Preconditions
-///
-/// - elements in `length` must not be negative
-pub fn string_space(length: &dyn Array) -> Result<ArrayRef, DataFusionError> {
-    match length.data_type() {
-        DataType::Int32 => {
-            let array = length.as_any().downcast_ref::<Int32Array>().unwrap();
-            Ok(generic_string_space::<i32>(array))
-        }
-        DataType::Dictionary(_, _) => {
-            let dict = as_dictionary_array::<Int32Type>(length);
-            let values = string_space(dict.values())?;
-            let result = DictionaryArray::try_new(dict.keys().clone(), values)?;
-            Ok(Arc::new(result))
-        }
-        dt => panic!(
-            "Unsupported input type for function 'string_space': {:?}",
-            dt
-        ),
-    }
-}
 
 pub fn substring(array: &dyn Array, start: i64, length: u64) -> Result<ArrayRef, DataFusionError> {
     match array.data_type() {
@@ -82,46 +57,6 @@ pub fn substring(array: &dyn Array, start: i64, length: u64) -> Result<ArrayRef,
             let result = DictionaryArray::try_new(dict.keys().clone(), values)?;
             Ok(Arc::new(result))
         }
-        dt => panic!("Unsupported input type for function 'substring': {:?}", dt),
+        dt => panic!("Unsupported input type for function 'substring': {dt:?}"),
     }
-}
-
-fn generic_string_space<OffsetSize: OffsetSizeTrait>(length: &Int32Array) -> ArrayRef {
-    let array_len = length.len();
-    let mut offsets = MutableBuffer::new((array_len + 1) * std::mem::size_of::<OffsetSize>());
-    let mut length_so_far = OffsetSize::zero();
-
-    // compute null bitmap (copy)
-    let null_bit_buffer = length.to_data().nulls().map(|b| b.buffer().clone());
-
-    // Gets slice of length array to access it directly for performance.
-    let length_data = length.to_data();
-    let lengths = length_data.buffers()[0].typed_data::<i32>();
-    let total = lengths.iter().map(|l| *l as usize).sum::<usize>();
-    let mut values = MutableBuffer::new(total);
-
-    offsets.push(length_so_far);
-
-    let blank = " ".as_bytes()[0];
-    values.resize(total, blank);
-
-    (0..array_len).for_each(|i| {
-        let current_len = lengths[i] as usize;
-
-        length_so_far += OffsetSize::from_usize(current_len).unwrap();
-        offsets.push(length_so_far);
-    });
-
-    let data = unsafe {
-        ArrayData::new_unchecked(
-            GenericStringArray::<OffsetSize>::DATA_TYPE,
-            array_len,
-            None,
-            null_bit_buffer,
-            0,
-            vec![offsets.into(), values.into()],
-            vec![],
-        )
-    };
-    make_array(data)
 }

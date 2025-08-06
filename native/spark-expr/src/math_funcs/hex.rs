@@ -31,7 +31,7 @@ use datafusion::logical_expr::ColumnarValue;
 use std::fmt::Write;
 
 fn hex_int64(num: i64) -> String {
-    format!("{:X}", num)
+    format!("{num:X}")
 }
 
 #[inline(always)]
@@ -49,11 +49,6 @@ fn hex_encode<T: AsRef<[u8]>>(data: T, lower_case: bool) -> String {
         }
     }
     s
-}
-
-#[inline(always)]
-pub(crate) fn hex_strings<T: AsRef<[u8]>>(data: T) -> String {
-    hex_encode(data, true)
 }
 
 #[inline(always)]
