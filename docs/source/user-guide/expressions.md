@@ -202,7 +202,17 @@ The following Spark expressions are currently available. Any known compatibility
 | ArraysOverlap  | Experimental                                                                                                                                                                                                 |
 | ArrayUnion     | Experimental: behaves differently than spark. Datafusion sorts the input arrays before performing the union, while spark preserves the order of the first array and appends unique elements from the second. |
 | ElementAt      | Arrays only                                                                                                                                                                                                  |
-| GetArrayItem   |                                                                                                                                                                                                              |
+| GetArrayItem   |
+
+## Maps
+
+| Expression          | Notes        |
+|---------------------|--------------|
+| MapLookupByKey ([]) |              |
+| MapKeys             |              |
+| MapValues           |              |     
+| MapEntries          |              |   
+| MapFromArrays       |              |
 
 ## Structs
 
