@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::utils::{build_bool_state, is_valid_decimal_precision, unlikely};
+use crate::utils::{build_bool_state, is_valid_decimal_precision};
 use arrow::array::{
     cast::AsArray, types::Decimal128Type, Array, ArrayRef, BooleanArray, Decimal128Array,
 };
@@ -293,7 +293,7 @@ impl SumDecimalGroupsAccumulator {
         let (new_sum, is_overflow) = self.sum[group_index].overflowing_add(value);
         self.sum[group_index] = new_sum;
 
-        if unlikely(is_overflow || !is_valid_decimal_precision(new_sum, self.precision)) {
+        if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
             // Overflow: set buffer accumulator to null
             self.is_not_null.set_bit(group_index, false);
         }
