@@ -57,7 +57,7 @@ public class ConstantColumnReader extends MetadataColumnReader {
    * @see <a href="https://github.com/apache/datafusion-comet/issues/2079">Comet Issue #2079</a>
    */
   public ConstantColumnReader(
-          DataType type, ColumnDescriptor descriptor, Object value, boolean useDecimal128) {
+      DataType type, ColumnDescriptor descriptor, Object value, boolean useDecimal128) {
     super(type, descriptor, useDecimal128, true);
     this.value = value;
   }

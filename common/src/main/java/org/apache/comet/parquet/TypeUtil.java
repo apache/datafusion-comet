@@ -37,10 +37,11 @@ public class TypeUtil {
 
   /**
    * Converts the input Spark 'field' into a Parquet column descriptor.
+   *
    * @deprecated since 0.10.0, will be removed in 0.11.0.
    * @see <a href="https://github.com/apache/datafusion-comet/issues/2079">Comet Issue #2079</a>
    */
-public  static ColumnDescriptor convertToParquet(StructField field) {
+  public static ColumnDescriptor convertToParquet(StructField field) {
     Type.Repetition repetition;
     int maxDefinitionLevel;
     if (field.nullable()) {
