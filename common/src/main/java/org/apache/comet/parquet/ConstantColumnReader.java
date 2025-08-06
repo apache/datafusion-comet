@@ -52,6 +52,16 @@ public class ConstantColumnReader extends MetadataColumnReader {
     init(values, index);
   }
 
+  /**
+   * @deprecated since 0.10.0, will be removed in 0.11.0.
+   * @see <a href="https://github.com/apache/datafusion-comet/issues/2079">Comet Issue #2079</a>
+   */
+  public ConstantColumnReader(
+          DataType type, ColumnDescriptor descriptor, Object value, boolean useDecimal128) {
+    super(type, descriptor, useDecimal128, true);
+    this.value = value;
+  }
+
   // Used by Iceberg
   public ConstantColumnReader(
       DataType type, ParquetColumnSpec spec, Object value, boolean useDecimal128) {

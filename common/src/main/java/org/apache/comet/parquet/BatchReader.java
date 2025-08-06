@@ -186,7 +186,8 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
   }
 
   /**
-   * @deprecated since 0.9.1, will be removed in 0.10.0.
+   * @deprecated since 0.10.0, will be removed in 0.11.0.
+   * @see <a href="https://github.com/apache/datafusion-comet/issues/2079">Comet Issue #2079</a>
    */
   public BatchReader(AbstractColumnReader[] columnReaders) {
     // Todo: set useDecimal128 and useLazyMaterialization
@@ -383,14 +384,16 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
   }
 
   /**
-   * @deprecated since 0.9.1, will be removed in 0.10.0.
+   * @deprecated since 0.10.0, will be removed in 0.11.0.
+   * @see <a href="https://github.com/apache/datafusion-comet/issues/2079">Comet Issue #2079</a>
    */
   public void setSparkSchema(StructType schema) {
     this.sparkSchema = schema;
   }
 
   /**
-   * @deprecated since 0.9.1, will be removed in 0.10.0.
+   * @deprecated since 0.10.0, will be removed in 0.11.0.
+   * @see <a href="https://github.com/apache/datafusion-comet/issues/2079">Comet Issue #2079</a>
    */
   public AbstractColumnReader[] getColumnReaders() {
     return columnReaders;

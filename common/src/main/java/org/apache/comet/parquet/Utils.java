@@ -57,8 +57,10 @@ public class Utils {
   /**
    * This method is called from Apache Iceberg.
    *
-   * @deprecated since 0.9.1, will be removed in 0.10.0; use getColumnReader with ParquetColumnSpec
+   * @deprecated since 0.10.0, will be removed in 0.11.0; use getColumnReader with ParquetColumnSpec
    *     instead.
+   *  @see <a href="https://github.com/apache/datafusion-comet/issues/2079">Comet Issue #2079</a>
+   *
    */
   public static ColumnReader getColumnReader(
       DataType type,
