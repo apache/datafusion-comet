@@ -16,6 +16,8 @@
 // under the License.
 
 use crate::hash_funcs::*;
+use crate::math_funcs::checked_add;
+use crate::math_funcs::checked_add::checked_add;
 use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::{
     spark_array_repeat, spark_ceil, spark_date_add, spark_date_sub, spark_decimal_div,
@@ -114,6 +116,9 @@ pub fn create_comet_physical_fun(
                 spark_decimal_integral_div,
                 data_type
             )
+        }
+        "checked_add" => {
+            make_comet_scalar_udf!("checked_add", checked_add, data_type)
         }
         "murmur3_hash" => {
             let func = Arc::new(spark_murmur3_hash);

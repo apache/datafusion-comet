@@ -94,10 +94,6 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
       withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
     }
-    if (expr.evalMode == EvalMode.TRY) {
-      withInfo(expr, s"Eval mode ${expr.evalMode} is not supported")
-      return None
-    }
     createMathExpression(
       expr,
       expr.left,
@@ -119,10 +115,6 @@ object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
       withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
     }
-    if (expr.evalMode == EvalMode.TRY) {
-      withInfo(expr, s"Eval mode ${expr.evalMode} is not supported")
-      return None
-    }
     createMathExpression(
       expr,
       expr.left,
@@ -142,10 +134,6 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     if (!supportedDataType(expr.left.dataType)) {
       withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
-      return None
-    }
-    if (expr.evalMode == EvalMode.TRY) {
-      withInfo(expr, s"Eval mode ${expr.evalMode} is not supported")
       return None
     }
     createMathExpression(
@@ -174,10 +162,6 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
       withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
     }
-    if (expr.evalMode == EvalMode.TRY) {
-      withInfo(expr, s"Eval mode ${expr.evalMode} is not supported")
-      return None
-    }
     createMathExpression(
       expr,
       expr.left,
@@ -197,10 +181,6 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     if (!supportedDataType(expr.left.dataType)) {
       withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
-      return None
-    }
-    if (expr.evalMode == EvalMode.TRY) {
-      withInfo(expr, s"Eval mode ${expr.evalMode} is not supported")
       return None
     }
 
