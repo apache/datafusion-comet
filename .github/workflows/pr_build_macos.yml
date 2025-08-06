@@ -99,7 +99,6 @@ jobs:
               org.apache.comet.CometNativeSuite
               org.apache.comet.CometSparkSessionExtensionsSuite
               org.apache.comet.CometStringExpressionSuite
-              org.apache.comet.CometStringExpressionSerdeSuite
               org.apache.spark.CometPluginsSuite
               org.apache.spark.CometPluginsDefaultSuite
               org.apache.spark.CometPluginsNonOverrideSuite
