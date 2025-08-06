@@ -206,13 +206,13 @@ The following Spark expressions are currently available. Any known compatibility
 
 ## Maps
 
-| Expression        | Notes        |
-|-------------------|--------------|
-| [] operator       |              |
-| map_keys          |              |
-| map_values        |              |
-| map_entries       |              |
-| map_from_arrays   |              |
+| Expression          | Notes        |
+|---------------------|--------------|
+| MapLookupByKey ([]) |              |
+| MapKeys             |              |
+| MapValues           |              |     
+| MapEntries          |              |   
+| MapFromArrays       |              |
 
 ## Structs
 
