@@ -16,6 +16,7 @@
 // under the License.
 
 mod ceil;
+pub(crate) mod checked_add;
 mod div;
 mod floor;
 pub(crate) mod hex;

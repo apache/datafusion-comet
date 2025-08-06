@@ -231,7 +231,7 @@ impl PhysicalPlanner {
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         match spark_expr.expr_struct.as_ref().unwrap() {
             ExprStruct::Add(expr) => {
-                // TODO respect eval mode
+                // TODO respect ANSI eval mode
                 // https://github.com/apache/datafusion-comet/issues/2021
                 // https://github.com/apache/datafusion-comet/issues/536
                 let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
@@ -241,6 +241,7 @@ impl PhysicalPlanner {
                     expr.return_type.as_ref(),
                     DataFusionOperator::Plus,
                     input_schema,
+                    _eval_mode != EvalMode::Try,
                 )
             }
             ExprStruct::Subtract(expr) => {
@@ -254,6 +255,7 @@ impl PhysicalPlanner {
                     expr.return_type.as_ref(),
                     DataFusionOperator::Minus,
                     input_schema,
+                    true,
                 )
             }
             ExprStruct::Multiply(expr) => {
@@ -267,6 +269,7 @@ impl PhysicalPlanner {
                     expr.return_type.as_ref(),
                     DataFusionOperator::Multiply,
                     input_schema,
+                    true,
                 )
             }
             ExprStruct::Divide(expr) => {
@@ -280,6 +283,7 @@ impl PhysicalPlanner {
                     expr.return_type.as_ref(),
                     DataFusionOperator::Divide,
                     input_schema,
+                    true,
                 )
             }
             ExprStruct::IntegralDivide(expr) => {
@@ -296,6 +300,7 @@ impl PhysicalPlanner {
                     BinaryExprOptions {
                         is_integral_div: true,
                     },
+                    false,
                 )
             }
             ExprStruct::Remainder(expr) => {
@@ -878,6 +883,7 @@ impl PhysicalPlanner {
         return_type: Option<&spark_expression::DataType>,
         op: DataFusionOperator,
         input_schema: SchemaRef,
+        fail_on_overflow: bool,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         self.create_binary_expr_with_options(
             left,
@@ -886,6 +892,7 @@ impl PhysicalPlanner {
             op,
             input_schema,
             BinaryExprOptions::default(),
+            fail_on_overflow,
         )
     }
 
@@ -897,6 +904,7 @@ impl PhysicalPlanner {
         op: DataFusionOperator,
         input_schema: SchemaRef,
         options: BinaryExprOptions,
+        fail_on_overflow: bool,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         let left = self.create_expr(left, Arc::clone(&input_schema))?;
         let right = self.create_expr(right, Arc::clone(&input_schema))?;
@@ -931,7 +939,7 @@ impl PhysicalPlanner {
                 Ok(Arc::new(Cast::new(
                     child,
                     data_type,
-                    SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                    SparkCastOptions::new_without_timezone(EvalMode::Try, false),
                 )))
             }
             (
@@ -961,7 +969,25 @@ impl PhysicalPlanner {
                     Arc::new(Field::new(func_name, data_type, true)),
                 )))
             }
-            _ => Ok(Arc::new(BinaryExpr::new(left, op, right))),
+            _ => {
+                if !fail_on_overflow && op == DataFusionOperator::Plus {
+                    let data_type = return_type.map(to_arrow_datatype).unwrap();
+                    let fun_expr = create_comet_physical_fun(
+                        "checked_add",
+                        data_type.clone(),
+                        &self.session_ctx.state(),
+                        None,
+                    )?;
+                    Ok(Arc::new(ScalarFunctionExpr::new(
+                        "checked_add",
+                        fun_expr,
+                        vec![left, right],
+                        Arc::new(Field::new("checked_add", data_type, true)),
+                    )))
+                } else {
+                    Ok(Arc::new(BinaryExpr::new(left, op, right)))
+                }
+            }
         }
     }
 

@@ -95,10 +95,10 @@ object CometAdd extends CometExpressionSerde with MathBase {
       withInfo(add, s"Unsupported datatype ${add.left.dataType}")
       return None
     }
-    if (add.evalMode == EvalMode.TRY) {
-      withInfo(add, s"Eval mode ${add.evalMode} is not supported")
-      return None
-    }
+//    if (add.evalMode == EvalMode.TRY) {
+//      withInfo(add, s"Eval mode ${add.evalMode} is not supported")
+//      return None
+//    }
     createMathExpression(
       expr,
       add.left,
