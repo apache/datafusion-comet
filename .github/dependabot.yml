@@ -20,25 +20,18 @@ updates:
   - package-ecosystem: cargo
     directory: "/native"
     schedule:
-      interval: daily
+      interval: weekly
     target-branch: main
     labels: [auto-dependencies]
     ignore:
-      # major version bumps of arrow* and parquet are handled manually
+      # major version bumps of datafusion*, arrow*, parquet are handled manually
       - dependency-name: "arrow*"
         update-types: ["version-update:semver-major"]
       - dependency-name: "parquet"
         update-types: ["version-update:semver-major"]
+      - dependency-name: "datafusion*"
+        update-types: ["version-update:semver-major"]
     groups:
-      # minor and patch bumps of arrow* and parquet are grouped
-      arrow-parquet:
-        applies-to: version-updates
-        patterns:
-          - "arrow*"
-          - "parquet"
-        update-types:
-          - "minor"
-          - "patch"
       proto:
         applies-to: version-updates
         patterns:
@@ -47,6 +40,6 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "daily"
+      interval: "weekly"
     open-pull-requests-limit: 10
     labels: [auto-dependencies]
