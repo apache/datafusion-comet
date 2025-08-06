@@ -2208,6 +2208,7 @@ impl PhysicalPlanner {
             window_frame.into(),
             input_schema.as_ref(),
             false, // TODO: Ignore nulls
+            false, // Spark does not support DISTINCT...OVER
         )
         .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
     }
