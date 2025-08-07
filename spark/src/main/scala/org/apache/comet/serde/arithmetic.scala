@@ -157,7 +157,6 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
     // See https://github.com/apache/arrow-datafusion/pull/6792
     // For now, use NullIf to swap zeros with nulls.
     val rightExpr = nullIfWhenPrimitive(expr.right)
-
     if (!supportedDataType(expr.left.dataType)) {
       withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None

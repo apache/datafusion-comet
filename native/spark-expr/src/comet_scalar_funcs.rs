@@ -16,8 +16,10 @@
 // under the License.
 
 use crate::hash_funcs::*;
-use crate::math_funcs::checked_add;
-use crate::math_funcs::checked_add::checked_add;
+use crate::math_funcs::checked_arithmetic;
+use crate::math_funcs::checked_arithmetic::{
+    checked_add, checked_div, checked_mod, checked_mul, checked_sub,
+};
 use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::{
     spark_array_repeat, spark_ceil, spark_date_add, spark_date_sub, spark_decimal_div,
@@ -43,7 +45,7 @@ macro_rules! make_comet_scalar_udf {
             $name.to_string(),
             Signature::variadic_any(Volatility::Immutable),
             $data_type.clone(),
-            Arc::new(move |args| $func(args, &$data_type)),
+            Arc::new(move |args| $func(args, &$data_type /* &str */)),
         );
         Ok(Arc::new(ScalarUDF::new_from_impl(scalar_func)))
     }};
@@ -119,6 +121,18 @@ pub fn create_comet_physical_fun(
         }
         "checked_add" => {
             make_comet_scalar_udf!("checked_add", checked_add, data_type)
+        }
+        "checked_sub" => {
+            make_comet_scalar_udf!("checked_sub", checked_sub, data_type)
+        }
+        "checked_mul" => {
+            make_comet_scalar_udf!("checked_mul", checked_mul, data_type)
+        }
+        "checked_div" => {
+            make_comet_scalar_udf!("checked_div", checked_div, data_type)
+        }
+        "checked_mod" => {
+            make_comet_scalar_udf!("checked_mod", checked_mod, data_type)
         }
         "murmur3_hash" => {
             let func = Arc::new(spark_murmur3_hash);

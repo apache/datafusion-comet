@@ -262,12 +262,10 @@ impl PhysicalPlanner {
                     expr.return_type.as_ref(),
                     DataFusionOperator::Minus,
                     input_schema,
-                    true,
+                    _eval_mode != EvalMode::Try,
                 )
             }
             ExprStruct::Multiply(expr) => {
-                // TODO respect eval mode
-                // https://github.com/apache/datafusion-comet/issues/2021
                 // https://github.com/apache/datafusion-comet/issues/534
                 let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
@@ -276,12 +274,10 @@ impl PhysicalPlanner {
                     expr.return_type.as_ref(),
                     DataFusionOperator::Multiply,
                     input_schema,
-                    true,
+                    _eval_mode != EvalMode::Try,
                 )
             }
             ExprStruct::Divide(expr) => {
-                // TODO respect eval mode
-                // https://github.com/apache/datafusion-comet/issues/2021
                 // https://github.com/apache/datafusion-comet/issues/533
                 let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
@@ -290,7 +286,7 @@ impl PhysicalPlanner {
                     expr.return_type.as_ref(),
                     DataFusionOperator::Divide,
                     input_schema,
-                    true,
+                    _eval_mode != EvalMode::Try,
                 )
             }
             ExprStruct::IntegralDivide(expr) => {
@@ -1096,19 +1092,29 @@ impl PhysicalPlanner {
                 )))
             }
             _ => {
-                if !fail_on_overflow && op == DataFusionOperator::Plus {
-                    let data_type = return_type.map(to_arrow_datatype).unwrap();
+                let data_type = return_type.map(to_arrow_datatype).unwrap();
+                print!("data type parsed : {}", data_type);
+                if !fail_on_overflow && data_type.is_integer() {
+                    let op_str = match op {
+                        DataFusionOperator::Plus => "checked_add",
+                        DataFusionOperator::Minus => "checked_sub",
+                        DataFusionOperator::Multiply => "checked_mul",
+                        DataFusionOperator::Divide => "checked_div",
+                        _ => {
+                            todo!("Operator with fail_on_overflow is yet to be implemented!");
+                        }
+                    };
                     let fun_expr = create_comet_physical_fun(
-                        "checked_add",
+                        &op_str,
                         data_type.clone(),
                         &self.session_ctx.state(),
                         None,
                     )?;
                     Ok(Arc::new(ScalarFunctionExpr::new(
-                        "checked_add",
+                        &op_str,
                         fun_expr,
                         vec![left, right],
-                        Arc::new(Field::new("checked_add", data_type, true)),
+                        Arc::new(Field::new(op_str, data_type, true)),
                     )))
                 } else {
                     Ok(Arc::new(BinaryExpr::new(left, op, right)))

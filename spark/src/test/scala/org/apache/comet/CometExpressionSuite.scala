@@ -315,11 +315,59 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("try_add") {
-    // TODO: we need to implement more comprehensive tests for all try_ arithmetic functions
-    // https://github.com/apache/datafusion-comet/issues/2021
     val data = Seq((Integer.MAX_VALUE, 1), (1, 1))
     withParquetTable(data, "tbl") {
       checkSparkAnswerAndOperator("SELECT try_add(_1, _2) FROM tbl")
+    }
+    withTable("t1") {
+      val value = Long.MaxValue
+      sql("create table t1(c1 long, c2 long) using parquet")
+      sql(s"insert into t1 values($value, 1)")
+      val res = sql("select try_add(c1, c2) from t1 order by c1")
+      res.show()
+      checkSparkAnswerAndOperator(res)
+    }
+  }
+
+  test("try_subtract") {
+    val data = Seq((Integer.MAX_VALUE, 1), (1, 1))
+    withParquetTable(data, "tbl") {
+      checkSparkAnswerAndOperator("SELECT try_subtract(_1, _2) FROM tbl")
+    }
+    withTable("t1") {
+      val value = Long.MinValue
+      sql("create table t1(c1 long, c2 long) using parquet")
+      sql(s"insert into t1 values($value, 1)")
+      val res = sql("select try_subtract(c1, c2) from t1 order by c1")
+      checkSparkAnswerAndOperator(res)
+    }
+  }
+
+  test("try_multiply") {
+    val data = Seq((Integer.MAX_VALUE, 2), (1, 1))
+    withParquetTable(data, "tbl") {
+      checkSparkAnswerAndOperator("SELECT try_multiply(_1, _2) FROM tbl")
+    }
+    withTable("t1") {
+      val value = Long.MinValue
+      sql("create table t1(c1 long, c2 long) using parquet")
+      sql(s"insert into t1 values($value, 2)")
+      val res = sql("select try_multiply(c1, c2) from t1 order by c1")
+      checkSparkAnswerAndOperator(res)
+    }
+  }
+
+  test("try_divide") {
+    val data = Seq((Integer.MIN_VALUE, -1), (15121991, 0))
+    withParquetTable(data, "tbl") {
+      checkSparkAnswerAndOperator("SELECT try_divide(_1, _2) FROM tbl")
+    }
+    withTable("t1") {
+      val value = Long.MinValue
+      sql("create table t1(c1 long, c2 long) using parquet")
+      sql(s"insert into t1 values($value, -1)")
+      val res = sql("select try_divide(c1, c2) from t1 order by c1")
+      checkSparkAnswerAndOperator(res)
     }
   }
 
