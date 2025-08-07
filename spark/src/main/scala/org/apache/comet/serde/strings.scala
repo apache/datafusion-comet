@@ -287,7 +287,7 @@ object CometChr extends CometExpressionSerde {
       binding: Boolean): Option[Expr] = {
     val child = expr.children.head
     val childExpr = exprToProtoInternal(child, inputs, binding)
-    val optExpr = scalarFunctionExprToProto("chr", childExpr)
+    val optExpr = scalarFunctionExprToProto("char", childExpr)
     optExprWithInfo(optExpr, expr, child)
   }
 }
