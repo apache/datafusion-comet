@@ -1061,7 +1061,7 @@ impl PartitionedBatchesProducer {
         }
     }
 
-    fn produce(&mut self, partition_id: usize) -> PartitionedBatchIterator {
+    fn produce(&mut self, partition_id: usize) -> PartitionedBatchIterator<'_> {
         PartitionedBatchIterator::new(
             &self.partition_indices[partition_id],
             &self.buffered_batches,

@@ -115,7 +115,7 @@ impl<'a> StringWrapper<'a> {
         Self { value }
     }
 
-    pub fn get(&self) -> &JString {
+    pub fn get(&self) -> &JString<'_> {
         &self.value
     }
 }
@@ -129,7 +129,7 @@ impl<'a> BinaryWrapper<'a> {
         Self { value }
     }
 
-    pub fn get(&self) -> &JObject {
+    pub fn get(&self) -> &JObject<'_> {
         &self.value
     }
 }
