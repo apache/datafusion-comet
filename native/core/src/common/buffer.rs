@@ -284,7 +284,10 @@ impl std::ops::Deref for CometBuffer {
 
     fn deref(&self) -> &[u8] {
         if self.len > self.capacity {
-            panic!("Buffer length exceeds capacity: len={}, capacity={}", self.len, self.capacity);
+            panic!(
+                "Buffer length exceeds capacity: len={}, capacity={}",
+                self.len, self.capacity
+            );
         }
         unsafe { std::slice::from_raw_parts(self.as_ptr(), self.len) }
     }
@@ -294,7 +297,10 @@ impl std::ops::DerefMut for CometBuffer {
     fn deref_mut(&mut self) -> &mut [u8] {
         assert!(self.owned, "cannot modify un-owned buffer");
         if self.len > self.capacity {
-            panic!("Buffer length exceeds capacity: len={}, capacity={}", self.len, self.capacity);
+            panic!(
+                "Buffer length exceeds capacity: len={}, capacity={}",
+                self.len, self.capacity
+            );
         }
         unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr(), self.len) }
     }
@@ -373,7 +379,8 @@ mod tests {
     #[test]
     fn test_unowned() {
         let arrow_buf = ArrowBuffer::from(b"hello comet");
-        let buf = CometBuffer::from_ptr(arrow_buf.as_ptr(), arrow_buf.len(), arrow_buf.capacity()).unwrap();
+        let buf = CometBuffer::from_ptr(arrow_buf.as_ptr(), arrow_buf.len(), arrow_buf.capacity())
+            .unwrap();
 
         assert_eq!(11, buf.len());
         assert_eq!(64, buf.capacity());
