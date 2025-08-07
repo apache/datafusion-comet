@@ -31,16 +31,15 @@ use std::{
 /// the unique owner for the memory it wraps. The holder of this buffer can read or write the
 /// buffer, and the buffer itself will be released when it goes out of scope.
 ///
-/// Also note that, in `owned` mode, the buffer is always filled with 0s, and its length is always
-/// equal to its capacity. It's up to the caller to decide which part of the buffer contains valid
-/// data.
+/// Also note that, in `owned` mode, the buffer is always filled with 0s. It's up to the caller
+/// to decide which part of the buffer contains valid data.
 ///
 /// If `owned` is false, this buffer is an alias to another buffer. The buffer itself becomes
 /// immutable and can only be read.
 #[derive(Debug)]
 pub struct CometBuffer {
     data: NonNull<u8>,
-    len: usize,
+    /// Buffer size in bytes
     capacity: usize,
     /// Whether this buffer owns the data it points to.
     owned: bool,
@@ -63,7 +62,6 @@ impl CometBuffer {
             let ptr = std::alloc::alloc_zeroed(layout);
             Self {
                 data: NonNull::new(ptr).unwrap_or_else(|| handle_alloc_error(layout)),
-                len: aligned_capacity,
                 capacity: aligned_capacity,
                 owned: true,
                 allocation: Arc::new(CometBufferAllocation::new()),
@@ -77,13 +75,9 @@ impl CometBuffer {
     }
 
     /// Returns the length (i.e., number of bytes) in this buffer.
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
     /// Whether this buffer is empty.
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.capacity == 0
     }
 
     /// Returns the data stored in this buffer as a slice.
@@ -134,7 +128,7 @@ impl CometBuffer {
         self.check_reference()?;
         Ok(ArrowBuffer::from_custom_allocation(
             ptr,
-            self.len,
+            self.capacity,
             Arc::<CometBufferAllocation>::clone(&self.allocation),
         ))
     }
@@ -157,7 +151,7 @@ impl CometBuffer {
     pub fn reset(&mut self) {
         debug_assert!(self.owned, "cannot modify un-owned buffer");
         unsafe {
-            std::ptr::write_bytes(self.as_mut_ptr(), 0, self.len);
+            std::ptr::write_bytes(self.as_mut_ptr(), 0, self.capacity);
         }
     }
 
@@ -175,15 +169,14 @@ impl CometBuffer {
                 "capacity too large".to_string(),
             ));
         }
-        if new_capacity > self.len {
+        if new_capacity > self.capacity {
             let (ptr, new_capacity) =
                 unsafe { Self::reallocate(self.data, self.capacity, new_capacity) };
-            let diff = new_capacity - self.len;
+            let diff = new_capacity - self.capacity;
             self.data = ptr;
-            self.capacity = new_capacity;
             // write the value
-            unsafe { self.data.as_ptr().add(self.len).write_bytes(0, diff) };
-            self.len = new_capacity;
+            unsafe { self.data.as_ptr().add(self.capacity).write_bytes(0, diff) };
+            self.capacity = new_capacity;
         }
         Ok(())
     }
@@ -225,9 +218,6 @@ impl PartialEq for CometBuffer {
         if self.data.as_ptr() == other.data.as_ptr() {
             return true;
         }
-        if self.len != other.len {
-            return false;
-        }
         if self.capacity != other.capacity {
             return false;
         }
@@ -239,26 +229,14 @@ impl std::ops::Deref for CometBuffer {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
-        if self.len > self.capacity {
-            panic!(
-                "Buffer length exceeds capacity: len={}, capacity={}",
-                self.len, self.capacity
-            );
-        }
-        unsafe { std::slice::from_raw_parts(self.as_ptr(), self.len) }
+        unsafe { std::slice::from_raw_parts(self.as_ptr(), self.capacity) }
     }
 }
 
 impl std::ops::DerefMut for CometBuffer {
     fn deref_mut(&mut self) -> &mut [u8] {
         assert!(self.owned, "cannot modify un-owned buffer");
-        if self.len > self.capacity {
-            panic!(
-                "Buffer length exceeds capacity: len={}, capacity={}",
-                self.len, self.capacity
-            );
-        }
-        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr(), self.len) }
+        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr(), self.capacity) }
     }
 }
 
@@ -277,11 +255,7 @@ mod tests {
     use arrow::buffer::Buffer as ArrowBuffer;
 
     impl CometBuffer {
-        pub fn from_ptr(
-            ptr: *const u8,
-            len: usize,
-            capacity: usize,
-        ) -> Result<Self, ExecutionError> {
+        pub fn from_ptr(ptr: *const u8, capacity: usize) -> Result<Self, ExecutionError> {
             if capacity % ALIGNMENT != 0 {
                 return Err(ExecutionError::GeneralError(format!(
                     "input buffer is not aligned to {ALIGNMENT} bytes"
@@ -294,7 +268,6 @@ mod tests {
             }
             Ok(Self {
                 data: NonNull::new(ptr as *mut u8).unwrap(),
-                len,
                 capacity,
                 owned: false,
                 allocation: Arc::new(CometBufferAllocation::new()),
@@ -332,7 +305,7 @@ mod tests {
                 std::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len())
             }
 
-            // TODO len and capacity are not updated after extending this buffer
+            // TODO capacity is not updated after extending this buffer
 
             Ok(())
         }
@@ -398,16 +371,14 @@ mod tests {
     #[test]
     fn test_unowned() {
         let arrow_buf = ArrowBuffer::from(b"hello comet");
-        let buf = CometBuffer::from_ptr(arrow_buf.as_ptr(), arrow_buf.len(), arrow_buf.capacity())
-            .unwrap();
+        let buf = CometBuffer::from_ptr(arrow_buf.as_ptr(), arrow_buf.capacity()).unwrap();
 
-        assert_eq!(11, buf.len());
         assert_eq!(64, buf.capacity());
         assert_eq!(b"hello comet", &buf.as_slice()[0..11]);
 
         unsafe {
             let arrow_buf2 = buf.to_arrow().unwrap();
-            assert_eq!(arrow_buf, arrow_buf2);
+            assert_eq!(&arrow_buf[0..11], &arrow_buf2[0..11]);
         }
     }
 }
