@@ -29,33 +29,6 @@ use num::traits::CheckedRem;
 use num::{CheckedAdd, CheckedDiv, CheckedMul, CheckedSub};
 use std::sync::Arc;
 
-fn checked_arithmetic_impl<T>(left_arr: &ArrayRef, right_arr: &ArrayRef, op_kind: &str) -> ArrayRef
-where
-    T: ArrowPrimitiveType,
-    T::Native: CheckedAdd + CheckedSub + CheckedMul + CheckedDiv + CheckedRem + Copy,
-{
-    let left = left_arr.as_primitive::<T>();
-    let right = right_arr.as_primitive::<T>();
-    let mut builder = PrimitiveBuilder::<T>::with_capacity(left.len());
-
-    for i in 0..left.len() {
-        if left.is_null(i) || right.is_null(i) {
-            builder.append_null();
-        } else {
-            let l = left.value(i);
-            let r = right.value(i);
-            let val = match op_kind {
-                "checked_add" => l.checked_add(&r),
-                "checked_sub" => l.checked_sub(&r),
-                "checked_mul" => l.checked_mul(&r),
-                _ => todo!("Unsupported operation: {}", op_kind),
-            };
-            builder.append_option(val);
-        }
-    }
-    Arc::new(builder.finish()) as ArrayRef
-}
-
 pub fn try_arithmetic_kernel<T>(
     left: &PrimitiveArray<T>,
     right: &PrimitiveArray<T>,
