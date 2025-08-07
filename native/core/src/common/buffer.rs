@@ -239,12 +239,6 @@ impl std::ops::Deref for CometBuffer {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
-        if self.len > self.capacity {
-            panic!(
-                "Buffer length exceeds capacity: len={}, capacity={}",
-                self.len, self.capacity
-            );
-        }
         unsafe { std::slice::from_raw_parts(self.as_ptr(), self.len) }
     }
 }
@@ -252,12 +246,6 @@ impl std::ops::Deref for CometBuffer {
 impl std::ops::DerefMut for CometBuffer {
     fn deref_mut(&mut self) -> &mut [u8] {
         assert!(self.owned, "cannot modify un-owned buffer");
-        if self.len > self.capacity {
-            panic!(
-                "Buffer length exceeds capacity: len={}, capacity={}",
-                self.len, self.capacity
-            );
-        }
         unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr(), self.len) }
     }
 }
@@ -290,6 +278,11 @@ mod tests {
             if ptr.is_null() {
                 return Err(ExecutionError::GeneralError(
                     "cannot create CometBuffer from null pointer".to_string(),
+                ));
+            }
+            if len > capacity {
+                return Err(ExecutionError::GeneralError(
+                    "cannot create CometBuffer with len > capacity".to_string(),
                 ));
             }
             Ok(Self {
