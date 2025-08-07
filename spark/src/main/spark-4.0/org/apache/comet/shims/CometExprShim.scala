@@ -26,8 +26,6 @@ import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
 import org.apache.spark.sql.types.{BinaryType, BooleanType, StringType}
 
-import java.util.Locale
-
 /**
  * `CometExprShim` acts as a shim for for parsing expressions from different Spark versions.
  */
@@ -59,6 +57,7 @@ trait CometExprShim {
                   BooleanType) =>
           val Seq(bin, charset, _, _) = s.arguments
           stringDecode(expr, charset, bin, inputs, binding)
+
         case _ => None
       }
     }

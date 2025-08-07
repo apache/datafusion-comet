@@ -1284,10 +1284,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             optExprWithInfo(optExpr, expr, r.child)
         }
 
-      case s: StringDecode =>
-        // Right child is the encoding expression.
-        stringDecode(expr, s.charset, s.bin, inputs, binding)
-
       case RegExpReplace(subject, pattern, replacement, startPosition) =>
         if (!RegExp.isSupportedPattern(pattern.toString) &&
           !CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
@@ -1672,10 +1668,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
       charset: Expression,
       bin: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean) = {
+      binding: Boolean): Option[Expr] = {
     charset match {
       case Literal(str, DataTypes.StringType)
-        if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
+          if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
         // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
         // for invalid strings.
         // Left child is the binary expression.
