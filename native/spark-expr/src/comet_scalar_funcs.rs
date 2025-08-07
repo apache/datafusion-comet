@@ -45,7 +45,7 @@ macro_rules! make_comet_scalar_udf {
             $name.to_string(),
             Signature::variadic_any(Volatility::Immutable),
             $data_type.clone(),
-            Arc::new(move |args| $func(args, &$data_type /* &str */)),
+            Arc::new(move |args| $func(args, &$data_type)),
         );
         Ok(Arc::new(ScalarUDF::new_from_impl(scalar_func)))
     }};

@@ -1061,7 +1061,7 @@ impl PhysicalPlanner {
                 Ok(Arc::new(Cast::new(
                     child,
                     data_type,
-                    SparkCastOptions::new_without_timezone(EvalMode::Try, false),
+                    SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
                 )))
             }
             (
@@ -1093,7 +1093,6 @@ impl PhysicalPlanner {
             }
             _ => {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
-                print!("data type parsed : {}", data_type);
                 if !fail_on_overflow && data_type.is_integer() {
                     let op_str = match op {
                         DataFusionOperator::Plus => "checked_add",
