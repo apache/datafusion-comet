@@ -2535,10 +2535,10 @@ impl TreeNodeRewriter for JoinFilterRewriter<'_> {
                     new_index + self.left_field_indices.len(),
                 ))))
             } else {
-                return Err(DataFusionError::Internal(format!(
+                Err(DataFusionError::Internal(format!(
                     "Column index {} out of range",
                     column.index()
-                )));
+                )))
             }
         } else {
             Ok(Transformed::no(node))
@@ -3375,7 +3375,7 @@ mod tests {
             "| {{b: n}: {a: 2, b: m, c: y}} |",
             "+------------------------------+",
         ];
-        assert_batches_eq!(expected, &[actual.clone()]);
+        assert_batches_eq!(expected, std::slice::from_ref(&actual));
 
         Ok(())
     }
