@@ -407,7 +407,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setBinary(
         let len = env.get_array_length(&value_array)?;
         let mut buffer = MutableBuffer::from_len_zeroed(len as usize);
         env.get_byte_array_region(&value_array, 0, from_u8_slice(buffer.as_slice_mut()))?;
-        reader.set_binary(buffer);
+        reader.set_binary(buffer)?;
         Ok(())
     })
 }

@@ -71,23 +71,24 @@ impl CometBuffer {
         }
     }
 
-    pub fn from_ptr(ptr: *const u8, len: usize, capacity: usize) -> Self {
-        assert_eq!(
-            capacity % ALIGNMENT,
-            0,
-            "input buffer is not aligned to {ALIGNMENT} bytes"
-        );
-        Self {
-            data: NonNull::new(ptr as *mut u8).unwrap_or_else(|| {
-                panic!(
-                    "cannot create CometBuffer from (ptr: {ptr:?}, len: {len}, capacity: {capacity}"
-                )
-            }),
+    pub fn from_ptr(ptr: *const u8, len: usize, capacity: usize) -> Result<Self, ExecutionError> {
+        if capacity % ALIGNMENT != 0 {
+            return Err(ExecutionError::GeneralError(format!(
+                "input buffer is not aligned to {ALIGNMENT} bytes"
+            )));
+        }
+        if ptr.is_null() {
+            return Err(ExecutionError::GeneralError(
+                "cannot create CometBuffer from null pointer".to_string(),
+            ));
+        }
+        Ok(Self {
+            data: NonNull::new(ptr as *mut u8).unwrap(),
             len,
             capacity,
             owned: false,
             allocation: Arc::new(CometBufferAllocation::new()),
-        }
+        })
     }
 
     /// Returns the capacity of this buffer.
@@ -118,20 +119,26 @@ impl CometBuffer {
 
     /// Extends this buffer (must be an owned buffer) by appending bytes from `src`,
     /// starting from `offset`.
-    pub fn extend_from_slice(&mut self, offset: usize, src: &[u8]) {
-        debug_assert!(self.owned, "cannot modify un-owned buffer");
-        debug_assert!(
-            offset + src.len() <= self.capacity(),
-            "buffer overflow, offset = {}, src.len = {}, capacity = {}",
-            offset,
-            src.len(),
-            self.capacity()
-        );
+    pub fn extend_from_slice(&mut self, offset: usize, src: &[u8]) -> Result<(), ExecutionError> {
+        if !self.owned {
+            return Err(ExecutionError::GeneralError(
+                "cannot modify un-owned buffer".to_string(),
+            ));
+        }
+        if offset + src.len() > self.capacity() {
+            return Err(ExecutionError::GeneralError(format!(
+                "buffer overflow, offset = {}, src.len = {}, capacity = {}",
+                offset,
+                src.len(),
+                self.capacity()
+            )));
+        }
 
         unsafe {
             let dst = self.data.as_ptr().add(offset);
             std::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len())
         }
+        Ok(())
     }
 
     /// Returns a raw pointer to this buffer's internal memory
@@ -201,8 +208,17 @@ impl CometBuffer {
     /// Resize this buffer to the `new_capacity`. For additional bytes allocated, they are filled
     /// with 0. if `new_capacity` is less than the current capacity of this buffer, this is a no-op.
     #[inline(always)]
-    pub fn resize(&mut self, new_capacity: usize) {
-        debug_assert!(self.owned, "cannot modify un-owned buffer");
+    pub fn resize(&mut self, new_capacity: usize) -> Result<(), ExecutionError> {
+        if !self.owned {
+            return Err(ExecutionError::GeneralError(
+                "cannot modify un-owned buffer".to_string(),
+            ));
+        }
+        if new_capacity > isize::MAX as usize {
+            return Err(ExecutionError::GeneralError(
+                "capacity too large".to_string(),
+            ));
+        }
         if new_capacity > self.len {
             let (ptr, new_capacity) =
                 unsafe { Self::reallocate(self.data, self.capacity, new_capacity) };
@@ -213,6 +229,7 @@ impl CometBuffer {
             unsafe { self.data.as_ptr().add(self.len).write_bytes(0, diff) };
             self.len = new_capacity;
         }
+        Ok(())
     }
 
     unsafe fn reallocate(
@@ -266,6 +283,9 @@ impl std::ops::Deref for CometBuffer {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
+        if self.len > self.capacity {
+            panic!("Buffer length exceeds capacity: len={}, capacity={}", self.len, self.capacity);
+        }
         unsafe { std::slice::from_raw_parts(self.as_ptr(), self.len) }
     }
 }
@@ -273,7 +293,10 @@ impl std::ops::Deref for CometBuffer {
 impl std::ops::DerefMut for CometBuffer {
     fn deref_mut(&mut self) -> &mut [u8] {
         assert!(self.owned, "cannot modify un-owned buffer");
-        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr(), self.capacity) }
+        if self.len > self.capacity {
+            panic!("Buffer length exceeds capacity: len={}, capacity={}", self.len, self.capacity);
+        }
+        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr(), self.len) }
     }
 }
 
@@ -305,12 +328,12 @@ mod tests {
         assert_eq!(64, buf.capacity());
         assert_eq!(64, buf.len());
 
-        buf.resize(100);
+        buf.resize(100).unwrap();
         assert_eq!(128, buf.capacity());
         assert_eq!(128, buf.len());
 
         // resize with less capacity is no-op
-        buf.resize(20);
+        buf.resize(20).unwrap();
         assert_eq!(128, buf.capacity());
         assert_eq!(128, buf.len());
     }
@@ -318,14 +341,14 @@ mod tests {
     #[test]
     fn test_extend_from_slice() {
         let mut buf = CometBuffer::new(100);
-        buf.extend_from_slice(0, b"hello");
+        buf.extend_from_slice(0, b"hello").unwrap();
         assert_eq!(b"hello", &buf.as_slice()[0..5]);
 
-        buf.extend_from_slice(5, b" world");
+        buf.extend_from_slice(5, b" world").unwrap();
         assert_eq!(b"hello world", &buf.as_slice()[0..11]);
 
         buf.reset();
-        buf.extend_from_slice(0, b"hello arrow");
+        buf.extend_from_slice(0, b"hello arrow").unwrap();
         assert_eq!(b"hello arrow", &buf.as_slice()[0..11]);
     }
 
@@ -334,7 +357,7 @@ mod tests {
         let mut buf = CometBuffer::new(1);
 
         let str = b"aaaa bbbb cccc dddd";
-        buf.extend_from_slice(0, str.as_slice());
+        buf.extend_from_slice(0, str.as_slice()).unwrap();
 
         assert_eq!(64, buf.len());
         assert_eq!(64, buf.capacity());
@@ -350,7 +373,7 @@ mod tests {
     #[test]
     fn test_unowned() {
         let arrow_buf = ArrowBuffer::from(b"hello comet");
-        let buf = CometBuffer::from_ptr(arrow_buf.as_ptr(), arrow_buf.len(), arrow_buf.capacity());
+        let buf = CometBuffer::from_ptr(arrow_buf.as_ptr(), arrow_buf.len(), arrow_buf.capacity()).unwrap();
 
         assert_eq!(11, buf.len());
         assert_eq!(64, buf.capacity());

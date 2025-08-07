@@ -591,7 +591,7 @@ impl ColumnReader {
     }
 
     #[inline]
-    pub fn set_binary(&mut self, value: MutableBuffer) {
+    pub fn set_binary(&mut self, value: MutableBuffer) -> Result<(), ExecutionError> {
         make_func_mut!(self, set_binary, value)
     }
 
@@ -887,7 +887,7 @@ impl<T: DataType> TypedColumnReader<T> {
     }
 
     /// Sets all values in the vector of this column reader to be binary represented by `buffer`.
-    pub fn set_binary(&mut self, buffer: MutableBuffer) {
+    pub fn set_binary(&mut self, buffer: MutableBuffer) -> Result<(), ExecutionError> {
         self.check_const("set_binary");
 
         // TODO: consider using dictionary here
@@ -898,7 +898,7 @@ impl<T: DataType> TypedColumnReader<T> {
         let child_vector = &mut self.vector.children[0];
         let value_buf = &mut child_vector.value_buffer;
 
-        value_buf.resize(total_len);
+        value_buf.resize(total_len)?;
 
         let mut value_buf_offset = 0;
         let mut offset_buf_offset = 4;
@@ -914,6 +914,7 @@ impl<T: DataType> TypedColumnReader<T> {
             offset_buf_offset += 4;
         }
         self.vector.num_values += self.capacity;
+        Ok(())
     }
 
     /// Sets all values in the vector of this column reader to be decimal represented by `buffer`.

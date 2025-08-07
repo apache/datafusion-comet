@@ -647,7 +647,7 @@ macro_rules! make_plain_binary_impl {
                             let new_capacity = ::std::cmp::max(value_offset + len, value_buf_len * 2);
                             debug!("Reserving additional space ({} -> {} bytes) for value buffer",
                                    value_buf_len, new_capacity);
-                            child.value_buffer.resize(new_capacity);
+                            child.value_buffer.resize(new_capacity).unwrap();
                         }
 
                         // Copy the actual string content into the value buffer
@@ -722,7 +722,7 @@ macro_rules! make_plain_dict_binary_impl {
                         debug!("Reserving additional space ({} -> {} bytes) for value buffer \
                                 during dictionary fallback", value_buf_len,
                                new_capacity);
-                        dst_child.value_buffer.resize(new_capacity);
+                        dst_child.value_buffer.resize(new_capacity).unwrap();
                     }
 
                     bit::memcpy(
