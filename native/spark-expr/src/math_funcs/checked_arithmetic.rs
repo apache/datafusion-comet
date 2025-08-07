@@ -16,17 +16,13 @@
 // under the License.
 
 use arrow::array::{
-    Array, ArrowNativeTypeOp, Int32Array, Int32Builder, PrimitiveArray, PrimitiveBuilder,
+    Array, ArrowNativeTypeOp, PrimitiveArray, PrimitiveBuilder,
 };
 use arrow::array::{ArrayRef, AsArray};
 
-use arrow::compute::try_binary;
 use arrow::datatypes::{ArrowPrimitiveType, DataType, Int32Type, Int64Type};
-use arrow::error::ArrowError;
-use datafusion::common::{DataFusionError, ExprSchema};
+use datafusion::common::DataFusionError;
 use datafusion::physical_plan::ColumnarValue;
-use num::traits::CheckedRem;
-use num::{CheckedAdd, CheckedDiv, CheckedMul, CheckedSub};
 use std::sync::Arc;
 
 pub fn try_arithmetic_kernel<T>(
