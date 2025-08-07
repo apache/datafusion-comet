@@ -279,7 +279,7 @@ impl PhysicalPlanner {
                     expr.return_type.as_ref(),
                     DataFusionOperator::Divide,
                     input_schema,
-                    _eval_mode != EvalMode::Try,
+                    false,
                 )
             }
             ExprStruct::IntegralDivide(expr) => {
