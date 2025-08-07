@@ -569,7 +569,7 @@ impl PhysicalPlanner {
                                         SingleRowListArrayBuilder::new(Arc::new(Decimal128Array::new(vals.decimal_values.into_iter().map(|v| {
                                             let big_integer = BigInt::from_signed_bytes_be(&v);
                                             big_integer.to_i128().ok_or_else(|| {
-                                                return GeneralError(format!(
+                                                GeneralError(format!(
                                                     "Cannot parse {big_integer:?} as i128 for Decimal literal"
                                                 ))
                                             }).unwrap()
