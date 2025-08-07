@@ -1133,6 +1133,12 @@ impl PhysicalPlanner {
                 assert_eq!(children.len(), 1);
                 let num = limit.limit;
                 let offset: i32 = limit.offset;
+                if num != -1 && offset > num {
+                    return Err(GeneralError(format!(
+                        "Invalid limit/offset combination: [{}. {}]",
+                        num, offset
+                    )));
+                }
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
                 let limit: Arc<dyn ExecutionPlan> = if offset == 0 {
                     Arc::new(LocalLimitExec::new(
@@ -1143,7 +1149,6 @@ impl PhysicalPlanner {
                     let fetch = if num == -1 {
                         None
                     } else {
-                        assert!(num >= offset);
                         Some((num - offset) as usize)
                     };
                     Arc::new(GlobalLimitExec::new(
