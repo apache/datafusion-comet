@@ -16,7 +16,6 @@
 // under the License.
 
 use crate::hash_funcs::*;
-use crate::math_funcs::checked_arithmetic;
 use crate::math_funcs::checked_arithmetic::{
     checked_add, checked_div, checked_mod, checked_mul, checked_sub,
 };
