@@ -239,7 +239,7 @@ impl std::ops::Deref for CometBuffer {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.as_ptr(), self.capacity) }
+        unsafe { std::slice::from_raw_parts(self.as_ptr(), self.len) }
     }
 }
 
