@@ -15,10 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod chr;
 mod string_space;
 mod substring;
 
-pub use chr::SparkChrFunc;
 pub use string_space::SparkStringSpace;
 pub use substring::SubstringExpr;
