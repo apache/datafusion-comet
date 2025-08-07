@@ -751,18 +751,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
           binding,
           (builder, binaryExpr) => builder.setLtEq(binaryExpr))
 
-      case Literal(value, dataType)           if supportedDataType(
-        dataType,
-        allowComplex = value == null ||
-          // Nested literal support for native reader
-
-
-          // can be tracked https://github.com/apache/datafusion-comet/issues/1937
-          // now supports only Array of primitive
-          (Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION)
-            .contains(CometConf.COMET_NATIVE_SCAN_IMPL.get()) && dataType
-            .isInstanceOf[ArrayType]) && !isComplexType(
-            dataType.asInstanceOf[ArrayType].elementType)) =>
+      case Literal(value, dataType)
+          if supportedDataType(
+            dataType,
+            allowComplex = value == null ||
+              // Nested literal support for native reader
+              // can be tracked https://github.com/apache/datafusion-comet/issues/1937
+              // now supports only Array of primitive
+              (Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION)
+                .contains(CometConf.COMET_NATIVE_SCAN_IMPL.get()) && dataType
+                .isInstanceOf[ArrayType]) && !isComplexType(
+                dataType.asInstanceOf[ArrayType].elementType)) =>
         val exprBuilder = ExprOuterClass.Literal.newBuilder()
 
         if (value == null) {
