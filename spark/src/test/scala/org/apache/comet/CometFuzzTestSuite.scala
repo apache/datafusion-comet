@@ -271,7 +271,6 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("decode") {
-    // https://github.com/apache/datafusion-comet/issues/1942
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     // We want to make sure that the schema generator wasn't modified to accidentally omit

@@ -18,14 +18,13 @@
  */
 package org.apache.comet.shims
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{castToProto, exprToProtoInternal}
+import org.apache.comet.serde.QueryPlanSerde.stringDecode
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
-import org.apache.spark.sql.types.{BinaryType, BooleanType, DataTypes, StringType}
+import org.apache.spark.sql.types.{BinaryType, BooleanType, StringType}
 
 import java.util.Locale
 
@@ -59,22 +58,7 @@ trait CometExprShim {
                   BooleanType,
                   BooleanType) =>
           val Seq(bin, charset, _, _) = s.arguments
-          charset match {
-            case Literal(str, DataTypes.StringType)
-                if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
-              // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
-              // for invalid strings.
-              // Left child is the binary expression.
-              castToProto(
-                expr,
-                None,
-                DataTypes.StringType,
-                exprToProtoInternal(bin, inputs, binding).get,
-                CometEvalMode.TRY)
-            case _ =>
-              withInfo(expr, "Comet only supports decoding with 'utf-8'.")
-              None
-          }
+          stringDecode(expr, charset, bin, inputs, binding)
         case _ => None
       }
     }
