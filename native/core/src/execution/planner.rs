@@ -1135,8 +1135,7 @@ impl PhysicalPlanner {
                 let offset: i32 = limit.offset;
                 if num != -1 && offset > num {
                     return Err(GeneralError(format!(
-                        "Invalid limit/offset combination: [{}. {}]",
-                        num, offset
+                        "Invalid limit/offset combination: [{num}. {offset}]"
                     )));
                 }
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
