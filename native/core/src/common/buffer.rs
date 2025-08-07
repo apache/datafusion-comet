@@ -71,26 +71,6 @@ impl CometBuffer {
         }
     }
 
-    pub fn from_ptr(ptr: *const u8, len: usize, capacity: usize) -> Result<Self, ExecutionError> {
-        if capacity % ALIGNMENT != 0 {
-            return Err(ExecutionError::GeneralError(format!(
-                "input buffer is not aligned to {ALIGNMENT} bytes"
-            )));
-        }
-        if ptr.is_null() {
-            return Err(ExecutionError::GeneralError(
-                "cannot create CometBuffer from null pointer".to_string(),
-            ));
-        }
-        Ok(Self {
-            data: NonNull::new(ptr as *mut u8).unwrap(),
-            len,
-            capacity,
-            owned: false,
-            allocation: Arc::new(CometBufferAllocation::new()),
-        })
-    }
-
     /// Returns the capacity of this buffer.
     pub fn capacity(&self) -> usize {
         self.capacity
@@ -115,30 +95,6 @@ impl CometBuffer {
     pub fn as_slice_mut(&mut self) -> &mut [u8] {
         debug_assert!(self.owned, "cannot modify un-owned buffer");
         self
-    }
-
-    /// Extends this buffer (must be an owned buffer) by appending bytes from `src`,
-    /// starting from `offset`.
-    pub fn extend_from_slice(&mut self, offset: usize, src: &[u8]) -> Result<(), ExecutionError> {
-        if !self.owned {
-            return Err(ExecutionError::GeneralError(
-                "cannot modify un-owned buffer".to_string(),
-            ));
-        }
-        if offset + src.len() > self.capacity() {
-            return Err(ExecutionError::GeneralError(format!(
-                "buffer overflow, offset = {}, src.len = {}, capacity = {}",
-                offset,
-                src.len(),
-                self.capacity()
-            )));
-        }
-
-        unsafe {
-            let dst = self.data.as_ptr().add(offset);
-            std::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len())
-        }
-        Ok(())
     }
 
     /// Returns a raw pointer to this buffer's internal memory
@@ -320,6 +276,67 @@ mod tests {
     use super::*;
     use arrow::buffer::Buffer as ArrowBuffer;
 
+    impl CometBuffer {
+        pub fn from_ptr(
+            ptr: *const u8,
+            len: usize,
+            capacity: usize,
+        ) -> Result<Self, ExecutionError> {
+            if capacity % ALIGNMENT != 0 {
+                return Err(ExecutionError::GeneralError(format!(
+                    "input buffer is not aligned to {ALIGNMENT} bytes"
+                )));
+            }
+            if ptr.is_null() {
+                return Err(ExecutionError::GeneralError(
+                    "cannot create CometBuffer from null pointer".to_string(),
+                ));
+            }
+            Ok(Self {
+                data: NonNull::new(ptr as *mut u8).unwrap(),
+                len,
+                capacity,
+                owned: false,
+                allocation: Arc::new(CometBufferAllocation::new()),
+            })
+        }
+
+        /// Extends this buffer (must be an owned buffer) by appending bytes from `src`,
+        /// starting from `offset`.
+        pub fn extend_from_slice(
+            &mut self,
+            offset: usize,
+            src: &[u8],
+        ) -> Result<(), ExecutionError> {
+            if !self.owned {
+                return Err(ExecutionError::GeneralError(
+                    "cannot modify un-owned buffer".to_string(),
+                ));
+            }
+
+            // TODO this implementation does not seem complete or correct but this code is
+            // only used in the unit tests in this module, so it probably doesn't matter
+
+            // TODO this check seems incorrect
+            if offset + src.len() > self.capacity() {
+                return Err(ExecutionError::GeneralError(format!(
+                    "buffer overflow, offset = {}, src.len = {}, capacity = {}",
+                    offset,
+                    src.len(),
+                    self.capacity()
+                )));
+            }
+
+            unsafe {
+                let dst = self.data.as_ptr().add(offset);
+                std::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len())
+            }
+
+            // TODO len and capacity are not updated after extending this buffer
+
+            Ok(())
+        }
+    }
     #[test]
     fn test_buffer_new() {
         let buf = CometBuffer::new(63);
@@ -361,6 +378,8 @@ mod tests {
     #[test]
     fn test_to_arrow() {
         let mut buf = CometBuffer::new(1);
+        assert_eq!(64, buf.len());
+        assert_eq!(64, buf.capacity());
 
         let str = b"aaaa bbbb cccc dddd";
         buf.extend_from_slice(0, str.as_slice()).unwrap();
