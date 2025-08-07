@@ -15,9 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{
-    Array, ArrowNativeTypeOp, PrimitiveArray, PrimitiveBuilder,
-};
+use arrow::array::{Array, ArrowNativeTypeOp, PrimitiveArray, PrimitiveBuilder};
 use arrow::array::{ArrayRef, AsArray};
 
 use arrow::datatypes::{ArrowPrimitiveType, DataType, Int32Type, Int64Type};
