@@ -239,14 +239,14 @@ impl std::ops::Deref for CometBuffer {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.as_ptr(), self.len) }
+        unsafe { std::slice::from_raw_parts(self.as_ptr(), self.capacity) }
     }
 }
 
 impl std::ops::DerefMut for CometBuffer {
     fn deref_mut(&mut self) -> &mut [u8] {
         assert!(self.owned, "cannot modify un-owned buffer");
-        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr(), self.len) }
+        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr(), self.capacity) }
     }
 }
 
