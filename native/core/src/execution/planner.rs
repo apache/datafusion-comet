@@ -86,10 +86,11 @@ use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
-    BinaryArray, BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Array, Decimal128Builder,
-    Float32Builder, Float64Builder, Int16Builder, Int32Builder, Int64Builder, Int8Builder,
-    NullArray, StringBuilder, TimestampMicrosecondBuilder,
+    BinaryArray, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
+    Int16Array, Int32Array, Int64Array, Int8Array, NullArray, StringBuilder,
+    TimestampMicrosecondArray,
 };
+use arrow::buffer::{BooleanBuffer, Buffer, MutableBuffer, OffsetBuffer};
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
@@ -490,181 +491,64 @@ impl PhysicalPlanner {
                                     }
                                     DataType::Boolean => {
                                         let vals = values.clone();
-                                        let len = vals.boolean_values.len();
-                                        let mut arr = BooleanBuilder::with_capacity(len);
-
-                                        for i in 0 .. len {
-                                            if !vals.null_mask[i] {
-                                                arr.append_value(vals.boolean_values[i]);
-                                            } else {
-                                                arr.append_null();
-                                            }
-                                        }
-
-                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                        SingleRowListArrayBuilder::new(Arc::new(BooleanArray::new(BooleanBuffer::from(vals.boolean_values), Some(vals.null_mask.into()))))
                                             .build_list_scalar()
                                     }
                                     DataType::Int8 => {
                                         let vals = values.clone();
-                                        let len = vals.byte_values.len();
-                                        let mut arr = Int8Builder::with_capacity(len);
-
-                                        for i in 0 .. len {
-                                            if !vals.null_mask[i] {
-                                                arr.append_value(vals.byte_values[i] as i8);
-                                            } else {
-                                                arr.append_null();
-                                            }
-                                        }
-
-                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                        SingleRowListArrayBuilder::new(Arc::new(Int8Array::new(vals.byte_values.iter().map(|&x| x as i8).collect::<Vec<_>>().into(), Some(vals.null_mask.into()))))
                                             .build_list_scalar()
                                     }
                                     DataType::Int16 => {
                                         let vals = values.clone();
-                                        let len = vals.short_values.len();
-                                        let mut arr = Int16Builder::with_capacity(len);
-
-                                        for i in 0 .. len {
-                                            if !vals.null_mask[i] {
-                                                arr.append_value(vals.short_values[i] as i16);
-                                            } else {
-                                                arr.append_null();
-                                            }
-                                        }
-
-                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                        SingleRowListArrayBuilder::new(Arc::new(Int16Array::new(vals.short_values.iter().map(|&x| x as i16).collect::<Vec<_>>().into(), Some(vals.null_mask.into()))))
                                             .build_list_scalar()
                                     }
                                     DataType::Int32 => {
                                         let vals = values.clone();
-                                        let len = vals.int_values.len();
-                                        let mut arr = Int32Builder::with_capacity(len);
-
-                                        for i in 0 .. len {
-                                            if !vals.null_mask[i] {
-                                                arr.append_value(vals.int_values[i]);
-                                            } else {
-                                                arr.append_null();
-                                            }
-                                        }
-
-                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                        SingleRowListArrayBuilder::new(Arc::new(Int32Array::new(vals.int_values.into(), Some(vals.null_mask.into()))))
                                             .build_list_scalar()
                                     }
                                     DataType::Int64 => {
                                         let vals = values.clone();
-                                        let len = vals.long_values.len();
-                                        let mut arr = Int64Builder::with_capacity(len);
-
-                                        for i in 0 .. len {
-                                            if !vals.null_mask[i] {
-                                                arr.append_value(vals.long_values[i]);
-                                            } else {
-                                                arr.append_null();
-                                            }
-                                        }
-
-                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                        SingleRowListArrayBuilder::new(Arc::new(Int64Array::new(vals.long_values.into(), Some(vals.null_mask.into()))))
                                             .build_list_scalar()
                                     }
                                     DataType::Float32 => {
                                         let vals = values.clone();
-                                        let len = vals.float_values.len();
-                                        let mut arr = Float32Builder::with_capacity(len);
-
-                                        for i in 0 .. len {
-                                            if !vals.null_mask[i] {
-                                                arr.append_value(vals.float_values[i]);
-                                            } else {
-                                                arr.append_null();
-                                            }
-                                        }
-
-                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                        SingleRowListArrayBuilder::new(Arc::new(Float32Array::new(vals.float_values.into(), Some(vals.null_mask.into()))))
                                             .build_list_scalar()
                                     }
                                     DataType::Float64 => {
                                         let vals = values.clone();
-                                        let len = vals.double_values.len();
-                                        let mut arr = Float64Builder::with_capacity(len);
-
-                                        for i in 0 .. len {
-                                            if !vals.null_mask[i] {
-                                                arr.append_value(vals.double_values[i]);
-                                            } else {
-                                                arr.append_null();
-                                            }
-                                        }
-
-                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                        SingleRowListArrayBuilder::new(Arc::new(Float64Array::new(vals.double_values.into(), Some(vals.null_mask.into()))))
                                             .build_list_scalar()
                                     }
                                     DataType::Timestamp(TimeUnit::Microsecond, None) => {
                                         let vals = values.clone();
-                                        let len = vals.long_values.len();
-                                        let mut arr = TimestampMicrosecondBuilder::with_capacity(len);
-
-                                        for i in 0 .. len {
-                                            if !vals.null_mask[i] {
-                                                arr.append_value(vals.long_values[i]);
-                                            } else {
-                                                arr.append_null();
-                                            }
-                                        }
-
-                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                        SingleRowListArrayBuilder::new(Arc::new(TimestampMicrosecondArray::new(vals.long_values.into(), Some(vals.null_mask.into()))))
                                             .build_list_scalar()
                                     }
                                     DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) => {
                                         let vals = values.clone();
-                                        let len = vals.long_values.len();
-                                        let mut arr = TimestampMicrosecondBuilder::with_capacity(len);
-
-                                        for i in 0 .. len {
-                                            if !vals.null_mask[i] {
-                                                arr.append_value(vals.long_values[i]);
-                                            } else {
-                                                arr.append_null();
-                                            }
-                                        }
-
-                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish().with_timezone(Arc::clone(tz))))
+                                        SingleRowListArrayBuilder::new(Arc::new(TimestampMicrosecondArray::new(vals.long_values.into(), Some(vals.null_mask.into())).with_timezone(Arc::clone(tz))))
                                             .build_list_scalar()
                                     }
                                     DataType::Date32 => {
                                         let vals = values.clone();
-                                        let len = vals.int_values.len();
-                                        let mut arr = Date32Builder::with_capacity(len);
-
-                                        for i in 0 .. len {
-                                            if !vals.null_mask[i] {
-                                                arr.append_value(vals.int_values[i]);
-                                            } else {
-                                                arr.append_null();
-                                            }
-                                        }
-
-                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                        SingleRowListArrayBuilder::new(Arc::new(Date32Array::new(vals.int_values.into(), Some(vals.null_mask.into()))))
                                             .build_list_scalar()
                                     }
                                     DataType::Binary => {
                                         let vals = values.clone();
-                                        let mut arr = BinaryBuilder::new();
-
-                                        for (i, v) in vals.bytes_values.into_iter().enumerate() {
-                                            if !vals.null_mask[i] {
-                                                arr.append_value(v);
-                                            } else {
-                                                arr.append_null();
-                                            }
-                                        }
-
-                                        let binary_array: BinaryArray = arr.finish();
-                                        SingleRowListArrayBuilder::new(Arc::new(binary_array))
+                                        let offsets = MutableBuffer::new((vals.bytes_values.len() + 1) * size_of::<i32>());
+                                        let offsets = Buffer::from(offsets);
+                                        let value_offsets = unsafe { OffsetBuffer::new_unchecked(offsets.into()) };
+                                        SingleRowListArrayBuilder::new(Arc::new(BinaryArray::new(value_offsets, vals.int_values.into(), Some(vals.null_mask.into()))))
                                             .build_list_scalar()
                                     }
                                     DataType::Utf8 => {
+                                        // Using a builder here as it is quite complicated to create StringArray from vector of string with nulls
                                         let vals = values.clone();
                                         let len = vals.string_values.len();
                                         let mut arr = StringBuilder::with_capacity(len, len);
@@ -682,25 +566,14 @@ impl PhysicalPlanner {
                                     }
                                     DataType::Decimal128(p, s) => {
                                         let vals = values.clone();
-                                        let mut arr = Decimal128Builder::new().with_precision_and_scale(*p, *s)?;
-
-                                        for (i, v) in vals.decimal_values.into_iter().enumerate() {
-                                            if !vals.null_mask[i] {
-                                                let big_integer = BigInt::from_signed_bytes_be(&v);
-                                                let integer = big_integer.to_i128().ok_or_else(|| {
-                                                    GeneralError(format!(
-                                                        "Cannot parse {big_integer:?} as i128 for Decimal literal"
-                                                    ))
-                                                })?;
-                                                arr.append_value(integer);
-                                            } else {
-                                                arr.append_null();
-                                            }
-                                        }
-
-                                        let decimal_array: Decimal128Array = arr.finish();
-                                        SingleRowListArrayBuilder::new(Arc::new(decimal_array))
-                                            .build_list_scalar()
+                                        SingleRowListArrayBuilder::new(Arc::new(Decimal128Array::new(vals.decimal_values.into_iter().map(|v| {
+                                            let big_integer = BigInt::from_signed_bytes_be(&v);
+                                            big_integer.to_i128().ok_or_else(|| {
+                                                return GeneralError(format!(
+                                                    "Cannot parse {big_integer:?} as i128 for Decimal literal"
+                                                ))
+                                            }).unwrap()
+                                        }).collect::<Vec<_>>().into(), Some(vals.null_mask.into())).with_precision_and_scale(*p, *s)?)).build_list_scalar()
                                     }
                                     dt => {
                                         return Err(GeneralError(format!(
