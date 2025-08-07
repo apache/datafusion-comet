@@ -27,9 +27,8 @@ import org.apache.parquet.io.InputFile;
 import org.apache.parquet.io.SeekableInputStream;
 
 /**
- * A Parquet {@link InputFile} implementation that's similar to {@link
- * org.apache.parquet.hadoop.util.HadoopInputFile}, but with optimizations introduced in Hadoop 3.x,
- * for S3 specifically.
+ * Wraps an Object that possibly implements the methods of a Parquet InputFile (but is not a Parquet
+ * InputFile). Such an object` exists, for instance, in Iceberg's InputFile
  */
 public class WrappedInputFile implements InputFile {
   Object wrapped;

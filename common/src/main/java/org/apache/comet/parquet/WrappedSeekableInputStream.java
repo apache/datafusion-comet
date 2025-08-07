@@ -28,7 +28,7 @@ import org.apache.parquet.io.DelegatingSeekableInputStream;
 
 /**
  * Wraps an InputStream that possibly implements the methods of a Parquet SeekableInputStream (but
- * is not a Parquet SeekableInputStream). Such an InputStream exists, fir instance, in Iceberg's
+ * is not a Parquet SeekableInputStream). Such an InputStream exists, for instance, in Iceberg's
  * SeekableInputStream
  */
 public class WrappedSeekableInputStream extends DelegatingSeekableInputStream {
