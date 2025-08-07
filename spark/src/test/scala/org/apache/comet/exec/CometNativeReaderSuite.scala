@@ -436,7 +436,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       """
         |select 1 a
         |""".stripMargin,
-      "select array(1, 2, 3, null) from tbl")
+      "select array(1, 2, null, 3, null) from tbl")
   }
 
   test("native reader - support ARRAY literal BOOL fields") {
@@ -444,7 +444,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       """
         |select 1 a
         |""".stripMargin,
-      "select array(true, false, null) from tbl")
+      "select array(true, null, false, null) from tbl")
   }
 
   test("native reader - support ARRAY literal NULL fields") {
@@ -468,7 +468,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       """
         |select 1 a
         |""".stripMargin,
-      "select array(1, 2, 3, null) from tbl")
+      "select array(1, 2, null, 3, null) from tbl")
   }
 
   test("native reader - support ARRAY literal SHORT fields") {
@@ -476,7 +476,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       """
         |select 1 a
         |""".stripMargin,
-      "select array(cast(1 as short), cast(2 as short), cast(3 as short), null) from tbl")
+      "select array(cast(1 as short), cast(2 as short), null, cast(3 as short), null) from tbl")
   }
 
   test("native reader - support ARRAY literal DATE fields") {
@@ -484,7 +484,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       """
         |select 1 a
         |""".stripMargin,
-      "select array(CAST('2024-01-01' AS DATE), CAST('2024-02-01' AS DATE), CAST('2024-03-01' AS DATE), null) from tbl")
+      "select array(CAST('2024-01-01' AS DATE), CAST('2024-02-01' AS DATE), null, CAST('2024-03-01' AS DATE), null) from tbl")
   }
 
   test("native reader - support ARRAY literal LONG fields") {
@@ -492,7 +492,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       """
         |select 1 a
         |""".stripMargin,
-      "select array(cast(1 as bigint), cast(2 as bigint), cast(3 as bigint), null) from tbl")
+      "select array(cast(1 as bigint), cast(2 as bigint), null, cast(3 as bigint), null) from tbl")
   }
 
   test("native reader - support ARRAY literal TIMESTAMP fields") {
@@ -500,7 +500,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       """
         |select 1 a
         |""".stripMargin,
-      "select array(CAST('2024-01-01 10:00:00' AS TIMESTAMP), CAST('2024-01-02 10:00:00' AS TIMESTAMP), CAST('2024-01-03 10:00:00' AS TIMESTAMP), null) from tbl")
+      "select array(CAST('2024-01-01 10:00:00' AS TIMESTAMP), CAST('2024-01-02 10:00:00' AS TIMESTAMP), null, CAST('2024-01-03 10:00:00' AS TIMESTAMP), null) from tbl")
   }
 
   test("native reader - support ARRAY literal TIMESTAMP TZ fields") {
@@ -508,7 +508,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       """
         |select 1 a
         |""".stripMargin,
-      "select array(CAST('2024-01-01 10:00:00' AS TIMESTAMP_NTZ), CAST('2024-01-02 10:00:00' AS TIMESTAMP_NTZ), CAST('2024-01-03 10:00:00' AS TIMESTAMP_NTZ), null) from tbl")
+      "select array(CAST('2024-01-01 10:00:00' AS TIMESTAMP_NTZ), CAST('2024-01-02 10:00:00' AS TIMESTAMP_NTZ), null, CAST('2024-01-03 10:00:00' AS TIMESTAMP_NTZ), null) from tbl")
   }
 
   test("native reader - support ARRAY literal FLOAT fields") {
@@ -516,7 +516,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       """
         |select 1 a
         |""".stripMargin,
-      "select array(cast(1 as float), cast(2 as float), cast(3 as float), null) from tbl")
+      "select array(cast(1 as float), cast(2 as float), null, cast(3 as float), null) from tbl")
   }
 
   test("native reader - support ARRAY literal DOUBLE fields") {
@@ -524,7 +524,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       """
         |select 1 a
         |""".stripMargin,
-      "select array(cast(1 as double), cast(2 as double), cast(3 as double), null) from tbl")
+      "select array(cast(1 as double), cast(2 as double), null, cast(3 as double), null) from tbl")
   }
 
   test("native reader - support ARRAY literal STRING fields") {
@@ -532,7 +532,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       """
         |select 1 a
         |""".stripMargin,
-      "select array('a', 'bc', 'def', null) from tbl")
+      "select array('a', 'bc', null, 'def', null) from tbl")
   }
 
   test("native reader - support ARRAY literal DECIMAL fields") {
@@ -540,7 +540,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       """
         |select 1 a
         |""".stripMargin,
-      "select array(cast(1 as decimal(10, 2)), cast(2.5 as decimal(10, 2)),cast(3.75 as decimal(10, 2)), null) from tbl")
+      "select array(cast(1 as decimal(10, 2)), cast(2.5 as decimal(10, 2)), null, cast(3.75 as decimal(10, 2)), null) from tbl")
   }
 
   test("native reader - support ARRAY literal BINARY fields") {
@@ -548,7 +548,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       """
         |select 1 a
         |""".stripMargin,
-      "select array(cast('a' as binary), cast('bc' as binary), cast('def' as binary), null) from tbl")
+      "select array(cast('a' as binary), cast('bc' as binary), null, cast('def' as binary), null) from tbl")
   }
 
   test("SPARK-18053: ARRAY equality is broken") {
