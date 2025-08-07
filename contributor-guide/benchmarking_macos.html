@@ -407,6 +407,14 @@ mkdir<span class="w"> </span>/tmp/spark-events
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/sbin/start-master.sh
 </pre></div>
 </div>
+<p>Note: For Apache Spark distributions installed using <code class="docutils literal notranslate"><span class="pre">brew</span></code> tool, it may happen there is no <code class="docutils literal notranslate"><span class="pre">$SPARK_HOME/sbin</span></code> folder on your machine. However it is still possible to start Apache Spark master by running command</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-class<span class="w"> </span>org.apache.spark.deploy.master.Master
+</pre></div>
+</div>
+<p>Once master has started, look for output to find Master endpoint URI, like</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>INFO<span class="w"> </span>Master:<span class="w"> </span>Starting<span class="w"> </span>Spark<span class="w"> </span>master<span class="w"> </span>at<span class="w"> </span>spark://192.168.4.142:7078
+</pre></div>
+</div>
 <p>Set <code class="docutils literal notranslate"><span class="pre">SPARK_MASTER</span></code> env var (host name will need to be edited):</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">SPARK_MASTER</span><span class="o">=</span>spark://Rustys-MacBook-Pro.local:7077
 </pre></div>
