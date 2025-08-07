@@ -657,7 +657,7 @@ impl BitReader {
         debug_assert!(self.bit_offset == 0 || i == num_bits_to_read);
 
         // Check if there's opportunity to directly copy bytes using `memcpy`.
-        if (offset + i).is_multiple_of(8) && i < num_bits_to_read {
+        if (offset + i) % 8 == 0 && i < num_bits_to_read {
             let num_bytes = (num_bits_to_read - i) / 8;
             let dst_byte_offset = (offset + i) / 8;
             if num_bytes > 0 {
@@ -671,7 +671,7 @@ impl BitReader {
             }
         }
 
-        debug_assert!((offset + i).is_multiple_of(8) || num_bits_to_read - i < 8);
+        debug_assert!((offset + i) % 8 != 0 || num_bits_to_read - i < 8);
 
         // Now copy the remaining bits if there's any.
         while i < num_bits_to_read {
