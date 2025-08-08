@@ -239,54 +239,54 @@ impl PhysicalPlanner {
         match spark_expr.expr_struct.as_ref().unwrap() {
             ExprStruct::Add(expr) => {
                 // TODO respect ANSI eval mode
-                // https://github.com/apache/datafusion-comet/issues/2021
                 // https://github.com/apache/datafusion-comet/issues/536
-                let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
                     expr.right.as_ref().unwrap(),
                     expr.return_type.as_ref(),
                     DataFusionOperator::Plus,
                     input_schema,
-                    _eval_mode != EvalMode::Try,
+                    eval_mode != EvalMode::Try,
                 )
             }
             ExprStruct::Subtract(expr) => {
-                // TODO respect eval mode
-                // https://github.com/apache/datafusion-comet/issues/2021
+                // TODO respect ANSI eval mode
                 // https://github.com/apache/datafusion-comet/issues/535
-                let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
                     expr.right.as_ref().unwrap(),
                     expr.return_type.as_ref(),
                     DataFusionOperator::Minus,
                     input_schema,
-                    _eval_mode != EvalMode::Try,
+                    eval_mode != EvalMode::Try,
                 )
             }
             ExprStruct::Multiply(expr) => {
+                // TODO respect ANSI eval mode
                 // https://github.com/apache/datafusion-comet/issues/534
-                let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
                     expr.right.as_ref().unwrap(),
                     expr.return_type.as_ref(),
                     DataFusionOperator::Multiply,
                     input_schema,
-                    _eval_mode != EvalMode::Try,
+                    eval_mode != EvalMode::Try,
                 )
             }
             ExprStruct::Divide(expr) => {
+                // TODO respect ANSI eval mode
                 // https://github.com/apache/datafusion-comet/issues/533
-                let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
                     expr.right.as_ref().unwrap(),
                     expr.return_type.as_ref(),
                     DataFusionOperator::Divide,
                     input_schema,
-                    false,
+                    eval_mode != EvalMode::Try,
                 )
             }
             ExprStruct::IntegralDivide(expr) => {
@@ -1005,7 +1005,7 @@ impl PhysicalPlanner {
         return_type: Option<&spark_expression::DataType>,
         op: DataFusionOperator,
         input_schema: SchemaRef,
-        fail_on_overflow: bool,
+        fail_on_overflow: bool
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         self.create_binary_expr_with_options(
             left,
@@ -1014,10 +1014,11 @@ impl PhysicalPlanner {
             op,
             input_schema,
             BinaryExprOptions::default(),
-            fail_on_overflow,
+            fail_on_overflow
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_binary_expr_with_options(
         &self,
         left: &Expr,
@@ -1026,7 +1027,7 @@ impl PhysicalPlanner {
         op: DataFusionOperator,
         input_schema: SchemaRef,
         options: BinaryExprOptions,
-        fail_on_overflow: bool,
+        fail_on_overflow: bool
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         let left = self.create_expr(left, Arc::clone(&input_schema))?;
         let right = self.create_expr(right, Arc::clone(&input_schema))?;
@@ -1104,13 +1105,13 @@ impl PhysicalPlanner {
                         }
                     };
                     let fun_expr = create_comet_physical_fun(
-                        &op_str,
+                        op_str,
                         data_type.clone(),
                         &self.session_ctx.state(),
                         None,
                     )?;
                     Ok(Arc::new(ScalarFunctionExpr::new(
-                        &op_str,
+                        op_str,
                         fun_expr,
                         vec![left, right],
                         Arc::new(Field::new(op_str, data_type, true)),
