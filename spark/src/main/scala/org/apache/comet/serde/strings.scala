@@ -43,7 +43,7 @@ object CometStringRepeat extends CometExpressionSerde {
   }
 }
 
-class CometCaseConversionBase(function: String) extends ScalarFuncSerde(function) {
+class CometCaseConversionBase(function: String) extends CometScalarFunction(function) {
 
   override def convert(
       expr: Expression,
@@ -65,7 +65,7 @@ object CometUpper extends CometCaseConversionBase("upper")
 
 object CometLower extends CometCaseConversionBase("lower")
 
-object CometInitCap extends ScalarFuncSerde("initcap") {
+object CometInitCap extends CometScalarFunction("initcap") {
 
   override def convert(
       expr: Expression,
