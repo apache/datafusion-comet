@@ -878,7 +878,7 @@ impl PhysicalPlanner {
         return_type: Option<&spark_expression::DataType>,
         op: DataFusionOperator,
         input_schema: SchemaRef,
-        eval_mode : EvalMode
+        eval_mode: EvalMode
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         self.create_binary_expr_with_options(
             left,
@@ -900,7 +900,7 @@ impl PhysicalPlanner {
         op: DataFusionOperator,
         input_schema: SchemaRef,
         options: BinaryExprOptions,
-        eval_mode : EvalMode
+        eval_mode: EvalMode
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         let left = self.create_expr(left, Arc::clone(&input_schema))?;
         let right = self.create_expr(right, Arc::clone(&input_schema))?;
