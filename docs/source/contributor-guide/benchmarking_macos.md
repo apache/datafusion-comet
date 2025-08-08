@@ -61,6 +61,16 @@ Start Spark in standalone mode:
 $SPARK_HOME/sbin/start-master.sh
 ```
 
+Note: For Apache Spark distributions installed using `brew` tool, it may happen there is no `$SPARK_HOME/sbin` folder on your machine. However it is still possible to start Apache Spark master by running command
+```shell
+$SPARK_HOME/bin/spark-class org.apache.spark.deploy.master.Master
+```
+
+Once master has started, look for output to find Master endpoint URI, like 
+```shell
+INFO Master: Starting Spark master at spark://192.168.4.142:7078
+```
+
 Set `SPARK_MASTER` env var (host name will need to be edited):
 
 ```shell

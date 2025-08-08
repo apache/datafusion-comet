@@ -85,43 +85,44 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[ArraysOverlap] -> CometArraysOverlap,
     classOf[ArrayUnion] -> CometArrayUnion,
     classOf[CreateArray] -> CometCreateArray,
-    classOf[Ascii] -> CometAscii,
-    classOf[ConcatWs] -> CometConcatWs,
-    classOf[Chr] -> CometChr,
+    classOf[Ascii] -> CometScalarFunction("ascii"),
+    classOf[ConcatWs] -> CometScalarFunction("concat_ws"),
+    classOf[Chr] -> CometScalarFunction("char"),
     classOf[InitCap] -> CometInitCap,
     classOf[BitwiseCount] -> CometBitwiseCount,
     classOf[BitwiseGet] -> CometBitwiseGet,
     classOf[BitwiseNot] -> CometBitwiseNot,
     classOf[BitwiseOr] -> CometBitwiseOr,
     classOf[BitwiseXor] -> CometBitwiseXor,
-    classOf[BitLength] -> CometBitLength,
+    classOf[BitLength] -> CometScalarFunction("bit_length"),
     classOf[FromUnixTime] -> CometFromUnixTime,
-    classOf[Length] -> CometLength,
-    classOf[Acos] -> UnaryScalarFuncSerde("acos"),
-    classOf[Cos] -> UnaryScalarFuncSerde("cos"),
-    classOf[Asin] -> UnaryScalarFuncSerde("asin"),
-    classOf[Sin] -> UnaryScalarFuncSerde("sin"),
-    classOf[Atan] -> UnaryScalarFuncSerde("atan"),
-    classOf[Tan] -> UnaryScalarFuncSerde("tan"),
-    classOf[Exp] -> UnaryScalarFuncSerde("exp"),
-    classOf[Expm1] -> UnaryScalarFuncSerde("expm1"),
-    classOf[Sqrt] -> UnaryScalarFuncSerde("sqrt"),
-    classOf[Signum] -> UnaryScalarFuncSerde("signum"),
-    classOf[Md5] -> UnaryScalarFuncSerde("md5"),
+    classOf[Length] -> CometScalarFunction("length"),
+    classOf[Acos] -> CometScalarFunction("acos"),
+    classOf[Cos] -> CometScalarFunction("cos"),
+    classOf[Asin] -> CometScalarFunction("asin"),
+    classOf[Sin] -> CometScalarFunction("sin"),
+    classOf[Atan] -> CometScalarFunction("atan"),
+    classOf[Tan] -> CometScalarFunction("tan"),
+    classOf[Exp] -> CometScalarFunction("exp"),
+    classOf[Expm1] -> CometScalarFunction("expm1"),
+    classOf[Sqrt] -> CometScalarFunction("sqrt"),
+    classOf[Signum] -> CometScalarFunction("signum"),
+    classOf[Md5] -> CometScalarFunction("md5"),
     classOf[ShiftLeft] -> CometShiftLeft,
     classOf[ShiftRight] -> CometShiftRight,
-    classOf[StringInstr] -> CometStringInstr,
+    classOf[StringInstr] -> CometScalarFunction("instr"),
     classOf[StringRepeat] -> CometStringRepeat,
-    classOf[StringReplace] -> CometStringReplace,
-    classOf[StringTranslate] -> CometStringTranslate,
-    classOf[StringTrim] -> CometTrim,
-    classOf[StringTrimLeft] -> CometStringTrimLeft,
-    classOf[StringTrimRight] -> CometStringTrimRight,
-    classOf[StringTrimBoth] -> CometStringTrimBoth,
+    classOf[StringReplace] -> CometScalarFunction("replace"),
+    classOf[StringTranslate] -> CometScalarFunction("translate"),
+    classOf[StringTrim] -> CometScalarFunction("trim"),
+    classOf[StringTrimLeft] -> CometScalarFunction("ltrim"),
+    classOf[StringTrimRight] -> CometScalarFunction("rtrim"),
+    classOf[StringTrimBoth] -> CometScalarFunction("btrim"),
     classOf[Upper] -> CometUpper,
     classOf[Lower] -> CometLower,
     classOf[Murmur3Hash] -> CometMurmur3Hash,
     classOf[XxHash64] -> CometXxHash64,
+    classOf[Sha2] -> CometSha2,
     classOf[MapKeys] -> CometMapKeys,
     classOf[MapEntries] -> CometMapEntries,
     classOf[MapValues] -> CometMapValues,
@@ -140,7 +141,16 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Randn] -> CometRandn,
     classOf[SparkPartitionID] -> CometSparkPartitionId,
     classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
-    classOf[StringSpace] -> UnaryScalarFuncSerde("string_space"),
+    classOf[StringSpace] -> CometScalarFunction("string_space"),
+    classOf[StartsWith] -> CometScalarFunction("starts_with"),
+    classOf[EndsWith] -> CometScalarFunction("ends_with"),
+    classOf[Contains] -> CometScalarFunction("contains"),
+    classOf[Substring] -> CometSubstring,
+    classOf[Like] -> CometLike,
+    classOf[RLike] -> CometRLike,
+    classOf[OctetLength] -> CometScalarFunction("octet_length"),
+    classOf[Reverse] -> CometScalarFunction("reverse"),
+    classOf[StringRPad] -> CometStringRPad,
     classOf[Year] -> CometYear,
     classOf[Hour] -> CometHour,
     classOf[Minute] -> CometMinute,
@@ -754,25 +764,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         withInfo(expr, s"Unsupported datatype $dataType")
         None
 
-      case Substring(str, Literal(pos, _), Literal(len, _)) =>
-        val strExpr = exprToProtoInternal(str, inputs, binding)
-
-        if (strExpr.isDefined) {
-          val builder = ExprOuterClass.Substring.newBuilder()
-          builder.setChild(strExpr.get)
-          builder.setStart(pos.asInstanceOf[Int])
-          builder.setLen(len.asInstanceOf[Int])
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setSubstring(builder)
-              .build())
-        } else {
-          withInfo(expr, str)
-          None
-        }
-
       // ToPrettyString is new in Spark 3.5
       case _
           if expr.getClass.getSimpleName == "ToPrettyString" && expr
@@ -1273,18 +1264,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case OctetLength(child) =>
-        val castExpr = Cast(child, StringType)
-        val childExpr = exprToProtoInternal(castExpr, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("octet_length", childExpr)
-        optExprWithInfo(optExpr, expr, castExpr)
-
-      case Reverse(child) =>
-        val castExpr = Cast(child, StringType)
-        val childExpr = exprToProtoInternal(castExpr, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("reverse", childExpr)
-        optExprWithInfo(optExpr, expr, castExpr)
-
       case BitwiseAnd(left, right) =>
         createBinaryExpr(
           expr,
@@ -1349,24 +1328,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      // read-side padding in Spark 3.5.2+ is represented by rpad function
-      case StringRPad(srcStr, size, chars) =>
-        chars match {
-          case Literal(str, DataTypes.StringType) if str.toString == " " =>
-            val arg0 = exprToProtoInternal(srcStr, inputs, binding)
-            val arg1 = exprToProtoInternal(size, inputs, binding)
-            if (arg0.isDefined && arg1.isDefined) {
-              scalarFunctionExprToProto("rpad", arg0, arg1)
-            } else {
-              withInfo(expr, "rpad unsupported arguments", srcStr, size)
-              None
-            }
-
-          case _ =>
-            withInfo(expr, "rpad only supports padding with spaces")
-            None
-        }
-
       case KnownFloatingPointNormalized(NormalizeNaNAndZero(expr)) =>
         val dataType = serializeDataType(expr.dataType)
         if (dataType.isEmpty) {
@@ -1426,29 +1387,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         } else {
           withInfo(expr, bloomFilter, value)
           None
-        }
-
-      case Sha2(left, numBits) =>
-        if (!numBits.foldable) {
-          withInfo(expr, "non literal numBits is not supported")
-          return None
-        }
-        // it's possible for spark to dynamically compute the number of bits from input
-        // expression, however DataFusion does not support that yet.
-        val childExpr = exprToProtoInternal(left, inputs, binding)
-        val bits = numBits.eval().asInstanceOf[Int]
-        val algorithm = bits match {
-          case 224 => "sha224"
-          case 256 | 0 => "sha256"
-          case 384 => "sha384"
-          case 512 => "sha512"
-          case _ =>
-            null
-        }
-        if (algorithm == null) {
-          exprToProtoInternal(Literal(null, StringType), inputs, binding)
-        } else {
-          scalarFunctionExprToProtoWithReturnType(algorithm, StringType, childExpr)
         }
 
       case struct @ CreateNamedStruct(_) =>
@@ -2524,15 +2462,14 @@ trait CometAggregateExpressionSerde {
 /** Marker trait for an expression that is not guaranteed to be 100% compatible with Spark */
 trait IncompatExpr {}
 
-/** Serde for single-argument scalar function. */
-case class UnaryScalarFuncSerde(name: String) extends CometExpressionSerde {
+/** Serde for scalar function. */
+case class CometScalarFunction(name: String) extends CometExpressionSerde {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    val child = expr.children.head
-    val childExpr = exprToProtoInternal(child, inputs, binding)
-    val optExpr = scalarFunctionExprToProto(name, childExpr)
-    optExprWithInfo(optExpr, expr, child)
+    val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProto(name, childExpr: _*)
+    optExprWithInfo(optExpr, expr, expr.children: _*)
   }
 }
