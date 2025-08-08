@@ -2588,3 +2588,15 @@ case class UnaryScalarFuncSerde(name: String) extends CometExpressionSerde {
     optExprWithInfo(optExpr, expr, child)
   }
 }
+
+/** Serde for scalar function. */
+case class ScalarFuncSerde(name: String) extends CometExpressionSerde {
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProto(name, childExpr: _*)
+    optExprWithInfo(optExpr, expr, expr.children: _*)
+  }
+}
