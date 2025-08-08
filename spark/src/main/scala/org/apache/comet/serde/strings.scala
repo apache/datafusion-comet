@@ -27,28 +27,6 @@ import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
-class CometStringExprCastChildren(function: String) extends CometExpressionSerde {
-  override def convert(
-      expr: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    // cast all arguments to string as needed
-    val castExpr = expr.children.map {
-      case expr if expr.dataType == DataTypes.StringType => expr
-      case expr => ???
-    }
-    val childExpr = castExpr.map(exprToProtoInternal(_, inputs, binding))
-    val optExpr = scalarFunctionExprToProto(function, childExpr: _*)
-    optExprWithInfo(optExpr, expr, castExpr: _*)
-  }
-}
-
-object CometAscii extends CometStringExprCastChildren("ascii")
-
-object CometBitLength extends CometStringExprCastChildren("bit_length")
-
-object CometStringInstr extends CometStringExprCastChildren("strpos")
-
 object CometStringRepeat extends CometExpressionSerde {
 
   override def convert(
@@ -65,7 +43,7 @@ object CometStringRepeat extends CometExpressionSerde {
   }
 }
 
-class CometCaseConversionBase(function: String) extends CometStringExprCastChildren(function) {
+class CometCaseConversionBase(function: String) extends ScalarFuncSerde(function) {
 
   override def convert(
       expr: Expression,
@@ -87,7 +65,7 @@ object CometUpper extends CometCaseConversionBase("upper")
 
 object CometLower extends CometCaseConversionBase("lower")
 
-object CometInitCap extends CometStringExprCastChildren("initcap") {
+object CometInitCap extends ScalarFuncSerde("initcap") {
 
   override def convert(
       expr: Expression,
