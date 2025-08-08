@@ -43,7 +43,7 @@ public class LazyColumnReader extends ColumnReader {
   // The lazy vector being updated.
   private final CometLazyVector vector;
 
-  public LazyColumnReader(
+  LazyColumnReader(
       DataType sparkReadType,
       ColumnDescriptor descriptor,
       CometSchemaImporter importer,

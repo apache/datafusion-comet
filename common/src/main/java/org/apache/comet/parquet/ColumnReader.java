@@ -93,7 +93,7 @@ public class ColumnReader extends AbstractColumnReader {
   private ArrowArray array = null;
   private ArrowSchema schema = null;
 
-  public ColumnReader(
+  ColumnReader(
       DataType type,
       ColumnDescriptor descriptor,
       CometSchemaImporter importer,
@@ -111,6 +111,8 @@ public class ColumnReader extends AbstractColumnReader {
    * Set the page reader for a new column chunk to read. Expects to call `readBatch` after this.
    *
    * @param pageReader the page reader for the new column chunk
+   * @deprecated since 0.10.0, will be removed in 0.11.0.
+   * @see <a href="https://github.com/apache/datafusion-comet/issues/2079">Comet Issue #2079</a>
    */
   public void setPageReader(PageReader pageReader) throws IOException {
     this.pageReader = pageReader;
