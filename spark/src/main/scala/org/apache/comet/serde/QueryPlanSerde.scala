@@ -86,8 +86,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[ArrayUnion] -> CometArrayUnion,
     classOf[CreateArray] -> CometCreateArray,
     classOf[Ascii] -> CometAscii,
-    classOf[ConcatWs] -> CometConcatWs,
-    classOf[Chr] -> CometChr,
+    classOf[ConcatWs] -> ScalarFuncSerde("concat_ws"),
+    classOf[Chr] -> ScalarFuncSerde("char"),
     classOf[InitCap] -> CometInitCap,
     classOf[BitwiseCount] -> CometBitwiseCount,
     classOf[BitwiseGet] -> CometBitwiseGet,
@@ -96,28 +96,28 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[BitwiseXor] -> CometBitwiseXor,
     classOf[BitLength] -> CometBitLength,
     classOf[FromUnixTime] -> CometFromUnixTime,
-    classOf[Length] -> CometLength,
-    classOf[Acos] -> UnaryScalarFuncSerde("acos"),
-    classOf[Cos] -> UnaryScalarFuncSerde("cos"),
-    classOf[Asin] -> UnaryScalarFuncSerde("asin"),
-    classOf[Sin] -> UnaryScalarFuncSerde("sin"),
-    classOf[Atan] -> UnaryScalarFuncSerde("atan"),
-    classOf[Tan] -> UnaryScalarFuncSerde("tan"),
-    classOf[Exp] -> UnaryScalarFuncSerde("exp"),
-    classOf[Expm1] -> UnaryScalarFuncSerde("expm1"),
-    classOf[Sqrt] -> UnaryScalarFuncSerde("sqrt"),
-    classOf[Signum] -> UnaryScalarFuncSerde("signum"),
-    classOf[Md5] -> UnaryScalarFuncSerde("md5"),
+    classOf[Length] -> ScalarFuncSerde("length"),
+    classOf[Acos] -> ScalarFuncSerde("acos"),
+    classOf[Cos] -> ScalarFuncSerde("cos"),
+    classOf[Asin] -> ScalarFuncSerde("asin"),
+    classOf[Sin] -> ScalarFuncSerde("sin"),
+    classOf[Atan] -> ScalarFuncSerde("atan"),
+    classOf[Tan] -> ScalarFuncSerde("tan"),
+    classOf[Exp] -> ScalarFuncSerde("exp"),
+    classOf[Expm1] -> ScalarFuncSerde("expm1"),
+    classOf[Sqrt] -> ScalarFuncSerde("sqrt"),
+    classOf[Signum] -> ScalarFuncSerde("signum"),
+    classOf[Md5] -> ScalarFuncSerde("md5"),
     classOf[ShiftLeft] -> CometShiftLeft,
     classOf[ShiftRight] -> CometShiftRight,
     classOf[StringInstr] -> CometStringInstr,
     classOf[StringRepeat] -> CometStringRepeat,
-    classOf[StringReplace] -> CometStringReplace,
-    classOf[StringTranslate] -> CometStringTranslate,
-    classOf[StringTrim] -> CometStringTrim,
-    classOf[StringTrimLeft] -> CometStringTrimLeft,
-    classOf[StringTrimRight] -> CometStringTrimRight,
-    classOf[StringTrimBoth] -> CometStringTrimBoth,
+    classOf[StringReplace] -> ScalarFuncSerde("replace"),
+    classOf[StringTranslate] -> ScalarFuncSerde("translate"),
+    classOf[StringTrim] -> ScalarFuncSerde("trim"),
+    classOf[StringTrimLeft] -> ScalarFuncSerde("ltrim"),
+    classOf[StringTrimRight] -> ScalarFuncSerde("rtrim"),
+    classOf[StringTrimBoth] -> ScalarFuncSerde("btrim"),
     classOf[Upper] -> CometUpper,
     classOf[Lower] -> CometLower,
     classOf[Murmur3Hash] -> CometMurmur3Hash,
@@ -141,15 +141,15 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Randn] -> CometRandn,
     classOf[SparkPartitionID] -> CometSparkPartitionId,
     classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
-    classOf[StringSpace] -> CometStringSpace,
-    classOf[StartsWith] -> CometStartsWith,
-    classOf[EndsWith] -> CometEndsWith,
-    classOf[Contains] -> CometContains,
+    classOf[StringSpace] -> ScalarFuncSerde("string_space"),
+    classOf[StartsWith] -> ScalarFuncSerde("starts_with"),
+    classOf[EndsWith] -> ScalarFuncSerde("ends_with"),
+    classOf[Contains] -> ScalarFuncSerde("contains"),
     classOf[Substring] -> CometSubstring,
     classOf[Like] -> CometLike,
     classOf[RLike] -> CometRLike,
-    classOf[OctetLength] -> CometOctetLength,
-    classOf[Reverse] -> CometReverse,
+    classOf[OctetLength] -> ScalarFuncSerde("octet_length"),
+    classOf[Reverse] -> ScalarFuncSerde("reverse"),
     classOf[StringRPad] -> CometStringRPad)
 
   /**
@@ -2575,19 +2575,6 @@ trait CometAggregateExpressionSerde {
 
 /** Marker trait for an expression that is not guaranteed to be 100% compatible with Spark */
 trait IncompatExpr {}
-
-/** Serde for single-argument scalar function. */
-case class UnaryScalarFuncSerde(name: String) extends CometExpressionSerde {
-  override def convert(
-      expr: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    val child = expr.children.head
-    val childExpr = exprToProtoInternal(child, inputs, binding)
-    val optExpr = scalarFunctionExprToProto(name, childExpr)
-    optExprWithInfo(optExpr, expr, child)
-  }
-}
 
 /** Serde for scalar function. */
 case class ScalarFuncSerde(name: String) extends CometExpressionSerde {

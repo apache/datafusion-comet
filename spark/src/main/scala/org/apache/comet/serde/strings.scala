@@ -35,7 +35,7 @@ class CometStringExprCastChildren(function: String) extends CometExpressionSerde
     // cast all arguments to string as needed
     val castExpr = expr.children.map {
       case expr if expr.dataType == DataTypes.StringType => expr
-      case expr => Cast(expr, StringType)
+      case expr => ???
     }
     val childExpr = castExpr.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProto(function, childExpr: _*)
@@ -65,18 +65,6 @@ object CometStringRepeat extends CometExpressionSerde {
   }
 }
 
-object CometStringReplace extends CometStringExprCastChildren("replace")
-
-object CometStringTranslate extends CometStringExprCastChildren("translate")
-
-object CometStringTrim extends CometStringExprCastChildren("trim")
-
-object CometStringTrimLeft extends CometStringExprCastChildren("ltrim")
-
-object CometStringTrimRight extends CometStringExprCastChildren("rtrim")
-
-object CometStringTrimBoth extends CometStringExprCastChildren("btrim")
-
 class CometCaseConversionBase(function: String) extends CometStringExprCastChildren(function) {
 
   override def convert(
@@ -99,8 +87,6 @@ object CometUpper extends CometCaseConversionBase("upper")
 
 object CometLower extends CometCaseConversionBase("lower")
 
-object CometLength extends CometStringExprCastChildren("length")
-
 object CometInitCap extends CometStringExprCastChildren("initcap") {
 
   override def convert(
@@ -118,18 +104,6 @@ object CometInitCap extends CometStringExprCastChildren("initcap") {
     super.convert(expr, inputs, binding)
   }
 }
-
-object CometChr extends UnaryScalarFuncSerde("char")
-
-object CometConcatWs extends CometStringExprCastChildren("concat_ws")
-
-object CometStringSpace extends UnaryScalarFuncSerde("string_space")
-
-object CometStartsWith extends ScalarFuncSerde("starts_with")
-
-object CometEndsWith extends ScalarFuncSerde("end_with")
-
-object CometContains extends ScalarFuncSerde("contains")
 
 object CometSubstring extends CometExpressionSerde {
 
@@ -208,10 +182,6 @@ object CometRLike extends CometExpressionSerde {
     }
   }
 }
-
-object CometOctetLength extends CometStringExprCastChildren("octet_length")
-
-object CometReverse extends CometStringExprCastChildren("reverse")
 
 object CometStringRPad extends CometExpressionSerde {
 
