@@ -33,21 +33,44 @@ where
 {
     let len = left.len();
     let mut builder = PrimitiveBuilder::<T>::with_capacity(len);
-
-    for i in 0..len {
-        if left.is_null(i) || right.is_null(i) {
-            builder.append_null();
-        } else {
-            let l = left.value(i);
-            let r = right.value(i);
-
-            match op {
-                "checked_add" => builder.append_option(l.add_checked(r).ok()),
-                "checked_sub" => builder.append_option(l.sub_checked(r).ok()),
-                "checked_mul" => builder.append_option(l.mul_checked(r).ok()),
-                _ => todo!("Unsupported operation: {}", op),
+    match op {
+        "checked_add" => {
+            for i in 0..len {
+                if left.is_null(i) || right.is_null(i) {
+                    builder.append_null();
+                } else {
+                    builder.append_option(left.value(i).add_checked(right.value(i)).ok());
+                }
             }
         }
+        "checked_sub" => {
+            for i in 0..len {
+                if left.is_null(i) || right.is_null(i) {
+                    builder.append_null();
+                } else {
+                    builder.append_option(left.value(i).sub_checked(right.value(i)).ok());
+                }
+            }
+        }
+        "checked_mul" => {
+            for i in 0..len {
+                if left.is_null(i) || right.is_null(i) {
+                    builder.append_null();
+                } else {
+                    builder.append_option(left.value(i).mul_checked(right.value(i)).ok());
+                }
+            }
+        }
+        "checked_div" => {
+            for i in 0..len {
+                if left.is_null(i) || right.is_null(i) {
+                    builder.append_null();
+                } else {
+                    builder.append_option(left.value(i).div_checked(right.value(i)).ok());
+                }
+            }
+        }
+        _ => todo!("Unsupported operation: {}", op),
     }
 
     Ok(Arc::new(builder.finish()) as ArrayRef)
@@ -79,13 +102,6 @@ pub fn checked_div(
     data_type: &DataType,
 ) -> Result<ColumnarValue, DataFusionError> {
     checked_arithmetic_internal(args, data_type, "checked_div")
-}
-
-pub fn checked_mod(
-    args: &[ColumnarValue],
-    data_type: &DataType,
-) -> Result<ColumnarValue, DataFusionError> {
-    checked_arithmetic_internal(args, data_type, "checked_mod")
 }
 
 fn checked_arithmetic_internal(
