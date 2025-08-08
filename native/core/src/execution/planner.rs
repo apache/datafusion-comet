@@ -39,6 +39,7 @@ use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     common::DataFusionError,
+    config::ConfigOptions,
     execution::FunctionRegistry,
     functions_aggregate::first_last::{FirstValue, LastValue},
     logical_expr::Operator as DataFusionOperator,
@@ -622,8 +623,13 @@ impl PhysicalPlanner {
                 let args = vec![child];
                 let comet_hour = Arc::new(ScalarUDF::new_from_impl(SparkHour::new(timezone)));
                 let field_ref = Arc::new(Field::new("hour", DataType::Int32, true));
-                let expr: ScalarFunctionExpr =
-                    ScalarFunctionExpr::new("hour", comet_hour, args, field_ref);
+                let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
+                    "hour",
+                    comet_hour,
+                    args,
+                    field_ref,
+                    Arc::new(ConfigOptions::default()),
+                );
 
                 Ok(Arc::new(expr))
             }
@@ -634,8 +640,13 @@ impl PhysicalPlanner {
                 let args = vec![child];
                 let comet_minute = Arc::new(ScalarUDF::new_from_impl(SparkMinute::new(timezone)));
                 let field_ref = Arc::new(Field::new("minute", DataType::Int32, true));
-                let expr: ScalarFunctionExpr =
-                    ScalarFunctionExpr::new("minute", comet_minute, args, field_ref);
+                let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
+                    "minute",
+                    comet_minute,
+                    args,
+                    field_ref,
+                    Arc::new(ConfigOptions::default()),
+                );
 
                 Ok(Arc::new(expr))
             }
@@ -646,8 +657,13 @@ impl PhysicalPlanner {
                 let args = vec![child];
                 let comet_second = Arc::new(ScalarUDF::new_from_impl(SparkSecond::new(timezone)));
                 let field_ref = Arc::new(Field::new("second", DataType::Int32, true));
-                let expr: ScalarFunctionExpr =
-                    ScalarFunctionExpr::new("second", comet_second, args, field_ref);
+                let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
+                    "second",
+                    comet_second,
+                    args,
+                    field_ref,
+                    Arc::new(ConfigOptions::default()),
+                );
 
                 Ok(Arc::new(expr))
             }
@@ -869,8 +885,13 @@ impl PhysicalPlanner {
                     ScalarUDF::new_from_impl(BloomFilterMightContain::try_new(bloom_filter_expr)?);
 
                 let field_ref = Arc::new(Field::new("might_contain", DataType::Boolean, true));
-                let expr: ScalarFunctionExpr =
-                    ScalarFunctionExpr::new("might_contain", Arc::new(udf), args, field_ref);
+                let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
+                    "might_contain",
+                    Arc::new(udf),
+                    args,
+                    field_ref,
+                    Arc::new(ConfigOptions::default()),
+                );
                 Ok(Arc::new(expr))
             }
             ExprStruct::CreateNamedStruct(expr) => {
@@ -1089,6 +1110,7 @@ impl PhysicalPlanner {
                     fun_expr,
                     vec![left, right],
                     Arc::new(Field::new(func_name, data_type, true)),
+                    Arc::new(ConfigOptions::default()),
                 )))
             }
             _ => {
@@ -2375,6 +2397,7 @@ impl PhysicalPlanner {
             window_frame.into(),
             input_schema.as_ref(),
             false, // TODO: Ignore nulls
+            false, // TODO: Spark does not support DISTINCT ... OVER
         )
         .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
     }
@@ -2554,6 +2577,7 @@ impl PhysicalPlanner {
             fun_expr,
             args.to_vec(),
             Arc::new(Field::new(fun_name, data_type, true)),
+            Arc::new(ConfigOptions::default()),
         ));
 
         Ok(scalar_expr)
