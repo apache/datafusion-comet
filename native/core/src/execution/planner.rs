@@ -86,11 +86,11 @@ use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
-    BinaryArray, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array, Float32Array,
+    BinaryBuilder, BooleanArray, Date32Array, Decimal128Array, Float32Array,
     Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, NullArray, StringBuilder,
     TimestampMicrosecondArray,
 };
-use arrow::buffer::{BooleanBuffer, Buffer, MutableBuffer, OffsetBuffer};
+use arrow::buffer::BooleanBuffer;
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
