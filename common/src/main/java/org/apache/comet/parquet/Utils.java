@@ -502,8 +502,14 @@ public class Utils {
       }
     }
 
+    int id = -1;
+    Type type = descriptor.getPrimitiveType();
+    if (type != null && type.getId() != null) {
+      id = type.getId().intValue();
+    }
+
     return new ParquetColumnSpec(
-        1, // ToDo: pass in the correct id
+        id,
         path,
         physicalType,
         typeLength,
