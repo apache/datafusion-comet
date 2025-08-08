@@ -186,7 +186,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     this.taskContext = TaskContext$.MODULE$.get();
   }
 
-  public NativeBatchReader(AbstractColumnReader[] columnReaders) {
+  private NativeBatchReader(AbstractColumnReader[] columnReaders) {
     // Todo: set useDecimal128 and useLazyMaterialization
     int numColumns = columnReaders.length;
     this.columnReaders = new AbstractColumnReader[numColumns];
