@@ -379,6 +379,21 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("try_integral_divide overflow cases") {
+    val data = Seq((15121991, 0))
+    withParquetTable(data, "tbl") {
+      checkSparkAnswerAndOperator("SELECT try_divide(_1, _2) FROM tbl")
+      checkSparkAnswerAndOperator("""
+                                    |SELECT try_divide(-128, -1),
+                                    |try_divide(-32768, -1),
+                                    |try_divide(-2147483648, -1),
+                                    |try_divide(-9223372036854775808, -1),
+                                    |try_divide(CAST(99999 AS DECIMAL(5,0)), CAST(0.0001 AS DECIMAL(5,4)))
+                                    |from tbl
+                                    |""".stripMargin)
+    }
+  }
+
   test("dictionary arithmetic") {
     // TODO: test ANSI mode
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "false", "parquet.enable.dictionary" -> "true") {
