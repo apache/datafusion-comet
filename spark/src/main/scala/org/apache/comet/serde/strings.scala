@@ -97,26 +97,21 @@ object CometLower extends CometCaseConversionBase("lower")
 
 object CometLength extends CometStringExprCastChildren("length")
 
-object CometInitCap extends CometExpressionSerde {
+object CometInitCap extends CometStringExprCastChildren("initcap") {
 
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    if (CometConf.COMET_EXEC_INITCAP_ENABLED.get()) {
-      val castExpr = Cast(expr.children.head, StringType)
-      val childExpr = exprToProtoInternal(castExpr, inputs, binding)
-      val optExpr = scalarFunctionExprToProto("initcap", childExpr)
-      optExprWithInfo(optExpr, expr, castExpr)
-    } else {
+    if (!CometConf.COMET_EXEC_INITCAP_ENABLED.get()) {
       withInfo(
         expr,
         "Comet initCap is not compatible with Spark yet. " +
           "See https://github.com/apache/datafusion-comet/issues/1052 ." +
           s"Set ${CometConf.COMET_EXEC_INITCAP_ENABLED.key}=true to enable it anyway.")
-      None
+      return None
     }
-
+    super.convert(expr, inputs, binding)
   }
 }
 
