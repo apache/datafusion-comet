@@ -407,6 +407,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+     test("fix_rpad") {
+       withTable("t1") {
+           val value = "IfIWasARoadIWouldBeBent"
+           sql("create table t1(c1 varchar(100), c2 int) using parquet")
+           sql(s"insert into t1 values('$value', 10)")
+           val res = sql("select rpad(c1,c2) from t1 order by c1")
+            res.show(10, false)
+           checkSparkAnswerAndOperator(res)
+    }
+       }
 
   test("dictionary arithmetic") {
     // TODO: test ANSI mode
