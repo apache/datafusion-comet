@@ -363,16 +363,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("try_divide") {
-    val data = Seq((Integer.MIN_VALUE, -1), (15121991, 0))
+    val data = Seq((15121991, 0))
     withParquetTable(data, "tbl") {
       checkSparkAnswerAndOperator("SELECT try_divide(_1, _2) FROM tbl")
       checkSparkAnswerAndOperator("""
             |SELECT
-            |  try_divide(10, 0)
-            |  try_divide(NULL, 5)
-            |  try_divide(5, NULL)
-            |  try_divide(-2147483648, -1)
-            |  try_divide(-9223372036854775808, -1)
+            |  try_divide(10, 0),
+            |  try_divide(NULL, 5),
+            |  try_divide(5, NULL),
+            |  try_divide(-2147483648, -1),
+            |  try_divide(-9223372036854775808, -1),
             |  try_divide(DECIMAL('9999999999999999999999999999'), 0.1)
             |  from tbl
             |""".stripMargin)

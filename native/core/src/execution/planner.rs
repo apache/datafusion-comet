@@ -240,7 +240,7 @@ impl PhysicalPlanner {
                     expr.return_type.as_ref(),
                     DataFusionOperator::Plus,
                     input_schema,
-                    eval_mode != EvalMode::Try,
+                    eval_mode,
                 )
             }
             ExprStruct::Subtract(expr) => {
@@ -253,7 +253,7 @@ impl PhysicalPlanner {
                     expr.return_type.as_ref(),
                     DataFusionOperator::Minus,
                     input_schema,
-                    eval_mode != EvalMode::Try,
+                    eval_mode,
                 )
             }
             ExprStruct::Multiply(expr) => {
@@ -266,7 +266,7 @@ impl PhysicalPlanner {
                     expr.return_type.as_ref(),
                     DataFusionOperator::Multiply,
                     input_schema,
-                    eval_mode != EvalMode::Try,
+                    eval_mode,
                 )
             }
             ExprStruct::Divide(expr) => {
@@ -279,14 +279,13 @@ impl PhysicalPlanner {
                     expr.return_type.as_ref(),
                     DataFusionOperator::Divide,
                     input_schema,
-                    eval_mode != EvalMode::Try,
+                    eval_mode,
                 )
             }
             ExprStruct::IntegralDivide(expr) => {
                 // TODO respect eval mode
-                // https://github.com/apache/datafusion-comet/issues/2021
                 // https://github.com/apache/datafusion-comet/issues/533
-                let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr_with_options(
                     expr.left.as_ref().unwrap(),
                     expr.right.as_ref().unwrap(),
@@ -296,7 +295,7 @@ impl PhysicalPlanner {
                     BinaryExprOptions {
                         is_integral_div: true,
                     },
-                    false,
+                    eval_mode,
                 )
             }
             ExprStruct::Remainder(expr) => {
@@ -879,7 +878,7 @@ impl PhysicalPlanner {
         return_type: Option<&spark_expression::DataType>,
         op: DataFusionOperator,
         input_schema: SchemaRef,
-        fail_on_overflow: bool
+        eval_mode : EvalMode
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         self.create_binary_expr_with_options(
             left,
@@ -888,7 +887,7 @@ impl PhysicalPlanner {
             op,
             input_schema,
             BinaryExprOptions::default(),
-            fail_on_overflow
+            eval_mode
         )
     }
 
@@ -901,7 +900,7 @@ impl PhysicalPlanner {
         op: DataFusionOperator,
         input_schema: SchemaRef,
         options: BinaryExprOptions,
-        fail_on_overflow: bool
+        eval_mode : EvalMode
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         let left = self.create_expr(left, Arc::clone(&input_schema))?;
         let right = self.create_expr(right, Arc::clone(&input_schema))?;
@@ -968,14 +967,14 @@ impl PhysicalPlanner {
             }
             _ => {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
-                if !fail_on_overflow && data_type.is_integer() {
+                if eval_mode == EvalMode::Try && data_type.is_integer() {
                     let op_str = match op {
                         DataFusionOperator::Plus => "checked_add",
                         DataFusionOperator::Minus => "checked_sub",
                         DataFusionOperator::Multiply => "checked_mul",
                         DataFusionOperator::Divide => "checked_div",
                         _ => {
-                            todo!("Operator with fail_on_overflow is yet to be implemented!");
+                            todo!("Operator yet to be implemented!");
                         }
                     };
                     let fun_expr = create_comet_physical_fun(
