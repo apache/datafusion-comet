@@ -798,13 +798,13 @@ object QueryPlanSerde extends Logging with CometExprShim {
                   array.foreach(v => {
                     val casted = v.asInstanceOf[java.lang.Boolean]
                     listLiteralBuilder.addBooleanValues(casted)
-                    listLiteralBuilder.addNullMask(casted == null)
+                    listLiteralBuilder.addNullMask(casted != null)
                   })
                 case ByteType =>
                   array.foreach(v => {
                     val casted = v.asInstanceOf[java.lang.Integer]
                     listLiteralBuilder.addByteValues(casted)
-                    listLiteralBuilder.addNullMask(casted == null)
+                    listLiteralBuilder.addNullMask(casted != null)
                   })
                 case ShortType =>
                   array.foreach(v => {
@@ -812,38 +812,38 @@ object QueryPlanSerde extends Logging with CometExprShim {
                     listLiteralBuilder.addShortValues(
                       if (casted != null) casted.intValue()
                       else null.asInstanceOf[java.lang.Integer])
-                    listLiteralBuilder.addNullMask(casted == null)
+                    listLiteralBuilder.addNullMask(casted != null)
                   })
                 case IntegerType | DateType =>
                   array.foreach(v => {
                     val casted = v.asInstanceOf[java.lang.Integer]
                     listLiteralBuilder.addIntValues(casted)
-                    listLiteralBuilder.addNullMask(casted == null)
+                    listLiteralBuilder.addNullMask(casted != null)
                   })
                 case LongType | TimestampType | TimestampNTZType =>
                   array.foreach(v => {
                     val casted = v.asInstanceOf[java.lang.Long]
                     listLiteralBuilder.addLongValues(casted)
-                    listLiteralBuilder.addNullMask(casted == null)
+                    listLiteralBuilder.addNullMask(casted != null)
                   })
                 case FloatType =>
                   array.foreach(v => {
                     val casted = v.asInstanceOf[java.lang.Float]
                     listLiteralBuilder.addFloatValues(casted)
-                    listLiteralBuilder.addNullMask(casted == null)
+                    listLiteralBuilder.addNullMask(casted != null)
                   })
                 case DoubleType =>
                   array.foreach(v => {
                     val casted = v.asInstanceOf[java.lang.Double]
                     listLiteralBuilder.addDoubleValues(casted)
-                    listLiteralBuilder.addNullMask(casted == null)
+                    listLiteralBuilder.addNullMask(casted != null)
                   })
                 case StringType =>
                   array.foreach(v => {
                     val casted = v.asInstanceOf[org.apache.spark.unsafe.types.UTF8String]
                     listLiteralBuilder.addStringValues(
                       if (casted != null) casted.toString else "")
-                    listLiteralBuilder.addNullMask(casted == null)
+                    listLiteralBuilder.addNullMask(casted != null)
                   })
                 case _: DecimalType =>
                   array
@@ -854,7 +854,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
                         com.google.protobuf.ByteString
                           .copyFrom(casted.toBigDecimal.underlying.unscaledValue.toByteArray)
                       } else ByteString.EMPTY)
-                      listLiteralBuilder.addNullMask(casted == null)
+                      listLiteralBuilder.addNullMask(casted != null)
                     })
                 case _: BinaryType =>
                   array
@@ -864,7 +864,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
                       listLiteralBuilder.addBytesValues(if (casted != null) {
                         com.google.protobuf.ByteString.copyFrom(casted)
                       } else ByteString.EMPTY)
-                      listLiteralBuilder.addNullMask(casted == null)
+                      listLiteralBuilder.addNullMask(casted != null)
                     })
               }
               exprBuilder.setListVal(listLiteralBuilder.build())
