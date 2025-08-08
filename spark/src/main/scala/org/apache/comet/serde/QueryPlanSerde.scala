@@ -640,7 +640,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       }
     }
 
-    expr match {
+    versionSpecificExprToProtoInternal(expr, inputs, binding).orElse(expr match {
       case a @ Alias(_, _) =>
         val r = exprToProtoInternal(a.child, inputs, binding)
         if (r.isEmpty) {
@@ -1275,25 +1275,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             optExprWithInfo(optExpr, expr, r.child)
         }
 
-      case s: StringDecode =>
-        // Right child is the encoding expression.
-        s.charset match {
-          case Literal(str, DataTypes.StringType)
-              if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
-            // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
-            // for invalid strings.
-            // Left child is the binary expression.
-            castToProto(
-              expr,
-              None,
-              DataTypes.StringType,
-              exprToProtoInternal(s.bin, inputs, binding).get,
-              CometEvalMode.TRY)
-          case _ =>
-            withInfo(expr, "Comet only supports decoding with 'utf-8'.")
-            None
-        }
-
       case RegExpReplace(subject, pattern, replacement, startPosition) =>
         if (!RegExp.isSupportedPattern(pattern.toString) &&
           !CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
@@ -1617,6 +1598,30 @@ object QueryPlanSerde extends Logging with CometExprShim {
             withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
             None
         }
+    })
+  }
+
+  def stringDecode(
+      expr: Expression,
+      charset: Expression,
+      bin: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    charset match {
+      case Literal(str, DataTypes.StringType)
+          if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
+        // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
+        // for invalid strings.
+        // Left child is the binary expression.
+        castToProto(
+          expr,
+          None,
+          DataTypes.StringType,
+          exprToProtoInternal(bin, inputs, binding).get,
+          CometEvalMode.TRY)
+      case _ =>
+        withInfo(expr, "Comet only supports decoding with 'utf-8'.")
+        None
     }
   }
 
