@@ -1552,8 +1552,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
       case _ @ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
         convert(CometArrayCompact)
-      case _: ArrayExcept =>
-        convert(CometArrayExcept)
       case expr =>
         QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
           case Some(handler) => convert(handler)
