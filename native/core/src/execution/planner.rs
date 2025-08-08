@@ -86,8 +86,8 @@ use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
-    BinaryArray, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
-    Int16Array, Int32Array, Int64Array, Int8Array, NullArray, StringBuilder,
+    BinaryArray, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array, Float32Array,
+    Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, NullArray, StringBuilder,
     TimestampMicrosecondArray,
 };
 use arrow::buffer::{BooleanBuffer, Buffer, MutableBuffer, OffsetBuffer};
@@ -540,21 +540,32 @@ impl PhysicalPlanner {
                                             .build_list_scalar()
                                     }
                                     DataType::Binary => {
+                                        // Using a builder here as it is quite complicated to create StringArray from a vector with nulls
+                                        // to calculate correct offsets
                                         let vals = values.clone();
-                                        let offsets = MutableBuffer::new((vals.bytes_values.len() + 1) * size_of::<i32>());
-                                        let offsets = Buffer::from(offsets);
-                                        let value_offsets = unsafe { OffsetBuffer::new_unchecked(offsets.into()) };
-                                        SingleRowListArrayBuilder::new(Arc::new(BinaryArray::new(value_offsets, vals.int_values.into(), Some(vals.null_mask.into()))))
+                                        let len = vals.bytes_values.len();
+                                        let mut arr = BinaryBuilder::with_capacity(len, len);
+
+                                        for (i, v) in vals.bytes_values.into_iter().enumerate() {
+                                            if vals.null_mask[i] {
+                                                arr.append_value(v);
+                                            } else {
+                                                arr.append_null();
+                                            }
+                                        }
+
+                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
                                             .build_list_scalar()
                                     }
                                     DataType::Utf8 => {
-                                        // Using a builder here as it is quite complicated to create StringArray from vector of string with nulls
+                                        // Using a builder here as it is quite complicated to create StringArray from a vector with nulls
+                                        // to calculate correct offsets
                                         let vals = values.clone();
                                         let len = vals.string_values.len();
                                         let mut arr = StringBuilder::with_capacity(len, len);
 
                                         for (i, v) in vals.string_values.into_iter().enumerate() {
-                                            if !vals.null_mask[i] {
+                                            if vals.null_mask[i] {
                                                 arr.append_value(v);
                                             } else {
                                                 arr.append_null();
