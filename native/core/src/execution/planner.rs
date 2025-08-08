@@ -86,8 +86,8 @@ use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
-    BinaryBuilder, BooleanArray, Date32Array, Decimal128Array, Float32Array,
-    Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, NullArray, StringBuilder,
+    BinaryBuilder, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
+    Int16Array, Int32Array, Int64Array, Int8Array, NullArray, StringBuilder,
     TimestampMicrosecondArray,
 };
 use arrow::buffer::BooleanBuffer;
