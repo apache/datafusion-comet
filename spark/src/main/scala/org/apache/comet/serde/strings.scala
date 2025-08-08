@@ -21,18 +21,21 @@ package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Like, Literal, RLike, StringRPad, Substring}
 import org.apache.spark.sql.types.{DataTypes, LongType, StringType}
-
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProto, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
 class CometStringExprCastChildren(function: String) extends CometExpressionSerde {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val castExpr = expr.children.map(Cast(_, StringType))
+    // cast all arguments to string as needed
+    val castExpr = expr.children.map {
+      case expr if expr.dataType == DataTypes.StringType => expr
+      case expr => Cast(expr, StringType)
+    }
     val childExpr = castExpr.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProto(function, childExpr: _*)
     optExprWithInfo(optExpr, expr, castExpr: _*)
