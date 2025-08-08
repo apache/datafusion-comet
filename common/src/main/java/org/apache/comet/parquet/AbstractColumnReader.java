@@ -63,7 +63,7 @@ public abstract class AbstractColumnReader implements AutoCloseable {
   /** A pointer to the native implementation of ColumnReader. */
   protected long nativeHandle;
 
-  public AbstractColumnReader(
+  AbstractColumnReader(
       DataType type,
       Type fieldType,
       ColumnDescriptor descriptor,
@@ -76,7 +76,7 @@ public abstract class AbstractColumnReader implements AutoCloseable {
     this.useLegacyDateTimestamp = useLegacyDateTimestamp;
   }
 
-  public AbstractColumnReader(
+  AbstractColumnReader(
       DataType type,
       ColumnDescriptor descriptor,
       boolean useDecimal128,
@@ -85,7 +85,7 @@ public abstract class AbstractColumnReader implements AutoCloseable {
     TypeUtil.checkParquetType(descriptor, type);
   }
 
-  public ColumnDescriptor getDescriptor() {
+  ColumnDescriptor getDescriptor() {
     return descriptor;
   }
 
