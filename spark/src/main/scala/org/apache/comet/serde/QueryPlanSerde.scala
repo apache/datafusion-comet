@@ -150,7 +150,15 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[RLike] -> CometRLike,
     classOf[OctetLength] -> CometScalarFunction("octet_length"),
     classOf[Reverse] -> CometScalarFunction("reverse"),
-    classOf[StringRPad] -> CometStringRPad)
+    classOf[StringRPad] -> CometStringRPad,
+    classOf[Year] -> CometYear,
+    classOf[Hour] -> CometHour,
+    classOf[Minute] -> CometMinute,
+    classOf[Second] -> CometSecond,
+    classOf[DateAdd] -> CometDateAdd,
+    classOf[DateSub] -> CometDateSub,
+    classOf[TruncDate] -> CometTruncDate,
+    classOf[TruncTimestamp] -> CometTruncTimestamp)
 
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
@@ -640,7 +648,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       }
     }
 
-    expr match {
+    versionSpecificExprToProtoInternal(expr, inputs, binding).orElse(expr match {
       case a @ Alias(_, _) =>
         val r = exprToProtoInternal(a.child, inputs, binding)
         if (r.isEmpty) {
@@ -851,128 +859,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             None
           }
         }
-
-      case Hour(child, timeZoneId) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-
-        if (childExpr.isDefined) {
-          val builder = ExprOuterClass.Hour.newBuilder()
-          builder.setChild(childExpr.get)
-
-          val timeZone = timeZoneId.getOrElse("UTC")
-          builder.setTimezone(timeZone)
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setHour(builder)
-              .build())
-        } else {
-          withInfo(expr, child)
-          None
-        }
-
-      case Minute(child, timeZoneId) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-
-        if (childExpr.isDefined) {
-          val builder = ExprOuterClass.Minute.newBuilder()
-          builder.setChild(childExpr.get)
-
-          val timeZone = timeZoneId.getOrElse("UTC")
-          builder.setTimezone(timeZone)
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setMinute(builder)
-              .build())
-        } else {
-          withInfo(expr, child)
-          None
-        }
-
-      case DateAdd(left, right) =>
-        val leftExpr = exprToProtoInternal(left, inputs, binding)
-        val rightExpr = exprToProtoInternal(right, inputs, binding)
-        val optExpr =
-          scalarFunctionExprToProtoWithReturnType("date_add", DateType, leftExpr, rightExpr)
-        optExprWithInfo(optExpr, expr, left, right)
-
-      case DateSub(left, right) =>
-        val leftExpr = exprToProtoInternal(left, inputs, binding)
-        val rightExpr = exprToProtoInternal(right, inputs, binding)
-        val optExpr =
-          scalarFunctionExprToProtoWithReturnType("date_sub", DateType, leftExpr, rightExpr)
-        optExprWithInfo(optExpr, expr, left, right)
-
-      case TruncDate(child, format) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val formatExpr = exprToProtoInternal(format, inputs, binding)
-        val optExpr =
-          scalarFunctionExprToProtoWithReturnType("date_trunc", DateType, childExpr, formatExpr)
-        optExprWithInfo(optExpr, expr, child, format)
-
-      case TruncTimestamp(format, child, timeZoneId) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val formatExpr = exprToProtoInternal(format, inputs, binding)
-
-        if (childExpr.isDefined && formatExpr.isDefined) {
-          val builder = ExprOuterClass.TruncTimestamp.newBuilder()
-          builder.setChild(childExpr.get)
-          builder.setFormat(formatExpr.get)
-
-          val timeZone = timeZoneId.getOrElse("UTC")
-          builder.setTimezone(timeZone)
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setTruncTimestamp(builder)
-              .build())
-        } else {
-          withInfo(expr, child, format)
-          None
-        }
-
-      case Second(child, timeZoneId) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-
-        if (childExpr.isDefined) {
-          val builder = ExprOuterClass.Second.newBuilder()
-          builder.setChild(childExpr.get)
-
-          val timeZone = timeZoneId.getOrElse("UTC")
-          builder.setTimezone(timeZone)
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setSecond(builder)
-              .build())
-        } else {
-          withInfo(expr, child)
-          None
-        }
-
-      case Year(child) =>
-        val periodType = exprToProtoInternal(Literal("year"), inputs, binding)
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("datepart", Seq(periodType, childExpr): _*)
-          .map(e => {
-            Expr
-              .newBuilder()
-              .setCast(
-                ExprOuterClass.Cast
-                  .newBuilder()
-                  .setChild(e)
-                  .setDatatype(serializeDataType(IntegerType).get)
-                  .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
-                  .setAllowIncompat(false)
-                  .build())
-              .build()
-          })
-        optExprWithInfo(optExpr, expr, child)
 
       case SortOrder(child, direction, nullOrdering, _) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
@@ -1217,25 +1103,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             val optExpr =
               scalarFunctionExprToProtoWithReturnType("round", r.dataType, childExpr, scaleExpr)
             optExprWithInfo(optExpr, expr, r.child)
-        }
-
-      case s: StringDecode =>
-        // Right child is the encoding expression.
-        s.charset match {
-          case Literal(str, DataTypes.StringType)
-              if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
-            // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
-            // for invalid strings.
-            // Left child is the binary expression.
-            castToProto(
-              expr,
-              None,
-              DataTypes.StringType,
-              exprToProtoInternal(s.bin, inputs, binding).get,
-              CometEvalMode.TRY)
-          case _ =>
-            withInfo(expr, "Comet only supports decoding with 'utf-8'.")
-            None
         }
 
       case RegExpReplace(subject, pattern, replacement, startPosition) =>
@@ -1559,6 +1426,30 @@ object QueryPlanSerde extends Logging with CometExprShim {
             withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
             None
         }
+    })
+  }
+
+  def stringDecode(
+      expr: Expression,
+      charset: Expression,
+      bin: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    charset match {
+      case Literal(str, DataTypes.StringType)
+          if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
+        // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
+        // for invalid strings.
+        // Left child is the binary expression.
+        castToProto(
+          expr,
+          None,
+          DataTypes.StringType,
+          exprToProtoInternal(bin, inputs, binding).get,
+          CometEvalMode.TRY)
+      case _ =>
+        withInfo(expr, "Comet only supports decoding with 'utf-8'.")
+        None
     }
   }
 
