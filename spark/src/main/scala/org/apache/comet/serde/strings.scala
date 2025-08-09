@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Like, Literal, RLike, StringRPad, Substring}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Like, Literal, RLike, StringLPad, StringRPad, Substring}
 import org.apache.spark.sql.types.{DataTypes, LongType, StringType}
 
 import org.apache.comet.CometConf
@@ -176,6 +176,26 @@ object CometStringRPad extends CometExpressionSerde {
           exprToProtoInternal(stringRPad.len, inputs, binding))
       case _ =>
         withInfo(expr, "StringRPad with non-space characters is not supported")
+        None
+    }
+  }
+}
+
+object CometStringLPad extends CometExpressionSerde {
+
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val stringLPad = expr.asInstanceOf[StringLPad]
+    stringLPad.pad match {
+      case Literal(str, DataTypes.StringType) if str.toString == " " =>
+        scalarFunctionExprToProto(
+          "lpad",
+          exprToProtoInternal(stringLPad.str, inputs, binding),
+          exprToProtoInternal(stringLPad.len, inputs, binding))
+      case _ =>
+        withInfo(expr, "StringLPad with non-space characters is not supported")
         None
     }
   }
