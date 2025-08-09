@@ -95,10 +95,6 @@ object CometAdd extends CometExpressionSerde with MathBase {
       withInfo(add, s"Unsupported datatype ${add.left.dataType}")
       return None
     }
-    if (add.evalMode == EvalMode.TRY) {
-      withInfo(add, s"Eval mode ${add.evalMode} is not supported")
-      return None
-    }
     createMathExpression(
       expr,
       add.left,
@@ -119,10 +115,6 @@ object CometSubtract extends CometExpressionSerde with MathBase {
     val sub = expr.asInstanceOf[Subtract]
     if (!supportedDataType(sub.left.dataType)) {
       withInfo(sub, s"Unsupported datatype ${sub.left.dataType}")
-      return None
-    }
-    if (sub.evalMode == EvalMode.TRY) {
-      withInfo(sub, s"Eval mode ${sub.evalMode} is not supported")
       return None
     }
     createMathExpression(
@@ -147,10 +139,7 @@ object CometMultiply extends CometExpressionSerde with MathBase {
       withInfo(mul, s"Unsupported datatype ${mul.left.dataType}")
       return None
     }
-    if (mul.evalMode == EvalMode.TRY) {
-      withInfo(mul, s"Eval mode ${mul.evalMode} is not supported")
-      return None
-    }
+
     createMathExpression(
       expr,
       mul.left,
@@ -179,10 +168,6 @@ object CometDivide extends CometExpressionSerde with MathBase {
       withInfo(div, s"Unsupported datatype ${div.left.dataType}")
       return None
     }
-    if (div.evalMode == EvalMode.TRY) {
-      withInfo(div, s"Eval mode ${div.evalMode} is not supported")
-      return None
-    }
     createMathExpression(
       expr,
       div.left,
@@ -204,10 +189,6 @@ object CometIntegralDivide extends CometExpressionSerde with MathBase {
 
     if (!supportedDataType(div.left.dataType)) {
       withInfo(div, s"Unsupported datatype ${div.left.dataType}")
-      return None
-    }
-    if (div.evalMode == EvalMode.TRY) {
-      withInfo(div, s"Eval mode ${div.evalMode} is not supported")
       return None
     }
 
