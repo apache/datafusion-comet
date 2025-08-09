@@ -24,6 +24,7 @@ import org.scalatest.Tag
 
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.functions.{array, col}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
 
@@ -253,18 +254,11 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
   }
 
   test("native reader - read a STRUCT subfield - field from second") {
-    withSQLConf(
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion") {
-      testSingleLineQuery(
-        """
+    testSingleLineQuery(
+      """
           |select 1 a, named_struct('a', 1, 'b', 'n') c0
           |""".stripMargin,
-        "select c0.b from tbl")
-    }
+      "select c0.b from tbl")
   }
 
   test("native reader - read a STRUCT subfield from ARRAY of STRUCTS - field from first") {
@@ -435,5 +429,132 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         | )
         |""".stripMargin,
       "select c0['key1'].b from tbl")
+  }
+
+  test("native reader - support ARRAY literal INT fields") {
+    testSingleLineQuery(
+      """
+        |select 1 a
+        |""".stripMargin,
+      "select array(1, 2, null, 3, null) from tbl")
+  }
+
+  test("native reader - support ARRAY literal BOOL fields") {
+    testSingleLineQuery(
+      """
+        |select 1 a
+        |""".stripMargin,
+      "select array(true, null, false, null) from tbl")
+  }
+
+  test("native reader - support ARRAY literal NULL fields") {
+    testSingleLineQuery(
+      """
+        |select 1 a
+        |""".stripMargin,
+      "select array(null) from tbl")
+  }
+
+  test("native reader - support empty ARRAY literal") {
+    testSingleLineQuery(
+      """
+        |select 1 a
+        |""".stripMargin,
+      "select array() from tbl")
+  }
+
+  test("native reader - support ARRAY literal BYTE fields") {
+    testSingleLineQuery(
+      """
+        |select 1 a
+        |""".stripMargin,
+      "select array(1, 2, null, 3, null) from tbl")
+  }
+
+  test("native reader - support ARRAY literal SHORT fields") {
+    testSingleLineQuery(
+      """
+        |select 1 a
+        |""".stripMargin,
+      "select array(cast(1 as short), cast(2 as short), null, cast(3 as short), null) from tbl")
+  }
+
+  test("native reader - support ARRAY literal DATE fields") {
+    testSingleLineQuery(
+      """
+        |select 1 a
+        |""".stripMargin,
+      "select array(CAST('2024-01-01' AS DATE), CAST('2024-02-01' AS DATE), null, CAST('2024-03-01' AS DATE), null) from tbl")
+  }
+
+  test("native reader - support ARRAY literal LONG fields") {
+    testSingleLineQuery(
+      """
+        |select 1 a
+        |""".stripMargin,
+      "select array(cast(1 as bigint), cast(2 as bigint), null, cast(3 as bigint), null) from tbl")
+  }
+
+  test("native reader - support ARRAY literal TIMESTAMP fields") {
+    testSingleLineQuery(
+      """
+        |select 1 a
+        |""".stripMargin,
+      "select array(CAST('2024-01-01 10:00:00' AS TIMESTAMP), CAST('2024-01-02 10:00:00' AS TIMESTAMP), null, CAST('2024-01-03 10:00:00' AS TIMESTAMP), null) from tbl")
+  }
+
+  test("native reader - support ARRAY literal TIMESTAMP TZ fields") {
+    testSingleLineQuery(
+      """
+        |select 1 a
+        |""".stripMargin,
+      "select array(CAST('2024-01-01 10:00:00' AS TIMESTAMP_NTZ), CAST('2024-01-02 10:00:00' AS TIMESTAMP_NTZ), null, CAST('2024-01-03 10:00:00' AS TIMESTAMP_NTZ), null) from tbl")
+  }
+
+  test("native reader - support ARRAY literal FLOAT fields") {
+    testSingleLineQuery(
+      """
+        |select 1 a
+        |""".stripMargin,
+      "select array(cast(1 as float), cast(2 as float), null, cast(3 as float), null) from tbl")
+  }
+
+  test("native reader - support ARRAY literal DOUBLE fields") {
+    testSingleLineQuery(
+      """
+        |select 1 a
+        |""".stripMargin,
+      "select array(cast(1 as double), cast(2 as double), null, cast(3 as double), null) from tbl")
+  }
+
+  test("native reader - support ARRAY literal STRING fields") {
+    testSingleLineQuery(
+      """
+        |select 1 a
+        |""".stripMargin,
+      "select array('a', 'bc', null, 'def', null) from tbl")
+  }
+
+  test("native reader - support ARRAY literal DECIMAL fields") {
+    testSingleLineQuery(
+      """
+        |select 1 a
+        |""".stripMargin,
+      "select array(cast(1 as decimal(10, 2)), cast(2.5 as decimal(10, 2)), null, cast(3.75 as decimal(10, 2)), null) from tbl")
+  }
+
+  test("native reader - support ARRAY literal BINARY fields") {
+    testSingleLineQuery(
+      """
+        |select 1 a
+        |""".stripMargin,
+      "select array(cast('a' as binary), cast('bc' as binary), null, cast('def' as binary), null) from tbl")
+  }
+
+  test("SPARK-18053: ARRAY equality is broken") {
+    withTable("array_tbl") {
+      spark.range(10).select(array(col("id")).as("arr")).write.saveAsTable("array_tbl")
+      assert(sql("SELECT * FROM array_tbl where arr = ARRAY(1L)").count == 1)
+    }
   }
 }
