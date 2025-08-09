@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::utils::{build_bool_state, is_valid_decimal_precision, unlikely};
+use crate::utils::{build_bool_state, is_valid_decimal_precision};
 use arrow::array::{
     cast::AsArray, types::Decimal128Type, Array, ArrayRef, BooleanArray, Decimal128Array,
 };
@@ -287,24 +287,16 @@ impl SumDecimalGroupsAccumulator {
         !self.is_empty.get_bit(index) && !self.is_not_null.get_bit(index)
     }
 
+    #[inline]
     fn update_single(&mut self, group_index: usize, value: i128) {
-        if unlikely(self.is_overflow(group_index)) {
-            // This means there's a overflow in decimal, so we will just skip the rest
-            // of the computation
-            return;
-        }
-
         self.is_empty.set_bit(group_index, false);
         let (new_sum, is_overflow) = self.sum[group_index].overflowing_add(value);
+        self.sum[group_index] = new_sum;
 
         if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
             // Overflow: set buffer accumulator to null
             self.is_not_null.set_bit(group_index, false);
-            return;
         }
-
-        self.sum[group_index] = new_sum;
-        self.is_not_null.set_bit(group_index, true)
     }
 }
 
