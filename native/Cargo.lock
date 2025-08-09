@@ -1386,8 +1386,7 @@ dependencies = [
 [[package]]
 name = "datafusion"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f47772c28553d837e12cdcc0fb04c2a0fe8eca8b704a30f721d076f32407435"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -1436,8 +1435,7 @@ dependencies = [
 [[package]]
 name = "datafusion-catalog"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b6b29c9c922959285fac53139e12c81014e2ca54704f20355edd7e9d11fd773"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1462,8 +1460,7 @@ dependencies = [
 [[package]]
 name = "datafusion-catalog-listing"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7313553e4c01d184dd49183afdfa22f23204a10a26dd12e6f799203d8fdb95c2"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1589,8 +1586,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d66104731b7476a8c86fbe7a6fd741e6329791166ac89a91fcd8336a560ddaf"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "ahash",
  "arrow",
@@ -1613,8 +1609,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common-runtime"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e7527ecdfeae6961a8564d3b036507a67bd467fd36a9f10cf8ad7a99db1f1bc"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "futures",
  "log",
@@ -1624,8 +1619,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40e5076be33d8eb9f4d99858e5f3477b36c07e61eee8eb93c4320428d9e1e344"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1654,8 +1648,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-csv"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "785518d0f2f136c19b9389a10762c01a5aeb5fcdebdb244297bb656b2862dc88"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1679,8 +1672,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-json"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71cb7c3bad0951bf5c52505d0e6d87e6c0098156d2a195924cbcdc82238d29ba"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1704,8 +1696,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-parquet"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea76ad2c5189c98a6b1d4bdf6c3b3caacc9701c417af6661597c946a201bc328"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1736,14 +1727,12 @@ dependencies = [
 [[package]]
 name = "datafusion-doc"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bcc45e380db5c6033c3f39e765a3d752679f14315060a7f4030a60066a36946"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 
 [[package]]
 name = "datafusion-execution"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8209805fdce3d5c6e1625f674d3e4ce93e995a56d3709a0bb8d4361062652596"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "arrow",
  "dashmap",
@@ -1761,8 +1750,7 @@ dependencies = [
 [[package]]
 name = "datafusion-expr"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7879a845e72a00cacffacbdf5f40626049cb9584d2ba8aa0b9172f09833110ab"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1782,8 +1770,7 @@ dependencies = [
 [[package]]
 name = "datafusion-expr-common"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6da7e47e70ef2c7678735c82c392bd74687004043f5fc8072ab8678dc6fa459d"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -1795,8 +1782,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e7b92b04c5c3b1151f055251b36e272071f9088d9701826a533cb4f764af1c8"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "arrow",
  "arrow-buffer",
@@ -1824,8 +1810,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f16cb922b62e535a4d484961ac2c1c6d188dbe02e85e026c05f0fabbc8f814e"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "ahash",
  "arrow",
@@ -1845,8 +1830,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate-common"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f71bb59dc8b4dc985c911f2e0d8cf426c21f565b56dca4b852c244101a1a7a2"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "ahash",
  "arrow",
@@ -1858,8 +1842,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-nested"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27eb3b98a2eb02a8af4ef19cc793cac21fc98d8720b987f15d7d25b8cc875f4d"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "arrow",
  "arrow-ord",
@@ -1880,8 +1863,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-table"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "350e0940fc3e2fa4645a4d323f9ebf9258b2d7fdad12013a471cae4ae5568683"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1896,8 +1878,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-window"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df03c6c62039578fd110b327c474846fdf3d9077a568f1e8706e585ed30cb98d"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -1914,8 +1895,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-window-common"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "083659a95914bf3ca568a72b085cb8654576fef1236b260dc2379cb8e5f922b2"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "datafusion-common",
  "datafusion-physical-expr-common",
@@ -1924,8 +1904,7 @@ dependencies = [
 [[package]]
 name = "datafusion-macros"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cabe1f32daa2fa54e6b20d14a13a9e85bef97c4161fe8a90d76b6d9693a5ac4"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "datafusion-expr",
  "quote",
@@ -1935,8 +1914,7 @@ dependencies = [
 [[package]]
 name = "datafusion-optimizer"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e12a97dcb0ccc569798be1289c744829cce5f18cc9b037054f8d7f93e1d57be"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "arrow",
  "chrono",
@@ -1954,8 +1932,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41312712b8659a82b4e9faa8d97a018e7f2ccbdedf2f7cb93ecf256e39858c86"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "ahash",
  "arrow",
@@ -1976,8 +1953,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr-common"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be1649a60ea0319496d616ae3554e84dfcc262c201ab4439abcd83cca989b85b"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "ahash",
  "arrow",
@@ -1990,8 +1966,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-optimizer"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea3f5b8ba6122426774aaaf11325740b8e5d3afaab9ab39dc63423adca554748"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -2009,8 +1984,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-plan"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a595f296929d6cffa12b993ea53e9fe8215fada050d78626c5cf0e2f02b0205"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "ahash",
  "arrow",
@@ -2039,8 +2013,7 @@ dependencies = [
 [[package]]
 name = "datafusion-pruning"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "391a457b9d23744c53eeb89edd1027424cba100581488d89800ed841182df905"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "arrow",
  "arrow-schema",
@@ -2057,8 +2030,7 @@ dependencies = [
 [[package]]
 name = "datafusion-session"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd5f2fe790f43839c70fb9604c4f9b59ad290ef64e1d2f927925dd34a9245406"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2081,8 +2053,7 @@ dependencies = [
 [[package]]
 name = "datafusion-spark"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba125f581764c93193e09b3622044bb030d6ae3e124fcc874305f04345d6ea63"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "arrow",
  "datafusion-catalog",
@@ -2097,8 +2068,7 @@ dependencies = [
 [[package]]
 name = "datafusion-sql"
 version = "49.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ebebb82fda37f62f06fe14339f4faa9f197a0320cc4d26ce2a5fd53a5ccd27c"
+source = "git+https://github.com/apache/datafusion.git?branch=branch-49#9cfb9cd013f33bcdae25360790da7101ee33266f"
 dependencies = [
  "arrow",
  "bigdecimal",
