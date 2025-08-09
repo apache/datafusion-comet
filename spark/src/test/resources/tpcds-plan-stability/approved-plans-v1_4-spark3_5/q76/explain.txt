@@ -193,7 +193,7 @@ Functions [2]: [count(1), sum(UnscaledValue(ext_sales_price#13))]
 
 (34) CometTakeOrderedAndProject
 Input [7]: [channel#11, col_name#12, d_year#9, d_qoy#10, i_category#7, sales_cnt#40, sales_amt#41]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[channel#11 ASC NULLS FIRST,col_name#12 ASC NULLS FIRST,d_year#9 ASC NULLS FIRST,d_qoy#10 ASC NULLS FIRST,i_category#7 ASC NULLS FIRST], output=[channel#11,col_name#12,d_year#9,d_qoy#10,i_category#7,sales_cnt#40,sales_amt#41]), [channel#11, col_name#12, d_year#9, d_qoy#10, i_category#7, sales_cnt#40, sales_amt#41], 100, [channel#11 ASC NULLS FIRST, col_name#12 ASC NULLS FIRST, d_year#9 ASC NULLS FIRST, d_qoy#10 ASC NULLS FIRST, i_category#7 ASC NULLS FIRST], [channel#11, col_name#12, d_year#9, d_qoy#10, i_category#7, sales_cnt#40, sales_amt#41]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[channel#11 ASC NULLS FIRST,col_name#12 ASC NULLS FIRST,d_year#9 ASC NULLS FIRST,d_qoy#10 ASC NULLS FIRST,i_category#7 ASC NULLS FIRST], output=[channel#11,col_name#12,d_year#9,d_qoy#10,i_category#7,sales_cnt#40,sales_amt#41]), [channel#11, col_name#12, d_year#9, d_qoy#10, i_category#7, sales_cnt#40, sales_amt#41], 100, 0, [channel#11 ASC NULLS FIRST, col_name#12 ASC NULLS FIRST, d_year#9 ASC NULLS FIRST, d_qoy#10 ASC NULLS FIRST, i_category#7 ASC NULLS FIRST], [channel#11, col_name#12, d_year#9, d_qoy#10, i_category#7, sales_cnt#40, sales_amt#41]
 
 (35) CometColumnarToRow [codegen id : 1]
 Input [7]: [channel#11, col_name#12, d_year#9, d_qoy#10, i_category#7, sales_cnt#40, sales_amt#41]

@@ -283,7 +283,7 @@ Arguments: [item_id#12, ss_item_rev#13, ss_dev#34, cs_item_rev#23, cs_dev#35, ws
 
 (51) CometTakeOrderedAndProject
 Input [8]: [item_id#12, ss_item_rev#13, ss_dev#34, cs_item_rev#23, cs_dev#35, ws_item_rev#33, ws_dev#36, average#37]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[item_id#12 ASC NULLS FIRST,ss_item_rev#13 ASC NULLS FIRST], output=[item_id#12,ss_item_rev#13,ss_dev#34,cs_item_rev#23,cs_dev#35,ws_item_rev#33,ws_dev#36,average#37]), [item_id#12, ss_item_rev#13, ss_dev#34, cs_item_rev#23, cs_dev#35, ws_item_rev#33, ws_dev#36, average#37], 100, [item_id#12 ASC NULLS FIRST, ss_item_rev#13 ASC NULLS FIRST], [item_id#12, ss_item_rev#13, ss_dev#34, cs_item_rev#23, cs_dev#35, ws_item_rev#33, ws_dev#36, average#37]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[item_id#12 ASC NULLS FIRST,ss_item_rev#13 ASC NULLS FIRST], output=[item_id#12,ss_item_rev#13,ss_dev#34,cs_item_rev#23,cs_dev#35,ws_item_rev#33,ws_dev#36,average#37]), [item_id#12, ss_item_rev#13, ss_dev#34, cs_item_rev#23, cs_dev#35, ws_item_rev#33, ws_dev#36, average#37], 100, 0, [item_id#12 ASC NULLS FIRST, ss_item_rev#13 ASC NULLS FIRST], [item_id#12, ss_item_rev#13, ss_dev#34, cs_item_rev#23, cs_dev#35, ws_item_rev#33, ws_dev#36, average#37]
 
 (52) CometColumnarToRow [codegen id : 1]
 Input [8]: [item_id#12, ss_item_rev#13, ss_dev#34, cs_item_rev#23, cs_dev#35, ws_item_rev#33, ws_dev#36, average#37]

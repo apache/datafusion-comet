@@ -143,7 +143,7 @@ Functions: []
 
 (25) CometTakeOrderedAndProject
 Input [3]: [i_item_id#6, i_item_desc#3, i_current_price#4]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_item_id#6 ASC NULLS FIRST], output=[i_item_id#6,i_item_desc#3,i_current_price#4]), [i_item_id#6, i_item_desc#3, i_current_price#4], 100, [i_item_id#6 ASC NULLS FIRST], [i_item_id#6, i_item_desc#3, i_current_price#4]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_item_id#6 ASC NULLS FIRST], output=[i_item_id#6,i_item_desc#3,i_current_price#4]), [i_item_id#6, i_item_desc#3, i_current_price#4], 100, 0, [i_item_id#6 ASC NULLS FIRST], [i_item_id#6, i_item_desc#3, i_current_price#4]
 
 (26) CometColumnarToRow [codegen id : 1]
 Input [3]: [i_item_id#6, i_item_desc#3, i_current_price#4]

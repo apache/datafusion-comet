@@ -201,7 +201,7 @@ Functions [1]: [sum(UnscaledValue(ss_ext_sales_price#7))]
 
 (35) CometTakeOrderedAndProject
 Input [5]: [brand_id#26, brand#27, i_manufact_id#12, i_manufact#16, ext_price#28]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[ext_price#28 DESC NULLS LAST,brand#27 ASC NULLS FIRST,brand_id#26 ASC NULLS FIRST,i_manufact_id#12 ASC NULLS FIRST,i_manufact#16 ASC NULLS FIRST], output=[brand_id#26,brand#27,i_manufact_id#12,i_manufact#16,ext_price#28]), [brand_id#26, brand#27, i_manufact_id#12, i_manufact#16, ext_price#28], 100, [ext_price#28 DESC NULLS LAST, brand#27 ASC NULLS FIRST, brand_id#26 ASC NULLS FIRST, i_manufact_id#12 ASC NULLS FIRST, i_manufact#16 ASC NULLS FIRST], [brand_id#26, brand#27, i_manufact_id#12, i_manufact#16, ext_price#28]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[ext_price#28 DESC NULLS LAST,brand#27 ASC NULLS FIRST,brand_id#26 ASC NULLS FIRST,i_manufact_id#12 ASC NULLS FIRST,i_manufact#16 ASC NULLS FIRST], output=[brand_id#26,brand#27,i_manufact_id#12,i_manufact#16,ext_price#28]), [brand_id#26, brand#27, i_manufact_id#12, i_manufact#16, ext_price#28], 100, 0, [ext_price#28 DESC NULLS LAST, brand#27 ASC NULLS FIRST, brand_id#26 ASC NULLS FIRST, i_manufact_id#12 ASC NULLS FIRST, i_manufact#16 ASC NULLS FIRST], [brand_id#26, brand#27, i_manufact_id#12, i_manufact#16, ext_price#28]
 
 (36) CometColumnarToRow [codegen id : 1]
 Input [5]: [brand_id#26, brand#27, i_manufact_id#12, i_manufact#16, ext_price#28]

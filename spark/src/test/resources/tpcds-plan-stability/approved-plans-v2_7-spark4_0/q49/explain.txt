@@ -454,7 +454,7 @@ Functions: []
 
 (83) CometTakeOrderedAndProject
 Input [5]: [channel#37, item#32, return_ratio#33, return_rank#35, currency_rank#36]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[channel#37 ASC NULLS FIRST,return_rank#35 ASC NULLS FIRST,currency_rank#36 ASC NULLS FIRST,item#32 ASC NULLS FIRST], output=[channel#37,item#32,return_ratio#33,return_rank#35,currency_rank#36]), [channel#37, item#32, return_ratio#33, return_rank#35, currency_rank#36], 100, [channel#37 ASC NULLS FIRST, return_rank#35 ASC NULLS FIRST, currency_rank#36 ASC NULLS FIRST, item#32 ASC NULLS FIRST], [channel#37, item#32, return_ratio#33, return_rank#35, currency_rank#36]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[channel#37 ASC NULLS FIRST,return_rank#35 ASC NULLS FIRST,currency_rank#36 ASC NULLS FIRST,item#32 ASC NULLS FIRST], output=[channel#37,item#32,return_ratio#33,return_rank#35,currency_rank#36]), [channel#37, item#32, return_ratio#33, return_rank#35, currency_rank#36], 100, 0, [channel#37 ASC NULLS FIRST, return_rank#35 ASC NULLS FIRST, currency_rank#36 ASC NULLS FIRST, item#32 ASC NULLS FIRST], [channel#37, item#32, return_ratio#33, return_rank#35, currency_rank#36]
 
 (84) CometColumnarToRow [codegen id : 17]
 Input [5]: [channel#37, item#32, return_ratio#33, return_rank#35, currency_rank#36]

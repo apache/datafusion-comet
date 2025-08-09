@@ -393,7 +393,7 @@ Child 2 Input [7]: [i_item_id#98, s_state#99, g_state#100, agg1#101, agg2#102, a
 
 (70) CometTakeOrderedAndProject
 Input [7]: [i_item_id#22, s_state#23, g_state#87, agg1#88, agg2#89, agg3#90, agg4#91]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_item_id#22 ASC NULLS FIRST,s_state#23 ASC NULLS FIRST], output=[i_item_id#22,s_state#23,g_state#87,agg1#88,agg2#89,agg3#90,agg4#91]), [i_item_id#22, s_state#23, g_state#87, agg1#88, agg2#89, agg3#90, agg4#91], 100, [i_item_id#22 ASC NULLS FIRST, s_state#23 ASC NULLS FIRST], [i_item_id#22, s_state#23, g_state#87, agg1#88, agg2#89, agg3#90, agg4#91]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_item_id#22 ASC NULLS FIRST,s_state#23 ASC NULLS FIRST], output=[i_item_id#22,s_state#23,g_state#87,agg1#88,agg2#89,agg3#90,agg4#91]), [i_item_id#22, s_state#23, g_state#87, agg1#88, agg2#89, agg3#90, agg4#91], 100, 0, [i_item_id#22 ASC NULLS FIRST, s_state#23 ASC NULLS FIRST], [i_item_id#22, s_state#23, g_state#87, agg1#88, agg2#89, agg3#90, agg4#91]
 
 (71) CometColumnarToRow [codegen id : 1]
 Input [7]: [i_item_id#22, s_state#23, g_state#87, agg1#88, agg2#89, agg3#90, agg4#91]

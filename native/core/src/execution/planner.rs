@@ -87,6 +87,7 @@ use datafusion::physical_expr::LexOrdering;
 use crate::parquet::parquet_exec::init_datasource_exec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
+use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
 use datafusion_comet_proto::{
     spark_expression::{
@@ -1126,12 +1127,30 @@ impl PhysicalPlanner {
             OpStruct::Limit(limit) => {
                 assert_eq!(children.len(), 1);
                 let num = limit.limit;
+                let offset: i32 = limit.offset;
+                if num != -1 && offset > num {
+                    return Err(GeneralError(format!(
+                        "Invalid limit/offset combination: [{num}. {offset}]"
+                    )));
+                }
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
-
-                let limit = Arc::new(LocalLimitExec::new(
-                    Arc::clone(&child.native_plan),
-                    num as usize,
-                ));
+                let limit: Arc<dyn ExecutionPlan> = if offset == 0 {
+                    Arc::new(LocalLimitExec::new(
+                        Arc::clone(&child.native_plan),
+                        num as usize,
+                    ))
+                } else {
+                    let fetch = if num == -1 {
+                        None
+                    } else {
+                        Some((num - offset) as usize)
+                    };
+                    Arc::new(GlobalLimitExec::new(
+                        Arc::clone(&child.native_plan),
+                        offset as usize,
+                        fetch,
+                    ))
+                };
                 Ok((
                     scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, limit, vec![child])),
@@ -1148,7 +1167,7 @@ impl PhysicalPlanner {
                     .collect();
 
                 let fetch = sort.fetch.map(|num| num as usize);
-
+                let skip = sort.skip.map(|num| num as usize);
                 // SortExec caches batches so we need to make a copy of incoming batches. Also,
                 // SortExec fails in some cases if we do not unpack dictionary-encoded arrays, and
                 // it would be more efficient if we could avoid that.
@@ -1159,6 +1178,11 @@ impl PhysicalPlanner {
                     SortExec::new(LexOrdering::new(exprs?).unwrap(), Arc::clone(&child_copied))
                         .with_fetch(fetch),
                 );
+
+                let sort: Arc<dyn ExecutionPlan> = match skip {
+                    Some(x) if x > 0 => Arc::new(GlobalLimitExec::new(sort, x, None)),
+                    _ => sort,
+                };
 
                 Ok((
                     scans,

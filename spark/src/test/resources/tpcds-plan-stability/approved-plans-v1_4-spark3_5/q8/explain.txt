@@ -244,7 +244,7 @@ Functions [1]: [sum(UnscaledValue(ss_net_profit#2))]
 
 (43) CometTakeOrderedAndProject
 Input [2]: [s_store_name#9, sum(ss_net_profit)#23]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[s_store_name#9 ASC NULLS FIRST], output=[s_store_name#9,sum(ss_net_profit)#23]), [s_store_name#9, sum(ss_net_profit)#23], 100, [s_store_name#9 ASC NULLS FIRST], [s_store_name#9, sum(ss_net_profit)#23]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[s_store_name#9 ASC NULLS FIRST], output=[s_store_name#9,sum(ss_net_profit)#23]), [s_store_name#9, sum(ss_net_profit)#23], 100, 0, [s_store_name#9 ASC NULLS FIRST], [s_store_name#9, sum(ss_net_profit)#23]
 
 (44) CometColumnarToRow [codegen id : 1]
 Input [2]: [s_store_name#9, sum(ss_net_profit)#23]

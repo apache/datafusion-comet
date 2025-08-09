@@ -133,7 +133,7 @@ Functions [1]: [sum(UnscaledValue(cs_sales_price#2))]
 
 (23) CometTakeOrderedAndProject
 Input [2]: [ca_zip#11, sum(cs_sales_price)#16]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[ca_zip#11 ASC NULLS FIRST], output=[ca_zip#11,sum(cs_sales_price)#16]), [ca_zip#11, sum(cs_sales_price)#16], 100, [ca_zip#11 ASC NULLS FIRST], [ca_zip#11, sum(cs_sales_price)#16]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[ca_zip#11 ASC NULLS FIRST], output=[ca_zip#11,sum(cs_sales_price)#16]), [ca_zip#11, sum(cs_sales_price)#16], 100, 0, [ca_zip#11 ASC NULLS FIRST], [ca_zip#11, sum(cs_sales_price)#16]
 
 (24) CometColumnarToRow [codegen id : 1]
 Input [2]: [ca_zip#11, sum(cs_sales_price)#16]

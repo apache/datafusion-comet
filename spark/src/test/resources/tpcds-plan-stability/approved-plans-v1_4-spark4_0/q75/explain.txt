@@ -698,7 +698,7 @@ Arguments: [prev_year#133, year#134, i_brand_id#8, i_class_id#9, i_category_id#1
 
 (127) CometTakeOrderedAndProject
 Input [10]: [prev_year#133, year#134, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, prev_yr_cnt#135, curr_yr_cnt#136, sales_cnt_diff#137, sales_amt_diff#138]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[sales_cnt_diff#137 ASC NULLS FIRST], output=[prev_year#133,year#134,i_brand_id#8,i_class_id#9,i_category_id#10,i_manufact_id#12,prev_yr_cnt#135,curr_yr_cnt#136,sales_cnt_diff#137,sales_amt_diff#138]), [prev_year#133, year#134, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, prev_yr_cnt#135, curr_yr_cnt#136, sales_cnt_diff#137, sales_amt_diff#138], 100, [sales_cnt_diff#137 ASC NULLS FIRST], [prev_year#133, year#134, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, prev_yr_cnt#135, curr_yr_cnt#136, sales_cnt_diff#137, sales_amt_diff#138]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[sales_cnt_diff#137 ASC NULLS FIRST], output=[prev_year#133,year#134,i_brand_id#8,i_class_id#9,i_category_id#10,i_manufact_id#12,prev_yr_cnt#135,curr_yr_cnt#136,sales_cnt_diff#137,sales_amt_diff#138]), [prev_year#133, year#134, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, prev_yr_cnt#135, curr_yr_cnt#136, sales_cnt_diff#137, sales_amt_diff#138], 100, 0, [sales_cnt_diff#137 ASC NULLS FIRST], [prev_year#133, year#134, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, prev_yr_cnt#135, curr_yr_cnt#136, sales_cnt_diff#137, sales_amt_diff#138]
 
 (128) CometColumnarToRow [codegen id : 5]
 Input [10]: [prev_year#133, year#134, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, prev_yr_cnt#135, curr_yr_cnt#136, sales_cnt_diff#137, sales_amt_diff#138]

@@ -216,7 +216,7 @@ Arguments: [c_last_name#29, c_first_name#28, ca_city#35, bought_city#30, ss_tick
 
 (38) CometTakeOrderedAndProject
 Input [8]: [c_last_name#29, c_first_name#28, ca_city#35, bought_city#30, ss_ticket_number#5, extended_price#31, extended_tax#33, list_price#32]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[c_last_name#29 ASC NULLS FIRST,ss_ticket_number#5 ASC NULLS FIRST], output=[c_last_name#29,c_first_name#28,ca_city#35,bought_city#30,ss_ticket_number#5,extended_price#31,extended_tax#33,list_price#32]), [c_last_name#29, c_first_name#28, ca_city#35, bought_city#30, ss_ticket_number#5, extended_price#31, extended_tax#33, list_price#32], 100, [c_last_name#29 ASC NULLS FIRST, ss_ticket_number#5 ASC NULLS FIRST], [c_last_name#29, c_first_name#28, ca_city#35, bought_city#30, ss_ticket_number#5, extended_price#31, extended_tax#33, list_price#32]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[c_last_name#29 ASC NULLS FIRST,ss_ticket_number#5 ASC NULLS FIRST], output=[c_last_name#29,c_first_name#28,ca_city#35,bought_city#30,ss_ticket_number#5,extended_price#31,extended_tax#33,list_price#32]), [c_last_name#29, c_first_name#28, ca_city#35, bought_city#30, ss_ticket_number#5, extended_price#31, extended_tax#33, list_price#32], 100, 0, [c_last_name#29 ASC NULLS FIRST, ss_ticket_number#5 ASC NULLS FIRST], [c_last_name#29, c_first_name#28, ca_city#35, bought_city#30, ss_ticket_number#5, extended_price#31, extended_tax#33, list_price#32]
 
 (39) CometColumnarToRow [codegen id : 1]
 Input [8]: [c_last_name#29, c_first_name#28, ca_city#35, bought_city#30, ss_ticket_number#5, extended_price#31, extended_tax#33, list_price#32]

@@ -328,7 +328,7 @@ Functions [1]: [count(1)]
 
 (57) CometTakeOrderedAndProject
 Input [3]: [segment#40, num_customers#42, segment_base#43]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[segment#40 ASC NULLS FIRST,num_customers#42 ASC NULLS FIRST], output=[segment#40,num_customers#42,segment_base#43]), [segment#40, num_customers#42, segment_base#43], 100, [segment#40 ASC NULLS FIRST, num_customers#42 ASC NULLS FIRST], [segment#40, num_customers#42, segment_base#43]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[segment#40 ASC NULLS FIRST,num_customers#42 ASC NULLS FIRST], output=[segment#40,num_customers#42,segment_base#43]), [segment#40, num_customers#42, segment_base#43], 100, 0, [segment#40 ASC NULLS FIRST, num_customers#42 ASC NULLS FIRST], [segment#40, num_customers#42, segment_base#43]
 
 (58) CometColumnarToRow [codegen id : 1]
 Input [3]: [segment#40, num_customers#42, segment_base#43]

@@ -104,7 +104,7 @@ Functions [1]: [sum(UnscaledValue(ss_ext_sales_price#5))]
 
 (18) CometTakeOrderedAndProject
 Input [4]: [d_year#2, i_category_id#8, i_category#11, sum(ss_ext_sales_price)#13]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[sum(ss_ext_sales_price)#13 DESC NULLS LAST,d_year#2 ASC NULLS FIRST,i_category_id#8 ASC NULLS FIRST,i_category#11 ASC NULLS FIRST], output=[d_year#2,i_category_id#8,i_category#11,sum(ss_ext_sales_price)#13]), [d_year#2, i_category_id#8, i_category#11, sum(ss_ext_sales_price)#13], 100, [sum(ss_ext_sales_price)#13 DESC NULLS LAST, d_year#2 ASC NULLS FIRST, i_category_id#8 ASC NULLS FIRST, i_category#11 ASC NULLS FIRST], [d_year#2, i_category_id#8, i_category#11, sum(ss_ext_sales_price)#13]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[sum(ss_ext_sales_price)#13 DESC NULLS LAST,d_year#2 ASC NULLS FIRST,i_category_id#8 ASC NULLS FIRST,i_category#11 ASC NULLS FIRST], output=[d_year#2,i_category_id#8,i_category#11,sum(ss_ext_sales_price)#13]), [d_year#2, i_category_id#8, i_category#11, sum(ss_ext_sales_price)#13], 100, 0, [sum(ss_ext_sales_price)#13 DESC NULLS LAST, d_year#2 ASC NULLS FIRST, i_category_id#8 ASC NULLS FIRST, i_category#11 ASC NULLS FIRST], [d_year#2, i_category_id#8, i_category#11, sum(ss_ext_sales_price)#13]
 
 (19) CometColumnarToRow [codegen id : 1]
 Input [4]: [d_year#2, i_category_id#8, i_category#11, sum(ss_ext_sales_price)#13]

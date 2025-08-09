@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index a4b1b2c3c9f..63ec4784625 100644
+index 443d46a4302..63ec4784625 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -148,6 +148,8 @@
@@ -1523,19 +1523,30 @@ index 418ca3430bb..eb8267192f8 100644
        withTempPath { path =>
          val dir = path.getCanonicalPath
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/InsertSortForLimitAndOffsetSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/InsertSortForLimitAndOffsetSuite.scala
-index d1b11a74cf3..8ea0129b3af 100644
+index d1b11a74cf3..08087c80201 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/InsertSortForLimitAndOffsetSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/InsertSortForLimitAndOffsetSuite.scala
-@@ -17,7 +17,7 @@
+@@ -17,8 +17,9 @@
  
  package org.apache.spark.sql.execution
  
 -import org.apache.spark.sql.{Dataset, QueryTest}
 +import org.apache.spark.sql.{Dataset, IgnoreComet, QueryTest}
  import org.apache.spark.sql.IntegratedUDFTestUtils._
++import org.apache.spark.sql.comet.CometCollectLimitExec
  import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
  import org.apache.spark.sql.functions.rand
-@@ -77,7 +77,9 @@ class InsertSortForLimitAndOffsetSuite extends QueryTest
+ import org.apache.spark.sql.internal.SQLConf
+@@ -39,7 +40,7 @@ class InsertSortForLimitAndOffsetSuite extends QueryTest
+ 
+   private def assertHasCollectLimitExec(plan: SparkPlan): Unit = {
+     assert(find(plan) {
+-      case _: CollectLimitExec => true
++      case _: CollectLimitExec | _: CometCollectLimitExec => true
+       case _ => false
+     }.isDefined)
+   }
+@@ -77,7 +78,9 @@ class InsertSortForLimitAndOffsetSuite extends QueryTest
      assert(!hasLocalSort(physicalPlan))
    }
  
@@ -1546,7 +1557,7 @@ index d1b11a74cf3..8ea0129b3af 100644
      withSQLConf(SQLConf.TOP_K_SORT_FALLBACK_THRESHOLD.key -> "1") {
        val df = spark.range(10).orderBy($"id" % 8).limit(2)
        df.collect()
-@@ -88,7 +90,9 @@ class InsertSortForLimitAndOffsetSuite extends QueryTest
+@@ -88,7 +91,9 @@ class InsertSortForLimitAndOffsetSuite extends QueryTest
      }
    }
  
@@ -1557,7 +1568,7 @@ index d1b11a74cf3..8ea0129b3af 100644
      withSQLConf(
        SQLConf.TOP_K_SORT_FALLBACK_THRESHOLD.key -> "1",
        // To trigger the bug, we have to disable the coalescing optimization. Otherwise we use only
-@@ -117,7 +121,9 @@ class InsertSortForLimitAndOffsetSuite extends QueryTest
+@@ -117,7 +122,9 @@ class InsertSortForLimitAndOffsetSuite extends QueryTest
      assert(!hasLocalSort(physicalPlan))
    }
  

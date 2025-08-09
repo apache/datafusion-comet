@@ -100,7 +100,7 @@ Functions: []
 
 (18) CometTakeOrderedAndProject
 Input [1]: [i_product_name#11]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_product_name#11 ASC NULLS FIRST], output=[i_product_name#11]), [i_product_name#11], 100, [i_product_name#11 ASC NULLS FIRST], [i_product_name#11]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_product_name#11 ASC NULLS FIRST], output=[i_product_name#11]), [i_product_name#11], 100, 0, [i_product_name#11 ASC NULLS FIRST], [i_product_name#11]
 
 (19) CometColumnarToRow [codegen id : 1]
 Input [1]: [i_product_name#11]

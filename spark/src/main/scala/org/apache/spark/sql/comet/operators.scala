@@ -577,6 +577,7 @@ case class CometGlobalLimitExec(
     override val nativeOp: Operator,
     override val originalPlan: SparkPlan,
     limit: Int,
+    offset: Int,
     child: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
     extends CometUnaryExec {
@@ -588,20 +589,23 @@ case class CometGlobalLimitExec(
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
 
-  override def stringArgs: Iterator[Any] = Iterator(limit, child)
+  override def stringArgs: Iterator[Any] = Iterator(limit, offset, child)
 
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometGlobalLimitExec =>
         this.output == other.output &&
-        this.limit == other.limit && this.child == other.child &&
+        this.limit == other.limit &&
+        this.offset == other.offset &&
+        this.child == other.child &&
         this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
         false
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(output, limit: java.lang.Integer, child)
+  override def hashCode(): Int =
+    Objects.hashCode(output, limit: java.lang.Integer, offset: java.lang.Integer, child)
 }
 
 case class CometExpandExec(

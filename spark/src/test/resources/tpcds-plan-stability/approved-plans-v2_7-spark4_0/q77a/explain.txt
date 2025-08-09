@@ -629,7 +629,7 @@ Functions: []
 
 (110) CometTakeOrderedAndProject
 Input [5]: [channel#32, id#33, sales#115, returns#116, profit#117]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[channel#32 ASC NULLS FIRST,id#33 ASC NULLS FIRST], output=[channel#32,id#33,sales#115,returns#116,profit#117]), [channel#32, id#33, sales#115, returns#116, profit#117], 100, [channel#32 ASC NULLS FIRST, id#33 ASC NULLS FIRST], [channel#32, id#33, sales#115, returns#116, profit#117]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[channel#32 ASC NULLS FIRST,id#33 ASC NULLS FIRST], output=[channel#32,id#33,sales#115,returns#116,profit#117]), [channel#32, id#33, sales#115, returns#116, profit#117], 100, 0, [channel#32 ASC NULLS FIRST, id#33 ASC NULLS FIRST], [channel#32, id#33, sales#115, returns#116, profit#117]
 
 (111) CometColumnarToRow [codegen id : 46]
 Input [5]: [channel#32, id#33, sales#115, returns#116, profit#117]

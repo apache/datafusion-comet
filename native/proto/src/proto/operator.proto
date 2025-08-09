@@ -117,6 +117,7 @@ message Filter {
 message Sort {
   repeated spark.spark_expression.Expr sort_orders = 1;
   optional int32 fetch = 3;
+  optional int32 skip = 4;
 }
 
 message HashAggregate {

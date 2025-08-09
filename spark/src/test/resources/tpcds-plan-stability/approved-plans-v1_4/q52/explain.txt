@@ -104,7 +104,7 @@ Functions [1]: [sum(UnscaledValue(ss_ext_sales_price#5))]
 
 (18) CometTakeOrderedAndProject
 Input [4]: [d_year#2, brand_id#13, brand#14, ext_price#15]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[d_year#2 ASC NULLS FIRST,ext_price#15 DESC NULLS LAST,brand_id#13 ASC NULLS FIRST], output=[d_year#2,brand_id#13,brand#14,ext_price#15]), [d_year#2, brand_id#13, brand#14, ext_price#15], 100, [d_year#2 ASC NULLS FIRST, ext_price#15 DESC NULLS LAST, brand_id#13 ASC NULLS FIRST], [d_year#2, brand_id#13, brand#14, ext_price#15]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[d_year#2 ASC NULLS FIRST,ext_price#15 DESC NULLS LAST,brand_id#13 ASC NULLS FIRST], output=[d_year#2,brand_id#13,brand#14,ext_price#15]), [d_year#2, brand_id#13, brand#14, ext_price#15], 100, 0, [d_year#2 ASC NULLS FIRST, ext_price#15 DESC NULLS LAST, brand_id#13 ASC NULLS FIRST], [d_year#2, brand_id#13, brand#14, ext_price#15]
 
 (19) CometColumnarToRow [codegen id : 1]
 Input [4]: [d_year#2, brand_id#13, brand#14, ext_price#15]
