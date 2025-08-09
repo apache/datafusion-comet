@@ -19,9 +19,10 @@ use crate::hash_funcs::*;
 use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::{
     spark_array_repeat, spark_ceil, spark_date_add, spark_date_sub, spark_decimal_div,
-    spark_decimal_integral_div, spark_floor, spark_hex, spark_isnan, spark_make_decimal,
-    spark_read_side_padding, spark_round, spark_rpad, spark_unhex, spark_unscaled_value,
-    SparkBitwiseCount, SparkBitwiseGet, SparkBitwiseNot, SparkDateTrunc, SparkStringSpace,
+    spark_decimal_integral_div, spark_floor, spark_hex, spark_isnan, spark_left_side_padding,
+    spark_lpad, spark_make_decimal, spark_read_side_padding, spark_round, spark_rpad, spark_unhex,
+    spark_unscaled_value, SparkBitwiseCount, SparkBitwiseGet, SparkBitwiseNot, SparkDateTrunc,
+    SparkStringSpace,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -82,6 +83,14 @@ pub fn create_comet_physical_fun(
         "read_side_padding" => {
             let func = Arc::new(spark_read_side_padding);
             make_comet_scalar_udf!("read_side_padding", func, without data_type)
+        }
+        "lpad" => {
+            let func = Arc::new(spark_lpad);
+            make_comet_scalar_udf!("lpad", func, without data_type)
+        }
+        "left_side_padding" => {
+            let func = Arc::new(spark_left_side_padding);
+            make_comet_scalar_udf!("left_side_padding", func, without data_type)
         }
         "rpad" => {
             let func = Arc::new(spark_rpad);

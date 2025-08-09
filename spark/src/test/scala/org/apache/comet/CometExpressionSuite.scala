@@ -323,6 +323,26 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("fix_rpad") {
+    withTable("t1") {
+      sql("create table t1(c1 varchar(100), c2 int) using parquet")
+      sql("insert into t1 values('IfIWasARoadIWouldBeBent', 10)")
+      sql("insert into t1 values('IfIWereATrainIwouldBeLate', 9)")
+      sql("insert into t1 values(NULL, 10)")
+      val res = sql("select rpad(c1,c2) , rpad(c1,5) from t1 order by c1")
+      checkSparkAnswerAndOperator(res)
+    }
+  }
+
+  test("test_lpad_expression") {
+    withTable("t1") {
+      sql("create table t1(c1 varchar(100), c2 int) using parquet")
+      sql("insert into t1 values('IfIWasARoadIWouldBeBent', 10)")
+      val res = sql("select lpad(c1, 50), lpad(c1, 5)  from t1 order by c1")
+      checkSparkAnswerAndOperator(res)
+    }
+  }
+
   test("dictionary arithmetic") {
     // TODO: test ANSI mode
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "false", "parquet.enable.dictionary" -> "true") {

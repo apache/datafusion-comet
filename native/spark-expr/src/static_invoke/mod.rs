@@ -17,4 +17,5 @@
 
 mod char_varchar_utils;
 
+pub use char_varchar_utils::{spark_left_side_padding, spark_lpad};
 pub use char_varchar_utils::{spark_read_side_padding, spark_rpad};

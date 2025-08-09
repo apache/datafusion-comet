@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod left_side_padding;
 mod read_side_padding;
 
+pub use left_side_padding::{spark_left_side_padding, spark_lpad};
 pub use read_side_padding::{spark_read_side_padding, spark_rpad};
