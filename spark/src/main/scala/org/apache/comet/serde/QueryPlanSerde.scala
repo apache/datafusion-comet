@@ -1966,16 +1966,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             }
           }
 
-          // Some native expressions do not support operating on dictionary-encoded arrays, so
-          // wrap the child in a CopyExec to unpack dictionaries first.
-          // Should we re use the method??
-          def wrapChildInCopyExec(condition: Expression): Boolean = {
-            condition.exists(expr => {
-              expr.isInstanceOf[StartsWith] || expr.isInstanceOf[EndsWith] || expr
-                .isInstanceOf[Contains]
-            })
-          }
-
           val filterBuilder = OperatorOuterClass.Filter
             .newBuilder()
             .setPredicate(cond.get)

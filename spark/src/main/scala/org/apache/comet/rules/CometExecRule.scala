@@ -23,7 +23,7 @@ import scala.annotation.tailrec
 import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
+import org.apache.spark.sql.catalyst.expressions.{Contains, Divide, DoubleLiteral, EndsWith, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder, StartsWith}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
@@ -767,6 +767,14 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     case ee: ExpandExec =>
       val newChild = wrapInCopyExec(ee.child)
       ee.copy(child = newChild)
+    case filter @ FilterExec(condition, _) if condition.exists(expr => {
+          expr.isInstanceOf[StartsWith] || expr.isInstanceOf[EndsWith] || expr
+            .isInstanceOf[Contains]
+        }) =>
+      // Some native expressions do not support operating on dictionary-encoded arrays, so
+      // wrap the child in a CopyExec to unpack dictionaries first.
+      val newChild = wrapInCopyExec(filter.child)
+      filter.copy(child = newChild)
   }
 
   // Returns true if given operator can return input array as output array without
