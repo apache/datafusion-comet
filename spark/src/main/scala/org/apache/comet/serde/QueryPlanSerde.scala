@@ -122,15 +122,26 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Lower] -> CometLower,
     classOf[Murmur3Hash] -> CometMurmur3Hash,
     classOf[XxHash64] -> CometXxHash64,
+    classOf[Sha2] -> CometSha2,
     classOf[MapKeys] -> CometMapKeys,
     classOf[MapEntries] -> CometMapEntries,
     classOf[MapValues] -> CometMapValues,
     classOf[MapFromArrays] -> CometMapFromArrays,
     classOf[GetMapValue] -> CometMapExtract,
+    classOf[GreaterThan] -> CometGreaterThan,
+    classOf[GreaterThanOrEqual] -> CometGreaterThanOrEqual,
+    classOf[LessThan] -> CometLessThan,
+    classOf[LessThanOrEqual] -> CometLessThanOrEqual,
+    classOf[IsNull] -> CometIsNull,
+    classOf[IsNotNull] -> CometIsNotNull,
+    classOf[IsNaN] -> CometIsNaN,
+    classOf[In] -> CometIn,
+    classOf[InSet] -> CometInSet,
     classOf[Rand] -> CometRand,
     classOf[Randn] -> CometRandn,
     classOf[SparkPartitionID] -> CometSparkPartitionId,
-    classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId)
+    classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
+    classOf[StringSpace] -> UnaryScalarFuncSerde("string_space"))
 
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
@@ -683,42 +694,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           binding,
           (builder, binaryExpr) => builder.setNeqNullSafe(binaryExpr))
 
-      case GreaterThan(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setGt(binaryExpr))
-
-      case GreaterThanOrEqual(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setGtEq(binaryExpr))
-
-      case LessThan(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setLt(binaryExpr))
-
-      case LessThanOrEqual(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setLtEq(binaryExpr))
-
       case Literal(value, dataType)
           if supportedDataType(dataType, allowComplex = value == null) =>
         val exprBuilder = ExprOuterClass.Literal.newBuilder()
@@ -943,14 +918,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val valueExpr = exprToProtoInternal(value, inputs, binding)
         scalarFunctionExprToProto("contains", attributeExpr, valueExpr)
 
-      case StringSpace(child) =>
-        createUnaryExpr(
-          expr,
-          child,
-          inputs,
-          binding,
-          (builder, unaryExpr) => builder.setStringSpace(unaryExpr))
-
       case Hour(child, timeZoneId) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
 
@@ -1071,29 +1038,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
                   .build())
               .build()
           })
-        optExprWithInfo(optExpr, expr, child)
-
-      case IsNull(child) =>
-        createUnaryExpr(
-          expr,
-          child,
-          inputs,
-          binding,
-          (builder, unaryExpr) => builder.setIsNull(unaryExpr))
-
-      case IsNotNull(child) =>
-        createUnaryExpr(
-          expr,
-          child,
-          inputs,
-          binding,
-          (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
-
-      case IsNaN(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr =
-          scalarFunctionExprToProtoWithReturnType("isnan", BooleanType, childExpr)
-
         optExprWithInfo(optExpr, expr, child)
 
       case SortOrder(child, direction, nullOrdering, _) =>
@@ -1465,20 +1409,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
           binding,
           (builder, binaryExpr) => builder.setBitwiseAnd(binaryExpr))
 
-      case In(value, list) =>
-        in(expr, value, list, inputs, binding, negate = false)
-
-      case InSet(value, hset) =>
-        val valueDataType = value.dataType
-        val list = hset.map { setVal =>
-          Literal(setVal, valueDataType)
-        }.toSeq
-        // Change `InSet` to `In` expression
-        // We do Spark `InSet` optimization in native (DataFusion) side.
-        in(expr, value, list, inputs, binding, negate = false)
-
-      case Not(In(value, list)) =>
-        in(expr, value, list, inputs, binding, negate = true)
+      case Not(In(_, _)) =>
+        CometNotIn.convert(expr, inputs, binding)
 
       case Not(child) =>
         createUnaryExpr(
@@ -1609,29 +1541,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         } else {
           withInfo(expr, bloomFilter, value)
           None
-        }
-
-      case Sha2(left, numBits) =>
-        if (!numBits.foldable) {
-          withInfo(expr, "non literal numBits is not supported")
-          return None
-        }
-        // it's possible for spark to dynamically compute the number of bits from input
-        // expression, however DataFusion does not support that yet.
-        val childExpr = exprToProtoInternal(left, inputs, binding)
-        val bits = numBits.eval().asInstanceOf[Int]
-        val algorithm = bits match {
-          case 224 => "sha224"
-          case 256 | 0 => "sha256"
-          case 384 => "sha384"
-          case 512 => "sha512"
-          case _ =>
-            null
-        }
-        if (algorithm == null) {
-          exprToProtoInternal(Literal(null, StringType), inputs, binding)
-        } else {
-          scalarFunctionExprToProtoWithReturnType(algorithm, StringType, childExpr)
         }
 
       case struct @ CreateNamedStruct(_) =>
@@ -1818,32 +1727,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           inner).build())
     } else {
       withInfo(expr, left, right)
-      None
-    }
-  }
-
-  def in(
-      expr: Expression,
-      value: Expression,
-      list: Seq[Expression],
-      inputs: Seq[Attribute],
-      binding: Boolean,
-      negate: Boolean): Option[Expr] = {
-    val valueExpr = exprToProtoInternal(value, inputs, binding)
-    val listExprs = list.map(exprToProtoInternal(_, inputs, binding))
-    if (valueExpr.isDefined && listExprs.forall(_.isDefined)) {
-      val builder = ExprOuterClass.In.newBuilder()
-      builder.setInValue(valueExpr.get)
-      builder.addAllLists(listExprs.map(_.get).asJava)
-      builder.setNegated(negate)
-      Some(
-        ExprOuterClass.Expr
-          .newBuilder()
-          .setIn(builder)
-          .build())
-    } else {
-      val allExprs = list ++ Seq(value)
-      withInfo(expr, allExprs: _*)
       None
     }
   }
