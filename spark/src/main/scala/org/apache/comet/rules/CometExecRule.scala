@@ -767,10 +767,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     case ee: ExpandExec =>
       val newChild = wrapInCopyExec(ee.child)
       ee.copy(child = newChild)
-    case filter @ FilterExec(condition, _) if condition.exists(expr => {
+    case filter @ FilterExec(condition, _)
+        if condition.exists(expr =>
           expr.isInstanceOf[StartsWith] || expr.isInstanceOf[EndsWith] || expr
-            .isInstanceOf[Contains]
-        }) =>
+            .isInstanceOf[Contains]) =>
       // Some native expressions do not support operating on dictionary-encoded arrays, so
       // wrap the child in a CopyExec to unpack dictionaries first.
       val newChild = wrapInCopyExec(filter.child)
