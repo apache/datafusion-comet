@@ -94,3 +94,19 @@ object CometMapFromArrays extends CometExpressionSerde {
     optExprWithInfo(mapFromArraysExpr, expr, expr.children: _*)
   }
 }
+
+object CometMapSort extends CometExpressionSerde {
+
+  override def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val mapSortExpr = expr.asInstanceOf[MapSort]
+    val childExpr = exprToProtoInternal(mapSortExpr.child, inputs, binding)
+    val returnType = mapSortExpr.child.dataType
+
+    val mapSortScalarExpr =
+      scalarFunctionExprToProtoWithReturnType("map_sort", returnType, childExpr)
+    optExprWithInfo(mapSortScalarExpr, expr, expr.children: _*)
+  }
+}
