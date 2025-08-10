@@ -675,8 +675,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       }
 
       // FIXME: Should we move to separate Rule
-      var newPlan = transformAndAddCopyExec(normalizedPlan)
-      newPlan = transform(normalizedPlan)
+      var newPlan = transform(transformAndAddCopyExec(normalizedPlan))
 
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)
@@ -767,14 +766,14 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     case ee: ExpandExec =>
       val newChild = wrapInCopyExec(ee.child)
       ee.copy(child = newChild)
-    case filter @ FilterExec(condition, _)
+    case filter @ FilterExec(condition, child)
         if condition.exists(expr =>
           expr.isInstanceOf[StartsWith] || expr.isInstanceOf[EndsWith] || expr
             .isInstanceOf[Contains]) =>
       // Some native expressions do not support operating on dictionary-encoded arrays, so
       // wrap the child in a CopyExec to unpack dictionaries first.
-      val newChild = wrapInCopyExec(filter.child)
-      filter.copy(child = newChild)
+      val newChild = wrapInCopyExec(child)
+      filter.copy(condition = filter.condition, child = newChild)
   }
 
   // Returns true if given operator can return input array as output array without
