@@ -1930,7 +1930,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case CopyExec(child, copyMode) => {
+      case CopyExec(child, copyMode) =>
         if (childOp.nonEmpty) {
           val copyModeBuilder = if (copyMode == UnpackOrDeepCopy) {
             OperatorOuterClass.CopyMode.UnpackOrClone
@@ -1945,7 +1945,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(op, child)
           None
         }
-      }
 
       case FilterExec(condition, child) if CometConf.COMET_EXEC_FILTER_ENABLED.get(conf) =>
         val cond = exprToProto(condition, child.output)
@@ -1969,6 +1968,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
           // Some native expressions do not support operating on dictionary-encoded arrays, so
           // wrap the child in a CopyExec to unpack dictionaries first.
+          // Should we re use the method??
           def wrapChildInCopyExec(condition: Expression): Boolean = {
             condition.exists(expr => {
               expr.isInstanceOf[StartsWith] || expr.isInstanceOf[EndsWith] || expr
@@ -1980,7 +1980,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             .newBuilder()
             .setPredicate(cond.get)
             .setUseDatafusionFilter(!containsNativeCometScan(op))
-            .setWrapChildInCopyExec(wrapChildInCopyExec(condition))
           Some(result.setFilter(filterBuilder).build())
         } else {
           withInfo(op, condition, child)

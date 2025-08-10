@@ -769,9 +769,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       ee.copy(child = newChild)
   }
 
-  /// Returns true if given operator can return input array as output array without
-  /// modification. This is used to determine if we need to copy the input batch to avoid
-  /// data corruption from reusing the input batch.
+  // Returns true if given operator can return input array as output array without
+  // modification. This is used to determine if we need to copy the input batch to avoid
+  // data corruption from reusing the input batch.
   @tailrec
   private def canReuseInputBatch(plan: SparkPlan): Boolean = {
     if (plan.isInstanceOf[ProjectExec] || plan.isInstanceOf[LocalLimitExec]) {

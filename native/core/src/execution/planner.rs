@@ -1021,7 +1021,7 @@ impl PhysicalPlanner {
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
                 let filter: Arc<dyn ExecutionPlan> =
-                    if !filter.wrap_child_in_copy_exec && filter.use_datafusion_filter {
+                    if filter.use_datafusion_filter {
                         Arc::new(DataFusionFilterExec::try_new(
                             predicate,
                             Arc::clone(&child.native_plan),
@@ -2907,7 +2907,6 @@ mod tests {
             op_struct: Some(OpStruct::Filter(spark_operator::Filter {
                 predicate: Some(expr),
                 use_datafusion_filter: false,
-                wrap_child_in_copy_exec: false,
             })),
         }
     }

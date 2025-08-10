@@ -112,7 +112,7 @@ message Filter {
   spark.spark_expression.Expr predicate = 1;
   bool use_datafusion_filter = 2;
   // Some expressions don't support dictionary arrays, so may need to wrap the child in a CopyExec
-  bool wrap_child_in_copy_exec = 3;
+//  bool wrap_child_in_copy_exec = 3;
 }
 
 message Sort {
