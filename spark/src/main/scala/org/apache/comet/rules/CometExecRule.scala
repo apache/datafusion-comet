@@ -674,7 +674,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         normalizePlan(plan)
       }
 
-      // FIXME: Should we move to separate Rule
       var newPlan = transform(transformAndAddCopyExec(normalizedPlan))
 
       // if the plan cannot be run fully natively then explain why (when appropriate
@@ -764,6 +763,12 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       val newChild = wrapInCopyExec(se.child)
       se.copy(child = newChild)
     case ee: ExpandExec =>
+      // `Expand` operator keeps the input batch and expands it to multiple output
+      // batches. However, `ScanExec` will reuse input arrays for the next
+      // input batch. Therefore, we need to copy the input batch to avoid
+      // the data corruption. Note that we only need to copy the input batch
+      // if the child operator is `ScanExec`, because other operators after `ScanExec`
+      // will create new arrays for the output batch.
       val newChild = wrapInCopyExec(ee.child)
       ee.copy(child = newChild)
     case filter @ FilterExec(condition, child)
@@ -784,7 +789,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     if (plan.isInstanceOf[ProjectExec] || plan.isInstanceOf[LocalLimitExec]) {
       canReuseInputBatch(plan.children.head)
     } else {
-      // FIXME
       plan.isInstanceOf[CometScanExec]
     }
   }

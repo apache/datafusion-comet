@@ -1020,18 +1020,17 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                let filter: Arc<dyn ExecutionPlan> =
-                    if filter.use_datafusion_filter {
-                        Arc::new(DataFusionFilterExec::try_new(
-                            predicate,
-                            Arc::clone(&child.native_plan),
-                        )?)
-                    } else {
-                        Arc::new(CometFilterExec::try_new(
-                            predicate,
-                            Arc::clone(&child.native_plan),
-                        )?)
-                    };
+                let filter: Arc<dyn ExecutionPlan> = if filter.use_datafusion_filter {
+                    Arc::new(DataFusionFilterExec::try_new(
+                        predicate,
+                        Arc::clone(&child.native_plan),
+                    )?)
+                } else {
+                    Arc::new(CometFilterExec::try_new(
+                        predicate,
+                        Arc::clone(&child.native_plan),
+                    )?)
+                };
 
                 Ok((
                     scans,
@@ -1367,21 +1366,7 @@ impl PhysicalPlanner {
                     .collect();
                 let schema = Arc::new(Schema::new(fields));
 
-                // `Expand` operator keeps the input batch and expands it to multiple output
-                // batches. However, `ScanExec` will reuse input arrays for the next
-                // input batch. Therefore, we need to copy the input batch to avoid
-                // the data corruption. Note that we only need to copy the input batch
-                // if the child operator is `ScanExec`, because other operators after `ScanExec`
-                // will create new arrays for the output batch.
-                let input = if can_reuse_input_batch(&child.native_plan) {
-                    // FIXME: handle me in Spark Planner
-                    Arc::new(CopyExec::new(
-                        Arc::clone(&child.native_plan),
-                        CopyMode::UnpackOrDeepCopy,
-                    ))
-                } else {
-                    Arc::clone(&child.native_plan)
-                };
+                let input = Arc::clone(&child.native_plan);
                 let expand = Arc::new(ExpandExec::new(projections, input, schema));
                 Ok((
                     scans,
