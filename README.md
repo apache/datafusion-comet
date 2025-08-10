@@ -34,6 +34,8 @@ Apache DataFusion Comet is a high-performance accelerator for Apache Spark, buil
 performance of Apache Spark workloads while leveraging commodity hardware and seamlessly integrating with the
 Spark ecosystem without requiring any code changes.
 
+Comet also accelerates Apache Iceberg, when performing Parquet scans from Spark. 
+
 [Apache DataFusion]: https://datafusion.apache.org
 
 # Benefits of Using Comet
@@ -46,7 +48,7 @@ The following chart shows the time it takes to run the 22 TPC-H queries against 
 using a single executor with 8 cores. See the [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html)
 for details of the environment used for these benchmarks.
 
-When using Comet, the overall run time is reduced from 616 seconds to 275 seconds, a 2.2x speedup.
+When using Comet, the overall run time is reduced from 652 seconds to 268 seconds, a 2.4x speedup.
 
 ![](docs/source/_static/images/benchmark-results/0.9.0/tpch_allqueries.png)
 

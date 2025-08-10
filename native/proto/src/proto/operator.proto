@@ -111,6 +111,8 @@ message Projection {
 message Filter {
   spark.spark_expression.Expr predicate = 1;
   bool use_datafusion_filter = 2;
+  // Some expressions don't support dictionary arrays, so may need to wrap the child in a CopyExec
+  bool wrap_child_in_copy_exec = 3;
 }
 
 message Sort {
@@ -178,9 +180,7 @@ enum JoinType {
   RightOuter = 2;
   FullOuter = 3;
   LeftSemi = 4;
-  RightSemi = 5;
-  LeftAnti = 6;
-  RightAnti = 7;
+  LeftAnti = 5;
 }
 
 enum BuildSide {

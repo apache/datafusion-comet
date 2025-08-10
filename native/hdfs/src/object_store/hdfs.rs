@@ -32,7 +32,7 @@ use hdfs::walkdir::HdfsWalkDir;
 use object_store::{
     path::{self, Path},
     Error, GetOptions, GetRange, GetResult, GetResultPayload, ListResult, MultipartUpload,
-    ObjectMeta, ObjectStore, PutMultipartOpts, PutOptions, PutPayload, PutResult, Result,
+    ObjectMeta, ObjectStore, PutMultipartOptions, PutOptions, PutPayload, PutResult, Result,
 };
 
 /// scheme for HDFS File System
@@ -88,19 +88,33 @@ impl HadoopFileSystem {
 
     fn read_range(range: &Range<u64>, file: &HdfsFile) -> Result<Bytes> {
         let to_read = (range.end - range.start) as usize;
+        let mut total_read = 0;
         let mut buf = vec![0; to_read];
-        let read = file
-            .read_with_pos(range.start as i64, buf.as_mut_slice())
-            .map_err(to_error)?;
-        assert_eq!(
-            to_read as i32,
-            read,
-            "Read path {} from {} with expected size {} and actual size {}",
-            file.path(),
-            range.start,
-            to_read,
-            read
-        );
+        while total_read < to_read {
+            let read = file
+                .read_with_pos(
+                    (range.start + total_read as u64) as i64,
+                    buf[total_read..].as_mut(),
+                )
+                .map_err(to_error)?;
+            if read <= 0 {
+                break;
+            }
+            total_read += read as usize;
+        }
+
+        if total_read != to_read {
+            return Err(Error::Generic {
+                store: "HadoopFileSystem",
+                source: Box::new(HdfsErr::Generic(format!(
+                    "Error reading path {} at position {} with expected size {} and actual size {}",
+                    file.path(),
+                    range.start,
+                    to_read,
+                    total_read
+                ))),
+            });
+        }
         Ok(buf.into())
     }
 }
@@ -125,7 +139,7 @@ impl ObjectStore for HadoopFileSystem {
     async fn put_multipart_opts(
         &self,
         _location: &Path,
-        _opts: PutMultipartOpts,
+        _opts: PutMultipartOptions,
     ) -> object_store::Result<Box<dyn MultipartUpload>> {
         unimplemented!()
     }
@@ -141,13 +155,27 @@ impl ObjectStore for HadoopFileSystem {
             let file_status = file.get_file_status().map_err(to_error)?;
 
             let to_read = file_status.len();
+            let mut total_read = 0;
             let mut buf = vec![0; to_read];
-            let read = file.read(buf.as_mut_slice()).map_err(to_error)?;
-            assert_eq!(
-                to_read as i32, read,
-                "Read path {} with expected size {} and actual size {}",
-                &location, to_read, read
-            );
+            while total_read < to_read {
+                let read = file.read(buf.as_mut_slice()).map_err(to_error)?;
+                if read <= 0 {
+                    break;
+                }
+                total_read += read as usize;
+            }
+
+            if total_read != to_read {
+                return Err(Error::Generic {
+                    store: "HadoopFileSystem",
+                    source: Box::new(HdfsErr::Generic(format!(
+                        "Error reading path {} with expected size {} and actual size {}",
+                        file.path(),
+                        to_read,
+                        total_read
+                    ))),
+                });
+            }
 
             file.close().map_err(to_error)?;
 
