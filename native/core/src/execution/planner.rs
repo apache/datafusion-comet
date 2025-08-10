@@ -1021,23 +1021,16 @@ impl PhysicalPlanner {
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
                 let filter: Arc<dyn ExecutionPlan> =
-                    match (filter.wrap_child_in_copy_exec, filter.use_datafusion_filter) {
-                        (true, true) => Arc::new(DataFusionFilterExec::try_new(
-                            predicate,
-                            Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
-                        )?),
-                        (true, false) => Arc::new(CometFilterExec::try_new(
-                            predicate,
-                            Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
-                        )?),
-                        (false, true) => Arc::new(DataFusionFilterExec::try_new(
+                    if !filter.wrap_child_in_copy_exec && filter.use_datafusion_filter {
+                        Arc::new(DataFusionFilterExec::try_new(
                             predicate,
                             Arc::clone(&child.native_plan),
-                        )?),
-                        (false, false) => Arc::new(CometFilterExec::try_new(
+                        )?)
+                    } else {
+                        Arc::new(CometFilterExec::try_new(
                             predicate,
                             Arc::clone(&child.native_plan),
-                        )?),
+                        )?)
                     };
 
                 Ok((
@@ -1149,8 +1142,11 @@ impl PhysicalPlanner {
 
                 let fetch = sort.fetch.map(|num| num as usize);
                 let sort = Arc::new(
-                    SortExec::new(LexOrdering::new(exprs?).unwrap(), Arc::clone(&child.native_plan))
-                        .with_fetch(fetch),
+                    SortExec::new(
+                        LexOrdering::new(exprs?).unwrap(),
+                        Arc::clone(&child.native_plan),
+                    )
+                    .with_fetch(fetch),
                 );
 
                 Ok((

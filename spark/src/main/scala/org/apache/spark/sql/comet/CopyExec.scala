@@ -30,7 +30,7 @@ case class CopyExec(override val child: SparkPlan, copyMode: CopyMode) extends U
     // during native execution offload to handle data deep copying/cloning Record batches
     // The actual execution happens in the native layer through CometExecNode.
     throw new UnsupportedOperationException(
-      "This method should not be called directly - this operator is meant for internal purposes only")
+      "This method should not be called directly - CopyExec operator is meant for internal purposes only")
   }
   override def output: Seq[Attribute] = child.output
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
