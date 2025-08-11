@@ -19,13 +19,16 @@
 
 package org.apache.comet.serde
 
+import java.util.Locale
+
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Like, Literal, RLike, StringRPad, Substring}
 import org.apache.spark.sql.types.{DataTypes, LongType, StringType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{castToProto, createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
 object CometStringRepeat extends CometExpressionSerde {
 
@@ -176,6 +179,33 @@ object CometStringRPad extends CometExpressionSerde {
           exprToProtoInternal(stringRPad.len, inputs, binding))
       case _ =>
         withInfo(expr, "StringRPad with non-space characters is not supported")
+        None
+    }
+  }
+}
+
+trait CommonStringExprs {
+
+  def stringDecode(
+      expr: Expression,
+      charset: Expression,
+      bin: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    charset match {
+      case Literal(str, DataTypes.StringType)
+          if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
+        // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
+        // for invalid strings.
+        // Left child is the binary expression.
+        castToProto(
+          expr,
+          None,
+          DataTypes.StringType,
+          exprToProtoInternal(bin, inputs, binding).get,
+          CometEvalMode.TRY)
+      case _ =>
+        withInfo(expr, "Comet only supports decoding with 'utf-8'.")
         None
     }
   }
