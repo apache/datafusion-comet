@@ -23,23 +23,20 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.sql.execution.ProjectExec
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
 
 object CometProjectExec extends CometOperatorSerde[ProjectExec] {
 
+  override def enabledConfig: Option[ConfigEntry[Boolean]] =
+    Some(CometConf.COMET_EXEC_PROJECT_ENABLED)
+
   override def convert(
       op: ProjectExec,
       builder: Operator.Builder,
       childOp: Operator*): Option[OperatorOuterClass.Operator] = {
-    if (!CometConf.COMET_EXEC_PROJECT_ENABLED.get(op.conf)) {
-      withInfo(
-        op,
-        s"CometProjectExec is disabled. Set ${CometConf.COMET_EXEC_PROJECT_ENABLED.key}=true to enable it.")
-      return None
-    }
     val exprs = op.projectList.map(exprToProto(_, op.child.output))
 
     if (exprs.forall(_.isDefined) && childOp.nonEmpty) {

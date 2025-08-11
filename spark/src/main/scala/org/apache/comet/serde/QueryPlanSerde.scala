@@ -47,7 +47,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
 import org.apache.comet.expressions._
 import org.apache.comet.objectstore.NativeConfig
@@ -2234,6 +2234,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case op =>
         opSerdeMap.get(op.getClass) match {
           case Some(handler) =>
+            handler.enabledConfig match {
+              case Some(enabledConfig) =>
+                if (!enabledConfig.get(op.conf)) {
+                  withInfo(
+                    op,
+                    s"Native support for operator ${op.getClass.getSimpleName} is disabled. " +
+                      s"Set ${enabledConfig.key}=true to enable it.")
+                  return None
+                }
+              case _ =>
+            }
             handler.asInstanceOf[CometOperatorSerde[SparkPlan]].convert(op, builder, childOp: _*)
           case _ =>
             // Emit warning if:
@@ -2421,13 +2432,19 @@ trait CometOperatorSerde[T <: SparkPlan] {
    *   Child operators that have already been converted to Comet.
    * @return
    *   Protocol buffer representation, or None if the operator could not be converted. In this
-   *   case it is expected that the input operator will have been tagged with reasons why it
-   *   could not be converted.
+   *   case it is expected that the input operator will have been tagged with reasons why it could
+   *   not be converted.
    */
   def convert(
       op: T,
       builder: Operator.Builder,
       childOp: Operator*): Option[OperatorOuterClass.Operator]
+
+  /**
+   * Get the optional Comet configuration entry that is used to enable or disable native support
+   * for this operator.
+   */
+  def enabledConfig: Option[ConfigEntry[Boolean]]
 }
 
 /**
