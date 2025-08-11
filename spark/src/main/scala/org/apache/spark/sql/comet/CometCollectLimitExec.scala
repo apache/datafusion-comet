@@ -62,15 +62,10 @@ case class CometCollectLimitExec(
     new UnsafeRowSerializer(child.output.size, longMetric("dataSize"))
 
   override def executeCollect(): Array[InternalRow] = {
-    if (limit >= 0) {
-      if (offset > 0) {
-        ColumnarToRowExec(child).executeTake(limit).drop(offset)
-      } else {
-        ColumnarToRowExec(child).executeTake(limit)
-      }
-    } else {
-      ColumnarToRowExec(child).executeCollect().drop(offset)
-    }
+  val rows = if (limit >= 0) ColumnarToRowExec(child).executeTake(limit)
+             else ColumnarToRowExec(child).executeCollect()
+  if (offset > 0) rows.drop(offset) else rows
+}
   }
 
   protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
