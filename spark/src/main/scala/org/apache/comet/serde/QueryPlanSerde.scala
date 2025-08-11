@@ -2419,6 +2419,10 @@ trait CometOperatorSerde[T <: SparkPlan] {
    *   The protobuf builder for the operator.
    * @param childO
    *   Child operators that have already been converted to Comet.
+   * @return
+   *   Protocol buffer representation, or None if the operator could not be converted. In this
+   *   case it is expected that the input operator will have been tagged with reasons why it
+   *   could not be converted.
    */
   def convert(
       op: T,
