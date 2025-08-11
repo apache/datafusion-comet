@@ -85,6 +85,13 @@ use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
+use arrow::array::{
+    BinaryBuilder, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
+    Int16Array, Int32Array, Int64Array, Int8Array, NullArray, StringBuilder,
+    TimestampMicrosecondArray,
+};
+use arrow::buffer::BooleanBuffer;
+use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
@@ -473,6 +480,125 @@ impl PhysicalPlanner {
                                         "Decimal literal's data type should be Decimal128 but got {dt:?}"
                                     )))
                                 }
+                            }
+                        },
+                        Value::ListVal(values) => {
+                            if let DataType::List(f) = data_type {
+                                match f.data_type() {
+                                    DataType::Null => {
+                                        SingleRowListArrayBuilder::new(Arc::new(NullArray::new(values.clone().null_mask.len())))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Boolean => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(BooleanArray::new(BooleanBuffer::from(vals.boolean_values), Some(vals.null_mask.into()))))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Int8 => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(Int8Array::new(vals.byte_values.iter().map(|&x| x as i8).collect::<Vec<_>>().into(), Some(vals.null_mask.into()))))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Int16 => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(Int16Array::new(vals.short_values.iter().map(|&x| x as i16).collect::<Vec<_>>().into(), Some(vals.null_mask.into()))))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Int32 => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(Int32Array::new(vals.int_values.into(), Some(vals.null_mask.into()))))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Int64 => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(Int64Array::new(vals.long_values.into(), Some(vals.null_mask.into()))))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Float32 => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(Float32Array::new(vals.float_values.into(), Some(vals.null_mask.into()))))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Float64 => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(Float64Array::new(vals.double_values.into(), Some(vals.null_mask.into()))))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Timestamp(TimeUnit::Microsecond, None) => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(TimestampMicrosecondArray::new(vals.long_values.into(), Some(vals.null_mask.into()))))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(TimestampMicrosecondArray::new(vals.long_values.into(), Some(vals.null_mask.into())).with_timezone(Arc::clone(tz))))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Date32 => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(Date32Array::new(vals.int_values.into(), Some(vals.null_mask.into()))))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Binary => {
+                                        // Using a builder as it is cumbersome to create BinaryArray from a vector with nulls
+                                        // and calculate correct offsets
+                                        let vals = values.clone();
+                                        let item_capacity = vals.string_values.len();
+                                        let data_capacity = vals.string_values.first().map(|s| s.len() * item_capacity).unwrap_or(0);
+                                        let mut arr = BinaryBuilder::with_capacity(item_capacity, data_capacity);
+
+                                        for (i, v) in vals.bytes_values.into_iter().enumerate() {
+                                            if vals.null_mask[i] {
+                                                arr.append_value(v);
+                                            } else {
+                                                arr.append_null();
+                                            }
+                                        }
+
+                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Utf8 => {
+                                        // Using a builder as it is cumbersome to create StringArray from a vector with nulls
+                                        // and calculate correct offsets
+                                        let vals = values.clone();
+                                        let item_capacity = vals.string_values.len();
+                                        let data_capacity = vals.string_values.first().map(|s| s.len() * item_capacity).unwrap_or(0);
+                                        let mut arr = StringBuilder::with_capacity(item_capacity, data_capacity);
+
+                                        for (i, v) in vals.string_values.into_iter().enumerate() {
+                                            if vals.null_mask[i] {
+                                                arr.append_value(v);
+                                            } else {
+                                                arr.append_null();
+                                            }
+                                        }
+
+                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Decimal128(p, s) => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(Decimal128Array::new(vals.decimal_values.into_iter().map(|v| {
+                                            let big_integer = BigInt::from_signed_bytes_be(&v);
+                                            big_integer.to_i128().ok_or_else(|| {
+                                                GeneralError(format!(
+                                                    "Cannot parse {big_integer:?} as i128 for Decimal literal"
+                                                ))
+                                            }).unwrap()
+                                        }).collect::<Vec<_>>().into(), Some(vals.null_mask.into())).with_precision_and_scale(*p, *s)?)).build_list_scalar()
+                                    }
+                                    dt => {
+                                        return Err(GeneralError(format!(
+                                            "DataType::List literal does not support {dt:?} type"
+                                        )))
+                                    }
+                                }
+
+                            } else {
+                                return Err(GeneralError(format!(
+                                    "Expected DataType::List but got {data_type:?}"
+                                )))
                             }
                         }
                     }
@@ -1300,6 +1426,7 @@ impl PhysicalPlanner {
                 // The `ScanExec` operator will take actual arrays from Spark during execution
                 let scan =
                     ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?;
+
                 Ok((
                     vec![scan.clone()],
                     Arc::new(SparkPlan::new(spark_plan.plan_id, Arc::new(scan), vec![])),
@@ -2322,7 +2449,6 @@ impl PhysicalPlanner {
                         other => other,
                     };
                     let func = self.session_ctx.udf(fun_name)?;
-
                     let coerced_types = func
                         .coerce_types(&input_expr_types)
                         .unwrap_or_else(|_| input_expr_types.clone());

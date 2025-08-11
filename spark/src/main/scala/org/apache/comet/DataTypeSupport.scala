@@ -74,4 +74,9 @@ object DataTypeSupport {
   val ARRAY_ELEMENT = "array element"
   val MAP_KEY = "map key"
   val MAP_VALUE = "map value"
+
+  def isComplexType(dt: DataType): Boolean = dt match {
+    case _: StructType | _: ArrayType | _: MapType => true
+    case _ => false
+  }
 }
