@@ -19,8 +19,6 @@
 
 package org.apache.comet.serde
 
-import java.util.Locale
-
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ListBuffer
 
@@ -30,7 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
-import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
+import org.apache.spark.sql.catalyst.util.{CharVarcharCodegenUtils, GenericArrayData}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
@@ -47,14 +45,18 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
+import com.google.protobuf.ByteString
+
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
+import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.expressions._
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType._
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.Types.ListLiteral
 import org.apache.comet.shims.CometExprShim
 
 /**
@@ -65,7 +67,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
   /**
    * Mapping of Spark expression class to Comet expression handler.
    */
-  private val exprSerdeMap: Map[Class[_], CometExpressionSerde] = Map(
+  private val exprSerdeMap: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Add] -> CometAdd,
     classOf[Subtract] -> CometSubtract,
     classOf[Multiply] -> CometMultiply,
@@ -92,6 +94,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[BitwiseCount] -> CometBitwiseCount,
     classOf[BitwiseGet] -> CometBitwiseGet,
     classOf[BitwiseNot] -> CometBitwiseNot,
+    classOf[BitwiseAnd] -> CometBitwiseAnd,
     classOf[BitwiseOr] -> CometBitwiseOr,
     classOf[BitwiseXor] -> CometBitwiseXor,
     classOf[BitLength] -> CometScalarFunction("bit_length"),
@@ -635,7 +638,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       binding: Boolean): Option[Expr] = {
     SQLConf.get
 
-    def convert(handler: CometExpressionSerde): Option[Expr] = {
+    def convert[T <: Expression](expr: T, handler: CometExpressionSerde[T]): Option[Expr] = {
       handler match {
         case _: IncompatExpr if !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() =>
           withInfo(
@@ -711,8 +714,53 @@ object QueryPlanSerde extends Logging with CometExprShim {
           binding,
           (builder, binaryExpr) => builder.setNeqNullSafe(binaryExpr))
 
+      case GreaterThan(left, right) =>
+        createBinaryExpr(
+          expr,
+          left,
+          right,
+          inputs,
+          binding,
+          (builder, binaryExpr) => builder.setGt(binaryExpr))
+
+      case GreaterThanOrEqual(left, right) =>
+        createBinaryExpr(
+          expr,
+          left,
+          right,
+          inputs,
+          binding,
+          (builder, binaryExpr) => builder.setGtEq(binaryExpr))
+
+      case LessThan(left, right) =>
+        createBinaryExpr(
+          expr,
+          left,
+          right,
+          inputs,
+          binding,
+          (builder, binaryExpr) => builder.setLt(binaryExpr))
+
+      case LessThanOrEqual(left, right) =>
+        createBinaryExpr(
+          expr,
+          left,
+          right,
+          inputs,
+          binding,
+          (builder, binaryExpr) => builder.setLtEq(binaryExpr))
+
       case Literal(value, dataType)
-          if supportedDataType(dataType, allowComplex = value == null) =>
+          if supportedDataType(
+            dataType,
+            allowComplex = value == null ||
+              // Nested literal support for native reader
+              // can be tracked https://github.com/apache/datafusion-comet/issues/1937
+              // now supports only Array of primitive
+              (Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION)
+                .contains(CometConf.COMET_NATIVE_SCAN_IMPL.get()) && dataType
+                .isInstanceOf[ArrayType]) && !isComplexType(
+                dataType.asInstanceOf[ArrayType].elementType)) =>
         val exprBuilder = ExprOuterClass.Literal.newBuilder()
 
         if (value == null) {
@@ -723,14 +771,13 @@ object QueryPlanSerde extends Logging with CometExprShim {
             case _: BooleanType => exprBuilder.setBoolVal(value.asInstanceOf[Boolean])
             case _: ByteType => exprBuilder.setByteVal(value.asInstanceOf[Byte])
             case _: ShortType => exprBuilder.setShortVal(value.asInstanceOf[Short])
-            case _: IntegerType => exprBuilder.setIntVal(value.asInstanceOf[Int])
-            case _: LongType => exprBuilder.setLongVal(value.asInstanceOf[Long])
+            case _: IntegerType | _: DateType => exprBuilder.setIntVal(value.asInstanceOf[Int])
+            case _: LongType | _: TimestampType | _: TimestampNTZType =>
+              exprBuilder.setLongVal(value.asInstanceOf[Long])
             case _: FloatType => exprBuilder.setFloatVal(value.asInstanceOf[Float])
             case _: DoubleType => exprBuilder.setDoubleVal(value.asInstanceOf[Double])
             case _: StringType =>
               exprBuilder.setStringVal(value.asInstanceOf[UTF8String].toString)
-            case _: TimestampType => exprBuilder.setLongVal(value.asInstanceOf[Long])
-            case _: TimestampNTZType => exprBuilder.setLongVal(value.asInstanceOf[Long])
             case _: DecimalType =>
               // Pass decimal literal as bytes.
               val unscaled = value.asInstanceOf[Decimal].toBigDecimal.underlying.unscaledValue
@@ -740,7 +787,87 @@ object QueryPlanSerde extends Logging with CometExprShim {
               val byteStr =
                 com.google.protobuf.ByteString.copyFrom(value.asInstanceOf[Array[Byte]])
               exprBuilder.setBytesVal(byteStr)
-            case _: DateType => exprBuilder.setIntVal(value.asInstanceOf[Int])
+            case a: ArrayType =>
+              val listLiteralBuilder = ListLiteral.newBuilder()
+              val array = value.asInstanceOf[GenericArrayData].array
+              a.elementType match {
+                case NullType =>
+                  array.foreach(_ => listLiteralBuilder.addNullMask(true))
+                case BooleanType =>
+                  array.foreach(v => {
+                    val casted = v.asInstanceOf[java.lang.Boolean]
+                    listLiteralBuilder.addBooleanValues(casted)
+                    listLiteralBuilder.addNullMask(casted != null)
+                  })
+                case ByteType =>
+                  array.foreach(v => {
+                    val casted = v.asInstanceOf[java.lang.Integer]
+                    listLiteralBuilder.addByteValues(casted)
+                    listLiteralBuilder.addNullMask(casted != null)
+                  })
+                case ShortType =>
+                  array.foreach(v => {
+                    val casted = v.asInstanceOf[java.lang.Short]
+                    listLiteralBuilder.addShortValues(
+                      if (casted != null) casted.intValue()
+                      else null.asInstanceOf[java.lang.Integer])
+                    listLiteralBuilder.addNullMask(casted != null)
+                  })
+                case IntegerType | DateType =>
+                  array.foreach(v => {
+                    val casted = v.asInstanceOf[java.lang.Integer]
+                    listLiteralBuilder.addIntValues(casted)
+                    listLiteralBuilder.addNullMask(casted != null)
+                  })
+                case LongType | TimestampType | TimestampNTZType =>
+                  array.foreach(v => {
+                    val casted = v.asInstanceOf[java.lang.Long]
+                    listLiteralBuilder.addLongValues(casted)
+                    listLiteralBuilder.addNullMask(casted != null)
+                  })
+                case FloatType =>
+                  array.foreach(v => {
+                    val casted = v.asInstanceOf[java.lang.Float]
+                    listLiteralBuilder.addFloatValues(casted)
+                    listLiteralBuilder.addNullMask(casted != null)
+                  })
+                case DoubleType =>
+                  array.foreach(v => {
+                    val casted = v.asInstanceOf[java.lang.Double]
+                    listLiteralBuilder.addDoubleValues(casted)
+                    listLiteralBuilder.addNullMask(casted != null)
+                  })
+                case StringType =>
+                  array.foreach(v => {
+                    val casted = v.asInstanceOf[org.apache.spark.unsafe.types.UTF8String]
+                    listLiteralBuilder.addStringValues(
+                      if (casted != null) casted.toString else "")
+                    listLiteralBuilder.addNullMask(casted != null)
+                  })
+                case _: DecimalType =>
+                  array
+                    .foreach(v => {
+                      val casted =
+                        v.asInstanceOf[Decimal]
+                      listLiteralBuilder.addDecimalValues(if (casted != null) {
+                        com.google.protobuf.ByteString
+                          .copyFrom(casted.toBigDecimal.underlying.unscaledValue.toByteArray)
+                      } else ByteString.EMPTY)
+                      listLiteralBuilder.addNullMask(casted != null)
+                    })
+                case _: BinaryType =>
+                  array
+                    .foreach(v => {
+                      val casted =
+                        v.asInstanceOf[Array[Byte]]
+                      listLiteralBuilder.addBytesValues(if (casted != null) {
+                        com.google.protobuf.ByteString.copyFrom(casted)
+                      } else ByteString.EMPTY)
+                      listLiteralBuilder.addNullMask(casted != null)
+                    })
+              }
+              exprBuilder.setListVal(listLiteralBuilder.build())
+              exprBuilder.setDatatype(serializeDataType(dataType).get)
             case dt =>
               logWarning(s"Unexpected datatype '$dt' for literal value '$value'")
           }
@@ -1198,8 +1325,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
           binding,
           (builder, binaryExpr) => builder.setBitwiseAnd(binaryExpr))
 
-      case Not(In(_, _)) =>
-        CometNotIn.convert(expr, inputs, binding)
+      case n @ Not(In(_, _)) =>
+        CometNotIn.convert(n, inputs, binding)
 
       case Not(child) =>
         createUnaryExpr(
@@ -1417,40 +1544,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(expr, "unsupported arguments for GetArrayStructFields", child)
           None
         }
-      case _ @ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
-        convert(CometArrayCompact)
+      case af @ ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
+        convert(af, CometArrayCompact)
       case expr =>
         QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
-          case Some(handler) => convert(handler)
+          case Some(handler) =>
+            convert(expr, handler.asInstanceOf[CometExpressionSerde[Expression]])
           case _ =>
             withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
             None
         }
     })
-  }
-
-  def stringDecode(
-      expr: Expression,
-      charset: Expression,
-      bin: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    charset match {
-      case Literal(str, DataTypes.StringType)
-          if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
-        // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
-        // for invalid strings.
-        // Left child is the binary expression.
-        castToProto(
-          expr,
-          None,
-          DataTypes.StringType,
-          exprToProtoInternal(bin, inputs, binding).get,
-          CometEvalMode.TRY)
-      case _ =>
-        withInfo(expr, "Comet only supports decoding with 'utf-8'.")
-        None
-    }
   }
 
   /**
@@ -2351,7 +2455,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
 /**
  * Trait for providing serialization logic for expressions.
  */
-trait CometExpressionSerde {
+trait CometExpressionSerde[T <: Expression] {
 
   /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into
@@ -2368,10 +2472,7 @@ trait CometExpressionSerde {
    *   case it is expected that the input expression will have been tagged with reasons why it
    *   could not be converted.
    */
-  def convert(
-      expr: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr]
+  def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[ExprOuterClass.Expr]
 }
 
 /**
@@ -2410,11 +2511,8 @@ trait CometAggregateExpressionSerde {
 trait IncompatExpr {}
 
 /** Serde for scalar function. */
-case class CometScalarFunction(name: String) extends CometExpressionSerde {
-  override def convert(
-      expr: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
+case class CometScalarFunction[T <: Expression](name: String) extends CometExpressionSerde[T] {
+  override def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProto(name, childExpr: _*)
     optExprWithInfo(optExpr, expr, expr.children: _*)

@@ -21,12 +21,11 @@ package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal, MonotonicallyIncreasingID, Rand, Randn, SparkPartitionID}
 
-object CometSparkPartitionId extends CometExpressionSerde {
+object CometSparkPartitionId extends CometExpressionSerde[SparkPartitionID] {
   override def convert(
-      expr: Expression,
+      expr: SparkPartitionID,
       _inputs: Seq[Attribute],
       _binding: Boolean): Option[ExprOuterClass.Expr] = {
-    assert(expr.isInstanceOf[SparkPartitionID])
     Some(
       ExprOuterClass.Expr
         .newBuilder()
@@ -35,12 +34,11 @@ object CometSparkPartitionId extends CometExpressionSerde {
   }
 }
 
-object CometMonotonicallyIncreasingId extends CometExpressionSerde {
+object CometMonotonicallyIncreasingId extends CometExpressionSerde[MonotonicallyIncreasingID] {
   override def convert(
-      expr: Expression,
+      expr: MonotonicallyIncreasingID,
       _inputs: Seq[Attribute],
       _binding: Boolean): Option[ExprOuterClass.Expr] = {
-    assert(expr.isInstanceOf[MonotonicallyIncreasingID])
     Some(
       ExprOuterClass.Expr
         .newBuilder()
@@ -49,7 +47,7 @@ object CometMonotonicallyIncreasingId extends CometExpressionSerde {
   }
 }
 
-sealed abstract class CometRandCommonSerde extends CometExpressionSerde {
+sealed abstract class CometRandCommonSerde[T <: Expression] extends CometExpressionSerde[T] {
   protected def extractSeedFromExpr(expr: Expression): Option[Long] = {
     expr match {
       case Literal(seed: Long, _) => Some(seed)
@@ -59,13 +57,12 @@ sealed abstract class CometRandCommonSerde extends CometExpressionSerde {
   }
 }
 
-object CometRand extends CometRandCommonSerde {
+object CometRand extends CometRandCommonSerde[Rand] {
   override def convert(
-      expr: Expression,
+      expr: Rand,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val Rand(child, _) = expr
-    extractSeedFromExpr(child).map { seed =>
+    extractSeedFromExpr(expr.child).map { seed =>
       ExprOuterClass.Expr
         .newBuilder()
         .setRand(ExprOuterClass.Rand.newBuilder().setSeed(seed))
@@ -74,13 +71,12 @@ object CometRand extends CometRandCommonSerde {
   }
 }
 
-object CometRandn extends CometRandCommonSerde {
+object CometRandn extends CometRandCommonSerde[Randn] {
   override def convert(
-      expr: Expression,
+      expr: Randn,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val Randn(child, _) = expr
-    extractSeedFromExpr(child).map { seed =>
+    extractSeedFromExpr(expr.child).map { seed =>
       ExprOuterClass.Expr
         .newBuilder()
         .setRandn(ExprOuterClass.Rand.newBuilder().setSeed(seed))

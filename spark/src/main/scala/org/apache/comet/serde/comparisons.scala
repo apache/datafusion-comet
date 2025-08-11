@@ -28,153 +28,137 @@ import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde._
 
-object CometGreaterThan extends CometExpressionSerde {
+object CometGreaterThan extends CometExpressionSerde[GreaterThan] {
   override def convert(
-      expr: Expression,
+      expr: GreaterThan,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val greaterThan = expr.asInstanceOf[GreaterThan]
-
     createBinaryExpr(
       expr,
-      greaterThan.left,
-      greaterThan.right,
+      expr.left,
+      expr.right,
       inputs,
       binding,
       (builder, binaryExpr) => builder.setGt(binaryExpr))
   }
 }
 
-object CometGreaterThanOrEqual extends CometExpressionSerde {
+object CometGreaterThanOrEqual extends CometExpressionSerde[GreaterThanOrEqual] {
   override def convert(
-      expr: Expression,
+      expr: GreaterThanOrEqual,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val greaterThanOrEqual = expr.asInstanceOf[GreaterThanOrEqual]
-
     createBinaryExpr(
       expr,
-      greaterThanOrEqual.left,
-      greaterThanOrEqual.right,
+      expr.left,
+      expr.right,
       inputs,
       binding,
       (builder, binaryExpr) => builder.setGtEq(binaryExpr))
   }
 }
 
-object CometLessThan extends CometExpressionSerde {
+object CometLessThan extends CometExpressionSerde[LessThan] {
   override def convert(
-      expr: Expression,
+      expr: LessThan,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val lessThan = expr.asInstanceOf[LessThan]
-
     createBinaryExpr(
       expr,
-      lessThan.left,
-      lessThan.right,
+      expr.left,
+      expr.right,
       inputs,
       binding,
       (builder, binaryExpr) => builder.setLt(binaryExpr))
   }
 }
 
-object CometLessThanOrEqual extends CometExpressionSerde {
+object CometLessThanOrEqual extends CometExpressionSerde[LessThanOrEqual] {
   override def convert(
-      expr: Expression,
+      expr: LessThanOrEqual,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val lessThanOrEqual = expr.asInstanceOf[LessThanOrEqual]
-
     createBinaryExpr(
       expr,
-      lessThanOrEqual.left,
-      lessThanOrEqual.right,
+      expr.left,
+      expr.right,
       inputs,
       binding,
       (builder, binaryExpr) => builder.setLtEq(binaryExpr))
   }
 }
 
-object CometIsNull extends CometExpressionSerde {
+object CometIsNull extends CometExpressionSerde[IsNull] {
   override def convert(
-      expr: Expression,
+      expr: IsNull,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val isNull = expr.asInstanceOf[IsNull]
-
     createUnaryExpr(
       expr,
-      isNull.child,
+      expr.child,
       inputs,
       binding,
       (builder, unaryExpr) => builder.setIsNull(unaryExpr))
   }
 }
 
-object CometIsNotNull extends CometExpressionSerde {
+object CometIsNotNull extends CometExpressionSerde[IsNotNull] {
   override def convert(
-      expr: Expression,
+      expr: IsNotNull,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val isNotNull = expr.asInstanceOf[IsNotNull]
-
     createUnaryExpr(
       expr,
-      isNotNull.child,
+      expr.child,
       inputs,
       binding,
       (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
   }
 }
 
-object CometIsNaN extends CometExpressionSerde {
+object CometIsNaN extends CometExpressionSerde[IsNaN] {
   override def convert(
-      expr: Expression,
+      expr: IsNaN,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val isNaN = expr.asInstanceOf[IsNaN]
-    val childExpr = exprToProtoInternal(isNaN.child, inputs, binding)
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val optExpr = scalarFunctionExprToProtoWithReturnType("isnan", BooleanType, childExpr)
 
-    optExprWithInfo(optExpr, expr, isNaN.child)
+    optExprWithInfo(optExpr, expr, expr.child)
   }
 }
 
-object CometIn extends CometExpressionSerde {
+object CometIn extends CometExpressionSerde[In] {
   override def convert(
-      expr: Expression,
+      expr: In,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val inExpr = expr.asInstanceOf[In]
-    ComparisonUtils.in(expr, inExpr.value, inExpr.list, inputs, binding, negate = false)
+    ComparisonUtils.in(expr, expr.value, expr.list, inputs, binding, negate = false)
   }
 }
 
-object CometNotIn extends CometExpressionSerde {
+object CometNotIn extends CometExpressionSerde[Not] {
   override def convert(
-      expr: Expression,
+      expr: Not,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val notExpr = expr.asInstanceOf[Not]
-    val inExpr = notExpr.child.asInstanceOf[In]
+    val inExpr = expr.child.asInstanceOf[In]
     ComparisonUtils.in(expr, inExpr.value, inExpr.list, inputs, binding, negate = true)
   }
 }
 
-object CometInSet extends CometExpressionSerde {
+object CometInSet extends CometExpressionSerde[InSet] {
   override def convert(
-      expr: Expression,
+      expr: InSet,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val inSetExpr = expr.asInstanceOf[InSet]
-    val valueDataType = inSetExpr.child.dataType
-    val list = inSetExpr.hset.map { setVal =>
+    val valueDataType = expr.child.dataType
+    val list = expr.hset.map { setVal =>
       Literal(setVal, valueDataType)
     }.toSeq
     // Change `InSet` to `In` expression
     // We do Spark `InSet` optimization in native (DataFusion) side.
-    ComparisonUtils.in(expr, inSetExpr.child, list, inputs, binding, negate = false)
+    ComparisonUtils.in(expr, expr.child, list, inputs, binding, negate = false)
   }
 }
 

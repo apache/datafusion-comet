@@ -22,7 +22,7 @@ updates:
     schedule:
       interval: weekly
     target-branch: main
-    labels: [auto-dependencies]
+    labels: [dependencies]
     ignore:
       # major version bumps of datafusion*, arrow*, parquet are handled manually
       - dependency-name: "arrow*"
@@ -42,4 +42,4 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
-    labels: [auto-dependencies]
+    labels: [dependencies]
