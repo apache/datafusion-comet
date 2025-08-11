@@ -63,6 +63,12 @@ import org.apache.comet.shims.CometExprShim
 object QueryPlanSerde extends Logging with CometExprShim {
 
   /**
+   * Mapping of Spark operator class to Comet operator handler.
+   */
+  private val opSerdeMap: Map[Class[_], CometOperatorSerde[_]] = Map(
+    classOf[ProjectExec] -> CometProjectExec)
+
+  /**
    * Mapping of Spark expression class to Comet expression handler.
    */
   private val exprSerdeMap: Map[Class[_], CometExpressionSerde] = Map(
@@ -1768,9 +1774,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case op: ProjectExec =>
-        CometProjectExec.convert(op, builder, childOp: _*)
-
       case FilterExec(condition, child) if CometConf.COMET_EXEC_FILTER_ENABLED.get(conf) =>
         val cond = exprToProto(condition, child.output)
 
@@ -2229,15 +2232,20 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
 
       case op =>
-        // Emit warning if:
-        //  1. it is not Spark shuffle operator, which is handled separately
-        //  2. it is not a Comet operator
-        if (!op.nodeName.contains("Comet") && !op.isInstanceOf[ShuffleExchangeExec]) {
-          val msg = s"unsupported Spark operator: ${op.nodeName}"
-          emitWarning(msg)
-          withInfo(op, msg)
+        opSerdeMap.get(op.getClass) match {
+          case Some(handler) =>
+            handler.asInstanceOf[CometOperatorSerde[SparkPlan]].convert(op, builder, childOp: _*)
+          case _ =>
+            // Emit warning if:
+            //  1. it is not Spark shuffle operator, which is handled separately
+            //  2. it is not a Comet operator
+            if (!op.nodeName.contains("Comet") && !op.isInstanceOf[ShuffleExchangeExec]) {
+              val msg = s"unsupported Spark operator: ${op.nodeName}"
+              emitWarning(msg)
+              withInfo(op, msg)
+            }
+            None
         }
-        None
     }
   }
 
