@@ -63,9 +63,9 @@ public final class CometUnifiedShuffleMemoryAllocator extends CometShuffleMemory
       // Already freed block
       return 0;
     }
-    long allocatedMemory = block.size();
+    long blockSize = block.size();
     this.freePage(block);
-    return allocatedMemory;
+    return blockSize;
   }
 
   /**
