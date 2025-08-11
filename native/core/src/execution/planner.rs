@@ -1173,20 +1173,20 @@ impl PhysicalPlanner {
                 // https://github.com/apache/datafusion-comet/issues/963
                 let child_copied = Self::wrap_in_copy_exec(Arc::clone(&child.native_plan));
 
-                let sort = Arc::new(
+                let mut sort_exec: Arc<dyn ExecutionPlan> = Arc::new(
                     SortExec::new(LexOrdering::new(exprs?).unwrap(), Arc::clone(&child_copied))
                         .with_fetch(fetch),
                 );
 
-if let Some(x) = sort.skip.filter(|&n| n > 0).map(|n| n as usize) {
-    sort = Arc::new(GlobalLimitExec::new(sort, x, None));
-}
+                if let Some(skip) = sort.skip.filter(|&n| n > 0).map(|n| n as usize) {
+                    sort_exec = Arc::new(GlobalLimitExec::new(sort_exec, skip, None));
+                }
 
                 Ok((
                     scans,
                     Arc::new(SparkPlan::new(
                         spark_plan.plan_id,
-                        sort,
+                        sort_exec,
                         vec![Arc::clone(&child)],
                     )),
                 ))
