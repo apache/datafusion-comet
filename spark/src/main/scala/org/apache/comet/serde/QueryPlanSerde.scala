@@ -2417,7 +2417,7 @@ trait CometOperatorSerde[T <: SparkPlan] {
    *   The Spark operator.
    * @param builder
    *   The protobuf builder for the operator.
-   * @param childO
+   * @param childOp
    *   Child operators that have already been converted to Comet.
    * @return
    *   Protocol buffer representation, or None if the operator could not be converted. In this
