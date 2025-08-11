@@ -58,6 +58,10 @@ public final class CometUnifiedShuffleMemoryAllocator extends CometShuffleMemory
   }
 
   public synchronized void free(MemoryBlock block) {
+    if (block.pageNumber == MemoryBlock.FREED_IN_ALLOCATOR_PAGE_NUMBER) {
+      // Already freed block
+      return;
+    }
     this.freePage(block);
   }
 
