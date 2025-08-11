@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, InitCap, Like, Literal, Lower, RLike, StringRPad, StringRepeat, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, InitCap, Like, Literal, Lower, RLike, StringRepeat, StringRPad, Substring, Upper}
 import org.apache.spark.sql.types.{DataTypes, LongType, StringType}
 
 import org.apache.comet.CometConf
@@ -43,12 +43,10 @@ object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
   }
 }
 
-class CometCaseConversionBase[T <: Expression](function: String) extends CometScalarFunction[T](function) {
+class CometCaseConversionBase[T <: Expression](function: String)
+    extends CometScalarFunction[T](function) {
 
-  override def convert(
-      expr: T,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
+  override def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     if (!CometConf.COMET_CASE_CONVERSION_ENABLED.get()) {
       withInfo(
         expr,
@@ -67,10 +65,7 @@ object CometLower extends CometCaseConversionBase[Lower]("lower")
 
 object CometInitCap extends CometScalarFunction[InitCap]("initcap") {
 
-  override def convert(
-      expr: InitCap,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
+  override def convert(expr: InitCap, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     if (!CometConf.COMET_EXEC_INITCAP_ENABLED.get()) {
       withInfo(
         expr,
@@ -111,10 +106,7 @@ object CometSubstring extends CometExpressionSerde[Substring] {
 
 object CometLike extends CometExpressionSerde[Like] {
 
-  override def convert(
-      expr: Like,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
+  override def convert(expr: Like, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     if (expr.escapeChar == '\\') {
       createBinaryExpr(
         expr,
@@ -132,10 +124,7 @@ object CometLike extends CometExpressionSerde[Like] {
 
 object CometRLike extends CometExpressionSerde[RLike] {
 
-  override def convert(
-      expr: RLike,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
+  override def convert(expr: RLike, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     expr.right match {
       case Literal(pattern, DataTypes.StringType) =>
         val regex = pattern.toString

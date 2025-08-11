@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.annotation.tailrec
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayRemove, ArrayRepeat, ArrayUnion, ArraysOverlap, Attribute, CreateArray, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -240,7 +240,10 @@ object CometArrayCompact extends CometExpressionSerde[Expression] with IncompatE
   }
 }
 
-object CometArrayExcept extends CometExpressionSerde[ArrayExcept] with CometExprShim with IncompatExpr {
+object CometArrayExcept
+    extends CometExpressionSerde[ArrayExcept]
+    with CometExprShim
+    with IncompatExpr {
 
   @tailrec
   def isTypeSupported(dt: DataType): Boolean = {

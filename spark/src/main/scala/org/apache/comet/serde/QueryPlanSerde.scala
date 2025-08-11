@@ -1480,7 +1480,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
         convert(ae, CometArrayExcept)
       case expr =>
         QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
-          case Some(handler) => convert(expr, handler.asInstanceOf[CometExpressionSerde[Expression]])
+          case Some(handler) =>
+            convert(expr, handler.asInstanceOf[CometExpressionSerde[Expression]])
           case _ =>
             withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
             None
@@ -2416,8 +2417,6 @@ trait CometExpressionSerde[T <: Expression] {
    * Convert a Spark expression into a protocol buffer representation that can be passed into
    * native code.
    *
-   * @tparam T
-   *   The type of the Spark expression
    * @param expr
    *   The Spark expression.
    * @param inputs
@@ -2429,10 +2428,7 @@ trait CometExpressionSerde[T <: Expression] {
    *   case it is expected that the input expression will have been tagged with reasons why it
    *   could not be converted.
    */
-  def convert(
-      expr: T,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr]
+  def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[ExprOuterClass.Expr]
 }
 
 /**
@@ -2472,10 +2468,7 @@ trait IncompatExpr {}
 
 /** Serde for scalar function. */
 case class CometScalarFunction[T <: Expression](name: String) extends CometExpressionSerde[T] {
-  override def convert(
-      expr: T,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
+  override def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProto(name, childExpr: _*)
     optExprWithInfo(optExpr, expr, expr.children: _*)
