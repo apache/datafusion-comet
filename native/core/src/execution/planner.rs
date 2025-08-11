@@ -540,12 +540,13 @@ impl PhysicalPlanner {
                                             .build_list_scalar()
                                     }
                                     DataType::Binary => {
-                                        // Using a builder here as it is quite complicated to create StringArray from a vector with nulls
-                                        // to calculate correct offsets
+                                        // Using a builder as it is cumbersome to create BinaryArray from a vector with nulls
+                                        // and calculate correct offsets
                                         let vals = values.clone();
-                                        let len = vals.bytes_values.len();
-                                        let mut arr = BinaryBuilder::with_capacity(len, len);
-
+                                        let item_capacity = vals.string_values.len();
+                                        let data_capacity = vals.string_values.first().map(|s| s.len() * item_capacity).unwrap_or(0);
+                                        let mut arr = BinaryBuilder::with_capacity(item_capacity, data_capacity);
+;
                                         for (i, v) in vals.bytes_values.into_iter().enumerate() {
                                             if vals.null_mask[i] {
                                                 arr.append_value(v);
@@ -558,11 +559,12 @@ impl PhysicalPlanner {
                                             .build_list_scalar()
                                     }
                                     DataType::Utf8 => {
-                                        // Using a builder here as it is quite complicated to create StringArray from a vector with nulls
-                                        // to calculate correct offsets
+                                        // Using a builder as it is cumbersome to create StringArray from a vector with nulls
+                                        // and calculate correct offsets
                                         let vals = values.clone();
-                                        let len = vals.string_values.len();
-                                        let mut arr = StringBuilder::with_capacity(len, len);
+                                        let item_capacity = vals.string_values.len();
+                                        let data_capacity = vals.string_values.first().map(|s| s.len() * item_capacity).unwrap_or(0);
+                                        let mut arr = StringBuilder::with_capacity(item_capacity, data_capacity);
 
                                         for (i, v) in vals.string_values.into_iter().enumerate() {
                                             if vals.null_mask[i] {
