@@ -1179,10 +1179,9 @@ impl PhysicalPlanner {
                         .with_fetch(fetch),
                 );
 
-                let sort: Arc<dyn ExecutionPlan> = match skip {
-                    Some(x) if x > 0 => Arc::new(GlobalLimitExec::new(sort, x, None)),
-                    _ => sort,
-                };
+if let Some(x) = sort.skip.filter(|&n| n > 0).map(|n| n as usize) {
+    sort = Arc::new(GlobalLimitExec::new(sort, x, None));
+}
 
                 Ok((
                     scans,
