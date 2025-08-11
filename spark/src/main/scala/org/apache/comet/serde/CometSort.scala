@@ -21,32 +21,38 @@ package org.apache.comet.serde
 
 import scala.collection.JavaConverters._
 
-import org.apache.spark.sql.execution.ProjectExec
+import org.apache.spark.sql.execution.SortExec
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.exprToProto
+import org.apache.comet.serde.QueryPlanSerde.{exprToProto, supportedSortType}
 
-object CometProjectExec extends CometOperatorSerde[ProjectExec] {
+object CometSort extends CometOperatorSerde[SortExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
-    Some(CometConf.COMET_EXEC_PROJECT_ENABLED)
+    Some(CometConf.COMET_EXEC_SORT_ENABLED)
 
   override def convert(
-      op: ProjectExec,
+      op: SortExec,
       builder: Operator.Builder,
       childOp: Operator*): Option[OperatorOuterClass.Operator] = {
-    val exprs = op.projectList.map(exprToProto(_, op.child.output))
+    if (!supportedSortType(op, op.sortOrder)) {
+      withInfo(op, "Unsupported data type in sort expressions")
+      return None
+    }
 
-    if (exprs.forall(_.isDefined) && childOp.nonEmpty) {
-      val projectBuilder = OperatorOuterClass.Projection
+    val sortOrders = op.sortOrder.map(exprToProto(_, op.child.output))
+
+    if (sortOrders.forall(_.isDefined) && childOp.nonEmpty) {
+      val sortBuilder = OperatorOuterClass.Sort
         .newBuilder()
-        .addAllProjectList(exprs.map(_.get).asJava)
-      Some(builder.setProjection(projectBuilder).build())
+        .addAllSortOrders(sortOrders.map(_.get).asJava)
+      Some(builder.setSort(sortBuilder).build())
     } else {
-      withInfo(op, op.projectList: _*)
+      withInfo(op, "sort order not supported", op.sortOrder: _*)
       None
     }
   }
+
 }

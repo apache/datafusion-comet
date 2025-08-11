@@ -67,8 +67,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
   /**
    * Mapping of Spark operator class to Comet operator handler.
    */
-  private val opSerdeMap: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] = Map(
-    classOf[ProjectExec] -> CometProjectExec)
+  private val opSerdeMap: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
+    Map(classOf[ProjectExec] -> CometProject, classOf[SortExec] -> CometSort)
 
   /**
    * Mapping of Spark expression class to Comet expression handler.
@@ -1915,23 +1915,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           Some(builder.setFilter(filterBuilder).build())
         } else {
           withInfo(op, condition, child)
-          None
-        }
-
-      case SortExec(sortOrder, _, child, _) if CometConf.COMET_EXEC_SORT_ENABLED.get(conf) =>
-        if (!supportedSortType(op, sortOrder)) {
-          return None
-        }
-
-        val sortOrders = sortOrder.map(exprToProto(_, child.output))
-
-        if (sortOrders.forall(_.isDefined) && childOp.nonEmpty) {
-          val sortBuilder = OperatorOuterClass.Sort
-            .newBuilder()
-            .addAllSortOrders(sortOrders.map(_.get).asJava)
-          Some(builder.setSort(sortBuilder).build())
-        } else {
-          withInfo(op, "sort order not supported", sortOrder: _*)
           None
         }
 
