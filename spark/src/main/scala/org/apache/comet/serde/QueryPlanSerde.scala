@@ -65,7 +65,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
   /**
    * Mapping of Spark expression class to Comet expression handler.
    */
-  private val exprSerdeMap: Map[Class[_], CometExpressionSerde] = Map(
+  private val exprSerdeMap: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Add] -> CometAdd,
     classOf[Subtract] -> CometSubtract,
     classOf[Multiply] -> CometMultiply,
@@ -92,6 +92,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[BitwiseCount] -> CometBitwiseCount,
     classOf[BitwiseGet] -> CometBitwiseGet,
     classOf[BitwiseNot] -> CometBitwiseNot,
+    classOf[BitwiseAnd] -> CometBitwiseAnd,
     classOf[BitwiseOr] -> CometBitwiseOr,
     classOf[BitwiseXor] -> CometBitwiseXor,
     classOf[BitLength] -> CometScalarFunction("bit_length"),
@@ -635,7 +636,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       binding: Boolean): Option[Expr] = {
     SQLConf.get
 
-    def convert(handler: CometExpressionSerde): Option[Expr] = {
+    def convert[T <: Expression](expr: T, handler: CometExpressionSerde[T]): Option[Expr] = {
       handler match {
         case _: IncompatExpr if !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() =>
           withInfo(
@@ -1254,8 +1255,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
           binding,
           (builder, binaryExpr) => builder.setBitwiseAnd(binaryExpr))
 
-      case Not(In(_, _)) =>
-        CometNotIn.convert(expr, inputs, binding)
+      case n @ Not(In(_, _)) =>
+        CometNotIn.convert(n, inputs, binding)
 
       case Not(child) =>
         createUnaryExpr(
@@ -1473,13 +1474,13 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(expr, "unsupported arguments for GetArrayStructFields", child)
           None
         }
-      case _ @ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
-        convert(CometArrayCompact)
-      case _: ArrayExcept =>
-        convert(CometArrayExcept)
+      case af @ ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
+        convert(af, CometArrayCompact)
+      case ae: ArrayExcept =>
+        convert(ae, CometArrayExcept)
       case expr =>
         QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
-          case Some(handler) => convert(handler)
+          case Some(handler) => convert(expr, handler.asInstanceOf[CometExpressionSerde[Expression]])
           case _ =>
             withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
             None
@@ -2409,12 +2410,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
 /**
  * Trait for providing serialization logic for expressions.
  */
-trait CometExpressionSerde {
+trait CometExpressionSerde[T <: Expression] {
 
   /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into
    * native code.
    *
+   * @tparam T
+   *   The type of the Spark expression
    * @param expr
    *   The Spark expression.
    * @param inputs
@@ -2427,7 +2430,7 @@ trait CometExpressionSerde {
    *   could not be converted.
    */
   def convert(
-      expr: Expression,
+      expr: T,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr]
 }
@@ -2468,9 +2471,9 @@ trait CometAggregateExpressionSerde {
 trait IncompatExpr {}
 
 /** Serde for scalar function. */
-case class CometScalarFunction(name: String) extends CometExpressionSerde {
+case class CometScalarFunction[T <: Expression](name: String) extends CometExpressionSerde[T] {
   override def convert(
-      expr: Expression,
+      expr: T,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
