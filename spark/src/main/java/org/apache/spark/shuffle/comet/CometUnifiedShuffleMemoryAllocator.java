@@ -58,8 +58,8 @@ public final class CometUnifiedShuffleMemoryAllocator extends CometShuffleMemory
   }
 
   public synchronized void free(MemoryBlock block) {
-    if (block.pageNumber == MemoryBlock.FREED_IN_ALLOCATOR_PAGE_NUMBER ||
-      block.pageNumber == MemoryBlock.FREED_IN_TMM_PAGE_NUMBER) {
+    if (block.pageNumber == MemoryBlock.FREED_IN_ALLOCATOR_PAGE_NUMBER
+        || block.pageNumber == MemoryBlock.FREED_IN_TMM_PAGE_NUMBER) {
       // Already freed block
       return;
     }

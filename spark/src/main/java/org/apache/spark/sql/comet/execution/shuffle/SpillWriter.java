@@ -218,8 +218,8 @@ public abstract class SpillWriter {
   public long freeMemory() {
     long freed = 0L;
     for (MemoryBlock block : allocatedPages) {
-      if (block.pageNumber == MemoryBlock.FREED_IN_ALLOCATOR_PAGE_NUMBER ||
-        block.pageNumber == MemoryBlock.FREED_IN_TMM_PAGE_NUMBER) {
+      if (block.pageNumber == MemoryBlock.FREED_IN_ALLOCATOR_PAGE_NUMBER
+          || block.pageNumber == MemoryBlock.FREED_IN_TMM_PAGE_NUMBER) {
         freed += block.size();
         allocator.free(block);
       }
