@@ -152,14 +152,15 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
       // Already freed block
       return 0;
     }
-    allocatedMemory -= block.size();
+    long blockSize = block.size();
+    allocatedMemory -= blockSize;
 
     pageTable[block.pageNumber] = null;
     allocatedPages.clear(block.pageNumber);
     block.pageNumber = MemoryBlock.FREED_IN_TMM_PAGE_NUMBER;
 
     allocator.free(block);
-    return allocatedMemory;
+    return blockSize;
   }
 
   /**
