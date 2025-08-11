@@ -60,19 +60,3 @@ overflow-checks = false
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
-
-# Cargo.toml
-[profile.dev]
-# Light optimization for your crate (keeps compile times reasonable)
-opt-level = 1            # 0..3; try 1 or 2 for more speed
-debug = 1                # smaller debug info; 0 = none, 2 = full
-debug-assertions = false # turn off extra checks in std & your code
-overflow-checks = false  # disable integer overflow checks
-incremental = true       # faster rebuilds (slightly slower runtime)
-codegen-units = 16       # more parallel codegen, faster builds
-lto = "off"              # keep LTO off in dev
-panic = "abort"          # faster, smaller binaries (no unwinding)
-
-# Heavier optimization for dependencies only (big win with small compile cost)
-[profile.dev.package."*"]
-opt-level = 3
