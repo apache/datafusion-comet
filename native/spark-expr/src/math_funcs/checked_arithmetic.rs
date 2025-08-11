@@ -70,7 +70,7 @@ where
                 }
             }
         }
-        _ => todo!("Unsupported operation: {}", op),
+        _ => Err!("Unsupported operation: {}", op),
     }
 
     Ok(Arc::new(builder.finish()) as ArrayRef)
