@@ -15,9 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::fmt::format;
 use arrow::array::{Array, ArrowNativeTypeOp, PrimitiveArray, PrimitiveBuilder};
 use arrow::array::{ArrayRef, AsArray};
+use std::fmt::format;
 
 use arrow::datatypes::{ArrowPrimitiveType, DataType, Int32Type, Int64Type};
 use datafusion::common::DataFusionError;
@@ -71,7 +71,7 @@ where
                 }
             }
         }
-        _ => Err(format!("Unsupported operation: {}",op)).unwrap(),
+        _ => Err(format!("Unsupported operation: {}", op)).unwrap(),
     }
 
     Ok(Arc::new(builder.finish()) as ArrayRef)
