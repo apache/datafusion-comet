@@ -1641,7 +1641,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
    */
   def operator2Proto(op: SparkPlan, childOp: Operator*): Option[Operator] = {
     val conf = op.conf
-    val result = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
+    val result: Operator.Builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
     childOp.foreach(result.addChildren)
 
     op match {
@@ -1768,18 +1768,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case ProjectExec(projectList, child) if CometConf.COMET_EXEC_PROJECT_ENABLED.get(conf) =>
-        val exprs = projectList.map(exprToProto(_, child.output))
-
-        if (exprs.forall(_.isDefined) && childOp.nonEmpty) {
-          val projectBuilder = OperatorOuterClass.Projection
-            .newBuilder()
-            .addAllProjectList(exprs.map(_.get).asJava)
-          Some(result.setProjection(projectBuilder).build())
-        } else {
-          withInfo(op, projectList: _*)
-          None
-        }
+      case op: ProjectExec =>
+        CometProjectExec.convert(op, result, childOp: _*)
 
       case FilterExec(condition, child) if CometConf.COMET_EXEC_FILTER_ENABLED.get(conf) =>
         val cond = exprToProto(condition, child.output)
@@ -2404,6 +2394,13 @@ object QueryPlanSerde extends Logging with CometExprShim {
     })
     nativeScanBuilder.addFilePartitions(partitionBuilder.build())
   }
+}
+
+trait CometOperatorSerde[T <: SparkPlan] {
+  def convert(
+      op: T,
+      result: Operator.Builder,
+      childOp: Operator*): Option[OperatorOuterClass.Operator]
 }
 
 /**
