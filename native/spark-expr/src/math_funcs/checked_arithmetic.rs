@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::fmt::format;
 use arrow::array::{Array, ArrowNativeTypeOp, PrimitiveArray, PrimitiveBuilder};
 use arrow::array::{ArrayRef, AsArray};
 
@@ -70,7 +71,7 @@ where
                 }
             }
         }
-        _ => Err!("Unsupported operation: {}", op),
+        _ => Err(format!("Unsupported operation: {}",op)).unwrap(),
     }
 
     Ok(Arc::new(builder.finish()) as ArrayRef)
