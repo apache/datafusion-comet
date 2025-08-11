@@ -32,7 +32,7 @@ object CometProjectExec extends CometOperatorSerde[ProjectExec] {
 
   override def convert(
       op: ProjectExec,
-      result: Operator.Builder,
+      builder: Operator.Builder,
       childOp: Operator*): Option[OperatorOuterClass.Operator] = {
     if (!CometConf.COMET_EXEC_PROJECT_ENABLED.get(op.conf)) {
       withInfo(
@@ -46,7 +46,7 @@ object CometProjectExec extends CometOperatorSerde[ProjectExec] {
       val projectBuilder = OperatorOuterClass.Projection
         .newBuilder()
         .addAllProjectList(exprs.map(_.get).asJava)
-      Some(result.setProjection(projectBuilder).build())
+      Some(builder.setProjection(projectBuilder).build())
     } else {
       withInfo(op, op.projectList: _*)
       None
