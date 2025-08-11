@@ -20,7 +20,7 @@ use crate::utils::array_with_timezone;
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::builder::StringBuilder;
 use arrow::array::{DictionaryArray, StringArray, StructArray};
-use arrow::datatypes::{DataType, Schema};
+use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, Schema};
 use arrow::{
     array::{
         cast::AsArray,
@@ -40,7 +40,8 @@ use arrow::{
 };
 use chrono::{DateTime, NaiveDate, TimeZone, Timelike};
 use datafusion::common::{
-    cast::as_generic_string_array, internal_err, Result as DataFusionResult, ScalarValue,
+    cast::as_generic_string_array, internal_err, DataFusionError, Result as DataFusionResult,
+    ScalarValue,
 };
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
@@ -866,6 +867,40 @@ pub fn spark_cast(
     }
 }
 
+// copied from datafusion common scalar/mod.rs
+fn dict_from_values<K: ArrowDictionaryKeyType>(
+    values_array: ArrayRef,
+) -> datafusion::common::Result<ArrayRef> {
+    // Create a key array with `size` elements of 0..array_len for all
+    // non-null value elements
+    let key_array: PrimitiveArray<K> = (0..values_array.len())
+        .map(|index| {
+            if values_array.is_valid(index) {
+                let native_index = K::Native::from_usize(index).ok_or_else(|| {
+                    DataFusionError::Internal(format!(
+                        "Can not create index of type {} from value {}",
+                        K::DATA_TYPE,
+                        index
+                    ))
+                })?;
+                Ok(Some(native_index))
+            } else {
+                Ok(None)
+            }
+        })
+        .collect::<datafusion::common::Result<Vec<_>>>()?
+        .into_iter()
+        .collect();
+
+    // create a new DictionaryArray
+    //
+    // Note: this path could be made faster by using the ArrayData
+    // APIs and skipping validation, if it every comes up in
+    // performance traces.
+    let dict_array = DictionaryArray::<K>::try_new(key_array, values_array)?;
+    Ok(Arc::new(dict_array))
+}
+
 fn cast_array(
     array: ArrayRef,
     to_type: &DataType,
@@ -895,18 +930,33 @@ fn cast_array(
                 .downcast_ref::<DictionaryArray<Int32Type>>()
                 .expect("Expected a dictionary array");
 
-            let casted_dictionary = DictionaryArray::<Int32Type>::new(
-                dict_array.keys().clone(),
-                cast_array(Arc::clone(dict_array.values()), to_type, cast_options)?,
-            );
-
             let casted_result = match to_type {
-                Dictionary(_, _) => Arc::new(casted_dictionary.clone()),
-                _ => take(casted_dictionary.values().as_ref(), dict_array.keys(), None)?,
+                Dictionary(_, to_value_type) => {
+                    let casted_dictionary = DictionaryArray::<Int32Type>::new(
+                        dict_array.keys().clone(),
+                        cast_array(Arc::clone(dict_array.values()), to_value_type, cast_options)?,
+                    );
+                    Arc::new(casted_dictionary.clone())
+                }
+                _ => {
+                    let casted_dictionary = DictionaryArray::<Int32Type>::new(
+                        dict_array.keys().clone(),
+                        cast_array(Arc::clone(dict_array.values()), to_type, cast_options)?,
+                    );
+                    take(casted_dictionary.values().as_ref(), dict_array.keys(), None)?
+                }
             };
             return Ok(spark_cast_postprocess(casted_result, &from_type, to_type));
         }
-        _ => array,
+        _ => {
+            if let Dictionary(_, _) = to_type {
+                let dict_array = dict_from_values::<Int32Type>(array)?;
+                let casted_result = cast_array(dict_array, to_type, cast_options)?;
+                return Ok(spark_cast_postprocess(casted_result, &from_type, to_type));
+            } else {
+                array
+            }
+        }
     };
     let from_type = array.data_type();
     let eval_mode = cast_options.eval_mode;
