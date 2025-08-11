@@ -1167,7 +1167,6 @@ impl PhysicalPlanner {
                     .collect();
 
                 let fetch = sort.fetch.map(|num| num as usize);
-                let skip = sort.skip.map(|num| num as usize);
                 // SortExec caches batches so we need to make a copy of incoming batches. Also,
                 // SortExec fails in some cases if we do not unpack dictionary-encoded arrays, and
                 // it would be more efficient if we could avoid that.
