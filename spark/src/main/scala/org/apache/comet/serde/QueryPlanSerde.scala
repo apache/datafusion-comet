@@ -2417,7 +2417,7 @@ trait CometOperatorSerde[T <: SparkPlan] {
    *   The Spark operator.
    * @param builder
    *   The protobuf builder for the operator.
-   * @param childOp
+   * @param childO
    *   Child operators that have already been converted to Comet.
    */
   def convert(
