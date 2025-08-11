@@ -17,7 +17,6 @@
 
 use arrow::array::{Array, ArrowNativeTypeOp, PrimitiveArray, PrimitiveBuilder};
 use arrow::array::{ArrayRef, AsArray};
-use std::fmt::format;
 
 use arrow::datatypes::{ArrowPrimitiveType, DataType, Int32Type, Int64Type};
 use datafusion::common::DataFusionError;
@@ -71,7 +70,12 @@ where
                 }
             }
         }
-        _ => Err(format!("Unsupported operation: {}", op)).unwrap(),
+        _ => {
+            return Err(DataFusionError::Internal(format!(
+                "Unsupported operation: {:?}",
+                op
+            )))
+        }
     }
 
     Ok(Arc::new(builder.finish()) as ArrayRef)
