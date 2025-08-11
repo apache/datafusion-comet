@@ -19,8 +19,6 @@
 
 package org.apache.comet.serde
 
-import java.util.Locale
-
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ListBuffer
 
@@ -1487,30 +1485,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             None
         }
     })
-  }
-
-  def stringDecode(
-      expr: Expression,
-      charset: Expression,
-      bin: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    charset match {
-      case Literal(str, DataTypes.StringType)
-          if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
-        // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
-        // for invalid strings.
-        // Left child is the binary expression.
-        castToProto(
-          expr,
-          None,
-          DataTypes.StringType,
-          exprToProtoInternal(bin, inputs, binding).get,
-          CometEvalMode.TRY)
-      case _ =>
-        withInfo(expr, "Comet only supports decoding with 'utf-8'.")
-        None
-    }
   }
 
   /**
