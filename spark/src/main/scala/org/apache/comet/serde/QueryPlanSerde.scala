@@ -65,7 +65,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
   /**
    * Mapping of Spark operator class to Comet operator handler.
    */
-  private val opSerdeMap: Map[Class[_], CometOperatorSerde[_]] = Map(
+  private val opSerdeMap: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] = Map(
     classOf[ProjectExec] -> CometProjectExec)
 
   /**
