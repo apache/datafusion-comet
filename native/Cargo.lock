@@ -339,9 +339,9 @@ dependencies = [
 
 [[package]]
 name = "assertables"
-version = "9.8.1"
+version = "9.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0118bf39618c9958c058d23c1453fdfc40c99688d9a0dfdc441244421ef89407"
+checksum = "59051ec02907378a67b0ba1b8631121f5388c8dbbb3cec8c749d8f93c2c3c211"
 
 [[package]]
 name = "async-channel"
