@@ -546,7 +546,7 @@ impl PhysicalPlanner {
                                         let item_capacity = vals.string_values.len();
                                         let data_capacity = vals.string_values.first().map(|s| s.len() * item_capacity).unwrap_or(0);
                                         let mut arr = BinaryBuilder::with_capacity(item_capacity, data_capacity);
-;
+
                                         for (i, v) in vals.bytes_values.into_iter().enumerate() {
                                             if vals.null_mask[i] {
                                                 arr.append_value(v);
