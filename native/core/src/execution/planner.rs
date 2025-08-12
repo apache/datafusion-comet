@@ -2791,6 +2791,7 @@ mod tests {
     use datafusion::logical_expr::ScalarUDF;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
+    use datafusion::physical_plan::display::DisplayableExecutionPlan;
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
@@ -2808,6 +2809,42 @@ mod tests {
         spark_operator::{operator::OpStruct, Operator},
     };
     use datafusion_comet_spark_expr::EvalMode;
+
+    #[test]
+    fn copy_exec() {
+        let scan_exec = create_scan();
+        
+        // Create a SortOrder expression that sorts by the first column (index 0)
+        // in ascending order with nulls first
+        let sort_order_expr = spark_expression::Expr {
+            expr_struct: Some(ExprStruct::SortOrder(Box::new(spark_expression::SortOrder {
+                child: Some(Box::new(spark_expression::Expr {
+                    expr_struct: Some(ExprStruct::Bound(spark_expression::BoundReference {
+                        index: 0,
+                        datatype: Some(spark_expression::DataType {
+                            type_id: 3, // Int32
+                            type_info: None,
+                        }),
+                    })),
+                })),
+                direction: spark_expression::SortDirection::Ascending as i32,
+                null_ordering: spark_expression::NullOrdering::NullsFirst as i32,
+            }))),
+        };
+        
+        let sort_exec = Operator {
+            plan_id: 0,
+            children: vec![scan_exec],
+            op_struct: Some(OpStruct::Sort(spark_operator::Sort {
+                sort_orders: vec![sort_order_expr],
+                fetch: None,
+            }))
+        };
+        let planner = PhysicalPlanner::default();
+        let (_scans, datafusion_plan) = planner.create_plan(&sort_exec, &mut vec![], 1).unwrap();
+        let plan_str = format!("{}", DisplayableExecutionPlan::new(datafusion_plan.native_plan.as_ref()).indent(true));
+        println!("{plan_str}");
+    }
 
     #[test]
     fn test_unpack_dictionary_primitive() {
