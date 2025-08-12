@@ -1086,7 +1086,7 @@ index 780e175..57892ac 100644
    }
  
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java
-index 11f054b..108de81 100644
+index 11f054b..324d201 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java
 @@ -148,7 +148,7 @@ class SparkBatch implements Batch {
@@ -1098,6 +1098,15 @@ index 11f054b..108de81 100644
      return readConf.parquetVectorizationEnabled()
          && expectedSchema.columns().stream().allMatch(this::supportsParquetBatchReads)
          && taskGroups.stream().allMatch(this::supportsParquetBatchReads);
+@@ -161,7 +161,7 @@ class SparkBatch implements Batch {
+ 
+     } else if (task.isFileScanTask() && !task.isDataTask()) {
+       FileScanTask fileScanTask = task.asFileScanTask();
+-      return fileScanTask.file().format() == FileFormat.PARQUET;
++      return fileScanTask.file().format() == FileFormat.PARQUET && fileScanTask.deletes().isEmpty();
+ 
+     } else {
+       return false;
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkScan.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkScan.java
 index 019f391..298c25f 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkScan.java
