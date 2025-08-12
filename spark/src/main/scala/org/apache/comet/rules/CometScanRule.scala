@@ -37,6 +37,7 @@ import org.apache.spark.sql.types._
 import org.apache.comet.{CometConf, CometSparkSessionExtensions, DataTypeSupport}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
+import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 
 /**
@@ -300,11 +301,6 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
       typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
     val partitionSchemaSupported =
       typeChecker.isSchemaSupported(partitionSchema, fallbackReasons)
-
-    def isComplexType(dt: DataType): Boolean = dt match {
-      case _: StructType | _: ArrayType | _: MapType => true
-      case _ => false
-    }
 
     def hasMapsContainingStructs(dataType: DataType): Boolean = {
       dataType match {

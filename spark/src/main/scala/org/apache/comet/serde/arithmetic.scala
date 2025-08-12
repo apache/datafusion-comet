@@ -85,140 +85,133 @@ trait MathBase {
 
 }
 
-object CometAdd extends CometExpressionSerde with MathBase {
+object CometAdd extends CometExpressionSerde[Add] with MathBase {
   override def convert(
-      expr: Expression,
+      expr: Add,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val add = expr.asInstanceOf[Add]
-    if (!supportedDataType(add.left.dataType)) {
-      withInfo(add, s"Unsupported datatype ${add.left.dataType}")
+    if (!supportedDataType(expr.left.dataType)) {
+      withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
     }
-    if (add.evalMode == EvalMode.TRY) {
-      withInfo(add, s"Eval mode ${add.evalMode} is not supported")
+    if (expr.evalMode == EvalMode.TRY) {
+      withInfo(expr, s"Eval mode ${expr.evalMode} is not supported")
       return None
     }
     createMathExpression(
       expr,
-      add.left,
-      add.right,
+      expr.left,
+      expr.right,
       inputs,
       binding,
-      add.dataType,
-      add.evalMode,
+      expr.dataType,
+      expr.evalMode,
       (builder, mathExpr) => builder.setAdd(mathExpr))
   }
 }
 
-object CometSubtract extends CometExpressionSerde with MathBase {
+object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
   override def convert(
-      expr: Expression,
+      expr: Subtract,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val sub = expr.asInstanceOf[Subtract]
-    if (!supportedDataType(sub.left.dataType)) {
-      withInfo(sub, s"Unsupported datatype ${sub.left.dataType}")
+    if (!supportedDataType(expr.left.dataType)) {
+      withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
     }
-    if (sub.evalMode == EvalMode.TRY) {
-      withInfo(sub, s"Eval mode ${sub.evalMode} is not supported")
+    if (expr.evalMode == EvalMode.TRY) {
+      withInfo(expr, s"Eval mode ${expr.evalMode} is not supported")
       return None
     }
     createMathExpression(
       expr,
-      sub.left,
-      sub.right,
+      expr.left,
+      expr.right,
       inputs,
       binding,
-      sub.dataType,
-      sub.evalMode,
+      expr.dataType,
+      expr.evalMode,
       (builder, mathExpr) => builder.setSubtract(mathExpr))
   }
 }
 
-object CometMultiply extends CometExpressionSerde with MathBase {
+object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
   override def convert(
-      expr: Expression,
+      expr: Multiply,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val mul = expr.asInstanceOf[Multiply]
-    if (!supportedDataType(mul.left.dataType)) {
-      withInfo(mul, s"Unsupported datatype ${mul.left.dataType}")
+    if (!supportedDataType(expr.left.dataType)) {
+      withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
     }
-    if (mul.evalMode == EvalMode.TRY) {
-      withInfo(mul, s"Eval mode ${mul.evalMode} is not supported")
+    if (expr.evalMode == EvalMode.TRY) {
+      withInfo(expr, s"Eval mode ${expr.evalMode} is not supported")
       return None
     }
     createMathExpression(
       expr,
-      mul.left,
-      mul.right,
+      expr.left,
+      expr.right,
       inputs,
       binding,
-      mul.dataType,
-      mul.evalMode,
+      expr.dataType,
+      expr.evalMode,
       (builder, mathExpr) => builder.setMultiply(mathExpr))
   }
 }
 
-object CometDivide extends CometExpressionSerde with MathBase {
+object CometDivide extends CometExpressionSerde[Divide] with MathBase {
   override def convert(
-      expr: Expression,
+      expr: Divide,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val div = expr.asInstanceOf[Divide]
-
     // Datafusion now throws an exception for dividing by zero
     // See https://github.com/apache/arrow-datafusion/pull/6792
     // For now, use NullIf to swap zeros with nulls.
-    val rightExpr = nullIfWhenPrimitive(div.right)
+    val rightExpr = nullIfWhenPrimitive(expr.right)
 
-    if (!supportedDataType(div.left.dataType)) {
-      withInfo(div, s"Unsupported datatype ${div.left.dataType}")
+    if (!supportedDataType(expr.left.dataType)) {
+      withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
     }
-    if (div.evalMode == EvalMode.TRY) {
-      withInfo(div, s"Eval mode ${div.evalMode} is not supported")
+    if (expr.evalMode == EvalMode.TRY) {
+      withInfo(expr, s"Eval mode ${expr.evalMode} is not supported")
       return None
     }
     createMathExpression(
       expr,
-      div.left,
+      expr.left,
       rightExpr,
       inputs,
       binding,
-      div.dataType,
-      div.evalMode,
+      expr.dataType,
+      expr.evalMode,
       (builder, mathExpr) => builder.setDivide(mathExpr))
   }
 }
 
-object CometIntegralDivide extends CometExpressionSerde with MathBase {
+object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with MathBase {
   override def convert(
-      expr: Expression,
+      expr: IntegralDivide,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val div = expr.asInstanceOf[IntegralDivide]
-
-    if (!supportedDataType(div.left.dataType)) {
-      withInfo(div, s"Unsupported datatype ${div.left.dataType}")
+    if (!supportedDataType(expr.left.dataType)) {
+      withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
     }
-    if (div.evalMode == EvalMode.TRY) {
-      withInfo(div, s"Eval mode ${div.evalMode} is not supported")
+    if (expr.evalMode == EvalMode.TRY) {
+      withInfo(expr, s"Eval mode ${expr.evalMode} is not supported")
       return None
     }
 
 //    Precision is set to 19 (max precision for a numerical data type except DecimalType)
 
     val left =
-      if (div.left.dataType.isInstanceOf[DecimalType]) div.left
-      else Cast(div.left, DecimalType(19, 0))
+      if (expr.left.dataType.isInstanceOf[DecimalType]) expr.left
+      else Cast(expr.left, DecimalType(19, 0))
     val right =
-      if (div.right.dataType.isInstanceOf[DecimalType]) div.right
-      else Cast(div.right, DecimalType(19, 0))
+      if (expr.right.dataType.isInstanceOf[DecimalType]) expr.right
+      else Cast(expr.right, DecimalType(19, 0))
 
     val rightExpr = nullIfWhenPrimitive(right)
 
@@ -237,7 +230,7 @@ object CometIntegralDivide extends CometExpressionSerde with MathBase {
       inputs,
       binding,
       dataType,
-      div.evalMode,
+      expr.evalMode,
       (builder, mathExpr) => builder.setIntegralDivide(mathExpr))
 
     if (divideExpr.isDefined) {
@@ -245,7 +238,7 @@ object CometIntegralDivide extends CometExpressionSerde with MathBase {
         // check overflow for decimal type
         val builder = ExprOuterClass.CheckOverflow.newBuilder()
         builder.setChild(divideExpr.get)
-        builder.setFailOnError(div.evalMode == EvalMode.ANSI)
+        builder.setFailOnError(expr.evalMode == EvalMode.ANSI)
         builder.setDatatype(serializeDataType(dataType).get)
         Some(
           ExprOuterClass.Expr
@@ -264,29 +257,28 @@ object CometIntegralDivide extends CometExpressionSerde with MathBase {
   }
 }
 
-object CometRemainder extends CometExpressionSerde with MathBase {
+object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
   override def convert(
-      expr: Expression,
+      expr: Remainder,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val remainder = expr.asInstanceOf[Remainder]
-    if (!supportedDataType(remainder.left.dataType)) {
-      withInfo(remainder, s"Unsupported datatype ${remainder.left.dataType}")
+    if (!supportedDataType(expr.left.dataType)) {
+      withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
     }
-    if (remainder.evalMode == EvalMode.TRY) {
-      withInfo(remainder, s"Eval mode ${remainder.evalMode} is not supported")
+    if (expr.evalMode == EvalMode.TRY) {
+      withInfo(expr, s"Eval mode ${expr.evalMode} is not supported")
       return None
     }
 
     createMathExpression(
       expr,
-      remainder.left,
-      remainder.right,
+      expr.left,
+      expr.right,
       inputs,
       binding,
-      remainder.dataType,
-      remainder.evalMode,
+      expr.dataType,
+      expr.evalMode,
       (builder, mathExpr) => builder.setRemainder(mathExpr))
   }
 }

@@ -29,7 +29,7 @@ jobs:
   check-pr-title:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Check PR title
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
