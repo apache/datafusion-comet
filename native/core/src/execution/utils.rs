@@ -180,8 +180,8 @@ fn validate_offsets<T: ArrowNativeType + num::Num + std::fmt::Display>(
         return Ok(());
     }
 
-    for i in 0..values_length + 1 {
-        let _ = offsets[i].to_usize().ok_or_else(|| {
+    for (i, offset) in offsets.iter().enumerate().take(values_length + 1) {
+        let _ = offset.to_usize().ok_or_else(|| {
             ArrowError::InvalidArgumentError(format!(
                 "Error converting offset[{i}] ({}) to usize",
                 offsets[i]
