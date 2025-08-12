@@ -52,6 +52,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.expressions._
 import org.apache.comet.objectstore.NativeConfig
+import org.apache.comet.parquet.SupportsComet
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
 import org.apache.comet.serde.ExprOuterClass.DataType._
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
@@ -2207,6 +2208,13 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
         val scanTypes = op.output.flatten { attr =>
           serializeDataType(attr.dataType)
+        }
+
+        // iceberg
+        op match {
+          case batchScan: CometBatchScanExec if batchScan.scan.isInstanceOf[SupportsComet] =>
+            scanBuilder.setHasBufferReuse(true)
+          case _ =>
         }
 
         if (scanTypes.length == op.output.length) {

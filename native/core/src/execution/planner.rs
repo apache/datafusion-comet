@@ -1430,8 +1430,13 @@ impl PhysicalPlanner {
                     };
 
                 // The `ScanExec` operator will take actual arrays from Spark during execution
-                let scan =
-                    ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?;
+                let scan = ScanExec::new(
+                    self.exec_context_id,
+                    input_source,
+                    &scan.source,
+                    data_types,
+                    scan.has_buffer_reuse,
+                )?;
 
                 Ok((
                     vec![scan.clone()],
@@ -2798,6 +2803,7 @@ mod tests {
     use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
 
     use crate::execution::operators::ExecutionError;
+    use crate::execution::spark_plan::SparkPlan;
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
     use datafusion_comet_proto::spark_expression::expr::ExprStruct;
@@ -2809,7 +2815,6 @@ mod tests {
         spark_operator::{operator::OpStruct, Operator},
     };
     use datafusion_comet_spark_expr::EvalMode;
-    use crate::execution::spark_plan::SparkPlan;
 
     #[test]
     fn test_unpack_dictionary_primitive() {
@@ -2822,6 +2827,7 @@ mod tests {
                     type_info: None,
                 }],
                 source: "".to_string(),
+                has_buffer_reuse: true,
             })),
         };
 
@@ -2895,6 +2901,7 @@ mod tests {
                     type_info: None,
                 }],
                 source: "".to_string(),
+                has_buffer_reuse: true,
             })),
         };
 
@@ -3175,6 +3182,7 @@ mod tests {
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![create_proto_datatype()],
                 source: "".to_string(),
+                has_buffer_reuse: true,
             })),
         }
     }
@@ -3217,6 +3225,7 @@ mod tests {
                     },
                 ],
                 source: "".to_string(),
+                has_buffer_reuse: true,
             })),
         };
 
@@ -3331,6 +3340,7 @@ mod tests {
                     },
                 ],
                 source: "".to_string(),
+                has_buffer_reuse: true,
             })),
         };
 

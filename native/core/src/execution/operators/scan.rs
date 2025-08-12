@@ -63,6 +63,8 @@ pub struct ScanExec {
     pub input_source: Option<Arc<GlobalRef>>,
     /// A description of the input source for informational purposes
     pub input_source_description: String,
+    /// Whether this is a native_comet scan that reuses buffers
+    pub has_buffer_reuse: bool,
     /// The data types of columns of the input batch. Converted from Spark schema.
     pub data_types: Vec<DataType>,
     /// Schema of first batch
@@ -88,6 +90,7 @@ impl ScanExec {
         input_source: Option<Arc<GlobalRef>>,
         input_source_description: &str,
         data_types: Vec<DataType>,
+        has_buffer_reuse: bool,
     ) -> Result<Self, CometError> {
         let metrics_set = ExecutionPlanMetricsSet::default();
         let baseline_metrics = BaselineMetrics::new(&metrics_set, 0);
@@ -130,6 +133,7 @@ impl ScanExec {
             exec_context_id,
             input_source,
             input_source_description: input_source_description.to_string(),
+            has_buffer_reuse,
             data_types,
             batch: Arc::new(Mutex::new(Some(first_batch))),
             cache,
