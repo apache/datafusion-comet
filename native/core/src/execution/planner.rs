@@ -3002,7 +3002,7 @@ mod tests {
     }
 
     #[test]
-    fn add_copy_to_scan() {
+    fn add_copy_to_sort_on_scan() {
         let scan_exec = create_scan();
         let sort_exec = create_sort_exec(scan_exec);
         let planner = PhysicalPlanner::default();
@@ -3010,12 +3010,13 @@ mod tests {
         let plan_str = explain_plan(datafusion_plan);
         let expected_str = r"SortExec: expr=[col_0@0 ASC], preserve_partitioning=[false]
   CopyExec [UnpackOrDeepCopy]
-    ScanExec: source=[], schema=[col_0: Int32]";
+    ScanExec: source=[], schema=[col_0: Int32]
+";
         assert_eq!(plan_str, expected_str);
     }
 
     #[test]
-    fn add_copy_to_filter_scan() {
+    fn add_copy_to_sort_on_filtered_scan() {
         let scan_exec = create_scan();
         let filter_exec = create_filter(scan_exec, 1);
         let sort_exec = create_sort_exec(filter_exec);
@@ -3025,7 +3026,8 @@ mod tests {
         let expected_str = r"SortExec: expr=[col_0@0 ASC], preserve_partitioning=[false]
   CopyExec [UnpackOrDeepCopy]
     CometFilterExec: col_0@0 = 1
-      ScanExec: source=[], schema=[col_0: Int32]";
+      ScanExec: source=[], schema=[col_0: Int32]
+";
         assert_eq!(plan_str, expected_str);
     }
 
