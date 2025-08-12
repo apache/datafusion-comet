@@ -130,33 +130,74 @@ pub fn bytes_to_i128(slice: &[u8]) -> i128 {
 }
 
 pub(crate) fn validate_array_data(array: &ArrayData) -> Result<(), ArrowError> {
-    array.validate_full()
-    // match array.data_type() {
-    //     DataType::Utf8 | DataType::Binary => {
-    //         let buffer = &array.buffers()[1];
-    //         validate_offsets::<i32>(buffer.typed_data(), array.len())
-    //     }
-    //     DataType::LargeUtf8 | DataType::LargeBinary => {
-    //         let buffer = &array.buffers()[1];
-    //         validate_offsets::<i64>(buffer.typed_data(), array.len())
-    //     }
-    //     _ => Ok(()),
-    // }
+    array.validate_full()?;
+
+    // self.validate_offsets::<i32>(self.buffers[1].len())?;
+
+    /*
+        fn validate_offsets<T: ArrowNativeType + num::Num + std::fmt::Display>(
+        &self,
+        values_length: usize,
+    ) -> Result<(), ArrowError> {
+        // Justification: buffer size was validated above
+        let offsets = self.typed_offsets::<T>()?;
+        if offsets.is_empty() {
+            return Ok(());
+        }
+
+        let first_offset = offsets[0].to_usize().ok_or_else(|| {
+            ArrowError::InvalidArgumentError(format!(
+                "Error converting offset[0] ({}) to usize for {}",
+                offsets[0], self.data_type
+            ))
+        })?;
+
+        let last_offset = offsets[self.len].to_usize().ok_or_else(|| {
+            ArrowError::InvalidArgumentError(format!(
+                "Error converting offset[{}] ({}) to usize for {}",
+                self.len, offsets[self.len], self.data_type
+            ))
+        })?;
+
+     */
+
+    match array.data_type() {
+        DataType::Utf8 | DataType::Binary => {
+            validate_offsets::<i32>(array.buffers()[0].typed_data(), array.len())
+        }
+        DataType::LargeUtf8 | DataType::LargeBinary => {
+            validate_offsets::<i32>(array.buffers()[0].typed_data(), array.len())
+        }
+        _ => Ok(()),
+    }
 }
 
-// fn validate_offsets<T: ArrowNativeType + num::Num + std::fmt::Display>(
-//     offsets: &[T],
-//     values_length: usize,
-// ) -> Result<(), ArrowError> {
-//     for i in 0..values_length - 1 {
-//         let current_offset = offsets[i];
-//         let next_offset = offsets[i + 1];
-//         if (current_offset > next_offset) || current_offset < T::zero() || next_offset < T::zero() {
-//             return Err(ArrowError::MemoryError(format!(
-//                 "corrupt offsets [{i}] {current_offset}, [{}] {next_offset}",
-//                 i + 1
-//             )));
-//         }
-//     }
-//     Ok(())
-// }
+fn validate_offsets<T: ArrowNativeType + num::Num + std::fmt::Display>(
+    offsets: &[T],
+    values_length: usize,
+) -> Result<(), ArrowError> {
+    if offsets.is_empty() {
+        return Ok(());
+    }
+
+    for i in 0..values_length + 1 {
+        let _ = offsets[i].to_usize().ok_or_else(|| {
+            ArrowError::InvalidArgumentError(format!(
+                "Error converting offset[{i}] ({}) to usize",
+                offsets[i]
+            ))
+        })?;
+    }
+
+    for i in 0..values_length {
+        let current_offset = offsets[i].to_usize().unwrap();
+        let next_offset = offsets[i + 1].to_usize().unwrap();
+        if current_offset > next_offset {
+            return Err(ArrowError::MemoryError(format!(
+                "corrupt offsets [{i}] {current_offset} > [{}] {next_offset}",
+                i + 1
+            )));
+        }
+    }
+    Ok(())
+}

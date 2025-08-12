@@ -90,9 +90,11 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "2g")
     conf.set(CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key, "true")
     /// Validate arrays passed between JVM and native
-    conf.set(CometConf.COMET_DEBUG_ENABLED.key, "true")
+    conf.set(CometConf.COMET_DEBUG_ENABLED.key, isDebugEnabled.toString)
     conf
   }
+
+  def isDebugEnabled: Boolean = true
 
   /**
    * A helper function for comparing Comet DataFrame with Spark result using absolute tolerance.
