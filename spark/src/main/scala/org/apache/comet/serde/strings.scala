@@ -26,7 +26,7 @@ import org.apache.spark.sql.types.{DataTypes, LongType, StringType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.expressions.CometEvalMode
+import org.apache.comet.expressions.{CometEvalMode, RegExp}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{castToProto, createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
@@ -130,9 +130,13 @@ object CometRLike extends CometExpressionSerde[RLike] {
   override def convert(expr: RLike, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     expr.right match {
       case Literal(pattern, DataTypes.StringType) =>
-        val regex = pattern.toString
-        if (regex.contains("(?i)") || regex.contains("(?-i)")) {
-          withInfo(expr, "Regex flag (?i) and (?-i) are not supported")
+        if (!RegExp.isSupportedPattern(pattern.toString) &&
+          !CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
+          withInfo(
+            expr,
+            s"Regexp pattern $pattern is not compatible with Spark. " +
+              s"Set ${CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key}=true " +
+              "to allow it anyway.")
           None
         } else {
           createBinaryExpr(

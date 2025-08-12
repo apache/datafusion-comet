@@ -987,62 +987,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           }
         }
 
-      case Like(left, right, escapeChar) =>
-        if (escapeChar == '\\') {
-          createBinaryExpr(
-            expr,
-            left,
-            right,
-            inputs,
-            binding,
-            (builder, binaryExpr) => builder.setLike(binaryExpr))
-        } else {
-          // TODO custom escape char
-          withInfo(expr, s"custom escape character $escapeChar not supported in LIKE")
-          None
-        }
-
-      case RLike(left, right) =>
-        // we currently only support scalar regex patterns
-        right match {
-          case Literal(pattern, DataTypes.StringType) =>
-            if (!RegExp.isSupportedPattern(pattern.toString) &&
-              !CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
-              withInfo(
-                expr,
-                s"Regexp pattern $pattern is not compatible with Spark. " +
-                  s"Set ${CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key}=true " +
-                  "to allow it anyway.")
-              return None
-            }
-          case _ =>
-            withInfo(expr, "Only scalar regexp patterns are supported")
-            return None
-        }
-
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setRlike(binaryExpr))
-
-      case StartsWith(attribute, prefix) =>
-        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
-        val prefixExpr = exprToProtoInternal(prefix, inputs, binding)
-        scalarFunctionExprToProto("starts_with", attributeExpr, prefixExpr)
-
-      case EndsWith(attribute, suffix) =>
-        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
-        val suffixExpr = exprToProtoInternal(suffix, inputs, binding)
-        scalarFunctionExprToProto("ends_with", attributeExpr, suffixExpr)
-
-      case Contains(attribute, value) =>
-        val attributeExpr = exprToProtoInternal(attribute, inputs, binding)
-        val valueExpr = exprToProtoInternal(value, inputs, binding)
-        scalarFunctionExprToProto("contains", attributeExpr, valueExpr)
-
       case SortOrder(child, direction, nullOrdering, _) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
 
@@ -1602,8 +1546,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
       case af @ ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
         convert(af, CometArrayCompact)
-      case ae: ArrayExcept =>
-        convert(ae, CometArrayExcept)
       case expr =>
         QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
           case Some(handler) =>
