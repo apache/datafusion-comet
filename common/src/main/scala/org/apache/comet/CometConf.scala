@@ -455,7 +455,7 @@ object CometConf extends ShimCometConf {
           "checks may be expensive in performance and should only be enabled for debugging " +
           "purpose.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_EXPLAIN_VERBOSE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.explain.verbose.enabled")
