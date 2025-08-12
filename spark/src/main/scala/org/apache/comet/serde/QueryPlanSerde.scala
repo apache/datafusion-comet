@@ -1796,6 +1796,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
           // TODO this could be optimized more to stop walking the tree on hitting
           //  certain operators such as join or aggregate which will copy batches
           def containsNativeCometScan(plan: SparkPlan): Boolean = {
+            // TODO this needs updating to support Iceberg invoking native_comet scan
             plan match {
               case w: CometScanWrapper => containsNativeCometScan(w.originalPlan)
               case scan: CometScanExec => scan.scanImpl == CometConf.SCAN_NATIVE_COMET

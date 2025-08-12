@@ -2789,9 +2789,9 @@ mod tests {
     };
     use datafusion::error::DataFusionError;
     use datafusion::logical_expr::ScalarUDF;
+    use datafusion::physical_plan::display::DisplayableExecutionPlan;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
-    use datafusion::physical_plan::display::DisplayableExecutionPlan;
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
@@ -2809,42 +2809,7 @@ mod tests {
         spark_operator::{operator::OpStruct, Operator},
     };
     use datafusion_comet_spark_expr::EvalMode;
-
-    #[test]
-    fn copy_exec() {
-        let scan_exec = create_scan();
-        
-        // Create a SortOrder expression that sorts by the first column (index 0)
-        // in ascending order with nulls first
-        let sort_order_expr = spark_expression::Expr {
-            expr_struct: Some(ExprStruct::SortOrder(Box::new(spark_expression::SortOrder {
-                child: Some(Box::new(spark_expression::Expr {
-                    expr_struct: Some(ExprStruct::Bound(spark_expression::BoundReference {
-                        index: 0,
-                        datatype: Some(spark_expression::DataType {
-                            type_id: 3, // Int32
-                            type_info: None,
-                        }),
-                    })),
-                })),
-                direction: spark_expression::SortDirection::Ascending as i32,
-                null_ordering: spark_expression::NullOrdering::NullsFirst as i32,
-            }))),
-        };
-        
-        let sort_exec = Operator {
-            plan_id: 0,
-            children: vec![scan_exec],
-            op_struct: Some(OpStruct::Sort(spark_operator::Sort {
-                sort_orders: vec![sort_order_expr],
-                fetch: None,
-            }))
-        };
-        let planner = PhysicalPlanner::default();
-        let (_scans, datafusion_plan) = planner.create_plan(&sort_exec, &mut vec![], 1).unwrap();
-        let plan_str = format!("{}", DisplayableExecutionPlan::new(datafusion_plan.native_plan.as_ref()).indent(true));
-        println!("{plan_str}");
-    }
+    use crate::execution::spark_plan::SparkPlan;
 
     #[test]
     fn test_unpack_dictionary_primitive() {
@@ -3036,6 +3001,41 @@ mod tests {
         assert_eq!(comet_err.to_string(), "Error from DataFusion: exec error.");
     }
 
+    #[test]
+    fn add_copy_to_scan() {
+        let scan_exec = create_scan();
+        let sort_exec = create_sort_exec(scan_exec);
+        let planner = PhysicalPlanner::default();
+        let (_scans, datafusion_plan) = planner.create_plan(&sort_exec, &mut vec![], 1).unwrap();
+        let plan_str = explain_plan(datafusion_plan);
+        let expected_str = r"SortExec: expr=[col_0@0 ASC], preserve_partitioning=[false]
+  CopyExec [UnpackOrDeepCopy]
+    ScanExec: source=[], schema=[col_0: Int32]";
+        assert_eq!(plan_str, expected_str);
+    }
+
+    #[test]
+    fn add_copy_to_filter_scan() {
+        let scan_exec = create_scan();
+        let filter_exec = create_filter(scan_exec, 1);
+        let sort_exec = create_sort_exec(filter_exec);
+        let planner = PhysicalPlanner::default();
+        let (_scans, datafusion_plan) = planner.create_plan(&sort_exec, &mut vec![], 1).unwrap();
+        let plan_str = explain_plan(datafusion_plan);
+        let expected_str = r"SortExec: expr=[col_0@0 ASC], preserve_partitioning=[false]
+  CopyExec [UnpackOrDeepCopy]
+    CometFilterExec: col_0@0 = 1
+      ScanExec: source=[], schema=[col_0: Int32]";
+        assert_eq!(plan_str, expected_str);
+    }
+
+    fn explain_plan(datafusion_plan: Arc<SparkPlan>) -> String {
+        format!(
+            "{}",
+            DisplayableExecutionPlan::new(datafusion_plan.native_plan.as_ref()).indent(true)
+        )
+    }
+
     // Creates a filter operator which takes an `Int32Array` and selects rows that are equal to
     // `value`.
     fn create_filter(child_op: spark_operator::Operator, value: i32) -> spark_operator::Operator {
@@ -3085,6 +3085,38 @@ mod tests {
                 wrap_child_in_copy_exec: false,
             })),
         }
+    }
+
+    fn create_sort_exec(scan_exec: Operator) -> Operator {
+        // Create a SortOrder expression that sorts by the first column (index 0)
+        // in ascending order with nulls first
+        let sort_order_expr = spark_expression::Expr {
+            expr_struct: Some(ExprStruct::SortOrder(Box::new(
+                spark_expression::SortOrder {
+                    child: Some(Box::new(spark_expression::Expr {
+                        expr_struct: Some(ExprStruct::Bound(spark_expression::BoundReference {
+                            index: 0,
+                            datatype: Some(spark_expression::DataType {
+                                type_id: 3, // Int32
+                                type_info: None,
+                            }),
+                        })),
+                    })),
+                    direction: spark_expression::SortDirection::Ascending as i32,
+                    null_ordering: spark_expression::NullOrdering::NullsFirst as i32,
+                },
+            ))),
+        };
+
+        let sort_exec = Operator {
+            plan_id: 0,
+            children: vec![scan_exec],
+            op_struct: Some(OpStruct::Sort(spark_operator::Sort {
+                sort_orders: vec![sort_order_expr],
+                fetch: None,
+            })),
+        };
+        sort_exec
     }
 
     #[test]
