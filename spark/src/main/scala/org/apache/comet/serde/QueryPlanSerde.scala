@@ -2263,16 +2263,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case op =>
         opSerdeMap.get(op.getClass) match {
           case Some(handler) =>
-            handler.enabledConfig match {
-              case Some(enabledConfig) =>
-                if (!enabledConfig.get(op.conf)) {
-                  withInfo(
-                    op,
-                    s"Native support for operator ${op.getClass.getSimpleName} is disabled. " +
-                      s"Set ${enabledConfig.key}=true to enable it.")
-                  return None
-                }
-              case _ =>
+            handler.enabledConfig.foreach { enabledConfig =>
+              if (!enabledConfig.get(op.conf)) {
+                withInfo(
+                  op,
+                  s"Native support for operator ${op.getClass.getSimpleName} is disabled. " +
+                    s"Set ${enabledConfig.key}=true to enable it.")
+                return None
+              }
             }
             handler.asInstanceOf[CometOperatorSerde[SparkPlan]].convert(op, builder, childOp: _*)
           case _ =>
