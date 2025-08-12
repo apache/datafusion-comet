@@ -148,20 +148,22 @@ pub struct PhysicalPlanner {
     exec_context_id: i64,
     partition: i32,
     session_ctx: Arc<SessionContext>,
+    validate_arrays: bool,
 }
 
 impl Default for PhysicalPlanner {
     fn default() -> Self {
-        Self::new(Arc::new(SessionContext::new()), 0)
+        Self::new(Arc::new(SessionContext::new()), 0, false)
     }
 }
 
 impl PhysicalPlanner {
-    pub fn new(session_ctx: Arc<SessionContext>, partition: i32) -> Self {
+    pub fn new(session_ctx: Arc<SessionContext>, partition: i32, validate_arrays: bool) -> Self {
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,
             partition,
+            validate_arrays,
         }
     }
 
@@ -170,6 +172,7 @@ impl PhysicalPlanner {
             exec_context_id,
             partition: self.partition,
             session_ctx: Arc::clone(&self.session_ctx),
+            validate_arrays: self.validate_arrays,
         }
     }
 
@@ -1424,8 +1427,13 @@ impl PhysicalPlanner {
                     };
 
                 // The `ScanExec` operator will take actual arrays from Spark during execution
-                let scan =
-                    ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?;
+                let scan = ScanExec::new(
+                    self.exec_context_id,
+                    input_source,
+                    &scan.source,
+                    data_types,
+                    self.validate_arrays,
+                )?;
 
                 Ok((
                     vec![scan.clone()],
@@ -3116,7 +3124,7 @@ mod tests {
             datafusion_functions_nested::make_array::MakeArray::new(),
         ));
         let task_ctx = session_ctx.task_ctx();
-        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0, true);
 
         // Create a plan for
         // ProjectionExec: expr=[make_array(col_0@0) as col_0]
@@ -3232,7 +3240,7 @@ mod tests {
     fn test_array_repeat() {
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
-        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0, true);
 
         // Mock scan operator with 3 INT32 columns
         let op_scan = Operator {

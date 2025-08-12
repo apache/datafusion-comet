@@ -430,9 +430,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             // query plan, we need to defer stream initialization to first time execution.
             if exec_context.root_op.is_none() {
                 let start = Instant::now();
-                let planner =
-                    PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
-                        .with_exec_id(exec_context_id);
+                let planner = PhysicalPlanner::new(
+                    Arc::clone(&exec_context.session_ctx),
+                    partition,
+                    exec_context.debug_native,
+                )
+                .with_exec_id(exec_context_id);
                 let (scans, root_op) = planner.create_plan(
                     &exec_context.spark_plan,
                     &mut exec_context.input_sources.clone(),

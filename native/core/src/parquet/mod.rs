@@ -686,9 +686,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| unsafe {
         let session_config = SessionConfig::new().with_batch_size(batch_size as usize);
-        let planer =
-            PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(session_config)), 0);
-        let session_ctx = planer.session_ctx();
+        // TODO pass in option for validate_arrays
+        let validate_arrays = false;
+        let planner = PhysicalPlanner::new(
+            Arc::new(SessionContext::new_with_config(session_config)),
+            0,
+            validate_arrays,
+        );
+        let session_ctx = planner.session_ctx();
 
         let path: String = env
             .get_string(&JString::from_raw(file_path))
@@ -716,7 +721,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             let filter_buffer = env.convert_byte_array(&filter_array)?;
             let filter_expr = serde::deserialize_expr(filter_buffer.as_slice())?;
             Some(vec![
-                planer.create_expr(&filter_expr, Arc::clone(&data_schema))?
+                planner.create_expr(&filter_expr, Arc::clone(&data_schema))?
             ])
         } else {
             None
