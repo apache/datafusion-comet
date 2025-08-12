@@ -57,8 +57,15 @@ public final class CometUnifiedShuffleMemoryAllocator extends CometShuffleMemory
     return this.allocatePage(required);
   }
 
-  public synchronized void free(MemoryBlock block) {
+  public synchronized long free(MemoryBlock block) {
+    if (block.pageNumber == MemoryBlock.FREED_IN_ALLOCATOR_PAGE_NUMBER
+        || block.pageNumber == MemoryBlock.FREED_IN_TMM_PAGE_NUMBER) {
+      // Already freed block
+      return 0;
+    }
+    long blockSize = block.size();
     this.freePage(block);
+    return blockSize;
   }
 
   /**
