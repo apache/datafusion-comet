@@ -29,7 +29,6 @@ import org.apache.spark.sql.functions._
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.CometArrayExcept
 import org.apache.comet.serde.{CometArrayExcept, CometArrayRemove, CometFlatten}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
