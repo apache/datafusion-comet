@@ -24,84 +24,79 @@ import org.apache.spark.sql.types.{ByteType, IntegerType, LongType}
 
 import org.apache.comet.serde.QueryPlanSerde._
 
-object CometBitwiseAdd extends CometExpressionSerde {
+object CometBitwiseAnd extends CometExpressionSerde[BitwiseAnd] {
   override def convert(
-      expr: Expression,
+      expr: BitwiseAnd,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val bitwiseAndExpr = expr.asInstanceOf[BitwiseAnd]
     createBinaryExpr(
       expr,
-      bitwiseAndExpr.left,
-      bitwiseAndExpr.right,
+      expr.left,
+      expr.right,
       inputs,
       binding,
       (builder, binaryExpr) => builder.setBitwiseAnd(binaryExpr))
   }
 }
 
-object CometBitwiseNot extends CometExpressionSerde {
+object CometBitwiseNot extends CometExpressionSerde[BitwiseNot] {
   override def convert(
-      expr: Expression,
+      expr: BitwiseNot,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val bitwiseNotExpr = expr.asInstanceOf[BitwiseNot]
-    val childProto = exprToProto(bitwiseNotExpr.child, inputs, binding)
+    val childProto = exprToProto(expr.child, inputs, binding)
     val bitNotScalarExpr =
       scalarFunctionExprToProto("bit_not", childProto)
     optExprWithInfo(bitNotScalarExpr, expr, expr.children: _*)
   }
 }
 
-object CometBitwiseOr extends CometExpressionSerde {
+object CometBitwiseOr extends CometExpressionSerde[BitwiseOr] {
   override def convert(
-      expr: Expression,
+      expr: BitwiseOr,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val bitwiseOrExpr = expr.asInstanceOf[BitwiseOr]
     createBinaryExpr(
       expr,
-      bitwiseOrExpr.left,
-      bitwiseOrExpr.right,
+      expr.left,
+      expr.right,
       inputs,
       binding,
       (builder, binaryExpr) => builder.setBitwiseOr(binaryExpr))
   }
 }
 
-object CometBitwiseXor extends CometExpressionSerde {
+object CometBitwiseXor extends CometExpressionSerde[BitwiseXor] {
   override def convert(
-      expr: Expression,
+      expr: BitwiseXor,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val bitwiseXorExpr = expr.asInstanceOf[BitwiseXor]
     createBinaryExpr(
       expr,
-      bitwiseXorExpr.left,
-      bitwiseXorExpr.right,
+      expr.left,
+      expr.right,
       inputs,
       binding,
       (builder, binaryExpr) => builder.setBitwiseXor(binaryExpr))
   }
 }
 
-object CometShiftRight extends CometExpressionSerde {
+object CometShiftRight extends CometExpressionSerde[ShiftRight] {
   override def convert(
-      expr: Expression,
+      expr: ShiftRight,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val shiftRightExpr = expr.asInstanceOf[ShiftRight]
     // DataFusion bitwise shift right expression requires
     // same data type between left and right side
-    val rightExpression = if (shiftRightExpr.left.dataType == LongType) {
-      Cast(shiftRightExpr.right, LongType)
+    val rightExpression = if (expr.left.dataType == LongType) {
+      Cast(expr.right, LongType)
     } else {
-      shiftRightExpr.right
+      expr.right
     }
 
     createBinaryExpr(
       expr,
-      shiftRightExpr.left,
+      expr.left,
       rightExpression,
       inputs,
       binding,
@@ -109,23 +104,22 @@ object CometShiftRight extends CometExpressionSerde {
   }
 }
 
-object CometShiftLeft extends CometExpressionSerde {
+object CometShiftLeft extends CometExpressionSerde[ShiftLeft] {
   override def convert(
-      expr: Expression,
+      expr: ShiftLeft,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val shiftLeftLeft = expr.asInstanceOf[ShiftLeft]
     // DataFusion bitwise shift right expression requires
     // same data type between left and right side
-    val rightExpression = if (shiftLeftLeft.left.dataType == LongType) {
-      Cast(shiftLeftLeft.right, LongType)
+    val rightExpression = if (expr.left.dataType == LongType) {
+      Cast(expr.right, LongType)
     } else {
-      shiftLeftLeft.right
+      expr.right
     }
 
     createBinaryExpr(
       expr,
-      shiftLeftLeft.left,
+      expr.left,
       rightExpression,
       inputs,
       binding,
@@ -133,27 +127,25 @@ object CometShiftLeft extends CometExpressionSerde {
   }
 }
 
-object CometBitwiseGet extends CometExpressionSerde {
+object CometBitwiseGet extends CometExpressionSerde[BitwiseGet] {
   override def convert(
-      expr: Expression,
+      expr: BitwiseGet,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val bitwiseGetExpr = expr.asInstanceOf[BitwiseGet]
-    val argProto = exprToProto(bitwiseGetExpr.left, inputs, binding)
-    val posProto = exprToProto(bitwiseGetExpr.right, inputs, binding)
+    val argProto = exprToProto(expr.left, inputs, binding)
+    val posProto = exprToProto(expr.right, inputs, binding)
     val bitGetScalarExpr =
       scalarFunctionExprToProtoWithReturnType("bit_get", ByteType, argProto, posProto)
     optExprWithInfo(bitGetScalarExpr, expr, expr.children: _*)
   }
 }
 
-object CometBitwiseCount extends CometExpressionSerde {
+object CometBitwiseCount extends CometExpressionSerde[BitwiseCount] {
   override def convert(
-      expr: Expression,
+      expr: BitwiseCount,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val bitwiseCountExpr = expr.asInstanceOf[BitwiseCount]
-    val childProto = exprToProto(bitwiseCountExpr.child, inputs, binding)
+    val childProto = exprToProto(expr.child, inputs, binding)
     val bitCountScalarExpr =
       scalarFunctionExprToProtoWithReturnType("bit_count", IntegerType, childProto)
     optExprWithInfo(bitCountScalarExpr, expr, expr.children: _*)

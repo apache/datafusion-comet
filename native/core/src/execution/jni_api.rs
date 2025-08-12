@@ -42,6 +42,7 @@ use datafusion::{
 use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_spark::function::hash::sha2::SparkSha2;
 use datafusion_spark::function::math::expm1::SparkExpm1;
+use datafusion_spark::function::string::char::SparkChar;
 use futures::poll;
 use futures::stream::StreamExt;
 use jni::objects::JByteBuffer;
@@ -290,6 +291,7 @@ fn prepare_datafusion_session_context(
     // register UDFs from datafusion-spark crate
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha2::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkChar::default()));
 
     // Must be the last one to override existing functions with the same name
     datafusion_comet_spark_expr::register_all_comet_functions(&mut session_ctx)?;
@@ -334,9 +336,7 @@ fn prepare_output(
             // Validate the output arrays.
             for array in results.iter() {
                 let array_data = array.to_data();
-                array_data
-                    .validate_full()
-                    .expect("Invalid output array data");
+                array_data.validate_full()?;
             }
         }
 
@@ -428,9 +428,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             // query plan, we need to defer stream initialization to first time execution.
             if exec_context.root_op.is_none() {
                 let start = Instant::now();
-                let planner =
-                    PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
-                        .with_exec_id(exec_context_id);
+                let planner = PhysicalPlanner::new(
+                    Arc::clone(&exec_context.session_ctx),
+                    partition,
+                    exec_context.debug_native,
+                )
+                .with_exec_id(exec_context_id);
                 let (scans, root_op) = planner.create_plan(
                     &exec_context.spark_plan,
                     &mut exec_context.input_sources.clone(),

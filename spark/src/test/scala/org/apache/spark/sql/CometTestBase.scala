@@ -44,7 +44,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal._
 import org.apache.spark.sql.test._
-import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, MapType, StructType}
+import org.apache.spark.sql.types.{DecimalType, StructType}
 
 import org.apache.comet._
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
@@ -89,6 +89,8 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key, "true")
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "2g")
     conf.set(CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key, "true")
+    /// Validate arrays passed between JVM and native
+    conf.set(CometConf.COMET_DEBUG_ENABLED.key, "true")
     conf
   }
 
@@ -1141,10 +1143,5 @@ abstract class CometTestBase
   def usingDataSourceExecWithIncompatTypes(conf: SQLConf): Boolean = {
     usingDataSourceExec(conf) &&
     !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get(conf)
-  }
-
-  def isComplexType(dt: DataType): Boolean = dt match {
-    case _: StructType | _: ArrayType | _: MapType => true
-    case _ => false
   }
 }

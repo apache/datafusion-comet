@@ -80,6 +80,8 @@ pub struct ScanExec {
     jvm_fetch_time: Time,
     /// Time spent in FFI
     arrow_ffi_time: Time,
+    /// Debug mode
+    validate_arrays: bool,
 }
 
 impl ScanExec {
@@ -88,6 +90,7 @@ impl ScanExec {
         input_source: Option<Arc<GlobalRef>>,
         input_source_description: &str,
         data_types: Vec<DataType>,
+        validate_arrays: bool,
     ) -> Result<Self, CometError> {
         let metrics_set = ExecutionPlanMetricsSet::default();
         let baseline_metrics = BaselineMetrics::new(&metrics_set, 0);
@@ -108,6 +111,7 @@ impl ScanExec {
                 data_types.len(),
                 &jvm_fetch_time,
                 &arrow_ffi_time,
+                validate_arrays,
             )?;
             timer.stop();
             batch
@@ -138,6 +142,7 @@ impl ScanExec {
             jvm_fetch_time,
             arrow_ffi_time,
             schema,
+            validate_arrays: validate_arrays,
         })
     }
 
@@ -186,6 +191,7 @@ impl ScanExec {
                 self.data_types.len(),
                 &self.jvm_fetch_time,
                 &self.arrow_ffi_time,
+                self.validate_arrays,
             )?;
             *current_batch = Some(next_batch);
         }
@@ -202,6 +208,7 @@ impl ScanExec {
         num_cols: usize,
         jvm_fetch_time: &Time,
         arrow_ffi_time: &Time,
+        validate_arrays: bool,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             // This is a unit test. We don't need to call JNI.
@@ -275,7 +282,10 @@ impl ScanExec {
             let schema_ptr = schema_addrs[i];
             let array_data = ArrayData::from_spark((array_ptr, schema_ptr))?;
 
-            // TODO: validate array input data
+            // validate array input data
+            if validate_arrays {
+                array_data.validate_full()?;
+            }
 
             inputs.push(make_array(array_data));
 
