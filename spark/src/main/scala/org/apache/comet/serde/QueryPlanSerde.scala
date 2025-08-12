@@ -2450,8 +2450,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
 trait CometOperatorSerde[T <: SparkPlan] {
 
   /**
-   * Convert a Spark operator into a protocol buffer representation that can be passed into
-   * native code.
+   * Convert a Spark operator into a protocol buffer representation that can be passed into native
+   * code.
    *
    * @param op
    *   The Spark operator.
