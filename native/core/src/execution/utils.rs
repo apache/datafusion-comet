@@ -131,29 +131,32 @@ pub fn bytes_to_i128(slice: &[u8]) -> i128 {
 
 pub(crate) fn validate_array_data(array: &ArrayData) -> Result<(), ArrowError> {
     array.validate_full()?;
-    match array.data_type() {
-        DataType::Utf8 | DataType::Binary => {
-            validate_offsets::<i32>(array.buffers()[1].typed_data())
-        }
-        DataType::LargeUtf8 | DataType::LargeBinary => {
-            validate_offsets::<i64>(array.buffers()[1].typed_data())
-        }
-        _ => Ok(()),
-    }
+    // match array.data_type() {
+    //     DataType::Utf8 | DataType::Binary => {
+    //         let buffer = &array.buffers()[1];
+    //         validate_offsets::<i32>(buffer.typed_data(), array.len())
+    //     }
+    //     DataType::LargeUtf8 | DataType::LargeBinary => {
+    //         let buffer = &array.buffers()[1];
+    //         validate_offsets::<i64>(buffer.typed_data(), array.len())
+    //     }
+    //     _ => Ok(()),
+    // }
 }
 
-fn validate_offsets<T: ArrowNativeType + num::Num + std::fmt::Display>(
-    offsets: &[T],
-) -> Result<(), ArrowError> {
-    for i in 0..offsets.len() - 1 {
-        let current_offset = offsets[i];
-        let next_offset = offsets[i + 1];
-        if current_offset >= next_offset {
-            return Err(ArrowError::MemoryError(format!(
-                "corrupt offsets [{i}] {current_offset} >= [{}] {next_offset}",
-                i + 1
-            )));
-        }
-    }
-    Ok(())
-}
+// fn validate_offsets<T: ArrowNativeType + num::Num + std::fmt::Display>(
+//     offsets: &[T],
+//     values_length: usize,
+// ) -> Result<(), ArrowError> {
+//     for i in 0..values_length - 1 {
+//         let current_offset = offsets[i];
+//         let next_offset = offsets[i + 1];
+//         if (current_offset > next_offset) || current_offset < T::zero() || next_offset < T::zero() {
+//             return Err(ArrowError::MemoryError(format!(
+//                 "corrupt offsets [{i}] {current_offset}, [{}] {next_offset}",
+//                 i + 1
+//             )));
+//         }
+//     }
+//     Ok(())
+// }
