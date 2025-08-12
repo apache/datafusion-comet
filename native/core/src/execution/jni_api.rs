@@ -336,9 +336,7 @@ fn prepare_output(
             // Validate the output arrays.
             for array in results.iter() {
                 let array_data = array.to_data();
-                array_data
-                    .validate_full()
-                    .expect("Invalid output array data");
+                array_data.validate_full()?;
             }
         }
 
