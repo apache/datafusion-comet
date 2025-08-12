@@ -33,7 +33,7 @@ public abstract class CometShuffleMemoryAllocatorTrait extends MemoryConsumer {
 
   public abstract MemoryBlock allocate(long required);
 
-  public abstract void free(MemoryBlock block);
+  public abstract long free(MemoryBlock block);
 
   public abstract long getOffsetInPage(long pagePlusOffsetAddress);
 
