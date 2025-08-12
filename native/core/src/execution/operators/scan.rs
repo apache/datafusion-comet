@@ -142,7 +142,7 @@ impl ScanExec {
             jvm_fetch_time,
             arrow_ffi_time,
             schema,
-            validate_arrays: validate_arrays,
+            validate_arrays,
         })
     }
 
