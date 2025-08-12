@@ -130,7 +130,7 @@ pub fn bytes_to_i128(slice: &[u8]) -> i128 {
 }
 
 pub(crate) fn validate_array_data(array: &ArrayData) -> Result<(), ArrowError> {
-    array.validate_full()?;
+    array.validate_full()
     // match array.data_type() {
     //     DataType::Utf8 | DataType::Binary => {
     //         let buffer = &array.buffers()[1];
