@@ -94,10 +94,6 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
       withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
     }
-    if (expr.evalMode == EvalMode.TRY) {
-      withInfo(expr, s"Eval mode ${expr.evalMode} is not supported")
-      return None
-    }
     createMathExpression(
       expr,
       expr.left,
@@ -117,10 +113,6 @@ object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     if (!supportedDataType(expr.left.dataType)) {
       withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
-      return None
-    }
-    if (expr.evalMode == EvalMode.TRY) {
-      withInfo(expr, s"Eval mode ${expr.evalMode} is not supported")
       return None
     }
     createMathExpression(
@@ -144,10 +136,6 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
       withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
     }
-    if (expr.evalMode == EvalMode.TRY) {
-      withInfo(expr, s"Eval mode ${expr.evalMode} is not supported")
-      return None
-    }
     createMathExpression(
       expr,
       expr.left,
@@ -169,13 +157,8 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
     // See https://github.com/apache/arrow-datafusion/pull/6792
     // For now, use NullIf to swap zeros with nulls.
     val rightExpr = nullIfWhenPrimitive(expr.right)
-
     if (!supportedDataType(expr.left.dataType)) {
       withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
-      return None
-    }
-    if (expr.evalMode == EvalMode.TRY) {
-      withInfo(expr, s"Eval mode ${expr.evalMode} is not supported")
       return None
     }
     createMathExpression(
@@ -197,10 +180,6 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     if (!supportedDataType(expr.left.dataType)) {
       withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
-      return None
-    }
-    if (expr.evalMode == EvalMode.TRY) {
-      withInfo(expr, s"Eval mode ${expr.evalMode} is not supported")
       return None
     }
 
