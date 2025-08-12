@@ -19,10 +19,11 @@
 
 package org.apache.comet.rules
 
+import scala.annotation.tailrec
 import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
+import org.apache.spark.sql.catalyst.expressions.{Contains, Divide, DoubleLiteral, EndsWith, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder, StartsWith}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
@@ -36,7 +37,7 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExc
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometConf.COMET_ANSI_MODE_ENABLED
@@ -340,6 +341,11 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             op.left,
             op.right,
             SerializedPlan(None)))
+
+      case op: CopyExec if op.children.forall(isCometNative) =>
+        newPlanWithProto(
+          op,
+          CometCopyExec(_, op, op.output, op.copyMode, op.child, SerializedPlan(None)))
 
       case op: SortMergeJoinExec
           if CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) &&
@@ -668,7 +674,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         normalizePlan(plan)
       }
 
-      var newPlan = transform(normalizedPlan)
+      var newPlan = transform(transformAndAddCopyExec(normalizedPlan))
 
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)
@@ -745,6 +751,53 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           firstNativeOp = true
           op
       }
+    }
+  }
+
+  private def transformAndAddCopyExec(plan: SparkPlan) = plan.transform {
+    case shj: ShuffledHashJoinExec =>
+      val newLeft = wrapInCopyExec(shj.left)
+      val newRight = wrapInCopyExec(shj.right)
+      shj.copy(left = newLeft, right = newRight)
+    case se: SortExec =>
+      val newChild = wrapInCopyExec(se.child)
+      se.copy(child = newChild)
+    case ee: ExpandExec =>
+      // `Expand` operator keeps the input batch and expands it to multiple output
+      // batches. However, `ScanExec` will reuse input arrays for the next
+      // input batch. Therefore, we need to copy the input batch to avoid
+      // the data corruption. Note that we only need to copy the input batch
+      // if the child operator is `ScanExec`, because other operators after `ScanExec`
+      // will create new arrays for the output batch.
+      val newChild = wrapInCopyExec(ee.child)
+      ee.copy(child = newChild)
+    case filter @ FilterExec(condition, child)
+        if condition.exists(expr =>
+          expr.isInstanceOf[StartsWith] || expr.isInstanceOf[EndsWith] || expr
+            .isInstanceOf[Contains]) =>
+      // Some native expressions do not support operating on dictionary-encoded arrays, so
+      // wrap the child in a CopyExec to unpack dictionaries first.
+      val newChild = wrapInCopyExec(child)
+      filter.copy(condition = filter.condition, child = newChild)
+  }
+
+  // Returns true if given operator can return input array as output array without
+  // modification. This is used to determine if we need to copy the input batch to avoid
+  // data corruption from reusing the input batch.
+  @tailrec
+  private def canReuseInputBatch(plan: SparkPlan): Boolean = {
+    if (plan.isInstanceOf[ProjectExec] || plan.isInstanceOf[LocalLimitExec]) {
+      canReuseInputBatch(plan.children.head)
+    } else {
+      plan.isInstanceOf[CometScanExec]
+    }
+  }
+
+  private def wrapInCopyExec(plan: SparkPlan): SparkPlan = {
+    if (canReuseInputBatch(plan)) {
+      CopyExec(plan, UnpackOrDeepCopy)
+    } else {
+      CopyExec(plan, UnpackOrClone)
     }
   }
 

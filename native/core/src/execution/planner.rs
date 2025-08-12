@@ -1146,25 +1146,17 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                let filter: Arc<dyn ExecutionPlan> =
-                    match (filter.wrap_child_in_copy_exec, filter.use_datafusion_filter) {
-                        (true, true) => Arc::new(DataFusionFilterExec::try_new(
-                            predicate,
-                            Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
-                        )?),
-                        (true, false) => Arc::new(CometFilterExec::try_new(
-                            predicate,
-                            Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
-                        )?),
-                        (false, true) => Arc::new(DataFusionFilterExec::try_new(
-                            predicate,
-                            Arc::clone(&child.native_plan),
-                        )?),
-                        (false, false) => Arc::new(CometFilterExec::try_new(
-                            predicate,
-                            Arc::clone(&child.native_plan),
-                        )?),
-                    };
+                let filter: Arc<dyn ExecutionPlan> = if filter.use_datafusion_filter {
+                    Arc::new(DataFusionFilterExec::try_new(
+                        predicate,
+                        Arc::clone(&child.native_plan),
+                    )?)
+                } else {
+                    Arc::new(CometFilterExec::try_new(
+                        predicate,
+                        Arc::clone(&child.native_plan),
+                    )?)
+                };
 
                 Ok((
                     scans,
@@ -1274,16 +1266,12 @@ impl PhysicalPlanner {
                     .collect();
 
                 let fetch = sort.fetch.map(|num| num as usize);
-
-                // SortExec caches batches so we need to make a copy of incoming batches. Also,
-                // SortExec fails in some cases if we do not unpack dictionary-encoded arrays, and
-                // it would be more efficient if we could avoid that.
-                // https://github.com/apache/datafusion-comet/issues/963
-                let child_copied = Self::wrap_in_copy_exec(Arc::clone(&child.native_plan));
-
                 let sort = Arc::new(
-                    SortExec::new(LexOrdering::new(exprs?).unwrap(), Arc::clone(&child_copied))
-                        .with_fetch(fetch),
+                    SortExec::new(
+                        LexOrdering::new(exprs?).unwrap(),
+                        Arc::clone(&child.native_plan),
+                    )
+                    .with_fetch(fetch),
                 );
 
                 Ok((
@@ -1453,7 +1441,7 @@ impl PhysicalPlanner {
                 }?;
 
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
-                    Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
+                    Arc::clone(&child.native_plan),
                     partitioning,
                     codec,
                     writer.output_data_file.clone(),
@@ -1505,20 +1493,7 @@ impl PhysicalPlanner {
                     .collect();
                 let schema = Arc::new(Schema::new(fields));
 
-                // `Expand` operator keeps the input batch and expands it to multiple output
-                // batches. However, `ScanExec` will reuse input arrays for the next
-                // input batch. Therefore, we need to copy the input batch to avoid
-                // the data corruption. Note that we only need to copy the input batch
-                // if the child operator is `ScanExec`, because other operators after `ScanExec`
-                // will create new arrays for the output batch.
-                let input = if can_reuse_input_batch(&child.native_plan) {
-                    Arc::new(CopyExec::new(
-                        Arc::clone(&child.native_plan),
-                        CopyMode::UnpackOrDeepCopy,
-                    ))
-                } else {
-                    Arc::clone(&child.native_plan)
-                };
+                let input = Arc::clone(&child.native_plan);
                 let expand = Arc::new(ExpandExec::new(projections, input, schema));
                 Ok((
                     scans,
@@ -1614,8 +1589,8 @@ impl PhysicalPlanner {
                 // to copy the input batch to avoid the data corruption from reusing the input
                 // batch. We also need to unpack dictionary arrays, because the join operators
                 // do not support them.
-                let left = Self::wrap_in_copy_exec(Arc::clone(&join_params.left.native_plan));
-                let right = Self::wrap_in_copy_exec(Arc::clone(&join_params.right.native_plan));
+                let left = Arc::clone(&join_params.left.native_plan);
+                let right = Arc::clone(&join_params.right.native_plan);
 
                 let hash_join = Arc::new(HashJoinExec::try_new(
                     left,
@@ -1701,6 +1676,20 @@ impl PhysicalPlanner {
                 Ok((
                     scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, window_agg, vec![child])),
+                ))
+            }
+            OpStruct::Copy(copy) => {
+                assert_eq!(children.len(), 1);
+                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
+                let copy_mode = if copy.mode == 0 {
+                    CopyMode::UnpackOrDeepCopy
+                } else {
+                    CopyMode::UnpackOrClone
+                };
+                let copy = Arc::new(CopyExec::new(Arc::clone(&child.native_plan), copy_mode));
+                Ok((
+                    scans,
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, copy, vec![child])),
                 ))
             }
         }
@@ -1843,16 +1832,6 @@ impl PhysicalPlanner {
             },
             left_scans,
         ))
-    }
-
-    /// Wrap an ExecutionPlan in a CopyExec, which will unpack any dictionary-encoded arrays
-    /// and make a deep copy of other arrays if the plan re-uses batches.
-    fn wrap_in_copy_exec(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-        if can_reuse_input_batch(&plan) {
-            Arc::new(CopyExec::new(plan, CopyMode::UnpackOrDeepCopy))
-        } else {
-            Arc::new(CopyExec::new(plan, CopyMode::UnpackOrClone))
-        }
     }
 
     /// Create a DataFusion physical aggregate expression from Spark physical aggregate expression
@@ -3039,7 +3018,6 @@ mod tests {
             op_struct: Some(OpStruct::Filter(spark_operator::Filter {
                 predicate: Some(expr),
                 use_datafusion_filter: false,
-                wrap_child_in_copy_exec: false,
             })),
         }
     }
