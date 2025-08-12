@@ -1039,6 +1039,20 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("explicit zero limit and offset") {
+    withParquetTable((0 until 50).map(i => (i, i + 8)), "tbl") {
+      withSQLConf(
+        "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.EliminateLimits") {
+        val dfWithZeroLimitAndOffsetOrdered =
+          sql("SELECT _1, _2 FROM tbl order by _2 LIMIT 0 OFFSET 0")
+        checkSparkAnswerAndOperator(dfWithZeroLimitAndOffsetOrdered)
+        val dfWithZeroLimitAndOffsetUnordered =
+          sql("SELECT _1, _2 FROM tbl LIMIT 0 OFFSET 0")
+        checkSparkAnswerAndOperator(dfWithZeroLimitAndOffsetUnordered)
+      }
+    }
+  }
+
   test("sort with dictionary") {
     withSQLConf(CometConf.COMET_BATCH_SIZE.key -> 8192.toString) {
       withTempDir { dir =>

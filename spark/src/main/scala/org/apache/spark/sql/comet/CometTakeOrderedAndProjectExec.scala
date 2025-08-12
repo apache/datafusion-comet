@@ -69,7 +69,7 @@ case class CometTakeOrderedAndProjectExec(
 
   protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val childRDD = child.executeColumnar()
-    if (childRDD.getNumPartitions == 0) {
+    if (childRDD.getNumPartitions == 0 || limit == 0) {
       new ParallelCollectionRDD(sparkContext, Seq.empty[ColumnarBatch], 1, Map.empty)
     } else {
       val singlePartitionRDD = if (childRDD.getNumPartitions == 1) {
