@@ -1,8 +1,34 @@
+diff --git a/build.gradle b/build.gradle
+index 7327b38..7967109 100644
+--- a/build.gradle
++++ b/build.gradle
+@@ -780,6 +780,13 @@ project(':iceberg-parquet') {
+     implementation project(':iceberg-core')
+     implementation project(':iceberg-common')
+ 
++    implementation("org.apache.datafusion:comet-spark-spark${sparkVersionsString}_${scalaVersion}:${libs.versions.comet.get()}") {
++      exclude group: 'org.apache.arrow'
++      exclude group: 'org.apache.parquet'
++      exclude group: 'org.apache.spark'
++      exclude group: 'org.apache.iceberg'
++    }
++
+     implementation(libs.parquet.avro) {
+       exclude group: 'org.apache.avro', module: 'avro'
+       // already shaded by Parquet
 diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
-index 04ffa8f..0d88648 100644
+index 04ffa8f..cc0099c 100644
 --- a/gradle/libs.versions.toml
 +++ b/gradle/libs.versions.toml
-@@ -81,7 +81,7 @@ slf4j = "2.0.16"
+@@ -34,6 +34,7 @@ azuresdk-bom = "1.2.31"
+ awssdk-s3accessgrants = "2.3.0"
+ caffeine = "2.9.3"
+ calcite = "1.10.0"
++comet = "0.10.0-SNAPSHOT"
+ datasketches = "6.2.0"
+ delta-standalone = "3.3.0"
+ delta-spark = "3.3.0"
+@@ -81,7 +82,7 @@ slf4j = "2.0.16"
  snowflake-jdbc = "3.22.0"
  spark-hive33 = "3.3.4"
  spark-hive34 = "3.4.4"
@@ -11,8 +37,628 @@ index 04ffa8f..0d88648 100644
  sqlite-jdbc = "3.48.0.0"
  testcontainers = "1.20.4"
  tez010 = "0.10.4"
+diff --git a/parquet/src/main/java/org/apache/iceberg/parquet/CometTypeUtils.java b/parquet/src/main/java/org/apache/iceberg/parquet/CometTypeUtils.java
+new file mode 100644
+index 0000000..ddf6c7d
+--- /dev/null
++++ b/parquet/src/main/java/org/apache/iceberg/parquet/CometTypeUtils.java
+@@ -0,0 +1,255 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing,
++ * software distributed under the License is distributed on an
++ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++ * KIND, either express or implied.  See the License for the
++ * specific language governing permissions and limitations
++ * under the License.
++ */
++package org.apache.iceberg.parquet;
++
++import java.util.Map;
++import org.apache.comet.parquet.ParquetColumnSpec;
++import org.apache.iceberg.relocated.com.google.common.collect.Maps;
++import org.apache.parquet.column.ColumnDescriptor;
++import org.apache.parquet.schema.LogicalTypeAnnotation;
++import org.apache.parquet.schema.PrimitiveType;
++import org.apache.parquet.schema.Type;
++import org.apache.parquet.schema.Types;
++
++public class CometTypeUtils {
++
++  private CometTypeUtils() {}
++
++  public static ParquetColumnSpec descriptorToParquetColumnSpec(ColumnDescriptor descriptor) {
++
++    String[] path = descriptor.getPath();
++    PrimitiveType primitiveType = descriptor.getPrimitiveType();
++    String physicalType = primitiveType.getPrimitiveTypeName().name();
++
++    int typeLength =
++        primitiveType.getPrimitiveTypeName() == PrimitiveType.PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY
++            ? primitiveType.getTypeLength()
++            : 0;
++
++    boolean isRepeated = primitiveType.getRepetition() == Type.Repetition.REPEATED;
++
++    // ToDo: extract this into a Util method
++    String logicalTypeName = null;
++    Map<String, String> logicalTypeParams = Maps.newHashMap();
++    LogicalTypeAnnotation logicalType = primitiveType.getLogicalTypeAnnotation();
++
++    if (logicalType != null) {
++      logicalTypeName = logicalType.getClass().getSimpleName();
++
++      // Handle specific logical types
++      if (logicalType instanceof LogicalTypeAnnotation.DecimalLogicalTypeAnnotation) {
++        LogicalTypeAnnotation.DecimalLogicalTypeAnnotation decimal =
++            (LogicalTypeAnnotation.DecimalLogicalTypeAnnotation) logicalType;
++        logicalTypeParams.put("precision", String.valueOf(decimal.getPrecision()));
++        logicalTypeParams.put("scale", String.valueOf(decimal.getScale()));
++      } else if (logicalType instanceof LogicalTypeAnnotation.TimestampLogicalTypeAnnotation) {
++        LogicalTypeAnnotation.TimestampLogicalTypeAnnotation timestamp =
++            (LogicalTypeAnnotation.TimestampLogicalTypeAnnotation) logicalType;
++        logicalTypeParams.put("isAdjustedToUTC", String.valueOf(timestamp.isAdjustedToUTC()));
++        logicalTypeParams.put("unit", timestamp.getUnit().name());
++      } else if (logicalType instanceof LogicalTypeAnnotation.TimeLogicalTypeAnnotation) {
++        LogicalTypeAnnotation.TimeLogicalTypeAnnotation time =
++            (LogicalTypeAnnotation.TimeLogicalTypeAnnotation) logicalType;
++        logicalTypeParams.put("isAdjustedToUTC", String.valueOf(time.isAdjustedToUTC()));
++        logicalTypeParams.put("unit", time.getUnit().name());
++      } else if (logicalType instanceof LogicalTypeAnnotation.IntLogicalTypeAnnotation) {
++        LogicalTypeAnnotation.IntLogicalTypeAnnotation intType =
++            (LogicalTypeAnnotation.IntLogicalTypeAnnotation) logicalType;
++        logicalTypeParams.put("isSigned", String.valueOf(intType.isSigned()));
++        logicalTypeParams.put("bitWidth", String.valueOf(intType.getBitWidth()));
++      }
++    }
++
++    return new ParquetColumnSpec(
++        1, // ToDo: pass in the correct id
++        path,
++        physicalType,
++        typeLength,
++        isRepeated,
++        descriptor.getMaxDefinitionLevel(),
++        descriptor.getMaxRepetitionLevel(),
++        logicalTypeName,
++        logicalTypeParams);
++  }
++
++  public static ColumnDescriptor buildColumnDescriptor(ParquetColumnSpec columnSpec) {
++    PrimitiveType.PrimitiveTypeName primType =
++        PrimitiveType.PrimitiveTypeName.valueOf(columnSpec.getPhysicalType());
++
++    Type.Repetition repetition;
++    if (columnSpec.getMaxRepetitionLevel() > 0) {
++      repetition = Type.Repetition.REPEATED;
++    } else if (columnSpec.getMaxDefinitionLevel() > 0) {
++      repetition = Type.Repetition.OPTIONAL;
++    } else {
++      repetition = Type.Repetition.REQUIRED;
++    }
++
++    String name = columnSpec.getPath()[columnSpec.getPath().length - 1];
++    // Reconstruct the logical type from parameters
++    LogicalTypeAnnotation logicalType = null;
++    if (columnSpec.getLogicalTypeName() != null) {
++      logicalType =
++          reconstructLogicalType(
++              columnSpec.getLogicalTypeName(), columnSpec.getLogicalTypeParams());
++    }
++
++    PrimitiveType primitiveType;
++    if (primType == PrimitiveType.PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY) {
++      primitiveType =
++          org.apache.parquet.schema.Types.primitive(primType, repetition)
++              .length(columnSpec.getTypeLength())
++              .as(logicalType)
++              .id(columnSpec.getFieldId())
++              .named(name);
++    } else {
++      primitiveType =
++          Types.primitive(primType, repetition)
++              .as(logicalType)
++              .id(columnSpec.getFieldId())
++              .named(name);
++    }
++
++    return new ColumnDescriptor(
++        columnSpec.getPath(),
++        primitiveType,
++        columnSpec.getMaxRepetitionLevel(),
++        columnSpec.getMaxDefinitionLevel());
++  }
++
++  private static LogicalTypeAnnotation reconstructLogicalType(
++      String logicalTypeName, java.util.Map<String, String> params) {
++
++    switch (logicalTypeName) {
++        // MAP
++      case "MapLogicalTypeAnnotation":
++        return LogicalTypeAnnotation.mapType();
++
++        // LIST
++      case "ListLogicalTypeAnnotation":
++        return LogicalTypeAnnotation.listType();
++
++        // STRING
++      case "StringLogicalTypeAnnotation":
++        return LogicalTypeAnnotation.stringType();
++
++        // MAP_KEY_VALUE
++      case "MapKeyValueLogicalTypeAnnotation":
++        return LogicalTypeAnnotation.MapKeyValueTypeAnnotation.getInstance();
++
++        // ENUM
++      case "EnumLogicalTypeAnnotation":
++        return LogicalTypeAnnotation.enumType();
++
++        // DECIMAL
++      case "DecimalLogicalTypeAnnotation":
++        if (!params.containsKey("scale") || !params.containsKey("precision")) {
++          throw new IllegalArgumentException(
++              "Missing required parameters for DecimalLogicalTypeAnnotation: " + params);
++        }
++        int scale = Integer.parseInt(params.get("scale"));
++        int precision = Integer.parseInt(params.get("precision"));
++        return LogicalTypeAnnotation.decimalType(scale, precision);
++
++        // DATE
++      case "DateLogicalTypeAnnotation":
++        return LogicalTypeAnnotation.dateType();
++
++        // TIME
++      case "TimeLogicalTypeAnnotation":
++        if (!params.containsKey("isAdjustedToUTC") || !params.containsKey("unit")) {
++          throw new IllegalArgumentException(
++              "Missing required parameters for TimeLogicalTypeAnnotation: " + params);
++        }
++
++        boolean isUTC = Boolean.parseBoolean(params.get("isAdjustedToUTC"));
++        String timeUnitStr = params.get("unit");
++
++        LogicalTypeAnnotation.TimeUnit timeUnit;
++        switch (timeUnitStr) {
++          case "MILLIS":
++            timeUnit = LogicalTypeAnnotation.TimeUnit.MILLIS;
++            break;
++          case "MICROS":
++            timeUnit = LogicalTypeAnnotation.TimeUnit.MICROS;
++            break;
++          case "NANOS":
++            timeUnit = LogicalTypeAnnotation.TimeUnit.NANOS;
++            break;
++          default:
++            throw new IllegalArgumentException("Unknown time unit: " + timeUnitStr);
++        }
++        return LogicalTypeAnnotation.timeType(isUTC, timeUnit);
++
++        // TIMESTAMP
++      case "TimestampLogicalTypeAnnotation":
++        if (!params.containsKey("isAdjustedToUTC") || !params.containsKey("unit")) {
++          throw new IllegalArgumentException(
++              "Missing required parameters for TimestampLogicalTypeAnnotation: " + params);
++        }
++        boolean isAdjustedToUTC = Boolean.parseBoolean(params.get("isAdjustedToUTC"));
++        String unitStr = params.get("unit");
++
++        LogicalTypeAnnotation.TimeUnit unit;
++        switch (unitStr) {
++          case "MILLIS":
++            unit = LogicalTypeAnnotation.TimeUnit.MILLIS;
++            break;
++          case "MICROS":
++            unit = LogicalTypeAnnotation.TimeUnit.MICROS;
++            break;
++          case "NANOS":
++            unit = LogicalTypeAnnotation.TimeUnit.NANOS;
++            break;
++          default:
++            throw new IllegalArgumentException("Unknown timestamp unit: " + unitStr);
++        }
++        return LogicalTypeAnnotation.timestampType(isAdjustedToUTC, unit);
++
++        // INTEGER
++      case "IntLogicalTypeAnnotation":
++        if (!params.containsKey("isSigned") || !params.containsKey("bitWidth")) {
++          throw new IllegalArgumentException(
++              "Missing required parameters for IntLogicalTypeAnnotation: " + params);
++        }
++        boolean isSigned = Boolean.parseBoolean(params.get("isSigned"));
++        int bitWidth = Integer.parseInt(params.get("bitWidth"));
++        return LogicalTypeAnnotation.intType(bitWidth, isSigned);
++
++        // JSON
++      case "JsonLogicalTypeAnnotation":
++        return LogicalTypeAnnotation.jsonType();
++
++        // BSON
++      case "BsonLogicalTypeAnnotation":
++        return LogicalTypeAnnotation.bsonType();
++
++        // UUID
++      case "UUIDLogicalTypeAnnotation":
++        return LogicalTypeAnnotation.uuidType();
++
++        // INTERVAL
++      case "IntervalLogicalTypeAnnotation":
++        return LogicalTypeAnnotation.IntervalLogicalTypeAnnotation.getInstance();
++
++      default:
++        throw new IllegalArgumentException("Unknown logical type: " + logicalTypeName);
++    }
++  }
++}
+diff --git a/parquet/src/main/java/org/apache/iceberg/parquet/CometVectorizedParquetReader.java b/parquet/src/main/java/org/apache/iceberg/parquet/CometVectorizedParquetReader.java
+new file mode 100644
+index 0000000..88b195b
+--- /dev/null
++++ b/parquet/src/main/java/org/apache/iceberg/parquet/CometVectorizedParquetReader.java
+@@ -0,0 +1,255 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing,
++ * software distributed under the License is distributed on an
++ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++ * KIND, either express or implied.  See the License for the
++ * specific language governing permissions and limitations
++ * under the License.
++ */
++package org.apache.iceberg.parquet;
++
++import java.io.IOException;
++import java.io.UncheckedIOException;
++import java.nio.ByteBuffer;
++import java.util.List;
++import java.util.Map;
++import java.util.NoSuchElementException;
++import java.util.function.Function;
++import org.apache.comet.parquet.FileReader;
++import org.apache.comet.parquet.ParquetColumnSpec;
++import org.apache.comet.parquet.ReadOptions;
++import org.apache.comet.parquet.RowGroupReader;
++import org.apache.comet.parquet.WrappedInputFile;
++import org.apache.hadoop.conf.Configuration;
++import org.apache.iceberg.Schema;
++import org.apache.iceberg.exceptions.RuntimeIOException;
++import org.apache.iceberg.expressions.Expression;
++import org.apache.iceberg.expressions.Expressions;
++import org.apache.iceberg.io.CloseableGroup;
++import org.apache.iceberg.io.CloseableIterable;
++import org.apache.iceberg.io.CloseableIterator;
++import org.apache.iceberg.io.InputFile;
++import org.apache.iceberg.mapping.NameMapping;
++import org.apache.iceberg.relocated.com.google.common.collect.Lists;
++import org.apache.iceberg.util.ByteBuffers;
++import org.apache.parquet.ParquetReadOptions;
++import org.apache.parquet.column.ColumnDescriptor;
++import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
++import org.apache.parquet.hadoop.metadata.ColumnPath;
++import org.apache.parquet.schema.MessageType;
++
++public class CometVectorizedParquetReader<T> extends CloseableGroup
++    implements CloseableIterable<T> {
++  private final InputFile input;
++  private final ParquetReadOptions options;
++  private final Schema expectedSchema;
++  private final Function<MessageType, VectorizedReader<?>> batchReaderFunc;
++  private final Expression filter;
++  private final boolean reuseContainers;
++  private final boolean caseSensitive;
++  private final int batchSize;
++  private final NameMapping nameMapping;
++  private final Map<String, String> properties;
++  private Long start = null;
++  private Long length = null;
++  private ByteBuffer fileEncryptionKey = null;
++  private ByteBuffer fileAADPrefix = null;
++
++  public CometVectorizedParquetReader(
++      InputFile input,
++      Schema expectedSchema,
++      ParquetReadOptions options,
++      Function<MessageType, VectorizedReader<?>> readerFunc,
++      NameMapping nameMapping,
++      Expression filter,
++      boolean reuseContainers,
++      boolean caseSensitive,
++      int maxRecordsPerBatch,
++      Map<String, String> properties,
++      Long start,
++      Long length,
++      ByteBuffer fileEncryptionKey,
++      ByteBuffer fileAADPrefix) {
++    this.input = input;
++    this.expectedSchema = expectedSchema;
++    this.options = options;
++    this.batchReaderFunc = readerFunc;
++    // replace alwaysTrue with null to avoid extra work evaluating a trivial filter
++    this.filter = filter == Expressions.alwaysTrue() ? null : filter;
++    this.reuseContainers = reuseContainers;
++    this.caseSensitive = caseSensitive;
++    this.batchSize = maxRecordsPerBatch;
++    this.nameMapping = nameMapping;
++    this.properties = properties;
++    this.start = start;
++    this.length = length;
++    this.fileEncryptionKey = fileEncryptionKey;
++    this.fileAADPrefix = fileAADPrefix;
++  }
++
++  private ReadConf conf = null;
++
++  private ReadConf init() {
++    if (conf == null) {
++      ReadConf readConf =
++          new ReadConf(
++              input,
++              options,
++              expectedSchema,
++              filter,
++              null,
++              batchReaderFunc,
++              nameMapping,
++              reuseContainers,
++              caseSensitive,
++              batchSize);
++      this.conf = readConf.copy();
++      return readConf;
++    }
++    return conf;
++  }
++
++  @Override
++  public CloseableIterator<T> iterator() {
++    FileIterator<T> iter =
++        new FileIterator<>(init(), properties, start, length, fileEncryptionKey, fileAADPrefix);
++    addCloseable(iter);
++    return iter;
++  }
++
++  private static class FileIterator<T> implements CloseableIterator<T> {
++    // private final ParquetFileReader reader;
++    private final boolean[] shouldSkip;
++    private final VectorizedReader<T> model;
++    private final long totalValues;
++    private final int batchSize;
++    private final List<Map<ColumnPath, ColumnChunkMetaData>> columnChunkMetadata;
++    private final boolean reuseContainers;
++    private int nextRowGroup = 0;
++    private long nextRowGroupStart = 0;
++    private long valuesRead = 0;
++    private T last = null;
++    private final FileReader cometReader;
++
++    FileIterator(
++        ReadConf conf,
++        Map<String, String> properties,
++        Long start,
++        Long length,
++        ByteBuffer fileEncryptionKey,
++        ByteBuffer fileAADPrefix) {
++      this.shouldSkip = conf.shouldSkip();
++      this.totalValues = conf.totalValues();
++      this.reuseContainers = conf.reuseContainers();
++      this.model = conf.vectorizedModel();
++      this.batchSize = conf.batchSize();
++      this.model.setBatchSize(this.batchSize);
++      this.columnChunkMetadata = conf.columnChunkMetadataForRowGroups();
++      this.cometReader =
++          newCometReader(
++              conf.file(),
++              conf.projection(),
++              properties,
++              start,
++              length,
++              fileEncryptionKey,
++              fileAADPrefix);
++    }
++
++    private FileReader newCometReader(
++        InputFile file,
++        MessageType projection,
++        Map<String, String> properties,
++        Long start,
++        Long length,
++        ByteBuffer fileEncryptionKey,
++        ByteBuffer fileAADPrefix) {
++      try {
++        ReadOptions cometOptions = ReadOptions.builder(new Configuration()).build();
++
++        FileReader fileReader =
++            new FileReader(
++                new WrappedInputFile(file),
++                cometOptions,
++                properties,
++                start,
++                length,
++                ByteBuffers.toByteArray(fileEncryptionKey),
++                ByteBuffers.toByteArray(fileAADPrefix));
++
++        List<ColumnDescriptor> columnDescriptors = projection.getColumns();
++
++        List<ParquetColumnSpec> specs = Lists.newArrayList();
++
++        for (ColumnDescriptor descriptor : columnDescriptors) {
++          ParquetColumnSpec spec = CometTypeUtils.descriptorToParquetColumnSpec(descriptor);
++          specs.add(spec);
++        }
++
++        fileReader.setRequestedSchemaFromSpecs(specs);
++        return fileReader;
++      } catch (IOException e) {
++        throw new UncheckedIOException("Failed to open Parquet file: " + file.location(), e);
++      }
++    }
++
++    @Override
++    public boolean hasNext() {
++      return valuesRead < totalValues;
++    }
++
++    @Override
++    public T next() {
++      if (!hasNext()) {
++        throw new NoSuchElementException();
++      }
++      if (valuesRead >= nextRowGroupStart) {
++        advance();
++      }
++
++      // batchSize is an integer, so casting to integer is safe
++      int numValuesToRead = (int) Math.min(nextRowGroupStart - valuesRead, batchSize);
++      if (reuseContainers) {
++        this.last = model.read(last, numValuesToRead);
++      } else {
++        this.last = model.read(null, numValuesToRead);
++      }
++      valuesRead += numValuesToRead;
++
++      return last;
++    }
++
++    private void advance() {
++      while (shouldSkip[nextRowGroup]) {
++        nextRowGroup += 1;
++        cometReader.skipNextRowGroup();
++      }
++      RowGroupReader pages;
++      try {
++        pages = cometReader.readNextRowGroup();
++      } catch (IOException e) {
++        throw new RuntimeIOException(e);
++      }
++
++      model.setRowGroupInfo(pages, columnChunkMetadata.get(nextRowGroup));
++      nextRowGroupStart += pages.getRowCount();
++      nextRowGroup += 1;
++    }
++
++    @Override
++    public void close() throws IOException {
++      model.close();
++      cometReader.close();
++    }
++  }
++}
+diff --git a/parquet/src/main/java/org/apache/iceberg/parquet/Parquet.java b/parquet/src/main/java/org/apache/iceberg/parquet/Parquet.java
+index 2c37a52..503dbd6 100644
+--- a/parquet/src/main/java/org/apache/iceberg/parquet/Parquet.java
++++ b/parquet/src/main/java/org/apache/iceberg/parquet/Parquet.java
+@@ -1075,6 +1075,7 @@ public class Parquet {
+     private NameMapping nameMapping = null;
+     private ByteBuffer fileEncryptionKey = null;
+     private ByteBuffer fileAADPrefix = null;
++    private boolean isComet;
+ 
+     private ReadBuilder(InputFile file) {
+       this.file = file;
+@@ -1172,6 +1173,11 @@ public class Parquet {
+       return this;
+     }
+ 
++    public ReadBuilder enableComet(boolean enableComet) {
++      this.isComet = enableComet;
++      return this;
++    }
++
+     public ReadBuilder withFileEncryptionKey(ByteBuffer encryptionKey) {
+       this.fileEncryptionKey = encryptionKey;
+       return this;
+@@ -1182,7 +1188,7 @@ public class Parquet {
+       return this;
+     }
+ 
+-    @SuppressWarnings({"unchecked", "checkstyle:CyclomaticComplexity"})
++    @SuppressWarnings({"unchecked", "checkstyle:CyclomaticComplexity", "MethodLength"})
+     public <D> CloseableIterable<D> build() {
+       FileDecryptionProperties fileDecryptionProperties = null;
+       if (fileEncryptionKey != null) {
+@@ -1234,16 +1240,35 @@ public class Parquet {
+         }
+ 
+         if (batchedReaderFunc != null) {
+-          return new VectorizedParquetReader<>(
+-              file,
+-              schema,
+-              options,
+-              batchedReaderFunc,
+-              mapping,
+-              filter,
+-              reuseContainers,
+-              caseSensitive,
+-              maxRecordsPerBatch);
++          if (isComet) {
++            LOG.info("Comet enabled");
++            return new CometVectorizedParquetReader<>(
++                    file,
++                    schema,
++                    options,
++                    batchedReaderFunc,
++                    mapping,
++                    filter,
++                    reuseContainers,
++                    caseSensitive,
++                    maxRecordsPerBatch,
++                    properties,
++                    start,
++                    length,
++                    fileEncryptionKey,
++                    fileAADPrefix);
++          } else {
++            return new VectorizedParquetReader<>(
++                    file,
++                    schema,
++                    options,
++                    batchedReaderFunc,
++                    mapping,
++                    filter,
++                    reuseContainers,
++                    caseSensitive,
++                    maxRecordsPerBatch);
++          }
+         } else {
+           return new org.apache.iceberg.parquet.ParquetReader<>(
+               file, schema, options, readerFunc, mapping, filter, reuseContainers, caseSensitive);
+diff --git a/parquet/src/main/java/org/apache/iceberg/parquet/ReadConf.java b/parquet/src/main/java/org/apache/iceberg/parquet/ReadConf.java
+index 1fb2372..142e5fb 100644
+--- a/parquet/src/main/java/org/apache/iceberg/parquet/ReadConf.java
++++ b/parquet/src/main/java/org/apache/iceberg/parquet/ReadConf.java
+@@ -157,6 +157,14 @@ class ReadConf<T> {
+     return newReader;
+   }
+ 
++  InputFile file() {
++    return file;
++  }
++
++  MessageType projection() {
++    return projection;
++  }
++
+   ParquetValueReader<T> model() {
+     return model;
+   }
 diff --git a/spark/v3.5/build.gradle b/spark/v3.5/build.gradle
-index e2d2c7a..8735bf8 100644
+index e2d2c7a..f64232d 100644
 --- a/spark/v3.5/build.gradle
 +++ b/spark/v3.5/build.gradle
 @@ -75,7 +75,7 @@ project(":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}") {
@@ -20,7 +666,7 @@ index e2d2c7a..8735bf8 100644
      }
  
 -    compileOnly "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.5.0"
-+    compileOnly "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.10.0-SNAPSHOT"
++    compileOnly "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:${libs.versions.comet.get()}"
  
      implementation libs.parquet.column
      implementation libs.parquet.hadoop
@@ -29,7 +675,7 @@ index e2d2c7a..8735bf8 100644
      testImplementation libs.parquet.hadoop
      testImplementation libs.awaitility
 -    testImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.5.0"
-+    testImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.10.0-SNAPSHOT"
++    testImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:${libs.versions.comet.get()}"
  
      // Required because we remove antlr plugin dependencies from the compile configuration, see note above
      runtimeOnly libs.antlr.runtime
@@ -37,7 +683,7 @@ index e2d2c7a..8735bf8 100644
      integrationImplementation project(path: ':iceberg-hive-metastore', configuration: 'testArtifacts')
      integrationImplementation project(path: ":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}", configuration: 'testArtifacts')
      integrationImplementation project(path: ":iceberg-spark:iceberg-spark-extensions-${sparkMajorVersion}_${scalaVersion}", configuration: 'testArtifacts')
-+    integrationImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:0.10.0-SNAPSHOT"
++    integrationImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:${libs.versions.comet.get()}"
  
      // runtime dependencies for running Hive Catalog based integration test
      integrationRuntimeOnly project(':iceberg-hive-metastore')
@@ -189,72 +835,258 @@ index 68c537e..f35f539 100644
        builder
            .config("parquet.dictionary.page.size", "1")
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
-index 4794863..0be31c1 100644
+index 4794863..8bb508f 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
-@@ -20,11 +20,11 @@ package org.apache.iceberg.spark.data.vectorized;
+@@ -20,21 +20,25 @@ package org.apache.iceberg.spark.data.vectorized;
  
  import java.io.IOException;
  import java.util.Map;
++import org.apache.comet.CometConf;
 +import org.apache.comet.CometSchemaImporter;
  import org.apache.comet.parquet.AbstractColumnReader;
  import org.apache.comet.parquet.ColumnReader;
++import org.apache.comet.parquet.ParquetColumnSpec;
++import org.apache.comet.parquet.RowGroupReader;
  import org.apache.comet.parquet.TypeUtil;
  import org.apache.comet.parquet.Utils;
 -import org.apache.comet.shaded.arrow.c.CometSchemaImporter;
  import org.apache.comet.shaded.arrow.memory.RootAllocator;
++import org.apache.iceberg.parquet.CometTypeUtils;
  import org.apache.iceberg.parquet.VectorizedReader;
  import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
-@@ -96,7 +96,7 @@ class CometColumnReader implements VectorizedReader<ColumnVector> {
+ import org.apache.iceberg.spark.SparkSchemaUtil;
+ import org.apache.iceberg.types.Types;
+ import org.apache.parquet.column.ColumnDescriptor;
+ import org.apache.parquet.column.page.PageReadStore;
+-import org.apache.parquet.column.page.PageReader;
+ import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
+ import org.apache.parquet.hadoop.metadata.ColumnPath;
++import org.apache.spark.sql.internal.SQLConf;
+ import org.apache.spark.sql.types.DataType;
+ import org.apache.spark.sql.types.Metadata;
+ import org.apache.spark.sql.types.StructField;
+@@ -46,23 +50,28 @@ class CometColumnReader implements VectorizedReader<ColumnVector> {
+ 
+   private final ColumnDescriptor descriptor;
+   private final DataType sparkType;
++  private final int fieldId;
+ 
+   // The delegated ColumnReader from Comet side
+   private AbstractColumnReader delegate;
+   private boolean initialized = false;
+   private int batchSize = DEFAULT_BATCH_SIZE;
+   private CometSchemaImporter importer;
++  private ParquetColumnSpec spec;
+ 
+-  CometColumnReader(DataType sparkType, ColumnDescriptor descriptor) {
++  CometColumnReader(DataType sparkType, ColumnDescriptor descriptor, int fieldId) {
+     this.sparkType = sparkType;
+     this.descriptor = descriptor;
++    this.fieldId = fieldId;
+   }
+ 
+   CometColumnReader(Types.NestedField field) {
+     DataType dataType = SparkSchemaUtil.convert(field.type());
+     StructField structField = new StructField(field.name(), dataType, false, Metadata.empty());
+     this.sparkType = dataType;
+-    this.descriptor = TypeUtil.convertToParquet(structField);
++    this.descriptor =
++        CometTypeUtils.buildColumnDescriptor(TypeUtil.convertToParquetSpec(structField));
++    this.fieldId = field.fieldId();
+   }
+ 
+   public AbstractColumnReader delegate() {
+@@ -96,7 +105,26 @@ class CometColumnReader implements VectorizedReader<ColumnVector> {
      }
  
      this.importer = new CometSchemaImporter(new RootAllocator());
 -    this.delegate = Utils.getColumnReader(sparkType, descriptor, importer, batchSize, false, false);
-+    this.delegate = Utils.getColumnReader(sparkType, descriptor, importer, batchSize, true, false);
++
++    spec = CometTypeUtils.descriptorToParquetColumnSpec(descriptor);
++
++    boolean useLegacyTime =
++        Boolean.parseBoolean(
++            SQLConf.get()
++                .getConfString(
++                    CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP().key(), "false"));
++    boolean useLazyMaterialization =
++        Boolean.parseBoolean(
++            SQLConf.get().getConfString(CometConf.COMET_USE_LAZY_MATERIALIZATION().key(), "false"));
++    this.delegate =
++        Utils.getColumnReader(
++            sparkType,
++            spec,
++            importer,
++            batchSize,
++            true, // Comet sets this to true for native execution
++            useLazyMaterialization,
++            useLegacyTime);
      this.initialized = true;
    }
  
+@@ -115,9 +143,9 @@ class CometColumnReader implements VectorizedReader<ColumnVector> {
+    * <p>NOTE: this should be called before reading a new Parquet column chunk, and after {@link
+    * CometColumnReader#reset} is called.
+    */
+-  public void setPageReader(PageReader pageReader) throws IOException {
++  public void setPageReader(RowGroupReader pageStore) throws IOException {
+     Preconditions.checkState(initialized, "Invalid state: 'reset' should be called first");
+-    ((ColumnReader) delegate).setPageReader(pageReader);
++    ((ColumnReader) delegate).setRowGroupReader(pageStore, spec);
+   }
+ 
+   @Override
+diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnarBatchReader.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnarBatchReader.java
+index 1440e5d..fc6b283 100644
+--- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnarBatchReader.java
++++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnarBatchReader.java
+@@ -23,7 +23,8 @@ import java.io.UncheckedIOException;
+ import java.util.List;
+ import java.util.Map;
+ import org.apache.comet.parquet.AbstractColumnReader;
+-import org.apache.comet.parquet.BatchReader;
++import org.apache.comet.parquet.IcebergCometBatchReader;
++import org.apache.comet.parquet.RowGroupReader;
+ import org.apache.iceberg.Schema;
+ import org.apache.iceberg.data.DeleteFilter;
+ import org.apache.iceberg.parquet.VectorizedReader;
+@@ -55,7 +56,7 @@ class CometColumnarBatchReader implements VectorizedReader<ColumnarBatch> {
+   // calling BatchReader.nextBatch, the isDeleted value is not yet available, so
+   // DeleteColumnReader.readBatch must be called explicitly later, after the isDeleted value is
+   // available.
+-  private final BatchReader delegate;
++  private final IcebergCometBatchReader delegate;
+   private DeleteFilter<InternalRow> deletes = null;
+   private long rowStartPosInBatch = 0;
+ 
+@@ -65,9 +66,7 @@ class CometColumnarBatchReader implements VectorizedReader<ColumnarBatch> {
+     this.hasIsDeletedColumn =
+         readers.stream().anyMatch(reader -> reader instanceof CometDeleteColumnReader);
+ 
+-    AbstractColumnReader[] abstractColumnReaders = new AbstractColumnReader[readers.size()];
+-    this.delegate = new BatchReader(abstractColumnReaders);
+-    delegate.setSparkSchema(SparkSchemaUtil.convert(schema));
++    this.delegate = new IcebergCometBatchReader(readers.size(), SparkSchemaUtil.convert(schema));
+   }
+ 
+   @Override
+@@ -85,19 +84,22 @@ class CometColumnarBatchReader implements VectorizedReader<ColumnarBatch> {
+             && !(readers[i] instanceof CometPositionColumnReader)
+             && !(readers[i] instanceof CometDeleteColumnReader)) {
+           readers[i].reset();
+-          readers[i].setPageReader(pageStore.getPageReader(readers[i].descriptor()));
++          readers[i].setPageReader((RowGroupReader) pageStore);
+         }
+       } catch (IOException e) {
+         throw new UncheckedIOException("Failed to setRowGroupInfo for Comet vectorization", e);
+       }
+     }
+ 
++    AbstractColumnReader[] delegateReaders = new AbstractColumnReader[readers.length];
+     for (int i = 0; i < readers.length; i++) {
+-      delegate.getColumnReaders()[i] = this.readers[i].delegate();
++      delegateReaders[i] = readers[i].delegate();
+     }
+ 
++    delegate.init(delegateReaders);
++
+     this.rowStartPosInBatch =
+-        pageStore
++        ((RowGroupReader) pageStore)
+             .getRowIndexOffset()
+             .orElseThrow(
+                 () ->
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometConstantColumnReader.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometConstantColumnReader.java
-index 047c963..d84ce62 100644
+index 047c963..88d691a 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometConstantColumnReader.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometConstantColumnReader.java
-@@ -34,7 +34,7 @@ class CometConstantColumnReader<T> extends CometColumnReader {
+@@ -21,6 +21,7 @@ package org.apache.iceberg.spark.data.vectorized;
+ import java.math.BigDecimal;
+ import java.nio.ByteBuffer;
+ import org.apache.comet.parquet.ConstantColumnReader;
++import org.apache.iceberg.parquet.CometTypeUtils;
+ import org.apache.iceberg.types.Types;
+ import org.apache.spark.sql.types.DataType;
+ import org.apache.spark.sql.types.DataTypes;
+@@ -34,7 +35,11 @@ class CometConstantColumnReader<T> extends CometColumnReader {
      super(field);
      // use delegate to set constant value on the native side to be consumed by native execution.
      setDelegate(
 -        new ConstantColumnReader(sparkType(), descriptor(), convertToSparkValue(value), false));
-+        new ConstantColumnReader(sparkType(), descriptor(), convertToSparkValue(value), true));
++        new ConstantColumnReader(
++            sparkType(),
++            CometTypeUtils.descriptorToParquetColumnSpec(descriptor()),
++            convertToSparkValue(value),
++            false));
    }
  
    @Override
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometDeleteColumnReader.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometDeleteColumnReader.java
-index 6235bfe..34f579f 100644
+index 6235bfe..cba108e 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometDeleteColumnReader.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometDeleteColumnReader.java
-@@ -53,7 +53,7 @@ class CometDeleteColumnReader<T> extends CometColumnReader {
+@@ -51,10 +51,10 @@ class CometDeleteColumnReader<T> extends CometColumnReader {
+     DeleteColumnReader() {
+       super(
            DataTypes.BooleanType,
-           TypeUtil.convertToParquet(
+-          TypeUtil.convertToParquet(
++          TypeUtil.convertToParquetSpec(
                new StructField("_deleted", DataTypes.BooleanType, false, Metadata.empty())),
--          false /* useDecimal128 = false */,
-+          true /* useDecimal128 = true */,
-           false /* isConstant = false */);
+           false /* useDecimal128 = false */,
+-          false /* isConstant = false */);
++          false /* isConstant */);
        this.isDeleted = new boolean[0];
      }
+ 
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometPositionColumnReader.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometPositionColumnReader.java
-index bcc0e51..a779bed 100644
+index bcc0e51..98e8006 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometPositionColumnReader.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometPositionColumnReader.java
-@@ -45,7 +45,7 @@ class CometPositionColumnReader extends CometColumnReader {
+@@ -20,6 +20,7 @@ package org.apache.iceberg.spark.data.vectorized;
+ 
+ import org.apache.comet.parquet.MetadataColumnReader;
+ import org.apache.comet.parquet.Native;
++import org.apache.iceberg.parquet.CometTypeUtils;
+ import org.apache.iceberg.types.Types;
+ import org.apache.parquet.column.ColumnDescriptor;
+ import org.apache.spark.sql.types.DataTypes;
+@@ -44,7 +45,7 @@ class CometPositionColumnReader extends CometColumnReader {
+     PositionColumnReader(ColumnDescriptor descriptor) {
        super(
            DataTypes.LongType,
-           descriptor,
--          false /* useDecimal128 = false */,
-+          true /* useDecimal128 = true */,
+-          descriptor,
++          CometTypeUtils.descriptorToParquetColumnSpec(descriptor),
+           false /* useDecimal128 = false */,
            false /* isConstant = false */);
      }
+diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometVectorizedReaderBuilder.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometVectorizedReaderBuilder.java
+index d36f1a7..56f8c9b 100644
+--- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometVectorizedReaderBuilder.java
++++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometVectorizedReaderBuilder.java
+@@ -142,6 +142,7 @@ class CometVectorizedReaderBuilder extends TypeWithSchemaVisitor<VectorizedReade
+       return null;
+     }
+ 
+-    return new CometColumnReader(SparkSchemaUtil.convert(icebergField.type()), desc);
++    return new CometColumnReader(
++        SparkSchemaUtil.convert(icebergField.type()), desc, parquetFieldId);
+   }
+ }
+diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/BaseBatchReader.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/BaseBatchReader.java
+index 780e175..57892ac 100644
+--- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/BaseBatchReader.java
++++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/BaseBatchReader.java
+@@ -109,6 +109,7 @@ abstract class BaseBatchReader<T extends ScanTask> extends BaseReader<ColumnarBa
+         // read performance as every batch read doesn't have to pay the cost of allocating memory.
+         .reuseContainers()
+         .withNameMapping(nameMapping())
++        .enableComet(parquetConf.readerType() == ParquetReaderType.COMET)
+         .build();
+   }
  
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java
-index 11f054b..a646d86 100644
+index 11f054b..108de81 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java
 @@ -148,7 +148,7 @@ class SparkBatch implements Batch {
@@ -262,7 +1094,7 @@ index 11f054b..a646d86 100644
    // - only primitives or metadata columns are projected
    // - all tasks are of FileScanTask type and read only Parquet files
 -  private boolean useParquetBatchReads() {
-+  boolean useParquetBatchReads() {
++  protected boolean useParquetBatchReads() {
      return readConf.parquetVectorizationEnabled()
          && expectedSchema.columns().stream().allMatch(this::supportsParquetBatchReads)
          && taskGroups.stream().allMatch(this::supportsParquetBatchReads);
