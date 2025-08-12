@@ -27,6 +27,8 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
 
   import CometSparkSessionExtensions._
 
+  override def isDebugEnabled: Boolean = false
+
   test("isCometLoaded") {
     val conf = new SQLConf
 

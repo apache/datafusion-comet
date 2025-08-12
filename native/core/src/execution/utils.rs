@@ -18,6 +18,7 @@
 /// Utils for array vector, etc.
 use crate::errors::ExpressionError;
 use crate::execution::operators::ExecutionError;
+use arrow::datatypes::{ArrowNativeType, DataType};
 use arrow::{
     array::ArrayData,
     error::ArrowError,
@@ -126,4 +127,77 @@ pub fn bytes_to_i128(slice: &[u8]) -> i128 {
     }
 
     i128::from_le_bytes(bytes)
+}
+
+pub(crate) fn validate_array_data(array: &ArrayData) -> Result<(), ArrowError> {
+    array.validate_full()?;
+
+    // self.validate_offsets::<i32>(self.buffers[1].len())?;
+
+    /*
+        fn validate_offsets<T: ArrowNativeType + num::Num + std::fmt::Display>(
+        &self,
+        values_length: usize,
+    ) -> Result<(), ArrowError> {
+        // Justification: buffer size was validated above
+        let offsets = self.typed_offsets::<T>()?;
+        if offsets.is_empty() {
+            return Ok(());
+        }
+
+        let first_offset = offsets[0].to_usize().ok_or_else(|| {
+            ArrowError::InvalidArgumentError(format!(
+                "Error converting offset[0] ({}) to usize for {}",
+                offsets[0], self.data_type
+            ))
+        })?;
+
+        let last_offset = offsets[self.len].to_usize().ok_or_else(|| {
+            ArrowError::InvalidArgumentError(format!(
+                "Error converting offset[{}] ({}) to usize for {}",
+                self.len, offsets[self.len], self.data_type
+            ))
+        })?;
+
+     */
+
+    match array.data_type() {
+        DataType::Utf8 | DataType::Binary => {
+            validate_offsets::<i32>(array.buffers()[0].typed_data(), array.len())
+        }
+        DataType::LargeUtf8 | DataType::LargeBinary => {
+            validate_offsets::<i32>(array.buffers()[0].typed_data(), array.len())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_offsets<T: ArrowNativeType + num::Num + std::fmt::Display>(
+    offsets: &[T],
+    values_length: usize,
+) -> Result<(), ArrowError> {
+    if offsets.is_empty() {
+        return Ok(());
+    }
+
+    for (i, offset) in offsets.iter().enumerate().take(values_length + 1) {
+        let _ = offset.to_usize().ok_or_else(|| {
+            ArrowError::InvalidArgumentError(format!(
+                "Error converting offset[{i}] ({}) to usize",
+                offsets[i]
+            ))
+        })?;
+    }
+
+    for i in 0..values_length {
+        let current_offset = offsets[i].to_usize().unwrap();
+        let next_offset = offsets[i + 1].to_usize().unwrap();
+        if current_offset > next_offset {
+            return Err(ArrowError::MemoryError(format!(
+                "corrupt offsets [{i}] {current_offset} > [{}] {next_offset}",
+                i + 1
+            )));
+        }
+    }
+    Ok(())
 }

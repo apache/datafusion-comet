@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::execution::utils::validate_array_data;
 use crate::{
     errors::CometError,
     execution::{
@@ -284,7 +285,7 @@ impl ScanExec {
 
             // validate array input data
             if validate_arrays {
-                array_data.validate_full()?;
+                validate_array_data(&array_data)?;
             }
 
             inputs.push(make_array(array_data));

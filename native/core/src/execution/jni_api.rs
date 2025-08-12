@@ -74,6 +74,7 @@ use crate::execution::spark_plan::SparkPlan;
 
 use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end, with_trace};
 
+use crate::execution::utils::validate_array_data;
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::info;
 use once_cell::sync::Lazy;
@@ -336,7 +337,7 @@ fn prepare_output(
             // Validate the output arrays.
             for array in results.iter() {
                 let array_data = array.to_data();
-                array_data.validate_full()?;
+                validate_array_data(&array_data)?;
             }
         }
 
