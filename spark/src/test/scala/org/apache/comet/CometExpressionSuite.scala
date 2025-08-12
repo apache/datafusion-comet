@@ -412,6 +412,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val value = "IfIWasARoadIWouldBeBent"
       sql("create table t1(c1 varchar(100), c2 int) using parquet")
       sql(s"insert into t1 values('$value', 10)")
+      sql(s"insert into t1 values((${null}, 10))")
       val res = sql("select rpad(c1,c2) , rpad(c1,5) from t1 order by c1")
       checkSparkAnswerAndOperator(res)
     }

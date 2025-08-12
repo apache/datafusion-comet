@@ -21,9 +21,8 @@ use arrow::array::types::Int32Type;
 use arrow::array::{make_array, Array, AsArray, DictionaryArray};
 use arrow::array::{ArrayRef, OffsetSizeTrait};
 use arrow::datatypes::DataType;
-use datafusion::common::{cast::as_generic_string_array, DataFusionError, HashMap, ScalarValue};
+use datafusion::common::{cast::as_generic_string_array, DataFusionError, ScalarValue};
 use datafusion::physical_plan::ColumnarValue;
-use std::fmt::Write;
 use std::sync::Arc;
 
 /// Similar to DataFusion `rpad`, but not to truncate when the string is already longer than length
@@ -115,45 +114,19 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
     match rpad_argument {
         RPadArgument::ColArray(array_int) => {
             let int_pad_array = array_int.as_primitive::<Int32Type>();
-            let mut str_pad_value_map = HashMap::new();
-            for i in 0..string_array.len() {
-                if string_array.is_null(i) || int_pad_array.is_null(i) {
-                    continue; // skip nulls
-                }
-                str_pad_value_map.insert(string_array.value(i), int_pad_array.value(i));
-            }
 
             let mut builder = GenericStringBuilder::<T>::with_capacity(
-                str_pad_value_map.len(),
-                str_pad_value_map.len() * int_pad_array.len(),
+                string_array.len(),
+                string_array.len() * int_pad_array.len(),
             );
 
-            for string in string_array.iter() {
+            for (string, length) in string_array.iter().zip(int_pad_array) {
                 match string {
-                    Some(string) => {
-                        // It looks Spark's UTF8String is closer to chars rather than graphemes
-                        // https://stackoverflow.com/a/46290728
-                        let char_len = string.chars().count();
-                        let length: usize = 0.max(*str_pad_value_map.get(string).unwrap()) as usize;
-                        let space_string = " ".repeat(length);
-                        if length <= char_len {
-                            if truncate {
-                                let idx = string
-                                    .char_indices()
-                                    .nth(length)
-                                    .map(|(i, _)| i)
-                                    .unwrap_or(string.len());
-                                builder.append_value(&string[..idx]);
-                            } else {
-                                builder.append_value(string);
-                            }
-                        } else {
-                            // write_str updates only the value buffer, not null nor offset buffer
-                            // This is convenient for concatenating str(s)
-                            builder.write_str(string)?;
-                            builder.append_value(&space_string[char_len..]);
-                        }
-                    }
+                    Some(string) => builder.append_value(add_padding_string(
+                        string.parse().unwrap(),
+                        length.unwrap() as usize,
+                        truncate,
+                    )),
                     _ => builder.append_null(),
                 }
             }
@@ -161,7 +134,6 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
         }
         RPadArgument::ConstLength(length) => {
             let length = 0.max(length) as usize;
-            let space_string = " ".repeat(length);
 
             let mut builder = GenericStringBuilder::<T>::with_capacity(
                 string_array.len(),
@@ -170,32 +142,36 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
 
             for string in string_array.iter() {
                 match string {
-                    Some(string) => {
-                        // It looks Spark's UTF8String is closer to chars rather than graphemes
-                        // https://stackoverflow.com/a/46290728
-                        let char_len = string.chars().count();
-                        if length <= char_len {
-                            if truncate {
-                                let idx = string
-                                    .char_indices()
-                                    .nth(length)
-                                    .map(|(i, _)| i)
-                                    .unwrap_or(string.len());
-                                builder.append_value(&string[..idx]);
-                            } else {
-                                builder.append_value(string);
-                            }
-                        } else {
-                            // write_str updates only the value buffer, not null nor offset buffer
-                            // This is convenient for concatenating str(s)
-                            builder.write_str(string)?;
-                            builder.append_value(&space_string[char_len..]);
-                        }
-                    }
+                    Some(string) => builder.append_value(add_padding_string(
+                        string.parse().unwrap(),
+                        length,
+                        truncate,
+                    )),
                     _ => builder.append_null(),
                 }
             }
             Ok(ColumnarValue::Array(Arc::new(builder.finish())))
         }
+    }
+}
+
+fn add_padding_string(string: String, length: usize, truncate: bool) -> String {
+    // It looks Spark's UTF8String is closer to chars rather than graphemes
+    // https://stackoverflow.com/a/46290728
+    let space_string = " ".repeat(length);
+    let char_len = string.chars().count();
+    if length <= char_len {
+        if truncate {
+            let idx = string
+                .char_indices()
+                .nth(length)
+                .map(|(i, _)| i)
+                .unwrap_or(string.len());
+            string[..idx].parse().unwrap()
+        } else {
+            string
+        }
+    } else {
+        string + &space_string[char_len..]
     }
 }
