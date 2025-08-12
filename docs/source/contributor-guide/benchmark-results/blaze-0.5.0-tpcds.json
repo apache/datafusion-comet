@@ -1,0 +1,340 @@
+{
+    "engine": "datafusion-comet",
+    "benchmark": "tpcds",
+    "data_path": "/mnt/bigdata/tpcds/sf100",
+    "query_path": "/mnt/bigdata/tpcds/queries",
+    "spark_conf": {
+        "spark.blaze.forceShuffledHashJoin": "true",
+        "spark.driver.port": "35949",
+        "spark.eventLog.enabled": "true",
+        "spark.sql.analyzer.canonicalization.multiCommutativeOpMemoryOptThreshold": "2147483647",
+        "spark.cores.max": "16",
+        "spark.driver.extraClassPath": "/opt/blaze/blaze-engine-spark-3.5-release-5.0.0-SNAPSHOT.jar",
+        "spark.app.submitTime": "1753976545258",
+        "spark.executor.memory": "16g",
+        "spark.shuffle.manager": "org.apache.spark.sql.execution.blaze.shuffle.BlazeShuffleManager",
+        "spark.executor.instances": "2",
+        "spark.app.startTime": "1753976545559",
+        "spark.serializer.objectStreamReset": "100",
+        "spark.driver.host": "10.0.0.118",
+        "spark.submit.deployMode": "client",
+        "spark.app.name": "blaze benchmark derived from tpcds",
+        "spark.executor.cores": "8",
+        "spark.driver.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
+        "spark.executor.memoryOverhead": "16g",
+        "spark.sql.extensions": "org.apache.spark.sql.blaze.BlazeSparkSessionExtension",
+        "spark.blaze.enable": "true",
+        "spark.sql.adaptive.enabled": "true",
+        "spark.executor.id": "driver",
+        "spark.master": "spark://woody:7077",
+        "spark.sql.adaptive.forceApply": "true",
+        "spark.repl.local.jars": "file:///opt/blaze/blaze-engine-spark-3.5-release-5.0.0-SNAPSHOT.jar",
+        "spark.memory.offHeap.enabled": "false",
+        "spark.driver.memory": "8G",
+        "spark.jars": "file:///opt/blaze/blaze-engine-spark-3.5-release-5.0.0-SNAPSHOT.jar",
+        "spark.app.initial.jar.urls": "spark://10.0.0.118:35949/jars/blaze-engine-spark-3.5-release-5.0.0-SNAPSHOT.jar",
+        "spark.app.id": "app-20250731094225-0000",
+        "spark.rdd.compress": "True",
+        "spark.executor.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
+        "spark.submit.pyFiles": "",
+        "spark.sql.warehouse.dir": "file:/home/andy/git/apache/datafusion-comet/dev/benchmarks/spark-warehouse",
+        "spark.executor.extraClassPath": "/opt/blaze/blaze-engine-spark-3.5-release-5.0.0-SNAPSHOT.jar"
+    },
+    "1": [
+        4.29833984375
+    ],
+    "2": [
+        3.2578773498535156
+    ],
+    "3": [
+        1.8652851581573486
+    ],
+    "4": [
+        28.0850727558136
+    ],
+    "5": [
+        5.483048439025879
+    ],
+    "6": [
+        1.8989448547363281
+    ],
+    "7": [
+        2.7168705463409424
+    ],
+    "8": [
+        2.0041682720184326
+    ],
+    "9": [
+        6.036026239395142
+    ],
+    "10": [
+        2.158907175064087
+    ],
+    "11": [
+        12.088945388793945
+    ],
+    "12": [
+        1.6278820037841797
+    ],
+    "13": [
+        4.141969919204712
+    ],
+    "14": [
+        27.16408944129944
+    ],
+    "15": [
+        7.972369909286499
+    ],
+    "16": [
+        19.509708166122437
+    ],
+    "17": [
+        2.9771337509155273
+    ],
+    "18": [
+        3.184837818145752
+    ],
+    "19": [
+        3.512895107269287
+    ],
+    "20": [
+        2.5250091552734375
+    ],
+    "21": [
+        2.032010316848755
+    ],
+    "22": [
+        10.054096698760986
+    ],
+    "23": [
+        37.075517892837524
+    ],
+    "24": [
+        4.5132224559783936
+    ],
+    "25": [
+        3.260453939437866
+    ],
+    "26": [
+        1.6490797996520996
+    ],
+    "27": [
+        2.562084436416626
+    ],
+    "28": [
+        6.1220972537994385
+    ],
+    "29": [
+        3.355574607849121
+    ],
+    "30": [
+        1.3987014293670654
+    ],
+    "31": [
+        5.99055290222168
+    ],
+    "32": [
+        1.860522985458374
+    ],
+    "33": [
+        3.1227269172668457
+    ],
+    "34": [
+        1.4920480251312256
+    ],
+    "35": [
+        3.3718972206115723
+    ],
+    "36": [
+        3.137023687362671
+    ],
+    "37": [
+        2.0510008335113525
+    ],
+    "38": [
+        3.81714129447937
+    ],
+    "39": [
+        13.598978281021118
+    ],
+    "40": [
+        3.6551194190979004
+    ],
+    "41": [
+        0.20307397842407227
+    ],
+    "42": [
+        1.4140422344207764
+    ],
+    "43": [
+        1.4719886779785156
+    ],
+    "44": [
+        1.0411145687103271
+    ],
+    "45": [
+        2.1550612449645996
+    ],
+    "46": [
+        4.502093076705933
+    ],
+    "47": [
+        5.857606649398804
+    ],
+    "48": [
+        4.466501235961914
+    ],
+    "49": [
+        4.6020188331604
+    ],
+    "50": [
+        3.786076784133911
+    ],
+    "51": [
+        9.466694355010986
+    ],
+    "52": [
+        1.7045836448669434
+    ],
+    "53": [
+        1.6680505275726318
+    ],
+    "54": [
+        3.2161707878112793
+    ],
+    "55": [
+        1.3395226001739502
+    ],
+    "56": [
+        2.775632619857788
+    ],
+    "57": [
+        2.668205976486206
+    ],
+    "58": [
+        4.912959575653076
+    ],
+    "59": [
+        3.08463454246521
+    ],
+    "60": [
+        2.8756072521209717
+    ],
+    "61": [
+        4.997696161270142
+    ],
+    "62": [
+        1.0771088600158691
+    ],
+    "63": [
+        1.4476990699768066
+    ],
+    "64": [
+        8.340136051177979
+    ],
+    "65": [
+        9.196853160858154
+    ],
+    "66": [
+        3.8863117694854736
+    ],
+    "67": [
+        24.989885330200195
+    ],
+    "68": [
+        4.229811429977417
+    ],
+    "69": [
+        2.1849424839019775
+    ],
+    "70": [
+        3.462109088897705
+    ],
+    "71": [
+        2.9780192375183105
+    ],
+    "72": [
+        98.07282423973083
+    ],
+    "73": [
+        1.2939915657043457
+    ],
+    "74": [
+        17.994235277175903
+    ],
+    "75": [
+        9.07810640335083
+    ],
+    "76": [
+        1.987945795059204
+    ],
+    "77": [
+        3.2832038402557373
+    ],
+    "78": [
+        15.809038877487183
+    ],
+    "79": [
+        2.3230249881744385
+    ],
+    "80": [
+        9.651153087615967
+    ],
+    "81": [
+        1.4056549072265625
+    ],
+    "82": [
+        2.151021718978882
+    ],
+    "83": [
+        0.9110991954803467
+    ],
+    "84": [
+        0.9381260871887207
+    ],
+    "85": [
+        4.502171277999878
+    ],
+    "86": [
+        0.8276948928833008
+    ],
+    "87": [
+        3.5236589908599854
+    ],
+    "88": [
+        7.260309457778931
+    ],
+    "89": [
+        1.6737573146820068
+    ],
+    "90": [
+        0.6564974784851074
+    ],
+    "91": [
+        0.5676999092102051
+    ],
+    "92": [
+        0.9616613388061523
+    ],
+    "93": [
+        4.848900318145752
+    ],
+    "94": [
+        9.96233868598938
+    ],
+    "95": [
+        36.08780312538147
+    ],
+    "96": [
+        0.9135136604309082
+    ],
+    "97": [
+        4.4856956005096436
+    ],
+    "98": [
+        4.316124677658081
+    ],
+    "99": [
+        1.8331043720245361
+    ]
+}

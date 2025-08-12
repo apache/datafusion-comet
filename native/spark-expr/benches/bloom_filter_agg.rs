@@ -19,7 +19,7 @@ use arrow::array::builder::Int64Builder;
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::datatypes::SchemaRef;
 use arrow::datatypes::{DataType, Field, Schema};
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::common::ScalarValue;
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
@@ -30,12 +30,12 @@ use datafusion::physical_expr::expressions::{Column, Literal};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion_comet_spark_expr::BloomFilterAgg;
 use futures::StreamExt;
+use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
-
-use datafusion_comet_spark_expr::BloomFilterAgg;
 
 fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("bloom_filter_agg");

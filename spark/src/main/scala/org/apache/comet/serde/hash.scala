@@ -19,49 +19,69 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Murmur3Hash, XxHash64}
-import org.apache.spark.sql.types.{DecimalType, IntegerType, LongType}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Murmur3Hash, Sha2, XxHash64}
+import org.apache.spark.sql.types.{DecimalType, IntegerType, LongType, StringType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProtoWithReturnType, serializeDataType, supportedDataType}
 
-object CometXxHash64 extends CometExpressionSerde {
+object CometXxHash64 extends CometExpressionSerde[XxHash64] {
   override def convert(
-      expr: Expression,
+      expr: XxHash64,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     if (!HashUtils.isSupportedType(expr)) {
       return None
     }
-    val hash = expr.asInstanceOf[XxHash64]
-    val exprs = hash.children.map(exprToProtoInternal(_, inputs, binding))
+    val exprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val seedBuilder = ExprOuterClass.Literal
       .newBuilder()
       .setDatatype(serializeDataType(LongType).get)
-      .setLongVal(hash.seed)
+      .setLongVal(expr.seed)
     val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
     // the seed is put at the end of the arguments
     scalarFunctionExprToProtoWithReturnType("xxhash64", LongType, exprs :+ seedExpr: _*)
   }
 }
 
-object CometMurmur3Hash extends CometExpressionSerde {
+object CometMurmur3Hash extends CometExpressionSerde[Murmur3Hash] {
   override def convert(
-      expr: Expression,
+      expr: Murmur3Hash,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     if (!HashUtils.isSupportedType(expr)) {
       return None
     }
-    val hash = expr.asInstanceOf[Murmur3Hash]
-    val exprs = hash.children.map(exprToProtoInternal(_, inputs, binding))
+    val exprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val seedBuilder = ExprOuterClass.Literal
       .newBuilder()
       .setDatatype(serializeDataType(IntegerType).get)
-      .setIntVal(hash.seed)
+      .setIntVal(expr.seed)
     val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
     // the seed is put at the end of the arguments
     scalarFunctionExprToProtoWithReturnType("murmur3_hash", IntegerType, exprs :+ seedExpr: _*)
+  }
+}
+
+object CometSha2 extends CometExpressionSerde[Sha2] {
+  override def convert(
+      expr: Sha2,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (!HashUtils.isSupportedType(expr)) {
+      return None
+    }
+
+    // It's possible for spark to dynamically compute the number of bits from input
+    // expression, however DataFusion does not support that yet.
+    if (!expr.right.foldable) {
+      withInfo(expr, "For Sha2, non-foldable right argument is not supported")
+      return None
+    }
+
+    val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
+    val numBitsExpr = exprToProtoInternal(expr.right, inputs, binding)
+    scalarFunctionExprToProtoWithReturnType("sha2", StringType, leftExpr, numBitsExpr)
   }
 }
 

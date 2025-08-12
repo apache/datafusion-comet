@@ -19,12 +19,17 @@
 package org.apache.comet.shims
 
 import org.apache.comet.expressions.CometEvalMode
+import org.apache.comet.serde.CommonStringExprs
+import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
+import org.apache.spark.sql.internal.types.StringTypeWithCollation
+import org.apache.spark.sql.types.{BinaryType, BooleanType, StringType}
 
 /**
  * `CometExprShim` acts as a shim for for parsing expressions from different Spark versions.
  */
-trait CometExprShim {
+trait CometExprShim extends CommonStringExprs {
     /**
      * Returns a tuple of expressions for the `unhex` function.
      */
@@ -34,6 +39,28 @@ trait CometExprShim {
 
     protected def evalMode(c: Cast): CometEvalMode.Value =
         CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
+
+    def versionSpecificExprToProtoInternal(
+        expr: Expression,
+        inputs: Seq[Attribute],
+        binding: Boolean): Option[Expr] = {
+      expr match {
+        case s: StaticInvoke
+            if s.staticObject == classOf[StringDecode] &&
+              s.dataType.isInstanceOf[StringType] &&
+              s.functionName == "decode" &&
+              s.arguments.size == 4 &&
+              s.inputTypes == Seq(
+                  BinaryType,
+                  StringTypeWithCollation(supportsTrimCollation = true),
+                  BooleanType,
+                  BooleanType) =>
+          val Seq(bin, charset, _, _) = s.arguments
+          stringDecode(expr, charset, bin, inputs, binding)
+
+        case _ => None
+      }
+    }
 }
 
 object CometEvalModeUtil {

@@ -72,7 +72,7 @@ use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
-    JoinType as DFJoinType, ScalarValue,
+    JoinType as DFJoinType, NullEquality, ScalarValue,
 };
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
@@ -85,6 +85,13 @@ use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
+use arrow::array::{
+    BinaryBuilder, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
+    Int16Array, Int32Array, Int64Array, Int8Array, NullArray, StringBuilder,
+    TimestampMicrosecondArray,
+};
+use arrow::buffer::BooleanBuffer;
+use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
@@ -104,8 +111,8 @@ use datafusion_comet_spark_expr::monotonically_increasing_id::MonotonicallyIncre
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
     GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RLike,
-    RandExpr, RandnExpr, SparkCastOptions, Stddev, StringSpaceExpr, SubstringExpr, SumDecimal,
-    TimestampTruncExpr, ToJson, UnboundColumn, Variance,
+    RandExpr, RandnExpr, SparkCastOptions, Stddev, SubstringExpr, SumDecimal, TimestampTruncExpr,
+    ToJson, UnboundColumn, Variance,
 };
 use itertools::Itertools;
 use jni::objects::GlobalRef;
@@ -474,6 +481,125 @@ impl PhysicalPlanner {
                                     )))
                                 }
                             }
+                        },
+                        Value::ListVal(values) => {
+                            if let DataType::List(f) = data_type {
+                                match f.data_type() {
+                                    DataType::Null => {
+                                        SingleRowListArrayBuilder::new(Arc::new(NullArray::new(values.clone().null_mask.len())))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Boolean => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(BooleanArray::new(BooleanBuffer::from(vals.boolean_values), Some(vals.null_mask.into()))))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Int8 => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(Int8Array::new(vals.byte_values.iter().map(|&x| x as i8).collect::<Vec<_>>().into(), Some(vals.null_mask.into()))))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Int16 => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(Int16Array::new(vals.short_values.iter().map(|&x| x as i16).collect::<Vec<_>>().into(), Some(vals.null_mask.into()))))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Int32 => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(Int32Array::new(vals.int_values.into(), Some(vals.null_mask.into()))))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Int64 => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(Int64Array::new(vals.long_values.into(), Some(vals.null_mask.into()))))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Float32 => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(Float32Array::new(vals.float_values.into(), Some(vals.null_mask.into()))))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Float64 => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(Float64Array::new(vals.double_values.into(), Some(vals.null_mask.into()))))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Timestamp(TimeUnit::Microsecond, None) => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(TimestampMicrosecondArray::new(vals.long_values.into(), Some(vals.null_mask.into()))))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(TimestampMicrosecondArray::new(vals.long_values.into(), Some(vals.null_mask.into())).with_timezone(Arc::clone(tz))))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Date32 => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(Date32Array::new(vals.int_values.into(), Some(vals.null_mask.into()))))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Binary => {
+                                        // Using a builder as it is cumbersome to create BinaryArray from a vector with nulls
+                                        // and calculate correct offsets
+                                        let vals = values.clone();
+                                        let item_capacity = vals.string_values.len();
+                                        let data_capacity = vals.string_values.first().map(|s| s.len() * item_capacity).unwrap_or(0);
+                                        let mut arr = BinaryBuilder::with_capacity(item_capacity, data_capacity);
+
+                                        for (i, v) in vals.bytes_values.into_iter().enumerate() {
+                                            if vals.null_mask[i] {
+                                                arr.append_value(v);
+                                            } else {
+                                                arr.append_null();
+                                            }
+                                        }
+
+                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Utf8 => {
+                                        // Using a builder as it is cumbersome to create StringArray from a vector with nulls
+                                        // and calculate correct offsets
+                                        let vals = values.clone();
+                                        let item_capacity = vals.string_values.len();
+                                        let data_capacity = vals.string_values.first().map(|s| s.len() * item_capacity).unwrap_or(0);
+                                        let mut arr = StringBuilder::with_capacity(item_capacity, data_capacity);
+
+                                        for (i, v) in vals.string_values.into_iter().enumerate() {
+                                            if vals.null_mask[i] {
+                                                arr.append_value(v);
+                                            } else {
+                                                arr.append_null();
+                                            }
+                                        }
+
+                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
+                                            .build_list_scalar()
+                                    }
+                                    DataType::Decimal128(p, s) => {
+                                        let vals = values.clone();
+                                        SingleRowListArrayBuilder::new(Arc::new(Decimal128Array::new(vals.decimal_values.into_iter().map(|v| {
+                                            let big_integer = BigInt::from_signed_bytes_be(&v);
+                                            big_integer.to_i128().ok_or_else(|| {
+                                                GeneralError(format!(
+                                                    "Cannot parse {big_integer:?} as i128 for Decimal literal"
+                                                ))
+                                            }).unwrap()
+                                        }).collect::<Vec<_>>().into(), Some(vals.null_mask.into())).with_precision_and_scale(*p, *s)?)).build_list_scalar()
+                                    }
+                                    dt => {
+                                        return Err(GeneralError(format!(
+                                            "DataType::List literal does not support {dt:?} type"
+                                        )))
+                                    }
+                                }
+
+                            } else {
+                                return Err(GeneralError(format!(
+                                    "Expected DataType::List but got {data_type:?}"
+                                )))
+                            }
                         }
                     }
                 };
@@ -546,11 +672,6 @@ impl PhysicalPlanner {
                     len as u64,
                 )))
             }
-            ExprStruct::StringSpace(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-
-                Ok(Arc::new(StringSpaceExpr::new(child)))
-            }
             ExprStruct::Like(expr) => {
                 let left =
                     self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
@@ -593,6 +714,14 @@ impl PhysicalPlanner {
                         None,
                         true,
                         false,
+                    ))),
+                    // DataFusion 49 hardcodes return type for MD5 built in function as UTF8View
+                    // which is not yet supported in Comet
+                    // Converting forcibly to UTF8. To be removed after UTF8View supported
+                    "md5" => Ok(Arc::new(Cast::new(
+                        func?,
+                        DataType::Utf8,
+                        SparkCastOptions::new_without_timezone(EvalMode::Try, true),
                     ))),
                     _ => func,
                 }
@@ -1153,7 +1282,7 @@ impl PhysicalPlanner {
                 let child_copied = Self::wrap_in_copy_exec(Arc::clone(&child.native_plan));
 
                 let sort = Arc::new(
-                    SortExec::new(LexOrdering::new(exprs?), Arc::clone(&child_copied))
+                    SortExec::new(LexOrdering::new(exprs?).unwrap(), Arc::clone(&child_copied))
                         .with_fetch(fetch),
                 );
 
@@ -1297,6 +1426,7 @@ impl PhysicalPlanner {
                 // The `ScanExec` operator will take actual arrays from Spark during execution
                 let scan =
                     ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?;
+
                 Ok((
                     vec![scan.clone()],
                     Arc::new(SparkPlan::new(spark_plan.plan_id, Arc::new(scan), vec![])),
@@ -1429,7 +1559,7 @@ impl PhysicalPlanner {
                     sort_options,
                     // null doesn't equal to null in Spark join key. If the join key is
                     // `EqualNullSafe`, Spark will rewrite it during planning.
-                    false,
+                    NullEquality::NullEqualsNothing,
                 )?);
 
                 if join.filter.is_some() {
@@ -1497,7 +1627,7 @@ impl PhysicalPlanner {
                     PartitionMode::Partitioned,
                     // null doesn't equal to null in Spark join key. If the join key is
                     // `EqualNullSafe`, Spark will rewrite it during planning.
-                    false,
+                    NullEquality::NullEqualsNothing,
                 )?);
 
                 // If the hash join is build right, we need to swap the left and right
@@ -2193,13 +2323,15 @@ impl PhysicalPlanner {
         };
 
         let window_frame = WindowFrame::new_bounds(units, lower_bound, upper_bound);
+        let lex_orderings = LexOrdering::new(sort_exprs.to_vec());
+        let sort_phy_exprs = lex_orderings.as_deref().unwrap_or(&[]);
 
         datafusion::physical_plan::windows::create_window_expr(
             &window_func,
             window_func_name,
             &window_args,
             partition_by,
-            &LexOrdering::new(sort_exprs.to_vec()),
+            sort_phy_exprs,
             window_frame.into(),
             input_schema.as_ref(),
             false, // TODO: Ignore nulls
@@ -2280,7 +2412,7 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|expr| self.create_sort_expr(expr, Arc::clone(&input_schema)))
                     .collect();
-                let lex_ordering = LexOrdering::from(exprs?);
+                let lex_ordering = LexOrdering::new(exprs?).unwrap();
                 Ok(CometPartitioning::RangePartitioning(
                     lex_ordering,
                     range_partition.num_partitions as usize,
@@ -2317,7 +2449,6 @@ impl PhysicalPlanner {
                         other => other,
                     };
                     let func = self.session_ctx.udf(fun_name)?;
-
                     let coerced_types = func
                         .coerce_types(&input_expr_types)
                         .unwrap_or_else(|_| input_expr_types.clone());
@@ -2530,10 +2661,10 @@ impl TreeNodeRewriter for JoinFilterRewriter<'_> {
                     new_index + self.left_field_indices.len(),
                 ))))
             } else {
-                return Err(DataFusionError::Internal(format!(
+                Err(DataFusionError::Internal(format!(
                     "Column index {} out of range",
                     column.index()
-                )));
+                )))
             }
         } else {
             Ok(Transformed::no(node))
@@ -3372,7 +3503,7 @@ mod tests {
             "| {{b: n}: {a: 2, b: m, c: y}} |",
             "+------------------------------+",
         ];
-        assert_batches_eq!(expected, &[actual.clone()]);
+        assert_batches_eq!(expected, std::slice::from_ref(&actual));
 
         Ok(())
     }

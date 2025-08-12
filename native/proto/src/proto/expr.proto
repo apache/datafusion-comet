@@ -21,6 +21,8 @@ syntax = "proto3";
 
 package spark.spark_expression;
 
+import "types.proto";
+
 option java_package = "org.apache.comet.serde";
 
 // The basic message representing a Spark expression.
@@ -45,7 +47,6 @@ message Expr {
     BinaryExpr or = 18;
     SortOrder sort_order = 19;
     Substring substring = 20;
-    UnaryExpr string_space = 21;
     Hour hour = 22;
     Minute minute = 23;
     Second second = 24;
@@ -113,13 +114,13 @@ enum StatisticsType {
 }
 
 message Count {
-   repeated Expr children = 1;
+  repeated Expr children = 1;
 }
 
 message Sum {
-   Expr child = 1;
-   DataType datatype = 2;
-   bool fail_on_error = 3;
+  Expr child = 1;
+  DataType datatype = 2;
+  bool fail_on_error = 3;
 }
 
 message Min {
@@ -216,10 +217,11 @@ message Literal {
     string string_val = 8;
     bytes bytes_val = 9;
     bytes decimal_val = 10;
-   }
+    ListLiteral list_val = 11;
+  }
 
-   DataType datatype = 11;
-   bool is_null = 12;
+  DataType datatype = 12;
+  bool is_null = 13;
 }
 
 enum EvalMode {
@@ -480,4 +482,3 @@ message DataType {
 
   DataTypeInfo type_info = 2;
 }
-

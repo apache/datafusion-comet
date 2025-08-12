@@ -19,6 +19,9 @@
 
 package org.apache.comet.parquet;
 
+import java.util.HashMap;
+import java.util.Map;
+
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.PrimitiveType;
@@ -54,8 +57,9 @@ public class Utils {
   /**
    * This method is called from Apache Iceberg.
    *
-   * @deprecated since 0.9.1, will be removed in 0.10.0; use getColumnReader with ParquetColumnSpec
+   * @deprecated since 0.10.0, will be removed in 0.11.0; use getColumnReader with ParquetColumnSpec
    *     instead.
+   * @see <a href="https://github.com/apache/datafusion-comet/issues/2079">Comet Issue #2079</a>
    */
   public static ColumnReader getColumnReader(
       DataType type,
@@ -452,5 +456,67 @@ public class Utils {
       default:
         throw new IllegalArgumentException("Unknown logical type: " + logicalTypeName);
     }
+  }
+
+  public static ParquetColumnSpec descriptorToParquetColumnSpec(ColumnDescriptor descriptor) {
+
+    String[] path = descriptor.getPath();
+    PrimitiveType primitiveType = descriptor.getPrimitiveType();
+    String physicalType = primitiveType.getPrimitiveTypeName().name();
+
+    int typeLength =
+        primitiveType.getPrimitiveTypeName() == PrimitiveType.PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY
+            ? primitiveType.getTypeLength()
+            : 0;
+
+    boolean isRepeated = primitiveType.getRepetition() == Type.Repetition.REPEATED;
+
+    String logicalTypeName = null;
+    Map<String, String> logicalTypeParams = new HashMap<>();
+    LogicalTypeAnnotation logicalType = primitiveType.getLogicalTypeAnnotation();
+
+    if (logicalType != null) {
+      logicalTypeName = logicalType.getClass().getSimpleName();
+
+      // Handle specific logical types
+      if (logicalType instanceof LogicalTypeAnnotation.DecimalLogicalTypeAnnotation) {
+        LogicalTypeAnnotation.DecimalLogicalTypeAnnotation decimal =
+            (LogicalTypeAnnotation.DecimalLogicalTypeAnnotation) logicalType;
+        logicalTypeParams.put("precision", String.valueOf(decimal.getPrecision()));
+        logicalTypeParams.put("scale", String.valueOf(decimal.getScale()));
+      } else if (logicalType instanceof LogicalTypeAnnotation.TimestampLogicalTypeAnnotation) {
+        LogicalTypeAnnotation.TimestampLogicalTypeAnnotation timestamp =
+            (LogicalTypeAnnotation.TimestampLogicalTypeAnnotation) logicalType;
+        logicalTypeParams.put("isAdjustedToUTC", String.valueOf(timestamp.isAdjustedToUTC()));
+        logicalTypeParams.put("unit", timestamp.getUnit().name());
+      } else if (logicalType instanceof LogicalTypeAnnotation.TimeLogicalTypeAnnotation) {
+        LogicalTypeAnnotation.TimeLogicalTypeAnnotation time =
+            (LogicalTypeAnnotation.TimeLogicalTypeAnnotation) logicalType;
+        logicalTypeParams.put("isAdjustedToUTC", String.valueOf(time.isAdjustedToUTC()));
+        logicalTypeParams.put("unit", time.getUnit().name());
+      } else if (logicalType instanceof LogicalTypeAnnotation.IntLogicalTypeAnnotation) {
+        LogicalTypeAnnotation.IntLogicalTypeAnnotation intType =
+            (LogicalTypeAnnotation.IntLogicalTypeAnnotation) logicalType;
+        logicalTypeParams.put("isSigned", String.valueOf(intType.isSigned()));
+        logicalTypeParams.put("bitWidth", String.valueOf(intType.getBitWidth()));
+      }
+    }
+
+    int id = -1;
+    Type type = descriptor.getPrimitiveType();
+    if (type != null && type.getId() != null) {
+      id = type.getId().intValue();
+    }
+
+    return new ParquetColumnSpec(
+        id,
+        path,
+        physicalType,
+        typeLength,
+        isRepeated,
+        descriptor.getMaxDefinitionLevel(),
+        descriptor.getMaxRepetitionLevel(),
+        logicalTypeName,
+        logicalTypeParams);
   }
 }

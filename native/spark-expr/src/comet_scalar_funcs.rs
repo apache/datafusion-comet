@@ -21,7 +21,7 @@ use crate::{
     spark_array_repeat, spark_ceil, spark_date_add, spark_date_sub, spark_decimal_div,
     spark_decimal_integral_div, spark_floor, spark_hex, spark_isnan, spark_make_decimal,
     spark_read_side_padding, spark_round, spark_rpad, spark_unhex, spark_unscaled_value,
-    SparkBitwiseCount, SparkBitwiseGet, SparkBitwiseNot, SparkChrFunc, SparkDateTrunc,
+    SparkBitwiseCount, SparkBitwiseGet, SparkBitwiseNot, SparkDateTrunc, SparkStringSpace,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -127,22 +127,6 @@ pub fn create_comet_physical_fun(
             let func = Arc::new(spark_isnan);
             make_comet_scalar_udf!("isnan", func, without data_type)
         }
-        "sha224" => {
-            let func = Arc::new(spark_sha224);
-            make_comet_scalar_udf!("sha224", func, without data_type)
-        }
-        "sha256" => {
-            let func = Arc::new(spark_sha256);
-            make_comet_scalar_udf!("sha256", func, without data_type)
-        }
-        "sha384" => {
-            let func = Arc::new(spark_sha384);
-            make_comet_scalar_udf!("sha384", func, without data_type)
-        }
-        "sha512" => {
-            let func = Arc::new(spark_sha512);
-            make_comet_scalar_udf!("sha512", func, without data_type)
-        }
         "date_add" => {
             let func = Arc::new(spark_date_add);
             make_comet_scalar_udf!("date_add", func, without data_type)
@@ -170,11 +154,11 @@ pub fn create_comet_physical_fun(
 
 fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
     vec![
-        Arc::new(ScalarUDF::new_from_impl(SparkChrFunc::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkBitwiseNot::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkBitwiseCount::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkBitwiseGet::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateTrunc::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkStringSpace::default())),
     ]
 }
 

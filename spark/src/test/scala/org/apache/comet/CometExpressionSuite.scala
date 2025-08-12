@@ -113,6 +113,18 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("Integral Division Overflow Handling Matches Spark Behavior") {
+    withTable("t1") {
+      withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+        val value = Long.MinValue
+        sql("create table t1(c1 long, c2 short) using parquet")
+        sql(s"insert into t1 values($value, -1)")
+        val res = sql("select c1 div c2 from t1 order by c1")
+        checkSparkAnswerAndOperator(res)
+      }
+    }
+  }
+
   test("basic data type support") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
@@ -366,22 +378,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       .map(i => (i.toString, (i + 100).toString))
     withParquetTable(data, "tbl") {
       checkSparkAnswerAndOperator("SELECT _1, substring(_2, 2, 2) FROM tbl")
-    }
-  }
-
-  test("string_space") {
-    withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
-      checkSparkAnswerAndOperator("SELECT space(_1), space(_2) FROM tbl")
-    }
-  }
-
-  test("string_space with dictionary") {
-    val data = (0 until 1000).map(i => Tuple1(i % 5))
-
-    withSQLConf("parquet.enable.dictionary" -> "true") {
-      withParquetTable(data, "tbl") {
-        checkSparkAnswerAndOperator("SELECT space(_1) FROM tbl")
-      }
     }
   }
 
@@ -1869,7 +1865,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               |md5(col), md5(cast(a as string)), md5(cast(b as string)),
               |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
               |xxhash64(col), xxhash64(col, 1), xxhash64(col, 0), xxhash64(col, a, b), xxhash64(b, a, col),
-              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128)
+              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128), sha2(col, -1)
               |from test
               |""".stripMargin)
         }
@@ -1981,7 +1977,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               |md5(col), md5(cast(a as string)), --md5(cast(b as string)),
               |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
               |xxhash64(col), xxhash64(col, 1), xxhash64(col, 0), xxhash64(col, a, b), xxhash64(b, a, col),
-              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128)
+              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128), sha2(col, -1)
               |from test
               |""".stripMargin)
         }
@@ -2686,7 +2682,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("test integral divide") {
     // this test requires native_comet scan due to unsigned u8/u16 issue
-    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path1 = new Path(dir.toURI.toString, "test1.parquet")

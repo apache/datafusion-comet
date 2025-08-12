@@ -934,7 +934,7 @@ impl SinglePartitionShufflePartitioner {
                     Ok(Some(concatenated))
                 }
                 Err(e) => Err(DataFusionError::ArrowError(
-                    e,
+                    Box::from(e),
                     Some(DataFusionError::get_back_trace()),
                 )),
             }
@@ -1061,7 +1061,7 @@ impl PartitionedBatchesProducer {
         }
     }
 
-    fn produce(&mut self, partition_id: usize) -> PartitionedBatchIterator {
+    fn produce(&mut self, partition_id: usize) -> PartitionedBatchIterator<'_> {
         PartitionedBatchIterator::new(
             &self.partition_indices[partition_id],
             &self.buffered_batches,
@@ -1122,7 +1122,7 @@ impl Iterator for PartitionedBatchIterator<'_> {
                 Some(Ok(batch))
             }
             Err(e) => Some(Err(DataFusionError::ArrowError(
-                e,
+                Box::from(e),
                 Some(DataFusionError::get_back_trace()),
             ))),
         }
@@ -1409,7 +1409,8 @@ mod test {
             CometPartitioning::RangePartitioning(
                 LexOrdering::new(vec![PhysicalSortExpr::new_default(
                     col("a", batch.schema().as_ref()).unwrap(),
-                )]),
+                )])
+                .unwrap(),
                 num_partitions,
                 100,
             ),
