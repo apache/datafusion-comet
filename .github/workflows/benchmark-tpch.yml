@@ -48,7 +48,7 @@ jobs:
     env:
       JAVA_VERSION: 11
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:
@@ -93,7 +93,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:
