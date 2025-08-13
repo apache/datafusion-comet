@@ -1086,29 +1086,46 @@ index 780e175..57892ac 100644
    }
  
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java
-index 11f054b..324d201 100644
+index 11f054b..b37dd33 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java
-@@ -148,7 +148,7 @@ class SparkBatch implements Batch {
-   // - Parquet vectorization is enabled
-   // - only primitives or metadata columns are projected
-   // - all tasks are of FileScanTask type and read only Parquet files
--  private boolean useParquetBatchReads() {
-+  protected boolean useParquetBatchReads() {
+@@ -172,17 +172,32 @@ class SparkBatch implements Batch {
+     return field.type().isPrimitiveType() || MetadataColumns.isMetadataColumn(field.fieldId());
+   }
+ 
+-  private boolean useCometBatchReads() {
++  protected boolean useCometBatchReads() {
      return readConf.parquetVectorizationEnabled()
-         && expectedSchema.columns().stream().allMatch(this::supportsParquetBatchReads)
-         && taskGroups.stream().allMatch(this::supportsParquetBatchReads);
-@@ -161,7 +161,7 @@ class SparkBatch implements Batch {
+         && readConf.parquetReaderType() == ParquetReaderType.COMET
+         && expectedSchema.columns().stream().allMatch(this::supportsCometBatchReads)
+-        && taskGroups.stream().allMatch(this::supportsParquetBatchReads);
++        && taskGroups.stream().allMatch(this::supportsCometBatchReads);
+   }
  
-     } else if (task.isFileScanTask() && !task.isDataTask()) {
-       FileScanTask fileScanTask = task.asFileScanTask();
--      return fileScanTask.file().format() == FileFormat.PARQUET;
+   private boolean supportsCometBatchReads(Types.NestedField field) {
+     return field.type().isPrimitiveType() && !field.type().typeId().equals(Type.TypeID.UUID);
+   }
+ 
++  private boolean supportsCometBatchReads(ScanTask task) {
++    if (task instanceof ScanTaskGroup) {
++      ScanTaskGroup<?> taskGroup = (ScanTaskGroup<?>) task;
++      return taskGroup.tasks().stream().allMatch(this::supportsCometBatchReads);
++
++    } else if (task.isFileScanTask() && !task.isDataTask()) {
++      FileScanTask fileScanTask = task.asFileScanTask();
++      // Comet can't handle delete files for now
 +      return fileScanTask.file().format() == FileFormat.PARQUET && fileScanTask.deletes().isEmpty();
- 
-     } else {
-       return false;
++
++    } else {
++      return false;
++    }
++  }
++
+   // conditions for using ORC batch reads:
+   // - ORC vectorization is enabled
+   // - all tasks are of type FileScanTask and read only ORC files with no delete files
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkScan.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkScan.java
-index 019f391..298c25f 100644
+index 019f391..1736631 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkScan.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkScan.java
 @@ -23,6 +23,7 @@ import java.util.List;
@@ -1136,19 +1153,15 @@ index 019f391..298c25f 100644
    private static final Logger LOG = LoggerFactory.getLogger(SparkScan.class);
    private static final String NDV_KEY = "ndv";
  
-@@ -348,4 +350,14 @@ abstract class SparkScan implements Scan, SupportsReportStatistics {
+@@ -348,4 +350,10 @@ abstract class SparkScan implements Scan, SupportsReportStatistics {
        return splitSize;
      }
    }
 +
 +  @Override
 +  public boolean isCometEnabled() {
-+    if (readConf.parquetReaderType() == ParquetReaderType.COMET) {
-+      SparkBatch batch = (SparkBatch) this.toBatch();
-+      return batch.useParquetBatchReads();
-+    }
-+
-+    return false;
++    SparkBatch batch = (SparkBatch) this.toBatch();
++    return batch.useCometBatchReads();
 +  }
  }
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java
