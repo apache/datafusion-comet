@@ -2611,9 +2611,15 @@ impl From<ExpressionError> for DataFusionError {
 /// data corruption from reusing the input batch.
 fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
     if op.as_any().is::<ScanExec>() {
-        // JVM side can return arrow buffers to the pool
-        // Also, native_comet scan reuses mutable buffers
-        true
+        let scan = op.as_any().downcast_ref::<ScanExec>().unwrap();
+        if scan.input_source_description.contains("CometScan") {
+            // Both native_comet and native_iceberg_compat scans reuse mutable buffers
+            true
+        } else {
+            // other scans (such as reading from broadcast or shuffle exchanges) do not use
+            // mutable buffers
+            false
+        }
     } else if op.as_any().is::<CopyExec>() {
         let copy_exec = op.as_any().downcast_ref::<CopyExec>().unwrap();
         copy_exec.mode() == &CopyMode::UnpackOrClone && can_reuse_input_batch(copy_exec.input())
