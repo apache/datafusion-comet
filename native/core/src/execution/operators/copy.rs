@@ -91,6 +91,14 @@ impl CopyExec {
             mode,
         }
     }
+
+    pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
+        &self.input
+    }
+
+    pub fn mode(&self) -> &CopyMode {
+        &self.mode
+    }
 }
 
 impl DisplayAs for CopyExec {
