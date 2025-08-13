@@ -2192,15 +2192,24 @@ object QueryPlanSerde extends Logging with CometExprShim {
           serializeDataType(attr.dataType)
         }
 
-        op match {
-          case batchScan: CometBatchScanExec if batchScan.scan.isInstanceOf[SupportsComet] =>
-            // Iceberg integration
-            scanBuilder.setHasBufferReuse(true)
-          case _: CoalesceExec =>
-            // CoalesceExec could be wrapping a native_comet scan on the Scala side
-            // See CometCastSuite for examples
-            scanBuilder.setHasBufferReuse(true)
-          case _ =>
+        def hasBufferReuse(op: SparkPlan): Boolean = {
+          op match {
+            case batchScan: CometBatchScanExec if batchScan.scan.isInstanceOf[SupportsComet] =>
+              // Iceberg integration
+              true
+            case scan: CometScanExec =>
+              // native_comet scan
+              scan.scanImpl == CometConf.SCAN_NATIVE_COMET
+            case CometScanWrapper(_, scan) =>
+              hasBufferReuse(scan)
+            case _ =>
+              // wrapper around scan such as CoalesceExec
+              op.children.exists(hasBufferReuse)
+          }
+        }
+
+        if (hasBufferReuse(op)) {
+          scanBuilder.setHasBufferReuse(true)
         }
 
         if (scanTypes.length == op.output.length) {
