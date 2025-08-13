@@ -240,7 +240,7 @@ Functions [7]: [avg(cast(cs_quantity#4 as decimal(12,2))), avg(cast(cs_list_pric
 
 (42) CometTakeOrderedAndProject
 Input [11]: [i_item_id#31, ca_country#32, ca_state#33, ca_county#34, agg1#50, agg2#51, agg3#52, agg4#53, agg5#54, agg6#55, agg7#56]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[ca_country#32 ASC NULLS FIRST,ca_state#33 ASC NULLS FIRST,ca_county#34 ASC NULLS FIRST,i_item_id#31 ASC NULLS FIRST], output=[i_item_id#31,ca_country#32,ca_state#33,ca_county#34,agg1#50,agg2#51,agg3#52,agg4#53,agg5#54,agg6#55,agg7#56]), [i_item_id#31, ca_country#32, ca_state#33, ca_county#34, agg1#50, agg2#51, agg3#52, agg4#53, agg5#54, agg6#55, agg7#56], 100, [ca_country#32 ASC NULLS FIRST, ca_state#33 ASC NULLS FIRST, ca_county#34 ASC NULLS FIRST, i_item_id#31 ASC NULLS FIRST], [i_item_id#31, ca_country#32, ca_state#33, ca_county#34, agg1#50, agg2#51, agg3#52, agg4#53, agg5#54, agg6#55, agg7#56]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[ca_country#32 ASC NULLS FIRST,ca_state#33 ASC NULLS FIRST,ca_county#34 ASC NULLS FIRST,i_item_id#31 ASC NULLS FIRST], output=[i_item_id#31,ca_country#32,ca_state#33,ca_county#34,agg1#50,agg2#51,agg3#52,agg4#53,agg5#54,agg6#55,agg7#56]), [i_item_id#31, ca_country#32, ca_state#33, ca_county#34, agg1#50, agg2#51, agg3#52, agg4#53, agg5#54, agg6#55, agg7#56], 100, 0, [ca_country#32 ASC NULLS FIRST, ca_state#33 ASC NULLS FIRST, ca_county#34 ASC NULLS FIRST, i_item_id#31 ASC NULLS FIRST], [i_item_id#31, ca_country#32, ca_state#33, ca_county#34, agg1#50, agg2#51, agg3#52, agg4#53, agg5#54, agg6#55, agg7#56]
 
 (43) CometColumnarToRow [codegen id : 1]
 Input [11]: [i_item_id#31, ca_country#32, ca_state#33, ca_county#34, agg1#50, agg2#51, agg3#52, agg4#53, agg5#54, agg6#55, agg7#56]

@@ -269,7 +269,7 @@ Functions [3]: [avg(ws_quantity#4), avg(UnscaledValue(wr_refunded_cash#16)), avg
 
 (47) CometTakeOrderedAndProject
 Input [4]: [substr(r_reason_desc, 1, 20)#44, avg(ws_quantity)#45, avg(wr_refunded_cash)#46, avg(wr_fee)#47]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[substr(r_reason_desc, 1, 20)#44 ASC NULLS FIRST,avg(ws_quantity)#45 ASC NULLS FIRST,avg(wr_refunded_cash)#46 ASC NULLS FIRST,avg(wr_fee)#47 ASC NULLS FIRST], output=[substr(r_reason_desc, 1, 20)#44,avg(ws_quantity)#45,avg(wr_refunded_cash)#46,avg(wr_fee)#47]), [substr(r_reason_desc, 1, 20)#44, avg(ws_quantity)#45, avg(wr_refunded_cash)#46, avg(wr_fee)#47], 100, [substr(r_reason_desc, 1, 20)#44 ASC NULLS FIRST, avg(ws_quantity)#45 ASC NULLS FIRST, avg(wr_refunded_cash)#46 ASC NULLS FIRST, avg(wr_fee)#47 ASC NULLS FIRST], [substr(r_reason_desc, 1, 20)#44, avg(ws_quantity)#45, avg(wr_refunded_cash)#46, avg(wr_fee)#47]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[substr(r_reason_desc, 1, 20)#44 ASC NULLS FIRST,avg(ws_quantity)#45 ASC NULLS FIRST,avg(wr_refunded_cash)#46 ASC NULLS FIRST,avg(wr_fee)#47 ASC NULLS FIRST], output=[substr(r_reason_desc, 1, 20)#44,avg(ws_quantity)#45,avg(wr_refunded_cash)#46,avg(wr_fee)#47]), [substr(r_reason_desc, 1, 20)#44, avg(ws_quantity)#45, avg(wr_refunded_cash)#46, avg(wr_fee)#47], 100, 0, [substr(r_reason_desc, 1, 20)#44 ASC NULLS FIRST, avg(ws_quantity)#45 ASC NULLS FIRST, avg(wr_refunded_cash)#46 ASC NULLS FIRST, avg(wr_fee)#47 ASC NULLS FIRST], [substr(r_reason_desc, 1, 20)#44, avg(ws_quantity)#45, avg(wr_refunded_cash)#46, avg(wr_fee)#47]
 
 (48) CometColumnarToRow [codegen id : 1]
 Input [4]: [substr(r_reason_desc, 1, 20)#44, avg(ws_quantity)#45, avg(wr_refunded_cash)#46, avg(wr_fee)#47]
