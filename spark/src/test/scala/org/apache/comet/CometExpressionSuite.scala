@@ -394,6 +394,21 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("ANSI support for add") {
+    val data = Seq((1, 1))
+    assume(isSpark40Plus)
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+            |SELECT
+            |  2147483647 + 1
+            |  from tbl
+            |  """.stripMargin)
+        checkSparkAnswerAndOperator(res)
+      }
+    }
+  }
+
   test("dictionary arithmetic") {
     // TODO: test ANSI mode
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "false", "parquet.enable.dictionary" -> "true") {
