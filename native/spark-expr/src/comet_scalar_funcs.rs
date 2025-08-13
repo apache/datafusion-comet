@@ -21,7 +21,7 @@ use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::{
     spark_array_repeat, spark_ceil, spark_date_add, spark_date_sub, spark_decimal_div,
     spark_decimal_integral_div, spark_floor, spark_hex, spark_isnan, spark_make_decimal,
-    spark_read_side_padding, spark_round, spark_rpad, spark_unhex, spark_unscaled_value,
+    spark_read_side_padding, spark_round, spark_rpad, spark_unhex, spark_unscaled_value, EvalMode,
     SparkBitwiseCount, SparkBitwiseGet, SparkBitwiseNot, SparkDateTrunc, SparkStringSpace,
 };
 use arrow::datatypes::DataType;
@@ -64,15 +64,41 @@ macro_rules! make_comet_scalar_udf {
         );
         Ok(Arc::new(ScalarUDF::new_from_impl(scalar_func)))
     }};
+    ($name:expr, $func:ident, $data_type:ident, $eval_mode:ident) => {{
+        let scalar_func = CometScalarFunction::new(
+            $name.to_string(),
+            Signature::variadic_any(Volatility::Immutable),
+            $data_type.clone(),
+            Arc::new(move |args| $func(args, &$data_type, $eval_mode)),
+        );
+        Ok(Arc::new(ScalarUDF::new_from_impl(scalar_func)))
+    }};
 }
 
-/// Create a physical scalar function.
 pub fn create_comet_physical_fun(
     fun_name: &str,
     data_type: DataType,
     registry: &dyn FunctionRegistry,
     fail_on_error: Option<bool>,
 ) -> Result<Arc<ScalarUDF>, DataFusionError> {
+    create_comet_physical_fun_with_eval_mode(
+        fun_name,
+        data_type,
+        registry,
+        fail_on_error,
+        EvalMode::Legacy,
+    )
+}
+
+/// Create a physical scalar function.
+pub fn create_comet_physical_fun_with_eval_mode(
+    fun_name: &str,
+    data_type: DataType,
+    registry: &dyn FunctionRegistry,
+    fail_on_error: Option<bool>,
+    eval_mode: EvalMode,
+) -> Result<Arc<ScalarUDF>, DataFusionError> {
+    println!("creating spark physical plan with eval mode ANSI");
     match fun_name {
         "ceil" => {
             make_comet_scalar_udf!("ceil", spark_ceil, data_type)
@@ -117,16 +143,16 @@ pub fn create_comet_physical_fun(
             )
         }
         "checked_add" => {
-            make_comet_scalar_udf!("checked_add", checked_add, data_type)
+            make_comet_scalar_udf!("checked_add", checked_add, data_type, eval_mode)
         }
         "checked_sub" => {
-            make_comet_scalar_udf!("checked_sub", checked_sub, data_type)
+            make_comet_scalar_udf!("checked_sub", checked_sub, data_type, eval_mode)
         }
         "checked_mul" => {
-            make_comet_scalar_udf!("checked_mul", checked_mul, data_type)
+            make_comet_scalar_udf!("checked_mul", checked_mul, data_type, eval_mode)
         }
         "checked_div" => {
-            make_comet_scalar_udf!("checked_div", checked_div, data_type)
+            make_comet_scalar_udf!("checked_div", checked_div, data_type, eval_mode)
         }
         "murmur3_hash" => {
             let func = Arc::new(spark_murmur3_hash);
