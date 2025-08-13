@@ -2,10 +2,10 @@
 * Project (4)
 +- * CometColumnarToRow (3)
    +- CometFilter (2)
-      +- CometScan parquet spark_catalog.default.reason (1)
+      +- CometScan [native_comet] parquet spark_catalog.default.reason (1)
 
 
-(1) CometScan parquet spark_catalog.default.reason
+(1) CometScan [native_comet] parquet spark_catalog.default.reason
 Output [1]: [r_reason_sk#1]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/reason]
@@ -34,10 +34,10 @@ Subquery:1 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery
             +- * CometColumnarToRow (8)
                +- CometProject (7)
                   +- CometFilter (6)
-                     +- CometScan parquet spark_catalog.default.store_sales (5)
+                     +- CometScan [native_comet] parquet spark_catalog.default.store_sales (5)
 
 
-(5) CometScan parquet spark_catalog.default.store_sales
+(5) CometScan [native_comet] parquet spark_catalog.default.store_sales
 Output [4]: [ss_quantity#17, ss_ext_discount_amt#18, ss_net_paid#19, ss_sold_date_sk#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -93,10 +93,10 @@ Subquery:4 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery
             +- * CometColumnarToRow (17)
                +- CometProject (16)
                   +- CometFilter (15)
-                     +- CometScan parquet spark_catalog.default.store_sales (14)
+                     +- CometScan [native_comet] parquet spark_catalog.default.store_sales (14)
 
 
-(14) CometScan parquet spark_catalog.default.store_sales
+(14) CometScan [native_comet] parquet spark_catalog.default.store_sales
 Output [4]: [ss_quantity#38, ss_ext_discount_amt#39, ss_net_paid#40, ss_sold_date_sk#41]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -152,10 +152,10 @@ Subquery:7 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery
             +- * CometColumnarToRow (26)
                +- CometProject (25)
                   +- CometFilter (24)
-                     +- CometScan parquet spark_catalog.default.store_sales (23)
+                     +- CometScan [native_comet] parquet spark_catalog.default.store_sales (23)
 
 
-(23) CometScan parquet spark_catalog.default.store_sales
+(23) CometScan [native_comet] parquet spark_catalog.default.store_sales
 Output [4]: [ss_quantity#59, ss_ext_discount_amt#60, ss_net_paid#61, ss_sold_date_sk#62]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -211,10 +211,10 @@ Subquery:10 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquer
             +- * CometColumnarToRow (35)
                +- CometProject (34)
                   +- CometFilter (33)
-                     +- CometScan parquet spark_catalog.default.store_sales (32)
+                     +- CometScan [native_comet] parquet spark_catalog.default.store_sales (32)
 
 
-(32) CometScan parquet spark_catalog.default.store_sales
+(32) CometScan [native_comet] parquet spark_catalog.default.store_sales
 Output [4]: [ss_quantity#80, ss_ext_discount_amt#81, ss_net_paid#82, ss_sold_date_sk#83]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -270,10 +270,10 @@ Subquery:13 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquer
             +- * CometColumnarToRow (44)
                +- CometProject (43)
                   +- CometFilter (42)
-                     +- CometScan parquet spark_catalog.default.store_sales (41)
+                     +- CometScan [native_comet] parquet spark_catalog.default.store_sales (41)
 
 
-(41) CometScan parquet spark_catalog.default.store_sales
+(41) CometScan [native_comet] parquet spark_catalog.default.store_sales
 Output [4]: [ss_quantity#101, ss_ext_discount_amt#102, ss_net_paid#103, ss_sold_date_sk#104]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]

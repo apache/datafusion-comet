@@ -17,7 +17,7 @@ WholeStageCodegen (12)
                                 CometHashAggregate [ss_list_price,sum,count,count]
                                   CometProject [ss_list_price]
                                     CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
-                                      CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
+                                      CometScan [native_comet] parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
             InputAdapter
               BroadcastExchange #3
                 WholeStageCodegen (3)
@@ -34,7 +34,7 @@ WholeStageCodegen (12)
                                       CometHashAggregate [ss_list_price,sum,count,count]
                                         CometProject [ss_list_price]
                                           CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
-                                            CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
+                                            CometScan [native_comet] parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
           InputAdapter
             BroadcastExchange #6
               WholeStageCodegen (5)
@@ -51,7 +51,7 @@ WholeStageCodegen (12)
                                     CometHashAggregate [ss_list_price,sum,count,count]
                                       CometProject [ss_list_price]
                                         CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
-                                          CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
+                                          CometScan [native_comet] parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
         InputAdapter
           BroadcastExchange #9
             WholeStageCodegen (7)
@@ -68,7 +68,7 @@ WholeStageCodegen (12)
                                   CometHashAggregate [ss_list_price,sum,count,count]
                                     CometProject [ss_list_price]
                                       CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
-                                        CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
+                                        CometScan [native_comet] parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
       InputAdapter
         BroadcastExchange #12
           WholeStageCodegen (9)
@@ -85,7 +85,7 @@ WholeStageCodegen (12)
                                 CometHashAggregate [ss_list_price,sum,count,count]
                                   CometProject [ss_list_price]
                                     CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
-                                      CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
+                                      CometScan [native_comet] parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
     InputAdapter
       BroadcastExchange #15
         WholeStageCodegen (11)
@@ -102,4 +102,4 @@ WholeStageCodegen (12)
                               CometHashAggregate [ss_list_price,sum,count,count]
                                 CometProject [ss_list_price]
                                   CometFilter [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
-                                    CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
+                                    CometScan [native_comet] parquet spark_catalog.default.store_sales [ss_quantity,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
