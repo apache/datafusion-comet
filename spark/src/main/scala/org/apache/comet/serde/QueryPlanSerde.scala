@@ -1789,11 +1789,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val cond = exprToProto(condition, child.output)
 
         if (cond.isDefined && childOp.nonEmpty) {
-          // We need to determine whether to use DataFusion's FilterExec or Comet's
-          // FilterExec. The difference is that DataFusion's implementation will sometimes pass
-          // batches through whereas the Comet implementation guarantees that a copy is always
-          // made, which is critical when using `native_comet` scans due to buffer re-use
-
           // Some native expressions do not support operating on dictionary-encoded arrays, so
           // wrap the child in a CopyExec to unpack dictionaries first.
           def wrapChildInCopyExec(condition: Expression): Boolean = {
