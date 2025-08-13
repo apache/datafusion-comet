@@ -2192,7 +2192,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           serializeDataType(attr.dataType)
         }
 
-        // iceberg
         op match {
           case batchScan: CometBatchScanExec if batchScan.scan.isInstanceOf[SupportsComet] =>
             // Iceberg integration
