@@ -1420,7 +1420,8 @@ impl PhysicalPlanner {
                     input_source,
                     &scan.source,
                     data_types,
-                    scan.has_buffer_reuse,
+                    // TODO scan.has_buffer_reuse,
+                    true
                 )?;
 
                 Ok((
