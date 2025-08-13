@@ -2614,9 +2614,15 @@ fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
         // JVM side can return arrow buffers to the pool
         // Also, native_comet scan reuses mutable buffers
         true
+    } else if op.as_any().is::<CopyExec>() {
+        let copy_exec = op.as_any().downcast_ref::<CopyExec>().unwrap();
+        copy_exec.mode() == &CopyMode::UnpackOrClone && can_reuse_input_batch(copy_exec.input())
+    } else if op.as_any().is::<CometFilterExec>() {
+        // CometFilterExec guarantees that all arrays have been copied
+        false
     } else {
         for child in op.children() {
-            if can_reuse_input_batch(&child) {
+            if can_reuse_input_batch(child) {
                 return true;
             }
         }
