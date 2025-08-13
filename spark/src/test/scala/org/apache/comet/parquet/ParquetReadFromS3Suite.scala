@@ -33,6 +33,8 @@ import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.comet.CometScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, sum}
+import org.apache.spark.sql.functions.expr
+import org.apache.spark.sql.functions.max
 
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
@@ -117,5 +119,28 @@ class ParquetReadFromS3Suite extends CometTestBase with AdaptiveSparkPlanHelper 
     assert(scans.size == 1)
 
     assert(df.first().getLong(0) == 499500)
+  }
+
+  private def writePartitionedTestParquetFile(filePath: String): Unit = {
+    val df = spark.range(0, 1000).withColumn("val", expr("concat('val#', id % 10)"))
+    df.write.format("parquet").partitionBy("val").mode(SaveMode.Overwrite).save(filePath)
+  }
+
+  test("write partitioned data and read from MinIO") {
+    val testFilePath = s"s3a://$testBucketName/data/test-partitioned"
+    writePartitionedTestParquetFile(testFilePath)
+
+    val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")), max(col("val")))
+    val scans = collect(df.queryExecution.executedPlan) {
+      case p: CometScanExec =>
+        p
+      case p: CometNativeScanExec =>
+        p
+    }
+    assert(scans.size == 1)
+
+    val firstRow = df.first()
+    assert(firstRow.getLong(0) == 499500)
+    assert(firstRow.getString(1) == "val#9")
   }
 }

@@ -66,7 +66,7 @@ pub fn create_store(
             source: format!("Scheme of URL is not S3: {url}").into(),
         });
     }
-    let path = Path::from_url_path(path)?;
+    let path = Path::parse(path)?;
 
     let mut builder = AmazonS3Builder::new()
         .with_url(url.to_string())
