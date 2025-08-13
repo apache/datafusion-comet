@@ -406,7 +406,7 @@ Arguments: [customer_id#41, customer_first_name#42, customer_last_name#43, custo
 
 (71) CometTakeOrderedAndProject
 Input [4]: [customer_id#41, customer_first_name#42, customer_last_name#43, customer_email_address#44]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[customer_id#41 ASC NULLS FIRST,customer_first_name#42 ASC NULLS FIRST,customer_last_name#43 ASC NULLS FIRST,customer_email_address#44 ASC NULLS FIRST], output=[customer_id#41,customer_first_name#42,customer_last_name#43,customer_email_address#44]), [customer_id#41, customer_first_name#42, customer_last_name#43, customer_email_address#44], 100, [customer_id#41 ASC NULLS FIRST, customer_first_name#42 ASC NULLS FIRST, customer_last_name#43 ASC NULLS FIRST, customer_email_address#44 ASC NULLS FIRST], [customer_id#41, customer_first_name#42, customer_last_name#43, customer_email_address#44]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[customer_id#41 ASC NULLS FIRST,customer_first_name#42 ASC NULLS FIRST,customer_last_name#43 ASC NULLS FIRST,customer_email_address#44 ASC NULLS FIRST], output=[customer_id#41,customer_first_name#42,customer_last_name#43,customer_email_address#44]), [customer_id#41, customer_first_name#42, customer_last_name#43, customer_email_address#44], 100, 0, [customer_id#41 ASC NULLS FIRST, customer_first_name#42 ASC NULLS FIRST, customer_last_name#43 ASC NULLS FIRST, customer_email_address#44 ASC NULLS FIRST], [customer_id#41, customer_first_name#42, customer_last_name#43, customer_email_address#44]
 
 (72) CometColumnarToRow [codegen id : 1]
 Input [4]: [customer_id#41, customer_first_name#42, customer_last_name#43, customer_email_address#44]

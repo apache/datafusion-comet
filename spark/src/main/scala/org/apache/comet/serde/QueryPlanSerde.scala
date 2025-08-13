@@ -1840,13 +1840,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
       case globalLimitExec: GlobalLimitExec
           if CometConf.COMET_EXEC_GLOBAL_LIMIT_ENABLED.get(conf) =>
-        // TODO: We don't support negative limit for now.
-        if (childOp.nonEmpty && globalLimitExec.limit >= 0) {
+        if (childOp.nonEmpty) {
           val limitBuilder = OperatorOuterClass.Limit.newBuilder()
 
-          // TODO: Spark 3.3 might have negative limit (-1) for Offset usage.
-          // When we upgrade to Spark 3.3., we need to address it here.
-          limitBuilder.setLimit(globalLimitExec.limit)
+          limitBuilder.setLimit(globalLimitExec.limit).setOffset(globalLimitExec.offset)
 
           Some(builder.setLimit(limitBuilder).build())
         } else {

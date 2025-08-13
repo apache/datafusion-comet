@@ -406,7 +406,7 @@ Arguments: [customer_id#28, customer_first_name#29, customer_last_name#30], [cus
 
 (71) CometTakeOrderedAndProject
 Input [3]: [customer_id#28, customer_first_name#29, customer_last_name#30]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[customer_id#28 ASC NULLS FIRST,customer_id#28 ASC NULLS FIRST,customer_id#28 ASC NULLS FIRST], output=[customer_id#28,customer_first_name#29,customer_last_name#30]), [customer_id#28, customer_first_name#29, customer_last_name#30], 100, [customer_id#28 ASC NULLS FIRST, customer_id#28 ASC NULLS FIRST, customer_id#28 ASC NULLS FIRST], [customer_id#28, customer_first_name#29, customer_last_name#30]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[customer_id#28 ASC NULLS FIRST,customer_id#28 ASC NULLS FIRST,customer_id#28 ASC NULLS FIRST], output=[customer_id#28,customer_first_name#29,customer_last_name#30]), [customer_id#28, customer_first_name#29, customer_last_name#30], 100, 0, [customer_id#28 ASC NULLS FIRST, customer_id#28 ASC NULLS FIRST, customer_id#28 ASC NULLS FIRST], [customer_id#28, customer_first_name#29, customer_last_name#30]
 
 (72) CometColumnarToRow [codegen id : 1]
 Input [3]: [customer_id#28, customer_first_name#29, customer_last_name#30]

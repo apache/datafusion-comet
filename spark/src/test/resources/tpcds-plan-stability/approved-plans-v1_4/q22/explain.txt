@@ -138,7 +138,7 @@ Functions [1]: [avg(inv_quantity_on_hand#3)]
 
 (24) CometTakeOrderedAndProject
 Input [5]: [i_product_name#18, i_brand#19, i_class#20, i_category#21, qoh#25]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[qoh#25 ASC NULLS FIRST,i_product_name#18 ASC NULLS FIRST,i_brand#19 ASC NULLS FIRST,i_class#20 ASC NULLS FIRST,i_category#21 ASC NULLS FIRST], output=[i_product_name#18,i_brand#19,i_class#20,i_category#21,qoh#25]), [i_product_name#18, i_brand#19, i_class#20, i_category#21, qoh#25], 100, [qoh#25 ASC NULLS FIRST, i_product_name#18 ASC NULLS FIRST, i_brand#19 ASC NULLS FIRST, i_class#20 ASC NULLS FIRST, i_category#21 ASC NULLS FIRST], [i_product_name#18, i_brand#19, i_class#20, i_category#21, qoh#25]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[qoh#25 ASC NULLS FIRST,i_product_name#18 ASC NULLS FIRST,i_brand#19 ASC NULLS FIRST,i_class#20 ASC NULLS FIRST,i_category#21 ASC NULLS FIRST], output=[i_product_name#18,i_brand#19,i_class#20,i_category#21,qoh#25]), [i_product_name#18, i_brand#19, i_class#20, i_category#21, qoh#25], 100, 0, [qoh#25 ASC NULLS FIRST, i_product_name#18 ASC NULLS FIRST, i_brand#19 ASC NULLS FIRST, i_class#20 ASC NULLS FIRST, i_category#21 ASC NULLS FIRST], [i_product_name#18, i_brand#19, i_class#20, i_category#21, qoh#25]
 
 (25) CometColumnarToRow [codegen id : 1]
 Input [5]: [i_product_name#18, i_brand#19, i_class#20, i_category#21, qoh#25]
