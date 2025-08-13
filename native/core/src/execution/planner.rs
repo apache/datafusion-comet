@@ -3160,15 +3160,14 @@ mod tests {
             ))),
         };
 
-        let sort_exec = Operator {
+        Operator {
             plan_id: 0,
             children: vec![scan_exec],
             op_struct: Some(OpStruct::Sort(spark_operator::Sort {
                 sort_orders: vec![sort_order_expr],
                 fetch: None,
             })),
-        };
-        sort_exec
+        }
     }
 
     #[test]
