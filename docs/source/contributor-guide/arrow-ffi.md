@@ -1,4 +1,4 @@
-# Arrow FFI Usage and Memory Safety Analysis
+# Arrow FFI Usage
 
 ## Overview
 
@@ -31,6 +31,7 @@ def exportBatch(arrayAddrs: Array[Long], schemaAddrs: Array[Long], batch: Column
 ```
 
 **Memory Management**:
+
 - ArrowArray and ArrowSchema structures are allocated by native side
 - JVM uses `ArrowSchema.wrap()` and `ArrowArray.wrap()` to wrap existing pointers
 - No deallocation needed on JVM side as structures are owned by native code
@@ -42,12 +43,12 @@ def exportBatch(arrayAddrs: Array[Long], schemaAddrs: Array[Long], batch: Column
 Native code exports data back to JVM through the `prepare_output` function:
 
 ```rust
-fn prepare_output(env: &mut JNIEnv, array_addrs: jlongArray, schema_addrs: jlongArray, 
+fn prepare_output(env: &mut JNIEnv, array_addrs: jlongArray, schema_addrs: jlongArray,
                   output_batch: RecordBatch, validate: bool) -> CometResult<jlong> {
     // Get memory addresses from JVM
     let array_addrs = unsafe { env.get_array_elements(&array_address_array, ReleaseMode::NoCopyBack)? };
     let schema_addrs = unsafe { env.get_array_elements(&schema_address_array, ReleaseMode::NoCopyBack)? };
-    
+
     // Export each column
     array_ref.to_data().move_to_spark(array_addrs[i], schema_addrs[i])?;
 }
@@ -65,21 +66,21 @@ impl SparkArrowConvert for ArrayData {
         let (array_ptr, schema_ptr) = addresses;
         let array_ptr = array_ptr as *mut FFI_ArrowArray;
         let schema_ptr = schema_ptr as *mut FFI_ArrowSchema;
-        
+
         let mut ffi_array = unsafe {
             let array_data = std::ptr::replace(array_ptr, FFI_ArrowArray::empty());
             let schema_data = std::ptr::replace(schema_ptr, FFI_ArrowSchema::empty());
             from_ffi(array_data, &schema_data)?
         };
-        
+
         ffi_array.align_buffers();
         Ok(ffi_array)
     }
-    
+
     fn move_to_spark(&self, array: i64, schema: i64) -> Result<(), ExecutionError> {
         let array_ptr = array as *mut FFI_ArrowArray;
         let schema_ptr = schema as *mut FFI_ArrowSchema;
-        
+
         unsafe {
             std::ptr::write(array_ptr, FFI_ArrowArray::new(self));
             std::ptr::write(schema_ptr, FFI_ArrowSchema::try_from(self.data_type())?);
@@ -94,10 +95,12 @@ impl SparkArrowConvert for ArrayData {
 ### 1. Memory Allocation Strategy
 
 **ArrowArray and ArrowSchema Structures**:
-- **JVM Side**: Uses `ArrowArray.allocateNew(allocator)` and `ArrowSchema.allocateNew(allocator)` in `NativeUtil.allocateArrowStructs()` 
+
+- **JVM Side**: Uses `ArrowArray.allocateNew(allocator)` and `ArrowSchema.allocateNew(allocator)` in `NativeUtil.allocateArrowStructs()`
 - **Native Side**: Creates empty structures with `FFI_ArrowArray::empty()` and `FFI_ArrowSchema::empty()`
 
 **Buffer Memory**:
+
 - Arrow buffers are managed by Arrow's memory pool system
 - Reference counting ensures proper cleanup
 - Buffers can be shared between arrays through Arc<> wrappers
@@ -105,6 +108,7 @@ impl SparkArrowConvert for ArrayData {
 ### 2. Ownership Transfer Patterns
 
 **JVM to Native Transfer**:
+
 1. JVM allocates ArrowArray/ArrowSchema structures
 2. JVM exports data using Arrow C Data Interface
 3. Native code imports using `from_ffi()` which transfers ownership
@@ -112,6 +116,7 @@ impl SparkArrowConvert for ArrayData {
 5. JVM structures remain allocated until explicitly freed
 
 **Native to JVM Transfer**:
+
 1. Native code writes data to JVM-allocated structures using `move_to_spark()`
 2. JVM wraps the structures and creates CometVectors
 3. JVM takes ownership of the data buffers
@@ -120,12 +125,14 @@ impl SparkArrowConvert for ArrayData {
 ### 3. Memory Cleanup
 
 **JVM Cleanup**:
+
 - `NativeUtil.close()` closes dictionary provider which releases dictionary arrays
 - Individual batches are closed via `ColumnarBatch.close()` in `CometExecIterator`
 - Arrow allocator tracks memory usage but reports false positives due to FFI transfers
 
 **Native Cleanup**:
-- Rust's RAII automatically drops structures when they go out of scope  
+
+- Rust's RAII automatically drops structures when they go out of scope
 - `std::ptr::replace()` with empty structures ensures proper cleanup
 - Explicit `Rc::from_raw()` calls in scan operations to avoid memory leaks
 
@@ -144,9 +151,10 @@ if (prevBatch != null) {
 ```
 
 **Risk**: The comment explicitly mentions "shared buffer memory across batches" but there's a window where:
+
 1. Native code might still have references to a batch
 2. JVM closes the previous batch, potentially freeing buffers
 3. Native code accesses freed memory
 
-**Mitigation**: In `planner.rs` we insert `CopyExec` operators to perform copies of arrays for operators 
+**Mitigation**: In `planner.rs` we insert `CopyExec` operators to perform copies of arrays for operators
 that may cache batches, but this is an area that we may improve in the future.
