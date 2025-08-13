@@ -11,11 +11,11 @@
                :     :  +- CometProject (8)
                :     :     +- CometBroadcastHashJoin (7)
                :     :        :- CometFilter (2)
-               :     :        :  +- CometScan parquet spark_catalog.default.catalog_sales (1)
+               :     :        :  +- CometScan [native_comet] parquet spark_catalog.default.catalog_sales (1)
                :     :        +- CometBroadcastExchange (6)
                :     :           +- CometProject (5)
                :     :              +- CometFilter (4)
-               :     :                 +- CometScan parquet spark_catalog.default.item (3)
+               :     :                 +- CometScan [native_comet] parquet spark_catalog.default.item (3)
                :     +- BroadcastExchange (24)
                :        +- * Filter (23)
                :           +- * HashAggregate (22)
@@ -26,15 +26,15 @@
                :                          +- CometProject (17)
                :                             +- CometBroadcastHashJoin (16)
                :                                :- CometFilter (11)
-               :                                :  +- CometScan parquet spark_catalog.default.catalog_sales (10)
+               :                                :  +- CometScan [native_comet] parquet spark_catalog.default.catalog_sales (10)
                :                                +- CometBroadcastExchange (15)
                :                                   +- CometProject (14)
                :                                      +- CometFilter (13)
-               :                                         +- CometScan parquet spark_catalog.default.date_dim (12)
+               :                                         +- CometScan [native_comet] parquet spark_catalog.default.date_dim (12)
                +- ReusedExchange (27)
 
 
-(1) CometScan parquet spark_catalog.default.catalog_sales
+(1) CometScan [native_comet] parquet spark_catalog.default.catalog_sales
 Output [3]: [cs_item_sk#1, cs_ext_discount_amt#2, cs_sold_date_sk#3]
 Batched: true
 Location: InMemoryFileIndex []
@@ -46,7 +46,7 @@ ReadSchema: struct<cs_item_sk:int,cs_ext_discount_amt:decimal(7,2)>
 Input [3]: [cs_item_sk#1, cs_ext_discount_amt#2, cs_sold_date_sk#3]
 Condition : (isnotnull(cs_item_sk#1) AND isnotnull(cs_ext_discount_amt#2))
 
-(3) CometScan parquet spark_catalog.default.item
+(3) CometScan [native_comet] parquet spark_catalog.default.item
 Output [2]: [i_item_sk#5, i_manufact_id#6]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -77,7 +77,7 @@ Arguments: [cs_ext_discount_amt#2, cs_sold_date_sk#3, i_item_sk#5], [cs_ext_disc
 (9) CometColumnarToRow [codegen id : 4]
 Input [3]: [cs_ext_discount_amt#2, cs_sold_date_sk#3, i_item_sk#5]
 
-(10) CometScan parquet spark_catalog.default.catalog_sales
+(10) CometScan [native_comet] parquet spark_catalog.default.catalog_sales
 Output [3]: [cs_item_sk#7, cs_ext_discount_amt#8, cs_sold_date_sk#9]
 Batched: true
 Location: InMemoryFileIndex []
@@ -89,7 +89,7 @@ ReadSchema: struct<cs_item_sk:int,cs_ext_discount_amt:decimal(7,2)>
 Input [3]: [cs_item_sk#7, cs_ext_discount_amt#8, cs_sold_date_sk#9]
 Condition : isnotnull(cs_item_sk#7)
 
-(12) CometScan parquet spark_catalog.default.date_dim
+(12) CometScan [native_comet] parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#11, d_date#12]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -200,10 +200,10 @@ BroadcastExchange (38)
 +- * CometColumnarToRow (37)
    +- CometProject (36)
       +- CometFilter (35)
-         +- CometScan parquet spark_catalog.default.date_dim (34)
+         +- CometScan [native_comet] parquet spark_catalog.default.date_dim (34)
 
 
-(34) CometScan parquet spark_catalog.default.date_dim
+(34) CometScan [native_comet] parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#19, d_date#24]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
