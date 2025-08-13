@@ -49,7 +49,7 @@ pub struct CopyExec {
     mode: CopyMode,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum CopyMode {
     /// Perform a deep copy and also unpack dictionaries
     UnpackOrDeepCopy,
