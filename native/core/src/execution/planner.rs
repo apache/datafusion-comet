@@ -62,8 +62,9 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{
-    create_comet_physical_fun, create_modulo_expr, create_negate_expr, BloomFilterAgg,
-    BloomFilterMightContain, EvalMode, SparkHour, SparkMinute, SparkSecond,
+    create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, create_modulo_expr,
+    create_negate_expr, BloomFilterAgg, BloomFilterMightContain, EvalMode, SparkHour, SparkMinute,
+    SparkSecond,
 };
 
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -1007,7 +1008,7 @@ impl PhysicalPlanner {
             }
             _ => {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
-                if eval_mode == EvalMode::Try && data_type.is_integer() {
+                if [EvalMode::Try, EvalMode::Ansi].contains(&eval_mode) && data_type.is_integer() {
                     let op_str = match op {
                         DataFusionOperator::Plus => "checked_add",
                         DataFusionOperator::Minus => "checked_sub",
@@ -1017,11 +1018,12 @@ impl PhysicalPlanner {
                             todo!("Operator yet to be implemented!");
                         }
                     };
-                    let fun_expr = create_comet_physical_fun(
+                    let fun_expr = create_comet_physical_fun_with_eval_mode(
                         op_str,
                         data_type.clone(),
                         &self.session_ctx.state(),
                         None,
+                        eval_mode,
                     )?;
                     Ok(Arc::new(ScalarFunctionExpr::new(
                         op_str,
