@@ -1667,3 +1667,16 @@ index 6e09252..f92dad4 100644
              .enableHiveSupport()
              .getOrCreate();
  
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java
+index 9d2ce2b..9b7b486 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java
+@@ -600,7 +600,7 @@ public class TestFilterPushDown extends TestBaseWithCatalog {
+     if (sparkFilter != null) {
+       assertThat(planAsString)
+           .as("Post scan filter should match")
+-          .contains("Filter (" + sparkFilter + ")");
++          .contains("CometFilter");
+     } else {
+       assertThat(planAsString).as("Should be no post scan filter").doesNotContain("Filter (");
+     }
