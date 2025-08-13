@@ -36,6 +36,8 @@ import org.apache.spark.sql.functions.{col, sum}
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.functions.max
 
+import org.apache.comet.CometConf
+
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
 import software.amazon.awssdk.services.s3.S3Client
@@ -109,16 +111,22 @@ class ParquetReadFromS3Suite extends CometTestBase with AdaptiveSparkPlanHelper 
     val testFilePath = s"s3a://$testBucketName/data/test-file.parquet"
     writeTestParquetFile(testFilePath)
 
-    val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
-    val scans = collect(df.queryExecution.executedPlan) {
-      case p: CometScanExec =>
-        p
-      case p: CometNativeScanExec =>
-        p
-    }
-    assert(scans.size == 1)
-
-    assert(df.first().getLong(0) == 499500)
+    Seq(
+      CometConf.SCAN_NATIVE_COMET,
+      CometConf.SCAN_NATIVE_DATAFUSION,
+      CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach(scanMode => {
+      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode) {
+        val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
+        val scans = collect(df.queryExecution.executedPlan) {
+          case p: CometScanExec =>
+            p
+          case p: CometNativeScanExec =>
+            p
+        }
+        assert(scans.size == 1)
+        assert(df.first().getLong(0) == 499500)
+      }
+    })
   }
 
   private def writePartitionedTestParquetFile(filePath: String): Unit = {
@@ -130,17 +138,25 @@ class ParquetReadFromS3Suite extends CometTestBase with AdaptiveSparkPlanHelper 
     val testFilePath = s"s3a://$testBucketName/data/test-partitioned"
     writePartitionedTestParquetFile(testFilePath)
 
-    val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")), max(col("val")))
-    val scans = collect(df.queryExecution.executedPlan) {
-      case p: CometScanExec =>
-        p
-      case p: CometNativeScanExec =>
-        p
-    }
-    assert(scans.size == 1)
+    Seq(
+      CometConf.SCAN_NATIVE_COMET,
+      CometConf.SCAN_NATIVE_DATAFUSION,
+      CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach(scanMode => {
+      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode) {
+        val df =
+          spark.read.format("parquet").load(testFilePath).agg(sum(col("id")), max(col("val")))
+        val scans = collect(df.queryExecution.executedPlan) {
+          case p: CometScanExec =>
+            p
+          case p: CometNativeScanExec =>
+            p
+        }
+        assert(scans.size == 1)
 
-    val firstRow = df.first()
-    assert(firstRow.getLong(0) == 499500)
-    assert(firstRow.getString(1) == "val#9")
+        val firstRow = df.first()
+        assert(firstRow.getLong(0) == 499500)
+        assert(firstRow.getString(1) == "val#9")
+      }
+    })
   }
 }
