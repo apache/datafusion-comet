@@ -172,7 +172,7 @@ Arguments: [c_last_name#25, c_first_name#24, substr(s_city, 1, 30)#28, ss_ticket
 
 (30) CometTakeOrderedAndProject
 Input [7]: [c_last_name#25, c_first_name#24, substr(s_city, 1, 30)#28, ss_ticket_number#5, amt#26, profit#27, s_city#15]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[c_last_name#25 ASC NULLS FIRST,c_first_name#24 ASC NULLS FIRST,substr(s_city#15, 1, 30) ASC NULLS FIRST,profit#27 ASC NULLS FIRST], output=[c_last_name#25,c_first_name#24,substr(s_city, 1, 30)#28,ss_ticket_number#5,amt#26,profit#27]), [c_last_name#25, c_first_name#24, substr(s_city, 1, 30)#28, ss_ticket_number#5, amt#26, profit#27], 100, [c_last_name#25 ASC NULLS FIRST, c_first_name#24 ASC NULLS FIRST, substr(s_city#15, 1, 30) ASC NULLS FIRST, profit#27 ASC NULLS FIRST], [c_last_name#25, c_first_name#24, substr(s_city, 1, 30)#28, ss_ticket_number#5, amt#26, profit#27]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[c_last_name#25 ASC NULLS FIRST,c_first_name#24 ASC NULLS FIRST,substr(s_city#15, 1, 30) ASC NULLS FIRST,profit#27 ASC NULLS FIRST], output=[c_last_name#25,c_first_name#24,substr(s_city, 1, 30)#28,ss_ticket_number#5,amt#26,profit#27]), [c_last_name#25, c_first_name#24, substr(s_city, 1, 30)#28, ss_ticket_number#5, amt#26, profit#27], 100, 0, [c_last_name#25 ASC NULLS FIRST, c_first_name#24 ASC NULLS FIRST, substr(s_city#15, 1, 30) ASC NULLS FIRST, profit#27 ASC NULLS FIRST], [c_last_name#25, c_first_name#24, substr(s_city, 1, 30)#28, ss_ticket_number#5, amt#26, profit#27]
 
 (31) CometColumnarToRow [codegen id : 1]
 Input [6]: [c_last_name#25, c_first_name#24, substr(s_city, 1, 30)#28, ss_ticket_number#5, amt#26, profit#27]

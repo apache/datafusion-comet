@@ -201,10 +201,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case op: LocalLimitExec =>
         newPlanWithProto(op, CometLocalLimitExec(_, op, op.limit, op.child, SerializedPlan(None)))
 
-      case op: GlobalLimitExec if op.offset == 0 =>
+      case op: GlobalLimitExec =>
         newPlanWithProto(
           op,
-          CometGlobalLimitExec(_, op, op.limit, op.child, SerializedPlan(None)))
+          CometGlobalLimitExec(_, op, op.limit, op.offset, op.child, SerializedPlan(None)))
 
       case op: CollectLimitExec =>
         val fallbackReasons = new ListBuffer[String]()
@@ -213,9 +213,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         }
         if (!isCometShuffleEnabled(conf)) {
           fallbackReasons += "Comet shuffle is not enabled"
-        }
-        if (op.offset != 0) {
-          fallbackReasons += "CollectLimit with non-zero offset is not supported"
         }
         if (fallbackReasons.nonEmpty) {
           withInfos(op, fallbackReasons.toSet)
@@ -382,6 +379,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
                 s,
                 s.output,
                 s.limit,
+                s.offset,
                 s.sortOrder,
                 s.projectList,
                 s.child)

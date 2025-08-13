@@ -246,7 +246,7 @@ Arguments: [rnk#14, best_performing#28, worst_performing#29], [rnk#14, i_product
 
 (47) CometTakeOrderedAndProject
 Input [3]: [rnk#14, best_performing#28, worst_performing#29]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[rnk#14 ASC NULLS FIRST], output=[rnk#14,best_performing#28,worst_performing#29]), [rnk#14, best_performing#28, worst_performing#29], 100, [rnk#14 ASC NULLS FIRST], [rnk#14, best_performing#28, worst_performing#29]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[rnk#14 ASC NULLS FIRST], output=[rnk#14,best_performing#28,worst_performing#29]), [rnk#14, best_performing#28, worst_performing#29], 100, 0, [rnk#14 ASC NULLS FIRST], [rnk#14, best_performing#28, worst_performing#29]
 
 (48) CometColumnarToRow [codegen id : 9]
 Input [3]: [rnk#14, best_performing#28, worst_performing#29]

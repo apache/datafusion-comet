@@ -261,7 +261,7 @@ Child 4 Input [5]: [i_product_name#61, i_brand#62, i_class#63, i_category#64, qo
 
 (46) CometTakeOrderedAndProject
 Input [5]: [i_product_name#20, i_brand#21, i_class#22, i_category#23, qoh#51]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[qoh#51 ASC NULLS FIRST,i_product_name#20 ASC NULLS FIRST,i_brand#21 ASC NULLS FIRST,i_class#22 ASC NULLS FIRST,i_category#23 ASC NULLS FIRST], output=[i_product_name#20,i_brand#21,i_class#22,i_category#23,qoh#51]), [i_product_name#20, i_brand#21, i_class#22, i_category#23, qoh#51], 100, [qoh#51 ASC NULLS FIRST, i_product_name#20 ASC NULLS FIRST, i_brand#21 ASC NULLS FIRST, i_class#22 ASC NULLS FIRST, i_category#23 ASC NULLS FIRST], [i_product_name#20, i_brand#21, i_class#22, i_category#23, qoh#51]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[qoh#51 ASC NULLS FIRST,i_product_name#20 ASC NULLS FIRST,i_brand#21 ASC NULLS FIRST,i_class#22 ASC NULLS FIRST,i_category#23 ASC NULLS FIRST], output=[i_product_name#20,i_brand#21,i_class#22,i_category#23,qoh#51]), [i_product_name#20, i_brand#21, i_class#22, i_category#23, qoh#51], 100, 0, [qoh#51 ASC NULLS FIRST, i_product_name#20 ASC NULLS FIRST, i_brand#21 ASC NULLS FIRST, i_class#22 ASC NULLS FIRST, i_category#23 ASC NULLS FIRST], [i_product_name#20, i_brand#21, i_class#22, i_category#23, qoh#51]
 
 (47) CometColumnarToRow [codegen id : 1]
 Input [5]: [i_product_name#20, i_brand#21, i_class#22, i_category#23, qoh#51]

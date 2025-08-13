@@ -567,7 +567,7 @@ Functions [2]: [sum(sales#49), sum(number_sales#50)]
 
 (101) CometTakeOrderedAndProject
 Input [6]: [channel#89, i_brand_id#90, i_class_id#91, i_category_id#92, sum(sales)#97, sum(number_sales)#98]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[channel#89 ASC NULLS FIRST,i_brand_id#90 ASC NULLS FIRST,i_class_id#91 ASC NULLS FIRST,i_category_id#92 ASC NULLS FIRST], output=[channel#89,i_brand_id#90,i_class_id#91,i_category_id#92,sum(sales)#97,sum(number_sales)#98]), [channel#89, i_brand_id#90, i_class_id#91, i_category_id#92, sum(sales)#97, sum(number_sales)#98], 100, [channel#89 ASC NULLS FIRST, i_brand_id#90 ASC NULLS FIRST, i_class_id#91 ASC NULLS FIRST, i_category_id#92 ASC NULLS FIRST], [channel#89, i_brand_id#90, i_class_id#91, i_category_id#92, sum(sales)#97, sum(number_sales)#98]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[channel#89 ASC NULLS FIRST,i_brand_id#90 ASC NULLS FIRST,i_class_id#91 ASC NULLS FIRST,i_category_id#92 ASC NULLS FIRST], output=[channel#89,i_brand_id#90,i_class_id#91,i_category_id#92,sum(sales)#97,sum(number_sales)#98]), [channel#89, i_brand_id#90, i_class_id#91, i_category_id#92, sum(sales)#97, sum(number_sales)#98], 100, 0, [channel#89 ASC NULLS FIRST, i_brand_id#90 ASC NULLS FIRST, i_class_id#91 ASC NULLS FIRST, i_category_id#92 ASC NULLS FIRST], [channel#89, i_brand_id#90, i_class_id#91, i_category_id#92, sum(sales)#97, sum(number_sales)#98]
 
 (102) CometColumnarToRow [codegen id : 1]
 Input [6]: [channel#89, i_brand_id#90, i_class_id#91, i_category_id#92, sum(sales)#97, sum(number_sales)#98]

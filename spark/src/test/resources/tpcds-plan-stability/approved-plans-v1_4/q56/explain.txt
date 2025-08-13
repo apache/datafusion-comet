@@ -341,7 +341,7 @@ Functions [1]: [sum(total_sales#39)]
 
 (61) CometTakeOrderedAndProject
 Input [2]: [i_item_id#38, total_sales#44]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[total_sales#44 ASC NULLS FIRST], output=[i_item_id#38,total_sales#44]), [i_item_id#38, total_sales#44], 100, [total_sales#44 ASC NULLS FIRST], [i_item_id#38, total_sales#44]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[total_sales#44 ASC NULLS FIRST], output=[i_item_id#38,total_sales#44]), [i_item_id#38, total_sales#44], 100, 0, [total_sales#44 ASC NULLS FIRST], [i_item_id#38, total_sales#44]
 
 (62) CometColumnarToRow [codegen id : 1]
 Input [2]: [i_item_id#38, total_sales#44]

@@ -94,6 +94,7 @@ use arrow::buffer::BooleanBuffer;
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
+use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
 use datafusion_comet_proto::{
     spark_expression::{
@@ -238,62 +239,61 @@ impl PhysicalPlanner {
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         match spark_expr.expr_struct.as_ref().unwrap() {
             ExprStruct::Add(expr) => {
-                // TODO respect eval mode
-                // https://github.com/apache/datafusion-comet/issues/2021
+                // TODO respect ANSI eval mode
                 // https://github.com/apache/datafusion-comet/issues/536
-                let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
                     expr.right.as_ref().unwrap(),
                     expr.return_type.as_ref(),
                     DataFusionOperator::Plus,
                     input_schema,
+                    eval_mode,
                 )
             }
             ExprStruct::Subtract(expr) => {
-                // TODO respect eval mode
-                // https://github.com/apache/datafusion-comet/issues/2021
+                // TODO respect ANSI eval mode
                 // https://github.com/apache/datafusion-comet/issues/535
-                let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
                     expr.right.as_ref().unwrap(),
                     expr.return_type.as_ref(),
                     DataFusionOperator::Minus,
                     input_schema,
+                    eval_mode,
                 )
             }
             ExprStruct::Multiply(expr) => {
-                // TODO respect eval mode
-                // https://github.com/apache/datafusion-comet/issues/2021
+                // TODO respect ANSI eval mode
                 // https://github.com/apache/datafusion-comet/issues/534
-                let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
                     expr.right.as_ref().unwrap(),
                     expr.return_type.as_ref(),
                     DataFusionOperator::Multiply,
                     input_schema,
+                    eval_mode,
                 )
             }
             ExprStruct::Divide(expr) => {
-                // TODO respect eval mode
-                // https://github.com/apache/datafusion-comet/issues/2021
+                // TODO respect ANSI eval mode
                 // https://github.com/apache/datafusion-comet/issues/533
-                let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
                     expr.right.as_ref().unwrap(),
                     expr.return_type.as_ref(),
                     DataFusionOperator::Divide,
                     input_schema,
+                    eval_mode,
                 )
             }
             ExprStruct::IntegralDivide(expr) => {
                 // TODO respect eval mode
-                // https://github.com/apache/datafusion-comet/issues/2021
                 // https://github.com/apache/datafusion-comet/issues/533
-                let _eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr_with_options(
                     expr.left.as_ref().unwrap(),
                     expr.right.as_ref().unwrap(),
@@ -303,6 +303,7 @@ impl PhysicalPlanner {
                     BinaryExprOptions {
                         is_integral_div: true,
                     },
+                    eval_mode,
                 )
             }
             ExprStruct::Remainder(expr) => {
@@ -1004,6 +1005,7 @@ impl PhysicalPlanner {
         return_type: Option<&spark_expression::DataType>,
         op: DataFusionOperator,
         input_schema: SchemaRef,
+        eval_mode: EvalMode,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         self.create_binary_expr_with_options(
             left,
@@ -1012,9 +1014,11 @@ impl PhysicalPlanner {
             op,
             input_schema,
             BinaryExprOptions::default(),
+            eval_mode,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_binary_expr_with_options(
         &self,
         left: &Expr,
@@ -1023,6 +1027,7 @@ impl PhysicalPlanner {
         op: DataFusionOperator,
         input_schema: SchemaRef,
         options: BinaryExprOptions,
+        eval_mode: EvalMode,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         let left = self.create_expr(left, Arc::clone(&input_schema))?;
         let right = self.create_expr(right, Arc::clone(&input_schema))?;
@@ -1087,7 +1092,34 @@ impl PhysicalPlanner {
                     Arc::new(Field::new(func_name, data_type, true)),
                 )))
             }
-            _ => Ok(Arc::new(BinaryExpr::new(left, op, right))),
+            _ => {
+                let data_type = return_type.map(to_arrow_datatype).unwrap();
+                if eval_mode == EvalMode::Try && data_type.is_integer() {
+                    let op_str = match op {
+                        DataFusionOperator::Plus => "checked_add",
+                        DataFusionOperator::Minus => "checked_sub",
+                        DataFusionOperator::Multiply => "checked_mul",
+                        DataFusionOperator::Divide => "checked_div",
+                        _ => {
+                            todo!("Operator yet to be implemented!");
+                        }
+                    };
+                    let fun_expr = create_comet_physical_fun(
+                        op_str,
+                        data_type.clone(),
+                        &self.session_ctx.state(),
+                        None,
+                    )?;
+                    Ok(Arc::new(ScalarFunctionExpr::new(
+                        op_str,
+                        fun_expr,
+                        vec![left, right],
+                        Arc::new(Field::new(op_str, data_type, true)),
+                    )))
+                } else {
+                    Ok(Arc::new(BinaryExpr::new(left, op, right)))
+                }
+            }
         }
     }
 
@@ -1252,12 +1284,30 @@ impl PhysicalPlanner {
             OpStruct::Limit(limit) => {
                 assert_eq!(children.len(), 1);
                 let num = limit.limit;
+                let offset: i32 = limit.offset;
+                if num != -1 && offset > num {
+                    return Err(GeneralError(format!(
+                        "Invalid limit/offset combination: [{num}. {offset}]"
+                    )));
+                }
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
-
-                let limit = Arc::new(LocalLimitExec::new(
-                    Arc::clone(&child.native_plan),
-                    num as usize,
-                ));
+                let limit: Arc<dyn ExecutionPlan> = if offset == 0 {
+                    Arc::new(LocalLimitExec::new(
+                        Arc::clone(&child.native_plan),
+                        num as usize,
+                    ))
+                } else {
+                    let fetch = if num == -1 {
+                        None
+                    } else {
+                        Some((num - offset) as usize)
+                    };
+                    Arc::new(GlobalLimitExec::new(
+                        Arc::clone(&child.native_plan),
+                        offset as usize,
+                        fetch,
+                    ))
+                };
                 Ok((
                     scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, limit, vec![child])),
@@ -1274,7 +1324,6 @@ impl PhysicalPlanner {
                     .collect();
 
                 let fetch = sort.fetch.map(|num| num as usize);
-
                 // SortExec caches batches so we need to make a copy of incoming batches. Also,
                 // SortExec fails in some cases if we do not unpack dictionary-encoded arrays, and
                 // it would be more efficient if we could avoid that.
@@ -1287,16 +1336,20 @@ impl PhysicalPlanner {
                     CopyMode::UnpackOrDeepCopy,
                 ));
 
-                let sort = Arc::new(
-                    SortExec::new(LexOrdering::new(exprs?).unwrap(), child_copied)
+                let mut sort_exec: Arc<dyn ExecutionPlan> = Arc::new(
+                    SortExec::new(LexOrdering::new(exprs?).unwrap(), Arc::clone(&child_copied))
                         .with_fetch(fetch),
                 );
+
+                if let Some(skip) = sort.skip.filter(|&n| n > 0).map(|n| n as usize) {
+                    sort_exec = Arc::new(GlobalLimitExec::new(sort_exec, skip, None));
+                }
 
                 Ok((
                     scans,
                     Arc::new(SparkPlan::new(
                         spark_plan.plan_id,
-                        sort,
+                        sort_exec,
                         vec![Arc::clone(&child)],
                     )),
                 ))
