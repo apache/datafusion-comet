@@ -29,12 +29,3 @@ pub use datafusion_comet_spark_expr::timezone;
 mod memory_pools;
 pub(crate) mod tracing;
 pub(crate) mod utils;
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        let result = 2 + 2;
-        assert_eq!(result, 4);
-    }
-}

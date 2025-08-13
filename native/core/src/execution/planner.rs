@@ -18,7 +18,6 @@
 //! Converts Spark physical plan to DataFusion physical plan
 
 use crate::execution::operators::CopyMode;
-use crate::execution::operators::FilterExec as CometFilterExec;
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -1146,27 +1145,17 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                let use_datafusion_filter = !backed_by_mutable_buffers(&child.native_plan);
-
-                let filter: Arc<dyn ExecutionPlan> =
-                    match (filter.wrap_child_in_copy_exec, use_datafusion_filter) {
-                        (true, true) => Arc::new(DataFusionFilterExec::try_new(
-                            predicate,
-                            Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
-                        )?),
-                        (true, false) => Arc::new(CometFilterExec::try_new(
-                            predicate,
-                            Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
-                        )?),
-                        (false, true) => Arc::new(DataFusionFilterExec::try_new(
-                            predicate,
-                            Arc::clone(&child.native_plan),
-                        )?),
-                        (false, false) => Arc::new(CometFilterExec::try_new(
-                            predicate,
-                            Arc::clone(&child.native_plan),
-                        )?),
-                    };
+                let filter: Arc<dyn ExecutionPlan> = if filter.wrap_child_in_copy_exec {
+                    Arc::new(DataFusionFilterExec::try_new(
+                        predicate,
+                        Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
+                    )?)
+                } else {
+                    Arc::new(DataFusionFilterExec::try_new(
+                        predicate,
+                        Arc::clone(&child.native_plan),
+                    )?)
+                };
 
                 Ok((
                     scans,
@@ -1511,22 +1500,11 @@ impl PhysicalPlanner {
                     .map(|(idx, dt)| Field::new(format!("col_{idx}"), dt.clone(), true))
                     .collect();
                 let schema = Arc::new(Schema::new(fields));
-
-                // `Expand` operator keeps the input batch and expands it to multiple output
-                // batches. However, `ScanExec` will reuse input arrays for the next
-                // input batch. Therefore, we need to copy the input batch to avoid
-                // the data corruption. Note that we only need to copy the input batch
-                // if the child operator is `ScanExec`, because other operators after `ScanExec`
-                // will create new arrays for the output batch.
-                let input = if backed_by_mutable_buffers(&child.native_plan) {
-                    Arc::new(CopyExec::new(
-                        Arc::clone(&child.native_plan),
-                        CopyMode::UnpackOrDeepCopy,
-                    ))
-                } else {
-                    Arc::clone(&child.native_plan)
-                };
-                let expand = Arc::new(ExpandExec::new(projections, input, schema));
+                let expand = Arc::new(ExpandExec::new(
+                    projections,
+                    Arc::clone(&child.native_plan),
+                    schema,
+                ));
                 Ok((
                     scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, expand, vec![child])),
@@ -1852,14 +1830,9 @@ impl PhysicalPlanner {
         ))
     }
 
-    /// Wrap an ExecutionPlan in a CopyExec, which will unpack any dictionary-encoded arrays
-    /// and make a deep copy of other arrays if the plan re-uses batches.
+    /// Wrap an ExecutionPlan in a CopyExec, which will unpack any dictionary-encoded arrays.
     fn wrap_in_copy_exec(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-        if backed_by_mutable_buffers(&plan) {
-            Arc::new(CopyExec::new(plan, CopyMode::UnpackOrDeepCopy))
-        } else {
-            Arc::new(CopyExec::new(plan, CopyMode::UnpackOrClone))
-        }
+        Arc::new(CopyExec::new(plan, CopyMode::UnpackOrClone))
     }
 
     /// Create a DataFusion physical aggregate expression from Spark physical aggregate expression
@@ -2560,35 +2533,6 @@ impl From<ExpressionError> for DataFusionError {
     }
 }
 
-/// Returns true if given operator can produce arrays that are backed
-/// by mutable buffers from a native_comet scan that has not been wrapped
-/// in CopyMode::UnpackOrDeepCopy
-fn backed_by_mutable_buffers(op: &Arc<dyn ExecutionPlan>) -> bool {
-    if op.as_any().is::<ScanExec>() {
-        // check for native_comet scan (either direct or via Iceberg)
-        op.as_any()
-            .downcast_ref::<ScanExec>()
-            .unwrap()
-            .has_buffer_reuse
-    } else if op.as_any().is::<CopyExec>() {
-        let copy_exec = op.as_any().downcast_ref::<CopyExec>().unwrap();
-        match copy_exec.mode() {
-            CopyMode::UnpackOrDeepCopy => false,
-            CopyMode::UnpackOrClone => backed_by_mutable_buffers(copy_exec.children()[0]),
-        }
-    } else if op.as_any().is::<CometFilterExec>() {
-        // CometFilterExec guarantees that copies are made
-        false
-    } else {
-        for child in op.children() {
-            if backed_by_mutable_buffers(child) {
-                return true;
-            }
-        }
-        false
-    }
-}
-
 /// Collects the indices of the columns in the input schema that are used in the expression
 /// and returns them as a pair of vectors, one for the left side and one for the right side.
 fn expr_to_columns(
@@ -3030,7 +2974,7 @@ mod tests {
         let (_scans, datafusion_plan) = planner.create_plan(&sort_exec, &mut vec![], 1).unwrap();
         let plan_str = explain_plan(datafusion_plan);
         let expected_str = r"SortExec: expr=[col_0@0 ASC], preserve_partitioning=[false]
-  CopyExec [UnpackOrDeepCopy]
+  CopyExec [UnpackOrClone]
     ScanExec: source=[native_comet], schema=[col_0: Int32]
 ";
         assert_eq!(plan_str, expected_str);
@@ -3060,7 +3004,7 @@ mod tests {
         let plan_str = explain_plan(datafusion_plan);
         let expected_str = r"SortExec: expr=[col_0@0 ASC], preserve_partitioning=[false]
   CopyExec [UnpackOrClone]
-    CometFilterExec: col_0@0 = 1
+    FilterExec: col_0@0 = 1
       ScanExec: source=[native_comet], schema=[col_0: Int32]
 ";
         assert_eq!(plan_str, expected_str);
@@ -3178,7 +3122,7 @@ mod tests {
 
         let (_scans, filter_exec) = planner.create_plan(&op, &mut vec![], 1).unwrap();
 
-        assert_eq!("CometFilterExec", filter_exec.native_plan.name());
+        assert_eq!("FilterExec", filter_exec.native_plan.name());
         assert_eq!(1, filter_exec.children.len());
         assert_eq!(0, filter_exec.additional_native_plans.len());
     }

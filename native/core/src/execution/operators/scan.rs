@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::execution::operators::copy_array;
 use crate::{
     errors::CometError,
     execution::{
@@ -111,6 +112,7 @@ impl ScanExec {
                 data_types.len(),
                 &jvm_fetch_time,
                 &arrow_ffi_time,
+                has_buffer_reuse,
             )?;
             timer.stop();
             batch
@@ -190,6 +192,7 @@ impl ScanExec {
                 self.data_types.len(),
                 &self.jvm_fetch_time,
                 &self.arrow_ffi_time,
+                self.has_buffer_reuse,
             )?;
             *current_batch = Some(next_batch);
         }
@@ -206,6 +209,7 @@ impl ScanExec {
         num_cols: usize,
         jvm_fetch_time: &Time,
         arrow_ffi_time: &Time,
+        copy_arrays: bool,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             // This is a unit test. We don't need to call JNI.
@@ -280,8 +284,17 @@ impl ScanExec {
             let array_data = ArrayData::from_spark((array_ptr, schema_ptr))?;
 
             // TODO: validate array input data
+            // array_data.validate_full()?;
 
-            inputs.push(make_array(array_data));
+            let array = make_array(array_data);
+
+            // for native_comet scans, copy the array to avoid memory
+            // corruption issues due to mutable buffer reuse
+            if copy_arrays {
+                inputs.push(copy_array(&array));
+            } else {
+                inputs.push(array);
+            }
 
             // Drop the Arcs to avoid memory leak
             unsafe {
