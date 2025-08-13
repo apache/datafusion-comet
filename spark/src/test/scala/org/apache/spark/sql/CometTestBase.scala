@@ -89,7 +89,6 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key, "true")
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "2g")
     conf.set(CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key, "true")
-    conf.set(CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key, "true")
     conf
   }
 
