@@ -2,11 +2,13 @@
 
 ## Overview
 
-This document analyzes how Apache DataFusion Comet uses Arrow FFI (Foreign Function Interface) to pass Arrow arrays between the JVM (Java/Scala) and native (Rust) code. The analysis focuses on memory lifecycle management and potential safety risks.
+This document provides an overview of Comet's usage of Arrow FFI (Foreign Function Interface) to pass Arrow arrays
+between the JVM (Java/Scala) and native (Rust) code.
 
 ## Architecture Overview
 
-Arrow FFI is used extensively in Comet to transfer columnar data across language boundaries. The main components involved are:
+Arrow FFI is used extensively in Comet to transfer columnar data across language boundaries. The main components 
+involved are:
 
 1. **JVM Side**: Scala/Java code that manages Arrow arrays and vectors
 2. **Native Side**: Rust code that processes data using DataFusion
@@ -18,7 +20,8 @@ Arrow FFI is used extensively in Comet to transfer columnar data across language
 
 **Location**: `common/src/main/scala/org/apache/comet/vector/NativeUtil.scala`
 
-The JVM exports Arrow data to native code through the `exportBatch` method:
+The JVM exports Arrow data to native code through the `exportBatch` method. This code is called via JNI from 
+native code.
 
 ```scala
 def exportBatch(arrayAddrs: Array[Long], schemaAddrs: Array[Long], batch: ColumnarBatch): Int = {
@@ -32,7 +35,7 @@ def exportBatch(arrayAddrs: Array[Long], schemaAddrs: Array[Long], batch: Column
 
 **Memory Management**:
 
-- ArrowArray and ArrowSchema structures are allocated by native side
+- `ArrowArray` and `ArrowSchema` structures are allocated by native side
 - JVM uses `ArrowSchema.wrap()` and `ArrowArray.wrap()` to wrap existing pointers
 - No deallocation needed on JVM side as structures are owned by native code
 
