@@ -129,9 +129,7 @@ impl SparkArrowConvert for ArrayData {
 - `std::ptr::replace()` with empty structures ensures proper cleanup
 - Explicit `Rc::from_raw()` calls in scan operations to avoid memory leaks
 
-## Identified Memory Safety Risks
-
-### 1. **HIGH RISK: Use-After-Free in Concurrent Access**
+## Memory Safety Risks
 
 **Location**: `spark/src/main/scala/org/apache/comet/CometExecIterator.scala`
 
@@ -146,100 +144,9 @@ if (prevBatch != null) {
 ```
 
 **Risk**: The comment explicitly mentions "shared buffer memory across batches" but there's a window where:
-1. Native code might still be processing a batch
+1. Native code might still have references to a batch
 2. JVM closes the previous batch, potentially freeing buffers
 3. Native code accesses freed memory
 
-**Mitigation**: The code attempts to sequence operations but relies on timing rather than explicit synchronization
-
-### 2. **MEDIUM RISK: Pointer Alignment Issues**
-
-**Location**: `native/core/src/execution/utils.rs`
-
-```rust
-// Check if the pointer alignment is correct.
-if array_ptr.align_offset(array_align) != 0 || schema_ptr.align_offset(schema_align) != 0 {
-    unsafe {
-        std::ptr::write_unaligned(array_ptr, FFI_ArrowArray::new(self));
-        std::ptr::write_unaligned(schema_ptr, FFI_ArrowSchema::try_from(self.data_type())?);
-    }
-}
-```
-
-**Risk**: Misaligned memory access can cause:
-- Performance degradation
-- Potential crashes on architectures that require alignment
-- Undefined behavior
-
-**Mitigation**: Code properly handles both aligned and unaligned cases
-
-### 3. **MEDIUM RISK: False Memory Leak Detection**
-
-**Location**: `spark/src/main/scala/org/apache/comet/CometExecIterator.scala`
-
-```scala
-// The allocator thoughts the exported ArrowArray and ArrowSchema structs are not released,
-// so it will report:
-// Caused by: java.lang.IllegalStateException: Memory was leaked by query.
-```
-
-**Risk**: 
-- Debugging complexity due to false positives
-- Potential masking of real memory leaks
-- Could lead to disabled leak detection
-
-**Mitigation**: Extensive comments explain the issue, but no technical solution implemented
-
-### 4. **LOW RISK: Buffer Offset Handling** 
-
-**Location**: `native/core/src/execution/jni_api.rs`
-
-```rust
-if array_ref.offset() != 0 {
-    // Bug with non-zero offset FFI, so take to a new array which will have an offset of 0.
-    let indices = UInt32Array::from((0..num_rows as u32).collect::<Vec<u32>>());
-    let new_array = take(array_ref, &indices, Some(TakeOptions { check_bounds: true }))?;
-    assert_eq!(new_array.offset(), 0);
-    new_array.to_data().move_to_spark(array_addrs[i], schema_addrs[i])?;
-}
-```
-
-**Risk**: Non-zero array offsets cause FFI issues, requiring expensive copying operations
-
-**Mitigation**: Code detects and handles the issue, but with performance cost
-
-## Recommendations
-
-### 1. Immediate Actions
-
-1. **Add Explicit Synchronization**: Replace timing-based batch cleanup with explicit synchronization mechanisms
-2. **Implement Proper Lifecycle Tracking**: Add reference counting or explicit lifetime management for shared buffers  
-3. **Add Validation**: Implement runtime checks for pointer validity before FFI operations
-
-### 2. Medium-term Improvements
-
-1. **Memory Pool Integration**: Better integrate with Arrow's memory pools to track FFI transfers
-2. **Error Recovery**: Add robust error handling for FFI failures and partial cleanup
-3. **Testing**: Add stress tests specifically for concurrent access patterns
-
-### 3. Long-term Considerations
-
-1. **Alternative FFI Mechanisms**: Consider newer Arrow FFI mechanisms that provide better lifetime guarantees
-2. **Zero-Copy Optimizations**: Investigate ways to reduce copying in the non-zero offset case
-3. **Monitoring**: Add metrics to track FFI-related memory usage and potential issues
-
-## Testing Considerations
-
-To properly test Arrow FFI memory safety:
-
-1. **Stress Testing**: Run concurrent operations with memory pressure
-2. **Valgrind/AddressSanitizer**: Use memory debugging tools on native code
-3. **JVM Memory Profiling**: Monitor for memory leaks using JVM profilers
-4. **Error Injection**: Test error handling during FFI operations
-5. **Platform Testing**: Verify behavior on different architectures and alignment requirements
-
-## Conclusion
-
-While Comet's Arrow FFI implementation is generally well-architected, there are several areas where memory safety could be improved. The most significant risk is the potential for use-after-free conditions in concurrent scenarios. The codebase shows awareness of these issues through extensive comments and defensive programming, but additional synchronization mechanisms would provide stronger guarantees.
-
-The false positive memory leak detection issue, while not a safety risk per se, could mask real problems and should be addressed through better integration with Arrow's memory management systems.
+**Mitigation**: In `planner.rs` we insert `CopyExec` operators to perform copies of arrays for operators 
+that may cache batches, but this is an area that we may improve in the future.
