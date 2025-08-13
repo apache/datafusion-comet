@@ -49,7 +49,7 @@ pub struct CopyExec {
     mode: CopyMode,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum CopyMode {
     /// Perform a deep copy and also unpack dictionaries
     UnpackOrDeepCopy,
@@ -90,6 +90,10 @@ impl CopyExec {
             metrics: ExecutionPlanMetricsSet::default(),
             mode,
         }
+    }
+
+    pub fn mode(&self) -> &CopyMode {
+        &self.mode
     }
 }
 
