@@ -2610,10 +2610,17 @@ impl From<ExpressionError> for DataFusionError {
 /// modification. This is used to determine if we need to copy the input batch to avoid
 /// data corruption from reusing the input batch.
 fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
-    if op.as_any().is::<ProjectionExec>() || op.as_any().is::<LocalLimitExec>() {
-        can_reuse_input_batch(op.children()[0])
+    if op.as_any().is::<ScanExec>() {
+        // JVM side can return arrow buffers to the pool
+        // Also, native_comet scan reuses mutable buffers
+        true
     } else {
-        op.as_any().is::<ScanExec>()
+        for child in op.children() {
+            if can_reuse_input_batch(&child) {
+                return true;
+            }
+        }
+        false
     }
 }
 
