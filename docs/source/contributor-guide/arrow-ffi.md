@@ -16,7 +16,7 @@ Arrow FFI is used extensively in Comet to transfer columnar data across language
 
 ### 1. JVM to Native (Data Import)
 
-**Location**: `common/src/main/scala/org/apache/comet/vector/NativeUtil.scala:91-137`
+**Location**: `common/src/main/scala/org/apache/comet/vector/NativeUtil.scala`
 
 The JVM exports Arrow data to native code through the `exportBatch` method:
 
@@ -37,7 +37,7 @@ def exportBatch(arrayAddrs: Array[Long], schemaAddrs: Array[Long], batch: Column
 
 ### 2. Native to JVM (Data Export)
 
-**Location**: `native/core/src/execution/jni_api.rs:302-375`
+**Location**: `native/core/src/execution/jni_api.rs`
 
 Native code exports data back to JVM through the `prepare_output` function:
 
@@ -55,7 +55,7 @@ fn prepare_output(env: &mut JNIEnv, array_addrs: jlongArray, schema_addrs: jlong
 
 ### 3. FFI Conversion Implementation
 
-**Location**: `native/core/src/execution/utils.rs:45-108`
+**Location**: `native/core/src/execution/utils.rs`
 
 The core FFI conversion logic implements the `SparkArrowConvert` trait:
 
@@ -133,7 +133,7 @@ impl SparkArrowConvert for ArrayData {
 
 ### 1. **HIGH RISK: Use-After-Free in Concurrent Access**
 
-**Location**: `spark/src/main/scala/org/apache/comet/CometExecIterator.scala:195-201`
+**Location**: `spark/src/main/scala/org/apache/comet/CometExecIterator.scala`
 
 ```scala
 // Close previous batch if any.
@@ -154,7 +154,7 @@ if (prevBatch != null) {
 
 ### 2. **MEDIUM RISK: Pointer Alignment Issues**
 
-**Location**: `native/core/src/execution/utils.rs:89-104`
+**Location**: `native/core/src/execution/utils.rs`
 
 ```rust
 // Check if the pointer alignment is correct.
@@ -175,7 +175,7 @@ if array_ptr.align_offset(array_align) != 0 || schema_ptr.align_offset(schema_al
 
 ### 3. **MEDIUM RISK: False Memory Leak Detection**
 
-**Location**: `spark/src/main/scala/org/apache/comet/CometExecIterator.scala:243-260`
+**Location**: `spark/src/main/scala/org/apache/comet/CometExecIterator.scala`
 
 ```scala
 // The allocator thoughts the exported ArrowArray and ArrowSchema structs are not released,
@@ -192,7 +192,7 @@ if array_ptr.align_offset(array_align) != 0 || schema_ptr.align_offset(schema_al
 
 ### 4. **LOW RISK: Buffer Offset Handling** 
 
-**Location**: `native/core/src/execution/jni_api.rs:349-369`
+**Location**: `native/core/src/execution/jni_api.rs`
 
 ```rust
 if array_ref.offset() != 0 {
