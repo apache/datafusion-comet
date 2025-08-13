@@ -2975,7 +2975,7 @@ mod tests {
         let plan_str = explain_plan(datafusion_plan);
         let expected_str = r"SortExec: expr=[col_0@0 ASC], preserve_partitioning=[false]
   CopyExec [UnpackOrClone]
-    ScanExec: source=[native_comet], schema=[col_0: Int32]
+    ScanExec: source=[native_comet], hasBufferReuse=true, schema=[col_0: Int32]
 ";
         assert_eq!(plan_str, expected_str);
     }
@@ -2989,7 +2989,7 @@ mod tests {
         let plan_str = explain_plan(datafusion_plan);
         let expected_str = r"SortExec: expr=[col_0@0 ASC], preserve_partitioning=[false]
   CopyExec [UnpackOrClone]
-    ScanExec: source=[sink], schema=[col_0: Int32]
+    ScanExec: source=[sink], hasBufferReuse=false, schema=[col_0: Int32]
 ";
         assert_eq!(plan_str, expected_str);
     }
@@ -3005,7 +3005,7 @@ mod tests {
         let expected_str = r"SortExec: expr=[col_0@0 ASC], preserve_partitioning=[false]
   CopyExec [UnpackOrClone]
     FilterExec: col_0@0 = 1
-      ScanExec: source=[native_comet], schema=[col_0: Int32]
+      ScanExec: source=[native_comet], hasBufferReuse=true, schema=[col_0: Int32]
 ";
         assert_eq!(plan_str, expected_str);
     }
@@ -3021,7 +3021,7 @@ mod tests {
         let expected_str = r"SortExec: expr=[col_0@0 ASC], preserve_partitioning=[false]
   CopyExec [UnpackOrClone]
     FilterExec: col_0@0 = 1
-      ScanExec: source=[sink], schema=[col_0: Int32]
+      ScanExec: source=[sink], hasBufferReuse=false, schema=[col_0: Int32]
 ";
         assert_eq!(plan_str, expected_str);
     }

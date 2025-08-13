@@ -284,7 +284,7 @@ case class CometScanExec(
   }
 
   override val nodeName: String =
-    s"CometScan $relation ${tableIdentifier.map(_.unquotedString).getOrElse("")}"
+    s"CometScan [$scanImpl] $relation ${tableIdentifier.map(_.unquotedString).getOrElse("")}"
 
   /**
    * Create an RDD for bucketed reads. The non-bucketed variant of this function is

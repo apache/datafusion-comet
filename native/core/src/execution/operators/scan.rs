@@ -392,6 +392,7 @@ impl DisplayAs for ScanExec {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "ScanExec: source=[{}], ", self.input_source_description)?;
+                write!(f, "hasBufferReuse={}, ", self.has_buffer_reuse)?;
                 let fields: Vec<String> = self
                     .data_types
                     .iter()

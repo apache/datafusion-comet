@@ -2181,11 +2181,13 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
         // These operators are source of Comet native execution chain
         val scanBuilder = OperatorOuterClass.Scan.newBuilder()
-        val source = op.simpleStringWithNodeId()
-        if (source.isEmpty) {
-          scanBuilder.setSource(op.getClass.getSimpleName)
-        } else {
-          scanBuilder.setSource(source)
+        op match {
+          case scan: CometScanExec =>
+            scanBuilder.setSource(
+              s"CometScanExec[${scan.scanImpl}]: ${op.simpleStringWithNodeId()}")
+          case _ =>
+            scanBuilder.setSource(
+              s"[${op.getClass.getSimpleName}]: ${op.simpleStringWithNodeId()}")
         }
 
         val scanTypes = op.output.flatten { attr =>
