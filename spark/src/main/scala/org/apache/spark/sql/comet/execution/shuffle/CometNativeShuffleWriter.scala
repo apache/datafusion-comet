@@ -141,7 +141,10 @@ class CometNativeShuffleWriter[K, V](
   }
 
   private def getNativePlan(dataFile: String, indexFile: String): Operator = {
-    val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("ShuffleWriterInput")
+    val scanBuilder = OperatorOuterClass.Scan
+      .newBuilder()
+      .setSource("ShuffleWriterInput")
+      .setHasBufferReuse(true) // TODO can be optimized?
     val opBuilder = OperatorOuterClass.Operator.newBuilder()
 
     val scanTypes = outputAttributes.flatten { attr =>
