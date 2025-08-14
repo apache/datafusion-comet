@@ -377,6 +377,13 @@ object CometSparkSessionExtensions extends Logging {
    *   The node with information (if any) attached
    */
   def withInfos[T <: TreeNode[_]](node: T, info: Set[String], exprs: T*): T = {
+    if (CometConf.COMET_LOG_FALLBACK_REASONS.get()) {
+      for (reason <- info) {
+        logWarning(
+          s"Comet native execution for ${node.getClass.getSimpleName} " +
+            s"is disabled due to: $reason")
+      }
+    }
     val existingNodeInfos = node.getTagValue(CometExplainInfo.EXTENSION_INFO)
     val newNodeInfo = (existingNodeInfos ++ exprs
       .flatMap(_.getTagValue(CometExplainInfo.EXTENSION_INFO))).flatten.toSet

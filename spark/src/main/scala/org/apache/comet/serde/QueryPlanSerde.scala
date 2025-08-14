@@ -208,7 +208,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     case m: MapType if allowComplex =>
       supportedDataType(m.keyType, allowComplex) && supportedDataType(m.valueType, allowComplex)
     case dt =>
-      emitWarning(s"unsupported Spark data type: $dt")
       false
   }
 
@@ -503,9 +502,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case Some(handler) =>
         handler.convert(aggExpr, fn, inputs, binding, conf)
       case _ =>
-        val msg = s"unsupported Spark aggregate function: ${fn.prettyName}"
-        emitWarning(msg)
-        withInfo(aggExpr, msg, fn.children: _*)
+        withInfo(
+          aggExpr,
+          s"unsupported Spark aggregate function: ${fn.prettyName}",
+          fn.children: _*)
         None
     }
   }
@@ -1365,18 +1365,23 @@ object QueryPlanSerde extends Logging with CometExprShim {
           ExprOuterClass.Expr.newBuilder().setNormalizeNanAndZero(builder).build()
         }
 
-      case s @ execution.ScalarSubquery(_, _) if supportedDataType(s.dataType) =>
-        val dataType = serializeDataType(s.dataType)
-        if (dataType.isEmpty) {
-          withInfo(s, s"Scalar subquery returns unsupported datatype ${s.dataType}")
-          return None
-        }
+      case s @ execution.ScalarSubquery(_, _) =>
+        if (supportedDataType(s.dataType)) {
+          val dataType = serializeDataType(s.dataType)
+          if (dataType.isEmpty) {
+            withInfo(s, s"Scalar subquery returns unsupported datatype ${s.dataType}")
+            return None
+          }
 
-        val builder = ExprOuterClass.Subquery
-          .newBuilder()
-          .setId(s.exprId.id)
-          .setDatatype(dataType.get)
-        Some(ExprOuterClass.Expr.newBuilder().setSubquery(builder).build())
+          val builder = ExprOuterClass.Subquery
+            .newBuilder()
+            .setId(s.exprId.id)
+            .setDatatype(dataType.get)
+          Some(ExprOuterClass.Expr.newBuilder().setSubquery(builder).build())
+        } else {
+          withInfo(s, s"Unsupported data type: ${s.dataType}")
+          None
+        }
 
       case UnscaledValue(child) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
@@ -1777,10 +1782,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
         } else {
           // There are unsupported scan type
-          val msg =
-            s"unsupported Comet operator: ${op.nodeName}, due to unsupported data types above"
-          emitWarning(msg)
-          withInfo(op, msg)
+          withInfo(
+            op,
+            s"unsupported Comet operator: ${op.nodeName}, due to unsupported data types above")
           None
         }
 
@@ -1969,9 +1973,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
           val attributes = groupingExpressions.map(_.toAttribute) ++ aggregateAttributes
           val resultExprs = resultExpressions.map(exprToProto(_, attributes))
           if (resultExprs.exists(_.isEmpty)) {
-            val msg = s"Unsupported result expressions found in: ${resultExpressions}"
-            emitWarning(msg)
-            withInfo(op, msg, resultExpressions: _*)
+            withInfo(
+              op,
+              s"Unsupported result expressions found in: $resultExpressions",
+              resultExpressions: _*)
             return None
           }
           hashAggBuilder.addAllResultExprs(resultExprs.map(_.get).asJava)
@@ -2013,9 +2018,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
               val attributes = groupingExpressions.map(_.toAttribute) ++ aggregateAttributes
               val resultExprs = resultExpressions.map(exprToProto(_, attributes))
               if (resultExprs.exists(_.isEmpty)) {
-                val msg = s"Unsupported result expressions found in: ${resultExpressions}"
-                emitWarning(msg)
-                withInfo(op, msg, resultExpressions: _*)
+                withInfo(
+                  op,
+                  s"Unsupported result expressions found in: $resultExpressions",
+                  resultExpressions: _*)
                 return None
               }
               hashAggBuilder.addAllResultExprs(resultExprs.map(_.get).asJava)
@@ -2189,6 +2195,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
           op.output.forall(a => supportedDataType(a.dataType, allowComplex = true))
 
         if (!supportedTypes) {
+          withInfo(op, "Unsupported data type")
           return None
         }
 
@@ -2215,9 +2222,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
         } else {
           // There are unsupported scan type
           val msg =
-            s"unsupported Comet operator: ${op.nodeName}, due to unsupported data types above"
-          emitWarning(msg)
-          withInfo(op, msg)
+            withInfo(
+              op,
+              s"unsupported Comet operator: ${op.nodeName}, due to unsupported data types above")
           None
         }
 
@@ -2239,9 +2246,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
             //  1. it is not Spark shuffle operator, which is handled separately
             //  2. it is not a Comet operator
             if (!op.nodeName.contains("Comet") && !op.isInstanceOf[ShuffleExchangeExec]) {
-              val msg = s"unsupported Spark operator: ${op.nodeName}"
-              emitWarning(msg)
-              withInfo(op, msg)
+              withInfo(op, s"unsupported Spark operator: ${op.nodeName}")
             }
             None
         }

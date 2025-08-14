@@ -474,6 +474,12 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_LOG_FALLBACK_REASONS: ConfigEntry[Boolean] =
+    conf("spark.comet.logFallbackReasons.enabled")
+      .doc("When this setting is enabled, Comet will log warning for all fallback reasons.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXPLAIN_TRANSFORMATIONS: ConfigEntry[Boolean] =
     conf("spark.comet.explain.rules")
       .doc("When this setting is enabled, Comet will log all plan transformations performed " +
