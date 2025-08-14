@@ -1603,9 +1603,12 @@ impl PhysicalPlanner {
                     })
                     .collect();
 
+                let left = Self::wrap_in_copy_exec(Arc::clone(&join_params.left.native_plan));
+                let right = Self::wrap_in_copy_exec(Arc::clone(&join_params.right.native_plan));
+
                 let join = Arc::new(SortMergeJoinExec::try_new(
-                    Arc::clone(&join_params.left.native_plan),
-                    Arc::clone(&join_params.right.native_plan),
+                    Arc::clone(&left),
+                    Arc::clone(&right),
                     join_params.join_on,
                     join_params.join_filter,
                     join_params.join_type,
@@ -2611,8 +2614,10 @@ impl From<ExpressionError> for DataFusionError {
 /// data corruption from reusing the input batch.
 fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
     if op.as_any().is::<ScanExec>() {
-        // JVM side can return arrow buffers to the pool
-        // Also, native_comet scan reuses mutable buffers
+        // native_comet and native_iceberg_compat scan reuse mutable buffers
+        // so we need to make copies of the batches
+        // for now, we also copy even if the source is not a Parquet scan, but
+        // we will optimize this later
         true
     } else if op.as_any().is::<CopyExec>() {
         let copy_exec = op.as_any().downcast_ref::<CopyExec>().unwrap();
