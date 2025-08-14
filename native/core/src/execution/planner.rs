@@ -250,8 +250,6 @@ impl PhysicalPlanner {
                 )
             }
             ExprStruct::Subtract(expr) => {
-                // TODO respect ANSI eval mode
-                // https://github.com/apache/datafusion-comet/issues/535
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
@@ -263,8 +261,6 @@ impl PhysicalPlanner {
                 )
             }
             ExprStruct::Multiply(expr) => {
-                // TODO respect ANSI eval mode
-                // https://github.com/apache/datafusion-comet/issues/534
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
@@ -276,9 +272,6 @@ impl PhysicalPlanner {
                 )
             }
             ExprStruct::Divide(expr) => {
-                // TODO respect ANSI eval mode
-                // https://github.com/apache/datafusion-comet/issues/533
-                print!("divide op !!!");
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
@@ -290,8 +283,6 @@ impl PhysicalPlanner {
                 )
             }
             ExprStruct::IntegralDivide(expr) => {
-                // TODO respect eval mode
-                // https://github.com/apache/datafusion-comet/issues/533
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr_with_options(
                     expr.left.as_ref().unwrap(),
@@ -1093,7 +1084,7 @@ impl PhysicalPlanner {
             }
             _ => {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
-                if [EvalMode::Try, EvalMode::Ansi].contains(&eval_mode) && data_type.is_integer() {
+                if [EvalMode::Try, EvalMode::Ansi].contains(&eval_mode) && data_type.is_numeric() {
                     let op_str = match op {
                         DataFusionOperator::Plus => "checked_add",
                         DataFusionOperator::Minus => "checked_sub",
