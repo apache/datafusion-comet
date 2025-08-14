@@ -163,6 +163,7 @@ fn checked_arithmetic_internal(
             )))
         }
     };
+    println!("Eval mode {:?}", eval_mode);
 
     let (left_arr, right_arr): (ArrayRef, ArrayRef) = match (left, right) {
         (ColumnarValue::Array(l), ColumnarValue::Array(r)) => (Arc::clone(l), Arc::clone(r)),

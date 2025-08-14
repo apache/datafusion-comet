@@ -281,6 +281,7 @@ impl PhysicalPlanner {
             ExprStruct::Divide(expr) => {
                 // TODO respect ANSI eval mode
                 // https://github.com/apache/datafusion-comet/issues/533
+                print!("divide op !!!");
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
