@@ -93,7 +93,9 @@ object CometExecUtils {
       outputAttributes: Seq[Attribute],
       limit: Int,
       offset: Int = 0): Option[Operator] = {
-    val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("LimitInput")
+    val scanBuilder = OperatorOuterClass.Scan
+      .newBuilder()
+      .setSource("LimitInput")
       .setHasBufferReuse(true) // TODO is this needed?
     val scanOpBuilder = OperatorOuterClass.Operator.newBuilder()
 
@@ -126,7 +128,9 @@ object CometExecUtils {
       child: SparkPlan,
       limit: Int,
       offset: Int = 0): Option[Operator] = {
-    val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("TopKInput")
+    val scanBuilder = OperatorOuterClass.Scan
+      .newBuilder()
+      .setSource("TopKInput")
       .setHasBufferReuse(true) // TODO is this needed?
     val scanOpBuilder = OperatorOuterClass.Operator.newBuilder()
 
