@@ -379,8 +379,7 @@ object CometSparkSessionExtensions extends Logging {
   def withInfos[T <: TreeNode[_]](node: T, info: Set[String], exprs: T*): T = {
     if (CometConf.COMET_LOG_FALLBACK_REASONS.get()) {
       for (reason <- info) {
-        logWarning(
-          s"Comet cannot accelerate ${node.getClass.getSimpleName} because: $reason")
+        logWarning(s"Comet cannot accelerate ${node.getClass.getSimpleName} because: $reason")
       }
     }
     val existingNodeInfos = node.getTagValue(CometExplainInfo.EXTENSION_INFO)
