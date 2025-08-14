@@ -380,8 +380,7 @@ object CometSparkSessionExtensions extends Logging {
     if (CometConf.COMET_LOG_FALLBACK_REASONS.get()) {
       for (reason <- info) {
         logWarning(
-          s"Comet native execution for ${node.getClass.getSimpleName} " +
-            s"is disabled due to: $reason")
+          s"Comet cannot accelerate ${node.getClass.getSimpleName} because: $reason")
       }
     }
     val existingNodeInfos = node.getTagValue(CometExplainInfo.EXTENSION_INFO)
