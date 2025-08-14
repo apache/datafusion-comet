@@ -35,6 +35,7 @@ where
 {
     let len = left.len();
     let mut builder = PrimitiveBuilder::<T>::with_capacity(len);
+    let error_msg = format!("{} : [ARITHMETIC_OVERFLOW] integer overflow. Use 'try_{}' to tolerate overflow and return NULL instead", op, op.split("_").last().unwrap());
     match op {
         "checked_add" => {
             for i in 0..len {
@@ -45,10 +46,7 @@ where
                         Ok(v) => builder.append_value(v),
                         Err(_e) => {
                             if is_ansi_mode {
-                                return Err(DataFusionError::Internal(format!(
-                                    "ARITHMETIC OVERFLOW : {}",
-                                    op
-                                )));
+                                return Err(DataFusionError::Internal(error_msg));
                             }
                         }
                     }
@@ -64,10 +62,7 @@ where
                         Ok(v) => builder.append_value(v),
                         Err(_e) => {
                             if is_ansi_mode {
-                                return Err(DataFusionError::Internal(format!(
-                                    "ARITHMETIC OVERFLOW : {}",
-                                    op
-                                )));
+                                return Err(DataFusionError::Internal(error_msg));
                             }
                         }
                     }
@@ -83,10 +78,7 @@ where
                         Ok(v) => builder.append_value(v),
                         Err(_e) => {
                             if is_ansi_mode {
-                                return Err(DataFusionError::Internal(format!(
-                                    "ARITHMETIC OVERFLOW : {}",
-                                    op
-                                )));
+                                return Err(DataFusionError::Internal(error_msg));
                             }
                         }
                     }
@@ -102,10 +94,7 @@ where
                         Ok(v) => builder.append_value(v),
                         Err(_e) => {
                             if is_ansi_mode {
-                                return Err(DataFusionError::Internal(format!(
-                                    "ARITHMETIC OVERFLOW : {}",
-                                    op
-                                )));
+                                return Err(DataFusionError::Internal(error_msg));
                             }
                         }
                     }
