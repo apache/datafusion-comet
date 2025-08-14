@@ -159,4 +159,21 @@ class ParquetReadFromS3Suite extends CometTestBase with AdaptiveSparkPlanHelper 
       }
     })
   }
+
+  test("read parquet file from MinIO with URL escape sequences in path") {
+    // Path with '%20' which is a URL escape for space
+    val testFilePath = s"s3a://$testBucketName/data/test%20file.parquet"
+    writeTestParquetFile(testFilePath)
+
+    val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
+    val scans = collect(df.queryExecution.executedPlan) {
+      case p: CometScanExec =>
+        p
+      case p: CometNativeScanExec =>
+        p
+    }
+    assert(scans.size == 1)
+
+    assert(df.first().getLong(0) == 499500)
+  }
 }
