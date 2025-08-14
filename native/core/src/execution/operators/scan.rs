@@ -97,13 +97,19 @@ impl ScanExec {
         let arrow_ffi_time = MetricBuilder::new(&metrics_set).subset_time("arrow_ffi_time", 0);
         let jvm_fetch_time = MetricBuilder::new(&metrics_set).subset_time("jvm_fetch_time", 0);
 
-        let copy_arrays = input_source_description.contains("native_comet")
-            || input_source_description.contains("native_iceberg_compat");
-
-        println!(
-            "*** {} -> copy_arrays = {copy_arrays}",
-            input_source_description
-        );
+        // TODO needs a more robust approach than looking at a text field
+        let copy_arrays = match input_source_description {
+            source if source.contains("native_comet") => true,
+            source if source.contains("native_iceberg_compat") => true,
+            source if source.contains("BroadcastQueryStage") => false,
+            source if source.contains("ShuffleQueryStage") => false,
+            _ => {
+                // take cautious approach for anything else because it could be backed
+                // by a Parquet scan
+                println!("ScanExec default to copying for {input_source_description}");
+                true
+            }
+        };
 
         // Scan's schema is determined by the input batch, so we need to set it before execution.
         // Note that we determine if arrays are dictionary-encoded based on the
