@@ -1609,9 +1609,12 @@ impl PhysicalPlanner {
                     })
                     .collect();
 
+                let left = Self::wrap_in_copy_exec(Arc::clone(&join_params.left.native_plan));
+                let right = Self::wrap_in_copy_exec(Arc::clone(&join_params.right.native_plan));
+
                 let join = Arc::new(SortMergeJoinExec::try_new(
-                    Arc::clone(&join_params.left.native_plan),
-                    Arc::clone(&join_params.right.native_plan),
+                    Arc::clone(&left),
+                    Arc::clone(&right),
                     join_params.join_on,
                     join_params.join_filter,
                     join_params.join_type,
@@ -2616,10 +2619,25 @@ impl From<ExpressionError> for DataFusionError {
 /// modification. This is used to determine if we need to copy the input batch to avoid
 /// data corruption from reusing the input batch.
 fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
-    if op.as_any().is::<ProjectionExec>() || op.as_any().is::<LocalLimitExec>() {
-        can_reuse_input_batch(op.children()[0])
+    if op.as_any().is::<ScanExec>() {
+        // native_comet and native_iceberg_compat scan reuse mutable buffers
+        // so we need to make copies of the batches
+        // for now, we also copy even if the source is not a Parquet scan, but
+        // we will optimize this later
+        true
+    } else if op.as_any().is::<CopyExec>() {
+        let copy_exec = op.as_any().downcast_ref::<CopyExec>().unwrap();
+        copy_exec.mode() == &CopyMode::UnpackOrClone && can_reuse_input_batch(copy_exec.input())
+    } else if op.as_any().is::<CometFilterExec>() {
+        // CometFilterExec guarantees that all arrays have been copied
+        false
     } else {
-        op.as_any().is::<ScanExec>()
+        for child in op.children() {
+            if can_reuse_input_batch(child) {
+                return true;
+            }
+        }
+        false
     }
 }
 

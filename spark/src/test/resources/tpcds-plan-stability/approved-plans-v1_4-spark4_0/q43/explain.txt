@@ -11,17 +11,17 @@ TakeOrderedAndProject (20)
                      :  +- CometBroadcastHashJoin (7)
                      :     :- CometProject (3)
                      :     :  +- CometFilter (2)
-                     :     :     +- CometScan parquet spark_catalog.default.date_dim (1)
+                     :     :     +- CometScan [native_comet] parquet spark_catalog.default.date_dim (1)
                      :     +- CometBroadcastExchange (6)
                      :        +- CometFilter (5)
-                     :           +- CometScan parquet spark_catalog.default.store_sales (4)
+                     :           +- CometScan [native_comet] parquet spark_catalog.default.store_sales (4)
                      +- CometBroadcastExchange (12)
                         +- CometProject (11)
                            +- CometFilter (10)
-                              +- CometScan parquet spark_catalog.default.store (9)
+                              +- CometScan [native_comet] parquet spark_catalog.default.store (9)
 
 
-(1) CometScan parquet spark_catalog.default.date_dim
+(1) CometScan [native_comet] parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#1, d_year#2, d_day_name#3]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -36,7 +36,7 @@ Condition : ((isnotnull(d_year#2) AND (d_year#2 = 2000)) AND isnotnull(d_date_sk
 Input [3]: [d_date_sk#1, d_year#2, d_day_name#3]
 Arguments: [d_date_sk#1, d_day_name#4], [d_date_sk#1, static_invoke(CharVarcharCodegenUtils.readSidePadding(d_day_name#3, 9)) AS d_day_name#4]
 
-(4) CometScan parquet spark_catalog.default.store_sales
+(4) CometScan [native_comet] parquet spark_catalog.default.store_sales
 Output [3]: [ss_store_sk#5, ss_sales_price#6, ss_sold_date_sk#7]
 Batched: true
 Location: InMemoryFileIndex []
@@ -61,7 +61,7 @@ Arguments: [d_date_sk#1], [ss_sold_date_sk#7], Inner, BuildRight
 Input [5]: [d_date_sk#1, d_day_name#4, ss_store_sk#5, ss_sales_price#6, ss_sold_date_sk#7]
 Arguments: [d_day_name#4, ss_store_sk#5, ss_sales_price#6], [d_day_name#4, ss_store_sk#5, ss_sales_price#6]
 
-(9) CometScan parquet spark_catalog.default.store
+(9) CometScan [native_comet] parquet spark_catalog.default.store
 Output [4]: [s_store_sk#8, s_store_id#9, s_store_name#10, s_gmt_offset#11]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store]

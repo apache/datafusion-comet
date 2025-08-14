@@ -14,27 +14,27 @@ TakeOrderedAndProject (33)
          :        :     :     :  +- CometBroadcastHashJoin (8)
          :        :     :     :     :- CometProject (3)
          :        :     :     :     :  +- CometFilter (2)
-         :        :     :     :     :     +- CometScan parquet spark_catalog.default.customer (1)
+         :        :     :     :     :     +- CometScan [native_comet] parquet spark_catalog.default.customer (1)
          :        :     :     :     +- CometBroadcastExchange (7)
          :        :     :     :        +- CometProject (6)
          :        :     :     :           +- CometFilter (5)
-         :        :     :     :              +- CometScan parquet spark_catalog.default.customer_address (4)
+         :        :     :     :              +- CometScan [native_comet] parquet spark_catalog.default.customer_address (4)
          :        :     :     +- CometBroadcastExchange (12)
          :        :     :        +- CometFilter (11)
-         :        :     :           +- CometScan parquet spark_catalog.default.customer_demographics (10)
+         :        :     :           +- CometScan [native_comet] parquet spark_catalog.default.customer_demographics (10)
          :        :     +- CometBroadcastExchange (17)
          :        :        +- CometFilter (16)
-         :        :           +- CometScan parquet spark_catalog.default.household_demographics (15)
+         :        :           +- CometScan [native_comet] parquet spark_catalog.default.household_demographics (15)
          :        +- CometBroadcastExchange (23)
          :           +- CometProject (22)
          :              +- CometFilter (21)
-         :                 +- CometScan parquet spark_catalog.default.income_band (20)
+         :                 +- CometScan [native_comet] parquet spark_catalog.default.income_band (20)
          +- CometProject (29)
             +- CometFilter (28)
-               +- CometScan parquet spark_catalog.default.store_returns (27)
+               +- CometScan [native_comet] parquet spark_catalog.default.store_returns (27)
 
 
-(1) CometScan parquet spark_catalog.default.customer
+(1) CometScan [native_comet] parquet spark_catalog.default.customer
 Output [6]: [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_current_addr_sk#4, c_first_name#5, c_last_name#6]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer]
@@ -49,7 +49,7 @@ Condition : ((isnotnull(c_current_addr_sk#4) AND isnotnull(c_current_cdemo_sk#2)
 Input [6]: [c_customer_id#1, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_current_addr_sk#4, c_first_name#5, c_last_name#6]
 Arguments: [c_customer_id#7, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_current_addr_sk#4, c_first_name#8, c_last_name#9], [static_invoke(CharVarcharCodegenUtils.readSidePadding(c_customer_id#1, 16)) AS c_customer_id#7, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_current_addr_sk#4, static_invoke(CharVarcharCodegenUtils.readSidePadding(c_first_name#5, 20)) AS c_first_name#8, static_invoke(CharVarcharCodegenUtils.readSidePadding(c_last_name#6, 30)) AS c_last_name#9]
 
-(4) CometScan parquet spark_catalog.default.customer_address
+(4) CometScan [native_comet] parquet spark_catalog.default.customer_address
 Output [2]: [ca_address_sk#10, ca_city#11]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
@@ -77,7 +77,7 @@ Arguments: [c_current_addr_sk#4], [ca_address_sk#10], Inner, BuildRight
 Input [7]: [c_customer_id#7, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_current_addr_sk#4, c_first_name#8, c_last_name#9, ca_address_sk#10]
 Arguments: [c_customer_id#7, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_first_name#8, c_last_name#9], [c_customer_id#7, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_first_name#8, c_last_name#9]
 
-(10) CometScan parquet spark_catalog.default.customer_demographics
+(10) CometScan [native_comet] parquet spark_catalog.default.customer_demographics
 Output [1]: [cd_demo_sk#12]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_demographics]
@@ -101,7 +101,7 @@ Arguments: [c_current_cdemo_sk#2], [cd_demo_sk#12], Inner, BuildRight
 Input [6]: [c_customer_id#7, c_current_cdemo_sk#2, c_current_hdemo_sk#3, c_first_name#8, c_last_name#9, cd_demo_sk#12]
 Arguments: [c_customer_id#7, c_current_hdemo_sk#3, c_first_name#8, c_last_name#9, cd_demo_sk#12], [c_customer_id#7, c_current_hdemo_sk#3, c_first_name#8, c_last_name#9, cd_demo_sk#12]
 
-(15) CometScan parquet spark_catalog.default.household_demographics
+(15) CometScan [native_comet] parquet spark_catalog.default.household_demographics
 Output [2]: [hd_demo_sk#13, hd_income_band_sk#14]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/household_demographics]
@@ -125,7 +125,7 @@ Arguments: [c_current_hdemo_sk#3], [hd_demo_sk#13], Inner, BuildRight
 Input [7]: [c_customer_id#7, c_current_hdemo_sk#3, c_first_name#8, c_last_name#9, cd_demo_sk#12, hd_demo_sk#13, hd_income_band_sk#14]
 Arguments: [c_customer_id#7, c_first_name#8, c_last_name#9, cd_demo_sk#12, hd_income_band_sk#14], [c_customer_id#7, c_first_name#8, c_last_name#9, cd_demo_sk#12, hd_income_band_sk#14]
 
-(20) CometScan parquet spark_catalog.default.income_band
+(20) CometScan [native_comet] parquet spark_catalog.default.income_band
 Output [3]: [ib_income_band_sk#15, ib_lower_bound#16, ib_upper_bound#17]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/income_band]
@@ -157,7 +157,7 @@ Arguments: [c_customer_id#7, c_first_name#8, c_last_name#9, cd_demo_sk#12], [c_c
 Input [4]: [c_customer_id#7, c_first_name#8, c_last_name#9, cd_demo_sk#12]
 Arguments: [c_customer_id#7, c_first_name#8, c_last_name#9, cd_demo_sk#12]
 
-(27) CometScan parquet spark_catalog.default.store_returns
+(27) CometScan [native_comet] parquet spark_catalog.default.store_returns
 Output [2]: [sr_cdemo_sk#18, sr_returned_date_sk#19]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_returns]
