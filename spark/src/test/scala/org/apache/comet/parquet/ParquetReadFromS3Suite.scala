@@ -28,15 +28,12 @@ import org.testcontainers.utility.DockerImageName
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.comet.CometScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.{col, sum}
-import org.apache.spark.sql.functions.expr
-import org.apache.spark.sql.functions.max
-
-import org.apache.comet.CometConf
+import org.apache.spark.sql.functions.{col, expr, max, sum}
 
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
@@ -106,74 +103,45 @@ class ParquetReadFromS3Suite extends CometTestBase with AdaptiveSparkPlanHelper 
     df.write.format("parquet").mode(SaveMode.Overwrite).save(filePath)
   }
 
-  test("read parquet file from MinIO") {
-
-    val testFilePath = s"s3a://$testBucketName/data/test-file.parquet"
-    writeTestParquetFile(testFilePath)
-
-    Seq(
-      CometConf.SCAN_NATIVE_COMET,
-      CometConf.SCAN_NATIVE_DATAFUSION,
-      CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach(scanMode => {
-      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode) {
-        val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
-        val scans = collect(df.queryExecution.executedPlan) {
-          case p: CometScanExec =>
-            p
-          case p: CometNativeScanExec =>
-            p
-        }
-        assert(scans.size == 1)
-        assert(df.first().getLong(0) == 499500)
-      }
-    })
-  }
-
-  private def writePartitionedTestParquetFile(filePath: String): Unit = {
+  private def writePartitionedParquetFile(filePath: String): Unit = {
     val df = spark.range(0, 1000).withColumn("val", expr("concat('val#', id % 10)"))
     df.write.format("parquet").partitionBy("val").mode(SaveMode.Overwrite).save(filePath)
   }
 
-  test("write partitioned data and read from MinIO") {
-    val testFilePath = s"s3a://$testBucketName/data/test-partitioned"
-    writePartitionedTestParquetFile(testFilePath)
-
-    Seq(
-      CometConf.SCAN_NATIVE_COMET,
-      CometConf.SCAN_NATIVE_DATAFUSION,
-      CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach(scanMode => {
-      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode) {
-        val df =
-          spark.read.format("parquet").load(testFilePath).agg(sum(col("id")), max(col("val")))
-        val scans = collect(df.queryExecution.executedPlan) {
-          case p: CometScanExec =>
-            p
-          case p: CometNativeScanExec =>
-            p
-        }
-        assert(scans.size == 1)
-
-        val firstRow = df.first()
-        assert(firstRow.getLong(0) == 499500)
-        assert(firstRow.getString(1) == "val#9")
-      }
-    })
+  private def assertCometScan(df: DataFrame): Unit = {
+    val scans = collect(df.queryExecution.executedPlan) {
+      case p: CometScanExec => p
+      case p: CometNativeScanExec => p
+    }
+    assert(scans.size == 1)
   }
 
-  test("read parquet file from MinIO with URL escape sequences in path") {
-    // Path with '%20' which is a URL escape for space
-    val testFilePath = s"s3a://$testBucketName/data/test%20file.parquet"
+  test("read parquet file from MinIO") {
+    val testFilePath = s"s3a://$testBucketName/data/test-file.parquet"
     writeTestParquetFile(testFilePath)
 
     val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
-    val scans = collect(df.queryExecution.executedPlan) {
-      case p: CometScanExec =>
-        p
-      case p: CometNativeScanExec =>
-        p
-    }
-    assert(scans.size == 1)
+    assertCometScan(df)
+    assert(df.first().getLong(0) == 499500)
+  }
 
+  test("read partitioned parquet file from MinIO") {
+    val testFilePath = s"s3a://$testBucketName/data/test-partitioned-file.parquet"
+    writePartitionedParquetFile(testFilePath)
+
+    val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")), max(col("val")))
+    val firstRow = df.first()
+    assert(firstRow.getLong(0) == 499500)
+    assert(firstRow.getString(1) == "val#9")
+  }
+
+  test("read parquet file from MinIO with URL escape sequences in path") {
+    // Path with '%23' and '%20' which are URL escape sequences for '#' and ' '
+    val testFilePath = s"s3a://$testBucketName/data/Brand%2321/test%20file.parquet"
+    writeTestParquetFile(testFilePath)
+
+    val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
+    assertCometScan(df)
     assert(df.first().getLong(0) == 499500)
   }
 }
