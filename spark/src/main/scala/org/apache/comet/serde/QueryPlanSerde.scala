@@ -203,7 +203,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       supportedDataType(a.elementType, allowComplex)
     case m: MapType if allowComplex =>
       supportedDataType(m.keyType, allowComplex) && supportedDataType(m.valueType, allowComplex)
-    case dt =>
+    case _ =>
       false
   }
 
@@ -2217,10 +2217,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
           Some(builder.setScan(scanBuilder).build())
         } else {
           // There are unsupported scan type
-          val msg =
-            withInfo(
-              op,
-              s"unsupported Comet operator: ${op.nodeName}, due to unsupported data types above")
+          withInfo(
+            op,
+            s"unsupported Comet operator: ${op.nodeName}, due to unsupported data types above")
           None
         }
 
