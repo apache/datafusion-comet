@@ -1745,11 +1745,9 @@ impl PhysicalPlanner {
                     })
                     .collect();
 
-                let child_copied = Self::wrap_in_copy_exec(Arc::clone(&child.native_plan));
-
                 let window_agg = Arc::new(BoundedWindowAggExec::try_new(
                     window_expr?,
-                    child_copied,
+                    Arc::clone(&child.native_plan),
                     InputOrderMode::Sorted,
                     !partition_exprs.is_empty(),
                 )?);
