@@ -41,7 +41,6 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.comet.exec.replaceSortMergeJoin=true \
-    --conf spark.comet.explain.native.enabled=true \
     --conf spark.comet.cast.allowIncompatible=true \
     tpcbench.py \
     --name comet \
