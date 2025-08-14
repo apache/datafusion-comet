@@ -1587,9 +1587,12 @@ impl PhysicalPlanner {
                     })
                     .collect();
 
+                let left = Self::wrap_in_copy_exec(Arc::clone(&join_params.left.native_plan));
+                let right = Self::wrap_in_copy_exec(Arc::clone(&join_params.right.native_plan));
+
                 let join = Arc::new(SortMergeJoinExec::try_new(
-                    Arc::clone(&join_params.left.native_plan),
-                    Arc::clone(&join_params.right.native_plan),
+                    Arc::clone(&left),
+                    Arc::clone(&right),
                     join_params.join_on,
                     join_params.join_filter,
                     join_params.join_type,

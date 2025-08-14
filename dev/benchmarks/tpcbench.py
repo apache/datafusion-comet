@@ -62,6 +62,9 @@ def main(benchmark: str, data_path: str, query_path: str, iterations: int, outpu
         iter_start_time = time.time()
 
         for query in range(1, num_queries+1):
+            if query != 9:
+                continue
+
             spark.sparkContext.setJobDescription(f"{benchmark} q{query}")
 
             # read text file
