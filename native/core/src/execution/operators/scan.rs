@@ -101,14 +101,7 @@ impl ScanExec {
         let copy_arrays = match input_source_description {
             source if source.contains("native_comet") => true,
             source if source.contains("native_iceberg_compat") => true,
-            source if source.contains("BroadcastQueryStage") => false,
-            source if source.contains("ShuffleQueryStage") => false,
-            _ => {
-                // take cautious approach for anything else because it could be backed
-                // by a Parquet scan
-                println!("ScanExec default to copying for {input_source_description}");
-                true
-            }
+            _ => false,
         };
 
         // Scan's schema is determined by the input batch, so we need to set it before execution.
