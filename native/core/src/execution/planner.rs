@@ -1600,9 +1600,12 @@ impl PhysicalPlanner {
                     })
                     .collect();
 
+                let left = Self::wrap_in_copy_exec(Arc::clone(&join_params.left.native_plan));
+                let right = Self::wrap_in_copy_exec(Arc::clone(&join_params.right.native_plan));
+
                 let join = Arc::new(SortMergeJoinExec::try_new(
-                    Arc::clone(&join_params.left.native_plan),
-                    Arc::clone(&join_params.right.native_plan),
+                    Arc::clone(&left),
+                    Arc::clone(&right),
                     join_params.join_on,
                     join_params.join_filter,
                     join_params.join_type,
@@ -1742,9 +1745,11 @@ impl PhysicalPlanner {
                     })
                     .collect();
 
+                let child_copied = Self::wrap_in_copy_exec(Arc::clone(&child.native_plan));
+
                 let window_agg = Arc::new(BoundedWindowAggExec::try_new(
                     window_expr?,
-                    Arc::clone(&child.native_plan),
+                    child_copied,
                     InputOrderMode::Sorted,
                     !partition_exprs.is_empty(),
                 )?);
@@ -2609,8 +2614,15 @@ impl From<ExpressionError> for DataFusionError {
 fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
     if op.as_any().is::<ScanExec>() {
         let scan = op.as_any().downcast_ref::<ScanExec>().unwrap();
-        // native_comet and native_iceberg_compat scans have buffer reu
-        scan.has_buffer_reuse
+        if scan.has_buffer_reuse {
+            // native_comet and native_iceberg_compat scans reuse mutable Parquet buffers
+            true
+        } else {
+            // scans other than native_comet and native_iceberg_compat, such as
+            // reading broadcast and shuffle exchanges should not be able to reuse their
+            // input batches
+            false
+        }
     } else if op.as_any().is::<CopyExec>() {
         let copy_exec = op.as_any().downcast_ref::<CopyExec>().unwrap();
         copy_exec.mode() == &CopyMode::UnpackOrClone && can_reuse_input_batch(copy_exec.input())
