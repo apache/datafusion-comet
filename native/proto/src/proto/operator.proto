@@ -76,8 +76,8 @@ message Scan {
   // is purely for informational purposes when viewing native query plans in
   // debug mode.
   string source = 2;
-  // we need to specialize if the source is native_comet scan (either directly,
-  // or via Iceberg) because the native code needs to insert CopyExec nodes to
+  // we need to specialize if the source is native_comet or native_iceberg_compat scan (either
+  // directly or via Iceberg) because the native code needs to insert CopyExec nodes to
   // avoid memory corruption issues due to the reuse of mutable buffers
   bool has_buffer_reuse = 3;
 }

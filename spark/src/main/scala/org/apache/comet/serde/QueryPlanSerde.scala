@@ -2194,7 +2194,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
             case batchScan: CometBatchScanExec if batchScan.scan.isInstanceOf[SupportsComet] =>
               // Iceberg integration
               true
-            case scan: CometScanExec =>
+            case _: CometScanExec =>
               // native_comet and native_iceberg_compat have buffer reuse
               true
             case CometScanWrapper(_, scan) =>
