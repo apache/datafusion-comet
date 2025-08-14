@@ -64,6 +64,8 @@ pub struct ScanExec {
     pub input_source: Option<Arc<GlobalRef>>,
     /// A description of the input source for informational purposes
     pub input_source_description: String,
+    /// Whether to copy incoming arrays
+    copy_arrays: bool,
     /// The data types of columns of the input batch. Converted from Spark schema.
     pub data_types: Vec<DataType>,
     /// Schema of first batch
@@ -95,6 +97,14 @@ impl ScanExec {
         let arrow_ffi_time = MetricBuilder::new(&metrics_set).subset_time("arrow_ffi_time", 0);
         let jvm_fetch_time = MetricBuilder::new(&metrics_set).subset_time("jvm_fetch_time", 0);
 
+        let copy_arrays = input_source_description.contains("native_comet")
+            || input_source_description.contains("native_iceberg_compat");
+
+        println!(
+            "*** {} -> copy_arrays = {copy_arrays}",
+            input_source_description
+        );
+
         // Scan's schema is determined by the input batch, so we need to set it before execution.
         // Note that we determine if arrays are dictionary-encoded based on the
         // first batch. The array may be dictionary-encoded in some batches and not others, and
@@ -109,6 +119,7 @@ impl ScanExec {
                 data_types.len(),
                 &jvm_fetch_time,
                 &arrow_ffi_time,
+                copy_arrays,
             )?;
             timer.stop();
             batch
@@ -131,6 +142,7 @@ impl ScanExec {
             exec_context_id,
             input_source,
             input_source_description: input_source_description.to_string(),
+            copy_arrays,
             data_types,
             batch: Arc::new(Mutex::new(Some(first_batch))),
             cache,
@@ -187,6 +199,7 @@ impl ScanExec {
                 self.data_types.len(),
                 &self.jvm_fetch_time,
                 &self.arrow_ffi_time,
+                self.copy_arrays,
             )?;
             *current_batch = Some(next_batch);
         }
@@ -203,6 +216,7 @@ impl ScanExec {
         num_cols: usize,
         jvm_fetch_time: &Time,
         arrow_ffi_time: &Time,
+        make_copy: bool,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             // This is a unit test. We don't need to call JNI.
@@ -281,10 +295,13 @@ impl ScanExec {
 
             let array = make_array(array_data);
 
-            // we copy the array to that we don't have to worry about potential memory
-            // corruption issues later on if underlying buffers are reused or freed
-            // TODO optimize this so that we only do this for Parquet inputs!
-            let array = copy_array(&array);
+            let array = if make_copy {
+                // we copy the array to that we don't have to worry about potential memory
+                // corruption issues later on if underlying buffers are reused or freed
+                copy_array(&array)
+            } else {
+                array
+            };
 
             inputs.push(array);
 
