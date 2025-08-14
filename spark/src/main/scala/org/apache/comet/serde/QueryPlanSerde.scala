@@ -192,10 +192,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Corr] -> CometCorr,
     classOf[BloomFilterAggregate] -> CometBloomFilterAggregate)
 
-  def emitWarning(reason: String): Unit = {
-    logWarning(s"Comet native execution is disabled due to: $reason")
-  }
-
   def supportedDataType(dt: DataType, allowComplex: Boolean = false): Boolean = dt match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
@@ -236,7 +232,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case _: MapType => 15
       case _: StructType => 16
       case dt =>
-        emitWarning(s"Cannot serialize Spark data type: $dt")
+        logWarning(s"Cannot serialize Spark data type: $dt")
         return None
     }
 

@@ -54,21 +54,27 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
   private def applyCometShuffle(plan: SparkPlan): SparkPlan = {
     plan.transformUp {
-      case s: ShuffleExchangeExec
-          if isCometPlan(s.child) && isCometNativeShuffleMode(conf) &&
-            nativeShuffleSupported(s)._1 =>
-        // Switch to use Decimal128 regardless of precision, since Arrow native execution
-        // doesn't support Decimal32 and Decimal64 yet.
-        conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
-        CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
-
-      // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
-      // (if configured)
-      case s: ShuffleExchangeExec
-          if (!s.child.supportsColumnar || isCometPlan(s.child)) && isCometJVMShuffleMode(conf) &&
-            columnarShuffleSupported(s)._1 &&
-            !isShuffleOperator(s.child) =>
-        CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
+      case s: ShuffleExchangeExec =>
+        if (isCometPlan(s.child) && isCometNativeShuffleMode(conf)) {
+          val nativeSupported = nativeShuffleSupported(s)
+          if (nativeSupported._1) {
+            // Switch to use Decimal128 regardless of precision, since Arrow native execution
+            // doesn't support Decimal32 and Decimal64 yet.
+            conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
+            CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
+          } else if ((!s.child.supportsColumnar || isCometPlan(s.child)) && isCometJVMShuffleMode(conf)) {
+            val columnarSupported = columnarShuffleSupported(s)
+            if (columnarSupported._1 && !isShuffleOperator(s.child)) {
+              CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
+            } else {
+              s
+            }
+          } else {
+            s
+          }
+        } else {
+          s
+        }
     }
   }
 
@@ -824,7 +830,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
 
     if (!supported) {
-      emitWarning(msg)
       (false, msg)
     } else {
       (true, null)
@@ -870,7 +875,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
 
     if (!supported) {
-      emitWarning(msg)
       (false, msg)
     } else {
       (true, null)
