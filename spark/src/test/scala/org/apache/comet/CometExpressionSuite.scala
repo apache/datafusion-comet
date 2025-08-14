@@ -468,7 +468,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("ANSI support for divide") {
     val data = Seq((Integer.MIN_VALUE, 0))
-    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true",CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
       "spark.comet.explainFallback.enabled" -> "true") {
       withParquetTable(data, "tbl") {
         val res = spark.sql("""
