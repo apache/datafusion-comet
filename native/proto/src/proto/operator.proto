@@ -76,6 +76,10 @@ message Scan {
   // is purely for informational purposes when viewing native query plans in
   // debug mode.
   string source = 2;
+  // we need to specialize if the source is native_comet scan (either directly,
+  // or via Iceberg) because the native code needs to insert CopyExec nodes to
+  // avoid memory corruption issues due to the reuse of mutable buffers
+  bool has_buffer_reuse = 3;
 }
 
 message NativeScan {
@@ -109,7 +113,6 @@ message Projection {
 
 message Filter {
   spark.spark_expression.Expr predicate = 1;
-  bool use_datafusion_filter = 2;
   // Some expressions don't support dictionary arrays, so may need to wrap the child in a CopyExec
   bool wrap_child_in_copy_exec = 3;
 }

@@ -1178,25 +1178,17 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                let filter: Arc<dyn ExecutionPlan> =
-                    match (filter.wrap_child_in_copy_exec, filter.use_datafusion_filter) {
-                        (true, true) => Arc::new(DataFusionFilterExec::try_new(
-                            predicate,
-                            Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
-                        )?),
-                        (true, false) => Arc::new(CometFilterExec::try_new(
-                            predicate,
-                            Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
-                        )?),
-                        (false, true) => Arc::new(DataFusionFilterExec::try_new(
-                            predicate,
-                            Arc::clone(&child.native_plan),
-                        )?),
-                        (false, false) => Arc::new(CometFilterExec::try_new(
-                            predicate,
-                            Arc::clone(&child.native_plan),
-                        )?),
-                    };
+                let filter: Arc<dyn ExecutionPlan> = if filter.wrap_child_in_copy_exec {
+                    Arc::new(DataFusionFilterExec::try_new(
+                        predicate,
+                        Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
+                    )?)
+                } else {
+                    Arc::new(DataFusionFilterExec::try_new(
+                        predicate,
+                        Arc::clone(&child.native_plan),
+                    )?)
+                };
 
                 Ok((
                     scans,
@@ -1477,8 +1469,13 @@ impl PhysicalPlanner {
                     };
 
                 // The `ScanExec` operator will take actual arrays from Spark during execution
-                let scan =
-                    ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?;
+                let scan = ScanExec::new(
+                    self.exec_context_id,
+                    input_source,
+                    &scan.source,
+                    data_types,
+                    scan.has_buffer_reuse,
+                )?;
 
                 Ok((
                     vec![scan.clone()],
@@ -2611,9 +2608,9 @@ impl From<ExpressionError> for DataFusionError {
 /// data corruption from reusing the input batch.
 fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
     if op.as_any().is::<ScanExec>() {
-        // JVM side can return arrow buffers to the pool
-        // Also, native_comet scan reuses mutable buffers
-        true
+        let scan = op.as_any().downcast_ref::<ScanExec>().unwrap();
+        // native_comet and native_iceberg_compat scans have buffer reu
+        scan.has_buffer_reuse
     } else if op.as_any().is::<CopyExec>() {
         let copy_exec = op.as_any().downcast_ref::<CopyExec>().unwrap();
         copy_exec.mode() == &CopyMode::UnpackOrClone && can_reuse_input_batch(copy_exec.input())
@@ -2880,6 +2877,7 @@ mod tests {
                     type_info: None,
                 }],
                 source: "".to_string(),
+                has_buffer_reuse: true,
             })),
         };
 
@@ -2953,6 +2951,7 @@ mod tests {
                     type_info: None,
                 }],
                 source: "".to_string(),
+                has_buffer_reuse: true,
             })),
         };
 
@@ -3104,7 +3103,6 @@ mod tests {
             children: vec![child_op],
             op_struct: Some(OpStruct::Filter(spark_operator::Filter {
                 predicate: Some(expr),
-                use_datafusion_filter: false,
                 wrap_child_in_copy_exec: false,
             })),
         }
@@ -3164,6 +3162,7 @@ mod tests {
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![create_proto_datatype()],
                 source: "".to_string(),
+                has_buffer_reuse: false,
             })),
         }
     }
@@ -3206,6 +3205,7 @@ mod tests {
                     },
                 ],
                 source: "".to_string(),
+                has_buffer_reuse: true,
             })),
         };
 
@@ -3320,6 +3320,7 @@ mod tests {
                     },
                 ],
                 source: "".to_string(),
+                has_buffer_reuse: true,
             })),
         };
 
