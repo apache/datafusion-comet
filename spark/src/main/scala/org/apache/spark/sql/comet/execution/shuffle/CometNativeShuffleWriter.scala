@@ -142,6 +142,7 @@ class CometNativeShuffleWriter[K, V](
 
   private def getNativePlan(dataFile: String, indexFile: String): Operator = {
     val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("ShuffleWriterInput")
+      .setHasBufferReuse(true) // TODO why is this needed?
     val opBuilder = OperatorOuterClass.Operator.newBuilder()
 
     val scanTypes = outputAttributes.flatten { attr =>

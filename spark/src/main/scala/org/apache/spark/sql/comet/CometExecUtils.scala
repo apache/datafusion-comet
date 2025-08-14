@@ -94,6 +94,7 @@ object CometExecUtils {
       limit: Int,
       offset: Int = 0): Option[Operator] = {
     val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("LimitInput")
+      .setHasBufferReuse(true) // TODO is this needed?
     val scanOpBuilder = OperatorOuterClass.Operator.newBuilder()
 
     val scanTypes = outputAttributes.flatten { attr =>
@@ -126,6 +127,7 @@ object CometExecUtils {
       limit: Int,
       offset: Int = 0): Option[Operator] = {
     val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("TopKInput")
+      .setHasBufferReuse(true) // TODO is this needed?
     val scanOpBuilder = OperatorOuterClass.Operator.newBuilder()
 
     val scanTypes = outputAttributes.flatten { attr =>
