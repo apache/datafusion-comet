@@ -75,6 +75,7 @@ macro_rules! make_comet_scalar_udf {
     }};
 }
 
+/// Create a physical scalar function.
 pub fn create_comet_physical_fun(
     fun_name: &str,
     data_type: DataType,
@@ -90,7 +91,7 @@ pub fn create_comet_physical_fun(
     )
 }
 
-/// Create a physical scalar function.
+/// Create a physical scalar function with eval mode. Goal is to deprecate above function once all the operators have ANSI support
 pub fn create_comet_physical_fun_with_eval_mode(
     fun_name: &str,
     data_type: DataType,
@@ -98,7 +99,6 @@ pub fn create_comet_physical_fun_with_eval_mode(
     fail_on_error: Option<bool>,
     eval_mode: EvalMode,
 ) -> Result<Arc<ScalarUDF>, DataFusionError> {
-    println!("creating spark physical plan with eval mode ANSI");
     match fun_name {
         "ceil" => {
             make_comet_scalar_udf!("ceil", spark_ceil, data_type)
