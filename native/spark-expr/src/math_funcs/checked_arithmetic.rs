@@ -19,7 +19,7 @@ use arrow::array::{Array, ArrowNativeTypeOp, PrimitiveArray, PrimitiveBuilder};
 use arrow::array::{ArrayRef, AsArray};
 
 use crate::EvalMode;
-use arrow::datatypes::{ArrowPrimitiveType, DataType, Int32Type, Int64Type};
+use arrow::datatypes::{ArrowPrimitiveType, DataType, Float32Type, Float64Type, Int32Type, Int64Type};
 use datafusion::common::DataFusionError;
 use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
@@ -187,6 +187,18 @@ fn checked_arithmetic_internal(
         DataType::Int64 => try_arithmetic_kernel::<Int64Type>(
             left_arr.as_primitive::<Int64Type>(),
             right_arr.as_primitive::<Int64Type>(),
+            op,
+            is_ansi_mode,
+        ),
+        DataType::Float32 =>try_arithmetic_kernel::<Float32Type>(
+            left_arr.as_primitive::<Float32Type>(),
+            right_arr.as_primitive::<Float32Type>(),
+            op,
+            is_ansi_mode,
+        ),
+        DataType::Float64 =>try_arithmetic_kernel::<Float64Type>(
+            left_arr.as_primitive::<Float64Type>(),
+            right_arr.as_primitive::<Float64Type>(),
             op,
             is_ansi_mode,
         ),
