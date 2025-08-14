@@ -41,7 +41,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -324,7 +324,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           |  try_add(NULL, 5),
           |  try_add(5, NULL),
           |  try_add(9223372036854775807, 1),
-          |  try_add(-9223372036854775808, -1)
+          |  try_add(-9223372036854775808, -1),
           |  from tbl
           |  """.stripMargin))
     }
@@ -394,16 +394,96 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("test coalesce lazy eval") {
+  test("ANSI support for add") {
+    assume(isSpark35Plus)
+    val data = Seq((Integer.MAX_VALUE, 1), (Integer.MIN_VALUE, -1))
     withSQLConf(
       SQLConf.ANSI_ENABLED.key -> "true",
-      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
-      val data = Seq((9999999999999L, 0))
-      withParquetTable(data, "t1") {
+      CometConf.COMET_ANSI_MODE_ENABLED.key -> "true") {
+      withParquetTable(data, "tbl") {
+        spark.table("tbl").printSchema()
         val res = spark.sql("""
-            |SELECT coalesce(_1, CAST(_1 AS TINYINT)) from t1;
-            |  """.stripMargin)
-        checkSparkAnswerAndOperator(res)
+             |SELECT
+             |  _1 + _2
+             |  from tbl
+             |  """.stripMargin)
+
+        checkSparkMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            val cometErrorPattern =
+              """org.apache.comet.CometNativeException: checked_add : [ARITHMETIC_OVERFLOW] integer overflow"""
+            assert(cometExc.getMessage.contains(cometErrorPattern))
+            assert(sparkExc.getMessage.contains("overflow"))
+          case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+  }
+
+  test("ANSI support for subtract") {
+    val data = Seq((Integer.MIN_VALUE, 1))
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true", "spark.comet.ansi.enabled" -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+                              |SELECT
+                              |  _1 - _2
+                              |  from tbl
+                              |  """.stripMargin)
+
+        checkSparkMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            val cometErrorPattern =
+              """org.apache.comet.CometNativeException: checked_sub : [ARITHMETIC_OVERFLOW] integer overflow"""
+            assert(cometExc.getMessage.contains(cometErrorPattern))
+            assert(sparkExc.getMessage.contains("overflow"))
+          case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+  }
+
+  test("ANSI support for multiply") {
+    val data = Seq((Integer.MAX_VALUE, 10))
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ANSI_MODE_ENABLED.key -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+                              |SELECT
+                              |  _1 * _2
+                              |  from tbl
+                              |  """.stripMargin)
+
+        checkSparkMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            val cometErrorPattern =
+              """org.apache.comet.CometNativeException: checked_mul : [ARITHMETIC_OVERFLOW] integer overflow"""
+            assert(cometExc.getMessage.contains(cometErrorPattern))
+            assert(sparkExc.getMessage.contains("overflow"))
+          case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+  }
+
+  test("ANSI support for divide") {
+    val data = Seq((Integer.MIN_VALUE, 0))
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true",CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
+      "spark.comet.explainFallback.enabled" -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+                              |SELECT
+                              |  _1 / _2
+                              |  from tbl
+                              |  """.stripMargin)
+        checkSparkMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            val cometErrorPattern =
+              """org.apache.comet.CometNativeException: checked_div : [ARITHMETIC_OVERFLOW] integer overflow"""
+            assert(cometExc.getMessage.contains(cometErrorPattern))
+            assert(sparkExc.getMessage.contains("Division by zero"))
+          case _ => fail("Exception should be thrown")
+        }
       }
     }
   }
