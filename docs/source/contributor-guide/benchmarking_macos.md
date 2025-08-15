@@ -61,16 +61,6 @@ Start Spark in standalone mode:
 $SPARK_HOME/sbin/start-master.sh
 ```
 
-Note: For Apache Spark distributions installed using `brew` tool, it may happen there is no `$SPARK_HOME/sbin` folder on your machine. However it is still possible to start Apache Spark master by running command
-```shell
-$SPARK_HOME/bin/spark-class org.apache.spark.deploy.master.Master
-```
-
-Once master has started, look for output to find Master endpoint URI, like 
-```shell
-INFO Master: Starting Spark master at spark://192.168.4.142:7078
-```
-
 Set `SPARK_MASTER` env var (host name will need to be edited):
 
 ```shell
@@ -82,6 +72,17 @@ export SPARK_MASTER=spark://Rustys-MacBook-Pro.local:7077
 $SPARK_HOME/sbin/start-worker.sh $SPARK_MASTER
 ```
 
+### Start local Apache Spark cluster using `spark-class`
+For Apache Spark distributions installed using `brew` tool, it may happen there is no `$SPARK_HOME/sbin` folder on your machine. 
+In order to start local Apache Spark cluster on `localhost:7077` port, run: 
+```shell
+$SPARK_HOME/bin/spark-class org.apache.spark.deploy.master.Master --host 127.0.0.1 --port 7077 --webui-port 8080
+```
+
+Once master has started, in separate console start the worker referring the spark master uri on `localhost:7077`
+```shell
+$SPARK_HOME/bin/spark-class org.apache.spark.deploy.worker.Worker --cores 8 --memory 16G spark://localhost:7077
+```
 
 ## Run Spark Benchmarks
 
