@@ -54,17 +54,14 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   private def applyCometShuffle(plan: SparkPlan): SparkPlan = {
     plan.transformUp {
       case s: ShuffleExchangeExec if nativeShuffleSupported(s) =>
-        logInfo("Comet extension enabled for Native Shuffle")
-
         // Switch to use Decimal128 regardless of precision, since Arrow native execution
         // doesn't support Decimal32 and Decimal64 yet.
         conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
         CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
 
-      // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
-      // (if configured)
       case s: ShuffleExchangeExec if columnarShuffleSupported(s) =>
-        logInfo("Comet extension enabled for JVM Columnar Shuffle")
+        // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
+        // (if configured)
         CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
     }
   }
