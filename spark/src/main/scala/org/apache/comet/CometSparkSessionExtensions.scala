@@ -30,6 +30,7 @@ import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNode
 import org.apache.spark.sql.comet._
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
@@ -39,6 +40,7 @@ import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.execution.datasources.v2.json.JsonScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
+import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
@@ -143,6 +145,18 @@ object CometSparkSessionExtensions extends Logging {
   // 3. Off-heap memory is enabled || Spark/Comet unit testing
   private[comet] def isCometShuffleEnabled(conf: SQLConf): Boolean =
     COMET_EXEC_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf)
+
+  def isCometShuffleEnabledWithInfo(s: ShuffleExchangeExec): Boolean = {
+    if (!COMET_EXEC_SHUFFLE_ENABLED.get(s.conf)) {
+      withInfo(s, s"${COMET_EXEC_SHUFFLE_ENABLED.key} is not enabled")
+      false
+    } else if (!isCometShuffleManagerEnabled(s.conf)) {
+      withInfo(s, s"spark.shuffle.manager is not set to ${CometShuffleManager.getClass.getName}")
+      false
+    } else {
+      true
+    }
+  }
 
   private def isCometShuffleManagerEnabled(conf: SQLConf) = {
     conf.contains("spark.shuffle.manager") && conf.getConfString("spark.shuffle.manager") ==

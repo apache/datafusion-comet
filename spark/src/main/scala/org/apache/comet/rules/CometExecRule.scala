@@ -765,8 +765,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         false
     }
 
-    if (!isCometShuffleEnabled(s.conf)) {
-      withInfo(s, "Comet shuffle not enabled")
+    if (!isCometShuffleEnabledWithInfo(s)) {
       return false
     }
 
@@ -818,8 +817,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
    */
   private def columnarShuffleSupported(s: ShuffleExchangeExec): Boolean = {
 
-    if (!isCometShuffleEnabled(s.conf)) {
-      withInfo(s, "Comet shuffle not enabled")
+    if (!isCometShuffleEnabledWithInfo(s)) {
       return false
     }
 
