@@ -18,7 +18,6 @@
 //! Converts Spark physical plan to DataFusion physical plan
 
 use crate::execution::operators::CopyMode;
-use crate::execution::operators::FilterExec as CometFilterExec;
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -93,7 +92,7 @@ use arrow::array::{
 use arrow::buffer::BooleanBuffer;
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
-use datafusion::physical_plan::filter::FilterExec as DataFusionFilterExec;
+use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
 use datafusion_comet_proto::{
@@ -1178,25 +1177,17 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                let filter: Arc<dyn ExecutionPlan> =
-                    match (filter.wrap_child_in_copy_exec, filter.use_datafusion_filter) {
-                        (true, true) => Arc::new(DataFusionFilterExec::try_new(
-                            predicate,
-                            Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
-                        )?),
-                        (true, false) => Arc::new(CometFilterExec::try_new(
-                            predicate,
-                            Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
-                        )?),
-                        (false, true) => Arc::new(DataFusionFilterExec::try_new(
-                            predicate,
-                            Arc::clone(&child.native_plan),
-                        )?),
-                        (false, false) => Arc::new(CometFilterExec::try_new(
-                            predicate,
-                            Arc::clone(&child.native_plan),
-                        )?),
-                    };
+                let filter: Arc<dyn ExecutionPlan> = if filter.wrap_child_in_copy_exec {
+                    Arc::new(FilterExec::try_new(
+                        predicate,
+                        Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
+                    )?)
+                } else {
+                    Arc::new(FilterExec::try_new(
+                        predicate,
+                        Arc::clone(&child.native_plan),
+                    )?)
+                };
 
                 Ok((
                     scans,
@@ -1564,14 +1555,7 @@ impl PhysicalPlanner {
                 // the data corruption. Note that we only need to copy the input batch
                 // if the child operator is `ScanExec`, because other operators after `ScanExec`
                 // will create new arrays for the output batch.
-                let input = if can_reuse_input_batch(&child.native_plan) {
-                    Arc::new(CopyExec::new(
-                        Arc::clone(&child.native_plan),
-                        CopyMode::UnpackOrDeepCopy,
-                    ))
-                } else {
-                    Arc::clone(&child.native_plan)
-                };
+                let input = Arc::clone(&child.native_plan);
                 let expand = Arc::new(ExpandExec::new(projections, input, schema));
                 Ok((
                     scans,
@@ -1901,14 +1885,9 @@ impl PhysicalPlanner {
         ))
     }
 
-    /// Wrap an ExecutionPlan in a CopyExec, which will unpack any dictionary-encoded arrays
-    /// and make a deep copy of other arrays if the plan re-uses batches.
+    /// Wrap an ExecutionPlan in a CopyExec, which will unpack any dictionary-encoded arrays.
     fn wrap_in_copy_exec(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-        if can_reuse_input_batch(&plan) {
-            Arc::new(CopyExec::new(plan, CopyMode::UnpackOrDeepCopy))
-        } else {
-            Arc::new(CopyExec::new(plan, CopyMode::UnpackOrClone))
-        }
+        Arc::new(CopyExec::new(plan, CopyMode::UnpackOrClone))
     }
 
     /// Create a DataFusion physical aggregate expression from Spark physical aggregate expression
@@ -2609,32 +2588,6 @@ impl From<ExpressionError> for DataFusionError {
     }
 }
 
-/// Returns true if given operator can return input array as output array without
-/// modification. This is used to determine if we need to copy the input batch to avoid
-/// data corruption from reusing the input batch.
-fn can_reuse_input_batch(op: &Arc<dyn ExecutionPlan>) -> bool {
-    if op.as_any().is::<ScanExec>() {
-        // native_comet and native_iceberg_compat scan reuse mutable buffers
-        // so we need to make copies of the batches
-        // for now, we also copy even if the source is not a Parquet scan, but
-        // we will optimize this later
-        true
-    } else if op.as_any().is::<CopyExec>() {
-        let copy_exec = op.as_any().downcast_ref::<CopyExec>().unwrap();
-        copy_exec.mode() == &CopyMode::UnpackOrClone && can_reuse_input_batch(copy_exec.input())
-    } else if op.as_any().is::<CometFilterExec>() {
-        // CometFilterExec guarantees that all arrays have been copied
-        false
-    } else {
-        for child in op.children() {
-            if can_reuse_input_batch(child) {
-                return true;
-            }
-        }
-        false
-    }
-}
-
 /// Collects the indices of the columns in the input schema that are used in the expression
 /// and returns them as a pair of vectors, one for the left side and one for the right side.
 fn expr_to_columns(
@@ -3109,7 +3062,6 @@ mod tests {
             children: vec![child_op],
             op_struct: Some(OpStruct::Filter(spark_operator::Filter {
                 predicate: Some(expr),
-                use_datafusion_filter: false,
                 wrap_child_in_copy_exec: false,
             })),
         }
@@ -3123,7 +3075,7 @@ mod tests {
 
         let (_scans, filter_exec) = planner.create_plan(&op, &mut vec![], 1).unwrap();
 
-        assert_eq!("CometFilterExec", filter_exec.native_plan.name());
+        assert_eq!("FilterExec", filter_exec.native_plan.name());
         assert_eq!(1, filter_exec.children.len());
         assert_eq!(0, filter_exec.additional_native_plans.len());
     }
