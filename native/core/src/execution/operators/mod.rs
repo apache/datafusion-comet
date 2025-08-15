@@ -22,14 +22,11 @@ use std::fmt::Debug;
 use jni::objects::GlobalRef;
 
 pub use copy::*;
-pub use filter::comet_filter_record_batch;
-pub use filter::FilterExec;
 pub use scan::*;
 
 mod copy;
 mod expand;
 pub use expand::ExpandExec;
-mod filter;
 mod scan;
 
 /// Error returned during executing operators.
