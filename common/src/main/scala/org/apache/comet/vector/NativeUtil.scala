@@ -99,6 +99,9 @@ class NativeUtil {
         case a: CometVector =>
           val valueVector = a.getValueVector
 
+          // scalastyle:off println
+          println("exporting array from jvm to native: " + valueVector)
+
           numRows += valueVector.getValueCount
 
           val provider = if (valueVector.getField.getDictionary != null) {
@@ -185,10 +188,15 @@ class NativeUtil {
 
       // Native execution should always have 'useDecimal128' set to true since it doesn't support
       // other cases.
-      arrayVectors += CometVector.getVector(
+      val cometVector = CometVector.getVector(
         importer.importVector(arrowArray, arrowSchema, dictionaryProvider),
         true,
         dictionaryProvider)
+
+      // scalastyle:off
+      println(s"importVector $cometVector")
+
+      arrayVectors += cometVector
     }
     arrayVectors.toSeq
   }

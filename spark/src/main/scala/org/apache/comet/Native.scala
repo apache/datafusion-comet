@@ -175,7 +175,8 @@ class Native extends NativeBase {
       length: Int,
       arrayAddrs: Array[Long],
       schemaAddrs: Array[Long],
-      tracingEnabled: Boolean): Long
+      tracingEnabled: Boolean,
+      debug: Boolean): Long
 
   /**
    * Log the beginning of an event.

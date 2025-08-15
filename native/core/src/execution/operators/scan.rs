@@ -306,7 +306,7 @@ impl ScanExec {
             let array_data = ArrayData::from_spark((array_ptr, schema_ptr))?;
 
             // TODO: validate array input data
-            // array_data.validate_full()?;
+            array_data.validate_full()?;
 
             let array = make_array(array_data);
 
@@ -513,6 +513,11 @@ impl Stream for ScanStream<'_> {
             InputBatch::Batch(columns, num_rows) => {
                 self.baseline_metrics.record_output(*num_rows);
                 let maybe_batch = self.build_record_batch(columns, *num_rows);
+
+                if let Ok(batch) = &maybe_batch {
+                    println!("native got batch from jvm: {:?}", batch);
+                }
+
                 Poll::Ready(Some(maybe_batch))
             }
         };

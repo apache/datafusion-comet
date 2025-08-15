@@ -69,6 +69,7 @@ public class CometBatchIterator {
     if (currentBatch == null) {
       return -1;
     }
+
     int numRows = nativeUtil.exportBatch(arrayAddrs, schemaAddrs, currentBatch);
     currentBatch = null;
     return numRows;

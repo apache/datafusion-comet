@@ -134,6 +134,7 @@ class CometJoinSuite extends CometTestBase {
   test("repro for memory corruption") {
     withSQLConf(
       "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
+      CometConf.COMET_DEBUG_ENABLED.key -> "true",
       SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
       SQLConf.SHUFFLE_PARTITIONS.key -> "2",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",

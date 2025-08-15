@@ -305,8 +305,16 @@ fn prepare_output(
     array_addrs: jlongArray,
     schema_addrs: jlongArray,
     output_batch: RecordBatch,
-    validate: bool,
+    stage_id: jint,
+    debug: bool,
 ) -> CometResult<jlong> {
+    if debug {
+        println!(
+            "prepare_output stage_id={stage_id} (passing batch from native to JVM):\n{:?}",
+            output_batch
+        );
+    }
+
     let array_address_array = unsafe { JLongArray::from_raw(array_addrs) };
     let num_cols = env.get_array_length(&array_address_array)? as usize;
 
@@ -332,7 +340,7 @@ fn prepare_output(
             )));
         }
 
-        if validate {
+        if debug {
             // Validate the output arrays.
             for array in results.iter() {
                 let array_data = array.to_data();
@@ -359,13 +367,17 @@ fn prepare_output(
 
                 assert_eq!(new_array.offset(), 0);
 
-                new_array
-                    .to_data()
-                    .move_to_spark(array_addrs[i], schema_addrs[i])?;
+                let data = new_array.to_data();
+                if debug {
+                    data.validate_full()?;
+                }
+                data.move_to_spark(array_addrs[i], schema_addrs[i])?;
             } else {
-                array_ref
-                    .to_data()
-                    .move_to_spark(array_addrs[i], schema_addrs[i])?;
+                let data = array_ref.to_data();
+                if debug {
+                    data.validate_full()?;
+                }
+                data.move_to_spark(array_addrs[i], schema_addrs[i])?;
             }
             i += 1;
         }
@@ -447,7 +459,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 if exec_context.explain_native {
                     let formatted_plan_str =
                         DisplayableExecutionPlan::new(root_op.native_plan.as_ref()).indent(true);
-                    info!("Comet native query plan:\n{formatted_plan_str:}");
+                    info!("Comet native query plan (Plan #{} Stage {} Partition {}):\n{formatted_plan_str:}",
+                        exec_context.root_op.as_ref().unwrap().plan_id, stage_id, partition);
                 }
 
                 let task_ctx = exec_context.session_ctx.task_ctx();
@@ -485,6 +498,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                             array_addrs,
                             schema_addrs,
                             output?,
+                            stage_id,
                             exec_context.debug_native,
                         );
                     }
@@ -528,6 +542,9 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
     _class: JClass,
     exec_context: jlong,
 ) {
+    // TODO this removes references to the last batch from the plan - is this safe?
+    println!("releasePlan");
+
     try_unwrap_or_throw(&e, |mut env| unsafe {
         let execution_context = get_execution_context(exec_context);
 
@@ -715,14 +732,19 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
     array_addrs: jlongArray,
     schema_addrs: jlongArray,
     tracing_enabled: jboolean,
+    debug: bool
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
-            let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
+            let raw_pointer: *mut u8 = env.get_direct_buffer_address(&byte_buffer)?;
             let length = length as usize;
             let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
             let batch = read_ipc_compressed(slice)?;
-            prepare_output(&mut env, array_addrs, schema_addrs, batch, false)
+            if debug {
+                println!("decode shuffle block from JVM DirectByteBuffer @ {:?}", raw_pointer);
+                println!("decoded batch: {batch:?}");
+            }
+            prepare_output(&mut env, array_addrs, schema_addrs, batch, 0, debug)
         })
     })
 }

@@ -167,7 +167,8 @@ case class NativeBatchDecoderIterator(
           bytesToRead.toInt,
           arrayAddrs,
           schemaAddrs,
-          CometConf.COMET_TRACING_ENABLED.get())
+          CometConf.COMET_TRACING_ENABLED.get(),
+          CometConf.COMET_DEBUG_ENABLED.get())
       })
     decodeTime.add(System.nanoTime() - startTime)
 
@@ -175,6 +176,10 @@ case class NativeBatchDecoderIterator(
   }
 
   def close(): Unit = {
+
+    // scalastyle:off println
+    println("Closing shuffle batch in JVM")
+
     synchronized {
       if (!isClosed) {
         if (currentBatch != null) {
