@@ -208,8 +208,9 @@ public abstract class CometVector extends ColumnVector {
 
   @Override
   public void close() {
-    System.out.println(
-        "[" + Thread.currentThread().getName() + "] CometVector.close() " + getValueVector());
+    String msg = "[" + Thread.currentThread().getName() + "] CometVector.close() " + getValueVector();
+    System.out.println(msg);
+    new RuntimeException(msg).printStackTrace();
     getValueVector().close();
   }
 
