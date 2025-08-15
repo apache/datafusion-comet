@@ -1241,10 +1241,10 @@ index 2665d7b..95647d7 100644
    }
  
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/TestBase.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/TestBase.java
-index de68351..0e39a32 100644
+index de68351..248f927 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/TestBase.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/TestBase.java
-@@ -77,6 +77,14 @@ public abstract class TestBase extends SparkTestHelperBase {
+@@ -77,6 +77,15 @@ public abstract class TestBase extends SparkTestHelperBase {
              .config(SQLConf.PARTITION_OVERWRITE_MODE().key(), "dynamic")
              .config("spark.hadoop." + METASTOREURIS.varname, hiveConf.get(METASTOREURIS.varname))
              .config("spark.sql.legacy.respectNullabilityInTextDatasetConversion", "true")
@@ -1256,6 +1256,7 @@ index de68351..0e39a32 100644
 +            .config("spark.memory.offHeap.size", "10g")
 +            .config("spark.comet.use.lazyMaterialization", "false")
 +            .config("spark.comet.schemaEvolution.enabled", "true")
++            .config("spark.comet.exec.broadcastExchange.enabled", "false")
              .enableHiveSupport()
              .getOrCreate();
  
