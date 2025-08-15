@@ -61,7 +61,6 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
 
    Getting Started <contributor-guide/contributing>
    Comet Plugin Overview <contributor-guide/plugin_overview>
-   Arrow FFI <contributor-guide/arrow-ffi>
    Development Guide <contributor-guide/development>
    Debugging Guide <contributor-guide/debugging>
    Benchmarking Guide <contributor-guide/benchmarking>
