@@ -2695,52 +2695,13 @@ fn create_case_expr(
     }
 }
 
-pub(crate) fn build_list_from_literal(data: ListLiteral) -> ArrayRef {
-    // --- Base case: no nested children → leaf node ---
-    if data.list_values.is_empty() {
-        // Create an Int32Array from the leaf values
-        Arc::new(Int32Array::from(data.int_values.clone())) as ArrayRef
-    } else {
-        // --- Recursive case: has nested children ---
-        // Build a ListArray for each child recursively
-        let child_arrays: Vec<ArrayRef> = data
-            .list_values
-            .iter()
-            .map(|c| build_list_from_literal(c.clone()))
-            .collect();
-
-        // Convert Vec<ArrayRef> into Vec<&dyn Array> for concat()
-        let child_refs: Vec<&dyn arrow::array::Array> =
-            child_arrays.iter().map(|a| a.as_ref()).collect();
-
-        // Concatenate all child arrays' *values* into one array
-        // Example: [[1,2,3], [4,5,6]] → values = [1,2,3,4,5,6]
-        let concat = arrow::compute::concat(&child_refs).unwrap();
-
-        // --- Build offsets for the parent list ---
-        let mut offsets = Vec::with_capacity(child_arrays.len() + 1);
-        offsets.push(0); // first list always starts at 0
-        let mut sum = 0;
-        for arr in &child_arrays {
-            sum += arr.len() as i32; // each child's length adds to total
-            offsets.push(sum); // store cumulative sum as next offset
-        }
-
-        // Create and return the parent ListArray
-        Arc::new(ListArray::new(
-            // Field: item type matches the concatenated child's type
-            FieldRef::from(Field::new("item", concat.data_type().clone(), true)),
-            OffsetBuffer::new(offsets.into()), // where each sublist starts/ends
-            concat,                            // the flattened values array
-            None,                              // no null bitmap at this level
-        ))
-    }
-}
 fn literal_to_array_ref(
     data_type: DataType,
     list_literal: ListLiteral,
 ) -> Result<ArrayRef, ExecutionError> {
     let nulls = &list_literal.null_mask;
+    dbg!(&data_type);
+    dbg!(&list_literal);
     match data_type {
         DataType::Null => Ok(Arc::new(NullArray::new(nulls.len()))),
         DataType::Boolean => Ok(Arc::new(BooleanArray::new(
@@ -2862,7 +2823,44 @@ fn literal_to_array_ref(
             )
             .with_precision_and_scale(p, s)?,
         )),
-        DataType::List(f) => Ok(Arc::new(build_list_from_literal(list_literal))),
+        // list of primitive types
+        DataType::List(f) if !matches!(f.data_type(), DataType::List(_)) => {
+            literal_to_array_ref(f.data_type().clone(), list_literal)
+        }
+        DataType::List(f) => {
+            let dt = f.data_type().clone();
+            let child_arrays: Vec<ArrayRef> = list_literal
+                .list_values
+                .iter()
+                .map(|c| literal_to_array_ref(dt.clone(), c.clone()).unwrap())
+                .collect();
+
+            // Convert Vec<ArrayRef> into Vec<&dyn Array> for concat()
+            let child_refs: Vec<&dyn arrow::array::Array> =
+                child_arrays.iter().map(|a| a.as_ref()).collect();
+
+            // Concatenate all child arrays' *values* into one array
+            // Example: [[1,2,3], [4,5,6]] → values = [1,2,3,4,5,6]
+            let concat = arrow::compute::concat(&child_refs).unwrap();
+
+            // --- Build offsets for the parent list ---
+            let mut offsets = Vec::with_capacity(child_arrays.len() + 1);
+            offsets.push(0); // first list always starts at 0
+            let mut sum = 0;
+            for arr in &child_arrays {
+                sum += arr.len() as i32; // each child's length adds to total
+                offsets.push(sum); // store cumulative sum as next offset
+            }
+
+            // Create and return the parent ListArray
+            Ok(Arc::new(ListArray::new(
+                // Field: item type matches the concatenated child's type
+                FieldRef::from(Field::new("item", concat.data_type().clone(), true)),
+                OffsetBuffer::new(offsets.into()), // where each sublist starts/ends
+                concat,                            // the flattened values array
+                None,                              // no null bitmap at this level
+            )))
+        }
         dt => Err(GeneralError(format!(
             "DataType::List literal does not support {dt:?} type"
         ))),
@@ -2875,7 +2873,7 @@ mod tests {
     use std::{sync::Arc, task::Poll};
 
     use arrow::array::{Array, DictionaryArray, Int32Array, ListArray, RecordBatch, StringArray};
-    use arrow::datatypes::{DataType, Field, Fields, Schema};
+    use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema};
     use datafusion::catalog::memory::DataSourceExec;
     use datafusion::datasource::listing::PartitionedFile;
     use datafusion::datasource::object_store::ObjectStoreUrl;
@@ -2892,7 +2890,7 @@ mod tests {
     use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
 
     use crate::execution::operators::ExecutionError;
-    use crate::execution::planner::build_list_from_literal;
+    use crate::execution::planner::literal_to_array_ref;
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
     use datafusion_comet_proto::spark_expression::expr::ExprStruct;
@@ -3702,11 +3700,11 @@ mod tests {
                             null_mask: vec![true, true, true, false],
                             ..Default::default()
                         },
-                        ListLiteral {
-                            ..Default::default()
-                        },
+                        // ListLiteral {
+                        //     ..Default::default()
+                        // },
                     ],
-                    null_mask: vec![true, true, true, false],
+                    null_mask: vec![true, true, true],
                     ..Default::default()
                 },
                 ListLiteral {
@@ -3718,15 +3716,35 @@ mod tests {
                     null_mask: vec![true],
                     ..Default::default()
                 },
-                ListLiteral {
-                    ..Default::default()
-                },
+                // ListLiteral {
+                //     ..Default::default()
+                // },
             ],
-            null_mask: vec![true, true, false],
+            null_mask: vec![true, true],
             ..Default::default()
         };
 
-        let array = build_list_from_literal(data);
+        let nested_type = DataType::List(FieldRef::from(Field::new(
+            "item",
+            DataType::List(
+                Field::new(
+                    "item",
+                    DataType::List(
+                        Field::new(
+                            "item",
+                            DataType::Int32,
+                            true, // Int32 nullable
+                        )
+                        .into(),
+                    ),
+                    true, // inner list nullable
+                )
+                .into(),
+            ),
+            true, // outer list nullable
+        )));
+
+        let array = literal_to_array_ref(nested_type, data)?;
 
         // Top-level should be ListArray<ListArray<Int32>>
         let list_outer = array.as_any().downcast_ref::<ListArray>().unwrap();
