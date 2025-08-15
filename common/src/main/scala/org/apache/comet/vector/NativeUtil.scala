@@ -31,15 +31,40 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.comet.CometArrowAllocator
 
 /**
- * Provides functionality for importing Arrow vectors from native code and wrapping them as
- * CometVectors.
+ * Utility class for managing Arrow array import/export operations across the JNI boundary
+ * using Apache Arrow's C Data Interface. This class serves as the critical bridge for
+ * zero-copy data transfer between JVM (Spark) and native (DataFusion) execution environments.
  *
- * Also provides functionality for exporting Comet columnar batches to native code.
+ * '''Key Responsibilities:'''
+ * - Export Spark ColumnarBatch to native Arrow arrays via memory addresses
+ * - Import native Arrow arrays back to JVM as CometVectors
+ * - Manage Arrow C Data Interface structures (ArrowArray, ArrowSchema)
+ * - Handle dictionary provider for complex data types
  *
- * Each instance of NativeUtil creates an instance of CDataDictionaryProvider (a
- * DictionaryProvider that is used in C Data Interface for imports).
+ * '''Memory Management:'''
+ * Each NativeUtil instance manages:
+ * - CDataDictionaryProvider for dictionary-encoded columns
+ * - Arrow allocator for memory tracking
+ * - ArrowImporter for C Data Interface operations
  *
- * NativeUtil must be closed after use to release resources in the dictionary provider.
+ * '''Usage Pattern:'''
+ * {{{scala
+ * val nativeUtil = new NativeUtil()
+ * try {
+ *   // Export batch to native
+ *   val rowCount = nativeUtil.exportBatch(arrayAddrs, schemaAddrs, batch)
+ *   
+ *   // Import results from native
+ *   val resultBatch = nativeUtil.getNextBatch(numCols, executionFunction)
+ * } finally {
+ *   nativeUtil.close()  // CRITICAL: Must close to release dictionary provider
+ * }
+ * }}}
+ *
+ * '''Thread Safety:'''
+ * This class is NOT thread-safe. Each thread should use its own NativeUtil instance.
+ *
+ * @note Must call close() after use to release resources in the dictionary provider.
  */
 class NativeUtil {
   import Utils._

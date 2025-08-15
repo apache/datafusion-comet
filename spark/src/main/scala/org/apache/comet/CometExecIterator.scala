@@ -35,22 +35,72 @@ import org.apache.comet.Tracing.withTrace
 import org.apache.comet.vector.NativeUtil
 
 /**
- * An iterator class used to execute Comet native query. It takes an input iterator which comes
- * from Comet Scan and is expected to produce batches of Arrow Arrays. During consuming this
- * iterator, it will consume input iterator and pass Arrow Arrays to Comet native engine by
- * addresses. Even after the end of input iterator, this iterator still possibly continues
- * executing native query as there might be blocking operators such as Sort, Aggregate. The API
- * `hasNext` can be used to check if it is the end of this iterator (i.e. the native query is
- * done).
+ * Apache DataFusion Comet's primary execution iterator that bridges JVM (Spark) and native
+ * (Rust) execution environments. This iterator orchestrates native query execution on Arrow
+ * columnar batches while managing sophisticated memory ownership semantics across the JNI boundary.
  *
- * @param inputs
- *   The input iterators producing sequence of batches of Arrow Arrays.
- * @param protobufQueryPlan
- *   The serialized bytes of Spark execution plan.
- * @param numParts
- *   The number of partitions.
- * @param partitionIndex
- *   The index of the partition.
+ * '''Architecture Overview:'''
+ * 1. Consumes input ColumnarBatch iterators from Spark operators
+ * 2. Transfers Arrow array ownership to native DataFusion execution engine via JNI
+ * 3. Executes queries natively using DataFusion's columnar processing
+ * 4. Returns results as ColumnarBatch with ownership transferred back to JVM
+ *
+ * '''Memory Management:'''
+ * This class implements a sophisticated ownership transfer pattern to prevent memory leaks
+ * and ensure thread safety:
+ * - '''Single Ownership''': Only one owner of Arrow array data at any time
+ * - '''Transfer Semantics''': Ownership flows JVM → Native → JVM during processing
+ * - '''Automatic Cleanup''': Previous batches are automatically released on next() calls
+ * - '''Exception Safety''': Resources are cleaned up even during exceptions
+ *
+ * '''Critical Usage Pattern:'''
+ * {{{scala
+ * // ALWAYS use try-finally or RAII pattern
+ * val iterator = new CometExecIterator(...)
+ * try {
+ *   while (iterator.hasNext) {
+ *     val batch = iterator.next()  // Previous batch auto-released
+ *     process(batch)               // Process immediately, don't store
+ *   }
+ * } finally {
+ *   iterator.close()  // CRITICAL: Must call close() for proper cleanup
+ * }
+ * }}}
+ *
+ * '''Thread Safety:'''
+ * This class is '''NOT thread-safe''' by design. Each iterator instance should only be
+ * accessed from a single thread. Concurrent access will cause race conditions and memory
+ * corruption.
+ *
+ * '''Memory Leak Prevention:'''
+ * The iterator automatically manages Arrow array lifecycle:
+ * - `hasNext()` releases previous batch before preparing next
+ * - `next()` releases current batch before returning new one
+ * - `close()` ensures all resources are properly cleaned up
+ *
+ * '''Error Handling:'''
+ * Native exceptions are automatically mapped to appropriate Spark exceptions:
+ * - File not found errors → SparkException with FileNotFoundException cause
+ * - Parquet errors → SparkException with Parquet-specific error details
+ *
+ * @param id Unique identifier for this execution context (used for native plan tracking)
+ * @param inputs Sequence of input ColumnarBatch iterators from upstream Spark operators
+ * @param numOutputCols Number of columns in the output schema
+ * @param protobufQueryPlan Serialized Spark physical plan as protocol buffer bytes
+ * @param nativeMetrics Metrics collection node for native execution statistics
+ * @param numParts Total number of partitions in the query
+ * @param partitionIndex Zero-based index of the partition this iterator processes
+ *
+ * @note '''Memory Leak False Positives''': The allocator may report memory leaks for
+ *       ArrowArray and ArrowSchema structs. These are false positives because the native
+ *       side releases memory through Arrow's C Data Interface release callbacks, which
+ *       the JVM allocator doesn't track.
+ *
+ * @see [[CometBatchIterator]] for the underlying batch iteration mechanism
+ * @see [[org.apache.comet.vector.NativeUtil]] for Arrow array import/export utilities
+ *
+ * @since 0.1.0
+ * @author Apache DataFusion Comet Team
  */
 class CometExecIterator(
     val id: Long,
@@ -185,6 +235,31 @@ class CometExecIterator(
     }
   }
 
+  /**
+   * Checks if there are more batches available from the native execution engine.
+   *
+   * '''Memory Management:'''
+   * This method implements critical memory safety by automatically releasing the previous
+   * batch before preparing the next one. This prevents memory leaks and ensures proper
+   * ownership transfer across the JNI boundary.
+   *
+   * '''Execution Flow:'''
+   * 1. Returns immediately if iterator is closed
+   * 2. Returns true if next batch is already prepared
+   * 3. Releases previous batch to prevent memory leaks
+   * 4. Calls native execution engine to prepare next batch
+   * 5. Automatically closes iterator if no more batches available
+   *
+   * '''Side Effects:'''
+   * - May trigger native query execution for blocking operators (Sort, Aggregate)
+   * - Releases memory from previous batch
+   * - May close the iterator if execution is complete
+   *
+   * @return true if more batches are available, false if execution is complete
+   *
+   * @note This method may trigger expensive native operations for blocking operators.
+   *       Consider this when implementing backpressure or timeout mechanisms.
+   */
   override def hasNext: Boolean = {
     if (closed) return false
 
@@ -210,6 +285,34 @@ class CometExecIterator(
     }
   }
 
+  /**
+   * Returns the next ColumnarBatch from native execution with proper memory ownership transfer.
+   *
+   * '''Memory Ownership:'''
+   * - Releases the current batch before returning the next one
+   * - Transfers ownership of the returned batch to the caller
+   * - Caller becomes responsible for batch lifecycle management
+   *
+   * '''Usage Pattern:'''
+   * {{{scala
+   * while (iterator.hasNext) {
+   *   val batch = iterator.next()  // Ownership transferred to caller
+   *   process(batch)               // Process immediately
+   *   // Batch automatically released on next iteration
+   * }
+   * }}}
+   *
+   * '''Memory Safety:'''
+   * - Previous batch is eagerly released to prevent memory leaks
+   * - Returned batch uses fresh Arrow arrays with clear ownership
+   * - No risk of use-after-free as old batch is nullified
+   *
+   * @return ColumnarBatch containing Arrow arrays with transferred ownership
+   * @throws NoSuchElementException if no more elements are available (call hasNext first)
+   *
+   * @note '''Critical''': Do not store references to returned batches across iterations.
+   *       Process each batch immediately to prevent memory leaks.
+   */
   override def next(): ColumnarBatch = {
     if (currentBatch != null) {
       // Eagerly release Arrow Arrays in the previous batch
@@ -227,6 +330,42 @@ class CometExecIterator(
     currentBatch
   }
 
+  /**
+   * Releases all resources associated with this iterator including native memory and JNI handles.
+   *
+   * '''Resource Cleanup:'''
+   * - Closes current ColumnarBatch and releases Arrow arrays
+   * - Closes NativeUtil and associated Arrow allocators
+   * - Releases native execution plan and associated memory
+   * - Marks iterator as closed to prevent further operations
+   *
+   * '''Memory Leak Prevention:'''
+   * This method is critical for preventing memory leaks. The native side holds references
+   * to Arrow arrays and execution context that must be explicitly released.
+   *
+   * '''False Positive Warnings:'''
+   * The JVM allocator may report memory leaks for ArrowArray and ArrowSchema structs.
+   * These are false positives because:
+   * - Native code releases memory through Arrow's C Data Interface callbacks
+   * - JVM allocator doesn't track native-side release operations
+   * - Actual memory is properly freed, just not visible to JVM accounting
+   *
+   * '''Thread Safety:'''
+   * This method is synchronized to prevent race conditions during cleanup.
+   * Multiple threads calling close() concurrently will be serialized safely.
+   *
+   * '''Usage:'''
+   * {{{scala
+   * val iterator = new CometExecIterator(...)
+   * try {
+   *   // use iterator
+   * } finally {
+   *   iterator.close()  // ALWAYS call in finally block
+   * }
+   * }}}
+   *
+   * @note This method is idempotent - multiple calls are safe but only the first has effect.
+   */
   def close(): Unit = synchronized {
     if (!closed) {
       if (currentBatch != null) {
