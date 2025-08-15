@@ -2134,13 +2134,15 @@ class CometExecSuite extends CometTestBase {
     val df2 = spark.table("tbl2")
     val df3 = spark.table("tbl3")
 
-    val dfWithReusedExchange = df1
-      .join(df3.hint("broadcast").join(df1, $"x" === $"z"), "x", "left")
-      .join(
-        df3.hint("broadcast").join(df2, $"y" === $"z").withColumnRenamed("z", "z1"),
-        $"x" === $"y")
-
-    checkSparkAnswerAndOperator(dfWithReusedExchange)
+    Seq("true", "false").foreach(aqeEnabled =>
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
+        val dfWithReusedExchange = df1
+          .join(df3.hint("broadcast").join(df1, $"x" === $"z"), "x", "right")
+          .join(
+            df3.hint("broadcast").join(df2, $"y" === $"z", "right").withColumnRenamed("z", "z1"),
+            $"x" === $"y")
+        checkSparkAnswerAndOperator(dfWithReusedExchange, classOf[ReusedExchangeExec])
+      })
 
   }
 
