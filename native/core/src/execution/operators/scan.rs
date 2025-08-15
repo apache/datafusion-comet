@@ -113,7 +113,7 @@ impl ScanExec {
             // TODO need to understand why we get memory corruption if
             // we don't do a deep copy here
             {
-                true
+                false
             }
             source if source.contains("BroadcastQueryStage") => false,
             source if source.contains("ShuffleQueryStage") => false,

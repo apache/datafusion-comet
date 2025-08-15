@@ -131,6 +131,27 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  test("repro for memory corruption") {
+    withSQLConf(
+      "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl_a") {
+        withParquetTable((0 until 10).map(i => (i % 10, i + 2)), "tbl_b") {
+          // Right join: build left
+          val df2 =
+            sql("SELECT /*+ SHUFFLE_HASH(tbl_a) */ * FROM tbl_a RIGHT JOIN tbl_b ON tbl_a._2 = tbl_b._1")
+
+          df2.explain(true)
+
+          checkSparkAnswerAndOperator(df2)
+        }
+      }
+    }
+  }
+
   test("HashJoin without join filter") {
     withSQLConf(
       "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
