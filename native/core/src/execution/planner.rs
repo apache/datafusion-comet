@@ -3665,7 +3665,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_literal_to_list() -> Result<(), DataFusionError> {
-        // [[[1, 2, 3], [4, 5, 6], [7, 8, 9, null], null], [10, null, 12], null]
+        /*
+            [
+                [
+                    [1, 2, 3],
+                    [4, 5, 6],
+                    [7, 8, 9, null],
+                    null
+                ],
+                [
+                    [10, null, 12]
+                ],
+                null
+           ]
+         */
         let data = ListLiteral {
             list_values: vec![
                 ListLiteral {
@@ -3685,11 +3698,11 @@ mod tests {
                             null_mask: vec![true, true, true, false],
                             ..Default::default()
                         },
-                        // ListLiteral {
-                        //     ..Default::default()
-                        // },
+                        ListLiteral {
+                            ..Default::default()
+                        },
                     ],
-                    null_mask: vec![true, true, true],
+                    null_mask: vec![true, true, true, false],
                     ..Default::default()
                 },
                 ListLiteral {
@@ -3701,11 +3714,11 @@ mod tests {
                     null_mask: vec![true],
                     ..Default::default()
                 },
-                // ListLiteral {
-                //     ..Default::default()
-                // },
+                ListLiteral {
+                    ..Default::default()
+                },
             ],
-            null_mask: vec![true, true],
+            null_mask: vec![true, true, false],
             ..Default::default()
         };
 
@@ -3739,7 +3752,7 @@ mod tests {
         let first_elem = list_outer.value(0);
         dbg!(&first_elem);
         let list_inner = first_elem.as_any().downcast_ref::<ListArray>().unwrap();
-        assert_eq!(list_inner.len(), 3);
+        assert_eq!(list_inner.len(), 4);
 
         // Inner values
         let v0 = list_inner.value(0);
@@ -3753,7 +3766,7 @@ mod tests {
 
         let v2 = list_inner.value(2);
         let vals2 = v2.as_any().downcast_ref::<Int32Array>().unwrap();
-        assert_eq!(vals2.values(), &[7, 8, 9]);
+        assert_eq!(vals2.values(), &[7, 8, 9, 0]);
 
         // Second outer element
         let second_elem = list_outer.value(1);
@@ -3762,7 +3775,7 @@ mod tests {
 
         let v3 = list_inner2.value(0);
         let vals3 = v3.as_any().downcast_ref::<Int32Array>().unwrap();
-        assert_eq!(vals3.values(), &[10, 11]);
+        assert_eq!(vals3.values(), &[10, 0, 11]);
 
         //println!("result 2 {:?}", build_array(&data));
 
