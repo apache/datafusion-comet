@@ -33,9 +33,7 @@ import org.apache.spark.sql.catalyst.util.RebaseDateTime.RebaseSpec
 import org.apache.spark.sql.execution.datasources.DataSourceUtils
 import org.apache.spark.sql.execution.datasources.PartitionedFile
 import org.apache.spark.sql.execution.datasources.RecordReaderIterator
-import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
-import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
-import org.apache.spark.sql.execution.datasources.parquet.ParquetReadSupport
+import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetFilters, ParquetOptions, ParquetReadSupport}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.{DateType, StructType, TimestampType}
@@ -121,7 +119,6 @@ class CometParquetFileFormat(scanImpl: String)
       val parquetSchema = footerFileMetaData.getSchema
       val parquetFilters = new ParquetFilters(
         parquetSchema,
-        dataSchema,
         pushDownDate,
         pushDownTimestamp,
         pushDownDecimal,
@@ -146,7 +143,7 @@ class CometParquetFileFormat(scanImpl: String)
           }
           pushed.foreach(p => ParquetInputFormat.setFilterPredicate(sharedConf, p))
           val pushedNative = if (parquetFilterPushDown) {
-            parquetFilters.createNativeFilters(filters)
+            CometNativeFilters.createNativeFilters(filters, dataSchema, Map.empty)
           } else {
             None
           }
