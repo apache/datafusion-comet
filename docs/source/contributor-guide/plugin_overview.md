@@ -148,7 +148,7 @@ Arrays created on the JVM side are owned and managed in JVM code.
 
 Arrays created on the native side are owned and managed in native code.
 
-# JVM getting batches from native side
+# Importing Batches from Native to JVM
 
 - `CometExecIterator` invokes native plans and uses Arrow FFI to read the output batches
 
@@ -156,13 +156,11 @@ Arrays created on the native side are owned and managed in native code.
 - native exports the arrays in prepare_output in `executePlan` and `decodeShuffleBatches`
 - native side must not hold references to the arrays once they are exported to JVM
 
-# Native getting batches from JVM
+# Exporting Batches from JVM to Native
 
 - Native `ScanExec` operators call `CometBatchIterator` via JNI to fetch input batches from the JVM
-- ScanExec calls `CometBatchIterator.next`
 - `CometBatchIterator.next` will close previous batches on the JVM side.
-- Native side needs to do a deep copy in ScanExec if the batches will be buffered (such as with shuffle writer)
-
+- Native side needs to do a deep copy in `ScanExec` if the batches will be buffered (such as with shuffle writer)
 
 ## End to End Flow
 
