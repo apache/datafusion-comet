@@ -2107,6 +2107,43 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("ReusedExchange broadcast with incompatible partitions number does not fail") {
+    // enforce different number of partitions for future broadcasts/exchanges
+    spark
+      .range(50)
+      .withColumnRenamed("id", "x")
+      .repartition(2)
+      .writeTo("tbl1")
+      .using("parquet")
+      .create()
+    spark
+      .range(50)
+      .withColumnRenamed("id", "y")
+      .repartition(3)
+      .writeTo("tbl2")
+      .using("parquet")
+      .create()
+    spark
+      .range(50)
+      .withColumnRenamed("id", "z")
+      .repartition(4)
+      .writeTo("tbl3")
+      .using("parquet")
+      .create()
+    val df1 = spark.table("tbl1")
+    val df2 = spark.table("tbl2")
+    val df3 = spark.table("tbl3")
+
+    val dfWithReusedExchange = df1
+      .join(df3.hint("broadcast").join(df1, $"x" === $"z"), "x", "left")
+      .join(
+        df3.hint("broadcast").join(df2, $"y" === $"z").withColumnRenamed("z", "z1"),
+        $"x" === $"y")
+
+    checkSparkAnswerAndOperator(dfWithReusedExchange)
+
+  }
+
   test("SparkToColumnar override node name for columnar input") {
     withSQLConf(
       SQLConf.USE_V1_SOURCE_LIST.key -> "",

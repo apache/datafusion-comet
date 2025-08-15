@@ -277,7 +277,7 @@ object CometBroadcastExchangeExec {
 class CometBatchRDD(
     sc: SparkContext,
     numPartitions: Int,
-    value: broadcast.Broadcast[Array[ChunkedByteBuffer]])
+    private[comet] val value: broadcast.Broadcast[Array[ChunkedByteBuffer]])
     extends RDD[ColumnarBatch](sc, Nil) {
 
   override def getPartitions: Array[Partition] = (0 until numPartitions).toArray.map { i =>
