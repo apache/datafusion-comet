@@ -99,8 +99,24 @@ impl ScanExec {
 
         // TODO needs a more robust approach than looking at a text field
         let copy_arrays = match input_source_description {
-            source if source.contains("native_comet") => true,
-            source if source.contains("native_iceberg_compat") => true,
+            source if source.contains("native_comet") =>
+            // mutable Parquet buffers get reused between batches
+            {
+                true
+            }
+            source if source.contains("native_iceberg_compat") =>
+            // mutable Parquet buffers get reused between batches
+            {
+                true
+            }
+            source if source.contains("ShuffleWriterInput") =>
+            // TODO need to understand why we get memory corruption if
+            // we don't do a deep copy here
+            {
+                true
+            }
+            source if source.contains("BroadcastQueryStage") => false,
+            source if source.contains("ShuffleQueryStage") => false,
             _ => false,
         };
 
