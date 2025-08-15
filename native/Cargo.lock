@@ -1505,6 +1505,7 @@ dependencies = [
  "itertools 0.14.0",
  "jni",
  "lazy_static",
+ "libc",
  "log",
  "log4rs",
  "lz4_flex",

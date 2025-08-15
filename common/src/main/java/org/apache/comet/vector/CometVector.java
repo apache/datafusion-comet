@@ -60,6 +60,7 @@ public abstract class CometVector extends ColumnVector {
 
   protected CometVector(DataType type, boolean useDecimal128) {
     super(type);
+    System.out.println("new CometVector");
     this.useDecimal128 = useDecimal128;
   }
 
@@ -207,6 +208,8 @@ public abstract class CometVector extends ColumnVector {
 
   @Override
   public void close() {
+    System.out.println(
+        "[" + Thread.currentThread().getName() + "] CometVector.close() " + getValueVector());
     getValueVector().close();
   }
 

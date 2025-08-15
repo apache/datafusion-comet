@@ -34,6 +34,8 @@ import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_DEBUG_ENABLED, COMET_
 import org.apache.comet.Tracing.withTrace
 import org.apache.comet.vector.NativeUtil
 
+// scalastyle:off
+
 /**
  * An iterator class used to execute Comet native query. It takes an input iterator which comes
  * from Comet Scan and is expected to produce batches of Arrow Arrays. During consuming this
@@ -196,6 +198,7 @@ class CometExecIterator(
     // This is to guarantee safety at the native side before we overwrite the buffer memory
     // shared across batches in the native side.
     if (prevBatch != null) {
+      println("[" + Thread.currentThread.getId + "] CometExecIterator closing batch")
       prevBatch.close()
       prevBatch = null
     }
@@ -213,6 +216,7 @@ class CometExecIterator(
   override def next(): ColumnarBatch = {
     if (currentBatch != null) {
       // Eagerly release Arrow Arrays in the previous batch
+      println("[" + Thread.currentThread.getId + "] CometExecIterator closing batch")
       currentBatch.close()
       currentBatch = null
     }
@@ -230,6 +234,7 @@ class CometExecIterator(
   def close(): Unit = synchronized {
     if (!closed) {
       if (currentBatch != null) {
+        println("[" + Thread.currentThread.getId + "] CometExecIterator closing batch")
         currentBatch.close()
         currentBatch = null
       }

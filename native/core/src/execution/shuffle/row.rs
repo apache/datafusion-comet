@@ -3155,6 +3155,8 @@ pub fn process_sorted_row_partition(
     initial_checksum: Option<u32>,
     codec: &CompressionCodec,
 ) -> Result<(i64, Option<u32>), CometError> {
+    println!("process_sorted_row_partition");
+
     // TODO: We can tune this parameter automatically based on row size and cache size.
     let row_step = 10;
 

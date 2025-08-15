@@ -244,6 +244,9 @@ public final class CometDiskBlockWriter {
 
   /** Serializes input row and inserts into current allocated page. */
   public void insertRow(UnsafeRow row, int partitionId) throws IOException {
+
+    System.out.println("CometDiskBlockWriter.insertRow");
+
     insertRecords++;
 
     if (!initialized) {
@@ -430,6 +433,7 @@ public final class CometDiskBlockWriter {
      */
     @Override
     protected void spill(int required) throws IOException {
+      System.out.println("ArrowIPCWriter.spill(" + required + ")");
       // Cannot allocate enough memory, spill and try again
       synchronized (currentWriters) {
         // Spill from the largest writer first to maximize the amount of memory we can

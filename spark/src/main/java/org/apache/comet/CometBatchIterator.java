@@ -48,6 +48,8 @@ public class CometBatchIterator {
   public int hasNext() {
     if (currentBatch == null) {
       if (input.hasNext()) {
+
+        System.out.println("CometBatchIterator.hasNext() called");
         currentBatch = input.next();
       }
     }
@@ -66,12 +68,22 @@ public class CometBatchIterator {
    * @return the number of rows of the current batch. -1 if there is no more batch.
    */
   public int next(long[] arrayAddrs, long[] schemaAddrs) {
+    System.out.println("CometBatchIterator.next() called");
     if (currentBatch == null) {
       return -1;
     }
-
     int numRows = nativeUtil.exportBatch(arrayAddrs, schemaAddrs, currentBatch);
+    System.out.println("Dropping reference to batch " + currentBatch);
     currentBatch = null;
+
+    System.gc();
+
+    try {
+      Thread.sleep(1000L);
+    } catch (InterruptedException e) {
+
+    }
+
     return numRows;
   }
 }

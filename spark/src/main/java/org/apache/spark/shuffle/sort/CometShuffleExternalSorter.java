@@ -478,6 +478,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
 
     @Override
     protected void spill(int required) throws IOException {
+      System.out.println("SpillSorter Spilling " + required + " records");
       CometShuffleExternalSorter.this.spill();
     }
 

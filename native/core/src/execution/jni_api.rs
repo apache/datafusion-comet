@@ -62,7 +62,7 @@ use jni::{
 };
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use std::{sync::Arc, task::Poll};
+use std::{sync::Arc, task::Poll, thread};
 use tokio::runtime::Runtime;
 
 use crate::execution::memory_pools::{
@@ -414,6 +414,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     array_addrs: jlongArray,
     schema_addrs: jlongArray,
 ) -> jlong {
+    use libc::pid_t;
+    let tid: pid_t = unsafe { libc::syscall(libc::SYS_gettid) as pid_t };
+    println!("[{:?}] executePlan", tid);
+
     try_unwrap_or_throw(&e, |mut env| {
         // Retrieve the query
         let exec_context = get_execution_context(exec_context);
@@ -622,6 +626,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
     compression_level: jint,
     tracing_enabled: jboolean,
 ) -> jlongArray {
+    println!("[{:?}] writeSortedFileNative", thread::current().id());
+
     try_unwrap_or_throw(&e, |mut env| unsafe {
         with_trace(
             "writeSortedFileNative",
@@ -732,8 +738,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
     array_addrs: jlongArray,
     schema_addrs: jlongArray,
     tracing_enabled: jboolean,
-    debug: bool
+    debug: bool,
 ) -> jlong {
+    println!("[{:?}] decodeShuffleBlock", thread::current().id());
+
     try_unwrap_or_throw(&e, |mut env| {
         with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
             let raw_pointer: *mut u8 = env.get_direct_buffer_address(&byte_buffer)?;
@@ -741,7 +749,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
             let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
             let batch = read_ipc_compressed(slice)?;
             if debug {
-                println!("decode shuffle block from JVM DirectByteBuffer @ {:?}", raw_pointer);
+                println!(
+                    "decode shuffle block from JVM DirectByteBuffer @ {:?}",
+                    raw_pointer
+                );
                 println!("decoded batch: {batch:?}");
             }
             prepare_output(&mut env, array_addrs, schema_addrs, batch, 0, debug)

@@ -27,6 +27,7 @@ use datafusion::error::Result;
 use datafusion::physical_plan::metrics::Time;
 use simd_adler32::Adler32;
 use std::io::{Cursor, Seek, SeekFrom, Write};
+use std::thread;
 
 #[derive(Debug, Clone)]
 pub enum CompressionCodec {
@@ -79,6 +80,16 @@ impl ShuffleBlockWriter {
         output: &mut W,
         ipc_time: &Time,
     ) -> Result<usize> {
+        use libc::pid_t;
+        let tid: pid_t = unsafe { libc::syscall(libc::SYS_gettid) as pid_t };
+
+        println!(
+            "[{:?}] writing shuffle batch: {:?}",
+            //thread::current().id(),
+            tid,
+            batch
+        );
+
         if batch.num_rows() == 0 {
             return Ok(0);
         }

@@ -135,6 +135,7 @@ public abstract class SpillWriter {
       // TODO: try to find space in previous pages
       try {
         currentPage = allocator.allocate(required);
+        System.out.println("Spilling to page " + currentPage);
       } catch (SparkOutOfMemoryError error) {
         try {
           // Cannot allocate enough memory, spill

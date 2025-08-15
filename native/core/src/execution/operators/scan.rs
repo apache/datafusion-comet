@@ -49,6 +49,7 @@ use std::{
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
+    thread,
 };
 
 /// ScanExec reads batches of data from Spark via JNI. The source of the scan could be a file
@@ -515,7 +516,9 @@ impl Stream for ScanStream<'_> {
                 let maybe_batch = self.build_record_batch(columns, *num_rows);
 
                 if let Ok(batch) = &maybe_batch {
-                    println!("native got batch from jvm: {:?}", batch);
+                    use libc::pid_t;
+                    let tid: pid_t = unsafe { libc::syscall(libc::SYS_gettid) as pid_t };
+                    println!("[{:?}] native got batch from jvm: {:?}", tid, batch);
                 }
 
                 Poll::Ready(Some(maybe_batch))

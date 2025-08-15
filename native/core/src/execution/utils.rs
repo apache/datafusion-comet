@@ -91,6 +91,7 @@ impl SparkArrowConvert for ArrayData {
 
         // Check if the pointer alignment is correct.
         if array_ptr.align_offset(array_align) != 0 || schema_ptr.align_offset(schema_align) != 0 {
+            println!("write_unaligned!");
             unsafe {
                 std::ptr::write_unaligned(array_ptr, FFI_ArrowArray::new(self));
                 std::ptr::write_unaligned(schema_ptr, FFI_ArrowSchema::try_from(self.data_type())?);
