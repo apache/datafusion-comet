@@ -324,7 +324,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           |  try_add(NULL, 5),
           |  try_add(5, NULL),
           |  try_add(9223372036854775807, 1),
-          |  try_add(-9223372036854775808, -1),
+          |  try_add(-9223372036854775808, -1)
           |  from tbl
           |  """.stripMargin))
     }
