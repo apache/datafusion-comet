@@ -61,6 +61,8 @@ public class CometBatchIterator {
   /**
    * Get the next batches of Arrow arrays.
    *
+   * Each call to this method can potentially release arrays that were returned from the previous call.
+   *
    * @param arrayAddrs The addresses of the ArrowArray structures.
    * @param schemaAddrs The addresses of the ArrowSchema structures.
    * @return the number of rows of the current batch. -1 if there is no more batch.
@@ -70,7 +72,10 @@ public class CometBatchIterator {
       return -1;
     }
     int numRows = nativeUtil.exportBatch(arrayAddrs, schemaAddrs, currentBatch);
+
+    // TODO releasing the reference here seems sketchy
     currentBatch = null;
+
     return numRows;
   }
 }

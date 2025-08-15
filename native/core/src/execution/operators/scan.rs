@@ -281,9 +281,11 @@ impl ScanExec {
 
             let array = make_array(array_data);
 
-            // we copy the array to that we don't have to worry about potential memory
-            // corruption issues later on if underlying buffers are reused or freed
-            // TODO optimize this so that we only do this for Parquet inputs!
+            // The incoming array data is owned by the JVM and can be freed or reused on
+            // the JVM side during the next call to `CometBatchIterator::next`, so we make a
+            // copy of the arrays so that the native side can safely buffer them.
+            // We could potentially avoid making a copy in the specific case where the
+            // native side does not need to buffer batches.
             let array = copy_array(&array);
 
             inputs.push(array);
