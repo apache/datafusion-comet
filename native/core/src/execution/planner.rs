@@ -2462,10 +2462,10 @@ impl TreeNodeRewriter for JoinFilterRewriter<'_> {
                     new_index + self.left_field_indices.len(),
                 ))))
             } else {
-                return Err(DataFusionError::Internal(format!(
+                Err(DataFusionError::Internal(format!(
                     "Column index {} out of range",
                     column.index()
-                )));
+                )))
             }
         } else {
             Ok(Transformed::no(node))

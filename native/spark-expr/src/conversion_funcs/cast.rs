@@ -679,7 +679,7 @@ macro_rules! cast_decimal_to_int16_down {
         let cast_array = $array
             .as_any()
             .downcast_ref::<Decimal128Array>()
-            .expect(concat!("Expected a Decimal128ArrayType"));
+            .expect("Expected a Decimal128ArrayType");
 
         let output_array = match $eval_mode {
             EvalMode::Ansi => cast_array
@@ -742,7 +742,7 @@ macro_rules! cast_decimal_to_int32_up {
         let cast_array = $array
             .as_any()
             .downcast_ref::<Decimal128Array>()
-            .expect(concat!("Expected a Decimal128ArrayType"));
+            .expect("Expected a Decimal128ArrayType");
 
         let output_array = match $eval_mode {
             EvalMode::Ansi => cast_array
