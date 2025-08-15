@@ -43,7 +43,6 @@ import org.apache.comet.CometConf.COMET_ANSI_MODE_ENABLED
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
-import org.apache.comet.serde.QueryPlanSerde.emitWarning
 
 /**
  * Spark physical optimizer rule for replacing Spark operators with Comet operators.
@@ -53,25 +52,24 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
 
   private def applyCometShuffle(plan: SparkPlan): SparkPlan = {
-    plan.transformUp {
-      case s: ShuffleExchangeExec
-          if isCometPlan(s.child) && isCometNativeShuffleMode(conf) &&
-            nativeShuffleSupported(s)._1 =>
-        logInfo("Comet extension enabled for Native Shuffle")
-
+    plan.transformUp { case s: ShuffleExchangeExec =>
+      val nativeSupport = nativeShuffleSupported(s)
+      if (nativeSupport._1) {
         // Switch to use Decimal128 regardless of precision, since Arrow native execution
         // doesn't support Decimal32 and Decimal64 yet.
         conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
         CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
-
-      // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
-      // (if configured)
-      case s: ShuffleExchangeExec
-          if (!s.child.supportsColumnar || isCometPlan(s.child)) && isCometJVMShuffleMode(conf) &&
-            columnarShuffleSupported(s)._1 &&
-            !isShuffleOperator(s.child) =>
-        logInfo("Comet extension enabled for JVM Columnar Shuffle")
-        CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
+      } else {
+        val columnarSupport = columnarShuffleSupported(s)
+        if (columnarSupport._1) {
+          // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
+          // (if configured)
+          CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
+        } else {
+          withInfo(s, nativeSupport._2 ++ columnarSupport._2)
+          s
+        }
+      }
     }
   }
 
@@ -794,6 +792,11 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         false
     }
 
+    // TODO refactor / code clean up
+    if (!(isCometPlan(s.child) && isCometNativeShuffleMode(s.conf))) {
+      return (false, "tbd")
+    }
+
     val inputs = s.child.output
     val partitioning = s.outputPartitioning
     val conf = SQLConf.get
@@ -827,7 +830,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
 
     if (!supported) {
-      emitWarning(msg)
       (false, msg)
     } else {
       (true, null)
@@ -839,6 +841,15 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
    * which supports struct/array.
    */
   private def columnarShuffleSupported(s: ShuffleExchangeExec): (Boolean, String) = {
+
+    // TODO refactor / code clean up
+    if ((!s.child.supportsColumnar || isCometPlan(s.child)) && isCometJVMShuffleMode(conf) &&
+      !isShuffleOperator(s.child)) {
+      // cool
+    } else {
+      return (false, "tbd")
+    }
+
     val inputs = s.child.output
     val partitioning = s.outputPartitioning
     var msg = ""
@@ -873,7 +884,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
 
     if (!supported) {
-      emitWarning(msg)
       (false, msg)
     } else {
       (true, null)
