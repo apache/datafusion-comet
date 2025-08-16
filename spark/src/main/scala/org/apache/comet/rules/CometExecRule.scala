@@ -841,7 +841,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
 
     if (isShuffleOperator(s.child)) {
-      withInfo(s, "Child is a shuffle operator")
+      withInfo(s, "Child {s.child.getClass.getName} is a shuffle operator")
       return false
     }
 
