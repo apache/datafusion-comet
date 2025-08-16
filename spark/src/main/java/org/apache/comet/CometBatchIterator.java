@@ -28,7 +28,7 @@ import org.apache.comet.vector.NativeUtil;
 /**
  * A Java adapter iterator that provides batch-by-batch Arrow array access for native code
  * consumption. This class serves as a bridge between Spark's ColumnarBatch format and native
- * DataFusion execution, managing Arrow array ownership transfer across the JNI boundary.
+ * DataFusion execution.
  *
  * <h2>Architecture Role</h2>
  *
