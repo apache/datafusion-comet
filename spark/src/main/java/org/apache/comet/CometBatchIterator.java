@@ -31,8 +31,9 @@ import org.apache.comet.vector.NativeUtil;
  * called by native code to retrieve Arrow arrays from Spark through JNI.
  */
 public class CometBatchIterator {
-  final Iterator<ColumnarBatch> input;
-  final NativeUtil nativeUtil;
+  private final Iterator<ColumnarBatch> input;
+  private final NativeUtil nativeUtil;
+  private ColumnarBatch previousBatch = null;
   private ColumnarBatch currentBatch = null;
 
   CometBatchIterator(Iterator<ColumnarBatch> input, NativeUtil nativeUtil) {
@@ -46,6 +47,10 @@ public class CometBatchIterator {
    * @return Number of rows in next batch or -1 if no batches left.
    */
   public int hasNext() {
+
+    // release reference to previous batch
+    previousBatch = null;
+
     if (currentBatch == null) {
       if (input.hasNext()) {
         currentBatch = input.next();
@@ -69,8 +74,16 @@ public class CometBatchIterator {
     if (currentBatch == null) {
       return -1;
     }
+
+    // export the batch using the Arrow C Data Interface
     int numRows = nativeUtil.exportBatch(arrayAddrs, schemaAddrs, currentBatch);
+
+    // keep a reference to the exported batch so that it doesn't get garbage collected
+    // while the native code is still processing it
+    previousBatch = currentBatch;
+
     currentBatch = null;
+
     return numRows;
   }
 }
