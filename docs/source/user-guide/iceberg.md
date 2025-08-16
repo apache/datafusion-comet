@@ -80,11 +80,14 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.sql.catalog.spark_catalog.type=hadoop \
     --conf spark.sql.catalog.spark_catalog.warehouse=/tmp/warehouse \
     --conf spark.plugins=org.apache.spark.CometPlugin \
-    --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
+    --conf spark.comet.exec.shuffle.enabled=false \
     --conf spark.sql.iceberg.parquet.reader-type=COMET \
     --conf spark.comet.explainFallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
-    --conf spark.memory.offHeap.size=2g
+    --conf spark.memory.offHeap.size=2g \
+    --conf spark.comet.use.lazyMaterialization=false \
+    --conf spark.comet.schemaEvolution.enabled=true \
+    --conf spark.comet.exec.broadcastExchange.enabled=false
 ```
 
 Create an Iceberg table. Note that Comet will not accelerate this part.
@@ -139,3 +142,9 @@ scala> spark.sql(s"SELECT * from t1").explain()
 *(1) CometColumnarToRow
 +- CometBatchScan spark_catalog.default.t1[c0#26, c1#27] spark_catalog.default.t1 (branch=null) [filters=, groupedBy=] RuntimeFilters: []
 ```
+
+## Known issues
+ - We temporarily disable Comet when there are delete files in Iceberg scan, see Iceberg [1.8.1 diff](../../../dev/diffs/iceberg/1.8.1.diff)
+   - Iceberg scan w/ delete files lead to [runtime exceptions](https://github.com/apache/datafusion-comet/issues/2117) and [incorrect results](https://github.com/apache/datafusion-comet/issues/2118)
+ - Enabling `CometShuffleManager` leads to [runtime exceptions](https://github.com/apache/datafusion-comet/issues/2086)
+ - Enabling `CometBroadcastExchangeExec` leads to [runtime exceptions](https://github.com/apache/datafusion-comet/issues/2116)
