@@ -242,10 +242,10 @@ abstract class CometNativeExec extends CometExec {
         // Find the first non broadcast plan which is not a reused exchange if possible
         val firstNonBroadcastPlan = sparkPlans.zipWithIndex
           .find {
-            case (p, idx) if !p.isInstanceOf[ReusedExchangeExec] => nonBroadcastPredicate(p, idx)
-            case _ => false
+            case (ReusedExchangeExec(_, _: CometBroadcastExchangeExec), _) => false
+            case (p, idx) => nonBroadcastPredicate(p, idx)
           }
-          .orElse(sparkPlans.zipWithIndex.find(nonBroadcastPredicate.tupled))
+          .orElse(sparkPlans.zipWithIndex.find(_._1.isInstanceOf[ReusedExchangeExec]))
 
         val containsBroadcastInput = sparkPlans.exists {
           case _: CometBroadcastExchangeExec => true
