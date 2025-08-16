@@ -789,7 +789,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
 
     if (!isCometPlan(s.child)) {
-      withInfo(s, "Child is not native")
+      withInfo(s, "Child {s.child.getClass.getName} is not native")
       return false
     }
 
