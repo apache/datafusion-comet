@@ -140,8 +140,28 @@ accessing Arrow data structures from multiple languages.
 
 [Arrow C Data Interface]: https://arrow.apache.org/docs/format/CDataInterface.html
 
-- `CometExecIterator` invokes native plans and uses Arrow FFI to read the output batches
-- Native `ScanExec` operators call `CometBatchIterator` via JNI to fetch input batches from the JVM
+### Array Ownership and Lifecycle
+
+#### Importing Batches from Native to JVM
+
+`CometExecIterator` invokes native plans by calling the JNI function `executePlan`. The ownership of the output 
+batches, which are created in native code, is transferred to FFI ready to be consumed by Java once the `executePlan` 
+function returns. 
+
+#### Exporting Batches from JVM to Native
+
+The leaf nodes of native plans are often `ScanExec` operators, which call `CometBatchIterator` via JNI to fetch 
+input batches from the JVM.
+
+Note that this approach does not follow best practice and does not benefit from zero-copy transfer.
+
+The incoming array data is owned by the JVM and can be freed or reused on the JVM side during the next call to
+`CometBatchIterator::hasNext` or `CometBatchIterator::next`. The native code must defensively create copies of 
+the arrays as needed.
+
+This approach was likely adopted because the incoming CometVectors are sometimes backed by mutable buffers 
+that are reused in the Parquet readers. We eventually plan on removing these mutable buffers and will then 
+be able to revisit the design of exporting batches from JVM to native code.
 
 ## End to End Flow
 
