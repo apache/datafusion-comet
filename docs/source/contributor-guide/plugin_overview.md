@@ -131,7 +131,7 @@ For shuffle reads a `ShuffledRDD` requests a `ShuffleReader` from the shuffle ma
 `CometBlockStoreShuffleReader` which is implemented in JVM and fetches blocks from Spark and then creates an 
 `ArrowReaderIterator` to process the blocks using Arrow's `StreamReader` for decoding IPC batches.
 
-# Arrow FFI
+## Arrow FFI
 
 Due to the hybrid execution model, it is necessary to pass batches of data between the JVM and native code.
 
@@ -140,27 +140,24 @@ accessing Arrow data structures from multiple languages.
 
 [Arrow C Data Interface]: https://arrow.apache.org/docs/format/CDataInterface.html
 
-## Array Ownership and Lifecycle
+### Array Ownership and Lifecycle
 
-Comet does not track ownership of Arrow arrays or buffers across language boundaries.
+#### Importing Batches from Native to JVM
 
-Arrays created on the JVM side are owned and managed in JVM code.
+`CometExecIterator` invokes native plans by calling the JNI function `executePlan`. The ownership of the output 
+batches, which are created in native code, is transferred to FFI ready to be consumed by Java once the `executePlan` 
+function returns. 
 
-Arrays created on the native side are owned and managed in native code.
+#### Exporting Batches from JVM to Native
 
-# Importing Batches from Native to JVM
+The leaf nodes of native plans are often `ScanExec` operators, which call `CometBatchIterator` via JNI to fetch 
+input batches from the JVM.
 
-- `CometExecIterator` invokes native plans and uses Arrow FFI to read the output batches
+Note that this approach does not follow best practice and does not benefit from zero-copy transfer.
 
-- native side owns the memory
-- native exports the arrays in prepare_output in `executePlan` and `decodeShuffleBatches`
-- native side must not hold references to the arrays once they are exported to JVM
-
-# Exporting Batches from JVM to Native
-
-- Native `ScanExec` operators call `CometBatchIterator` via JNI to fetch input batches from the JVM
-- `CometBatchIterator.next` will close previous batches on the JVM side.
-- Native side needs to do a deep copy in `ScanExec` if the batches will be buffered (such as with shuffle writer)
+The incoming array data is owned by the JVM and can be freed or reused on the JVM side during the next call to
+`CometBatchIterator::hasNext` or `CometBatchIterator::next`. The native code must defensively create copies of 
+the arrays as needed.
 
 ## End to End Flow
 
