@@ -846,7 +846,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
 
     if (!(!s.child.supportsColumnar || isCometPlan(s.child))) {
-      withInfo(s, "Child is a neither row-based or a Comet operator")
+      withInfo(s, "Child {s.child.getClass.getName} is a neither row-based or a Comet operator")
       return false
     }
 
