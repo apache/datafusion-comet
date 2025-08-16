@@ -17,7 +17,7 @@
 
 //! Define JNI APIs which can be called from Java/Scala.
 
-use super::{serde, utils::SparkArrowConvert};
+use super::{serde, utils::ArrowFfiConvert};
 use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
     execution::{
@@ -361,11 +361,11 @@ fn prepare_output(
 
                 new_array
                     .to_data()
-                    .move_to_spark(array_addrs[i], schema_addrs[i])?;
+                    .move_to_ffi(array_addrs[i], schema_addrs[i])?;
             } else {
                 array_ref
                     .to_data()
-                    .move_to_spark(array_addrs[i], schema_addrs[i])?;
+                    .move_to_ffi(array_addrs[i], schema_addrs[i])?;
             }
             i += 1;
         }
