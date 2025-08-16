@@ -91,7 +91,7 @@ use arrow::array::{
     Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, ListArray, NullArray,
     StringBuilder, TimestampMicrosecondArray,
 };
-use arrow::buffer::{BooleanBuffer, OffsetBuffer};
+use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec;
@@ -486,10 +486,8 @@ impl PhysicalPlanner {
                             }
                         },
                         Value::ListVal(values) => {
-                            dbg!(&values);
-
-                            if let DataType::List(f) = data_type {
-                                SingleRowListArrayBuilder::new(literal_to_array_ref(f.data_type().clone(), values.clone())?).build_list_scalar()
+                            if let DataType::List(ref f) = data_type {
+                                SingleRowListArrayBuilder::new(literal_to_array_ref(data_type, values.clone())?).build_list_scalar()
                             } else {
                                 return Err(GeneralError(format!(
                                     "Expected DataType::List but got {data_type:?}"
@@ -2836,29 +2834,29 @@ fn literal_to_array_ref(
                 .collect();
 
             // Convert Vec<ArrayRef> into Vec<&dyn Array> for concat()
-            let child_refs: Vec<&dyn arrow::array::Array> =
+            let child_refs: Vec<&dyn Array> =
                 child_arrays.iter().map(|a| a.as_ref()).collect();
-
-            // Concatenate all child arrays' *values* into one array
-            // Example: [[1,2,3], [4,5,6]] → values = [1,2,3,4,5,6]
-            let concat = arrow::compute::concat(&child_refs).unwrap();
 
             // --- Build offsets for the parent list ---
             let mut offsets = Vec::with_capacity(child_arrays.len() + 1);
-            offsets.push(0); // first list always starts at 0
+            offsets.push(0); // the first list always starts at 0
             let mut sum = 0;
             for arr in &child_arrays {
-                sum += arr.len() as i32; // each child's length adds to total
-                offsets.push(sum); // store cumulative sum as next offset
+                sum += arr.len() as i32; // each child's length adds to the total
+                offsets.push(sum); // store cumulative sum as the next offset
             }
+
+            // Concatenate all child arrays' *values* into one array
+            // Example: [[1,2,3], [4,5,6]] → values = [1,2,3,4,5,6]
+            let concat = arrow::compute::concat(&child_refs)?;
 
             // Create and return the parent ListArray
             Ok(Arc::new(ListArray::new(
                 // Field: item type matches the concatenated child's type
                 FieldRef::from(Field::new("item", concat.data_type().clone(), true)),
-                OffsetBuffer::new(offsets.into()), // where each sublist starts/ends
-                concat,                            // the flattened values array
-                None,                              // no null bitmap at this level
+                OffsetBuffer::new(offsets.into()),
+                concat,
+                Some(NullBuffer::from(list_literal.null_mask)),
             )))
         }
         dt => Err(GeneralError(format!(
@@ -3716,8 +3714,11 @@ mod tests {
                         ListLiteral {
                             ..Default::default()
                         },
+                        ListLiteral {
+                            ..Default::default()
+                        },
                     ],
-                    null_mask: vec![true, true, true, false],
+                    null_mask: vec![true, true, true, false, true],
                     ..Default::default()
                 },
                 ListLiteral {
@@ -3729,11 +3730,11 @@ mod tests {
                     null_mask: vec![true],
                     ..Default::default()
                 },
-                ListLiteral {
-                    ..Default::default()
-                },
+                // ListLiteral {
+                //     ..Default::default()
+                // },
             ],
-            null_mask: vec![true, true, false],
+            null_mask: vec![true, true],
             ..Default::default()
         };
 
@@ -3757,7 +3758,34 @@ mod tests {
             true, // outer list nullable
         )));
 
+        let data = ListLiteral {
+            list_values: vec![
+                ListLiteral {
+                int_values: vec![1, 2],
+                null_mask: vec![true, true],
+                ..Default::default()
+                },
+                ListLiteral {
+                    ..Default::default()
+                }
+            ],
+            null_mask: vec![true, false],
+            ..Default::default()
+        };
+
+        let nested_type = DataType::List(FieldRef::from(Field::new(
+            "item",
+            DataType::List(
+                Field::new("item", DataType::Int32, true).into(),
+                ), true)));
+
         let array = literal_to_array_ref(nested_type, data)?;
+
+        dbg!(&array);
+        dbg!(&array.nulls());
+
+
+
 
         // Top-level should be ListArray<ListArray<Int32>>
         let list_outer = array.as_any().downcast_ref::<ListArray>().unwrap();
@@ -3767,7 +3795,7 @@ mod tests {
         let first_elem = list_outer.value(0);
         dbg!(&first_elem);
         let list_inner = first_elem.as_any().downcast_ref::<ListArray>().unwrap();
-        assert_eq!(list_inner.len(), 4);
+        assert_eq!(list_inner.len(), 5);
 
         // Inner values
         let v0 = list_inner.value(0);
