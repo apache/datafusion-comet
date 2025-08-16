@@ -159,6 +159,10 @@ The incoming array data is owned by the JVM and can be freed or reused on the JV
 `CometBatchIterator::hasNext` or `CometBatchIterator::next`. The native code must defensively create copies of 
 the arrays as needed.
 
+This approach was likely adopted because the incoming CometVectors are sometimes backed by mutable buffers 
+that are reused in the Parquet readers. We eventually plan on removing these mutable buffers and will then 
+be able to revisit the design of exporting batches from JVM to native code.
+
 ## End to End Flow
 
 The following diagram shows an example of the end-to-end flow for a query stage.
