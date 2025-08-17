@@ -40,7 +40,7 @@ import org.apache.comet.vector.NativeUtil
  * managing sophisticated memory ownership semantics across the JNI boundary.
  *
  * '''Architecture Overview:'''
- *   - 1. Consumes input ColumnarBatch iterators from Spark operators
+ *   - \1. Consumes input ColumnarBatch iterators from Spark operators
  *   - 2. Transfers Arrow array ownership to native DataFusion execution engine via JNI (* see
  *     note below)
  *   - 3. Executes queries natively using DataFusion's columnar processing
