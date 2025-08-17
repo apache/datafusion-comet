@@ -12,7 +12,7 @@ WholeStageCodegen (1)
                       CometProject [ss_store_sk,ss_net_profit]
                         CometBroadcastHashJoin [ss_store_sk,ss_net_profit,ss_sold_date_sk,d_date_sk]
                           CometFilter [ss_store_sk,ss_net_profit,ss_sold_date_sk]
-                            CometScan [native_comet] parquet spark_catalog.default.store_sales [ss_store_sk,ss_net_profit,ss_sold_date_sk]
+                            CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales [ss_store_sk,ss_net_profit,ss_sold_date_sk]
                               SubqueryBroadcast [d_date_sk] #1
                                 BroadcastExchange #2
                                   WholeStageCodegen (1)
@@ -20,15 +20,15 @@ WholeStageCodegen (1)
                                       InputAdapter
                                         CometProject [d_date_sk]
                                           CometFilter [d_date_sk,d_year,d_qoy]
-                                            CometScan [native_comet] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_qoy]
+                                            CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_qoy]
                           CometBroadcastExchange [d_date_sk] #3
                             CometProject [d_date_sk]
                               CometFilter [d_date_sk,d_year,d_qoy]
-                                CometScan [native_comet] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_qoy]
+                                CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_qoy]
                       CometBroadcastExchange [s_store_sk,s_store_name,s_zip] #4
                         CometProject [s_zip] [s_store_sk,s_store_name,s_zip]
                           CometFilter [s_store_sk,s_store_name,s_zip]
-                            CometScan [native_comet] parquet spark_catalog.default.store [s_store_sk,s_store_name,s_zip]
+                            CometScan [native_iceberg_compat] parquet spark_catalog.default.store [s_store_sk,s_store_name,s_zip]
                   CometBroadcastExchange [ca_zip] #5
                     CometHashAggregate [ca_zip]
                       CometExchange [ca_zip] #6
@@ -36,7 +36,7 @@ WholeStageCodegen (1)
                           CometBroadcastHashJoin [ca_zip,ca_zip]
                             CometProject [ca_zip] [ca_zip]
                               CometFilter [ca_zip]
-                                CometScan [native_comet] parquet spark_catalog.default.customer_address [ca_zip]
+                                CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address [ca_zip]
                             CometBroadcastExchange [ca_zip] #7
                               CometProject [ca_zip]
                                 CometFilter [ca_zip,cnt]
@@ -47,8 +47,8 @@ WholeStageCodegen (1)
                                           CometBroadcastHashJoin [ca_address_sk,ca_zip,c_current_addr_sk]
                                             CometProject [ca_zip] [ca_address_sk,ca_zip]
                                               CometFilter [ca_address_sk,ca_zip]
-                                                CometScan [native_comet] parquet spark_catalog.default.customer_address [ca_address_sk,ca_zip]
+                                                CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address [ca_address_sk,ca_zip]
                                             CometBroadcastExchange [c_current_addr_sk] #9
                                               CometProject [c_current_addr_sk]
                                                 CometFilter [c_current_addr_sk,c_preferred_cust_flag]
-                                                  CometScan [native_comet] parquet spark_catalog.default.customer [c_current_addr_sk,c_preferred_cust_flag]
+                                                  CometScan [native_iceberg_compat] parquet spark_catalog.default.customer [c_current_addr_sk,c_preferred_cust_flag]

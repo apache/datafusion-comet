@@ -2,10 +2,10 @@
 * Project (4)
 +- * CometColumnarToRow (3)
    +- CometFilter (2)
-      +- CometScan [native_comet] parquet spark_catalog.default.reason (1)
+      +- CometScan [native_iceberg_compat] parquet spark_catalog.default.reason (1)
 
 
-(1) CometScan [native_comet] parquet spark_catalog.default.reason
+(1) CometScan [native_iceberg_compat] parquet spark_catalog.default.reason
 Output [1]: [r_reason_sk#1]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/reason]
@@ -33,10 +33,10 @@ Subquery:1 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery
          +- CometHashAggregate (8)
             +- CometProject (7)
                +- CometFilter (6)
-                  +- CometScan [native_comet] parquet spark_catalog.default.store_sales (5)
+                  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales (5)
 
 
-(5) CometScan [native_comet] parquet spark_catalog.default.store_sales
+(5) CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
 Output [4]: [ss_quantity#17, ss_ext_discount_amt#18, ss_net_paid#19, ss_sold_date_sk#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -84,10 +84,10 @@ Subquery:4 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery
          +- CometHashAggregate (16)
             +- CometProject (15)
                +- CometFilter (14)
-                  +- CometScan [native_comet] parquet spark_catalog.default.store_sales (13)
+                  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales (13)
 
 
-(13) CometScan [native_comet] parquet spark_catalog.default.store_sales
+(13) CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
 Output [4]: [ss_quantity#30, ss_ext_discount_amt#31, ss_net_paid#32, ss_sold_date_sk#33]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -135,10 +135,10 @@ Subquery:7 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery
          +- CometHashAggregate (24)
             +- CometProject (23)
                +- CometFilter (22)
-                  +- CometScan [native_comet] parquet spark_catalog.default.store_sales (21)
+                  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales (21)
 
 
-(21) CometScan [native_comet] parquet spark_catalog.default.store_sales
+(21) CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
 Output [4]: [ss_quantity#43, ss_ext_discount_amt#44, ss_net_paid#45, ss_sold_date_sk#46]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -186,10 +186,10 @@ Subquery:10 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquer
          +- CometHashAggregate (32)
             +- CometProject (31)
                +- CometFilter (30)
-                  +- CometScan [native_comet] parquet spark_catalog.default.store_sales (29)
+                  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales (29)
 
 
-(29) CometScan [native_comet] parquet spark_catalog.default.store_sales
+(29) CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
 Output [4]: [ss_quantity#56, ss_ext_discount_amt#57, ss_net_paid#58, ss_sold_date_sk#59]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -237,10 +237,10 @@ Subquery:13 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquer
          +- CometHashAggregate (40)
             +- CometProject (39)
                +- CometFilter (38)
-                  +- CometScan [native_comet] parquet spark_catalog.default.store_sales (37)
+                  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales (37)
 
 
-(37) CometScan [native_comet] parquet spark_catalog.default.store_sales
+(37) CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
 Output [4]: [ss_quantity#69, ss_ext_discount_amt#70, ss_net_paid#71, ss_sold_date_sk#72]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]

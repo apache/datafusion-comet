@@ -17,20 +17,20 @@ TakeOrderedAndProject (29)
                                  :     :  +- CometBroadcastHashJoin (7)
                                  :     :     :- CometProject (3)
                                  :     :     :  +- CometFilter (2)
-                                 :     :     :     +- CometScan [native_comet] parquet spark_catalog.default.item (1)
+                                 :     :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item (1)
                                  :     :     +- CometBroadcastExchange (6)
                                  :     :        +- CometFilter (5)
-                                 :     :           +- CometScan [native_comet] parquet spark_catalog.default.store_sales (4)
+                                 :     :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales (4)
                                  :     +- CometBroadcastExchange (12)
                                  :        +- CometProject (11)
                                  :           +- CometFilter (10)
-                                 :              +- CometScan [native_comet] parquet spark_catalog.default.date_dim (9)
+                                 :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (9)
                                  +- CometBroadcastExchange (17)
                                     +- CometFilter (16)
-                                       +- CometScan [native_comet] parquet spark_catalog.default.store (15)
+                                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store (15)
 
 
-(1) CometScan [native_comet] parquet spark_catalog.default.item
+(1) CometScan [native_iceberg_compat] parquet spark_catalog.default.item
 Output [5]: [i_item_sk#1, i_brand#2, i_class#3, i_category#4, i_manager_id#5]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -45,7 +45,7 @@ Condition : ((((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcha
 Input [5]: [i_item_sk#1, i_brand#2, i_class#3, i_category#4, i_manager_id#5]
 Arguments: [i_item_sk#1, i_manager_id#5], [i_item_sk#1, i_manager_id#5]
 
-(4) CometScan [native_comet] parquet spark_catalog.default.store_sales
+(4) CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
 Output [4]: [ss_item_sk#10, ss_store_sk#11, ss_sales_price#12, ss_sold_date_sk#13]
 Batched: true
 Location: InMemoryFileIndex []
@@ -70,7 +70,7 @@ Arguments: [i_item_sk#1], [ss_item_sk#10], Inner, BuildRight
 Input [6]: [i_item_sk#1, i_manager_id#5, ss_item_sk#10, ss_store_sk#11, ss_sales_price#12, ss_sold_date_sk#13]
 Arguments: [i_manager_id#5, ss_store_sk#11, ss_sales_price#12, ss_sold_date_sk#13], [i_manager_id#5, ss_store_sk#11, ss_sales_price#12, ss_sold_date_sk#13]
 
-(9) CometScan [native_comet] parquet spark_catalog.default.date_dim
+(9) CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#15, d_month_seq#16, d_moy#17]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -98,7 +98,7 @@ Arguments: [ss_sold_date_sk#13], [d_date_sk#15], Inner, BuildRight
 Input [6]: [i_manager_id#5, ss_store_sk#11, ss_sales_price#12, ss_sold_date_sk#13, d_date_sk#15, d_moy#17]
 Arguments: [i_manager_id#5, ss_store_sk#11, ss_sales_price#12, d_moy#17], [i_manager_id#5, ss_store_sk#11, ss_sales_price#12, d_moy#17]
 
-(15) CometScan [native_comet] parquet spark_catalog.default.store
+(15) CometScan [native_iceberg_compat] parquet spark_catalog.default.store
 Output [1]: [s_store_sk#18]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store]
@@ -170,10 +170,10 @@ BroadcastExchange (34)
 +- * CometColumnarToRow (33)
    +- CometProject (32)
       +- CometFilter (31)
-         +- CometScan [native_comet] parquet spark_catalog.default.date_dim (30)
+         +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (30)
 
 
-(30) CometScan [native_comet] parquet spark_catalog.default.date_dim
+(30) CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#15, d_month_seq#16, d_moy#17]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
