@@ -18,7 +18,7 @@
 use arrow::array::{Array, ArrowNativeTypeOp, PrimitiveArray, PrimitiveBuilder};
 use arrow::array::{ArrayRef, AsArray};
 
-use crate::EvalMode;
+use crate::{divide_by_zero_error, EvalMode, SparkError};
 use arrow::datatypes::{
     ArrowPrimitiveType, DataType, Float32Type, Float64Type, Int32Type, Int64Type,
 };
@@ -48,7 +48,12 @@ where
                         Ok(v) => builder.append_value(v),
                         Err(_e) => {
                             if is_ansi_mode {
-                                return Err(DataFusionError::Internal(error_msg));
+                                return Err(SparkError::ArithmeticOverflow {
+                                    from_type: String::from("Integer/Float"),
+                                }
+                                .into());
+                            } else {
+                                builder.append_null();
                             }
                         }
                     }
@@ -64,7 +69,12 @@ where
                         Ok(v) => builder.append_value(v),
                         Err(_e) => {
                             if is_ansi_mode {
-                                return Err(DataFusionError::Internal(error_msg));
+                                return Err(SparkError::ArithmeticOverflow {
+                                    from_type: String::from("Integer/Float"),
+                                }
+                                .into());
+                            } else {
+                                builder.append_null();
                             }
                         }
                     }
@@ -80,7 +90,12 @@ where
                         Ok(v) => builder.append_value(v),
                         Err(_e) => {
                             if is_ansi_mode {
-                                return Err(DataFusionError::Internal(error_msg));
+                                return Err(SparkError::ArithmeticOverflow {
+                                    from_type: String::from("Integer/Float"),
+                                }
+                                .into());
+                            } else {
+                                builder.append_null();
                             }
                         }
                     }
@@ -96,7 +111,16 @@ where
                         Ok(v) => builder.append_value(v),
                         Err(_e) => {
                             if is_ansi_mode {
-                                return Err(DataFusionError::Internal(error_msg));
+                                return if right.value(i).is_zero() {
+                                    Err(divide_by_zero_error().into())
+                                } else {
+                                    return Err(SparkError::ArithmeticOverflow {
+                                        from_type: String::from("Integer/Float"),
+                                    }
+                                    .into());
+                                };
+                            } else {
+                                builder.append_null();
                             }
                         }
                     }
@@ -165,7 +189,7 @@ fn checked_arithmetic_internal(
             )))
         }
     };
-    println!("Eval mode {:?}", eval_mode);
+    println!("Eval mode {:?} operation : {}", eval_mode, op);
 
     let (left_arr, right_arr): (ArrayRef, ArrayRef) = match (left, right) {
         (ColumnarValue::Array(l), ColumnarValue::Array(r)) => (Arc::clone(l), Arc::clone(r)),
