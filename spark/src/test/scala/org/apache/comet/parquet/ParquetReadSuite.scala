@@ -1337,26 +1337,28 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("scan metrics") {
-    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
 
-      val cometScanMetricNames = Seq(
-        "ParquetRowGroups",
-        "ParquetNativeDecodeTime",
-        "ParquetNativeLoadTime",
-        "ParquetLoadRowGroupTime",
-        "ParquetInputFileReadTime",
-        "ParquetInputFileReadSize",
-        "ParquetInputFileReadThroughput")
+    val cometScanMetricNames = Seq(
+      "ParquetRowGroups",
+      "ParquetNativeDecodeTime",
+      "ParquetNativeLoadTime",
+      "ParquetLoadRowGroupTime",
+      "ParquetInputFileReadTime",
+      "ParquetInputFileReadSize",
+      "ParquetInputFileReadThroughput")
 
-      val cometNativeScanMetricNames = Seq(
-        "time_elapsed_scanning_total",
-        "bytes_scanned",
-        "output_rows",
-        "time_elapsed_opening",
-        "time_elapsed_processing",
-        "time_elapsed_scanning_until_data")
+    val cometNativeScanMetricNames = Seq(
+      "time_elapsed_scanning_total",
+      "bytes_scanned",
+      "output_rows",
+      "time_elapsed_opening",
+      "time_elapsed_processing",
+      "time_elapsed_scanning_until_data")
 
-      withParquetTable((0 until 10000).map(i => (i, i.toDouble)), "tbl") {
+    withParquetTable((0 until 10000).map(i => (i, i.toDouble)), "tbl") {
+      // TODO need to implement metrics for SCAN_NATIVE_ICEBERG_COMPAT
+      // https://github.com/apache/datafusion-comet/issues/1882
+      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
         val df = sql("SELECT * FROM tbl WHERE _1 > 0")
         val scans = df.queryExecution.executedPlan collect {
           case s: CometScanExec => s
