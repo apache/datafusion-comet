@@ -40,10 +40,11 @@ import org.apache.comet.vector.NativeUtil
  * managing sophisticated memory ownership semantics across the JNI boundary.
  *
  * '''Architecture Overview:'''
- *   1. Consumes input ColumnarBatch iterators from Spark operators 2. Transfers Arrow array
- *      ownership to native DataFusion execution engine via JNI (* see note below) 3. Executes
- *      queries natively using DataFusion's columnar processing 4. Returns results as
- *      ColumnarBatch with ownership transferred back to JVM
+ *   - 1. Consumes input ColumnarBatch iterators from Spark operators
+ *   - 2. Transfers Arrow array ownership to native DataFusion execution engine via JNI (* see
+ *     note below)
+ *   - 3. Executes queries natively using DataFusion's columnar processing
+ *   - 4. Returns results as ColumnarBatch with ownership transferred back to JVM
  *
  * * This isn't quite true. Comet does not currently implement best practice when passing batches
  * from JVM to native. JVM retains ownership of arrays and native code must make defensive copies
