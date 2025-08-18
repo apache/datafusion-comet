@@ -18,7 +18,7 @@
 use crate::execution::operators::copy_array;
 use crate::{
     errors::CometError,
-    execution::{operators::ExecutionError, planner::TEST_EXEC_CONTEXT_ID, utils::ArrowFfiConvert},
+    execution::{operators::ExecutionError, planner::TEST_EXEC_CONTEXT_ID, utils::SparkArrowConvert},
     jvm_bridge::{jni_call, JVMClasses},
 };
 use arrow::array::{make_array, ArrayData, ArrayRef, RecordBatch, RecordBatchOptions};
@@ -272,7 +272,7 @@ impl ScanExec {
         for i in 0..num_cols {
             let array_ptr = array_addrs[i];
             let schema_ptr = schema_addrs[i];
-            let array_data = ArrayData::from_ffi((array_ptr, schema_ptr))?;
+            let array_data = ArrayData::from_spark((array_ptr, schema_ptr))?;
 
             // TODO: validate array input data
             // array_data.validate_full()?;

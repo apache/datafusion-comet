@@ -42,19 +42,19 @@ impl From<ExpressionError> for ArrowError {
     }
 }
 
-pub trait ArrowFfiConvert {
+pub trait SparkArrowConvert {
     /// Build Arrow Arrays from C data interface passed from Spark.
     /// It accepts a tuple (ArrowArray address, ArrowSchema address).
-    fn from_ffi(addresses: (i64, i64)) -> Result<Self, ExecutionError>
+    fn from_spark(addresses: (i64, i64)) -> Result<Self, ExecutionError>
     where
         Self: Sized;
 
     /// Move Arrow Arrays to C data interface.
-    fn move_to_ffi(&self, array: i64, schema: i64) -> Result<(), ExecutionError>;
+    fn move_to_spark(&self, array: i64, schema: i64) -> Result<(), ExecutionError>;
 }
 
-impl ArrowFfiConvert for ArrayData {
-    fn from_ffi(addresses: (i64, i64)) -> Result<Self, ExecutionError> {
+impl SparkArrowConvert for ArrayData {
+    fn from_spark(addresses: (i64, i64)) -> Result<Self, ExecutionError> {
         let (array_ptr, schema_ptr) = addresses;
 
         let array_ptr = array_ptr as *mut FFI_ArrowArray;
@@ -82,7 +82,7 @@ impl ArrowFfiConvert for ArrayData {
     }
 
     /// Moves ArrowData to Spark JVM side. Transfers ownership of the Rust-allocated data to the FFI layer so that JVM can consume it.
-    fn move_to_ffi(&self, array: i64, schema: i64) -> Result<(), ExecutionError> {
+    fn move_to_spark(&self, array: i64, schema: i64) -> Result<(), ExecutionError> {
         let array_ptr = array as *mut FFI_ArrowArray;
         let schema_ptr = schema as *mut FFI_ArrowSchema;
 
