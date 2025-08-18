@@ -87,7 +87,7 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.memory.offHeap.size=2g \
     --conf spark.comet.use.lazyMaterialization=false \
     --conf spark.comet.schemaEvolution.enabled=true \
-    --conf spark.comet.exec.broadcastExchange.enabled=false
+    --conf spark.sql.adaptive.enabled=false # or spark.comet.exec.broadcastExchange.enabled=false, see `Known issues`
 ```
 
 Create an Iceberg table. Note that Comet will not accelerate this part.
@@ -147,4 +147,5 @@ scala> spark.sql(s"SELECT * from t1").explain()
  - We temporarily disable Comet when there are delete files in Iceberg scan, see Iceberg [1.8.1 diff](../../../dev/diffs/iceberg/1.8.1.diff) and this [PR](https://github.com/apache/iceberg/pull/13793)
    - Iceberg scan w/ delete files lead to [runtime exceptions](https://github.com/apache/datafusion-comet/issues/2117) and [incorrect results](https://github.com/apache/datafusion-comet/issues/2118)
  - Enabling `CometShuffleManager` leads to [runtime exceptions](https://github.com/apache/datafusion-comet/issues/2086)
- - Enabling `CometBroadcastExchangeExec` leads to [runtime exceptions](https://github.com/apache/datafusion-comet/issues/2116)
+ - Spark Runtime Filtering isn't [working](https://github.com/apache/datafusion-comet/issues/2116)
+   - You can bypass the issue by either setting `spark.sql.adaptive.enabled=false` or `spark.comet.exec.broadcastExchange.enabled=false`
