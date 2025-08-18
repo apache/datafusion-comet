@@ -22,10 +22,5 @@ package spark.spark_config;
 option java_package = "org.apache.comet.serde";
 
 message ConfigMap {
-  repeated ConfigEntry entry = 1;
-}
-
-message ConfigEntry {
-  string key = 1;
-  string value = 2;
+  map<string, string> entries = 1;
 }

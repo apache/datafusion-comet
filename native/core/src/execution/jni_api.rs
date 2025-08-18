@@ -187,9 +187,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
             // Convert Spark configs to HashMap
             let _spark_config_map: HashMap<String, String> = spark_configs
-                .entry
+                .entries
                 .into_iter()
-                .map(|entry| (entry.key, entry.value))
                 .collect();
 
             let metrics = Arc::new(jni_new_global_ref!(env, metrics_node)?);
