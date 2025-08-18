@@ -88,9 +88,8 @@ class CometExecIterator(
 
     // serialize Spark conf in protobuf format
     val builder = ConfigMap.newBuilder()
-    conf.getAll.foreach {
-      case (k, v) =>
-        builder.addEntry(ConfigMapEntry.newBuilder().setKey(k).setValue(v))
+    conf.getAll.foreach { case (k, v) =>
+      builder.addEntry(ConfigMapEntry.newBuilder().setKey(k).setValue(v))
     }
     val protobufSparkConfigs = builder.build().toByteArray
 
