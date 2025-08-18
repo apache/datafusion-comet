@@ -1788,22 +1788,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val cond = exprToProto(condition, child.output)
 
         if (cond.isDefined && childOp.nonEmpty) {
-          // We need to determine whether to use DataFusion's FilterExec or Comet's
-          // FilterExec. The difference is that DataFusion's implementation will sometimes pass
-          // batches through whereas the Comet implementation guarantees that a copy is always
-          // made, which is critical when using `native_comet` scans due to buffer re-use
-
-          // TODO this could be optimized more to stop walking the tree on hitting
-          //  certain operators such as join or aggregate which will copy batches
-          def containsNativeCometScan(plan: SparkPlan): Boolean = {
-            plan match {
-              case w: CometScanWrapper => containsNativeCometScan(w.originalPlan)
-              case scan: CometScanExec => scan.scanImpl == CometConf.SCAN_NATIVE_COMET
-              case _: CometNativeScanExec => false
-              case _ => plan.children.exists(containsNativeCometScan)
-            }
-          }
-
           // Some native expressions do not support operating on dictionary-encoded arrays, so
           // wrap the child in a CopyExec to unpack dictionaries first.
           def wrapChildInCopyExec(condition: Expression): Boolean = {
@@ -1816,7 +1800,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           val filterBuilder = OperatorOuterClass.Filter
             .newBuilder()
             .setPredicate(cond.get)
-            .setUseDatafusionFilter(!containsNativeCometScan(op))
             .setWrapChildInCopyExec(wrapChildInCopyExec(condition))
           Some(builder.setFilter(filterBuilder).build())
         } else {
