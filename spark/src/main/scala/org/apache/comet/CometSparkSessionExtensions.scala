@@ -30,7 +30,6 @@ import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNode
 import org.apache.spark.sql.comet._
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
@@ -145,17 +144,7 @@ object CometSparkSessionExtensions extends Logging {
   private[comet] def isCometShuffleEnabled(conf: SQLConf): Boolean =
     COMET_EXEC_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf)
 
-  private[comet] def getCometShuffleNotEnabledReason(conf: SQLConf): Option[String] = {
-    if (!COMET_EXEC_SHUFFLE_ENABLED.get(conf)) {
-      Some(s"${COMET_EXEC_SHUFFLE_ENABLED.key} is not enabled")
-    } else if (!isCometShuffleManagerEnabled(conf)) {
-      Some(s"spark.shuffle.manager is not set to ${CometShuffleManager.getClass.getName}")
-    } else {
-      None
-    }
-  }
-
-  private def isCometShuffleManagerEnabled(conf: SQLConf) = {
+  def isCometShuffleManagerEnabled(conf: SQLConf): Boolean = {
     conf.contains("spark.shuffle.manager") && conf.getConfString("spark.shuffle.manager") ==
       "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
   }
