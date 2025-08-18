@@ -38,8 +38,8 @@ arrow = { version = "56.0.0", features = ["prettyprint", "ffi", "chrono-tz"] }
 async-trait = { version = "0.1" }
 bytes = { version = "1.10.0" }
 parquet = { version = "55.2.0", default-features = false, features = ["experimental"] }
-datafusion = { git = "https://github.com/apache/datafusion", rev = "9264bb8", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
-datafusion-spark = { git = "https://github.com/apache/datafusion", rev = "9264bb8" }
+datafusion = { git = "https://github.com/apache/datafusion", rev = "f3941b2", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
+datafusion-spark = { git = "https://github.com/apache/datafusion", rev = "f3941b2" }
 datafusion-comet-spark-expr = { path = "spark-expr" }
 datafusion-comet-proto = { path = "proto" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

@@ -38,12 +38,21 @@ use std::sync::Arc;
 /// The implementation mostly is the same as the DataFusion's implementation. The reason
 /// we have our own implementation is that DataFusion has UInt64 for state_field count,
 /// while Spark has Double for count.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Covariance {
     name: String,
     signature: Signature,
     stats_type: StatsType,
     null_on_divide_by_zero: bool,
+}
+
+impl std::hash::Hash for Covariance {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+        self.signature.hash(state);
+        // StatsType doesn't implement Hash, so we skip it or use a workaround
+        self.null_on_divide_by_zero.hash(state);
+    }
 }
 
 impl Covariance {
