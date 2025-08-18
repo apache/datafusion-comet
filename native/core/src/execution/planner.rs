@@ -1136,6 +1136,7 @@ impl PhysicalPlanner {
                         fun_expr,
                         vec![left, right],
                         Arc::new(Field::new(op_str, data_type, true)),
+                        Arc::new(ConfigOptions::default()),
                     )))
                 } else {
                     Ok(Arc::new(BinaryExpr::new(left, op, right)))
