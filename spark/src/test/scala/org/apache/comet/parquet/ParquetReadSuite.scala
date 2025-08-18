@@ -147,11 +147,12 @@ abstract class ParquetReadSuite extends CometTestBase {
             "f1 map<long, string>, f2 array<double>")
             .map(s => StructType.fromDDL(s))
 
-        // Arrays support for iceberg compat native and for Parquet V1
-        val cometScanExecSupported =
-          if (usingDataSourceExec(conf) && this.isInstanceOf[ParquetReadV1Suite])
-            Seq(true, true, true)
-          else Seq(true, false, false)
+        // Arrays support for iceberg compat native
+        val cometScanExecSupported = if (usingDataSourceExec(conf)) {
+          Seq(true, true, true)
+        } else {
+          Seq(true, false, false)
+        }
 
         val cometBatchScanExecSupported = Seq(true, false, false)
         val fallbackReasons = new ListBuffer[String]()
