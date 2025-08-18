@@ -86,8 +86,7 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=2g \
     --conf spark.comet.use.lazyMaterialization=false \
-    --conf spark.comet.schemaEvolution.enabled=true \
-    --conf spark.sql.adaptive.enabled=false # or spark.comet.exec.broadcastExchange.enabled=false, see `Known issues`
+    --conf spark.comet.schemaEvolution.enabled=true
 ```
 
 Create an Iceberg table. Note that Comet will not accelerate this part.
