@@ -319,6 +319,10 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
 }
 
 case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport {
+
+  // this class is intended to be used with a specific scan impl
+  assert(scanImpl != CometConf.SCAN_AUTO)
+
   override def isTypeSupported(
       dt: DataType,
       name: String,
