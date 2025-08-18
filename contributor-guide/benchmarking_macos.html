@@ -313,6 +313,18 @@ under the License.
   <a class="reference internal nav-link" href="#install-spark">
    Install Spark
   </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#start-local-apache-spark-cluster-using-spark-class">
+     Start local Apache Spark cluster using
+     <code class="docutils literal notranslate">
+      <span class="pre">
+       spark-class
+      </span>
+     </code>
+    </a>
+   </li>
+  </ul>
  </li>
  <li class="toc-h2 nav-item toc-entry">
   <a class="reference internal nav-link" href="#run-spark-benchmarks">
@@ -407,14 +419,6 @@ mkdir<span class="w"> </span>/tmp/spark-events
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/sbin/start-master.sh
 </pre></div>
 </div>
-<p>Note: For Apache Spark distributions installed using <code class="docutils literal notranslate"><span class="pre">brew</span></code> tool, it may happen there is no <code class="docutils literal notranslate"><span class="pre">$SPARK_HOME/sbin</span></code> folder on your machine. However it is still possible to start Apache Spark master by running command</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-class<span class="w"> </span>org.apache.spark.deploy.master.Master
-</pre></div>
-</div>
-<p>Once master has started, look for output to find Master endpoint URI, like</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>INFO<span class="w"> </span>Master:<span class="w"> </span>Starting<span class="w"> </span>Spark<span class="w"> </span>master<span class="w"> </span>at<span class="w"> </span>spark://192.168.4.142:7078
-</pre></div>
-</div>
 <p>Set <code class="docutils literal notranslate"><span class="pre">SPARK_MASTER</span></code> env var (host name will need to be edited):</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">SPARK_MASTER</span><span class="o">=</span>spark://Rustys-MacBook-Pro.local:7077
 </pre></div>
@@ -422,6 +426,18 @@ mkdir<span class="w"> </span>/tmp/spark-events
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/sbin/start-worker.sh<span class="w"> </span><span class="nv">$SPARK_MASTER</span>
 </pre></div>
 </div>
+<section id="start-local-apache-spark-cluster-using-spark-class">
+<h3>Start local Apache Spark cluster using <code class="docutils literal notranslate"><span class="pre">spark-class</span></code><a class="headerlink" href="#start-local-apache-spark-cluster-using-spark-class" title="Link to this heading">¶</a></h3>
+<p>For Apache Spark distributions installed using <code class="docutils literal notranslate"><span class="pre">brew</span></code> tool, it may happen there is no <code class="docutils literal notranslate"><span class="pre">$SPARK_HOME/sbin</span></code> folder on your machine.
+In order to start local Apache Spark cluster on <code class="docutils literal notranslate"><span class="pre">localhost:7077</span></code> port, run:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-class<span class="w"> </span>org.apache.spark.deploy.master.Master<span class="w"> </span>--host<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span>--port<span class="w"> </span><span class="m">7077</span><span class="w"> </span>--webui-port<span class="w"> </span><span class="m">8080</span>
+</pre></div>
+</div>
+<p>Once master has started, in separate console start the worker referring the spark master uri on <code class="docutils literal notranslate"><span class="pre">localhost:7077</span></code></p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-class<span class="w"> </span>org.apache.spark.deploy.worker.Worker<span class="w"> </span>--cores<span class="w"> </span><span class="m">8</span><span class="w"> </span>--memory<span class="w"> </span>16G<span class="w"> </span>spark://localhost:7077
+</pre></div>
+</div>
+</section>
 </section>
 <section id="run-spark-benchmarks">
 <h2>Run Spark Benchmarks<a class="headerlink" href="#run-spark-benchmarks" title="Link to this heading">¶</a></h2>
