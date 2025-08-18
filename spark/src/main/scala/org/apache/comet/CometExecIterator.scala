@@ -40,11 +40,11 @@ import org.apache.comet.vector.NativeUtil
  * managing sophisticated memory ownership semantics across the JNI boundary.
  *
  * '''Architecture Overview:'''
- *   - \1. Consumes input ColumnarBatch iterators from Spark operators
- *   - 2. Transfers Arrow array ownership to native DataFusion execution engine via JNI (* see
+ *   - Consumes input ColumnarBatch iterators from Spark operators
+ *   - Transfers Arrow array ownership to native DataFusion execution engine via JNI (* see
  *     note below)
- *   - 3. Executes queries natively using DataFusion's columnar processing
- *   - 4. Returns results as ColumnarBatch with ownership transferred back to JVM
+ *   - Executes queries natively using DataFusion's columnar processing
+ *   - Returns results as ColumnarBatch with ownership transferred back to JVM
  *
  * * This isn't quite true. Comet does not currently implement best practice when passing batches
  * from JVM to native. JVM retains ownership of arrays and native code must make defensive copies
@@ -280,7 +280,7 @@ class CometExecIterator(
    *
    * '''Thread Safety:''' This method is synchronized to prevent race conditions during cleanup.
    * Multiple threads calling close() concurrently will be serialized safely. This is important
-   * because it may be invoked from Spark's task cleanup listener.
+   * because this method may be invoked from a Spark TaskCompletionListener thread.
    *
    * @note
    *   This method is idempotent - multiple calls are safe but only the first has effect.
