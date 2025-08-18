@@ -32,6 +32,7 @@ import org.apache.spark.sql.vectorized._
 
 import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_POOL_TYPE, COMET_EXPLAIN_NATIVE_ENABLED, COMET_METRICS_UPDATE_INTERVAL}
 import org.apache.comet.Tracing.withTrace
+import org.apache.comet.serde.Config.{ConfigEntry => ConfigMapEntry, ConfigMap}
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -84,10 +85,20 @@ class CometExecIterator(
       // and `memory_fraction` below.
       CometSparkSessionExtensions.getCometMemoryOverhead(conf)
     }
+
+    // serialize Spark conf in protobuf format
+    val builder = ConfigMap.newBuilder()
+    conf.getAll.foreach {
+      case (k, v) =>
+        builder.addEntry(ConfigMapEntry.newBuilder().setKey(k).setValue(v))
+    }
+    val protobufSparkConfigs = builder.build().toByteArray
+
     nativeLib.createPlan(
       id,
       cometBatchIterators,
       protobufQueryPlan,
+      protobufSparkConfigs,
       numParts,
       nativeMetrics,
       metricsUpdateInterval = COMET_METRICS_UPDATE_INTERVAL.get(),

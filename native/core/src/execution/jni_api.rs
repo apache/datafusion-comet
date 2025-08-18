@@ -60,6 +60,7 @@ use jni::{
     objects::GlobalRef,
     sys::{jboolean, jdouble, jintArray, jobjectArray, jstring},
 };
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::{sync::Arc, task::Poll};
@@ -151,6 +152,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     id: jlong,
     iterators: jobjectArray,
     serialized_query: jbyteArray,
+    serialized_spark_configs: jbyteArray,
     partition_count: jint,
     metrics_node: JObject,
     metrics_update_interval: jlong,
@@ -173,11 +175,22 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
             let start = Instant::now();
 
+            // Deserialize query plan
             let array = unsafe { JPrimitiveArray::from_raw(serialized_query) };
             let bytes = env.convert_byte_array(array)?;
-
-            // Deserialize query plan
             let spark_plan = serde::deserialize_op(bytes.as_slice())?;
+
+            // Deserialize Spark configs
+            let array = unsafe { JPrimitiveArray::from_raw(serialized_spark_configs) };
+            let bytes = env.convert_byte_array(array)?;
+            let spark_configs = serde::deserialize_config(bytes.as_slice())?;
+
+            // Convert Spark configs to HashMap
+            let _spark_config_map: HashMap<String, String> = spark_configs
+                .entry
+                .iter()
+                .map(|entry| (entry.key.clone(), entry.value.clone()))
+                .collect();
 
             let metrics = Arc::new(jni_new_global_ref!(env, metrics_node)?);
 

@@ -15,27 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Build script for generating codes from .proto files.
+syntax = "proto3";
 
-use std::{fs, io::Result, path::Path};
+package spark.spark_config;
 
-fn main() -> Result<()> {
-    println!("cargo:rerun-if-changed=src/proto/");
+option java_package = "org.apache.comet.serde";
 
-    let out_dir = "src/generated";
-    if !Path::new(out_dir).is_dir() {
-        fs::create_dir(out_dir)?;
-    }
+message ConfigMap {
+  repeated ConfigEntry entry = 1;
+}
 
-    prost_build::Config::new().out_dir(out_dir).compile_protos(
-        &[
-            "src/proto/expr.proto",
-            "src/proto/metric.proto",
-            "src/proto/partitioning.proto",
-            "src/proto/operator.proto",
-            "src/proto/config.proto",
-        ],
-        &["src/proto"],
-    )?;
-    Ok(())
+message ConfigEntry {
+  string key = 1;
+  string value = 2;
 }
