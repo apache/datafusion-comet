@@ -146,7 +146,10 @@ accessing Arrow data structures from multiple languages.
 
 `CometExecIterator` invokes native plans by calling the JNI function `executePlan`. The ownership of the output 
 batches, which are created in native code, is transferred to FFI ready to be consumed by Java once the `executePlan` 
-function returns. 
+function returns.
+
+Once the JVM code finishes processing the arrays, it will call the `release` callback, which invokes native code 
+to release the memory that was allocated on the native side.
 
 #### Exporting Batches from JVM to Native
 
