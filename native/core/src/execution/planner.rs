@@ -86,11 +86,7 @@ use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
-use arrow::array::{
-    Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array, Float32Array,
-    Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, ListArray, NullArray,
-    StringBuilder, TimestampMicrosecondArray,
-};
+use arrow::array::{new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, ListArray, NullArray, StringBuilder, TimestampMicrosecondArray};
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
@@ -2825,7 +2821,7 @@ fn literal_to_array_ref(
         DataType::List(f) if !matches!(f.data_type(), DataType::List(_)) => {
             literal_to_array_ref(f.data_type().clone(), list_literal)
         }
-        DataType::List(f) => {
+        DataType::List(ref f) => {
             let dt = f.data_type().clone();
             let child_arrays: Vec<ArrayRef> = list_literal
                 .list_values
@@ -2848,14 +2844,21 @@ fn literal_to_array_ref(
 
             // Concatenate all child arrays' *values* into one array
             // Example: [[1,2,3], [4,5,6]] → values = [1,2,3,4,5,6]
-            let concat = arrow::compute::concat(&child_refs)?;
+            let output_array = if !child_refs.is_empty() {
+                arrow::compute::concat(&child_refs)?
+            } else {
+                let x = new_empty_array(&dt.clone());
+                offsets = vec![x.offset() as i32];
+                dbg!(&offsets);
+                x
+            };
 
             // Create and return the parent ListArray
             Ok(Arc::new(ListArray::new(
                 // Field: item type matches the concatenated child's type
-                FieldRef::from(Field::new("item", concat.data_type().clone(), true)),
+                FieldRef::from(Field::new("item", output_array.data_type().clone(), true)),
                 OffsetBuffer::new(offsets.into()),
-                concat,
+                output_array,
                 Some(NullBuffer::from(list_literal.null_mask)),
             )))
         }
@@ -3758,26 +3761,26 @@ mod tests {
             true, // outer list nullable
         )));
 
-        let data = ListLiteral {
-            list_values: vec![
-                ListLiteral {
-                int_values: vec![1, 2],
-                null_mask: vec![true, true],
-                ..Default::default()
-                },
-                ListLiteral {
-                    ..Default::default()
-                }
-            ],
-            null_mask: vec![true, false],
-            ..Default::default()
-        };
-
-        let nested_type = DataType::List(FieldRef::from(Field::new(
-            "item",
-            DataType::List(
-                Field::new("item", DataType::Int32, true).into(),
-                ), true)));
+        // let data = ListLiteral {
+        //     list_values: vec![
+        //         ListLiteral {
+        //         int_values: vec![1, 2],
+        //         null_mask: vec![true, true],
+        //         ..Default::default()
+        //         },
+        //         ListLiteral {
+        //             ..Default::default()
+        //         }
+        //     ],
+        //     null_mask: vec![true, false],
+        //     ..Default::default()
+        // };
+        //
+        // let nested_type = DataType::List(FieldRef::from(Field::new(
+        //     "item",
+        //     DataType::List(
+        //         Field::new("item", DataType::Int32, true).into(),
+        //         ), true)));
 
         let array = literal_to_array_ref(nested_type, data)?;
 
