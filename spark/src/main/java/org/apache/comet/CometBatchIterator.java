@@ -26,40 +26,12 @@ import org.apache.spark.sql.vectorized.ColumnarBatch;
 import org.apache.comet.vector.NativeUtil;
 
 /**
- * A Java adapter iterator that provides batch-by-batch Arrow array access for native code
- * consumption. This class serves as a bridge between Spark's ColumnarBatch format and native
- * DataFusion execution.
- *
- * <h2>Architecture Role</h2>
- *
- * CometBatchIterator acts as a pull-based data source for native execution:
- *
- * <ul>
- *   <li>Wraps Spark ColumnarBatch iterators from upstream operators
- *   <li>Exports Arrow arrays to native code via memory addresses using Arrow's C Data Interface
- *   <li>Provides JNI-friendly API for native code consumption
- * </ul>
- *
- * <h2>Memory Ownership Model</h2>
+ * Iterator for fetching batches from JVM to native code. Usually called via JNI from native
+ * ScanExec.
  *
  * Batches are owned by the JVM. Native code can safely access the batch after calling `next` but
  * the native code must not retain references to the batch because the next call to `hasNext` will
  * signal to the JVM that the batch can be closed.
- *
- * <pre>
- * JVM Phase:     CometBatchIterator owns ColumnarBatch
- *                        ↓
- * Export Phase:  Arrays exported via memory addresses
- *                        ↓
- * Native Phase:  Native code processes Arrow arrays
- *                        ↓
- * Release Phase: CometBatchIterator releases reference to batch
- * </pre>
- *
- * <h2>Thread Safety</h2>
- *
- * This class is <strong>NOT thread-safe</strong>. It's designed for single-threaded access from
- * native code via JNI. Concurrent access will cause race conditions and memory corruption.
  */
 public class CometBatchIterator {
   private final Iterator<ColumnarBatch> input;
