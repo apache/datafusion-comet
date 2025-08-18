@@ -28,14 +28,13 @@ import org.testcontainers.utility.DockerImageName
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.comet.CometScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.{col, sum}
+import org.apache.spark.sql.functions.{col, expr, max, sum}
 import org.apache.spark.tags.DockerTest
-
-import org.apache.comet.CometConf.SCAN_NATIVE_ICEBERG_COMPAT
 
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
@@ -117,25 +116,51 @@ class ParquetReadFromS3Suite extends CometTestBase with AdaptiveSparkPlanHelper 
     df.write.format("parquet").mode(SaveMode.Overwrite).save(filePath)
   }
 
+  private def writePartitionedParquetFile(filePath: String): Unit = {
+    val df = spark.range(0, 1000).withColumn("val", expr("concat('val#', id % 10)"))
+    df.write.format("parquet").partitionBy("val").mode(SaveMode.Overwrite).save(filePath)
+  }
+
+  private def assertCometScan(df: DataFrame): Unit = {
+    val scans = collect(df.queryExecution.executedPlan) {
+      case p: CometScanExec => p
+      case p: CometNativeScanExec => p
+    }
+    assert(scans.size == 1)
+  }
+
   test("read parquet file from MinIO") {
     assume(minioContainer != null, "No Docker API is available")
-
-    // native_iceberg_compat mode does not have comprehensive S3 support, so we don't run tests
-    // under this mode.
-    assume(sys.env.getOrElse("COMET_PARQUET_SCAN_IMPL", "") != SCAN_NATIVE_ICEBERG_COMPAT)
 
     val testFilePath = s"s3a://$testBucketName/data/test-file.parquet"
     writeTestParquetFile(testFilePath)
 
     val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
-    val scans = collect(df.queryExecution.executedPlan) {
-      case p: CometScanExec =>
-        p
-      case p: CometNativeScanExec =>
-        p
-    }
-    assert(scans.size == 1)
+    assertCometScan(df)
+    assert(df.first().getLong(0) == 499500)
+  }
 
+  test("read partitioned parquet file from MinIO") {
+    assume(minioContainer != null, "No Docker API is available")
+
+    val testFilePath = s"s3a://$testBucketName/data/test-partitioned-file.parquet"
+    writePartitionedParquetFile(testFilePath)
+
+    val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")), max(col("val")))
+    val firstRow = df.first()
+    assert(firstRow.getLong(0) == 499500)
+    assert(firstRow.getString(1) == "val#9")
+  }
+
+  test("read parquet file from MinIO with URL escape sequences in path") {
+    assume(minioContainer != null, "No Docker API is available")
+
+    // Path with '%23' and '%20' which are URL escape sequences for '#' and ' '
+    val testFilePath = s"s3a://$testBucketName/data/Brand%2321/test%20file.parquet"
+    writeTestParquetFile(testFilePath)
+
+    val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
+    assertCometScan(df)
     assert(df.first().getLong(0) == 499500)
   }
 }
