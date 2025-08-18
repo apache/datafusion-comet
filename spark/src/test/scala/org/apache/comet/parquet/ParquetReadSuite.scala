@@ -86,7 +86,9 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("unsupported Spark types") {
-    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
+    // TODO test fails in auto scan mode
+    // https://github.com/apache/datafusion-comet/issues/2183
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
       // for native iceberg compat, CometScanExec supports some types that native_comet does not.
       // note that native_datafusion does not use CometScanExec so we need not include that in
       // the check
@@ -115,9 +117,12 @@ abstract class ParquetReadSuite extends CometTestBase {
         MapType(keyType = IntegerType, valueType = BinaryType) -> isDataFusionScan)
         .foreach { case (dt, expected) =>
           val fallbackReasons = new ListBuffer[String]()
-          assert(
-            CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
-              .isTypeSupported(dt, "", fallbackReasons) == expected)
+          val isSupported = CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
+            .isTypeSupported(dt, "", fallbackReasons)
+          if (isSupported != expected) {
+            fail(
+              s"Failed on isTypeSupported check for ${dt}; expected=$expected, actual=$isSupported")
+          }
           // usingDataFusionParquetExec does not support CometBatchScanExec yet
           if (!isDataFusionScan) {
             assert(CometBatchScanExec.isTypeSupported(dt, "", fallbackReasons) == expected)

@@ -944,7 +944,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // Complex Types
 
   test("cast StructType to StringType") {
-    // TODO test fails if scan is native_iceberg_compat
+    // TODO test fails if scan is auto
     // https://github.com/apache/datafusion-comet/issues/2175
     withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
       Seq(true, false).foreach { dictionaryEnabled =>

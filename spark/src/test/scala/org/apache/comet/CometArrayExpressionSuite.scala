@@ -232,7 +232,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_contains - test all types (native Parquet reader)") {
-    // TODO test fails if scan is native_iceberg_compat
+    // TODO test fails if scan is auto
     // https://github.com/apache/datafusion-comet/issues/2173
     withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
       withTempDir { dir =>
@@ -410,7 +410,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_intersect") {
-    // TODO test fails if scan is native_iceberg_compat
+    // TODO test fails if scan is auto
     // https://github.com/apache/datafusion-comet/issues/2174
     withSQLConf(
       CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
