@@ -634,7 +634,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       for (fieldName <- fieldNames) {
         sql(s"SELECT array(array($fieldName, $fieldName), array($fieldName)) as a FROM t1")
           .createOrReplaceTempView("t2")
-        checkSparkAnswerAndOperator(sql(s"SELECT flatten(a) FROM t2"))
+        checkSparkAnswerAndOperator(sql("SELECT flatten(a) FROM t2"))
       }
     }
   }
