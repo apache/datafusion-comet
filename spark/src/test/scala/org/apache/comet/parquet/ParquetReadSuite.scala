@@ -87,6 +87,7 @@ abstract class ParquetReadSuite extends CometTestBase {
 
   test("unsupported Spark types") {
     // TODO this test is not correctly implemented for scan implementations other than SCAN_NATIVE_COMET
+    // https://github.com/apache/datafusion-comet/issues/2188
     withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
       // for native iceberg compat, CometScanExec supports some types that native_comet does not.
       // note that native_datafusion does not use CometScanExec so we need not include that in
@@ -131,6 +132,7 @@ abstract class ParquetReadSuite extends CometTestBase {
 
   test("unsupported Spark schema") {
     // TODO this test is not correctly implemented for scan implementations other than SCAN_NATIVE_COMET
+    // https://github.com/apache/datafusion-comet/issues/2188
     withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
       val schemaDDLs =
         Seq(
