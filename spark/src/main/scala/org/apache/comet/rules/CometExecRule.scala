@@ -813,7 +813,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           if (!supportedHashPartitionKeyDataType(expr.dataType)) {
             // native shuffle currently does not support complex types as partition keys
             // due to lack of hashing support for those types
-            withInfo(s, s"unsupported hash partitioning data type: ${expr.dataType}")
+            withInfo(
+              s,
+              s"unsupported hash partitioning data type for native shuffle: ${expr.dataType}")
             supported = false
           }
           if (!supportedShuffleDataType(expr.dataType)) {
