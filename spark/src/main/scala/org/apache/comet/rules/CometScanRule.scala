@@ -37,7 +37,6 @@ import org.apache.spark.sql.types._
 import org.apache.comet.{CometConf, DataTypeSupport}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
-import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.shims.CometTypeShim
 
