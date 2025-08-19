@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::execution::operators::copy_array;
 use crate::{
     errors::CometError,
     execution::{
@@ -276,8 +277,16 @@ impl ScanExec {
             let array_data = ArrayData::from_spark((array_ptr, schema_ptr))?;
 
             // TODO: validate array input data
+            // array_data.validate_full()?;
 
-            inputs.push(make_array(array_data));
+            let array = make_array(array_data);
+
+            // we copy the array to that we don't have to worry about potential memory
+            // corruption issues later on if underlying buffers are reused or freed
+            // TODO optimize this so that we only do this for Parquet inputs!
+            let array = copy_array(&array);
+
+            inputs.push(array);
 
             // Drop the Arcs to avoid memory leak
             unsafe {
