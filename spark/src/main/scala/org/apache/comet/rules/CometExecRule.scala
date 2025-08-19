@@ -827,10 +827,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case RangePartitioning(ordering, _) =>
         var supported = true
         if (!CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.get(conf)) {
-          withInfo(
-            s,
-            s"${CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key} is disabled")
-          supported = false
+          // do not encourage the users to enable the config because we know that
+          // the experimental implementation is not correct yet
+          withInfo(s, "Range partitioning is not supported")
         }
         for (o <- ordering) {
           if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
@@ -875,6 +874,13 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
 
     val inputs = s.child.output
+    for (dt <- inputs.map(_.dataType).distinct) {
+      if (!supportedShuffleDataType(dt)) {
+        withInfo(s, s"unsupported shuffle data type: $dt")
+        return false
+      }
+    }
+
     val partitioning = s.outputPartitioning
     partitioning match {
       case HashPartitioning(expressions, _) =>
@@ -889,25 +895,19 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             supported = false
           }
         }
-        // columnar shuffle supports the same data types (including complex types) both for
-        // partition keys and for other columns
-        for (attr <- inputs) {
-          if (!supportedShuffleDataType(attr.dataType)) {
-            withInfo(s, s"unsupported shuffle data type: ${attr.dataType}")
-            supported = false
-          }
-        }
         supported
       case SinglePartition =>
-        inputs.forall(attr => supportedShuffleDataType(attr.dataType))
+        // we already checked that the input types are supported
+        true
       case RoundRobinPartitioning(_) =>
-        inputs.forall(attr => supportedShuffleDataType(attr.dataType))
+        // we already checked that the input types are supported
+        true
       case RangePartitioning(orderings, _) =>
         var supported = true
         if (!CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.get(conf)) {
-          withInfo(
-            s,
-            s"${CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key} is disabled")
+          // do not encourage the users to enable the config because we know that
+          // the experimental implementation is not correct yet
+          withInfo(s, "Range partitioning is not supported")
           supported = false
         }
         for (o <- orderings) {
@@ -917,14 +917,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           }
           if (!supportedShuffleDataType(o.dataType)) {
             withInfo(s, s"unsupported shuffle data type: ${o.dataType}")
-            supported = false
-          }
-        }
-        // columnar shuffle supports the same data types (including complex types) both for
-        // partition keys and for other columns
-        for (attr <- inputs) {
-          if (!supportedShuffleDataType(attr.dataType)) {
-            withInfo(s, s"unsupported shuffle data type: ${attr.dataType}")
             supported = false
           }
         }
