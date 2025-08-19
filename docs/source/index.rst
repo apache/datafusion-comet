@@ -68,6 +68,7 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    Tracing <contributor-guide/tracing>
    Profiling Native Code <contributor-guide/profiling_native_code>
    Spark SQL Tests <contributor-guide/spark-sql-tests.md>
+   Roadmap <contributor-guide/roadmap.md>
    Github and Issue Tracker <https://github.com/apache/datafusion-comet>
 
 .. _toc.asf-links:
