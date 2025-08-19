@@ -830,6 +830,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           // do not encourage the users to enable the config because we know that
           // the experimental implementation is not correct yet
           withInfo(s, "Range partitioning is not supported")
+          supported = false
         }
         for (o <- ordering) {
           if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
