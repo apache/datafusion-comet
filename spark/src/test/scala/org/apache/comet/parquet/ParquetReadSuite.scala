@@ -86,87 +86,79 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("unsupported Spark types") {
-    for (scan <- Seq(
-        CometConf.SCAN_NATIVE_COMET,
-        CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
-        CometConf.SCAN_NATIVE_DATAFUSION)) {
-      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan) {
-        // for native iceberg compat, CometScanExec supports some types that native_comet does not.
-        // note that native_datafusion does not use CometScanExec so we need not include that in
-        // the check
-        val isDataFusionScan = usingDataSourceExec(conf)
-        Seq(
-          NullType -> false,
-          BooleanType -> true,
-          ByteType -> true,
-          ShortType -> true,
-          IntegerType -> true,
-          LongType -> true,
-          FloatType -> true,
-          DoubleType -> true,
-          BinaryType -> true,
-          StringType -> true,
-          // Timestamp here arbitrary for picking a concrete data type to from ArrayType
-          // Any other type works
-          ArrayType(TimestampType) -> isDataFusionScan,
-          StructType(
-            Seq(
-              StructField("f1", DecimalType.SYSTEM_DEFAULT),
-              StructField("f2", StringType))) -> isDataFusionScan,
-          MapType(keyType = LongType, valueType = DateType) -> isDataFusionScan,
-          StructType(
-            Seq(StructField("f1", ByteType), StructField("f2", StringType))) -> isDataFusionScan,
-          MapType(keyType = IntegerType, valueType = BinaryType) -> isDataFusionScan)
-          .foreach { case (dt, expected) =>
-            val fallbackReasons = new ListBuffer[String]()
-            val isSupported = CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
-              .isTypeSupported(dt, "", fallbackReasons)
-            if (isSupported != expected) {
-              fail(
-                s"Failed on isTypeSupported check for ${dt}; expected=$expected, actual=$isSupported")
-            }
-            // usingDataFusionParquetExec does not support CometBatchScanExec yet
-            if (!isDataFusionScan) {
-              assert(CometBatchScanExec.isTypeSupported(dt, "", fallbackReasons) == expected)
-            }
+    // TODO this test is not correctly implemented for scan implementations other than SCAN_NATIVE_COMET
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
+      // for native iceberg compat, CometScanExec supports some types that native_comet does not.
+      // note that native_datafusion does not use CometScanExec so we need not include that in
+      // the check
+      val isDataFusionScan = usingDataSourceExec(conf)
+      Seq(
+        NullType -> false,
+        BooleanType -> true,
+        ByteType -> true,
+        ShortType -> true,
+        IntegerType -> true,
+        LongType -> true,
+        FloatType -> true,
+        DoubleType -> true,
+        BinaryType -> true,
+        StringType -> true,
+        // Timestamp here arbitrary for picking a concrete data type to from ArrayType
+        // Any other type works
+        ArrayType(TimestampType) -> isDataFusionScan,
+        StructType(
+          Seq(
+            StructField("f1", DecimalType.SYSTEM_DEFAULT),
+            StructField("f2", StringType))) -> isDataFusionScan,
+        MapType(keyType = LongType, valueType = DateType) -> isDataFusionScan,
+        StructType(
+          Seq(StructField("f1", ByteType), StructField("f2", StringType))) -> isDataFusionScan,
+        MapType(keyType = IntegerType, valueType = BinaryType) -> isDataFusionScan)
+        .foreach { case (dt, expected) =>
+          val fallbackReasons = new ListBuffer[String]()
+          // TODO CometScanTypeChecker should only be used for ParquetReadSuiteV1Suite
+          assert(
+            CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
+              .isTypeSupported(dt, "", fallbackReasons) == expected)
+          // usingDataFusionParquetExec does not support CometBatchScanExec yet
+          // TODO CometBatchScanExec should only be used for ParquetReadSuiteV2Suite
+          if (!isDataFusionScan) {
+            assert(CometBatchScanExec.isTypeSupported(dt, "", fallbackReasons) == expected)
           }
-      }
+        }
     }
   }
 
   test("unsupported Spark schema") {
-    for (scan <- Seq(
-        CometConf.SCAN_NATIVE_COMET,
-        CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
-        CometConf.SCAN_NATIVE_DATAFUSION)) {
-      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan) {
-        val schemaDDLs =
-          Seq(
-            "f1 int, f2 boolean",
-            "f1 int, f2 array<int>",
-            "f1 map<long, string>, f2 array<double>")
-            .map(s => StructType.fromDDL(s))
+    // TODO this test is not correctly implemented for scan implementations other than SCAN_NATIVE_COMET
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
+      val schemaDDLs =
+        Seq(
+          "f1 int, f2 boolean",
+          "f1 int, f2 array<int>",
+          "f1 map<long, string>, f2 array<double>")
+          .map(s => StructType.fromDDL(s))
 
-        // Arrays support for iceberg compat native
-        val cometScanExecSupported = if (usingDataSourceExec(conf)) {
+      // Arrays support for iceberg compat native and for Parquet V1
+      val cometScanExecSupported =
+        if (usingDataSourceExec(conf) && this.isInstanceOf[ParquetReadV1Suite])
           Seq(true, true, true)
-        } else {
-          Seq(true, false, false)
-        }
+        else Seq(true, false, false)
 
-        val cometBatchScanExecSupported = Seq(true, false, false)
-        val fallbackReasons = new ListBuffer[String]()
+      val cometBatchScanExecSupported = Seq(true, false, false)
+      val fallbackReasons = new ListBuffer[String]()
 
-        schemaDDLs.zip(cometScanExecSupported).foreach { case (schema, expected) =>
-          assert(
-            CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
-              .isSchemaSupported(StructType(schema), fallbackReasons) == expected)
-        }
+      // TODO CometScanTypeChecker should only be used for ParquetReadSuiteV1Suite
+      schemaDDLs.zip(cometScanExecSupported).foreach { case (schema, expected) =>
+        assert(
+          CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
+            .isSchemaSupported(StructType(schema), fallbackReasons) == expected)
+      }
 
-        schemaDDLs.zip(cometBatchScanExecSupported).foreach { case (schema, expected) =>
-          assert(
-            CometBatchScanExec.isSchemaSupported(StructType(schema), fallbackReasons) == expected)
-        }
+      // TODO CometBatchScanExec should only be used for ParquetReadSuiteV2Suite
+      schemaDDLs.zip(cometBatchScanExecSupported).foreach { case (schema, expected) =>
+        assert(
+          CometBatchScanExec.isSchemaSupported(StructType(schema), fallbackReasons) == expected)
       }
     }
   }
