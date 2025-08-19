@@ -892,8 +892,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         // columnar shuffle supports the same data types (including complex types) both for
         // partition keys and for other columns
         for (attr <- inputs) {
-          withInfo(s, s"unsupported shuffle data type: ${attr.dataType}")
-          supported = false
+          if (!supportedShuffleDataType(attr.dataType)) {
+            withInfo(s, s"unsupported shuffle data type: ${attr.dataType}")
+            supported = false
+          }
         }
         supported
       case SinglePartition =>
@@ -921,8 +923,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         // columnar shuffle supports the same data types (including complex types) both for
         // partition keys and for other columns
         for (attr <- inputs) {
-          withInfo(s, s"unsupported shuffle data type: ${attr.dataType}")
-          supported = false
+          if (!supportedShuffleDataType(attr.dataType)) {
+            withInfo(s, s"unsupported shuffle data type: ${attr.dataType}")
+            supported = false
+          }
         }
         supported
       case _ =>
