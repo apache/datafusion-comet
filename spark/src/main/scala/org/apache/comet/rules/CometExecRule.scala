@@ -810,16 +810,18 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             withInfo(s, s"unsupported hash partitioning expression: $expr")
             supported = false
           }
-          if (!supportedHashPartitionKeyDataType(expr.dataType)) {
+        }
+        for (dt <- expressions.map(_.dataType).distinct) {
+          if (!supportedHashPartitionKeyDataType(dt)) {
             // native shuffle currently does not support complex types as partition keys
             // due to lack of hashing support for those types
             withInfo(
               s,
-              s"unsupported hash partitioning data type for native shuffle: ${expr.dataType}")
+              s"unsupported hash partitioning data type for native shuffle: $dt")
             supported = false
           }
-          if (!supportedShuffleDataType(expr.dataType)) {
-            withInfo(s, s"unsupported shuffle data type: ${expr.dataType}")
+          if (!supportedShuffleDataType(dt)) {
+            withInfo(s, s"unsupported shuffle data type: $dt")
             supported = false
           }
         }
@@ -839,8 +841,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             withInfo(s, s"unsupported range partitioning sort order: $o")
             supported = false
           }
-          if (!supportedShuffleDataType(o.dataType)) {
-            withInfo(s, s"unsupported shuffle data type: ${o.dataType}")
+        }
+        for (dt <- ordering.map(_.dataType).distinct) {
+          if (!supportedShuffleDataType(dt)) {
+            withInfo(s, s"unsupported shuffle data type: ${dt}")
             supported = false
           }
         }
@@ -893,8 +897,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             withInfo(s, s"unsupported hash partitioning expression: $expr")
             supported = false
           }
-          if (!supportedShuffleDataType(expr.dataType)) {
-            withInfo(s, s"unsupported shuffle data type: ${expr.dataType}")
+        }
+        for (dt <- expressions.map(_.dataType).distinct) {
+          if (!supportedShuffleDataType(dt)) {
+            withInfo(s, s"unsupported shuffle data type: $dt")
             supported = false
           }
         }
@@ -918,8 +924,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             withInfo(s, s"unsupported range partitioning sort order: $o")
             supported = false
           }
-          if (!supportedShuffleDataType(o.dataType)) {
-            withInfo(s, s"unsupported shuffle data type: ${o.dataType}")
+        }
+        for (dt <- orderings.map(_.dataType).distinct) {
+          if (!supportedShuffleDataType(dt)) {
+            withInfo(s, s"unsupported shuffle data type: $dt")
             supported = false
           }
         }
