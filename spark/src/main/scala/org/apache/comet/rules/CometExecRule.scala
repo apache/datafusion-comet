@@ -789,7 +789,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
 
     if (!isCometPlan(s.child)) {
-      withInfo(s, "Child {s.child.getClass.getName} is not native")
+      withInfo(s, s"Child ${s.child.getClass.getName} is not native")
       return false
     }
 
@@ -865,12 +865,12 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
 
     if (isShuffleOperator(s.child)) {
-      withInfo(s, "Child {s.child.getClass.getName} is a shuffle operator")
+      withInfo(s, s"Child ${s.child.getClass.getName} is a shuffle operator")
       return false
     }
 
     if (!(!s.child.supportsColumnar || isCometPlan(s.child))) {
-      withInfo(s, "Child {s.child.getClass.getName} is a neither row-based or a Comet operator")
+      withInfo(s, s"Child ${s.child.getClass.getName} is a neither row-based or a Comet operator")
       return false
     }
 
