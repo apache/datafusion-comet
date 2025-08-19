@@ -22,7 +22,7 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,gross_margin,i
                                           CometProject [ss_item_sk,ss_store_sk,ss_ext_sales_price,ss_net_profit]
                                             CometBroadcastHashJoin [ss_item_sk,ss_store_sk,ss_ext_sales_price,ss_net_profit,ss_sold_date_sk,d_date_sk]
                                               CometFilter [ss_item_sk,ss_store_sk,ss_ext_sales_price,ss_net_profit,ss_sold_date_sk]
-                                                CometScan [native_comet] parquet spark_catalog.default.store_sales [ss_item_sk,ss_store_sk,ss_ext_sales_price,ss_net_profit,ss_sold_date_sk]
+                                                CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales [ss_item_sk,ss_store_sk,ss_ext_sales_price,ss_net_profit,ss_sold_date_sk]
                                                   SubqueryBroadcast [d_date_sk] #1
                                                     BroadcastExchange #4
                                                       WholeStageCodegen (1)
@@ -30,19 +30,19 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,gross_margin,i
                                                           InputAdapter
                                                             CometProject [d_date_sk]
                                                               CometFilter [d_date_sk,d_year]
-                                                                CometScan [native_comet] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                                                CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                                               CometBroadcastExchange [d_date_sk] #5
                                                 CometProject [d_date_sk]
                                                   CometFilter [d_date_sk,d_year]
-                                                    CometScan [native_comet] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                                    CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                                           CometBroadcastExchange [i_item_sk,i_class,i_category] #6
                                             CometProject [i_class,i_category] [i_item_sk,i_class,i_category]
                                               CometFilter [i_item_sk,i_class,i_category]
-                                                CometScan [native_comet] parquet spark_catalog.default.item [i_item_sk,i_class,i_category]
+                                                CometScan [native_iceberg_compat] parquet spark_catalog.default.item [i_item_sk,i_class,i_category]
                                       CometBroadcastExchange [s_store_sk] #7
                                         CometProject [s_store_sk]
                                           CometFilter [s_store_sk,s_state]
-                                            CometScan [native_comet] parquet spark_catalog.default.store [s_store_sk,s_state]
+                                            CometScan [native_iceberg_compat] parquet spark_catalog.default.store [s_store_sk,s_state]
                             CometHashAggregate [gross_margin,i_category,i_class,t_category,t_class,lochierarchy,sum,isEmpty,sum,isEmpty,sum(ss_net_profit),sum(ss_ext_sales_price)]
                               CometExchange [i_category] #8
                                 CometHashAggregate [i_category,sum,isEmpty,sum,isEmpty,ss_net_profit,ss_ext_sales_price]
