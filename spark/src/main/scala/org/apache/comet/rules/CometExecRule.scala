@@ -798,25 +798,49 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     val conf = SQLConf.get
     partitioning match {
       case HashPartitioning(expressions, _) =>
-        // native shuffle currently does not support complex types as partition keys
-        // due to lack of hashing support for those types
-        val supported =
-          expressions.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-            expressions.forall(e => supportedHashPartitionKeyDataType(e.dataType)) &&
-            inputs.forall(attr => supportedShuffleDataType(attr.dataType)) &&
-            CometConf.COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED.get(conf)
-        if (!supported) {
-          withInfo(s, s"unsupported Spark partitioning: $expressions")
+        var supported = true
+        if (!CometConf.COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED.get(conf)) {
+          withInfo(
+            s,
+            s"${CometConf.COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED.key} is disabled")
+          supported = false
+        }
+        for (expr <- expressions) {
+          if (QueryPlanSerde.exprToProto(expr, inputs).isEmpty) {
+            withInfo(s, s"unsupported hash partitioning expression: $expr")
+            supported = false
+          }
+          if (!supportedHashPartitionKeyDataType(expr.dataType)) {
+            // native shuffle currently does not support complex types as partition keys
+            // due to lack of hashing support for those types
+            withInfo(s, s"unsupported hash partitioning data type: ${expr.dataType}")
+            supported = false
+          }
+          if (!supportedShuffleDataType(expr.dataType)) {
+            withInfo(s, s"unsupported shuffle data type: ${expr.dataType}")
+            supported = false
+          }
         }
         supported
       case SinglePartition =>
         inputs.forall(attr => supportedShuffleDataType(attr.dataType))
       case RangePartitioning(ordering, _) =>
-        val supported = ordering.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-          inputs.forall(attr => supportedShuffleDataType(attr.dataType)) &&
-          CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.get(conf)
-        if (!supported) {
-          withInfo(s, s"unsupported Spark partitioning: $ordering")
+        var supported = true
+        if (!CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.get(conf)) {
+          withInfo(
+            s,
+            s"${CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key} is disabled")
+          supported = false
+        }
+        for (o <- ordering) {
+          if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
+            withInfo(s, s"unsupported range partitioning sort order: $o")
+            supported = false
+          }
+          if (!supportedShuffleDataType(o.dataType)) {
+            withInfo(s, s"unsupported shuffle data type: ${o.dataType}")
+            supported = false
+          }
         }
         supported
       case _ =>
@@ -854,14 +878,22 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     val partitioning = s.outputPartitioning
     partitioning match {
       case HashPartitioning(expressions, _) =>
+        var supported = true
+        for (expr <- expressions) {
+          if (QueryPlanSerde.exprToProto(expr, inputs).isEmpty) {
+            withInfo(s, s"unsupported hash partitioning expression: $expr")
+            supported = false
+          }
+          if (!supportedShuffleDataType(expr.dataType)) {
+            withInfo(s, s"unsupported shuffle data type: ${expr.dataType}")
+            supported = false
+          }
+        }
         // columnar shuffle supports the same data types (including complex types) both for
         // partition keys and for other columns
-        val supported =
-          expressions.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-            expressions.forall(e => supportedShuffleDataType(e.dataType)) &&
-            inputs.forall(attr => supportedShuffleDataType(attr.dataType))
-        if (!supported) {
-          withInfo(s, s"unsupported Spark partitioning expressions: $expressions")
+        for (attr <- inputs) {
+          withInfo(s, s"unsupported shuffle data type: ${attr.dataType}")
+          supported = false
         }
         supported
       case SinglePartition =>
@@ -869,12 +901,28 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case RoundRobinPartitioning(_) =>
         inputs.forall(attr => supportedShuffleDataType(attr.dataType))
       case RangePartitioning(orderings, _) =>
-        val supported =
-          orderings.map(QueryPlanSerde.exprToProto(_, inputs)).forall(_.isDefined) &&
-            orderings.forall(e => supportedShuffleDataType(e.dataType)) &&
-            inputs.forall(attr => supportedShuffleDataType(attr.dataType))
-        if (!supported) {
-          withInfo(s, s"unsupported Spark partitioning expressions: $orderings")
+        var supported = true
+        if (!CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.get(conf)) {
+          withInfo(
+            s,
+            s"${CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key} is disabled")
+          supported = false
+        }
+        for (o <- orderings) {
+          if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
+            withInfo(s, s"unsupported range partitioning sort order: $o")
+            supported = false
+          }
+          if (!supportedShuffleDataType(o.dataType)) {
+            withInfo(s, s"unsupported shuffle data type: ${o.dataType}")
+            supported = false
+          }
+        }
+        // columnar shuffle supports the same data types (including complex types) both for
+        // partition keys and for other columns
+        for (attr <- inputs) {
+          withInfo(s, s"unsupported shuffle data type: ${attr.dataType}")
+          supported = false
         }
         supported
       case _ =>
