@@ -47,7 +47,7 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import com.google.protobuf.ByteString
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.expressions._
@@ -63,6 +63,12 @@ import org.apache.comet.shims.CometExprShim
  * An utility object for query plan and expression serialization.
  */
 object QueryPlanSerde extends Logging with CometExprShim {
+
+  /**
+   * Mapping of Spark operator class to Comet operator handler.
+   */
+  private val opSerdeMap: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
+    Map(classOf[ProjectExec] -> CometProject, classOf[SortExec] -> CometSort)
 
   /**
    * Mapping of Spark expression class to Comet expression handler.
@@ -1652,8 +1658,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
    */
   def operator2Proto(op: SparkPlan, childOp: Operator*): Option[Operator] = {
     val conf = op.conf
-    val result = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
-    childOp.foreach(result.addChildren)
+    val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
+    childOp.foreach(builder.addChildren)
 
     op match {
 
@@ -1670,7 +1676,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
           nativeScanBuilder.addAllFields(scanTypes.asJava)
 
           // Sink operators don't have children
-          result.clearChildren()
+          builder.clearChildren()
 
           if (conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED) &&
             CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.get(conf)) {
@@ -1768,7 +1774,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
             }
           }
 
-          Some(result.setNativeScan(nativeScanBuilder).build())
+          Some(builder.setNativeScan(nativeScanBuilder).build())
 
         } else {
           // There are unsupported scan type
@@ -1779,39 +1785,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case ProjectExec(projectList, child) if CometConf.COMET_EXEC_PROJECT_ENABLED.get(conf) =>
-        val exprs = projectList.map(exprToProto(_, child.output))
-
-        if (exprs.forall(_.isDefined) && childOp.nonEmpty) {
-          val projectBuilder = OperatorOuterClass.Projection
-            .newBuilder()
-            .addAllProjectList(exprs.map(_.get).asJava)
-          Some(result.setProjection(projectBuilder).build())
-        } else {
-          withInfo(op, projectList: _*)
-          None
-        }
-
       case FilterExec(condition, child) if CometConf.COMET_EXEC_FILTER_ENABLED.get(conf) =>
         val cond = exprToProto(condition, child.output)
 
         if (cond.isDefined && childOp.nonEmpty) {
-          // We need to determine whether to use DataFusion's FilterExec or Comet's
-          // FilterExec. The difference is that DataFusion's implementation will sometimes pass
-          // batches through whereas the Comet implementation guarantees that a copy is always
-          // made, which is critical when using `native_comet` scans due to buffer re-use
-
-          // TODO this could be optimized more to stop walking the tree on hitting
-          //  certain operators such as join or aggregate which will copy batches
-          def containsNativeCometScan(plan: SparkPlan): Boolean = {
-            plan match {
-              case w: CometScanWrapper => containsNativeCometScan(w.originalPlan)
-              case scan: CometScanExec => scan.scanImpl == CometConf.SCAN_NATIVE_COMET
-              case _: CometNativeScanExec => false
-              case _ => plan.children.exists(containsNativeCometScan)
-            }
-          }
-
           // Some native expressions do not support operating on dictionary-encoded arrays, so
           // wrap the child in a CopyExec to unpack dictionaries first.
           def wrapChildInCopyExec(condition: Expression): Boolean = {
@@ -1824,28 +1801,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
           val filterBuilder = OperatorOuterClass.Filter
             .newBuilder()
             .setPredicate(cond.get)
-            .setUseDatafusionFilter(!containsNativeCometScan(op))
             .setWrapChildInCopyExec(wrapChildInCopyExec(condition))
-          Some(result.setFilter(filterBuilder).build())
+          Some(builder.setFilter(filterBuilder).build())
         } else {
           withInfo(op, condition, child)
-          None
-        }
-
-      case SortExec(sortOrder, _, child, _) if CometConf.COMET_EXEC_SORT_ENABLED.get(conf) =>
-        if (!supportedSortType(op, sortOrder)) {
-          return None
-        }
-
-        val sortOrders = sortOrder.map(exprToProto(_, child.output))
-
-        if (sortOrders.forall(_.isDefined) && childOp.nonEmpty) {
-          val sortBuilder = OperatorOuterClass.Sort
-            .newBuilder()
-            .addAllSortOrders(sortOrders.map(_.get).asJava)
-          Some(result.setSort(sortBuilder).build())
-        } else {
-          withInfo(op, "sort order not supported", sortOrder: _*)
           None
         }
 
@@ -1857,7 +1816,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
             .newBuilder()
             .setLimit(limit)
             .setOffset(0)
-          Some(result.setLimit(limitBuilder).build())
+          Some(builder.setLimit(limitBuilder).build())
         } else {
           withInfo(op, "No child operator")
           None
@@ -1865,15 +1824,12 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
       case globalLimitExec: GlobalLimitExec
           if CometConf.COMET_EXEC_GLOBAL_LIMIT_ENABLED.get(conf) =>
-        // TODO: We don't support negative limit for now.
-        if (childOp.nonEmpty && globalLimitExec.limit >= 0) {
+        if (childOp.nonEmpty) {
           val limitBuilder = OperatorOuterClass.Limit.newBuilder()
 
-          // TODO: Spark 3.3 might have negative limit (-1) for Offset usage.
-          // When we upgrade to Spark 3.3., we need to address it here.
-          limitBuilder.setLimit(globalLimitExec.limit)
+          limitBuilder.setLimit(globalLimitExec.limit).setOffset(globalLimitExec.offset)
 
-          Some(result.setLimit(limitBuilder).build())
+          Some(builder.setLimit(limitBuilder).build())
         } else {
           withInfo(op, "No child operator")
           None
@@ -1891,7 +1847,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
             .newBuilder()
             .addAllProjectList(projExprs.map(_.get).asJava)
             .setNumExprPerProject(projections.head.size)
-          Some(result.setExpand(expandBuilder).build())
+          Some(builder.setExpand(expandBuilder).build())
         } else {
           withInfo(op, allProjExprs: _*)
           None
@@ -1936,7 +1892,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
           windowBuilder.addAllWindowExpr(windowExprProto.map(_.get).toIterable.asJava)
           windowBuilder.addAllPartitionByList(partitionExprs.map(_.get).asJava)
           windowBuilder.addAllOrderByList(sortOrders.map(_.get).asJava)
-          Some(result.setWindow(windowBuilder).build())
+          Some(builder.setWindow(windowBuilder).build())
         } else {
           None
         }
@@ -2003,7 +1959,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
             return None
           }
           hashAggBuilder.addAllResultExprs(resultExprs.map(_.get).asJava)
-          Some(result.setHashAgg(hashAggBuilder).build())
+          Some(builder.setHashAgg(hashAggBuilder).build())
         } else {
           val modes = aggregateExpressions.map(_.mode).distinct
 
@@ -2049,7 +2005,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
               hashAggBuilder.addAllResultExprs(resultExprs.map(_.get).asJava)
             }
             hashAggBuilder.setModeValue(mode.getNumber)
-            Some(result.setHashAgg(hashAggBuilder).build())
+            Some(builder.setHashAgg(hashAggBuilder).build())
           } else {
             val allChildren: Seq[Expression] =
               groupingExpressions ++ aggregateExpressions ++ aggregateAttributes
@@ -2111,7 +2067,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
             .setBuildSide(
               if (join.buildSide == BuildLeft) BuildSide.BuildLeft else BuildSide.BuildRight)
           condition.foreach(joinBuilder.setCondition)
-          Some(result.setHashJoin(joinBuilder).build())
+          Some(builder.setHashJoin(joinBuilder).build())
         } else {
           val allExprs: Seq[Expression] = join.leftKeys ++ join.rightKeys
           withInfo(join, allExprs: _*)
@@ -2201,7 +2157,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
             .addAllLeftJoinKeys(leftKeys.map(_.get).asJava)
             .addAllRightJoinKeys(rightKeys.map(_.get).asJava)
           condition.map(joinBuilder.setCondition)
-          Some(result.setSortMergeJoin(joinBuilder).build())
+          Some(builder.setSortMergeJoin(joinBuilder).build())
         } else {
           val allExprs: Seq[Expression] = join.leftKeys ++ join.rightKeys
           withInfo(join, allExprs: _*)
@@ -2237,9 +2193,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
           scanBuilder.addAllFields(scanTypes.asJava)
 
           // Sink operators don't have children
-          result.clearChildren()
+          builder.clearChildren()
 
-          Some(result.setScan(scanBuilder).build())
+          Some(builder.setScan(scanBuilder).build())
         } else {
           // There are unsupported scan type
           val msg =
@@ -2250,15 +2206,29 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
 
       case op =>
-        // Emit warning if:
-        //  1. it is not Spark shuffle operator, which is handled separately
-        //  2. it is not a Comet operator
-        if (!op.nodeName.contains("Comet") && !op.isInstanceOf[ShuffleExchangeExec]) {
-          val msg = s"unsupported Spark operator: ${op.nodeName}"
-          emitWarning(msg)
-          withInfo(op, msg)
+        opSerdeMap.get(op.getClass) match {
+          case Some(handler) =>
+            handler.enabledConfig.foreach { enabledConfig =>
+              if (!enabledConfig.get(op.conf)) {
+                withInfo(
+                  op,
+                  s"Native support for operator ${op.getClass.getSimpleName} is disabled. " +
+                    s"Set ${enabledConfig.key}=true to enable it.")
+                return None
+              }
+            }
+            handler.asInstanceOf[CometOperatorSerde[SparkPlan]].convert(op, builder, childOp: _*)
+          case _ =>
+            // Emit warning if:
+            //  1. it is not Spark shuffle operator, which is handled separately
+            //  2. it is not a Comet operator
+            if (!op.nodeName.contains("Comet") && !op.isInstanceOf[ShuffleExchangeExec]) {
+              val msg = s"unsupported Spark operator: ${op.nodeName}"
+              emitWarning(msg)
+              withInfo(op, msg)
+            }
+            None
         }
-        None
     }
   }
 
@@ -2415,6 +2385,38 @@ object QueryPlanSerde extends Logging with CometExprShim {
     })
     nativeScanBuilder.addFilePartitions(partitionBuilder.build())
   }
+}
+
+/**
+ * Trait for providing serialization logic for operators.
+ */
+trait CometOperatorSerde[T <: SparkPlan] {
+
+  /**
+   * Convert a Spark operator into a protocol buffer representation that can be passed into native
+   * code.
+   *
+   * @param op
+   *   The Spark operator.
+   * @param builder
+   *   The protobuf builder for the operator.
+   * @param childOp
+   *   Child operators that have already been converted to Comet.
+   * @return
+   *   Protocol buffer representation, or None if the operator could not be converted. In this
+   *   case it is expected that the input operator will have been tagged with reasons why it could
+   *   not be converted.
+   */
+  def convert(
+      op: T,
+      builder: Operator.Builder,
+      childOp: Operator*): Option[OperatorOuterClass.Operator]
+
+  /**
+   * Get the optional Comet configuration entry that is used to enable or disable native support
+   * for this operator.
+   */
+  def enabledConfig: Option[ConfigEntry[Boolean]]
 }
 
 /**

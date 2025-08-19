@@ -50,10 +50,11 @@ object CometExecUtils {
   def getNativeLimitRDD(
       childPlan: RDD[ColumnarBatch],
       outputAttribute: Seq[Attribute],
-      limit: Int): RDD[ColumnarBatch] = {
+      limit: Int,
+      offset: Int = 0): RDD[ColumnarBatch] = {
     val numParts = childPlan.getNumPartitions
     childPlan.mapPartitionsWithIndexInternal { case (idx, iter) =>
-      val limitOp = CometExecUtils.getLimitNativePlan(outputAttribute, limit).get
+      val limitOp = CometExecUtils.getLimitNativePlan(outputAttribute, limit, offset).get
       CometExec.getCometIterator(Seq(iter), outputAttribute.length, limitOp, numParts, idx)
     }
   }
@@ -66,8 +67,9 @@ object CometExecUtils {
       outputAttributes: Seq[Attribute],
       sortOrder: Seq[SortOrder],
       child: SparkPlan,
-      limit: Int): Option[Operator] = {
-    getTopKNativePlan(outputAttributes, sortOrder, child, limit).flatMap { topK =>
+      limit: Int,
+      offset: Int = 0): Option[Operator] = {
+    getTopKNativePlan(outputAttributes, sortOrder, child, limit, offset).flatMap { topK =>
       val exprs = projectList.map(exprToProto(_, child.output))
 
       if (exprs.forall(_.isDefined)) {
@@ -87,7 +89,10 @@ object CometExecUtils {
    * Prepare Limit native plan for Comet operators which take the first `limit` elements of each
    * child partition
    */
-  def getLimitNativePlan(outputAttributes: Seq[Attribute], limit: Int): Option[Operator] = {
+  def getLimitNativePlan(
+      outputAttributes: Seq[Attribute],
+      limit: Int,
+      offset: Int = 0): Option[Operator] = {
     val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("LimitInput")
     val scanOpBuilder = OperatorOuterClass.Operator.newBuilder()
 
@@ -100,6 +105,7 @@ object CometExecUtils {
 
       val limitBuilder = OperatorOuterClass.Limit.newBuilder()
       limitBuilder.setLimit(limit)
+      limitBuilder.setOffset(offset)
 
       val limitOpBuilder = OperatorOuterClass.Operator
         .newBuilder()
@@ -117,7 +123,8 @@ object CometExecUtils {
       outputAttributes: Seq[Attribute],
       sortOrder: Seq[SortOrder],
       child: SparkPlan,
-      limit: Int): Option[Operator] = {
+      limit: Int,
+      offset: Int = 0): Option[Operator] = {
     val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("TopKInput")
     val scanOpBuilder = OperatorOuterClass.Operator.newBuilder()
 
@@ -134,6 +141,7 @@ object CometExecUtils {
         val sortBuilder = OperatorOuterClass.Sort.newBuilder()
         sortBuilder.addAllSortOrders(sortOrders.map(_.get).asJava)
         sortBuilder.setFetch(limit)
+        sortBuilder.setSkip(offset)
 
         val sortOpBuilder = OperatorOuterClass.Operator
           .newBuilder()

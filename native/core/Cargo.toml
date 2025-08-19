@@ -119,7 +119,3 @@ harness = false
 [[bench]]
 name = "parquet_decode"
 harness = false
-
-[[bench]]
-name = "filter"
-harness = false

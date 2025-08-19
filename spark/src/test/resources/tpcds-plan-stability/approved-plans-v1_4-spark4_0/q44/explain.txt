@@ -26,7 +26,7 @@
          :     :     :                                               +- * CometColumnarToRow (4)
          :     :     :                                                  +- CometProject (3)
          :     :     :                                                     +- CometFilter (2)
-         :     :     :                                                        +- CometScan parquet spark_catalog.default.store_sales (1)
+         :     :     :                                                        +- CometScan [native_comet] parquet spark_catalog.default.store_sales (1)
          :     :     +- CometSort (35)
          :     :        +- CometColumnarExchange (34)
          :     :           +- * Project (33)
@@ -45,11 +45,11 @@
          :     +- CometBroadcastExchange (41)
          :        +- CometProject (40)
          :           +- CometFilter (39)
-         :              +- CometScan parquet spark_catalog.default.item (38)
+         :              +- CometScan [native_comet] parquet spark_catalog.default.item (38)
          +- ReusedExchange (44)
 
 
-(1) CometScan parquet spark_catalog.default.store_sales
+(1) CometScan [native_comet] parquet spark_catalog.default.store_sales
 Output [4]: [ss_item_sk#1, ss_store_sk#2, ss_net_profit#3, ss_sold_date_sk#4]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -204,7 +204,7 @@ Arguments: [rnk#14], [rnk#22], Inner
 Input [4]: [item_sk#10, rnk#14, item_sk#20, rnk#22]
 Arguments: [item_sk#10, rnk#14, item_sk#20], [item_sk#10, rnk#14, item_sk#20]
 
-(38) CometScan parquet spark_catalog.default.item
+(38) CometScan [native_comet] parquet spark_catalog.default.item
 Output [2]: [i_item_sk#23, i_product_name#24]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -246,7 +246,7 @@ Arguments: [rnk#14, best_performing#28, worst_performing#29], [rnk#14, i_product
 
 (47) CometTakeOrderedAndProject
 Input [3]: [rnk#14, best_performing#28, worst_performing#29]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[rnk#14 ASC NULLS FIRST], output=[rnk#14,best_performing#28,worst_performing#29]), [rnk#14, best_performing#28, worst_performing#29], 100, [rnk#14 ASC NULLS FIRST], [rnk#14, best_performing#28, worst_performing#29]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[rnk#14 ASC NULLS FIRST], output=[rnk#14,best_performing#28,worst_performing#29]), [rnk#14, best_performing#28, worst_performing#29], 100, 0, [rnk#14 ASC NULLS FIRST], [rnk#14, best_performing#28, worst_performing#29]
 
 (48) CometColumnarToRow [codegen id : 9]
 Input [3]: [rnk#14, best_performing#28, worst_performing#29]
@@ -261,10 +261,10 @@ Subquery:1 Hosting operator id = 9 Hosting Expression = Subquery scalar-subquery
          +- * CometColumnarToRow (52)
             +- CometProject (51)
                +- CometFilter (50)
-                  +- CometScan parquet spark_catalog.default.store_sales (49)
+                  +- CometScan [native_comet] parquet spark_catalog.default.store_sales (49)
 
 
-(49) CometScan parquet spark_catalog.default.store_sales
+(49) CometScan [native_comet] parquet spark_catalog.default.store_sales
 Output [4]: [ss_addr_sk#30, ss_store_sk#31, ss_net_profit#32, ss_sold_date_sk#33]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]

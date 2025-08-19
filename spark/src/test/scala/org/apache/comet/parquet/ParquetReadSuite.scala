@@ -1848,16 +1848,16 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
   test("Test V1 parquet scan uses respective scanner") {
     Seq(
       ("false", CometConf.SCAN_NATIVE_COMET, "FileScan parquet"),
-      ("true", CometConf.SCAN_NATIVE_COMET, "CometScan parquet"),
+      ("true", CometConf.SCAN_NATIVE_COMET, "CometScan [native_comet] parquet"),
       ("true", CometConf.SCAN_NATIVE_DATAFUSION, "CometNativeScan"),
-      ("true", CometConf.SCAN_NATIVE_ICEBERG_COMPAT, "CometScan parquet")).foreach {
-      case (cometEnabled, cometNativeScanImpl, expectedScanner) =>
+      ("true", CometConf.SCAN_NATIVE_ICEBERG_COMPAT, "CometScan [native_iceberg_compat] parquet"))
+      .foreach { case (cometEnabled, cometNativeScanImpl, expectedScanner) =>
         testScanner(
           cometEnabled,
           cometNativeScanImpl,
           scanner = expectedScanner,
           v1 = Some("parquet"))
-    }
+      }
   }
 
   test("test V1 parquet native scan -- case insensitive") {

@@ -17,7 +17,7 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
                                 CometProject [ws_item_sk,ws_net_paid]
                                   CometBroadcastHashJoin [ws_item_sk,ws_net_paid,ws_sold_date_sk,d_date_sk]
                                     CometFilter [ws_item_sk,ws_net_paid,ws_sold_date_sk]
-                                      CometScan parquet spark_catalog.default.web_sales [ws_item_sk,ws_net_paid,ws_sold_date_sk]
+                                      CometScan [native_comet] parquet spark_catalog.default.web_sales [ws_item_sk,ws_net_paid,ws_sold_date_sk]
                                         SubqueryBroadcast [d_date_sk] #1
                                           BroadcastExchange #3
                                             WholeStageCodegen (1)
@@ -25,12 +25,12 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
                                                 InputAdapter
                                                   CometProject [d_date_sk]
                                                     CometFilter [d_date_sk,d_month_seq]
-                                                      CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
+                                                      CometScan [native_comet] parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
                                     CometBroadcastExchange [d_date_sk] #4
                                       CometProject [d_date_sk]
                                         CometFilter [d_date_sk,d_month_seq]
-                                          CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
+                                          CometScan [native_comet] parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
                                 CometBroadcastExchange [i_item_sk,i_class,i_category] #5
                                   CometProject [i_class,i_category] [i_item_sk,i_class,i_category]
                                     CometFilter [i_item_sk,i_class,i_category]
-                                      CometScan parquet spark_catalog.default.item [i_item_sk,i_class,i_category]
+                                      CometScan [native_comet] parquet spark_catalog.default.item [i_item_sk,i_class,i_category]
