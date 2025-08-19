@@ -38,7 +38,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -272,8 +272,6 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("decode") {
-    // https://github.com/apache/datafusion-comet/issues/1942
-    assume(!isSpark40Plus)
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     // We want to make sure that the schema generator wasn't modified to accidentally omit
@@ -376,7 +374,10 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     Seq("native", "jvm").foreach { shuffleMode =>
-      Seq("native_comet", "native_datafusion", "native_iceberg_compat").foreach { scanImpl =>
+      Seq(
+        CometConf.SCAN_NATIVE_COMET,
+        CometConf.SCAN_NATIVE_DATAFUSION,
+        CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach { scanImpl =>
         super.test(testName + s" ($scanImpl, $shuffleMode shuffle)", testTags: _*) {
           withSQLConf(
             CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl,

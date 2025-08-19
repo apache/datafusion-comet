@@ -40,10 +40,9 @@ rand = { workspace = true }
 
 [dev-dependencies]
 arrow = {workspace = true}
-criterion = "0.5.1"
+criterion = { version = "0.7", features = ["async", "async_tokio", "async_std"] }
 rand = { workspace = true}
 tokio = { version = "1", features = ["rt-multi-thread"] }
-
 
 [lib]
 name = "datafusion_comet_spark_expr"
@@ -67,6 +66,10 @@ harness = false
 
 [[bench]]
 name = "aggregate"
+harness = false
+
+[[bench]]
+name = "bloom_filter_agg"
 harness = false
 
 [[test]]

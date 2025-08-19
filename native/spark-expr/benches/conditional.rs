@@ -19,7 +19,7 @@ use arrow::array::builder::{Int32Builder, StringBuilder};
 use arrow::datatypes::DataType;
 use arrow::datatypes::{Field, Schema};
 use arrow::record_batch::RecordBatch;
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::common::ScalarValue;
 use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::expressions::Column;
@@ -27,6 +27,7 @@ use datafusion::physical_expr::expressions::Literal;
 use datafusion::physical_expr::expressions::{BinaryExpr, CaseExpr};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion_comet_spark_expr::IfExpr;
+use std::hint::black_box;
 use std::sync::Arc;
 
 fn make_col(name: &str, index: usize) -> Arc<dyn PhysicalExpr> {

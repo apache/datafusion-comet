@@ -10,7 +10,7 @@ WholeStageCodegen (1)
                   CometHashAggregate [count,sum,count,sum,count,ss_ext_discount_amt,ss_net_paid]
                     CometProject [ss_ext_discount_amt,ss_net_paid]
                       CometFilter [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
-                        CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
+                        CometScan [native_comet] parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
     ReusedSubquery [mergedValue] #1
     ReusedSubquery [mergedValue] #1
     Subquery #2
@@ -23,7 +23,7 @@ WholeStageCodegen (1)
                   CometHashAggregate [count,sum,count,sum,count,ss_ext_discount_amt,ss_net_paid]
                     CometProject [ss_ext_discount_amt,ss_net_paid]
                       CometFilter [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
-                        CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
+                        CometScan [native_comet] parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
     ReusedSubquery [mergedValue] #2
     ReusedSubquery [mergedValue] #2
     Subquery #3
@@ -36,7 +36,7 @@ WholeStageCodegen (1)
                   CometHashAggregate [count,sum,count,sum,count,ss_ext_discount_amt,ss_net_paid]
                     CometProject [ss_ext_discount_amt,ss_net_paid]
                       CometFilter [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
-                        CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
+                        CometScan [native_comet] parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
     ReusedSubquery [mergedValue] #3
     ReusedSubquery [mergedValue] #3
     Subquery #4
@@ -49,7 +49,7 @@ WholeStageCodegen (1)
                   CometHashAggregate [count,sum,count,sum,count,ss_ext_discount_amt,ss_net_paid]
                     CometProject [ss_ext_discount_amt,ss_net_paid]
                       CometFilter [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
-                        CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
+                        CometScan [native_comet] parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
     ReusedSubquery [mergedValue] #4
     ReusedSubquery [mergedValue] #4
     Subquery #5
@@ -62,10 +62,10 @@ WholeStageCodegen (1)
                   CometHashAggregate [count,sum,count,sum,count,ss_ext_discount_amt,ss_net_paid]
                     CometProject [ss_ext_discount_amt,ss_net_paid]
                       CometFilter [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
-                        CometScan parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
+                        CometScan [native_comet] parquet spark_catalog.default.store_sales [ss_quantity,ss_ext_discount_amt,ss_net_paid,ss_sold_date_sk]
     ReusedSubquery [mergedValue] #5
     ReusedSubquery [mergedValue] #5
     CometColumnarToRow
       InputAdapter
         CometFilter [r_reason_sk]
-          CometScan parquet spark_catalog.default.reason [r_reason_sk]
+          CometScan [native_comet] parquet spark_catalog.default.reason [r_reason_sk]

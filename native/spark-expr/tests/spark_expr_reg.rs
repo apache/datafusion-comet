@@ -32,6 +32,7 @@ mod tests {
             "xxhash64",
             DataType::Int64,
             &session_state,
+            None,
         )?);
         let ctx = SessionContext::new_with_state(session_state);
 

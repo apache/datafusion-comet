@@ -1525,19 +1525,30 @@ index 418ca3430bb..eb8267192f8 100644
        withTempPath { path =>
          val dir = path.getCanonicalPath
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/InsertSortForLimitAndOffsetSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/InsertSortForLimitAndOffsetSuite.scala
-index d1b11a74cf3..8ea0129b3af 100644
+index d1b11a74cf3..08087c80201 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/InsertSortForLimitAndOffsetSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/InsertSortForLimitAndOffsetSuite.scala
-@@ -17,7 +17,7 @@
+@@ -17,8 +17,9 @@
  
  package org.apache.spark.sql.execution
  
 -import org.apache.spark.sql.{Dataset, QueryTest}
 +import org.apache.spark.sql.{Dataset, IgnoreComet, QueryTest}
  import org.apache.spark.sql.IntegratedUDFTestUtils._
++import org.apache.spark.sql.comet.CometCollectLimitExec
  import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
  import org.apache.spark.sql.functions.rand
-@@ -77,7 +77,9 @@ class InsertSortForLimitAndOffsetSuite extends QueryTest
+ import org.apache.spark.sql.internal.SQLConf
+@@ -39,7 +40,7 @@ class InsertSortForLimitAndOffsetSuite extends QueryTest
+ 
+   private def assertHasCollectLimitExec(plan: SparkPlan): Unit = {
+     assert(find(plan) {
+-      case _: CollectLimitExec => true
++      case _: CollectLimitExec | _: CometCollectLimitExec => true
+       case _ => false
+     }.isDefined)
+   }
+@@ -77,7 +78,9 @@ class InsertSortForLimitAndOffsetSuite extends QueryTest
      assert(!hasLocalSort(physicalPlan))
    }
  
@@ -1548,7 +1559,7 @@ index d1b11a74cf3..8ea0129b3af 100644
      withSQLConf(SQLConf.TOP_K_SORT_FALLBACK_THRESHOLD.key -> "1") {
        val df = spark.range(10).orderBy($"id" % 8).limit(2)
        df.collect()
-@@ -88,7 +90,9 @@ class InsertSortForLimitAndOffsetSuite extends QueryTest
+@@ -88,7 +91,9 @@ class InsertSortForLimitAndOffsetSuite extends QueryTest
      }
    }
  
@@ -1559,7 +1570,7 @@ index d1b11a74cf3..8ea0129b3af 100644
      withSQLConf(
        SQLConf.TOP_K_SORT_FALLBACK_THRESHOLD.key -> "1",
        // To trigger the bug, we have to disable the coalescing optimization. Otherwise we use only
-@@ -117,7 +121,9 @@ class InsertSortForLimitAndOffsetSuite extends QueryTest
+@@ -117,7 +122,9 @@ class InsertSortForLimitAndOffsetSuite extends QueryTest
      assert(!hasLocalSort(physicalPlan))
    }
  
@@ -1734,14 +1745,14 @@ index aed11badb71..ab7e9456e26 100644
            spark.range(1).foreach { _ =>
              columnarToRowExec.canonicalized
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
-index a3cfdc5a240..f4afc393ba0 100644
+index a3cfdc5a240..1b08a1f42ee 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
 @@ -22,6 +22,7 @@ import org.apache.spark.rdd.MapPartitionsWithEvaluatorRDD
  import org.apache.spark.sql.{Dataset, QueryTest, Row, SaveMode}
  import org.apache.spark.sql.catalyst.expressions.CodegenObjectFactoryMode
  import org.apache.spark.sql.catalyst.expressions.codegen.{ByteCodeStats, CodeAndComment, CodeGenerator}
-+import org.apache.spark.sql.comet.{CometHashJoinExec, CometSortExec, CometSortMergeJoinExec}
++import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometHashJoinExec, CometSortExec, CometSortMergeJoinExec}
  import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecutionSuite
  import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, SortAggregateExec}
  import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
@@ -1954,6 +1965,16 @@ index a3cfdc5a240..f4afc393ba0 100644
            val projection = Seq.tabulate(columnNum)(i => s"c$i + c$i as newC$i")
            val df = spark.read.parquet(path).selectExpr(projection: _*)
  
+@@ -815,6 +852,9 @@ class WholeStageCodegenSuite extends QueryTest with SharedSparkSession
+       assert(distinctWithId.queryExecution.executedPlan.exists {
+         case WholeStageCodegenExec(
+           ProjectExec(_, BroadcastHashJoinExec(_, _, _, _, _, _: HashAggregateExec, _, _))) => true
++        case WholeStageCodegenExec(
++          ProjectExec(_, BroadcastHashJoinExec(_, _, _, _, _, _: CometColumnarToRowExec, _, _))) =>
++            true
+         case _ => false
+       })
+       checkAnswer(distinctWithId, Seq(Row(1, 0), Row(1, 0)))
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 index 272be70f9fe..06957694002 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala

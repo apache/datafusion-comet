@@ -76,6 +76,9 @@ case class CometScanExec(
 
   assert(scanImpl != CometConf.SCAN_AUTO)
 
+  override val nodeName: String =
+    s"CometScan [$scanImpl] $relation ${tableIdentifier.map(_.unquotedString).getOrElse("")}"
+
   // FIXME: ideally we should reuse wrapped.supportsColumnar, however that fails many tests
   override lazy val supportsColumnar: Boolean =
     relation.fileFormat.supportBatch(relation.sparkSession, schema)
@@ -282,9 +285,6 @@ case class CometScanExec(
   override def executeCollect(): Array[InternalRow] = {
     ColumnarToRowExec(this).executeCollect()
   }
-
-  override val nodeName: String =
-    s"CometScan $relation ${tableIdentifier.map(_.unquotedString).getOrElse("")}"
 
   /**
    * Create an RDD for bucketed reads. The non-bucketed variant of this function is

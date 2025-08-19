@@ -21,12 +21,6 @@ inputs:
   iceberg-version:
     description: 'The Apache Iceberg version (e.g., 1.8.1) to build'
     required: true
-  scala-version:
-    description: 'The Scala short version (e.g., 2.13) to build'
-    required: true
-  spark-short-version:
-    description: 'The Apache Spark short version (e.g., 3.5) to build'
-    required: true
 runs:
   using: "composite"
   steps:
@@ -43,8 +37,3 @@ runs:
       run: |
         cd apache-iceberg
         git apply ../dev/diffs/iceberg/${{inputs.iceberg-version}}.diff
-
-    - name: Build Comet
-      shell: bash
-      run: |
-        PROFILES="-Pspark-${{inputs.spark-short-version}} -Pscala-${{inputs.scala-version}}" make release

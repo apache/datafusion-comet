@@ -41,74 +41,7 @@ The following chart shows how much Comet currently accelerates each query from t
 
 The raw results of these benchmarks in JSON format is available here:
 
-- [Spark](0.9.0/spark-tpch.json)
-- [Comet](0.9.0/comet-tpch.json)
+- [Spark](spark-3.5.3-tpch.json)
+- [Comet](comet-0.9.0-tpch.json)
 
-# Scripts
-
-Here are the scripts that were used to generate these results.
-
-## Apache Spark 
-
-```shell
-#!/bin/bash
-export SPARK_HOME=/opt/spark-3.5.6-bin-hadoop3/
-export SPARK_MASTER=spark://woody:7077
-$SPARK_HOME/bin/spark-submit \
-    --master $SPARK_MASTER \
-    --conf spark.driver.memory=8G \
-    --conf spark.executor.instances=1 \
-    --conf spark.executor.cores=8 \
-    --conf spark.cores.max=8 \
-    --conf spark.executor.memory=16g \
-    --conf spark.memory.offHeap.enabled=false \
-    --conf spark.memory.offHeap.size=8g \
-    --conf spark.eventLog.enabled=true \
-    tpcbench.py \
-    --name spark \
-    --benchmark tpch \
-    --data /mnt/bigdata/tpch/sf100/ \
-    --queries ../../tpch \
-    --output . \
-    --iterations 1
-```
-
-## Apache Spark + Comet
-
-```shell
-#!/bin/bash
-export COMET_JAR=/home/andy/git/apache/datafusion-comet/spark/target/comet-spark-spark3.5_2.12-0.9.0.jar
-export SPARK_HOME=/opt/spark-3.5.6-bin-hadoop3/
-export SPARK_MASTER=spark://woody:7077
-$SPARK_HOME/bin/spark-submit \
-    --master $SPARK_MASTER \
-    --jars $COMET_JAR \
-    --driver-class-path $COMET_JAR \
-    --conf spark.driver.memory=8G \
-    --conf spark.executor.instances=1 \
-    --conf spark.executor.cores=8 \
-    --conf spark.cores.max=8 \
-    --conf spark.executor.memory=8g \
-    --conf spark.memory.offHeap.enabled=true \
-    --conf spark.memory.offHeap.size=8g \
-    --conf spark.sql.adaptive.enabled=true \
-    --conf spark.eventLog.enabled=true \
-    --conf spark.driver.extraClassPath=$COMET_JAR \
-    --conf spark.executor.extraClassPath=$COMET_JAR \
-    --conf spark.plugins=org.apache.spark.CometPlugin \
-    --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-    --conf spark.comet.exec.sortMergeJoinWithJoinFilter.enabled=false \
-    --conf spark.comet.exec.replaceSortMergeJoin=true \
-    --conf spark.comet.enabled=true \
-    --conf spark.comet.exec.shuffle.mode=auto \
-    --conf spark.comet.cast.allowIncompatible=true \
-    --conf spark.comet.exec.shuffle.compression.codec=lz4 \
-    --conf spark.comet.exec.shuffle.compression.level=1 \
-    tpcbench.py \
-    --name comet \
-    --benchmark tpch \
-    --data /mnt/bigdata/tpch/sf100/ \
-    --queries ../../tpch \
-    --output . \
-    --iterations 1
-```
+The scripts that were used to generate these results can be found [here](https://github.com/apache/datafusion-comet/tree/main/dev/benchmarks).

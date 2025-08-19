@@ -21,7 +21,7 @@ TakeOrderedAndProject [c_last_name,c_first_name,ca_city,bought_city,ss_ticket_nu
                                         CometProject [ss_customer_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_ticket_number,ss_coupon_amt,ss_net_profit]
                                           CometBroadcastHashJoin [ss_customer_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_ticket_number,ss_coupon_amt,ss_net_profit,ss_sold_date_sk,d_date_sk]
                                             CometFilter [ss_customer_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_ticket_number,ss_coupon_amt,ss_net_profit,ss_sold_date_sk]
-                                              CometScan parquet spark_catalog.default.store_sales [ss_customer_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_ticket_number,ss_coupon_amt,ss_net_profit,ss_sold_date_sk]
+                                              CometScan [native_comet] parquet spark_catalog.default.store_sales [ss_customer_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_ticket_number,ss_coupon_amt,ss_net_profit,ss_sold_date_sk]
                                                 SubqueryBroadcast [d_date_sk] #1
                                                   BroadcastExchange #2
                                                     WholeStageCodegen (1)
@@ -29,22 +29,22 @@ TakeOrderedAndProject [c_last_name,c_first_name,ca_city,bought_city,ss_ticket_nu
                                                         InputAdapter
                                                           CometProject [d_date_sk]
                                                             CometFilter [d_date_sk,d_year,d_dow]
-                                                              CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_dow]
+                                                              CometScan [native_comet] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_dow]
                                             CometBroadcastExchange [d_date_sk] #3
                                               CometProject [d_date_sk]
                                                 CometFilter [d_date_sk,d_year,d_dow]
-                                                  CometScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_dow]
+                                                  CometScan [native_comet] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_dow]
                                         CometBroadcastExchange [s_store_sk] #4
                                           CometProject [s_store_sk]
                                             CometFilter [s_store_sk,s_city]
-                                              CometScan parquet spark_catalog.default.store [s_store_sk,s_city]
+                                              CometScan [native_comet] parquet spark_catalog.default.store [s_store_sk,s_city]
                                     CometBroadcastExchange [hd_demo_sk] #5
                                       CometProject [hd_demo_sk]
                                         CometFilter [hd_demo_sk,hd_dep_count,hd_vehicle_count]
-                                          CometScan parquet spark_catalog.default.household_demographics [hd_demo_sk,hd_dep_count,hd_vehicle_count]
+                                          CometScan [native_comet] parquet spark_catalog.default.household_demographics [hd_demo_sk,hd_dep_count,hd_vehicle_count]
                                 CometBroadcastExchange [ca_address_sk,ca_city] #6
                                   CometFilter [ca_address_sk,ca_city]
-                                    CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_city]
+                                    CometScan [native_comet] parquet spark_catalog.default.customer_address [ca_address_sk,ca_city]
             InputAdapter
               BroadcastExchange #7
                 WholeStageCodegen (2)
@@ -52,11 +52,11 @@ TakeOrderedAndProject [c_last_name,c_first_name,ca_city,bought_city,ss_ticket_nu
                     InputAdapter
                       CometProject [c_first_name,c_last_name] [c_customer_sk,c_current_addr_sk,c_first_name,c_last_name]
                         CometFilter [c_customer_sk,c_current_addr_sk,c_first_name,c_last_name]
-                          CometScan parquet spark_catalog.default.customer [c_customer_sk,c_current_addr_sk,c_first_name,c_last_name]
+                          CometScan [native_comet] parquet spark_catalog.default.customer [c_customer_sk,c_current_addr_sk,c_first_name,c_last_name]
         InputAdapter
           BroadcastExchange #8
             WholeStageCodegen (3)
               CometColumnarToRow
                 InputAdapter
                   CometFilter [ca_address_sk,ca_city]
-                    CometScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_city]
+                    CometScan [native_comet] parquet spark_catalog.default.customer_address [ca_address_sk,ca_city]

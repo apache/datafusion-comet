@@ -21,6 +21,8 @@ syntax = "proto3";
 
 package spark.spark_expression;
 
+import "types.proto";
+
 option java_package = "org.apache.comet.serde";
 
 // The basic message representing a Spark expression.
@@ -45,15 +47,11 @@ message Expr {
     BinaryExpr or = 18;
     SortOrder sort_order = 19;
     Substring substring = 20;
-    UnaryExpr string_space = 21;
     Hour hour = 22;
     Minute minute = 23;
     Second second = 24;
     CheckOverflow check_overflow = 25;
     BinaryExpr like = 26;
-    BinaryExpr startsWith = 27;
-    BinaryExpr endsWith = 28;
-    BinaryExpr contains = 29;
     BinaryExpr rlike = 30;
     ScalarFunc scalarFunc = 31;
     BinaryExpr eqNullSafe = 32;
@@ -83,7 +81,10 @@ message Expr {
     ArrayInsert array_insert = 58;
     MathExpr integral_divide = 59;
     ToPrettyString to_pretty_string = 60;
-    UnaryExpr rand = 61;
+    Rand rand = 61;
+    Rand randn = 62;
+    EmptyExpr spark_partition_id = 63;
+    EmptyExpr monotonically_increasing_id = 64;
   }
 }
 
@@ -113,13 +114,13 @@ enum StatisticsType {
 }
 
 message Count {
-   repeated Expr children = 1;
+  repeated Expr children = 1;
 }
 
 message Sum {
-   Expr child = 1;
-   DataType datatype = 2;
-   bool fail_on_error = 3;
+  Expr child = 1;
+  DataType datatype = 2;
+  bool fail_on_error = 3;
 }
 
 message Min {
@@ -216,23 +217,24 @@ message Literal {
     string string_val = 8;
     bytes bytes_val = 9;
     bytes decimal_val = 10;
-   }
+    ListLiteral list_val = 11;
+  }
 
-   DataType datatype = 11;
-   bool is_null = 12;
-}
-
-message MathExpr {
-  Expr left = 1;
-  Expr right = 2;
-  bool fail_on_error = 3;
-  DataType return_type = 4;
+  DataType datatype = 12;
+  bool is_null = 13;
 }
 
 enum EvalMode {
   LEGACY = 0;
   TRY = 1;
   ANSI = 2;
+}
+
+message MathExpr {
+  Expr left = 1;
+  Expr right = 2;
+  DataType return_type = 4;
+  EvalMode eval_mode = 5;
 }
 
 message Cast {
@@ -250,6 +252,9 @@ message BinaryExpr {
 
 message UnaryExpr {
   Expr child = 1;
+}
+
+message EmptyExpr {
 }
 
 // Bound to a particular vector array in input batch.
@@ -418,6 +423,10 @@ message ArrayJoin {
   Expr null_replacement_expr = 3;
 }
 
+message Rand {
+  int64 seed = 1;
+}
+
 message DataType {
   enum DataTypeId {
     BOOL = 0;
@@ -473,4 +482,3 @@ message DataType {
 
   DataTypeInfo type_info = 2;
 }
-

@@ -1000,6 +1000,59 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("TakeOrderedAndProjectExec with positive offset") {
+    withParquetTable((0 until 50).map(i => (i, i + 42)), "tbl") {
+      val regularDfWithOffset = sql("SELECT _1, _2 FROM tbl order by _1 LIMIT 5 OFFSET 7")
+      checkSparkAnswerAndOperator(regularDfWithOffset)
+      val dfWithOffsetOnly = sql("SELECT _1, _2 FROM tbl order by _1 OFFSET 12")
+      checkSparkAnswerAndOperator(dfWithOffsetOnly)
+      val incompleteDf = sql("SELECT _1, _2 FROM tbl order by _1 LIMIT 5 OFFSET 47")
+      checkSparkAnswerAndOperator(incompleteDf)
+      val emptyDf = sql("SELECT _1, _2 FROM tbl order by _1 LIMIT 50 OFFSET 1000")
+      checkSparkAnswerAndOperator(emptyDf)
+    }
+  }
+
+  test("CollectLimitExec with positive offset") {
+    withParquetTable((0 until 50).map(i => (i, i + 12)), "tbl") {
+      // disable top-k sort to switch from TakeProjectExec to CollectLimitExec in the execution plan
+      withSQLConf(SQLConf.TOP_K_SORT_FALLBACK_THRESHOLD.key -> "0") {
+        val regularDfWithOffset = sql("SELECT _1, _2 FROM tbl order by _2 LIMIT 4 OFFSET 4")
+        checkSparkAnswerAndOperator(regularDfWithOffset)
+        val dfWithOffsetOnly = sql("SELECT _1, _2 FROM tbl order by _2 OFFSET 15")
+        checkSparkAnswerAndOperator(dfWithOffsetOnly)
+        val incompleteDf = sql("SELECT _1, _2 FROM tbl order by _1 LIMIT 25 OFFSET 40")
+        checkSparkAnswerAndOperator(incompleteDf)
+        val emptyDf = sql("SELECT _1, _2 FROM tbl order by _1 LIMIT 50 OFFSET 1000")
+        checkSparkAnswerAndOperator(emptyDf)
+      }
+    }
+  }
+
+  test("GlobalLimit with positive offset") {
+    withParquetTable((0 until 50).map(i => (i, i + 13)), "tbl") {
+      val regularDfWithOffset =
+        sql("SELECT _1, _2 FROM tbl order by _2 LIMIT 4 OFFSET 1").groupBy("_1").agg(sum("_2"))
+      checkSparkAnswerAndOperator(regularDfWithOffset)
+      val dfWithOffsetOnly = sql("SELECT _1, _2 FROM tbl order by _2 OFFSET 15").agg(sum("_2"))
+      checkSparkAnswerAndOperator(dfWithOffsetOnly)
+    }
+  }
+
+  test("explicit zero limit and offset") {
+    withParquetTable((0 until 50).map(i => (i, i + 8)), "tbl") {
+      withSQLConf(
+        "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.EliminateLimits") {
+        val dfWithZeroLimitAndOffsetOrdered =
+          sql("SELECT _1, _2 FROM tbl order by _2 LIMIT 0 OFFSET 0")
+        checkSparkAnswerAndOperator(dfWithZeroLimitAndOffsetOrdered)
+        val dfWithZeroLimitAndOffsetUnordered =
+          sql("SELECT _1, _2 FROM tbl LIMIT 0 OFFSET 0")
+        checkSparkAnswerAndOperator(dfWithZeroLimitAndOffsetUnordered)
+      }
+    }
+  }
+
   test("sort with dictionary") {
     withSQLConf(CometConf.COMET_BATCH_SIZE.key -> 8192.toString) {
       withTempDir { dir =>
@@ -1698,7 +1751,7 @@ class CometExecSuite extends CometTestBase {
       })
   }
 
-  test("Fallback to Spark for TakeOrderedAndProjectExec with offset") {
+  test("TakeOrderedAndProjectExec with offset") {
     Seq("true", "false").foreach(aqeEnabled =>
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
         withTable("t1") {
@@ -1709,9 +1762,8 @@ class CometExecSuite extends CometTestBase {
             .repartition(3) // Force repartition to test data will come to single partition
             .write
             .saveAsTable("t1")
-
           val df = sql("SELECT * FROM t1 ORDER BY a, b LIMIT 3 OFFSET 1").groupBy($"a").sum("b")
-          checkSparkAnswer(df)
+          checkSparkAnswerAndOperator(df)
         }
       })
   }
