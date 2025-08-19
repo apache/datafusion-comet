@@ -3388,7 +3388,7 @@ mod tests {
 
         // generate test data in the temp folder
         let tmp_dir = TempDir::new()?;
-        let test_path = tmp_dir.path().to_str().unwrap().to_string();
+        let test_path = tmp_dir.path().to_str().unwrap();
 
         let plan = session_ctx
             .sql(test_data_query)
@@ -3397,13 +3397,11 @@ mod tests {
             .await?;
 
         // Write a parquet file into temp folder
-        session_ctx
-            .write_parquet(plan, test_path.clone(), None)
-            .await?;
+        session_ctx.write_parquet(plan, test_path, None).await?;
 
         // Register all parquet with temp data as file groups
         let mut file_groups: Vec<FileGroup> = vec![];
-        for entry in std::fs::read_dir(&test_path)? {
+        for entry in std::fs::read_dir(test_path)? {
             let entry = entry?;
             let path = entry.path();
 
