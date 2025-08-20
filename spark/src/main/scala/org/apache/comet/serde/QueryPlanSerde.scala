@@ -197,8 +197,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
         _: DecimalType | _: DateType | _: BooleanType | _: NullType =>
       true
-    case s: StructType if allowComplex && s.fields.nonEmpty =>
-      s.fields.map(_.dataType).forall(supportedDataType(_, allowComplex))
+    case s: StructType if allowComplex =>
+      s.fields.nonEmpty && s.fields.map(_.dataType).forall(supportedDataType(_, allowComplex))
     case a: ArrayType if allowComplex =>
       supportedDataType(a.elementType, allowComplex)
     case m: MapType if allowComplex =>
