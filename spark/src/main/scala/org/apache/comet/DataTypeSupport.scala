@@ -54,7 +54,8 @@ trait DataTypeSupport {
           TimestampNTZType =>
         true
       case StructType(fields) =>
-        fields.nonEmpty && fields.forall(f => isTypeSupported(f.dataType, f.name, fallbackReasons))
+        fields.nonEmpty && fields.forall(f =>
+          isTypeSupported(f.dataType, f.name, fallbackReasons))
       case ArrayType(elementType, _) =>
         isTypeSupported(elementType, ARRAY_ELEMENT, fallbackReasons)
       case MapType(keyType, valueType, _) =>
