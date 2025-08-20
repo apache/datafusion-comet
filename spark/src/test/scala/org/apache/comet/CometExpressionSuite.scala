@@ -490,6 +490,25 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+//  TODO : Add spark like coalesce support on data fusion / comet side
+  test("fix coalesce ANSI support for arithmetic ops") {
+    val data = Seq((Integer.MIN_VALUE, 0))
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
+      "spark.comet.explainFallback.enabled" -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+                              |SELECT
+                              |  coalesce(_1, _1/0)
+                              |  from tbl
+                              |  """.stripMargin)
+
+        checkSparkAnswer(res)
+      }
+    }
+  }
+
   test("dictionary arithmetic") {
     // TODO: test ANSI mode
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "false", "parquet.enable.dictionary" -> "true") {
