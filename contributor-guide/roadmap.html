@@ -24,7 +24,7 @@ under the License.
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Comet Benchmarking Guide &#8212; Apache DataFusion Comet  documentation</title>
+    <title>Comet Roadmap &#8212; Apache DataFusion Comet  documentation</title>
     
     <link href="../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
 <link href="../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
@@ -53,8 +53,7 @@ under the License.
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Adding a New Expression" href="adding_a_new_expression.html" />
-    <link rel="prev" title="Comet Debugging Guide" href="debugging.html" />
+    <link rel="prev" title="Running Spark SQL Tests" href="spark-sql-tests.html" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="docsearch:language" content="en">
     
@@ -200,8 +199,8 @@ under the License.
    Debugging Guide
   </a>
  </li>
- <li class="toctree-l1 current active">
-  <a class="current reference internal" href="#">
+ <li class="toctree-l1">
+  <a class="reference internal" href="benchmarking.html">
    Benchmarking Guide
   </a>
  </li>
@@ -225,8 +224,8 @@ under the License.
    Spark SQL Tests
   </a>
  </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="roadmap.html">
+ <li class="toctree-l1 current active">
+  <a class="current reference internal" href="#">
    Roadmap
   </a>
  </li>
@@ -302,8 +301,30 @@ under the License.
 <nav id="bd-toc-nav">
     <ul class="visible nav section-nav flex-column">
  <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#current-benchmark-results">
-   Current Benchmark Results
+  <a class="reference internal nav-link" href="#major-initiatives">
+   Major Initiatives
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#iceberg-integration">
+     Iceberg Integration
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#spark-4-0-0-support">
+     Spark 4.0.0 Support
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#removing-the-native-comet-scan-implementation">
+     Removing the native_comet scan implementation
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#ongoing-improvements">
+   Ongoing Improvements
   </a>
  </li>
 </ul>
@@ -315,7 +336,7 @@ under the License.
                 
 
 <div class="tocsection editthispage">
-    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/contributor-guide/benchmarking.md">
+    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/contributor-guide/roadmap.md">
         <i class="fas fa-pencil-alt"></i> Edit this page
     </a>
 </div>
@@ -352,21 +373,41 @@ KIND, either express or implied.  See the License for the
 specific language governing permissions and limitations
 under the License.
 -->
-<section id="comet-benchmarking-guide">
-<h1>Comet Benchmarking Guide<a class="headerlink" href="#comet-benchmarking-guide" title="Link to this heading">¶</a></h1>
-<p>To track progress on performance, we regularly run benchmarks derived from TPC-H and TPC-DS. Data generation and
-benchmarking documentation and scripts are available in the <a class="reference external" href="https://github.com/apache/datafusion-benchmarks">DataFusion Benchmarks</a> GitHub repository.</p>
-<p>Available benchmarking guides:</p>
+<section id="comet-roadmap">
+<h1>Comet Roadmap<a class="headerlink" href="#comet-roadmap" title="Link to this heading">¶</a></h1>
+<p>Comet is an open-source project and contributors are welcome to work on any issues at any time, but we find it
+helpful to have a roadmap for some of the major items that require coordination between contributors.</p>
+<section id="major-initiatives">
+<h2>Major Initiatives<a class="headerlink" href="#major-initiatives" title="Link to this heading">¶</a></h2>
+<section id="iceberg-integration">
+<h3>Iceberg Integration<a class="headerlink" href="#iceberg-integration" title="Link to this heading">¶</a></h3>
+<p>Iceberg integration is still a work-in-progress (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2060">#2060</a>), with major improvements expected in the next few
+releases. Once this integration is complete, we plan on switching from the <code class="docutils literal notranslate"><span class="pre">native_comet</span></code> scan to the
+<code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> scan (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2189">#2189</a>) so that complex types can be supported.</p>
+</section>
+<section id="spark-4-0-0-support">
+<h3>Spark 4.0.0 Support<a class="headerlink" href="#spark-4-0-0-support" title="Link to this heading">¶</a></h3>
+<p>Comet has experimental support for Spark 4.0.0, but there is more work to do (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1637">#1637</a>), such as enabling
+more Spark SQL tests and fully implementing ANSI support (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/313">#313</a>) for all supported expressions.</p>
+</section>
+<section id="removing-the-native-comet-scan-implementation">
+<h3>Removing the native_comet scan implementation<a class="headerlink" href="#removing-the-native-comet-scan-implementation" title="Link to this heading">¶</a></h3>
+<p>We are working towards deprecating (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2186">#2186</a>) and removing (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2177">#2177</a>) the <code class="docutils literal notranslate"><span class="pre">native_comet</span></code> scan implementation, which
+is the originally scan implementation that uses mutable buffers (which is incompatible with best practices around
+Arrow FFI) and does not support complex types.</p>
+<p>Once we are using the <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> scan (which is based on DataFusion’s <code class="docutils literal notranslate"><span class="pre">DataSourceExec</span></code>) in the Iceberg
+integration, we will be able to remove the <code class="docutils literal notranslate"><span class="pre">native_comet</span></code> scan implementation, and can then improve the efficiency
+of our use of Arrow FFI (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2171">#2171</a>).</p>
+</section>
+</section>
+<section id="ongoing-improvements">
+<h2>Ongoing Improvements<a class="headerlink" href="#ongoing-improvements" title="Link to this heading">¶</a></h2>
+<p>In addition to the major initiatives above, we have the following ongoing areas of work:</p>
 <ul class="simple">
-<li><p><a class="reference internal" href="benchmarking_macos.html"><span class="std std-doc">Benchmarking on macOS</span></a></p></li>
-<li><p><a class="reference internal" href="benchmarking_aws_ec2.html"><span class="doc std std-doc">Benchmarking on AWS EC2</span></a></p></li>
-</ul>
-<p>We also have many micro benchmarks that can be run from an IDE located <a class="reference external" href="https://github.com/apache/datafusion-comet/tree/main/spark/src/test/scala/org/apache/spark/sql/benchmark">here</a>.</p>
-<section id="current-benchmark-results">
-<h2>Current Benchmark Results<a class="headerlink" href="#current-benchmark-results" title="Link to this heading">¶</a></h2>
-<ul class="simple">
-<li><p><a class="reference internal" href="benchmark-results/tpc-h.html"><span class="doc std std-doc">Benchmarks derived from TPC-H</span></a></p></li>
-<li><p><a class="reference internal" href="benchmark-results/tpc-ds.html"><span class="doc std std-doc">Benchmarks derived from TPC-DS</span></a></p></li>
+<li><p>Adding support for more Spark expressions</p></li>
+<li><p>Moving more expressions to the <code class="docutils literal notranslate"><span class="pre">datafusion-spark</span></code> crate in the core DataFusion repository</p></li>
+<li><p>Performance tuning</p></li>
+<li><p>Nested type support improvements</p></li>
 </ul>
 </section>
 </section>
@@ -377,19 +418,12 @@ benchmarking documentation and scripts are available in the <a class="reference 
               
               <!-- Previous / next buttons -->
 <div class='prev-next-area'>
-    <a class='left-prev' id="prev-link" href="debugging.html" title="previous page">
+    <a class='left-prev' id="prev-link" href="spark-sql-tests.html" title="previous page">
         <i class="fas fa-angle-left"></i>
         <div class="prev-next-info">
             <p class="prev-next-subtitle">previous</p>
-            <p class="prev-next-title">Comet Debugging Guide</p>
+            <p class="prev-next-title">Running Spark SQL Tests</p>
         </div>
-    </a>
-    <a class='right-next' id="next-link" href="adding_a_new_expression.html" title="next page">
-    <div class="prev-next-info">
-        <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Adding a New Expression</p>
-    </div>
-    <i class="fas fa-angle-right"></i>
     </a>
 </div>
               
