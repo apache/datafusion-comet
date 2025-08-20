@@ -411,7 +411,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
             val cometErrorPattern =
-              """org.apache.comet.CometNativeException: checked_add : [ARITHMETIC_OVERFLOW] integer overflow"""
+              """org.apache.comet.CometNativeException: [ARITHMETIC_OVERFLOW] Integer/Float overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
             assert(cometExc.getMessage.contains(cometErrorPattern))
             assert(sparkExc.getMessage.contains("overflow"))
           case _ => fail("Exception should be thrown")
@@ -433,7 +433,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
             val cometErrorPattern =
-              """org.apache.comet.CometNativeException: checked_sub : [ARITHMETIC_OVERFLOW] integer overflow"""
+              """org.apache.comet.CometNativeException: [ARITHMETIC_OVERFLOW] Integer/Float overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
             assert(cometExc.getMessage.contains(cometErrorPattern))
             assert(sparkExc.getMessage.contains("overflow"))
           case _ => fail("Exception should be thrown")
@@ -457,7 +457,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
             val cometErrorPattern =
-              """org.apache.comet.CometNativeException: checked_mul : [ARITHMETIC_OVERFLOW] integer overflow"""
+              """org.apache.comet.CometNativeException: [ARITHMETIC_OVERFLOW] Integer/Float overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
             assert(cometExc.getMessage.contains(cometErrorPattern))
             assert(sparkExc.getMessage.contains("overflow"))
           case _ => fail("Exception should be thrown")
@@ -481,7 +481,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
             val cometErrorPattern =
-              """org.apache.comet.CometNativeException: checked_div : [ARITHMETIC_OVERFLOW] integer overflow"""
+              """org.apache.comet.CometNativeException: [DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
             assert(cometExc.getMessage.contains(cometErrorPattern))
             assert(sparkExc.getMessage.contains("Division by zero"))
           case _ => fail("Exception should be thrown")
