@@ -91,7 +91,7 @@ jobs:
         if: steps.cache-tpcds-sf-1.outputs.cache-hit != 'true'
         run: |
           apt-get install -y yacc bison flex gcc-12 g++-12
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 120 --slave /usr/bin/g++ g++ /usr/bin/g++-12
+          update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 120 --slave /usr/bin/g++ g++ /usr/bin/g++-12
           gcc --version
           cd tpcds-kit/tools && make OS=LINUX
       - name: Generate TPC-DS (SF=1) table data
