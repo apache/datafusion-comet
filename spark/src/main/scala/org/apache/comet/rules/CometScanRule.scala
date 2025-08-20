@@ -347,7 +347,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
 }
 
-case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport {
+case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with CometTypeShim {
 
   // this class is intended to be used with a specific scan impl
   assert(scanImpl != CometConf.SCAN_AUTO)
@@ -364,6 +364,8 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport {
           s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false. ${CometConf.COMPAT_GUIDE}."
         false
       case _: StructType | _: ArrayType | _: MapType if scanImpl == CometConf.SCAN_NATIVE_COMET =>
+        false
+      case dt => isStringCollationType(dt)
         false
       case _ =>
         super.isTypeSupported(dt, name, fallbackReasons)
