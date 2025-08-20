@@ -62,3 +62,4 @@ In addition to the major initiatives above, we have the following ongoing areas 
 - Adding support for more Spark expressions
 - Moving more expressions to the `datafusion-spark` crate in the core DataFusion repository
 - Performance tuning
+- Nested type support improvements
