@@ -37,7 +37,6 @@ where
 {
     let len = left.len();
     let mut builder = PrimitiveBuilder::<T>::with_capacity(len);
-    let error_msg = format!("{} : [ARITHMETIC_OVERFLOW] integer overflow. Use 'try_{}' to tolerate overflow and return NULL instead", op, op.split("_").last().unwrap());
     match op {
         "checked_add" => {
             for i in 0..len {
@@ -189,7 +188,6 @@ fn checked_arithmetic_internal(
             )))
         }
     };
-    println!("Eval mode {:?} operation : {}", eval_mode, op);
 
     let (left_arr, right_arr): (ArrayRef, ArrayRef) = match (left, right) {
         (ColumnarValue::Array(l), ColumnarValue::Array(r)) => (Arc::clone(l), Arc::clone(r)),
