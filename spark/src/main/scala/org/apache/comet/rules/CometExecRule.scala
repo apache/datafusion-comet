@@ -832,7 +832,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         if (!CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.get(conf)) {
           // do not encourage the users to enable the config because we know that
           // the experimental implementation is not correct yet
-          withInfo(s, "Range partitioning is not supported")
+          withInfo(s, "Range partitioning is not supported by native shuffle")
           supported = false
         }
         for (o <- ordering) {
