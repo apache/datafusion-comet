@@ -30,7 +30,7 @@ Here are some areas where you can help:
 
 ## Finding issues to work on
 
-We maintain a list of good first issues in GitHub [here](https://github.com/apache/datafusion-comet/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22).
+We maintain a list of good first issues in GitHub [here](https://github.com/apache/datafusion-comet/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22). We also have a [roadmap](roadmap.md).
 
 ## Reporting issues
 
