@@ -22,7 +22,7 @@ package org.apache.comet.rules
 import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
@@ -827,23 +827,18 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case SinglePartition =>
         // we already checked that the input types are supported
         true
-      case RangePartitioning(ordering, _) =>
-        var supported = true
+      case RangePartitioning(orderings, _) =>
         if (!CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.get(conf)) {
           // do not encourage the users to enable the config because we know that
           // the experimental implementation is not correct yet
           withInfo(s, "Range partitioning is not supported by native shuffle")
-          supported = false
+          return false
         }
-        for (o <- ordering) {
-          if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
-            withInfo(s, s"unsupported range partitioning sort order: $o")
-            supported = false
-          }
-        }
-        supported
+        rangePartitioningSupported(s, inputs, orderings)
       case _ =>
-        withInfo(s, s"unsupported Spark partitioning: ${partitioning.getClass.getName}")
+        withInfo(
+          s,
+          s"unsupported Spark partitioning for native shuffle: ${partitioning.getClass.getName}")
         false
     }
   }
@@ -896,24 +891,33 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         // we already checked that the input types are supported
         true
       case RangePartitioning(orderings, _) =>
-        var supported = true
-        for (o <- orderings) {
-          if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
-            withInfo(s, s"unsupported range partitioning sort order: $o")
-            supported = false
-          }
-        }
-        for (dt <- orderings.map(_.dataType).distinct) {
-          if (!supportedShuffleDataType(dt)) {
-            withInfo(s, s"unsupported shuffle data type: $dt")
-            supported = false
-          }
-        }
-        supported
+        rangePartitioningSupported(s, inputs, orderings)
       case _ =>
-        withInfo(s, s"unsupported Spark partitioning: ${partitioning.getClass.getName}")
+        withInfo(
+          s,
+          s"unsupported Spark partitioning for columnar shuffle: ${partitioning.getClass.getName}")
         false
     }
+  }
+
+  private def rangePartitioningSupported(
+      s: ShuffleExchangeExec,
+      inputs: Seq[Attribute],
+      orderings: Seq[SortOrder]) = {
+    var supported = true
+    for (o <- orderings) {
+      if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
+        withInfo(s, s"unsupported range partitioning sort order: $o")
+        supported = false
+      }
+    }
+    for (dt <- orderings.map(_.dataType).distinct) {
+      if (!supportedShuffleDataType(dt)) {
+        withInfo(s, s"unsupported shuffle data type: $dt")
+        supported = false
+      }
+    }
+    supported
   }
 
   /** Check that all input types can be written to a shuffle file */
