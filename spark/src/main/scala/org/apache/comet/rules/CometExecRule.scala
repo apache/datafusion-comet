@@ -793,14 +793,11 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       return false
     }
 
-    val inputs = s.child.output
-    for (dt <- inputs.map(_.dataType).distinct) {
-      if (!supportedShuffleDataType(dt)) {
-        withInfo(s, s"unsupported shuffle data type: $dt")
-        return false
-      }
+    if (!checkSupportedShuffleDataTypes(s)) {
+      return false
     }
 
+    val inputs = s.child.output
     val partitioning = s.outputPartitioning
     val conf = SQLConf.get
     partitioning match {
@@ -877,11 +874,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
 
     val inputs = s.child.output
-    for (dt <- inputs.map(_.dataType).distinct) {
-      if (!supportedShuffleDataType(dt)) {
-        withInfo(s, s"unsupported shuffle data type: $dt")
-        return false
-      }
+    if (!checkSupportedShuffleDataTypes(s)) {
+      return false
     }
 
     val partitioning = s.outputPartitioning
@@ -891,12 +885,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         for (expr <- expressions) {
           if (QueryPlanSerde.exprToProto(expr, inputs).isEmpty) {
             withInfo(s, s"unsupported hash partitioning expression: $expr")
-            supported = false
-          }
-        }
-        for (dt <- expressions.map(_.dataType).distinct) {
-          if (!supportedShuffleDataType(dt)) {
-            withInfo(s, s"unsupported shuffle data type: $dt")
             supported = false
           }
         }
@@ -928,6 +916,18 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
   }
 
+  /** Check that all input types can be written to a shuffle file */
+  private def checkSupportedShuffleDataTypes(s: ShuffleExchangeExec): Boolean = {
+    var supported = true
+    for (input <- s.child.output) {
+      if (!supportedShuffleDataType(input.dataType)) {
+        withInfo(s, s"unsupported shuffle data type ${input.dataType} for input $input")
+        supported = false
+      }
+    }
+    supported
+  }
+
   /**
    * Determine which data types are supported in a shuffle.
    */
@@ -940,6 +940,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       fields.forall(f => supportedShuffleDataType(f.dataType)) &&
       // Java Arrow stream reader cannot work on duplicate field name
       fields.map(f => f.name).distinct.length == fields.length
+
+    // TODO add support for nested complex types
+    // https://github.com/apache/datafusion-comet/issues/2199
+
     case ArrayType(ArrayType(_, _), _) => false // TODO: nested array is not supported
     case ArrayType(MapType(_, _, _), _) => false // TODO: map array element is not supported
     case ArrayType(elementType, _) =>
