@@ -42,7 +42,7 @@ env:
 jobs:
   prepare:
     name: Build native and prepare data
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     container:
       image: amd64/rust
     env:
@@ -100,7 +100,7 @@ jobs:
 
   benchmark:
     name: Run TPCDSQuerySuite
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     needs: [prepare]
     container:
       image: amd64/rust
