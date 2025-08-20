@@ -42,7 +42,7 @@ env:
 jobs:
   prepare:
     name: Build native and prepare data
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     container:
       image: amd64/rust
     env:
@@ -91,6 +91,10 @@ jobs:
         if: steps.cache-tpcds-sf-1.outputs.cache-hit != 'true'
         run: |
           apt-get install -y yacc bison flex
+          gcc --version
+          yacc --version
+          bison --version
+          flex --version
           cd tpcds-kit/tools && make OS=LINUX
       - name: Generate TPC-DS (SF=1) table data
         if: steps.cache-tpcds-sf-1.outputs.cache-hit != 'true'
@@ -100,7 +104,7 @@ jobs:
 
   benchmark:
     name: Run TPCDSQuerySuite
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     needs: [prepare]
     container:
       image: amd64/rust
