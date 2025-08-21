@@ -1280,7 +1280,7 @@ index 2e33f6505ab..e1e93ab3bad 100644
  
      withTable("t1", "t2") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
-index 11e9547dfc5..1a21a30fcac 100644
+index 11e9547dfc5..be9ae40ab3d 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
 @@ -20,10 +20,11 @@ package org.apache.spark.sql.collation
@@ -1325,7 +1325,15 @@ index 11e9547dfc5..1a21a30fcac 100644
                }.head.isInstanceOf[ArrayTransform])
              }
            }
-@@ -1815,7 +1821,9 @@ class CollationSuite extends DatasourceV2SQLBase with AdaptiveSparkPlanHelper {
+@@ -1676,6 +1682,7 @@ class CollationSuite extends DatasourceV2SQLBase with AdaptiveSparkPlanHelper {
+             } else {
+               assert(!collectFirst(queryPlan) {
+                 case b: BroadcastHashJoinExec => b.leftKeys.head
++                case b: CometBroadcastHashJoinExec => b.leftKeys.head
+               }.head.isInstanceOf[ArrayTransform])
+             }
+           }
+@@ -1815,7 +1822,9 @@ class CollationSuite extends DatasourceV2SQLBase with AdaptiveSparkPlanHelper {
      }
    }
  
