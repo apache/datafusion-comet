@@ -1280,10 +1280,10 @@ index 2e33f6505ab..e1e93ab3bad 100644
  
      withTable("t1", "t2") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
-index 11e9547dfc5..df5678c8d82 100644
+index 11e9547dfc5..1a21a30fcac 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
-@@ -20,7 +20,7 @@ package org.apache.spark.sql.collation
+@@ -20,10 +20,11 @@ package org.apache.spark.sql.collation
  import scala.jdk.CollectionConverters.MapHasAsJava
  
  import org.apache.spark.SparkException
@@ -1292,7 +1292,21 @@ index 11e9547dfc5..df5678c8d82 100644
  import org.apache.spark.sql.catalyst.ExtendedAnalysisException
  import org.apache.spark.sql.catalyst.expressions._
  import org.apache.spark.sql.catalyst.util.CollationFactory
-@@ -1505,7 +1505,9 @@ class CollationSuite extends DatasourceV2SQLBase with AdaptiveSparkPlanHelper {
++import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashJoinExec, CometSortMergeJoinExec}
+ import org.apache.spark.sql.connector.{DatasourceV2SQLBase, FakeV2ProviderWithCustomSchema}
+ import org.apache.spark.sql.connector.catalog.{Identifier, InMemoryTable}
+ import org.apache.spark.sql.connector.catalog.CatalogV2Implicits.CatalogHelper
+@@ -55,7 +56,9 @@ class CollationSuite extends DatasourceV2SQLBase with AdaptiveSparkPlanHelper {
+     assert(
+       collectFirst(queryPlan) {
+         case _: SortMergeJoinExec => assert(isSortMergeForced)
++        case _: CometSortMergeJoinExec => assert(isSortMergeForced)
+         case _: HashJoin => assert(!isSortMergeForced)
++        case _: CometHashJoinExec | _: CometBroadcastHashJoinExec => assert(!isSortMergeForced)
+       }.nonEmpty
+     )
+   }
+@@ -1505,7 +1508,9 @@ class CollationSuite extends DatasourceV2SQLBase with AdaptiveSparkPlanHelper {
      }
    }
  
@@ -1303,7 +1317,15 @@ index 11e9547dfc5..df5678c8d82 100644
      val t1 = "T_1"
      val t2 = "T_2"
  
-@@ -1815,7 +1817,9 @@ class CollationSuite extends DatasourceV2SQLBase with AdaptiveSparkPlanHelper {
+@@ -1611,6 +1616,7 @@ class CollationSuite extends DatasourceV2SQLBase with AdaptiveSparkPlanHelper {
+             } else {
+               assert(!collectFirst(queryPlan) {
+                 case b: BroadcastHashJoinExec => b.leftKeys.head
++                case b: CometBroadcastHashJoinExec => b.leftKeys.head
+               }.head.isInstanceOf[ArrayTransform])
+             }
+           }
+@@ -1815,7 +1821,9 @@ class CollationSuite extends DatasourceV2SQLBase with AdaptiveSparkPlanHelper {
      }
    }
  
