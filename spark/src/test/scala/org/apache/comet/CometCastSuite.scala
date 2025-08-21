@@ -603,8 +603,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   )
 
   test("cast StringType to ByteType") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.ByteType)
     // fuzz test
@@ -612,8 +610,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast StringType to ShortType") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.ShortType)
     // fuzz test
@@ -621,8 +617,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast StringType to IntegerType") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.IntegerType)
     // fuzz test
@@ -630,8 +624,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast StringType to LongType") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.LongType)
     // fuzz test

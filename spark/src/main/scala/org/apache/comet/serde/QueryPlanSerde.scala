@@ -551,14 +551,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
       dt: DataType,
       timeZoneId: Option[String],
       evalMode: CometEvalMode.Value): Option[Expr] = {
-    if (evalMode == CometEvalMode.ANSI && !CometConf.COMET_IGNORE_ANSI_MODE.get()) {
-      // TODO we support ANSI mode for some casts and not others, so
-      //  we can refine this check later. Also, this should really call
-      // CometCast.isSupported
-      withInfo(expr, s"ANSI mode not supported for implicit cast to $dt")
-      return None
-    }
-
     val childExpr = exprToProtoInternal(child, inputs, binding)
     if (childExpr.isDefined) {
       val castSupport =
@@ -685,14 +677,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
           CometEvalMode.TRY)
 
       case c @ Cast(child, dt, timeZoneId, _) =>
-        if (c.evalMode == EvalMode.ANSI && !CometConf.COMET_IGNORE_ANSI_MODE.get()) {
-          // TODO we support ANSI mode for some casts and not others, so
-          //  we can refine this check later. Also, this should really call
-          // CometCast.isSupported
-          withInfo(c, "ANSI mode not supported")
-          return None
-        }
-        handleCast(expr, child, inputs, binding, dt, timeZoneId, evalMode(c))
+        handleCast(c, child, inputs, binding, dt, timeZoneId, evalMode(c))
 
       case EqualTo(left, right) =>
         createBinaryExpr(
