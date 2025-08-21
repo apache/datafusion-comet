@@ -1279,6 +1279,21 @@ index 2e33f6505ab..e1e93ab3bad 100644
      }
  
      withTable("t1", "t2") {
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala
+index fee375db10a..8c2c24e2c5f 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala
+@@ -33,7 +33,9 @@ import org.apache.spark.sql.types._
+ import org.apache.spark.types.variant._
+ import org.apache.spark.unsafe.types.{UTF8String, VariantVal}
+ 
+-class VariantShreddingSuite extends QueryTest with SharedSparkSession with ParquetTest {
++class VariantShreddingSuite extends QueryTest with SharedSparkSession with ParquetTest
++    // TODO enable tests once https://github.com/apache/datafusion-comet/issues/2209 is fixed
++    with IgnoreCometSuite {
+   def parseJson(s: String): VariantVal = {
+     val v = VariantBuilder.parseJson(s, false)
+     new VariantVal(v.getValue, v.getMetadata)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
 index 11e9547dfc5..be9ae40ab3d 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
