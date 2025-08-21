@@ -3593,6 +3593,20 @@ index 4b27082e188..09f591dfed3 100644
        Utils.withContextClassLoader(Utils.getSparkClassLoader) {
          withUserDefinedFunction(udfInfo.funcName -> false) {
            val sparkClassLoader = Thread.currentThread().getContextClassLoader
+diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/InsertSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/InsertSuite.scala
+index cc7bb193731..06555d48da7 100644
+--- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/InsertSuite.scala
++++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/InsertSuite.scala
+@@ -818,7 +818,8 @@ class InsertSuite extends QueryTest with TestHiveSingleton with BeforeAndAfter
+     }
+   }
+ 
+-  test("SPARK-30201 HiveOutputWriter standardOI should use ObjectInspectorCopyOption.DEFAULT") {
++  test("SPARK-30201 HiveOutputWriter standardOI should use ObjectInspectorCopyOption.DEFAULT",
++      IgnoreComet("Comet does not support reading non UTF-8 strings")) {
+     withTable("t1", "t2") {
+       withTempDir { dir =>
+         val file = new File(dir, "test.hex")
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
 index b67370f6eb9..746b3974b29 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
