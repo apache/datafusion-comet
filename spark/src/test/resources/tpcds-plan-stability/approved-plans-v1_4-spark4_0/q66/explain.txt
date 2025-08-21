@@ -19,22 +19,22 @@ TakeOrderedAndProject (55)
                :                    :     :     :- CometProject (8)
                :                    :     :     :  +- CometBroadcastHashJoin (7)
                :                    :     :     :     :- CometFilter (2)
-               :                    :     :     :     :  +- CometScan parquet spark_catalog.default.web_sales (1)
+               :                    :     :     :     :  +- CometScan [native_comet] parquet spark_catalog.default.web_sales (1)
                :                    :     :     :     +- CometBroadcastExchange (6)
                :                    :     :     :        +- CometProject (5)
                :                    :     :     :           +- CometFilter (4)
-               :                    :     :     :              +- CometScan parquet spark_catalog.default.warehouse (3)
+               :                    :     :     :              +- CometScan [native_comet] parquet spark_catalog.default.warehouse (3)
                :                    :     :     +- CometBroadcastExchange (11)
                :                    :     :        +- CometFilter (10)
-               :                    :     :           +- CometScan parquet spark_catalog.default.date_dim (9)
+               :                    :     :           +- CometScan [native_comet] parquet spark_catalog.default.date_dim (9)
                :                    :     +- CometBroadcastExchange (17)
                :                    :        +- CometProject (16)
                :                    :           +- CometFilter (15)
-               :                    :              +- CometScan parquet spark_catalog.default.time_dim (14)
+               :                    :              +- CometScan [native_comet] parquet spark_catalog.default.time_dim (14)
                :                    +- CometBroadcastExchange (23)
                :                       +- CometProject (22)
                :                          +- CometFilter (21)
-               :                             +- CometScan parquet spark_catalog.default.ship_mode (20)
+               :                             +- CometScan [native_comet] parquet spark_catalog.default.ship_mode (20)
                +- * HashAggregate (49)
                   +- * CometColumnarToRow (48)
                      +- CometColumnarExchange (47)
@@ -49,14 +49,14 @@ TakeOrderedAndProject (55)
                                     :     :     :- CometProject (35)
                                     :     :     :  +- CometBroadcastHashJoin (34)
                                     :     :     :     :- CometFilter (32)
-                                    :     :     :     :  +- CometScan parquet spark_catalog.default.catalog_sales (31)
+                                    :     :     :     :  +- CometScan [native_comet] parquet spark_catalog.default.catalog_sales (31)
                                     :     :     :     +- ReusedExchange (33)
                                     :     :     +- ReusedExchange (36)
                                     :     +- ReusedExchange (39)
                                     +- ReusedExchange (42)
 
 
-(1) CometScan parquet spark_catalog.default.web_sales
+(1) CometScan [native_comet] parquet spark_catalog.default.web_sales
 Output [7]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_warehouse_sk#3, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7]
 Batched: true
 Location: InMemoryFileIndex []
@@ -68,7 +68,7 @@ ReadSchema: struct<ws_sold_time_sk:int,ws_ship_mode_sk:int,ws_warehouse_sk:int,w
 Input [7]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_warehouse_sk#3, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7]
 Condition : ((isnotnull(ws_warehouse_sk#3) AND isnotnull(ws_sold_time_sk#1)) AND isnotnull(ws_ship_mode_sk#2))
 
-(3) CometScan parquet spark_catalog.default.warehouse
+(3) CometScan [native_comet] parquet spark_catalog.default.warehouse
 Output [7]: [w_warehouse_sk#9, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#14, w_country#15]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/warehouse]
@@ -96,7 +96,7 @@ Arguments: [ws_warehouse_sk#3], [w_warehouse_sk#9], Inner, BuildRight
 Input [14]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_warehouse_sk#3, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7, w_warehouse_sk#9, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15]
 Arguments: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15], [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15]
 
-(9) CometScan parquet spark_catalog.default.date_dim
+(9) CometScan [native_comet] parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#17, d_year#18, d_moy#19]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -120,7 +120,7 @@ Arguments: [ws_sold_date_sk#7], [d_date_sk#17], Inner, BuildRight
 Input [15]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, ws_sold_date_sk#7, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, d_date_sk#17, d_year#18, d_moy#19]
 Arguments: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, d_year#18, d_moy#19], [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, d_year#18, d_moy#19]
 
-(14) CometScan parquet spark_catalog.default.time_dim
+(14) CometScan [native_comet] parquet spark_catalog.default.time_dim
 Output [2]: [t_time_sk#20, t_time#21]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/time_dim]
@@ -148,7 +148,7 @@ Arguments: [ws_sold_time_sk#1], [t_time_sk#20], Inner, BuildRight
 Input [14]: [ws_sold_time_sk#1, ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, d_year#18, d_moy#19, t_time_sk#20]
 Arguments: [ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, d_year#18, d_moy#19], [ws_ship_mode_sk#2, ws_quantity#4, ws_ext_sales_price#5, ws_net_paid#6, w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, d_year#18, d_moy#19]
 
-(20) CometScan parquet spark_catalog.default.ship_mode
+(20) CometScan [native_comet] parquet spark_catalog.default.ship_mode
 Output [2]: [sm_ship_mode_sk#22, sm_carrier#23]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/ship_mode]
@@ -200,7 +200,7 @@ Functions [24]: [sum(CASE WHEN (d_moy#19 = 1) THEN (ws_ext_sales_price#5 * cast(
 Aggregate Attributes [24]: [sum(CASE WHEN (d_moy#19 = 1) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#120, sum(CASE WHEN (d_moy#19 = 2) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#121, sum(CASE WHEN (d_moy#19 = 3) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#122, sum(CASE WHEN (d_moy#19 = 4) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#123, sum(CASE WHEN (d_moy#19 = 5) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#124, sum(CASE WHEN (d_moy#19 = 6) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#125, sum(CASE WHEN (d_moy#19 = 7) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#126, sum(CASE WHEN (d_moy#19 = 8) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#127, sum(CASE WHEN (d_moy#19 = 9) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#128, sum(CASE WHEN (d_moy#19 = 10) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#129, sum(CASE WHEN (d_moy#19 = 11) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#130, sum(CASE WHEN (d_moy#19 = 12) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#131, sum(CASE WHEN (d_moy#19 = 1) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#132, sum(CASE WHEN (d_moy#19 = 2) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#133, sum(CASE WHEN (d_moy#19 = 3) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#134, sum(CASE WHEN (d_moy#19 = 4) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#135, sum(CASE WHEN (d_moy#19 = 5) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#136, sum(CASE WHEN (d_moy#19 = 6) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#137, sum(CASE WHEN (d_moy#19 = 7) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#138, sum(CASE WHEN (d_moy#19 = 8) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#139, sum(CASE WHEN (d_moy#19 = 9) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#140, sum(CASE WHEN (d_moy#19 = 10) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#141, sum(CASE WHEN (d_moy#19 = 11) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#142, sum(CASE WHEN (d_moy#19 = 12) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#143]
 Results [32]: [w_warehouse_name#10, w_warehouse_sq_ft#11, w_city#12, w_county#13, w_state#16, w_country#15, DHL,BARIAN AS ship_carriers#144, d_year#18 AS year#145, sum(CASE WHEN (d_moy#19 = 1) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#120 AS jan_sales#146, sum(CASE WHEN (d_moy#19 = 2) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#121 AS feb_sales#147, sum(CASE WHEN (d_moy#19 = 3) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#122 AS mar_sales#148, sum(CASE WHEN (d_moy#19 = 4) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#123 AS apr_sales#149, sum(CASE WHEN (d_moy#19 = 5) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#124 AS may_sales#150, sum(CASE WHEN (d_moy#19 = 6) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#125 AS jun_sales#151, sum(CASE WHEN (d_moy#19 = 7) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#126 AS jul_sales#152, sum(CASE WHEN (d_moy#19 = 8) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#127 AS aug_sales#153, sum(CASE WHEN (d_moy#19 = 9) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#128 AS sep_sales#154, sum(CASE WHEN (d_moy#19 = 10) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#129 AS oct_sales#155, sum(CASE WHEN (d_moy#19 = 11) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#130 AS nov_sales#156, sum(CASE WHEN (d_moy#19 = 12) THEN (ws_ext_sales_price#5 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#131 AS dec_sales#157, sum(CASE WHEN (d_moy#19 = 1) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#132 AS jan_net#158, sum(CASE WHEN (d_moy#19 = 2) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#133 AS feb_net#159, sum(CASE WHEN (d_moy#19 = 3) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#134 AS mar_net#160, sum(CASE WHEN (d_moy#19 = 4) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#135 AS apr_net#161, sum(CASE WHEN (d_moy#19 = 5) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#136 AS may_net#162, sum(CASE WHEN (d_moy#19 = 6) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#137 AS jun_net#163, sum(CASE WHEN (d_moy#19 = 7) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#138 AS jul_net#164, sum(CASE WHEN (d_moy#19 = 8) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#139 AS aug_net#165, sum(CASE WHEN (d_moy#19 = 9) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#140 AS sep_net#166, sum(CASE WHEN (d_moy#19 = 10) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#141 AS oct_net#167, sum(CASE WHEN (d_moy#19 = 11) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#142 AS nov_net#168, sum(CASE WHEN (d_moy#19 = 12) THEN (ws_net_paid#6 * cast(ws_quantity#4 as decimal(10,0))) ELSE 0.00 END)#143 AS dec_net#169]
 
-(31) CometScan parquet spark_catalog.default.catalog_sales
+(31) CometScan [native_comet] parquet spark_catalog.default.catalog_sales
 Output [7]: [cs_sold_time_sk#170, cs_ship_mode_sk#171, cs_warehouse_sk#172, cs_quantity#173, cs_sales_price#174, cs_net_paid_inc_tax#175, cs_sold_date_sk#176]
 Batched: true
 Location: InMemoryFileIndex []
@@ -317,10 +317,10 @@ Subquery:1 Hosting operator id = 1 Hosting Expression = ws_sold_date_sk#7 IN dyn
 BroadcastExchange (59)
 +- * CometColumnarToRow (58)
    +- CometFilter (57)
-      +- CometScan parquet spark_catalog.default.date_dim (56)
+      +- CometScan [native_comet] parquet spark_catalog.default.date_dim (56)
 
 
-(56) CometScan parquet spark_catalog.default.date_dim
+(56) CometScan [native_comet] parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#17, d_year#18, d_moy#19]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]

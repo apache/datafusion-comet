@@ -315,11 +315,82 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("try_add") {
-    // TODO: we need to implement more comprehensive tests for all try_ arithmetic functions
-    // https://github.com/apache/datafusion-comet/issues/2021
-    val data = Seq((Integer.MAX_VALUE, 1))
+    val data = Seq((1, 1))
     withParquetTable(data, "tbl") {
-      checkSparkAnswer("SELECT try_add(_1, _2) FROM tbl")
+      checkSparkAnswerAndOperator(spark.sql("""
+          |SELECT
+          |  try_add(2147483647, 1),
+          |  try_add(-2147483648, -1),
+          |  try_add(NULL, 5),
+          |  try_add(5, NULL),
+          |  try_add(9223372036854775807, 1),
+          |  try_add(-9223372036854775808, -1)
+          |  from tbl
+          |  """.stripMargin))
+    }
+  }
+
+  test("try_subtract") {
+    val data = Seq((1, 1))
+    withParquetTable(data, "tbl") {
+      checkSparkAnswerAndOperator(spark.sql("""
+          |SELECT
+          |  try_subtract(2147483647, -1),
+          |  try_subtract(-2147483648, 1),
+          |  try_subtract(NULL, 5),
+          |  try_subtract(5, NULL),
+          |  try_subtract(9223372036854775807, -1),
+          |  try_subtract(-9223372036854775808, 1)
+          |  FROM tbl
+           """.stripMargin))
+    }
+  }
+
+  test("try_multiply") {
+    val data = Seq((1, 1))
+    withParquetTable(data, "tbl") {
+      checkSparkAnswerAndOperator(spark.sql("""
+          |SELECT
+          |  try_multiply(1073741824, 4),
+          |  try_multiply(-1073741824, 4),
+          |  try_multiply(NULL, 5),
+          |  try_multiply(5, NULL),
+          |  try_multiply(3037000499, 3037000500),
+          |  try_multiply(-3037000499, 3037000500)
+          |FROM tbl
+           """.stripMargin))
+    }
+  }
+
+  test("try_divide") {
+    val data = Seq((15121991, 0))
+    withParquetTable(data, "tbl") {
+      checkSparkAnswerAndOperator("SELECT try_divide(_1, _2) FROM tbl")
+      checkSparkAnswerAndOperator("""
+            |SELECT
+            |  try_divide(10, 0),
+            |  try_divide(NULL, 5),
+            |  try_divide(5, NULL),
+            |  try_divide(-2147483648, -1),
+            |  try_divide(-9223372036854775808, -1),
+            |  try_divide(DECIMAL('9999999999999999999999999999'), 0.1)
+            |  from tbl
+            |""".stripMargin)
+    }
+  }
+
+  test("try_integral_divide overflow cases") {
+    val data = Seq((15121991, 0))
+    withParquetTable(data, "tbl") {
+      checkSparkAnswerAndOperator("SELECT try_divide(_1, _2) FROM tbl")
+      checkSparkAnswerAndOperator("""
+                                    |SELECT try_divide(-128, -1),
+                                    |try_divide(-32768, -1),
+                                    |try_divide(-2147483648, -1),
+                                    |try_divide(-9223372036854775808, -1),
+                                    |try_divide(CAST(99999 AS DECIMAL(5,0)), CAST(0.0001 AS DECIMAL(5,4)))
+                                    |from tbl
+                                    |""".stripMargin)
     }
   }
 
@@ -1806,11 +1877,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             Set(
               "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
               "make_interval is not supported")),
-          (
-            s"select * from $table LIMIT 10 OFFSET 3",
-            Set(
-              "Comet shuffle is not enabled",
-              "CollectLimit with non-zero offset is not supported")))
+          (s"select * from $table LIMIT 10 OFFSET 3", Set("Comet shuffle is not enabled")))
           .foreach(test => {
             val qry = test._1
             val expected = test._2

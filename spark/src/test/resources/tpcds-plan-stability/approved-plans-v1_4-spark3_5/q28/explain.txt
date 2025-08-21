@@ -14,7 +14,7 @@
 :  :  :  :  :                    +- CometHashAggregate (4)
 :  :  :  :  :                       +- CometProject (3)
 :  :  :  :  :                          +- CometFilter (2)
-:  :  :  :  :                             +- CometScan parquet spark_catalog.default.store_sales (1)
+:  :  :  :  :                             +- CometScan [native_comet] parquet spark_catalog.default.store_sales (1)
 :  :  :  :  +- BroadcastExchange (23)
 :  :  :  :     +- * HashAggregate (22)
 :  :  :  :        +- * CometColumnarToRow (21)
@@ -26,7 +26,7 @@
 :  :  :  :                          +- CometHashAggregate (15)
 :  :  :  :                             +- CometProject (14)
 :  :  :  :                                +- CometFilter (13)
-:  :  :  :                                   +- CometScan parquet spark_catalog.default.store_sales (12)
+:  :  :  :                                   +- CometScan [native_comet] parquet spark_catalog.default.store_sales (12)
 :  :  :  +- BroadcastExchange (36)
 :  :  :     +- * HashAggregate (35)
 :  :  :        +- * CometColumnarToRow (34)
@@ -38,7 +38,7 @@
 :  :  :                          +- CometHashAggregate (28)
 :  :  :                             +- CometProject (27)
 :  :  :                                +- CometFilter (26)
-:  :  :                                   +- CometScan parquet spark_catalog.default.store_sales (25)
+:  :  :                                   +- CometScan [native_comet] parquet spark_catalog.default.store_sales (25)
 :  :  +- BroadcastExchange (49)
 :  :     +- * HashAggregate (48)
 :  :        +- * CometColumnarToRow (47)
@@ -50,7 +50,7 @@
 :  :                          +- CometHashAggregate (41)
 :  :                             +- CometProject (40)
 :  :                                +- CometFilter (39)
-:  :                                   +- CometScan parquet spark_catalog.default.store_sales (38)
+:  :                                   +- CometScan [native_comet] parquet spark_catalog.default.store_sales (38)
 :  +- BroadcastExchange (62)
 :     +- * HashAggregate (61)
 :        +- * CometColumnarToRow (60)
@@ -62,7 +62,7 @@
 :                          +- CometHashAggregate (54)
 :                             +- CometProject (53)
 :                                +- CometFilter (52)
-:                                   +- CometScan parquet spark_catalog.default.store_sales (51)
+:                                   +- CometScan [native_comet] parquet spark_catalog.default.store_sales (51)
 +- BroadcastExchange (75)
    +- * HashAggregate (74)
       +- * CometColumnarToRow (73)
@@ -74,10 +74,10 @@
                         +- CometHashAggregate (67)
                            +- CometProject (66)
                               +- CometFilter (65)
-                                 +- CometScan parquet spark_catalog.default.store_sales (64)
+                                 +- CometScan [native_comet] parquet spark_catalog.default.store_sales (64)
 
 
-(1) CometScan parquet spark_catalog.default.store_sales
+(1) CometScan [native_comet] parquet spark_catalog.default.store_sales
 Output [5]: [ss_quantity#1, ss_wholesale_cost#2, ss_list_price#3, ss_coupon_amt#4, ss_sold_date_sk#5]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -132,7 +132,7 @@ Functions [3]: [avg(UnscaledValue(ss_list_price#3)), count(ss_list_price#3), cou
 Aggregate Attributes [3]: [avg(UnscaledValue(ss_list_price#3))#9, count(ss_list_price#3)#10, count(ss_list_price#3)#11]
 Results [3]: [cast((avg(UnscaledValue(ss_list_price#3))#9 / 100.0) as decimal(11,6)) AS B1_LP#13, count(ss_list_price#3)#10 AS B1_CNT#14, count(ss_list_price#3)#11 AS B1_CNTD#15]
 
-(12) CometScan parquet spark_catalog.default.store_sales
+(12) CometScan [native_comet] parquet spark_catalog.default.store_sales
 Output [5]: [ss_quantity#16, ss_wholesale_cost#17, ss_list_price#18, ss_coupon_amt#19, ss_sold_date_sk#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -195,7 +195,7 @@ Arguments: IdentityBroadcastMode, [plan_id=5]
 Join type: Inner
 Join condition: None
 
-(25) CometScan parquet spark_catalog.default.store_sales
+(25) CometScan [native_comet] parquet spark_catalog.default.store_sales
 Output [5]: [ss_quantity#31, ss_wholesale_cost#32, ss_list_price#33, ss_coupon_amt#34, ss_sold_date_sk#35]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -258,7 +258,7 @@ Arguments: IdentityBroadcastMode, [plan_id=8]
 Join type: Inner
 Join condition: None
 
-(38) CometScan parquet spark_catalog.default.store_sales
+(38) CometScan [native_comet] parquet spark_catalog.default.store_sales
 Output [5]: [ss_quantity#46, ss_wholesale_cost#47, ss_list_price#48, ss_coupon_amt#49, ss_sold_date_sk#50]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -321,7 +321,7 @@ Arguments: IdentityBroadcastMode, [plan_id=11]
 Join type: Inner
 Join condition: None
 
-(51) CometScan parquet spark_catalog.default.store_sales
+(51) CometScan [native_comet] parquet spark_catalog.default.store_sales
 Output [5]: [ss_quantity#61, ss_wholesale_cost#62, ss_list_price#63, ss_coupon_amt#64, ss_sold_date_sk#65]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -384,7 +384,7 @@ Arguments: IdentityBroadcastMode, [plan_id=14]
 Join type: Inner
 Join condition: None
 
-(64) CometScan parquet spark_catalog.default.store_sales
+(64) CometScan [native_comet] parquet spark_catalog.default.store_sales
 Output [5]: [ss_quantity#76, ss_wholesale_cost#77, ss_list_price#78, ss_coupon_amt#79, ss_sold_date_sk#80]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]

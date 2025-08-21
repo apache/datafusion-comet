@@ -69,7 +69,7 @@ public class NativeColumnReader extends AbstractColumnReader {
   private long nativeBatchHandle = 0xDEADBEEFL;
   private final int columnNum;
 
-  public NativeColumnReader(
+  NativeColumnReader(
       long nativeBatchHandle,
       int columnNum,
       DataType type,

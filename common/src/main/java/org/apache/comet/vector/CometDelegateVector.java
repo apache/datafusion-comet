@@ -48,7 +48,7 @@ public class CometDelegateVector extends CometVector {
     this.delegate = delegate;
   }
 
-  public void setDelegate(CometVector delegate) {
+  protected void setDelegate(CometVector delegate) {
     this.delegate = delegate;
   }
 

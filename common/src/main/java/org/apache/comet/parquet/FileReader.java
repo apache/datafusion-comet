@@ -43,7 +43,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.Path;
 import org.apache.parquet.HadoopReadOptions;
 import org.apache.parquet.ParquetReadOptions;
 import org.apache.parquet.Preconditions;
@@ -130,15 +129,14 @@ public class FileReader implements Closeable {
   private RowGroupReader currentRowGroup = null;
   private InternalFileDecryptor fileDecryptor;
 
-  public FileReader(InputFile file, ParquetReadOptions options, ReadOptions cometOptions)
+  FileReader(InputFile file, ParquetReadOptions options, ReadOptions cometOptions)
       throws IOException {
     this(file, null, options, cometOptions, null);
   }
 
   /** This constructor is called from Apache Iceberg. */
   public FileReader(
-      Path path,
-      Configuration conf,
+      WrappedInputFile file,
       ReadOptions cometOptions,
       Map<String, String> properties,
       Long start,
@@ -147,9 +145,10 @@ public class FileReader implements Closeable {
       byte[] fileAADPrefix)
       throws IOException {
     ParquetReadOptions options =
-        buildParquetReadOptions(conf, properties, start, length, fileEncryptionKey, fileAADPrefix);
+        buildParquetReadOptions(
+            new Configuration(), properties, start, length, fileEncryptionKey, fileAADPrefix);
     this.converter = new ParquetMetadataConverter(options);
-    this.file = CometInputFile.fromPath(path, conf);
+    this.file = file;
     this.f = file.newStream();
     this.options = options;
     this.cometOptions = cometOptions;
@@ -177,7 +176,7 @@ public class FileReader implements Closeable {
     this.crc = options.usePageChecksumVerification() ? new CRC32() : null;
   }
 
-  public FileReader(
+  FileReader(
       InputFile file,
       ParquetReadOptions options,
       ReadOptions cometOptions,
@@ -186,7 +185,7 @@ public class FileReader implements Closeable {
     this(file, null, options, cometOptions, metrics);
   }
 
-  public FileReader(
+  FileReader(
       InputFile file,
       ParquetMetadata footer,
       ParquetReadOptions options,
@@ -226,12 +225,12 @@ public class FileReader implements Closeable {
   }
 
   /** Returns the footer of the Parquet file being read. */
-  public ParquetMetadata getFooter() {
+  ParquetMetadata getFooter() {
     return this.footer;
   }
 
   /** Returns the metadata of the Parquet file being read. */
-  public FileMetaData getFileMetaData() {
+  FileMetaData getFileMetaData() {
     return this.fileMetaData;
   }
 

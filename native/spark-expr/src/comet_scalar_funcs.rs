@@ -16,13 +16,13 @@
 // under the License.
 
 use crate::hash_funcs::*;
+use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
 use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::{
     spark_array_repeat, spark_ceil, spark_date_add, spark_date_sub, spark_decimal_div,
     spark_decimal_integral_div, spark_floor, spark_hex, spark_isnan, spark_make_decimal,
     spark_read_side_padding, spark_round, spark_rpad, spark_unhex, spark_unscaled_value,
-    SparkBitwiseCount, SparkBitwiseGet, SparkBitwiseNot, SparkChrFunc, SparkDateTrunc,
-    SparkStringSpace,
+    SparkBitwiseCount, SparkBitwiseGet, SparkBitwiseNot, SparkDateTrunc, SparkStringSpace,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -116,6 +116,18 @@ pub fn create_comet_physical_fun(
                 data_type
             )
         }
+        "checked_add" => {
+            make_comet_scalar_udf!("checked_add", checked_add, data_type)
+        }
+        "checked_sub" => {
+            make_comet_scalar_udf!("checked_sub", checked_sub, data_type)
+        }
+        "checked_mul" => {
+            make_comet_scalar_udf!("checked_mul", checked_mul, data_type)
+        }
+        "checked_div" => {
+            make_comet_scalar_udf!("checked_div", checked_div, data_type)
+        }
         "murmur3_hash" => {
             let func = Arc::new(spark_murmur3_hash);
             make_comet_scalar_udf!("murmur3_hash", func, without data_type)
@@ -155,7 +167,6 @@ pub fn create_comet_physical_fun(
 
 fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
     vec![
-        Arc::new(ScalarUDF::new_from_impl(SparkChrFunc::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkBitwiseNot::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkBitwiseCount::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkBitwiseGet::default())),
