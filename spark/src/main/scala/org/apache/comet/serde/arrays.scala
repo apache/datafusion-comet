@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.annotation.tailrec
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -186,6 +186,18 @@ object CometArrayMax extends CometExpressionSerde[ArrayMax] {
     val arrayMaxScalarExpr =
       scalarFunctionExprToProto("array_max", arrayExprProto)
     optExprWithInfo(arrayMaxScalarExpr, expr)
+  }
+}
+
+object CometArrayMin extends CometExpressionSerde[ArrayMin] {
+  override def convert(
+      expr: ArrayMin,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
+
+    val arrayMinScalarExpr = scalarFunctionExprToProto("array_min", arrayExprProto)
+    optExprWithInfo(arrayMinScalarExpr, expr)
   }
 }
 
