@@ -1160,6 +1160,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
         optExprWithInfo(optExpr, expr, left, right)
 
       case r: Round =>
+        if (r.ansiEnabled) {
+          withInfo(r, "ANSI mode not supported")
+          return None
+        }
+
         // _scale s a constant, copied from Spark's RoundBase because it is a protected val
         val scaleV: Any = r.scale.eval(EmptyRow)
         val _scale: Int = scaleV.asInstanceOf[Int]
