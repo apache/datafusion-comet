@@ -1785,3 +1785,16 @@ index 9d2ce2b..5e23368 100644
      } else {
        assertThat(planAsString).as("Should be no post scan filter").doesNotContain("Filter (");
      }
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestStoragePartitionedJoins.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestStoragePartitionedJoins.java
+index 6719c45..2515454 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestStoragePartitionedJoins.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestStoragePartitionedJoins.java
+@@ -616,7 +616,7 @@ public class TestStoragePartitionedJoins extends TestBaseWithCatalog {
+             + "FROM %s t1 "
+             + "INNER JOIN %s t2 "
+             + "ON t1.id = t2.id AND t1.%s = t2.%s "
+-            + "ORDER BY t1.id, t1.%s",
++            + "ORDER BY t1.id, t1.%s, t1.salary",
+         sourceColumnName,
+         tableName,
+         tableName(OTHER_TABLE_NAME),
