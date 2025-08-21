@@ -269,6 +269,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_IGNORE_ANSI_MODE.key -> "true",
       CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "false",
       SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> dppEnabled.toString,
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",

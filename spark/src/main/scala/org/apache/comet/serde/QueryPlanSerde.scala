@@ -1160,7 +1160,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         optExprWithInfo(optExpr, expr, left, right)
 
       case r: Round =>
-        if (r.ansiEnabled) {
+        if (r.ansiEnabled && !CometConf.COMET_IGNORE_ANSI_MODE.get()) {
           withInfo(r, "ANSI mode not supported")
           return None
         }
