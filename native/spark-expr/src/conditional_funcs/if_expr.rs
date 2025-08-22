@@ -98,7 +98,7 @@ impl PhysicalExpr for IfExpr {
     }
 
     fn nullable(&self, _input_schema: &Schema) -> Result<bool> {
-        if self.true_expr.nullable(_input_schema)? || self.true_expr.nullable(_input_schema)? {
+        if self.true_expr.nullable(_input_schema)? || self.false_expr.nullable(_input_schema)? {
             Ok(true)
         } else {
             Ok(false)
