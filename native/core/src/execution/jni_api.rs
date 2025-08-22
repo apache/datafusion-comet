@@ -173,9 +173,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         let array = unsafe { JPrimitiveArray::from_raw(serialized_spark_configs) };
         let bytes = env.convert_byte_array(array)?;
         let spark_configs = serde::deserialize_config(bytes.as_slice())?;
-
-        // Convert Spark configs to HashMap
         let spark_config: HashMap<String, String> = spark_configs.entries.into_iter().collect();
+
+        // Access Spark configs
         let debug_native = spark_config.get_bool(COMET_DEBUG_ENABLED);
         let explain_native = spark_config.get_bool(COMET_EXPLAIN_NATIVE_ENABLED);
         let tracing_enabled = spark_config.get_bool(COMET_TRACING_ENABLED);
