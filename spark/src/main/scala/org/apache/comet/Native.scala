@@ -65,10 +65,7 @@ class Native extends NativeBase {
       memoryPoolType: String,
       memoryLimit: Long,
       memoryLimitPerTask: Long,
-      taskAttemptId: Long,
-      debug: Boolean,
-      explain: Boolean,
-      tracingEnabled: Boolean): Long
+      taskAttemptId: Long): Long
   // scalastyle:on
 
   /**

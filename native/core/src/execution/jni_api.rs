@@ -75,6 +75,9 @@ use crate::execution::spark_plan::SparkPlan;
 
 use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end, with_trace};
 
+use crate::execution::spark_config::{
+    SparkConfig, COMET_DEBUG_ENABLED, COMET_EXPLAIN_NATIVE_ENABLED, COMET_TRACING_ENABLED,
+};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::info;
 use once_cell::sync::Lazy;
@@ -164,12 +167,20 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     memory_limit: jlong,
     memory_limit_per_task: jlong,
     task_attempt_id: jlong,
-    debug_native: jboolean,
-    explain_native: jboolean,
-    tracing_enabled: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
-        with_trace("createPlan", tracing_enabled != JNI_FALSE, || {
+        // Deserialize Spark configs
+        let array = unsafe { JPrimitiveArray::from_raw(serialized_spark_configs) };
+        let bytes = env.convert_byte_array(array)?;
+        let spark_configs = serde::deserialize_config(bytes.as_slice())?;
+
+        // Convert Spark configs to HashMap
+        let spark_config: HashMap<String, String> = spark_configs.entries.into_iter().collect();
+        let debug_native = spark_config.get_bool(COMET_DEBUG_ENABLED);
+        let explain_native = spark_config.get_bool(COMET_EXPLAIN_NATIVE_ENABLED);
+        let tracing_enabled = spark_config.get_bool(COMET_TRACING_ENABLED);
+
+        with_trace("createPlan", tracing_enabled, || {
             // Init JVM classes
             JVMClasses::init(&mut env);
 
@@ -179,15 +190,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let array = unsafe { JPrimitiveArray::from_raw(serialized_query) };
             let bytes = env.convert_byte_array(array)?;
             let spark_plan = serde::deserialize_op(bytes.as_slice())?;
-
-            // Deserialize Spark configs
-            let array = unsafe { JPrimitiveArray::from_raw(serialized_spark_configs) };
-            let bytes = env.convert_byte_array(array)?;
-            let spark_configs = serde::deserialize_config(bytes.as_slice())?;
-
-            // Convert Spark configs to HashMap
-            let _spark_config_map: HashMap<String, String> =
-                spark_configs.entries.into_iter().collect();
 
             let metrics = Arc::new(jni_new_global_ref!(env, metrics_node)?);
 
@@ -253,10 +255,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 metrics_last_update_time: Instant::now(),
                 plan_creation_time,
                 session_ctx: Arc::new(session),
-                debug_native: debug_native == 1,
-                explain_native: explain_native == 1,
+                debug_native,
+                explain_native,
                 memory_pool_config,
-                tracing_enabled: tracing_enabled != JNI_FALSE,
+                tracing_enabled,
             });
 
             Ok(Box::into_raw(exec_context) as i64)
