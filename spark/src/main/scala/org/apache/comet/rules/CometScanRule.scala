@@ -152,15 +152,6 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
           return withInfos(scanExec, fallbackReasons.toSet)
         }
 
-        if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && (SQLConf.get.ignoreMissingFiles ||
-            scanExec.relation.options
-              .get("ignoremissingfiles") // Spark sets this to lowercase.
-              .contains("true"))) {
-          fallbackReasons +=
-            "Full native scan disabled because ignoreMissingFiles enabled"
-          return withInfos(scanExec, fallbackReasons.toSet)
-        }
-
         if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && scanExec.bucketedScan) {
           // https://github.com/apache/datafusion-comet/issues/1719
           fallbackReasons +=
