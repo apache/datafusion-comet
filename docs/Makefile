@@ -19,20 +19,25 @@
 # Minimal makefile for Sphinx documentation
 #
 
-# You can set these variables from the command line, and also
-# from the environment for the first two.
 SPHINXOPTS    ?=
 SPHINXBUILD   ?= sphinx-build
 SOURCEDIR     = source
 BUILDDIR      = build
 
-# Put it first so that "make" without argument is like "make help".
+# Extract version from Cargo.toml (default)
+PROJECT_VERSION := $(shell grep '^version' ../native/Cargo.toml | head -1 | cut -d '"' -f2)
+
 help:
 	@$(SPHINXBUILD) -M help "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)
 
-.PHONY: help Makefile
+html:
+	@echo "Building docs for version $(PROJECT_VERSION)"
+	@PROJECT_VERSION=$(PROJECT_VERSION) $(SPHINXBUILD) -b html "$(SOURCEDIR)" "$(BUILDDIR)/html"
 
-# Catch-all target: route all unknown targets to Sphinx using the new
-# "make mode" option.  $(O) is meant as a shortcut for $(SPHINXOPTS).
-%: Makefile
-	@$(SPHINXBUILD) -M $@ "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)
+# Build docs and copy into versioned dir (like Spark does)
+publish: html
+	@mkdir -p site/docs/$(PROJECT_VERSION)
+	@cp -r $(BUILDDIR)/html/* site/docs/$(PROJECT_VERSION)/
+	@rm -rf site/docs/latest
+	@ln -s $(PROJECT_VERSION) site/docs/latest
+	@echo "Docs published under site/docs/$(PROJECT_VERSION) and site/docs/latest"
