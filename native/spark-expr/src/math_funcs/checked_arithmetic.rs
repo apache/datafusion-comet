@@ -20,7 +20,8 @@ use arrow::array::{ArrayRef, AsArray};
 
 use crate::{divide_by_zero_error, EvalMode, SparkError};
 use arrow::datatypes::{
-    ArrowPrimitiveType, DataType, Float32Type, Float64Type, Int32Type, Int64Type,
+    ArrowPrimitiveType, DataType, Float16Type, Float32Type, Float64Type, Int16Type, Int32Type,
+    Int64Type, Int8Type,
 };
 use datafusion::common::DataFusionError;
 use datafusion::physical_plan::ColumnarValue;
@@ -200,8 +201,20 @@ fn checked_arithmetic_internal(
         (ColumnarValue::Scalar(l), ColumnarValue::Scalar(r)) => (l.to_array()?, r.to_array()?),
     };
 
-    // Rust only supports checked_arithmetic on Int32 and Int64
+    // Rust only supports checked_arithmetic on numeric types
     let result_array = match data_type {
+        DataType::Int8 => try_arithmetic_kernel::<Int8Type>(
+            left_arr.as_primitive::<Int8Type>(),
+            right_arr.as_primitive::<Int8Type>(),
+            op,
+            is_ansi_mode,
+        ),
+        DataType::Int16 => try_arithmetic_kernel::<Int16Type>(
+            left_arr.as_primitive::<Int16Type>(),
+            right_arr.as_primitive::<Int16Type>(),
+            op,
+            is_ansi_mode,
+        ),
         DataType::Int32 => try_arithmetic_kernel::<Int32Type>(
             left_arr.as_primitive::<Int32Type>(),
             right_arr.as_primitive::<Int32Type>(),
@@ -211,6 +224,12 @@ fn checked_arithmetic_internal(
         DataType::Int64 => try_arithmetic_kernel::<Int64Type>(
             left_arr.as_primitive::<Int64Type>(),
             right_arr.as_primitive::<Int64Type>(),
+            op,
+            is_ansi_mode,
+        ),
+        DataType::Float16 => try_arithmetic_kernel::<Float16Type>(
+            left_arr.as_primitive::<Float16Type>(),
+            right_arr.as_primitive::<Float16Type>(),
             op,
             is_ansi_mode,
         ),
