@@ -115,7 +115,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("Integral Division Overflow Handling Matches Spark Behavior") {
     withTable("t1") {
-      withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "false") {
         val value = Long.MinValue
         sql("create table t1(c1 long, c2 short) using parquet")
         sql(s"insert into t1 values($value, -1)")

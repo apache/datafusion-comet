@@ -253,10 +253,12 @@ object CometCast {
       Compatible()
     case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType =>
       Compatible()
-    case DataTypes.FloatType | DataTypes.DoubleType =>
+    case d: DecimalType  if(d.scale == 0 && d.precision == 19) =>
       Compatible()
     case _: DecimalType =>
       Incompatible(Some("No overflow check"))
+    case DataTypes.FloatType | DataTypes.DoubleType =>
+      Compatible()
     case _ =>
       Unsupported
   }
