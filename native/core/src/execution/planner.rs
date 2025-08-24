@@ -998,7 +998,9 @@ impl PhysicalPlanner {
             }
             _ => {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
-                if [EvalMode::Try, EvalMode::Ansi].contains(&eval_mode) && data_type.is_numeric() {
+                if [EvalMode::Try, EvalMode::Ansi].contains(&eval_mode)
+                    && (data_type.is_floating() || data_type.is_integer())
+                {
                     let op_str = match op {
                         DataFusionOperator::Plus => "checked_add",
                         DataFusionOperator::Minus => "checked_sub",
