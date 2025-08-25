@@ -1320,8 +1320,12 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
 
       case a @ Coalesce(_) =>
-        val exprChildren = a.children.map(exprToProtoInternal(_, inputs, binding))
-        scalarFunctionExprToProto("coalesce", exprChildren: _*)
+        if (!SQLConf.get.ansiEnabled) {
+          val exprChildren = a.children.map(exprToProtoInternal(_, inputs, binding))
+          scalarFunctionExprToProto("coalesce", exprChildren: _*)
+        } else {
+          return None
+        }
 
       // With Spark 3.4, CharVarcharCodegenUtils.readSidePadding gets called to pad spaces for
       // char types.

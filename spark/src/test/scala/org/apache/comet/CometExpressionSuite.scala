@@ -41,7 +41,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -391,6 +391,121 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                                     |try_divide(CAST(99999 AS DECIMAL(5,0)), CAST(0.0001 AS DECIMAL(5,4)))
                                     |from tbl
                                     |""".stripMargin)
+    }
+  }
+
+  test("ANSI support for add") {
+    assume(isSpark35Plus)
+    val data = Seq((Integer.MAX_VALUE, 1), (Integer.MIN_VALUE, -1))
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ANSI_MODE_ENABLED.key -> "true") {
+      withParquetTable(data, "tbl") {
+        spark.table("tbl").printSchema()
+        val res = spark.sql("""
+             |SELECT
+             |  _1 + _2
+             |  from tbl
+             |  """.stripMargin)
+
+        checkSparkMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            val cometErrorPattern =
+              """org.apache.comet.CometNativeException: [ARITHMETIC_OVERFLOW] Integer/Float overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
+            assert(cometExc.getMessage.contains(cometErrorPattern))
+            assert(sparkExc.getMessage.contains("overflow"))
+          case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+  }
+
+  test("ANSI support for subtract") {
+    val data = Seq((Integer.MIN_VALUE, 1))
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true", "spark.comet.ansi.enabled" -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+                              |SELECT
+                              |  _1 - _2
+                              |  from tbl
+                              |  """.stripMargin)
+
+        checkSparkMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            val cometErrorPattern =
+              """org.apache.comet.CometNativeException: [ARITHMETIC_OVERFLOW] Integer/Float overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
+            assert(cometExc.getMessage.contains(cometErrorPattern))
+            assert(sparkExc.getMessage.contains("overflow"))
+          case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+  }
+
+  test("ANSI support for multiply") {
+    val data = Seq((Integer.MAX_VALUE, 10))
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ANSI_MODE_ENABLED.key -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+                              |SELECT
+                              |  _1 * _2
+                              |  from tbl
+                              |  """.stripMargin)
+
+        checkSparkMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            val cometErrorPattern =
+              """org.apache.comet.CometNativeException: [ARITHMETIC_OVERFLOW] Integer/Float overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
+            assert(cometExc.getMessage.contains(cometErrorPattern))
+            assert(sparkExc.getMessage.contains("overflow"))
+          case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+  }
+
+  test("ANSI support for divide") {
+    val data = Seq((Integer.MIN_VALUE, 0))
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
+      "spark.comet.explainFallback.enabled" -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+                              |SELECT
+                              |  _1 / _2
+                              |  from tbl
+                              |  """.stripMargin)
+        checkSparkMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            val cometErrorPattern =
+              """org.apache.comet.CometNativeException: [DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
+            assert(cometExc.getMessage.contains(cometErrorPattern))
+            assert(sparkExc.getMessage.contains("Division by zero"))
+          case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+  }
+
+//  TODO : Add spark like coalesce support on data fusion / comet side
+  test("fix coalesce ANSI support for arithmetic ops") {
+    val data = Seq((Integer.MIN_VALUE, 0))
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
+      "spark.comet.explainFallback.enabled" -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+                              |SELECT
+                              |  coalesce(_1, _1/0)
+                              |  from tbl
+                              |  """.stripMargin)
+
+        checkSparkAnswer(res)
+      }
     }
   }
 
