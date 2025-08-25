@@ -37,6 +37,7 @@ import org.apache.spark.sql.types._
 import org.apache.comet.{CometConf, DataTypeSupport}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
+import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
 import org.apache.comet.shims.CometTypeShim
 
@@ -297,11 +298,6 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
       typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
     val partitionSchemaSupported =
       typeChecker.isSchemaSupported(partitionSchema, fallbackReasons)
-
-    def isComplexType(dt: DataType): Boolean = dt match {
-      case _: StructType | _: ArrayType | _: MapType => true
-      case _ => false
-    }
 
     def hasUnsupportedType(dataType: DataType): Boolean = {
       dataType match {
