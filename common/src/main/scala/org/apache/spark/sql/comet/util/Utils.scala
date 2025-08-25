@@ -126,9 +126,7 @@ object Utils extends CometTypeShim {
       case FloatType => new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE)
       case DoubleType => new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE)
       case _: StringType => ArrowType.Utf8.INSTANCE
-      case dt if isStringCollationType(dt) =>
-        // TODO collation information is lost with this transformation
-        ArrowType.Utf8.INSTANCE
+      case dt if isStringCollationType(dt) => ArrowType.Utf8.INSTANCE
       case BinaryType => ArrowType.Binary.INSTANCE
       case DecimalType.Fixed(precision, scale) => new ArrowType.Decimal(precision, scale, 128)
       case DateType => new ArrowType.Date(DateUnit.DAY)

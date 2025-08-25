@@ -366,6 +366,8 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with C
       case _: StructType | _: ArrayType | _: MapType if scanImpl == CometConf.SCAN_NATIVE_COMET =>
         false
       case dt if isStringCollationType(dt) =>
+        // we don't need specific support for collation in scans, but this
+        // is a convenient place to force the whole query to fall back to Spark for now
         false
       case s: StructType if s.fields.isEmpty =>
         false
