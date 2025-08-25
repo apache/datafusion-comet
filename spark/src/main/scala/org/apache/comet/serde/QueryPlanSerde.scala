@@ -552,7 +552,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
       dt: DataType,
       timeZoneId: Option[String],
       evalMode: CometEvalMode.Value): Option[Expr] = {
-
     val childExpr = exprToProtoInternal(child, inputs, binding)
     if (childExpr.isDefined) {
       val castSupport =
@@ -679,7 +678,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
           CometEvalMode.TRY)
 
       case c @ Cast(child, dt, timeZoneId, _) =>
-        handleCast(expr, child, inputs, binding, dt, timeZoneId, evalMode(c))
+        handleCast(c, child, inputs, binding, dt, timeZoneId, evalMode(c))
 
       case EqualTo(left, right) =>
         createBinaryExpr(
@@ -1161,6 +1160,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
         optExprWithInfo(optExpr, expr, left, right)
 
       case r: Round =>
+        if (r.ansiEnabled && !CometConf.COMET_IGNORE_ANSI_MODE.get()) {
+          withInfo(r, "ANSI mode not supported")
+          return None
+        }
+
         // _scale s a constant, copied from Spark's RoundBase because it is a protected val
         val scaleV: Any = r.scale.eval(EmptyRow)
         val _scale: Int = scaleV.asInstanceOf[Int]

@@ -120,7 +120,11 @@ object CometCast {
         Compatible()
       case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType |
           DataTypes.LongType =>
-        Compatible()
+        if (evalMode == CometEvalMode.ANSI) {
+          Incompatible(Some("ANSI mode not supported"))
+        } else {
+          Compatible()
+        }
       case DataTypes.BinaryType =>
         Compatible()
       case DataTypes.FloatType | DataTypes.DoubleType =>
@@ -139,7 +143,7 @@ object CometCast {
         Compatible(Some("Only supports years between 262143 BC and 262142 AD"))
       case DataTypes.TimestampType if timeZoneId.exists(tz => tz != "UTC") =>
         Incompatible(Some(s"Cast will use UTC instead of $timeZoneId"))
-      case DataTypes.TimestampType if evalMode == "ANSI" =>
+      case DataTypes.TimestampType if evalMode == CometEvalMode.ANSI =>
         Incompatible(Some("ANSI mode not supported"))
       case DataTypes.TimestampType =>
         // https://github.com/apache/datafusion-comet/issues/328

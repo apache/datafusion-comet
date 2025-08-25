@@ -24,6 +24,7 @@ import scala.math.min
 import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, Cast, Divide, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Subtract}
 import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType}
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.QueryPlanSerde.{castToProto, evalModeToProto, exprToProtoInternal, serializeDataType}
@@ -90,6 +91,10 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
       expr: Add,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (expr.evalMode == EvalMode.ANSI && !CometConf.COMET_IGNORE_ANSI_MODE.get()) {
+      withInfo(expr, "ANSI mode not supported")
+      return None
+    }
     if (!supportedDataType(expr.left.dataType)) {
       withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
@@ -111,6 +116,10 @@ object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
       expr: Subtract,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (expr.evalMode == EvalMode.ANSI && !CometConf.COMET_IGNORE_ANSI_MODE.get()) {
+      withInfo(expr, "ANSI mode not supported")
+      return None
+    }
     if (!supportedDataType(expr.left.dataType)) {
       withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
@@ -132,6 +141,10 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
       expr: Multiply,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (expr.evalMode == EvalMode.ANSI && !CometConf.COMET_IGNORE_ANSI_MODE.get()) {
+      withInfo(expr, "ANSI mode not supported")
+      return None
+    }
     if (!supportedDataType(expr.left.dataType)) {
       withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
@@ -153,6 +166,10 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
       expr: Divide,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (expr.evalMode == EvalMode.ANSI && !CometConf.COMET_IGNORE_ANSI_MODE.get()) {
+      withInfo(expr, "ANSI mode not supported")
+      return None
+    }
     // Datafusion now throws an exception for dividing by zero
     // See https://github.com/apache/arrow-datafusion/pull/6792
     // For now, use NullIf to swap zeros with nulls.
@@ -178,6 +195,10 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
       expr: IntegralDivide,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (expr.evalMode == EvalMode.ANSI && !CometConf.COMET_IGNORE_ANSI_MODE.get()) {
+      withInfo(expr, "ANSI mode not supported")
+      return None
+    }
     if (!supportedDataType(expr.left.dataType)) {
       withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
@@ -241,6 +262,10 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
       expr: Remainder,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (expr.evalMode == EvalMode.ANSI && !CometConf.COMET_IGNORE_ANSI_MODE.get()) {
+      withInfo(expr, "ANSI mode not supported")
+      return None
+    }
     if (!supportedDataType(expr.left.dataType)) {
       withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None

@@ -16,9 +16,10 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.comet.shims
 
-trait ShimCometConf {
-  protected val COMET_SCHEMA_EVOLUTION_ENABLED_DEFAULT = true
+import org.apache.spark.sql.types.DataType
+
+trait CometTypeShim {
+    def isStringCollationType(dt: DataType): Boolean = false
 }
