@@ -42,7 +42,7 @@ use_existing_hdfs = []
 
 [build-dependencies]
 cc = "1"
-bindgen = "0.64.0"
+bindgen = "0.69.5"
 java-locator = { version = "0.1.9", features = ["locate-jdk-only"] }
 
 [dependencies]
@@ -52,5 +52,5 @@ url = "^2.2"
 log = "^0.4"
 
 [dev-dependencies]
-uuid = {version = "^0.8", features = ["v4"]}
+uuid = {version = "^1.17", features = ["v4"]}
 tempfile = "^3.2"

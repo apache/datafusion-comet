@@ -17,6 +17,7 @@
 
 use crate::hash_funcs::*;
 use crate::map_funcs::{map_from_list, map_to_list, spark_map_sort};
+use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
 use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::{
     spark_array_repeat, spark_ceil, spark_date_add, spark_date_sub, spark_decimal_div,
@@ -115,6 +116,18 @@ pub fn create_comet_physical_fun(
                 spark_decimal_integral_div,
                 data_type
             )
+        }
+        "checked_add" => {
+            make_comet_scalar_udf!("checked_add", checked_add, data_type)
+        }
+        "checked_sub" => {
+            make_comet_scalar_udf!("checked_sub", checked_sub, data_type)
+        }
+        "checked_mul" => {
+            make_comet_scalar_udf!("checked_mul", checked_mul, data_type)
+        }
+        "checked_div" => {
+            make_comet_scalar_udf!("checked_div", checked_div, data_type)
         }
         "murmur3_hash" => {
             let func = Arc::new(spark_murmur3_hash);

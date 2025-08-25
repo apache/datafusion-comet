@@ -38,6 +38,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
 import org.apache.spark.sql.types._
 
+import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -373,7 +374,10 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     Seq("native", "jvm").foreach { shuffleMode =>
-      Seq("native_comet", "native_datafusion", "native_iceberg_compat").foreach { scanImpl =>
+      Seq(
+        CometConf.SCAN_NATIVE_COMET,
+        CometConf.SCAN_NATIVE_DATAFUSION,
+        CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach { scanImpl =>
         super.test(testName + s" ($scanImpl, $shuffleMode shuffle)", testTags: _*) {
           withSQLConf(
             CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl,

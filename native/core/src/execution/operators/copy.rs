@@ -91,6 +91,14 @@ impl CopyExec {
             mode,
         }
     }
+
+    pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
+        &self.input
+    }
+
+    pub fn mode(&self) -> &CopyMode {
+        &self.mode
+    }
 }
 
 impl DisplayAs for CopyExec {
@@ -237,7 +245,7 @@ impl RecordBatchStream for CopyStream {
 }
 
 /// Copy an Arrow Array
-fn copy_array(array: &dyn Array) -> ArrayRef {
+pub(crate) fn copy_array(array: &dyn Array) -> ArrayRef {
     let capacity = array.len();
     let data = array.to_data();
 
