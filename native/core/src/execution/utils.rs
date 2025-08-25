@@ -18,11 +18,21 @@
 /// Utils for array vector, etc.
 use crate::errors::ExpressionError;
 use crate::execution::operators::ExecutionError;
+use arrow::datatypes::{DataType, Field, SchemaRef};
 use arrow::{
     array::ArrayData,
     error::ArrowError,
     ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema},
 };
+use datafusion::execution::FunctionRegistry;
+use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::{PhysicalExpr, ScalarFunctionExpr};
+use datafusion::physical_plan::projection::ProjectionExec;
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion_comet_proto::spark_operator::HashAggregate;
+use datafusion_comet_spark_expr::create_comet_physical_fun;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 impl From<ArrowError> for ExecutionError {
     fn from(error: ArrowError) -> ExecutionError {
@@ -126,4 +136,134 @@ pub fn bytes_to_i128(slice: &[u8]) -> i128 {
     }
 
     i128::from_le_bytes(bytes)
+}
+
+type GroupingExprs = Vec<(Arc<dyn PhysicalExpr>, String)>;
+type GroupingExprResult = Result<GroupingExprs, ExecutionError>;
+
+/// Provides utilities to support grouping on Map type in HashAggregate.
+pub struct HashAggregateMapConverter {
+    // Maps index of a grouping expression to its original Map type. This is used to convert a
+    // grouping expression return type back to Map type after aggregation.
+    expr_index_to_map_type: HashMap<usize, DataType>,
+}
+
+impl HashAggregateMapConverter {
+    pub fn default() -> Self {
+        Self {
+            expr_index_to_map_type: HashMap::new(),
+        }
+    }
+
+    /// Iterates through grouping expressions, and wraps those with Map type with `map_to_list`
+    /// scalar function.
+    pub fn maybe_wrap_map_type_in_grouping_exprs(
+        &mut self,
+        fn_registry: &dyn FunctionRegistry,
+        grouping_exprs: GroupingExprs,
+        child_schema: SchemaRef,
+    ) -> GroupingExprResult {
+        grouping_exprs
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (physical_expr, expr_name))| {
+                let expr_data_type = physical_expr.data_type(&child_schema)?;
+
+                if let DataType::Map(field_ref, _) = &expr_data_type {
+                    let list_type = DataType::List(Arc::clone(field_ref));
+
+                    // Update the map with the grouping expression index and its original Map type.
+                    self.expr_index_to_map_type
+                        .insert(idx, expr_data_type.clone());
+
+                    // Create `map_to_list` expression to wrap the original grouping expression.
+                    let map_to_list_func = create_comet_physical_fun(
+                        "map_to_list",
+                        list_type.clone(),
+                        fn_registry,
+                        None,
+                    )?;
+                    let map_to_list_expr = ScalarFunctionExpr::new(
+                        "map_to_list",
+                        map_to_list_func,
+                        vec![physical_expr],
+                        Arc::new(Field::new("map_to_list", list_type, true)),
+                    );
+
+                    // Return the scalar function expression.
+                    Ok((
+                        Arc::new(map_to_list_expr) as Arc<dyn PhysicalExpr>,
+                        expr_name,
+                    ))
+                } else {
+                    Ok((physical_expr, expr_name))
+                }
+            })
+            .collect()
+    }
+
+    /// Iterates over the aggregate schema, find the grouping expressions with Map type, and
+    /// wraps them with `map_from_list` scalar function to convert them back to Map type. It returns
+    /// a new ProjectionExec stacked on top of the original aggregate execution plan. If there was
+    /// no grouping expression with Map type, it returns the original aggregate execution plan.
+    pub fn maybe_project_map_type_with_aggregation(
+        &self,
+        fn_registry: &dyn FunctionRegistry,
+        hash_agg: &HashAggregate,
+        aggregate: Arc<dyn ExecutionPlan>,
+    ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
+        // If there was no grouping expression with Map type, return the original aggregate plan.
+        if self.expr_index_to_map_type.is_empty() {
+            return Ok(aggregate);
+        }
+
+        // Insert the projection expressions in this.
+        let mut projection_exprs = Vec::new();
+
+        let num_grouping_cols = hash_agg.grouping_exprs.len();
+        let agg_schema = aggregate.schema();
+
+        // Iterate through the aggregate schema. The aggregate schema contains both grouping
+        // expressions and aggregate expressions. The grouping expressions are at the beginning of
+        // the schema.
+        for (field_idx, field) in agg_schema.fields().iter().enumerate() {
+            let opt_map_type = self.expr_index_to_map_type.get(&field_idx);
+
+            // If the current field is not a grouping expression or the grouping expression does not
+            // have Map type, then project the current field as it is.
+            if field_idx >= num_grouping_cols || opt_map_type.is_none() {
+                let col_expr =
+                    Arc::new(Column::new(field.name(), field_idx)) as Arc<dyn PhysicalExpr>;
+                projection_exprs.push((col_expr, field.name().to_string()));
+                continue;
+            }
+
+            let map_type = opt_map_type.unwrap();
+
+            // Create `map_from_list` expression to convert the List type back to Map type. This
+            // expression was previously wrapped with `map_to_list` during grouping.
+            let map_from_list_func =
+                create_comet_physical_fun("map_from_list", map_type.clone(), fn_registry, None)?;
+            let col_expr = Arc::new(Column::new(field.name(), field_idx));
+            let map_to_list_expr = Arc::new(ScalarFunctionExpr::new(
+                "map_from_list",
+                map_from_list_func,
+                vec![col_expr],
+                Arc::new(Field::new(
+                    field.name(),
+                    map_type.clone(),
+                    field.is_nullable(),
+                )),
+            )) as Arc<dyn PhysicalExpr>;
+
+            // Add the `map_from_list` expression to the projection expressions.
+            projection_exprs.push((map_to_list_expr, field.name().to_string()));
+        }
+
+        // Return a new ProjectionExec on top of the original aggregate plan.
+        Ok(Arc::new(ProjectionExec::try_new(
+            projection_exprs,
+            Arc::clone(&aggregate),
+        )?) as Arc<dyn ExecutionPlan>)
+    }
 }

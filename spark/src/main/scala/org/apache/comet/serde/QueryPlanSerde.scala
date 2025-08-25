@@ -48,7 +48,7 @@ import org.apache.spark.unsafe.types.UTF8String
 import com.google.protobuf.ByteString
 
 import org.apache.comet.{CometConf, ConfigEntry}
-import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{isCometScan, isSpark40Plus, withInfo}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.expressions._
 import org.apache.comet.objectstore.NativeConfig
@@ -138,6 +138,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[MapValues] -> CometMapValues,
     classOf[MapFromArrays] -> CometMapFromArrays,
     classOf[GetMapValue] -> CometMapExtract,
+    classOf[MapSort] -> CometMapSort,
     classOf[GreaterThan] -> CometGreaterThan,
     classOf[GreaterThanOrEqual] -> CometGreaterThanOrEqual,
     classOf[LessThan] -> CometLessThan,
@@ -1920,7 +1921,13 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
         if (groupingExpressions.exists(expr =>
             expr.dataType match {
-              case _: MapType => true
+              case _: MapType =>
+                if (isSpark40Plus &&
+                  CometConf.COMET_ENABLE_GROUPING_ON_MAP_TYPE.get(conf) &&
+                  CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_DATAFUSION)
+                  false
+                else
+                  true
               case _ => false
             })) {
           withInfo(op, "Grouping on map types is not supported")
