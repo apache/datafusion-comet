@@ -233,13 +233,19 @@ abstract class CometNativeExec extends CometExec {
 
         foreachUntilCometInput(this)(sparkPlans += _)
 
-        // Find the first non broadcast plan
-        val firstNonBroadcastPlan = sparkPlans.zipWithIndex.find {
+        val nonBroadcastPredicate: (SparkPlan, Int) => Boolean = {
           case (_: CometBroadcastExchangeExec, _) => false
           case (BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _), _) => false
           case (BroadcastQueryStageExec(_, _: ReusedExchangeExec, _), _) => false
           case _ => true
         }
+        // Find the first non broadcast plan which is not a reused exchange if possible
+        val firstNonBroadcastPlan = sparkPlans.zipWithIndex
+          .find {
+            case (ReusedExchangeExec(_, _: CometBroadcastExchangeExec), _) => false
+            case (p, idx) => nonBroadcastPredicate(p, idx)
+          }
+          .orElse(sparkPlans.zipWithIndex.find(_._1.isInstanceOf[ReusedExchangeExec]))
 
         val containsBroadcastInput = sparkPlans.exists {
           case _: CometBroadcastExchangeExec => true
@@ -303,7 +309,16 @@ abstract class CometNativeExec extends CometExec {
         }
 
         if (inputs.nonEmpty) {
-          ZippedPartitionsRDD(sparkContext, inputs.toSeq)(createCometExecIter)
+          val fixedInputs = inputs.map {
+            case cometBatchRDD: CometBatchRDD
+                if cometBatchRDD.getNumPartitions != firstNonBroadcastPlanNumPartitions =>
+              new CometBatchRDD(
+                sparkContext,
+                firstNonBroadcastPlanNumPartitions,
+                cometBatchRDD.value)
+            case other => other
+          }
+          ZippedPartitionsRDD(sparkContext, fixedInputs.toSeq)(createCometExecIter)
         } else {
           val partitionNum = firstNonBroadcastPlanNumPartitions
           CometExecRDD(sparkContext, partitionNum)(createCometExecIter)
