@@ -47,7 +47,7 @@ chrono-tz = { version = "0.10" }
 futures = "0.3.28"
 num = "0.4"
 rand = "0.9"
-regex = "1.9.6"
+regex = "1.11.2"
 thiserror = "2"
 object_store = { version = "0.12.3", features = ["gcp", "azure", "aws", "http"] }
 url = "2.2"
