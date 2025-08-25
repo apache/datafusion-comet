@@ -81,7 +81,7 @@ impl SparkArrowConvert for ArrayData {
         Ok(ffi_array)
     }
 
-    /// Move this ArrowData to pointers of Arrow C data interface.
+    /// Moves ArrowData to Spark JVM side. Transfers ownership of the Rust-allocated data to the FFI layer so that JVM can consume it.
     fn move_to_spark(&self, array: i64, schema: i64) -> Result<(), ExecutionError> {
         let array_ptr = array as *mut FFI_ArrowArray;
         let schema_ptr = schema as *mut FFI_ArrowSchema;
