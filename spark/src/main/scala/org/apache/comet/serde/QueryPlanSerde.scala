@@ -2369,9 +2369,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
 sealed trait SupportLevel
 
 /**
- * Comet either supports this feature with full compatibility with Spark, or
- * may have known differences in some specific edge cases that are unlikely
- * to be an issue for most users.
+ * Comet either supports this feature with full compatibility with Spark, or may have known
+ * differences in some specific edge cases that are unlikely to be an issue for most users.
  *
  * Any compatibility differences are noted in the
  * [[https://datafusion.apache.org/comet/user-guide/compatibility.html Comet Compatibility Guide]].
