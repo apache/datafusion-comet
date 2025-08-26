@@ -642,11 +642,12 @@ object QueryPlanSerde extends Logging with CometExprShim {
     SQLConf.get
 
     def convert[T <: Expression](expr: T, handler: CometExpressionSerde[T]): Option[Expr] = {
-      handler match {
-        case _: IncompatExpr if !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() =>
+      handler.getSupportLevel(expr) match {
+        case incompat: Incompatible if !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() =>
+          val optionalNotes = incompat.notes.map(str => s" ($str)").getOrElse("")
           withInfo(
             expr,
-            s"$expr is not fully compatible with Spark. To enable it anyway, set " +
+            s"$expr is not fully compatible with Spark$optionalNotes. To enable it anyway, set " +
               s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true. ${CometConf.COMPAT_GUIDE}.")
           None
         case _ =>
@@ -2436,6 +2437,16 @@ trait CometOperatorSerde[T <: SparkPlan] {
 trait CometExpressionSerde[T <: Expression] {
 
   /**
+   * Determine the support level of the expression based on its attributes.
+   *
+   * @param expr
+   *   The Spark expression.
+   * @return
+   *   Support level (Compatible, Incompatible, or Unsupported).
+   */
+  def getSupportLevel(expr: T): SupportLevel = Compatible(None)
+
+  /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into
    * native code.
    *
@@ -2484,9 +2495,6 @@ trait CometAggregateExpressionSerde {
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr]
 }
-
-/** Marker trait for an expression that is not guaranteed to be 100% compatible with Spark */
-trait IncompatExpr {}
 
 /** Serde for scalar function. */
 case class CometScalarFunction[T <: Expression](name: String) extends CometExpressionSerde[T] {

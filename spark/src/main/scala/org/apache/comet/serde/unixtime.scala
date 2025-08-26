@@ -27,7 +27,10 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithIn
 
 // TODO: DataFusion supports only -8334601211038 <= sec <= 8210266876799
 // https://github.com/apache/datafusion/issues/16594
-object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] with IncompatExpr {
+object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] {
+
+  override def getSupportLevel(expr: FromUnixTime): SupportLevel = Incompatible(None)
+
   override def convert(
       expr: FromUnixTime,
       inputs: Seq[Attribute],
