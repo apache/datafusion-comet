@@ -892,7 +892,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   private def columnarShuffleSupported(s: ShuffleExchangeExec): Boolean = {
 
     /**
-     * Determine which data types are supported as data columns in native shuffle.
+     * Determine which data types are supported as data columns in columnar shuffle.
      *
      * Comet columnar shuffle used native code to convert Spark unsafe rows to Arrow batches, see
      * shuffle/row.rs
@@ -905,7 +905,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case StructType(fields) =>
         fields.forall(f => supportedSerializableDataType(f.dataType)) &&
         // Java Arrow stream reader cannot work on duplicate field name
-        fields.map(f => f.name).distinct.length == fields.length
+        fields.map(f => f.name).distinct.length == fields.length &&
+        fields.nonEmpty
 
       case ArrayType(elementType, _) =>
         supportedSerializableDataType(elementType)
