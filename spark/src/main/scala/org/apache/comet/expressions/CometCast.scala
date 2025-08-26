@@ -19,12 +19,13 @@
 
 package org.apache.comet.expressions
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression}
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, NullType, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.{CometExpressionSerde, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
+import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
 import org.apache.comet.shims.CometExprShim
 
@@ -76,6 +77,34 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       }
     } else {
       None
+    }
+  }
+
+  /**
+   * Wrap an already serialized expression in a cast.
+   */
+  def castToProto(
+      expr: Expression,
+      timeZoneId: Option[String],
+      dt: DataType,
+      childExpr: Expr,
+      evalMode: CometEvalMode.Value): Option[Expr] = {
+    serializeDataType(dt) match {
+      case Some(dataType) =>
+        val castBuilder = ExprOuterClass.Cast.newBuilder()
+        castBuilder.setChild(childExpr)
+        castBuilder.setDatatype(dataType)
+        castBuilder.setEvalMode(evalModeToProto(evalMode))
+        castBuilder.setAllowIncompat(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get())
+        castBuilder.setTimezone(timeZoneId.getOrElse("UTC"))
+        Some(
+          ExprOuterClass.Expr
+            .newBuilder()
+            .setCast(castBuilder)
+            .build())
+      case _ =>
+        withInfo(expr, s"Unsupported datatype in castToProto: $dt")
+        None
     }
   }
 

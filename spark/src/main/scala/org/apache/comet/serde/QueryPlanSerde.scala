@@ -518,84 +518,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     }
   }
 
-  // TODO this needs to be removed
-
-  /**
-   * Wrap an expression in a cast.
-   */
-  def castToProto(
-      expr: Expression,
-      timeZoneId: Option[String],
-      dt: DataType,
-      childExpr: Expr,
-      evalMode: CometEvalMode.Value): Option[Expr] = {
-    serializeDataType(dt) match {
-      case Some(dataType) =>
-        val castBuilder = ExprOuterClass.Cast.newBuilder()
-        castBuilder.setChild(childExpr)
-        castBuilder.setDatatype(dataType)
-        castBuilder.setEvalMode(evalModeToProto(evalMode))
-        castBuilder.setAllowIncompat(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get())
-        castBuilder.setTimezone(timeZoneId.getOrElse("UTC"))
-        Some(
-          ExprOuterClass.Expr
-            .newBuilder()
-            .setCast(castBuilder)
-            .build())
-      case _ =>
-        withInfo(expr, s"Unsupported datatype in castToProto: $dt")
-        None
-    }
-  }
-
-  // TODO this needs to be removed
-  def handleCast(
-      expr: Expression,
-      child: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean,
-      dt: DataType,
-      timeZoneId: Option[String],
-      evalMode: CometEvalMode.Value): Option[Expr] = {
-
-    val childExpr = exprToProtoInternal(child, inputs, binding)
-    if (childExpr.isDefined) {
-      val castSupport =
-        CometCast.isSupported(child.dataType, dt, timeZoneId, evalMode)
-
-      def getIncompatMessage(reason: Option[String]): String =
-        "Comet does not guarantee correct results for cast " +
-          s"from ${child.dataType} to $dt " +
-          s"with timezone $timeZoneId and evalMode $evalMode" +
-          reason.map(str => s" ($str)").getOrElse("")
-
-      castSupport match {
-        case Compatible(_) =>
-          castToProto(expr, timeZoneId, dt, childExpr.get, evalMode)
-        case Incompatible(reason) =>
-          if (CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get()) {
-            logWarning(getIncompatMessage(reason))
-            castToProto(expr, timeZoneId, dt, childExpr.get, evalMode)
-          } else {
-            withInfo(
-              expr,
-              s"${getIncompatMessage(reason)}. To enable all incompatible casts, set " +
-                s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true")
-            None
-          }
-        case Unsupported =>
-          withInfo(
-            expr,
-            s"Unsupported cast from ${child.dataType} to $dt " +
-              s"with timezone $timeZoneId and evalMode $evalMode")
-          None
-      }
-    } else {
-      withInfo(expr, child)
-      None
-    }
-  }
-
   /**
    * Convert a Spark expression to a protocol-buffer representation of a native Comet/DataFusion
    * expression.
@@ -689,16 +611,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val value = cast.eval()
         exprToProtoInternal(Literal(value, dataType), inputs, binding)
 
+      // TODO move this to shim layer
       case UnaryExpression(child) if expr.prettyName == "trycast" =>
         val timeZoneId = SQLConf.get.sessionLocalTimeZone
-        handleCast(
-          expr,
-          child,
-          inputs,
-          binding,
-          expr.dataType,
-          Some(timeZoneId),
-          CometEvalMode.TRY)
+        val cast = Cast(child, expr.dataType, Some(timeZoneId), EvalMode.TRY)
+        convert(cast, CometCast)
 
       case EqualTo(left, right) =>
         createBinaryExpr(
@@ -884,33 +801,37 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val child = expr.asInstanceOf[UnaryExpression].child
         val timezoneId = expr.asInstanceOf[TimeZoneAwareExpression].timeZoneId
 
-        handleCast(
-          expr,
-          child,
-          inputs,
-          binding,
+        // TODO this is duplicating logic in the `convert` method
+        val castSupported = CometCast.isSupported(
+          child.dataType,
           DataTypes.StringType,
           timezoneId,
-          CometEvalMode.TRY) match {
-          case Some(_) =>
-            exprToProtoInternal(child, inputs, binding) match {
-              case Some(p) =>
-                val toPrettyString = ExprOuterClass.ToPrettyString
+          CometEvalMode.TRY)
+        val x = castSupported match {
+          case Compatible(_) => true
+          case Incompatible(notes) => true
+          case _ => false
+        }
+
+        if (x) {
+          exprToProtoInternal(child, inputs, binding) match {
+            case Some(p) =>
+              val toPrettyString = ExprOuterClass.ToPrettyString
+                .newBuilder()
+                .setChild(p)
+                .setTimezone(timezoneId.getOrElse("UTC"))
+                .build()
+              Some(
+                ExprOuterClass.Expr
                   .newBuilder()
-                  .setChild(p)
-                  .setTimezone(timezoneId.getOrElse("UTC"))
-                  .build()
-                Some(
-                  ExprOuterClass.Expr
-                    .newBuilder()
-                    .setToPrettyString(toPrettyString)
-                    .build())
-              case _ =>
-                withInfo(expr, child)
-                None
-            }
-          case None =>
-            None
+                  .setToPrettyString(toPrettyString)
+                  .build())
+            case _ =>
+              withInfo(expr, child)
+              None
+          }
+        } else {
+          None
         }
 
       case StructsToJson(options, child, timezoneId) =>
