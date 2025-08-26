@@ -58,23 +58,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(cast.child, inputs, binding)
     if (childExpr.isDefined) {
-      serializeDataType(cast.dataType) match {
-        case Some(dataType) =>
-          val castBuilder = ExprOuterClass.Cast.newBuilder()
-          castBuilder.setChild(childExpr.get)
-          castBuilder.setDatatype(dataType)
-          castBuilder.setEvalMode(evalModeToProto(evalMode(cast)))
-          castBuilder.setAllowIncompat(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get())
-          castBuilder.setTimezone(cast.timeZoneId.getOrElse("UTC"))
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setCast(castBuilder)
-              .build())
-        case _ =>
-          withInfo(cast, s"Unsupported datatype: ${cast.dataType}")
-          None
-      }
+      castToProto(cast, cast.timeZoneId, cast.dataType, childExpr.get, evalMode(cast))
     } else {
       None
     }

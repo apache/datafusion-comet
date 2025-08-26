@@ -611,7 +611,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val value = cast.eval()
         exprToProtoInternal(Literal(value, dataType), inputs, binding)
 
-      // TODO move this to shim layer
       case UnaryExpression(child) if expr.prettyName == "trycast" =>
         val timeZoneId = SQLConf.get.sessionLocalTimeZone
         val cast = Cast(child, expr.dataType, Some(timeZoneId), EvalMode.TRY)
