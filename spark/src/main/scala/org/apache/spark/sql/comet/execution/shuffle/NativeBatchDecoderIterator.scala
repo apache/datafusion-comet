@@ -182,6 +182,7 @@ case class NativeBatchDecoderIterator(
           currentBatch = null
         }
         in.close()
+        NativeBatchDecoderIterator.resetDataBuf()
         isClosed = true
       }
     }
@@ -192,4 +193,8 @@ object NativeBatchDecoderIterator {
   private val threadLocalDataBuf: ThreadLocal[ByteBuffer] = ThreadLocal.withInitial(() => {
     ByteBuffer.allocateDirect(128 * 1024)
   })
+
+  private def resetDataBuf(): Unit = {
+    threadLocalDataBuf.set(ByteBuffer.allocateDirect(128 * 1024))
+  }
 }
