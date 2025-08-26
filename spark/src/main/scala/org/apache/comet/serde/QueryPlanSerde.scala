@@ -646,16 +646,24 @@ object QueryPlanSerde extends Logging with CometExprShim {
         case Unsupported =>
           withInfo(expr, s"$expr is not supported.")
           None
-        case incompat: Incompatible if !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() =>
-          val optionalNotes = incompat.notes.map(str => s" ($str)").getOrElse("")
-          withInfo(
-            expr,
-            s"$expr is not fully compatible with Spark$optionalNotes. To enable it anyway, set " +
-              s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true. ${CometConf.COMPAT_GUIDE}.")
-          None
-        case compat: Compatible =>
-          if (compat.notes.isDefined) {
-            logWarning(s"Comet supports $expr but has notes: ${compat.notes.get}")
+        case Incompatible(notes) =>
+          if (CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get()) {
+            if (notes.isDefined) {
+              logWarning(
+                s"Comet supports $expr when ${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true but has notes: ${notes.get}")
+            }
+            handler.convert(expr, inputs, binding)
+          } else {
+            val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
+            withInfo(
+              expr,
+              s"$expr is not fully compatible with Spark$optionalNotes. To enable it anyway, set " +
+                s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true. ${CometConf.COMPAT_GUIDE}.")
+            None
+          }
+        case Compatible(notes) =>
+          if (notes.isDefined) {
+            logWarning(s"Comet supports $expr but has notes: ${notes.get}")
           }
           handler.convert(expr, inputs, binding)
       }
