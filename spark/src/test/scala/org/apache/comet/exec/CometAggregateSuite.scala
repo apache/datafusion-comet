@@ -1529,8 +1529,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       // Group on second map column with different aggregates.
       checkSparkAnswerAndOperator(s"select _2, count(*) AS cnt from $tableName group by _2")
       checkSparkAnswerAndOperator(s"select _2, sum(_1) AS total from $tableName group by _2")
-
-      // Group on second map column with different aggregates.
       checkSparkAnswerAndOperator(
         s"select _2, count(*) AS cnt, sum(_1) AS sum_val from $tableName group by _2")
 

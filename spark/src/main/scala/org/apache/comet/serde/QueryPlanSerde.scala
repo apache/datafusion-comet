@@ -73,7 +73,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
   /**
    * Mapping of Spark expression class to Comet expression handler.
    */
-  private val exprSerdeMap: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+  private val exprSerdeMap: Map[Class[_ <: Expression], CometExpressionSerde[_]] = (Map(
     classOf[Add] -> CometAdd,
     classOf[Subtract] -> CometSubtract,
     classOf[Multiply] -> CometMultiply,
@@ -138,7 +138,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[MapValues] -> CometMapValues,
     classOf[MapFromArrays] -> CometMapFromArrays,
     classOf[GetMapValue] -> CometMapExtract,
-    classOf[MapSort] -> CometMapSort,
     classOf[GreaterThan] -> CometGreaterThan,
     classOf[GreaterThanOrEqual] -> CometGreaterThanOrEqual,
     classOf[LessThan] -> CometLessThan,
@@ -169,7 +168,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[DateAdd] -> CometDateAdd,
     classOf[DateSub] -> CometDateSub,
     classOf[TruncDate] -> CometTruncDate,
-    classOf[TruncTimestamp] -> CometTruncTimestamp)
+    classOf[TruncTimestamp] -> CometTruncTimestamp) ++ versionSpecificExprSerdeMap).toMap
 
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.

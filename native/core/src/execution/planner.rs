@@ -2824,7 +2824,9 @@ fn create_case_expr(
 
 #[cfg(test)]
 mod tests {
-    use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
+    use futures::{poll, StreamExt};
+    use std::{sync::Arc, task::Poll};
+
     use arrow::array::{Array, DictionaryArray, Int32Array, RecordBatch, StringArray};
     use arrow::datatypes::{DataType, Field, Fields, Schema};
     use datafusion::catalog::memory::DataSourceExec;
@@ -2837,10 +2839,10 @@ mod tests {
     use datafusion::logical_expr::ScalarUDF;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
-    use futures::{poll, StreamExt};
-    use std::{sync::Arc, task::Poll};
     use tempfile::TempDir;
     use tokio::sync::mpsc;
+
+    use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
 
     use crate::execution::operators::ExecutionError;
     use crate::parquet::parquet_support::SparkParquetOptions;

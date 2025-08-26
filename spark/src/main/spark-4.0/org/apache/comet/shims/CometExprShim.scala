@@ -19,8 +19,9 @@
 package org.apache.comet.shims
 
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.CommonStringExprs
+import org.apache.comet.serde.{CometExpressionSerde, CommonStringExprs, ExprOuterClass}
 import org.apache.comet.serde.ExprOuterClass.Expr
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProtoWithReturnType}
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
@@ -30,6 +31,10 @@ import org.apache.spark.sql.types.{BinaryType, BooleanType, StringType}
  * `CometExprShim` acts as a shim for for parsing expressions from different Spark versions.
  */
 trait CometExprShim extends CommonStringExprs {
+    // Version specific expression serde map.
+    protected val versionSpecificExprSerdeMap: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+      Map(classOf[MapSort] -> CometMapSort)
+
     /**
      * Returns a tuple of expressions for the `unhex` function.
      */
@@ -71,3 +76,17 @@ object CometEvalModeUtil {
     }
 }
 
+object CometMapSort extends CometExpressionSerde[MapSort] {
+
+  override def convert(
+                        mapSortExpr: MapSort,
+                        inputs: Seq[Attribute],
+                        binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(mapSortExpr.child, inputs, binding)
+    val returnType = mapSortExpr.child.dataType
+
+    val mapSortScalarExpr =
+      scalarFunctionExprToProtoWithReturnType("map_sort", returnType, childExpr)
+    optExprWithInfo(mapSortScalarExpr, mapSortExpr, mapSortExpr.children: _*)
+  }
+}
