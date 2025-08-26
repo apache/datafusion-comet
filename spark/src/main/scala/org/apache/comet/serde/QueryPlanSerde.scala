@@ -536,7 +536,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         castBuilder.setDatatype(dataType)
         castBuilder.setEvalMode(evalModeToProto(evalMode))
         castBuilder.setAllowIncompat(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get())
-        castBuilder.setAllowIncompat(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get())
         castBuilder.setTimezone(timeZoneId.getOrElse("UTC"))
         Some(
           ExprOuterClass.Expr
