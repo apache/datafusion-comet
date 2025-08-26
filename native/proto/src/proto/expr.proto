@@ -23,6 +23,7 @@ package spark.spark_expression;
 
 import "datatype.proto";
 import "literal.proto";
+import "types.proto";
 
 option java_package = "org.apache.comet.serde";
 
@@ -48,7 +49,6 @@ message Expr {
     BinaryExpr or = 18;
     SortOrder sort_order = 19;
     Substring substring = 20;
-    UnaryExpr string_space = 21;
     Hour hour = 22;
     Minute minute = 23;
     Second second = 24;
@@ -85,6 +85,8 @@ message Expr {
     ToPrettyString to_pretty_string = 60;
     Rand rand = 61;
     Rand randn = 62;
+    EmptyExpr spark_partition_id = 63;
+    EmptyExpr monotonically_increasing_id = 64;
   }
 }
 
@@ -114,13 +116,13 @@ enum StatisticsType {
 }
 
 message Count {
-   repeated Expr children = 1;
+  repeated Expr children = 1;
 }
 
 message Sum {
-   Expr child = 1;
-   DataType datatype = 2;
-   bool fail_on_error = 3;
+  Expr child = 1;
+  DataType datatype = 2;
+  bool fail_on_error = 3;
 }
 
 message Min {
@@ -231,6 +233,9 @@ message BinaryExpr {
 
 message UnaryExpr {
   Expr child = 1;
+}
+
+message EmptyExpr {
 }
 
 // Bound to a particular vector array in input batch.
@@ -402,5 +407,3 @@ message ArrayJoin {
 message Rand {
   int64 seed = 1;
 }
-
-

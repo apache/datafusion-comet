@@ -330,9 +330,9 @@
  - [x] sqrt
  - [x] tan
  - [ ] tanh
- - [ ] try_add
+ - [x] try_add
  - [x] try_divide
- - [ ] try_multiply
+ - [x] try_multiply
  - [x] try_subtract
  - [x] unhex
  - [ ] width_bucket
@@ -349,11 +349,11 @@
  - [ ] input_file_block_length
  - [ ] input_file_block_start
  - [ ] input_file_name
- - [ ] monotonically_increasing_id
+ - [x] monotonically_increasing_id
  - [ ] raise_error
  - [x] rand
  - [x] randn
- - [ ] spark_partition_id
+ - [x] spark_partition_id
  - [ ] typeof
  - [x] user
  - [ ] uuid

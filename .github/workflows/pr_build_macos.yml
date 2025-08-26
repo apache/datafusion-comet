@@ -115,7 +115,7 @@ jobs:
     name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-macos-builder
         with:

@@ -20,7 +20,7 @@
 # Comparison of Comet and Gluten
 
 This document provides a comparison of the Comet and Gluten projects to help guide users who are looking to choose
-between them. This document is likely biased because it is maintained by the Comet community.
+between them. This document is likely biased because the Comet community maintains it.
 
 We recommend trying out both Comet and Gluten to see which is the best fit for your needs.
 
@@ -29,7 +29,7 @@ This document is based on Comet 0.9.0 and Gluten 1.4.0.
 ## Architecture
 
 Comet and Gluten have very similar architectures. Both are Spark plugins that translate Spark physical plans to
-a serialized representation and pass them to native code for execution.
+a serialized representation and pass the serialized plan to native code for execution.
 
 Gluten serializes the plans using the Substrait format and has an extensible architecture that supports execution
 against multiple engines. Velox and Clickhouse are currently supported, but Velox is more widely used.
@@ -41,15 +41,20 @@ does not plan to support multiple engines, but rather focus on a tight integrati
 
 One of the main differences between Comet and Gluten is the choice of native execution engine.
 
-Gluten uses Velox, which is a vectorized query engine implemented in C++ and is maintained by Meta.
+Gluten uses Velox, which is an open-source C++ vectorized query engine created by Meta.
 
-Comet uses DataFusion, which is a vectorized query engine implemented in Rust and is maintained by the
+Comet uses Apache DataFusion, which is an open-source vectorized query engine implemented in Rust and is governed by the
 Apache Software Foundation.
 
 Velox and DataFusion are both mature query engines that are growing in popularity.
 
-Comet may be a better choice for users with plans for integrating with other Rust software in the future, and
-Gluten+Velox may be a better choice for users with plans for integrating with other C++ code.
+From the point of view of the usage of these query engines in Gluten and Comet, the most significant difference is 
+the choice of implementation language (Rust vs C++) and this may be the main factor that users should consider when 
+choosing a solution. For users wishing to implement UDFs in Rust, Comet would likely be a better choice. For users 
+wishing to implement UDFs in C++, Gluten would likely be a better choice.
+
+If users are just interested in speeding up their existing Spark jobs and do not need to implement UDFs in native 
+code, then we suggest benchmarking with both solutions and choosing the fastest one for your use case.
 
 ![github-stars-datafusion-velox.png](../_static/images/github-stars-datafusion-velox.png)
 
@@ -69,46 +74,24 @@ suite. See the [Gluten Compatibility Guide] for more information.
 ## Performance
 
 When running a benchmark derived from TPC-H on a single node against local Parquet files, we see that both Comet
-and Gluten provide a good speedup when compared to Spark. Comet provides a 2.4x speedup compares to a 2.8x speedup 
+and Gluten provide an impressive speedup when compared to Spark. Comet provides a 2.4x speedup compares to a 2.8x speedup 
 with Gluten.
 
-Gluten is currently slightly faster than Comet, but we expect to close that gap over time.
+Gluten is currently faster than Comet for this particular benchmark, but we expect to close that gap over time.
+
+Although TPC-H is a good benchmark for operators such as joins and aggregates, it doesn't necessarily represent 
+real-world queries, especially for ETL use cases. For example, there are no complex types involved and no string 
+manipulation, regular expressions, or other advanced expressions. We recommend running your own benchmarks based
+on your existing Spark jobs. 
 
 ![tpch_allqueries_comet_gluten.png](../_static/images//benchmark-results/0.9.0/tpch_spark_comet_gluten.png)
 
 The scripts that were used to generate these results can be found [here](https://github.com/apache/datafusion-comet/tree/main/dev/benchmarks).
 
-## Ease of Development
-
-Comet has a much smaller codebase than Gluten. A fresh clone of the respective repositories shows that Comet has ~41k
-lines of Scala+Java code and ~40k lines of Rust code. Gluten has ~207k lines of Scala+Java code and ~89k lines of C++
-code.
+## Ease of Development & Contributing
 
 Setting up a local development environment with Comet is generally easier than with Gluten due to Rust's package
 management capabilities vs the complexities around installing C++ dependencies.
-
-### Comet Lines of Code
-
-```
--------------------------------------------------------------------------------
-Language                     files          blank        comment           code
--------------------------------------------------------------------------------
-Rust                           159           4870           5388          39989
-Scala                          171           4849           6277          32538
-Java                            66           1556           2619           8724
-```
-
-### Gluten Lines of Code
-
-```
---------------------------------------------------------------------------------
-Language                      files          blank        comment           code
---------------------------------------------------------------------------------
-Scala                          1312          23264          37534         179664
-C++                             421           9841          10245          64554
-Java                            328           5063           6726          26520
-C/C++ Header                    304           4875           6255          23527
-```
 
 ## Summary
 

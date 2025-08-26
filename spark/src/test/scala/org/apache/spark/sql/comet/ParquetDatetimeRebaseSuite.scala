@@ -40,6 +40,7 @@ abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
   test("reading ancient dates before 1582") {
     Seq(true, false).foreach { exceptionOnRebase =>
       withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
         CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.key ->
           exceptionOnRebase.toString) {
         Seq("2_4_5", "2_4_6", "3_2_0").foreach { sparkVersion =>
@@ -65,6 +66,7 @@ abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
     assume(!usingDataSourceExec(conf))
     Seq(true, false).foreach { exceptionOnRebase =>
       withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
         CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.key ->
           exceptionOnRebase.toString) {
         Seq("2_4_5", "2_4_6", "3_2_0").foreach { sparkVersion =>
@@ -91,6 +93,7 @@ abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
     assume(!usingDataSourceExec(conf))
     Seq(true, false).foreach { exceptionOnRebase =>
       withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
         CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.key ->
           exceptionOnRebase.toString) {
         Seq("2_4_5", "2_4_6", "3_2_0").foreach { sparkVersion =>

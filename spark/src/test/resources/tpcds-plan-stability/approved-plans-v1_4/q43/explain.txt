@@ -10,17 +10,17 @@
                   :  +- CometBroadcastHashJoin (7)
                   :     :- CometProject (3)
                   :     :  +- CometFilter (2)
-                  :     :     +- CometScan parquet spark_catalog.default.date_dim (1)
+                  :     :     +- CometScan [native_comet] parquet spark_catalog.default.date_dim (1)
                   :     +- CometBroadcastExchange (6)
                   :        +- CometFilter (5)
-                  :           +- CometScan parquet spark_catalog.default.store_sales (4)
+                  :           +- CometScan [native_comet] parquet spark_catalog.default.store_sales (4)
                   +- CometBroadcastExchange (12)
                      +- CometProject (11)
                         +- CometFilter (10)
-                           +- CometScan parquet spark_catalog.default.store (9)
+                           +- CometScan [native_comet] parquet spark_catalog.default.store (9)
 
 
-(1) CometScan parquet spark_catalog.default.date_dim
+(1) CometScan [native_comet] parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#1, d_year#2, d_day_name#3]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -35,7 +35,7 @@ Condition : ((isnotnull(d_year#2) AND (d_year#2 = 2000)) AND isnotnull(d_date_sk
 Input [3]: [d_date_sk#1, d_year#2, d_day_name#3]
 Arguments: [d_date_sk#1, d_day_name#4], [d_date_sk#1, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, d_day_name#3, 9, true, false, true) AS d_day_name#4]
 
-(4) CometScan parquet spark_catalog.default.store_sales
+(4) CometScan [native_comet] parquet spark_catalog.default.store_sales
 Output [3]: [ss_store_sk#5, ss_sales_price#6, ss_sold_date_sk#7]
 Batched: true
 Location: InMemoryFileIndex []
@@ -60,7 +60,7 @@ Arguments: [d_date_sk#1], [ss_sold_date_sk#7], Inner, BuildRight
 Input [5]: [d_date_sk#1, d_day_name#4, ss_store_sk#5, ss_sales_price#6, ss_sold_date_sk#7]
 Arguments: [d_day_name#4, ss_store_sk#5, ss_sales_price#6], [d_day_name#4, ss_store_sk#5, ss_sales_price#6]
 
-(9) CometScan parquet spark_catalog.default.store
+(9) CometScan [native_comet] parquet spark_catalog.default.store
 Output [4]: [s_store_sk#8, s_store_id#9, s_store_name#10, s_gmt_offset#11]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store]
@@ -104,7 +104,7 @@ Functions [7]: [sum(UnscaledValue(CASE WHEN (d_day_name#4 = Sunday   ) THEN ss_s
 
 (18) CometTakeOrderedAndProject
 Input [9]: [s_store_name#10, s_store_id#12, sun_sales#20, mon_sales#21, tue_sales#22, wed_sales#23, thu_sales#24, fri_sales#25, sat_sales#26]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[s_store_name#10 ASC NULLS FIRST,s_store_id#12 ASC NULLS FIRST,sun_sales#20 ASC NULLS FIRST,mon_sales#21 ASC NULLS FIRST,tue_sales#22 ASC NULLS FIRST,wed_sales#23 ASC NULLS FIRST,thu_sales#24 ASC NULLS FIRST,fri_sales#25 ASC NULLS FIRST,sat_sales#26 ASC NULLS FIRST], output=[s_store_name#10,s_store_id#12,sun_sales#20,mon_sales#21,tue_sales#22,wed_sales#23,thu_sales#24,fri_sales#25,sat_sales#26]), [s_store_name#10, s_store_id#12, sun_sales#20, mon_sales#21, tue_sales#22, wed_sales#23, thu_sales#24, fri_sales#25, sat_sales#26], 100, [s_store_name#10 ASC NULLS FIRST, s_store_id#12 ASC NULLS FIRST, sun_sales#20 ASC NULLS FIRST, mon_sales#21 ASC NULLS FIRST, tue_sales#22 ASC NULLS FIRST, wed_sales#23 ASC NULLS FIRST, thu_sales#24 ASC NULLS FIRST, fri_sales#25 ASC NULLS FIRST, sat_sales#26 ASC NULLS FIRST], [s_store_name#10, s_store_id#12, sun_sales#20, mon_sales#21, tue_sales#22, wed_sales#23, thu_sales#24, fri_sales#25, sat_sales#26]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[s_store_name#10 ASC NULLS FIRST,s_store_id#12 ASC NULLS FIRST,sun_sales#20 ASC NULLS FIRST,mon_sales#21 ASC NULLS FIRST,tue_sales#22 ASC NULLS FIRST,wed_sales#23 ASC NULLS FIRST,thu_sales#24 ASC NULLS FIRST,fri_sales#25 ASC NULLS FIRST,sat_sales#26 ASC NULLS FIRST], output=[s_store_name#10,s_store_id#12,sun_sales#20,mon_sales#21,tue_sales#22,wed_sales#23,thu_sales#24,fri_sales#25,sat_sales#26]), [s_store_name#10, s_store_id#12, sun_sales#20, mon_sales#21, tue_sales#22, wed_sales#23, thu_sales#24, fri_sales#25, sat_sales#26], 100, 0, [s_store_name#10 ASC NULLS FIRST, s_store_id#12 ASC NULLS FIRST, sun_sales#20 ASC NULLS FIRST, mon_sales#21 ASC NULLS FIRST, tue_sales#22 ASC NULLS FIRST, wed_sales#23 ASC NULLS FIRST, thu_sales#24 ASC NULLS FIRST, fri_sales#25 ASC NULLS FIRST, sat_sales#26 ASC NULLS FIRST], [s_store_name#10, s_store_id#12, sun_sales#20, mon_sales#21, tue_sales#22, wed_sales#23, thu_sales#24, fri_sales#25, sat_sales#26]
 
 (19) CometColumnarToRow [codegen id : 1]
 Input [9]: [s_store_name#10, s_store_id#12, sun_sales#20, mon_sales#21, tue_sales#22, wed_sales#23, thu_sales#24, fri_sales#25, sat_sales#26]

@@ -113,6 +113,18 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("Integral Division Overflow Handling Matches Spark Behavior") {
+    withTable("t1") {
+      withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+        val value = Long.MinValue
+        sql("create table t1(c1 long, c2 short) using parquet")
+        sql(s"insert into t1 values($value, -1)")
+        val res = sql("select c1 div c2 from t1 order by c1")
+        checkSparkAnswerAndOperator(res)
+      }
+    }
+  }
+
   test("basic data type support") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
@@ -303,11 +315,82 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("try_add") {
-    // TODO: we need to implement more comprehensive tests for all try_ arithmetic functions
-    // https://github.com/apache/datafusion-comet/issues/2021
-    val data = Seq((Integer.MAX_VALUE, 1))
+    val data = Seq((1, 1))
     withParquetTable(data, "tbl") {
-      checkSparkAnswer("SELECT try_add(_1, _2) FROM tbl")
+      checkSparkAnswerAndOperator(spark.sql("""
+          |SELECT
+          |  try_add(2147483647, 1),
+          |  try_add(-2147483648, -1),
+          |  try_add(NULL, 5),
+          |  try_add(5, NULL),
+          |  try_add(9223372036854775807, 1),
+          |  try_add(-9223372036854775808, -1)
+          |  from tbl
+          |  """.stripMargin))
+    }
+  }
+
+  test("try_subtract") {
+    val data = Seq((1, 1))
+    withParquetTable(data, "tbl") {
+      checkSparkAnswerAndOperator(spark.sql("""
+          |SELECT
+          |  try_subtract(2147483647, -1),
+          |  try_subtract(-2147483648, 1),
+          |  try_subtract(NULL, 5),
+          |  try_subtract(5, NULL),
+          |  try_subtract(9223372036854775807, -1),
+          |  try_subtract(-9223372036854775808, 1)
+          |  FROM tbl
+           """.stripMargin))
+    }
+  }
+
+  test("try_multiply") {
+    val data = Seq((1, 1))
+    withParquetTable(data, "tbl") {
+      checkSparkAnswerAndOperator(spark.sql("""
+          |SELECT
+          |  try_multiply(1073741824, 4),
+          |  try_multiply(-1073741824, 4),
+          |  try_multiply(NULL, 5),
+          |  try_multiply(5, NULL),
+          |  try_multiply(3037000499, 3037000500),
+          |  try_multiply(-3037000499, 3037000500)
+          |FROM tbl
+           """.stripMargin))
+    }
+  }
+
+  test("try_divide") {
+    val data = Seq((15121991, 0))
+    withParquetTable(data, "tbl") {
+      checkSparkAnswerAndOperator("SELECT try_divide(_1, _2) FROM tbl")
+      checkSparkAnswerAndOperator("""
+            |SELECT
+            |  try_divide(10, 0),
+            |  try_divide(NULL, 5),
+            |  try_divide(5, NULL),
+            |  try_divide(-2147483648, -1),
+            |  try_divide(-9223372036854775808, -1),
+            |  try_divide(DECIMAL('9999999999999999999999999999'), 0.1)
+            |  from tbl
+            |""".stripMargin)
+    }
+  }
+
+  test("try_integral_divide overflow cases") {
+    val data = Seq((15121991, 0))
+    withParquetTable(data, "tbl") {
+      checkSparkAnswerAndOperator("SELECT try_divide(_1, _2) FROM tbl")
+      checkSparkAnswerAndOperator("""
+                                    |SELECT try_divide(-128, -1),
+                                    |try_divide(-32768, -1),
+                                    |try_divide(-2147483648, -1),
+                                    |try_divide(-9223372036854775808, -1),
+                                    |try_divide(CAST(99999 AS DECIMAL(5,0)), CAST(0.0001 AS DECIMAL(5,4)))
+                                    |from tbl
+                                    |""".stripMargin)
     }
   }
 
@@ -366,22 +449,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       .map(i => (i.toString, (i + 100).toString))
     withParquetTable(data, "tbl") {
       checkSparkAnswerAndOperator("SELECT _1, substring(_2, 2, 2) FROM tbl")
-    }
-  }
-
-  test("string_space") {
-    withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
-      checkSparkAnswerAndOperator("SELECT space(_1), space(_2) FROM tbl")
-    }
-  }
-
-  test("string_space with dictionary") {
-    val data = (0 until 1000).map(i => Tuple1(i % 5))
-
-    withSQLConf("parquet.enable.dictionary" -> "true") {
-      withParquetTable(data, "tbl") {
-        checkSparkAnswerAndOperator("SELECT space(_1) FROM tbl")
-      }
     }
   }
 
@@ -1810,11 +1877,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             Set(
               "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
               "make_interval is not supported")),
-          (
-            s"select * from $table LIMIT 10 OFFSET 3",
-            Set(
-              "Comet shuffle is not enabled",
-              "CollectLimit with non-zero offset is not supported")))
+          (s"select * from $table LIMIT 10 OFFSET 3", Set("Comet shuffle is not enabled")))
           .foreach(test => {
             val qry = test._1
             val expected = test._2
@@ -1869,7 +1932,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               |md5(col), md5(cast(a as string)), md5(cast(b as string)),
               |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
               |xxhash64(col), xxhash64(col, 1), xxhash64(col, 0), xxhash64(col, a, b), xxhash64(b, a, col),
-              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128)
+              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128), sha2(col, -1)
               |from test
               |""".stripMargin)
         }
@@ -1981,7 +2044,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               |md5(col), md5(cast(a as string)), --md5(cast(b as string)),
               |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
               |xxhash64(col), xxhash64(col, 1), xxhash64(col, 0), xxhash64(col, a, b), xxhash64(b, a, col),
-              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128)
+              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128), sha2(col, -1)
               |from test
               |""".stripMargin)
         }
@@ -2686,7 +2749,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("test integral divide") {
     // this test requires native_comet scan due to unsigned u8/u16 issue
-    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path1 = new Path(dir.toURI.toString, "test1.parquet")
@@ -2787,6 +2852,26 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       checkSparkAnswerAndOperatorWithTol(dfWithOverflowSeed)
       val dfWithNullSeed = df.selectExpr("_1", "randn(null) as randn")
       checkSparkAnswerAndOperatorWithTol(dfWithNullSeed)
+    }
+  }
+
+  test("spark_partition_id expression on random dataset") {
+    testOnShuffledRangeWithRandomParameters { df =>
+      val dfWithRandParameters =
+        df.withColumn("pid1", spark_partition_id())
+          .repartition(3)
+          .withColumn("pid2", spark_partition_id())
+      checkSparkAnswerAndOperator(dfWithRandParameters)
+    }
+  }
+
+  test("monotonically_increasing_id expression on random dataset") {
+    testOnShuffledRangeWithRandomParameters { df =>
+      val dfWithRandParameters =
+        df.withColumn("mid1", monotonically_increasing_id())
+          .repartition(3)
+          .withColumn("mid2", monotonically_increasing_id())
+      checkSparkAnswerAndOperator(dfWithRandParameters)
     }
   }
 

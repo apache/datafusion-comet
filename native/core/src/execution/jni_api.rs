@@ -18,15 +18,35 @@
 //! Define JNI APIs which can be called from Java/Scala.
 
 use super::{serde, utils::SparkArrowConvert};
-use arrow::array::RecordBatch;
+use crate::{
+    errors::{try_unwrap_or_throw, CometError, CometResult},
+    execution::{
+        metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
+        shuffle::row::process_sorted_row_partition, sort::RdxSort,
+    },
+    jvm_bridge::{jni_new_global_ref, JVMClasses},
+};
+use arrow::array::{Array, RecordBatch, UInt32Array};
+use arrow::compute::{take, TakeOptions};
 use arrow::datatypes::DataType as ArrowDataType;
+use datafusion::common::ScalarValue;
+use datafusion::execution::disk_manager::DiskManagerMode;
 use datafusion::execution::memory_pool::MemoryPool;
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use datafusion::logical_expr::ScalarUDF;
 use datafusion::{
     execution::{disk_manager::DiskManagerBuilder, runtime_env::RuntimeEnv},
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
+use datafusion_comet_proto::spark_operator::Operator;
+use datafusion_spark::function::hash::sha2::SparkSha2;
+use datafusion_spark::function::math::expm1::SparkExpm1;
+use datafusion_spark::function::string::char::SparkChar;
 use futures::poll;
+use futures::stream::StreamExt;
+use jni::objects::JByteBuffer;
+use jni::sys::JNI_FALSE;
 use jni::{
     errors::Result as JNIResult,
     objects::{
@@ -36,31 +56,14 @@ use jni::{
     sys::{jbyteArray, jint, jlong, jlongArray},
     JNIEnv,
 };
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
-use std::{sync::Arc, task::Poll};
-
-use crate::{
-    errors::{try_unwrap_or_throw, CometError, CometResult},
-    execution::{
-        metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
-        shuffle::row::process_sorted_row_partition, sort::RdxSort,
-    },
-    jvm_bridge::{jni_new_global_ref, JVMClasses},
-};
-use datafusion::common::ScalarValue;
-use datafusion::execution::disk_manager::DiskManagerMode;
-use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-use datafusion::logical_expr::ScalarUDF;
-use datafusion_comet_proto::spark_operator::Operator;
-use datafusion_spark::function::math::expm1::SparkExpm1;
-use futures::stream::StreamExt;
-use jni::objects::JByteBuffer;
-use jni::sys::JNI_FALSE;
 use jni::{
     objects::GlobalRef,
     sys::{jboolean, jdouble, jintArray, jobjectArray, jstring},
 };
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+use std::{sync::Arc, task::Poll};
 use tokio::runtime::Runtime;
 
 use crate::execution::memory_pools::{
@@ -149,6 +152,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     id: jlong,
     iterators: jobjectArray,
     serialized_query: jbyteArray,
+    serialized_spark_configs: jbyteArray,
     partition_count: jint,
     metrics_node: JObject,
     metrics_update_interval: jlong,
@@ -171,11 +175,19 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
             let start = Instant::now();
 
+            // Deserialize query plan
             let array = unsafe { JPrimitiveArray::from_raw(serialized_query) };
             let bytes = env.convert_byte_array(array)?;
-
-            // Deserialize query plan
             let spark_plan = serde::deserialize_op(bytes.as_slice())?;
+
+            // Deserialize Spark configs
+            let array = unsafe { JPrimitiveArray::from_raw(serialized_spark_configs) };
+            let bytes = env.convert_byte_array(array)?;
+            let spark_configs = serde::deserialize_config(bytes.as_slice())?;
+
+            // Convert Spark configs to HashMap
+            let _spark_config_map: HashMap<String, String> =
+                spark_configs.entries.into_iter().collect();
 
             let metrics = Arc::new(jni_new_global_ref!(env, metrics_node)?);
 
@@ -288,6 +300,8 @@ fn prepare_datafusion_session_context(
 
     // register UDFs from datafusion-spark crate
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha2::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkChar::default()));
 
     // Must be the last one to override existing functions with the same name
     datafusion_comet_spark_expr::register_all_comet_functions(&mut session_ctx)?;
@@ -341,10 +355,28 @@ fn prepare_output(
         let mut i = 0;
         while i < results.len() {
             let array_ref = results.get(i).ok_or(CometError::IndexOutOfBounds(i))?;
-            array_ref
-                .to_data()
-                .move_to_spark(array_addrs[i], schema_addrs[i])?;
 
+            if array_ref.offset() != 0 {
+                // https://github.com/apache/datafusion-comet/issues/2051
+                // Bug with non-zero offset FFI, so take to a new array which will have an offset of 0.
+                // We expect this to be a cold code path, hence the check_bounds: true and assert_eq.
+                let indices = UInt32Array::from((0..num_rows as u32).collect::<Vec<u32>>());
+                let new_array = take(
+                    array_ref,
+                    &indices,
+                    Some(TakeOptions { check_bounds: true }),
+                )?;
+
+                assert_eq!(new_array.offset(), 0);
+
+                new_array
+                    .to_data()
+                    .move_to_spark(array_addrs[i], schema_addrs[i])?;
+            } else {
+                array_ref
+                    .to_data()
+                    .move_to_spark(array_addrs[i], schema_addrs[i])?;
+            }
             i += 1;
         }
     }

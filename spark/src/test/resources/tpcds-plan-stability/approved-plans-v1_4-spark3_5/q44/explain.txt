@@ -23,7 +23,7 @@ TakeOrderedAndProject (45)
       :     :     :                                         +- CometHashAggregate (4)
       :     :     :                                            +- CometProject (3)
       :     :     :                                               +- CometFilter (2)
-      :     :     :                                                  +- CometScan parquet spark_catalog.default.store_sales (1)
+      :     :     :                                                  +- CometScan [native_comet] parquet spark_catalog.default.store_sales (1)
       :     :     +- * Sort (32)
       :     :        +- * Project (31)
       :     :           +- * Filter (30)
@@ -42,11 +42,11 @@ TakeOrderedAndProject (45)
       :        +- * CometColumnarToRow (38)
       :           +- CometProject (37)
       :              +- CometFilter (36)
-      :                 +- CometScan parquet spark_catalog.default.item (35)
+      :                 +- CometScan [native_comet] parquet spark_catalog.default.item (35)
       +- ReusedExchange (42)
 
 
-(1) CometScan parquet spark_catalog.default.store_sales
+(1) CometScan [native_comet] parquet spark_catalog.default.store_sales
 Output [4]: [ss_item_sk#1, ss_store_sk#2, ss_net_profit#3, ss_sold_date_sk#4]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -185,7 +185,7 @@ Join condition: None
 Output [3]: [item_sk#7, rnk#11, item_sk#16]
 Input [4]: [item_sk#7, rnk#11, item_sk#16, rnk#18]
 
-(35) CometScan parquet spark_catalog.default.item
+(35) CometScan [native_comet] parquet spark_catalog.default.item
 Output [2]: [i_item_sk#19, i_product_name#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -243,10 +243,10 @@ Subquery:1 Hosting operator id = 7 Hosting Expression = Subquery scalar-subquery
       +- CometHashAggregate (49)
          +- CometProject (48)
             +- CometFilter (47)
-               +- CometScan parquet spark_catalog.default.store_sales (46)
+               +- CometScan [native_comet] parquet spark_catalog.default.store_sales (46)
 
 
-(46) CometScan parquet spark_catalog.default.store_sales
+(46) CometScan [native_comet] parquet spark_catalog.default.store_sales
 Output [4]: [ss_addr_sk#26, ss_store_sk#27, ss_net_profit#28, ss_sold_date_sk#29]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]

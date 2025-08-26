@@ -21,6 +21,7 @@
 
 // Include generated modules from .proto files.
 #[allow(missing_docs)]
+#[allow(clippy::large_enum_variant)]
 pub mod spark_expression {
     include!(concat!("generated", "/spark.spark_expression.rs"));
 }
@@ -41,4 +42,10 @@ pub mod spark_operator {
 #[allow(missing_docs)]
 pub mod spark_metric {
     include!(concat!("generated", "/spark.spark_metric.rs"));
+}
+
+// Include generated modules from .proto files.
+#[allow(missing_docs)]
+pub mod spark_config {
+    include!(concat!("generated", "/spark.spark_config.rs"));
 }

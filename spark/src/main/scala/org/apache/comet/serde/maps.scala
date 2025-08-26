@@ -24,57 +24,65 @@ import org.apache.spark.sql.types.{ArrayType, MapType}
 
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 
-object CometMapKeys extends CometExpressionSerde {
+object CometMapKeys extends CometExpressionSerde[MapKeys] {
 
   override def convert(
-      expr: Expression,
+      expr: MapKeys,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val mk = expr.asInstanceOf[MapKeys]
-    val childExpr = exprToProtoInternal(mk.child, inputs, binding)
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val mapKeysScalarExpr = scalarFunctionExprToProto("map_keys", childExpr)
     optExprWithInfo(mapKeysScalarExpr, expr, expr.children: _*)
   }
 }
 
-object CometMapValues extends CometExpressionSerde {
+object CometMapEntries extends CometExpressionSerde[MapEntries] {
 
   override def convert(
-      expr: Expression,
+      expr: MapEntries,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val mv = expr.asInstanceOf[MapValues]
-    val childExpr = exprToProtoInternal(mv.child, inputs, binding)
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    val mapEntriesScalarExpr = scalarFunctionExprToProto("map_entries", childExpr)
+    optExprWithInfo(mapEntriesScalarExpr, expr, expr.children: _*)
+  }
+}
+
+object CometMapValues extends CometExpressionSerde[MapValues] {
+
+  override def convert(
+      expr: MapValues,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val mapValuesScalarExpr = scalarFunctionExprToProto("map_values", childExpr)
     optExprWithInfo(mapValuesScalarExpr, expr, expr.children: _*)
   }
 }
 
-object CometMapExtract extends CometExpressionSerde {
+object CometMapExtract extends CometExpressionSerde[GetMapValue] {
 
   override def convert(
-      expr: Expression,
+      expr: GetMapValue,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val gmv = expr.asInstanceOf[GetMapValue]
-    val mapExpr = exprToProtoInternal(gmv.child, inputs, binding)
-    val keyExpr = exprToProtoInternal(gmv.key, inputs, binding)
+    val mapExpr = exprToProtoInternal(expr.child, inputs, binding)
+    val keyExpr = exprToProtoInternal(expr.key, inputs, binding)
     val mapExtractExpr = scalarFunctionExprToProto("map_extract", mapExpr, keyExpr)
     optExprWithInfo(mapExtractExpr, expr, expr.children: _*)
   }
 }
 
-object CometMapFromArrays extends CometExpressionSerde {
+object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
 
   override def convert(
-      expr: Expression,
+      expr: MapFromArrays,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val mfa = expr.asInstanceOf[MapFromArrays]
-    val keysExpr = exprToProtoInternal(mfa.left, inputs, binding)
-    val valuesExpr = exprToProtoInternal(mfa.right, inputs, binding)
-    val keyType = mfa.left.dataType.asInstanceOf[ArrayType].elementType
-    val valueType = mfa.right.dataType.asInstanceOf[ArrayType].elementType
+    val keysExpr = exprToProtoInternal(expr.left, inputs, binding)
+    val valuesExpr = exprToProtoInternal(expr.right, inputs, binding)
+    val keyType = expr.left.dataType.asInstanceOf[ArrayType].elementType
+    val valueType = expr.right.dataType.asInstanceOf[ArrayType].elementType
     val returnType = MapType(keyType = keyType, valueType = valueType)
     val mapFromArraysExpr =
       scalarFunctionExprToProtoWithReturnType("map", returnType, keysExpr, valuesExpr)
