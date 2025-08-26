@@ -52,17 +52,17 @@ WholeStageCodegen (39)
                                                                                                       CometBroadcastHashJoin [ss_item_sk,ss_customer_sk,ss_cdemo_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_promo_sk,ss_ticket_number,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk,sr_item_sk,sr_ticket_number]
                                                                                                         CometBroadcastExchange [ss_item_sk,ss_customer_sk,ss_cdemo_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_promo_sk,ss_ticket_number,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk] #4
                                                                                                           CometFilter [ss_item_sk,ss_customer_sk,ss_cdemo_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_promo_sk,ss_ticket_number,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
-                                                                                                            CometScan [native_comet] parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_cdemo_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_promo_sk,ss_ticket_number,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
+                                                                                                            CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_cdemo_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_promo_sk,ss_ticket_number,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
                                                                                                               SubqueryBroadcast [d_date_sk] #1
                                                                                                                 BroadcastExchange #5
                                                                                                                   WholeStageCodegen (1)
                                                                                                                     CometColumnarToRow
                                                                                                                       InputAdapter
                                                                                                                         CometFilter [d_date_sk,d_year]
-                                                                                                                          CometScan [native_comet] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                                                                                                          CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                                                                                                         CometProject [sr_item_sk,sr_ticket_number]
                                                                                                           CometFilter [sr_item_sk,sr_ticket_number,sr_returned_date_sk]
-                                                                                                            CometScan [native_comet] parquet spark_catalog.default.store_returns [sr_item_sk,sr_ticket_number,sr_returned_date_sk]
+                                                                                                            CometScan [native_iceberg_compat] parquet spark_catalog.default.store_returns [sr_item_sk,sr_ticket_number,sr_returned_date_sk]
                                                                                         InputAdapter
                                                                                           WholeStageCodegen (3)
                                                                                             Sort [cs_item_sk]
@@ -82,12 +82,12 @@ WholeStageCodegen (39)
                                                                                                                         CometExchange [cs_item_sk,cs_order_number] #7
                                                                                                                           CometProject [cs_item_sk,cs_order_number,cs_ext_list_price]
                                                                                                                             CometFilter [cs_item_sk,cs_order_number,cs_ext_list_price,cs_sold_date_sk]
-                                                                                                                              CometScan [native_comet] parquet spark_catalog.default.catalog_sales [cs_item_sk,cs_order_number,cs_ext_list_price,cs_sold_date_sk]
+                                                                                                                              CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales [cs_item_sk,cs_order_number,cs_ext_list_price,cs_sold_date_sk]
                                                                                                                       CometSort [cr_item_sk,cr_order_number,cr_refunded_cash,cr_reversed_charge,cr_store_credit]
                                                                                                                         CometExchange [cr_item_sk,cr_order_number] #8
                                                                                                                           CometProject [cr_item_sk,cr_order_number,cr_refunded_cash,cr_reversed_charge,cr_store_credit]
                                                                                                                             CometFilter [cr_item_sk,cr_order_number,cr_refunded_cash,cr_reversed_charge,cr_store_credit,cr_returned_date_sk]
-                                                                                                                              CometScan [native_comet] parquet spark_catalog.default.catalog_returns [cr_item_sk,cr_order_number,cr_refunded_cash,cr_reversed_charge,cr_store_credit,cr_returned_date_sk]
+                                                                                                                              CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_returns [cr_item_sk,cr_order_number,cr_refunded_cash,cr_reversed_charge,cr_store_credit,cr_returned_date_sk]
                                                                                     InputAdapter
                                                                                       ReusedExchange [d_date_sk,d_year] #5
                                                                                 InputAdapter
@@ -97,21 +97,21 @@ WholeStageCodegen (39)
                                                                                         InputAdapter
                                                                                           CometProject [s_zip] [s_store_sk,s_store_name,s_zip]
                                                                                             CometFilter [s_store_sk,s_store_name,s_zip]
-                                                                                              CometScan [native_comet] parquet spark_catalog.default.store [s_store_sk,s_store_name,s_zip]
+                                                                                              CometScan [native_iceberg_compat] parquet spark_catalog.default.store [s_store_sk,s_store_name,s_zip]
                                                                             InputAdapter
                                                                               BroadcastExchange #10
                                                                                 WholeStageCodegen (6)
                                                                                   CometColumnarToRow
                                                                                     InputAdapter
                                                                                       CometFilter [c_customer_sk,c_current_cdemo_sk,c_current_hdemo_sk,c_current_addr_sk,c_first_shipto_date_sk,c_first_sales_date_sk]
-                                                                                        CometScan [native_comet] parquet spark_catalog.default.customer [c_customer_sk,c_current_cdemo_sk,c_current_hdemo_sk,c_current_addr_sk,c_first_shipto_date_sk,c_first_sales_date_sk]
+                                                                                        CometScan [native_iceberg_compat] parquet spark_catalog.default.customer [c_customer_sk,c_current_cdemo_sk,c_current_hdemo_sk,c_current_addr_sk,c_first_shipto_date_sk,c_first_sales_date_sk]
                                                                         InputAdapter
                                                                           BroadcastExchange #11
                                                                             WholeStageCodegen (7)
                                                                               CometColumnarToRow
                                                                                 InputAdapter
                                                                                   CometFilter [d_date_sk,d_year]
-                                                                                    CometScan [native_comet] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                                                                    CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                                                                     InputAdapter
                                                                       ReusedExchange [d_date_sk,d_year] #11
                                                                 InputAdapter
@@ -121,7 +121,7 @@ WholeStageCodegen (39)
                                                                         InputAdapter
                                                                           CometProject [cd_marital_status] [cd_demo_sk,cd_marital_status]
                                                                             CometFilter [cd_demo_sk,cd_marital_status]
-                                                                              CometScan [native_comet] parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status]
+                                                                              CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status]
                                                             InputAdapter
                                                               ReusedExchange [cd_demo_sk,cd_marital_status] #12
                                                         InputAdapter
@@ -130,14 +130,14 @@ WholeStageCodegen (39)
                                                               CometColumnarToRow
                                                                 InputAdapter
                                                                   CometFilter [p_promo_sk]
-                                                                    CometScan [native_comet] parquet spark_catalog.default.promotion [p_promo_sk]
+                                                                    CometScan [native_iceberg_compat] parquet spark_catalog.default.promotion [p_promo_sk]
                                                     InputAdapter
                                                       BroadcastExchange #14
                                                         WholeStageCodegen (12)
                                                           CometColumnarToRow
                                                             InputAdapter
                                                               CometFilter [hd_demo_sk,hd_income_band_sk]
-                                                                CometScan [native_comet] parquet spark_catalog.default.household_demographics [hd_demo_sk,hd_income_band_sk]
+                                                                CometScan [native_iceberg_compat] parquet spark_catalog.default.household_demographics [hd_demo_sk,hd_income_band_sk]
                                                 InputAdapter
                                                   ReusedExchange [hd_demo_sk,hd_income_band_sk] #14
                                             InputAdapter
@@ -147,7 +147,7 @@ WholeStageCodegen (39)
                                                     InputAdapter
                                                       CometProject [ca_street_number,ca_zip] [ca_address_sk,ca_street_number,ca_street_name,ca_city,ca_zip]
                                                         CometFilter [ca_address_sk,ca_street_number,ca_street_name,ca_city,ca_zip]
-                                                          CometScan [native_comet] parquet spark_catalog.default.customer_address [ca_address_sk,ca_street_number,ca_street_name,ca_city,ca_zip]
+                                                          CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address [ca_address_sk,ca_street_number,ca_street_name,ca_city,ca_zip]
                                         InputAdapter
                                           ReusedExchange [ca_address_sk,ca_street_number,ca_street_name,ca_city,ca_zip] #15
                                     InputAdapter
@@ -156,7 +156,7 @@ WholeStageCodegen (39)
                                           CometColumnarToRow
                                             InputAdapter
                                               CometFilter [ib_income_band_sk]
-                                                CometScan [native_comet] parquet spark_catalog.default.income_band [ib_income_band_sk]
+                                                CometScan [native_iceberg_compat] parquet spark_catalog.default.income_band [ib_income_band_sk]
                                 InputAdapter
                                   ReusedExchange [ib_income_band_sk] #16
                             InputAdapter
@@ -166,7 +166,7 @@ WholeStageCodegen (39)
                                     InputAdapter
                                       CometProject [i_product_name] [i_item_sk,i_product_name]
                                         CometFilter [i_item_sk,i_current_price,i_color,i_product_name]
-                                          CometScan [native_comet] parquet spark_catalog.default.item [i_item_sk,i_current_price,i_color,i_product_name]
+                                          CometScan [native_iceberg_compat] parquet spark_catalog.default.item [i_item_sk,i_current_price,i_color,i_product_name]
               CometSort [item_sk,store_name,store_zip,syear,cnt,s1,s2,s3]
                 CometColumnarExchange [item_sk,store_name,store_zip] #18
                   WholeStageCodegen (38)
@@ -214,17 +214,17 @@ WholeStageCodegen (39)
                                                                                                       CometBroadcastHashJoin [ss_item_sk,ss_customer_sk,ss_cdemo_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_promo_sk,ss_ticket_number,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk,sr_item_sk,sr_ticket_number]
                                                                                                         CometBroadcastExchange [ss_item_sk,ss_customer_sk,ss_cdemo_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_promo_sk,ss_ticket_number,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk] #20
                                                                                                           CometFilter [ss_item_sk,ss_customer_sk,ss_cdemo_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_promo_sk,ss_ticket_number,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
-                                                                                                            CometScan [native_comet] parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_cdemo_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_promo_sk,ss_ticket_number,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
+                                                                                                            CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_cdemo_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_promo_sk,ss_ticket_number,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
                                                                                                               SubqueryBroadcast [d_date_sk] #2
                                                                                                                 BroadcastExchange #21
                                                                                                                   WholeStageCodegen (1)
                                                                                                                     CometColumnarToRow
                                                                                                                       InputAdapter
                                                                                                                         CometFilter [d_date_sk,d_year]
-                                                                                                                          CometScan [native_comet] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                                                                                                          CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                                                                                                         CometProject [sr_item_sk,sr_ticket_number]
                                                                                                           CometFilter [sr_item_sk,sr_ticket_number,sr_returned_date_sk]
-                                                                                                            CometScan [native_comet] parquet spark_catalog.default.store_returns [sr_item_sk,sr_ticket_number,sr_returned_date_sk]
+                                                                                                            CometScan [native_iceberg_compat] parquet spark_catalog.default.store_returns [sr_item_sk,sr_ticket_number,sr_returned_date_sk]
                                                                                         InputAdapter
                                                                                           WholeStageCodegen (22)
                                                                                             Sort [cs_item_sk]
