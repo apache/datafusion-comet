@@ -136,6 +136,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[MapEntries] -> CometMapEntries,
     classOf[MapValues] -> CometMapValues,
     classOf[MapFromArrays] -> CometMapFromArrays,
+    classOf[MapFilter] -> CometMapFilter,
     classOf[GetMapValue] -> CometMapExtract,
     classOf[GreaterThan] -> CometGreaterThan,
     classOf[GreaterThanOrEqual] -> CometGreaterThanOrEqual,
@@ -534,6 +535,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         castBuilder.setChild(childExpr)
         castBuilder.setDatatype(dataType)
         castBuilder.setEvalMode(evalModeToProto(evalMode))
+        castBuilder.setAllowIncompat(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get())
         castBuilder.setAllowIncompat(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get())
         castBuilder.setTimezone(timeZoneId.getOrElse("UTC"))
         Some(
@@ -1524,6 +1526,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
             withInfo(expr, s"${expr.prettyName} is not supported", expr.children: _*)
             None
         }
+      case mapFilter : MapFilter =>
+        val mapExpr = exprToProtoInternal(mapFilter.input, inputs)
+        val lambdaExpr = exprToProtoInternal(mapFilter.function, inputs)
+        val optExpr = scalarFunctionExprToProtoWithReturnType("map_filter", mapFilter.dataType, mapExpr, lambdaExpr)
+        optExprWithInfo(optExpr, expr, mapFilter.input, mapFilter.function)
     })
   }
 
