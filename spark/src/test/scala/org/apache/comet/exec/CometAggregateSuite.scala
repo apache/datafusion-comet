@@ -978,7 +978,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("avg/sum overflow on decimal(38, _)") {
-    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       val table = "overflow_decimal_38"
       withTable(table) {
         sql(s"create table $table(a decimal(38, 2), b INT) using parquet")
@@ -1019,7 +1019,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("final decimal avg") {
     withSQLConf(
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true",
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withSQLConf("parquet.enable.dictionary" -> dictionaryEnabled.toString) {
@@ -1090,7 +1090,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withSQLConf(
           CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> nativeShuffleEnabled.toString,
           CometConf.COMET_SHUFFLE_MODE.key -> "native",
-          CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+          CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
           withTempDir { dir =>
             val path = new Path(dir.toURI.toString, "test")
             makeParquetFile(path, 1000, 20, dictionaryEnabled)

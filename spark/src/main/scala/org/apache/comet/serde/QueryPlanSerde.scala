@@ -169,7 +169,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[DateAdd] -> CometDateAdd,
     classOf[DateSub] -> CometDateSub,
     classOf[TruncDate] -> CometTruncDate,
-    classOf[TruncTimestamp] -> CometTruncTimestamp)
+    classOf[TruncTimestamp] -> CometTruncTimestamp,
+    classOf[Cast] -> CometCast)
 
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
@@ -517,6 +518,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     }
   }
 
+  // TODO this needs to be removed
+
   /**
    * Wrap an expression in a cast.
    */
@@ -532,7 +535,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         castBuilder.setChild(childExpr)
         castBuilder.setDatatype(dataType)
         castBuilder.setEvalMode(evalModeToProto(evalMode))
-        castBuilder.setAllowIncompat(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get())
+        castBuilder.setAllowIncompat(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get())
         castBuilder.setTimezone(timeZoneId.getOrElse("UTC"))
         Some(
           ExprOuterClass.Expr
@@ -545,6 +548,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     }
   }
 
+  // TODO this needs to be removed
   def handleCast(
       expr: Expression,
       child: Expression,
@@ -569,14 +573,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
         case Compatible(_) =>
           castToProto(expr, timeZoneId, dt, childExpr.get, evalMode)
         case Incompatible(reason) =>
-          if (CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.get()) {
+          if (CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get()) {
             logWarning(getIncompatMessage(reason))
             castToProto(expr, timeZoneId, dt, childExpr.get, evalMode)
           } else {
             withInfo(
               expr,
               s"${getIncompatMessage(reason)}. To enable all incompatible casts, set " +
-                s"${CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key}=true")
+                s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true")
             None
           }
         case Unsupported =>
@@ -695,9 +699,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           expr.dataType,
           Some(timeZoneId),
           CometEvalMode.TRY)
-
-      case c @ Cast(child, dt, timeZoneId, _) =>
-        handleCast(expr, child, inputs, binding, dt, timeZoneId, evalMode(c))
 
       case EqualTo(left, right) =>
         createBinaryExpr(

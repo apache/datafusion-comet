@@ -19,11 +19,16 @@
 
 package org.apache.comet.expressions
 
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast}
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, NullType, StructType}
 
-import org.apache.comet.serde.{Compatible, Incompatible, SupportLevel, Unsupported}
+import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.serde.{CometExpressionSerde, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
+import org.apache.comet.shims.CometExprShim
 
-object CometCast {
+object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
 
   def supportedTypes: Seq[DataType] =
     Seq(
@@ -41,6 +46,38 @@ object CometCast {
       DataTypes.TimestampType)
   // TODO add DataTypes.TimestampNTZType for Spark 3.4 and later
   // https://github.com/apache/datafusion-comet/issues/378
+
+  override def getSupportLevel(cast: Cast): SupportLevel = {
+    isSupported(cast.child.dataType, cast.dataType, cast.timeZoneId, evalMode(cast))
+  }
+
+  override def convert(
+      cast: Cast,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(cast.child, inputs, binding)
+    if (childExpr.isDefined) {
+      serializeDataType(cast.dataType) match {
+        case Some(dataType) =>
+          val castBuilder = ExprOuterClass.Cast.newBuilder()
+          castBuilder.setChild(childExpr.get)
+          castBuilder.setDatatype(dataType)
+          castBuilder.setEvalMode(evalModeToProto(evalMode(cast)))
+          castBuilder.setAllowIncompat(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get())
+          castBuilder.setTimezone(cast.timeZoneId.getOrElse("UTC"))
+          Some(
+            ExprOuterClass.Expr
+              .newBuilder()
+              .setCast(castBuilder)
+              .build())
+        case _ =>
+          withInfo(cast, s"Unsupported datatype: ${cast.dataType}")
+          None
+      }
+    } else {
+      None
+    }
+  }
 
   def isSupported(
       fromType: DataType,
