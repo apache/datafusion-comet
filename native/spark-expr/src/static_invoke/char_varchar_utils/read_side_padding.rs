@@ -41,21 +41,32 @@ fn spark_read_side_padding2(
 ) -> Result<ColumnarValue, DataFusionError> {
     match args {
         [ColumnarValue::Array(array), ColumnarValue::Scalar(ScalarValue::Int32(Some(length)))] => {
-            let rpad_arg = RPadArgument::ConstLength(*length);
             match array.data_type() {
-                DataType::Utf8 => {
-                    spark_read_side_padding_internal::<i32>(array, truncate, rpad_arg)
-                }
-                DataType::LargeUtf8 => {
-                    spark_read_side_padding_internal::<i64>(array, truncate, rpad_arg)
-                }
+                DataType::Utf8 => spark_read_side_padding_internal::<i32>(
+                    array,
+                    truncate,
+                    ColumnarValue::Scalar(ScalarValue::Int32(Some(*length))),
+                ),
+                DataType::LargeUtf8 => spark_read_side_padding_internal::<i64>(
+                    array,
+                    truncate,
+                    ColumnarValue::Scalar(ScalarValue::Int32(Some(*length))),
+                ),
                 // Dictionary support required for SPARK-48498
                 DataType::Dictionary(_, value_type) => {
                     let dict = as_dictionary_array::<Int32Type>(array);
                     let col = if value_type.as_ref() == &DataType::Utf8 {
-                        spark_read_side_padding_internal::<i32>(dict.values(), truncate, rpad_arg)?
+                        spark_read_side_padding_internal::<i32>(
+                            dict.values(),
+                            truncate,
+                            ColumnarValue::Scalar(ScalarValue::Int32(Some(*length))),
+                        )?
                     } else {
-                        spark_read_side_padding_internal::<i64>(dict.values(), truncate, rpad_arg)?
+                        spark_read_side_padding_internal::<i64>(
+                            dict.values(),
+                            truncate,
+                            ColumnarValue::Scalar(ScalarValue::Int32(Some(*length))),
+                        )?
                     };
                     // col consists of an array, so arg of to_array() is not used. Can be anything
                     let values = col.to_array(0)?;
@@ -68,21 +79,32 @@ fn spark_read_side_padding2(
             }
         }
         [ColumnarValue::Array(array), ColumnarValue::Array(array_int)] => {
-            let rpad_arg = RPadArgument::ColArray(Arc::clone(array_int));
             match array.data_type() {
-                DataType::Utf8 => {
-                    spark_read_side_padding_internal::<i32>(array, truncate, rpad_arg)
-                }
-                DataType::LargeUtf8 => {
-                    spark_read_side_padding_internal::<i64>(array, truncate, rpad_arg)
-                }
+                DataType::Utf8 => spark_read_side_padding_internal::<i32>(
+                    array,
+                    truncate,
+                    ColumnarValue::Array(Arc::<dyn arrow::array::Array>::clone(array_int)),
+                ),
+                DataType::LargeUtf8 => spark_read_side_padding_internal::<i64>(
+                    array,
+                    truncate,
+                    ColumnarValue::Array(Arc::<dyn arrow::array::Array>::clone(array_int)),
+                ),
                 // Dictionary support required for SPARK-48498
                 DataType::Dictionary(_, value_type) => {
                     let dict = as_dictionary_array::<Int32Type>(array);
                     let col = if value_type.as_ref() == &DataType::Utf8 {
-                        spark_read_side_padding_internal::<i32>(dict.values(), truncate, rpad_arg)?
+                        spark_read_side_padding_internal::<i32>(
+                            dict.values(),
+                            truncate,
+                            ColumnarValue::Array(Arc::<dyn arrow::array::Array>::clone(array_int)),
+                        )?
                     } else {
-                        spark_read_side_padding_internal::<i64>(dict.values(), truncate, rpad_arg)?
+                        spark_read_side_padding_internal::<i64>(
+                            dict.values(),
+                            truncate,
+                            ColumnarValue::Array(Arc::<dyn arrow::array::Array>::clone(array_int)),
+                        )?
                     };
                     // col consists of an array, so arg of to_array() is not used. Can be anything
                     let values = col.to_array(0)?;
@@ -100,19 +122,14 @@ fn spark_read_side_padding2(
     }
 }
 
-enum RPadArgument {
-    ConstLength(i32),
-    ColArray(ArrayRef),
-}
-
 fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
     array: &ArrayRef,
     truncate: bool,
-    rpad_argument: RPadArgument,
+    pad_type: ColumnarValue,
 ) -> Result<ColumnarValue, DataFusionError> {
     let string_array = as_generic_string_array::<T>(array)?;
-    match rpad_argument {
-        RPadArgument::ColArray(array_int) => {
+    match pad_type {
+        ColumnarValue::Array(array_int) => {
             let int_pad_array = array_int.as_primitive::<Int32Type>();
 
             let mut builder = GenericStringBuilder::<T>::with_capacity(
@@ -132,8 +149,8 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
             }
             Ok(ColumnarValue::Array(Arc::new(builder.finish())))
         }
-        RPadArgument::ConstLength(length) => {
-            let length = 0.max(length) as usize;
+        ColumnarValue::Scalar(const_pad_length) => {
+            let length = 0.max(i32::try_from(const_pad_length)?) as usize;
 
             let mut builder = GenericStringBuilder::<T>::with_capacity(
                 string_array.len(),
