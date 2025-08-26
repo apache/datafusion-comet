@@ -21,16 +21,7 @@ package org.apache.comet.expressions
 
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, NullType, StructType}
 
-sealed trait SupportLevel
-
-/** We support this feature with full compatibility with Spark */
-case class Compatible(notes: Option[String] = None) extends SupportLevel
-
-/** We support this feature but results can be different from Spark */
-case class Incompatible(notes: Option[String] = None) extends SupportLevel
-
-/** We do not support this feature */
-object Unsupported extends SupportLevel
+import org.apache.comet.serde.{Compatible, Incompatible, SupportLevel, Unsupported}
 
 object CometCast {
 

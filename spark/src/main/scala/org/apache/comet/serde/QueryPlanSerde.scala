@@ -643,14 +643,31 @@ object QueryPlanSerde extends Logging with CometExprShim {
     SQLConf.get
 
     def convert[T <: Expression](expr: T, handler: CometExpressionSerde[T]): Option[Expr] = {
-      handler match {
-        case _: IncompatExpr if !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() =>
-          withInfo(
-            expr,
-            s"$expr is not fully compatible with Spark. To enable it anyway, set " +
-              s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true. ${CometConf.COMPAT_GUIDE}.")
+      handler.getSupportLevel(expr) match {
+        case Unsupported =>
+          withInfo(expr, s"$expr is not supported.")
           None
-        case _ =>
+        case Incompatible(notes) =>
+          if (CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get()) {
+            if (notes.isDefined) {
+              logWarning(
+                s"Comet supports $expr when ${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true " +
+                  s"but has notes: ${notes.get}")
+            }
+            handler.convert(expr, inputs, binding)
+          } else {
+            val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
+            withInfo(
+              expr,
+              s"$expr is not fully compatible with Spark$optionalNotes. To enable it anyway, " +
+                s"set ${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true. " +
+                s"${CometConf.COMPAT_GUIDE}.")
+            None
+          }
+        case Compatible(notes) =>
+          if (notes.isDefined) {
+            logWarning(s"Comet supports $expr but has notes: ${notes.get}")
+          }
           handler.convert(expr, inputs, binding)
       }
     }
@@ -2349,6 +2366,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
   }
 }
 
+sealed trait SupportLevel
+
+/** We support this feature with full compatibility with Spark */
+case class Compatible(notes: Option[String] = None) extends SupportLevel
+
+/** We support this feature but results can be different from Spark */
+case class Incompatible(notes: Option[String] = None) extends SupportLevel
+
+/** We do not support this feature */
+object Unsupported extends SupportLevel
+
 /**
  * Trait for providing serialization logic for operators.
  */
@@ -2385,6 +2413,16 @@ trait CometOperatorSerde[T <: SparkPlan] {
  * Trait for providing serialization logic for expressions.
  */
 trait CometExpressionSerde[T <: Expression] {
+
+  /**
+   * Determine the support level of the expression based on its attributes.
+   *
+   * @param expr
+   *   The Spark expression.
+   * @return
+   *   Support level (Compatible, Incompatible, or Unsupported).
+   */
+  def getSupportLevel(expr: T): SupportLevel = Compatible(None)
 
   /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into
@@ -2435,9 +2473,6 @@ trait CometAggregateExpressionSerde {
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr]
 }
-
-/** Marker trait for an expression that is not guaranteed to be 100% compatible with Spark */
-trait IncompatExpr {}
 
 /** Serde for scalar function. */
 case class CometScalarFunction[T <: Expression](name: String) extends CometExpressionSerde[T] {
