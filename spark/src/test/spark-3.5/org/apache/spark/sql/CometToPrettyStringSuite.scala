@@ -20,7 +20,8 @@
 package org.apache.spark.sql
 
 import org.apache.comet.CometConf
-import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible}
+import org.apache.comet.expressions.{CometCast, CometEvalMode}
+import org.apache.comet.serde.Compatible
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 import org.apache.commons.io.FileUtils
 import org.apache.spark.sql.catalyst.TableIdentifier

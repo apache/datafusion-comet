@@ -2387,6 +2387,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
   }
 }
 
+sealed trait SupportLevel
+
+/** We support this feature with full compatibility with Spark */
+case class Compatible(notes: Option[String] = None) extends SupportLevel
+
+/** We support this feature but results can be different from Spark */
+case class Incompatible(notes: Option[String] = None) extends SupportLevel
+
+/** We do not support this feature */
+object Unsupported extends SupportLevel
+
 /**
  * Trait for providing serialization logic for operators.
  */
