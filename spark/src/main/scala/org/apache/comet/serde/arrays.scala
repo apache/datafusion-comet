@@ -93,7 +93,7 @@ object CometArrayRemove extends CometExpressionSerde[ArrayRemove] with CometExpr
   }
 }
 
-object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with IncompatExpr {
+object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with IncompatExpr[ArrayAppend] {
   override def convert(
       expr: ArrayAppend,
       inputs: Seq[Attribute],
@@ -149,7 +149,9 @@ object CometArrayContains extends CometExpressionSerde[ArrayContains] {
   }
 }
 
-object CometArrayDistinct extends CometExpressionSerde[ArrayDistinct] with IncompatExpr {
+object CometArrayDistinct
+    extends CometExpressionSerde[ArrayDistinct]
+    with IncompatExpr[ArrayDistinct] {
   override def convert(
       expr: ArrayDistinct,
       inputs: Seq[Attribute],
@@ -162,7 +164,9 @@ object CometArrayDistinct extends CometExpressionSerde[ArrayDistinct] with Incom
   }
 }
 
-object CometArrayIntersect extends CometExpressionSerde[ArrayIntersect] with IncompatExpr {
+object CometArrayIntersect
+    extends CometExpressionSerde[ArrayIntersect]
+    with IncompatExpr[ArrayIntersect] {
   override def convert(
       expr: ArrayIntersect,
       inputs: Seq[Attribute],
@@ -201,7 +205,9 @@ object CometArrayMin extends CometExpressionSerde[ArrayMin] {
   }
 }
 
-object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] with IncompatExpr {
+object CometArraysOverlap
+    extends CometExpressionSerde[ArraysOverlap]
+    with IncompatExpr[ArraysOverlap] {
   override def convert(
       expr: ArraysOverlap,
       inputs: Seq[Attribute],
@@ -218,7 +224,7 @@ object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] with Incom
   }
 }
 
-object CometArrayRepeat extends CometExpressionSerde[ArrayRepeat] with IncompatExpr {
+object CometArrayRepeat extends CometExpressionSerde[ArrayRepeat] with IncompatExpr[ArrayRepeat] {
   override def convert(
       expr: ArrayRepeat,
       inputs: Seq[Attribute],
@@ -232,7 +238,7 @@ object CometArrayRepeat extends CometExpressionSerde[ArrayRepeat] with IncompatE
   }
 }
 
-object CometArrayCompact extends CometExpressionSerde[Expression] with IncompatExpr {
+object CometArrayCompact extends CometExpressionSerde[Expression] with IncompatExpr[Expression] {
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -255,7 +261,7 @@ object CometArrayCompact extends CometExpressionSerde[Expression] with IncompatE
 object CometArrayExcept
     extends CometExpressionSerde[ArrayExcept]
     with CometExprShim
-    with IncompatExpr {
+    with IncompatExpr[ArrayExcept] {
 
   @tailrec
   def isTypeSupported(dt: DataType): Boolean = {
@@ -292,7 +298,7 @@ object CometArrayExcept
   }
 }
 
-object CometArrayJoin extends CometExpressionSerde[ArrayJoin] with IncompatExpr {
+object CometArrayJoin extends CometExpressionSerde[ArrayJoin] with IncompatExpr[ArrayJoin] {
   override def convert(
       expr: ArrayJoin,
       inputs: Seq[Attribute],
@@ -326,7 +332,7 @@ object CometArrayJoin extends CometExpressionSerde[ArrayJoin] with IncompatExpr 
   }
 }
 
-object CometArrayInsert extends CometExpressionSerde[ArrayInsert] with IncompatExpr {
+object CometArrayInsert extends CometExpressionSerde[ArrayInsert] with IncompatExpr[ArrayInsert] {
   override def convert(
       expr: ArrayInsert,
       inputs: Seq[Attribute],
@@ -361,7 +367,7 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] with IncompatE
   }
 }
 
-object CometArrayUnion extends CometExpressionSerde[ArrayUnion] with IncompatExpr {
+object CometArrayUnion extends CometExpressionSerde[ArrayUnion] with IncompatExpr[ArrayUnion] {
   override def convert(
       expr: ArrayUnion,
       inputs: Seq[Attribute],

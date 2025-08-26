@@ -643,7 +643,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
     def convert[T <: Expression](expr: T, handler: CometExpressionSerde[T]): Option[Expr] = {
       handler match {
-        case _: IncompatExpr if !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() =>
+        case incompat: IncompatExpr[T]
+            if incompat.isIncompat(expr) && !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() =>
           withInfo(
             expr,
             s"$expr is not fully compatible with Spark. To enable it anyway, set " +
@@ -2475,7 +2476,9 @@ trait CometAggregateExpressionSerde {
 }
 
 /** Marker trait for an expression that is not guaranteed to be 100% compatible with Spark */
-trait IncompatExpr {}
+trait IncompatExpr[T] {
+  def isIncompat(expr: T): Boolean = true
+}
 
 /** Serde for scalar function. */
 case class CometScalarFunction[T <: Expression](name: String) extends CometExpressionSerde[T] {
