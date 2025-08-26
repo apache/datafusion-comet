@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index 68e2c422a24..fb9c2e88fac 100644
+index 68e2c422a24..d971894ffe6 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -152,6 +152,8 @@
@@ -866,7 +866,7 @@ index c26757c9cff..d55775f09d7 100644
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-index 793a0da6a86..6ccb9d62582 100644
+index 793a0da6a86..e48e74091cb 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 @@ -1521,7 +1521,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
@@ -878,6 +878,19 @@ index 793a0da6a86..6ccb9d62582 100644
 +    IgnoreComet("TODO: native CometSort does not update peak execution memory")) {
      AccumulatorSuite.verifyPeakExecutionMemorySet(sparkContext, "external sort") {
        sql("SELECT * FROM testData2 ORDER BY a ASC, b ASC").collect()
+     }
+@@ -4497,7 +4498,11 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+           val msg = intercept[SparkException] {
+             sql(query).collect()
+           }.getMessage
+-          assert(msg.contains(query))
++          if (!isCometEnabled) {
++            // Comet's error message does not include the original SQL query
++            // https://github.com/apache/datafusion-comet/issues/2215
++            assert(msg.contains(query))
++          }
+         }
+       }
      }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
 index fa1a64460fc..1d2e215d6a3 100644

@@ -1057,7 +1057,7 @@ index ad424b3a7cc..4ece0117a34 100644
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-index b3fce19979e..345acb4811a 100644
+index b3fce19979e..67edf5eb91c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 @@ -1524,7 +1524,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
@@ -1086,11 +1086,24 @@ index b3fce19979e..345acb4811a 100644
    test("SPARK-39175: Query context of Cast should be serialized to executors" +
 -    " when WSCG is off") {
 +    " when WSCG is off",
-+    IgnoreComet("TODO: https://github.com/apache/datafusion-comet/issues/551")) {
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2218")) {
      withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
        SQLConf.ANSI_ENABLED.key -> "true") {
        withTable("t") {
-@@ -4497,7 +4500,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+@@ -4490,14 +4493,20 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+           assert(ex.isInstanceOf[SparkNumberFormatException] ||
+             ex.isInstanceOf[SparkDateTimeException] ||
+             ex.isInstanceOf[SparkRuntimeException])
+-          assert(ex.getMessage.contains(query))
++
++          if (!isCometEnabled) {
++            // Comet's error message does not include the original SQL query
++            // https://github.com/apache/datafusion-comet/issues/2215
++            assert(ex.getMessage.contains(query))
++          }
+         }
+       }
+     }
    }
  
    test("SPARK-39190,SPARK-39208,SPARK-39210: Query context of decimal overflow error should " +
