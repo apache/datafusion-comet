@@ -771,12 +771,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
      * For Hash Partition this defines the key that determines how data should be collocated for
      * operations like `groupByKey`, `reduceByKey` or `join`. Native code does not support hashing
      * complex types, see hash_funcs/utils.rs
-     *
-     * For Range Partition this defines the key that determines how data should be collocated for
-     * operations like `orderBy`. Comet does not support serializing complex types as boundary
-     * rows.
      */
-    def supportedPartitionDataType(dt: DataType): Boolean = dt match {
+    def supportedPartitioningDataType(dt: DataType): Boolean = dt match {
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
           _: TimestampNTZType | _: DecimalType | _: DateType =>
@@ -849,7 +845,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           }
         }
         for (dt <- expressions.map(_.dataType).distinct) {
-          if (!supportedPartitionDataType(dt)) {
+          if (!supportedPartitioningDataType(dt)) {
             withInfo(s, s"unsupported hash partitioning data type for native shuffle: $dt")
             supported = false
           }
@@ -875,7 +871,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           }
         }
         for (dt <- orderings.map(_.dataType).distinct) {
-          if (!supportedPartitionDataType(dt)) {
+          if (!supportedPartitioningDataType(dt)) {
             withInfo(s, s"unsupported range partitioning data type for native shuffle: $dt")
             supported = false
           }
