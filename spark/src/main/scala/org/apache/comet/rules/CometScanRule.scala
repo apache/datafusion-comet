@@ -34,16 +34,17 @@ import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, CometSparkSessionExtensions, DataTypeSupport}
+import org.apache.comet.{CometConf, DataTypeSupport}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
+import org.apache.comet.shims.CometTypeShim
 
 /**
  * Spark physical optimizer rule for replacing Spark scans with Comet scans.
  */
-case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
+case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with CometTypeShim {
 
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
 
@@ -73,6 +74,26 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
         })
       }
 
+      def isIcebergMetadataTable(scanExec: BatchScanExec): Boolean = {
+        // List of Iceberg metadata tables:
+        // https://iceberg.apache.org/docs/latest/spark-queries/#inspecting-tables
+        val metadataTableSuffix = Set(
+          "history",
+          "metadata_log_entries",
+          "snapshots",
+          "entries",
+          "files",
+          "manifests",
+          "partitions",
+          "position_deletes",
+          "all_data_files",
+          "all_delete_files",
+          "all_entries",
+          "all_manifests")
+
+        metadataTableSuffix.exists(suffix => scanExec.table.name().endsWith(suffix))
+      }
+
       plan.transform {
         case scan if hasMetadataCol(scan) =>
           withInfo(scan, "Metadata column is not supported")
@@ -83,7 +104,11 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
 
         // data source V2
         case scanExec: BatchScanExec =>
-          transformV2Scan(scanExec)
+          if (isIcebergMetadataTable(scanExec)) {
+            withInfo(scanExec, "Iceberg Metadata tables are not supported")
+          } else {
+            transformV2Scan(scanExec)
+          }
       }
     }
   }
@@ -262,10 +287,6 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
 
     val fallbackReasons = new ListBuffer[String]()
 
-    if (CometSparkSessionExtensions.isSpark40Plus) {
-      fallbackReasons += s"$SCAN_NATIVE_ICEBERG_COMPAT  is not implemented for Spark 4.0.0"
-    }
-
     // native_iceberg_compat only supports local filesystem and S3
     if (!scanExec.relation.inputFiles
         .forall(path => path.startsWith("file://") || path.startsWith("s3a://"))) {
@@ -278,21 +299,28 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
     val partitionSchemaSupported =
       typeChecker.isSchemaSupported(partitionSchema, fallbackReasons)
 
-    def hasMapsContainingStructs(dataType: DataType): Boolean = {
+    def hasUnsupportedType(dataType: DataType): Boolean = {
       dataType match {
-        case s: StructType => s.exists(field => hasMapsContainingStructs(field.dataType))
-        case a: ArrayType => hasMapsContainingStructs(a.elementType)
-        case m: MapType => isComplexType(m.keyType) || isComplexType(m.valueType)
+        case s: StructType => s.exists(field => hasUnsupportedType(field.dataType))
+        case a: ArrayType => hasUnsupportedType(a.elementType)
+        case m: MapType =>
+          // maps containing complex types are not supported
+          isComplexType(m.keyType) || isComplexType(m.valueType) ||
+          hasUnsupportedType(m.keyType) || hasUnsupportedType(m.valueType)
+        case dt => isStringCollationType(dt)
+        case _: StringType =>
+          // we only support `case object StringType` and not other instances of `class StringType`
+          dataType != StringType
         case _ => false
       }
     }
 
     val knownIssues =
-      scanExec.requiredSchema.exists(field => hasMapsContainingStructs(field.dataType)) ||
-        partitionSchema.exists(field => hasMapsContainingStructs(field.dataType))
+      scanExec.requiredSchema.exists(field => hasUnsupportedType(field.dataType)) ||
+        partitionSchema.exists(field => hasUnsupportedType(field.dataType))
 
     if (knownIssues) {
-      fallbackReasons += "There are known issues with maps containing structs when using " +
+      fallbackReasons += "Schema contains data types that are not supported by " +
         s"$SCAN_NATIVE_ICEBERG_COMPAT"
     }
 
@@ -315,7 +343,11 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] {
 
 }
 
-case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport {
+case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with CometTypeShim {
+
+  // this class is intended to be used with a specific scan impl
+  assert(scanImpl != CometConf.SCAN_AUTO)
+
   override def isTypeSupported(
       dt: DataType,
       name: String,
@@ -328,6 +360,12 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport {
           s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false. ${CometConf.COMPAT_GUIDE}."
         false
       case _: StructType | _: ArrayType | _: MapType if scanImpl == CometConf.SCAN_NATIVE_COMET =>
+        false
+      case dt if isStringCollationType(dt) =>
+        // we don't need specific support for collation in scans, but this
+        // is a convenient place to force the whole query to fall back to Spark for now
+        false
+      case s: StructType if s.fields.isEmpty =>
         false
       case _ =>
         super.isTypeSupported(dt, name, fallbackReasons)

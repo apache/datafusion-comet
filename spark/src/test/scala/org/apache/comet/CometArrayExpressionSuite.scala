@@ -405,10 +405,35 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("array_min") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, n = 10000)
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1");
+        checkSparkAnswerAndOperator(spark.sql("SELECT array_min(array(_2, _3, _4)) FROM t1"))
+        checkSparkAnswerAndOperator(
+          spark.sql("SELECT array_min((CASE WHEN _2 =_3 THEN array(_4) END)) FROM t1"))
+        checkSparkAnswerAndOperator(
+          spark.sql("SELECT array_min((CASE WHEN _2 =_3 THEN array(_2, _4) END)) FROM t1"))
+        checkSparkAnswerAndOperator(
+          spark.sql("SELECT array_min(array(CAST(NULL AS INT), CAST(NULL AS INT))) FROM t1"))
+        checkSparkAnswerAndOperator(
+          spark.sql("SELECT array_min(array(_2, CAST(NULL AS INT))) FROM t1"))
+        checkSparkAnswerAndOperator(spark.sql("SELECT array_min(array()) FROM t1"))
+        checkSparkAnswerAndOperator(
+          spark.sql(
+            "SELECT array_min(array(double('-Infinity'), 0.0, double('Infinity'))) FROM t1"))
+      }
+    }
+  }
+
   test("array_intersect") {
-    // https://github.com/apache/datafusion-comet/issues/1441
-    assume(!usingDataSourceExec)
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+    // TODO test fails if scan is auto
+    // https://github.com/apache/datafusion-comet/issues/2174
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
 
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>

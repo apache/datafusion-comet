@@ -25,7 +25,8 @@ import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.catalyst.expressions.Cast
 
-import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incompatible}
+import org.apache.comet.expressions.{CometCast, CometEvalMode}
+import org.apache.comet.serde.{Compatible, Incompatible}
 
 /**
  * Utility for generating markdown documentation from the configs.
