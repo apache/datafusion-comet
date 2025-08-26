@@ -570,8 +570,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
     def convert[T <: Expression](expr: T, handler: CometExpressionSerde[T]): Option[Expr] = {
       handler.getSupportLevel(expr) match {
-        case Unsupported =>
-          withInfo(expr, s"$expr is not supported.")
+        case Unsupported(notes) =>
+          withInfo(expr, notes.getOrElse(""))
           None
         case Incompatible(notes) =>
           if (CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get()) {
@@ -2296,7 +2296,7 @@ case class Compatible(notes: Option[String] = None) extends SupportLevel
 case class Incompatible(notes: Option[String] = None) extends SupportLevel
 
 /** Comet does not support this feature */
-object Unsupported extends SupportLevel
+case class Unsupported(notes: Option[String]) extends SupportLevel
 
 /**
  * Trait for providing serialization logic for operators.
