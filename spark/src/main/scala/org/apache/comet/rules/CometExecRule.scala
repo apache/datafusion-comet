@@ -785,7 +785,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
      * Determine which data types are supported as data columns in native shuffle.
      *
      * Native shuffle relies on the Arrow IPC writer to serialize batches to disk, so it should
-     * all types that Comet supports.
+     * support all types that Comet supports.
      */
     def supportedSerializableDataType(dt: DataType): Boolean = dt match {
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
