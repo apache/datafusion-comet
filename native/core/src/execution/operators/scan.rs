@@ -24,7 +24,7 @@ use crate::{
     jvm_bridge::{jni_call, JVMClasses},
 };
 use arrow::array::{make_array, ArrayData, ArrayRef, RecordBatch, RecordBatchOptions};
-use arrow::compute::{cast_with_options, CastOptions};
+use arrow::compute::{cast_with_options, take, CastOptions};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::ffi::FFI_ArrowArray;
 use arrow::ffi::FFI_ArrowSchema;
@@ -239,6 +239,87 @@ impl ScanExec {
 
         let mut timer = arrow_ffi_time.timer();
 
+        // Check for selection vectors and get selection indices if needed from
+        // JVM via FFI
+        // Selection vectors can be provided by, for instance, Iceberg to
+        // remove rows that have been deleted.
+        let selection_indices_arrays = Self::get_selection_indices(&mut env, iter, num_cols)?;
+
+        // fetch batch data from JVMi via FFI
+        let (num_rows, array_addrs, schema_addrs) =
+            Self::allocate_and_fetch_batch(&mut env, iter, num_cols)?;
+
+        let mut inputs: Vec<ArrayRef> = Vec::with_capacity(num_cols);
+
+        // Process each column
+        for i in 0..num_cols {
+            let array_ptr = array_addrs[i];
+            let schema_ptr = schema_addrs[i];
+            let array_data = ArrayData::from_spark((array_ptr, schema_ptr))?;
+
+            // TODO: validate array input data
+            // array_data.validate_full()?;
+
+            let array = make_array(array_data);
+
+            // Apply selection if selection vectors exist (applies to all columns)
+            let array = if let Some(ref selection_arrays) = selection_indices_arrays {
+                let indices = &selection_arrays[i];
+                // Apply the selection using Arrow's take kernel
+                match take(&*array, &**indices, None) {
+                    Ok(selected_array) => selected_array,
+                    Err(e) => {
+                        return Err(CometError::from(ExecutionError::ArrowError(format!(
+                            "Failed to apply selection for column {i}: {e}",
+                        ))));
+                    }
+                }
+            } else {
+                array
+            };
+
+            let array = if arrow_ffi_safe {
+                // ownership of this array has been transferred to native
+                array
+            } else {
+                // it is necessary to copy the array because the contents may be
+                // overwritten on the JVM side in the future
+                copy_array(&array)
+            };
+
+            inputs.push(array);
+
+            // Drop the Arcs to avoid memory leak
+            unsafe {
+                Rc::from_raw(array_ptr as *const FFI_ArrowArray);
+                Rc::from_raw(schema_ptr as *const FFI_ArrowSchema);
+            }
+        }
+
+        timer.stop();
+
+        // If selection was applied, determine the actual row count from the selected arrays
+        let actual_num_rows = if let Some(ref selection_arrays) = selection_indices_arrays {
+            if !selection_arrays.is_empty() {
+                // Use the length of the first selection array as the actual row count
+                selection_arrays[0].len()
+            } else {
+                num_rows as usize
+            }
+        } else {
+            num_rows as usize
+        };
+
+        Ok(InputBatch::new(inputs, Some(actual_num_rows)))
+    }
+
+    /// Allocates Arrow FFI structures and calls JNI to get the next batch data.
+    /// Returns the number of rows and the allocated array/schema addresses.
+    fn allocate_and_fetch_batch(
+        env: &mut jni::JNIEnv,
+        iter: &JObject,
+        num_cols: usize,
+    ) -> Result<(i32, Vec<i64>, Vec<i64>), CometError> {
         let mut array_addrs = Vec::with_capacity(num_cols);
         let mut schema_addrs = Vec::with_capacity(num_cols);
 
@@ -268,7 +349,7 @@ impl ScanExec {
         let schema_obj = JValueGen::Object(schema_obj.as_ref());
 
         let num_rows: i32 = unsafe {
-            jni_call!(&mut env,
+            jni_call!(env,
         comet_batch_iterator(iter).next(array_obj, schema_obj) -> i32)?
         };
 
@@ -276,39 +357,70 @@ impl ScanExec {
         // have a valid row count when calling next()
         assert!(num_rows != -1);
 
-        let mut inputs: Vec<ArrayRef> = Vec::with_capacity(num_cols);
+        Ok((num_rows, array_addrs, schema_addrs))
+    }
 
-        for i in 0..num_cols {
-            let array_ptr = array_addrs[i];
-            let schema_ptr = schema_addrs[i];
-            let array_data = ArrayData::from_spark((array_ptr, schema_ptr))?;
+    /// Checks for selection vectors and exports selection indices if needed.
+    /// Returns selection arrays if they exist (applies to all columns).
+    fn get_selection_indices(
+        env: &mut jni::JNIEnv,
+        iter: &JObject,
+        num_cols: usize,
+    ) -> Result<Option<Vec<ArrayRef>>, CometError> {
+        // Check if all columns have selection vectors
+        let has_selection_vectors_result: jni::sys::jboolean = unsafe {
+            jni_call!(env,
+                comet_batch_iterator(iter).has_selection_vectors() -> jni::sys::jboolean)?
+        };
+        let has_selection_vectors = has_selection_vectors_result != 0;
 
-            // TODO: validate array input data
-            // array_data.validate_full()?;
+        let selection_indices_arrays = if has_selection_vectors {
+            // Allocate arrays for selection indices export (one per column)
+            let mut indices_array_addrs = Vec::with_capacity(num_cols);
+            let mut indices_schema_addrs = Vec::with_capacity(num_cols);
 
-            let array = make_array(array_data);
+            for _ in 0..num_cols {
+                let arrow_array = Rc::new(FFI_ArrowArray::empty());
+                let arrow_schema = Rc::new(FFI_ArrowSchema::empty());
+                indices_array_addrs.push(Rc::into_raw(arrow_array) as i64);
+                indices_schema_addrs.push(Rc::into_raw(arrow_schema) as i64);
+            }
 
-            let array = if arrow_ffi_safe {
-                // ownership of this array has been transferred to native
-                array
-            } else {
-                // it is necessary to copy the array because the contents may be
-                // overwritten on the JVM side in the future
-                copy_array(&array)
+            // Prepare JNI arrays for the export call
+            let indices_array_obj = env.new_long_array(num_cols as jsize)?;
+            let indices_schema_obj = env.new_long_array(num_cols as jsize)?;
+            env.set_long_array_region(&indices_array_obj, 0, &indices_array_addrs)?;
+            env.set_long_array_region(&indices_schema_obj, 0, &indices_schema_addrs)?;
+
+            // Export selection indices from JVM
+            let _exported_count: i32 = unsafe {
+                jni_call!(env,
+                    comet_batch_iterator(iter).export_selection_indices(
+                        JValueGen::Object(JObject::from(indices_array_obj).as_ref()),
+                        JValueGen::Object(JObject::from(indices_schema_obj).as_ref())
+                    ) -> i32)?
             };
 
-            inputs.push(array);
+            // Convert to ArrayRef for easier handling
+            let mut selection_arrays = Vec::with_capacity(num_cols);
+            for i in 0..num_cols {
+                let array_data =
+                    ArrayData::from_spark((indices_array_addrs[i], indices_schema_addrs[i]))?;
+                selection_arrays.push(make_array(array_data));
 
-            // Drop the Arcs to avoid memory leak
-            unsafe {
-                Rc::from_raw(array_ptr as *const FFI_ArrowArray);
-                Rc::from_raw(schema_ptr as *const FFI_ArrowSchema);
+                // Drop the references to the FFI arrays
+                unsafe {
+                    Rc::from_raw(indices_array_addrs[i] as *const FFI_ArrowArray);
+                    Rc::from_raw(indices_schema_addrs[i] as *const FFI_ArrowSchema);
+                }
             }
-        }
 
-        timer.stop();
+            Some(selection_arrays)
+        } else {
+            None
+        };
 
-        Ok(InputBatch::new(inputs, Some(num_rows as usize)))
+        Ok(selection_indices_arrays)
     }
 }
 
