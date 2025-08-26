@@ -643,6 +643,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
     def convert[T <: Expression](expr: T, handler: CometExpressionSerde[T]): Option[Expr] = {
       handler.getSupportLevel(expr) match {
+        case Unsupported =>
+          withInfo(expr, s"$expr is not supported.")
+          None
         case incompat: Incompatible if !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() =>
           val optionalNotes = incompat.notes.map(str => s" ($str)").getOrElse("")
           withInfo(
@@ -650,7 +653,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
             s"$expr is not fully compatible with Spark$optionalNotes. To enable it anyway, set " +
               s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true. ${CometConf.COMPAT_GUIDE}.")
           None
-        case _ =>
+        case compat: Compatible =>
+          if (compat.notes.isDefined) {
+            logWarning(s"Comet supports $expr but has notes: ${compat.notes.get}")
+          }
           handler.convert(expr, inputs, binding)
       }
     }
