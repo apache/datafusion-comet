@@ -29,7 +29,7 @@ import org.apache.comet.vector.NativeUtil;
  * Iterator for fetching batches from JVM to native code. Usually called via JNI from native
  * ScanExec.
  *
- * Batches are owned by the JVM. Native code can safely access the batch after calling `next` but
+ * <p>Batches are owned by the JVM. Native code can safely access the batch after calling `next` but
  * the native code must not retain references to the batch because the next call to `hasNext` will
  * signal to the JVM that the batch can be closed.
  */
