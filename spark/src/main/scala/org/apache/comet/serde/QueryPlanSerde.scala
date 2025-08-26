@@ -2368,13 +2368,13 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
 sealed trait SupportLevel
 
-/** We support this feature with full compatibility with Spark */
+/** Comet supports this feature with full (or close enough) compatibility with Spark */
 case class Compatible(notes: Option[String] = None) extends SupportLevel
 
-/** We support this feature but results can be different from Spark */
+/** Comet supports this feature but results can be different from Spark */
 case class Incompatible(notes: Option[String] = None) extends SupportLevel
 
-/** We do not support this feature */
+/** Comet does not support this feature */
 object Unsupported extends SupportLevel
 
 /**
