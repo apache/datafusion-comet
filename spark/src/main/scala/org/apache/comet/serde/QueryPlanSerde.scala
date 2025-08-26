@@ -650,15 +650,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
           if (CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get()) {
             if (notes.isDefined) {
               logWarning(
-                s"Comet supports $expr when ${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true but has notes: ${notes.get}")
+                s"Comet supports $expr when ${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true " +
+                  s"but has notes: ${notes.get}")
             }
             handler.convert(expr, inputs, binding)
           } else {
             val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
             withInfo(
               expr,
-              s"$expr is not fully compatible with Spark$optionalNotes. To enable it anyway, set " +
-                s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true. ${CometConf.COMPAT_GUIDE}.")
+              s"$expr is not fully compatible with Spark$optionalNotes. To enable it anyway, " +
+                s"set ${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true. " +
+                s"${CometConf.COMPAT_GUIDE}.")
             None
           }
         case Compatible(notes) =>
