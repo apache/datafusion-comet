@@ -80,6 +80,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Divide] -> CometDivide,
     classOf[IntegralDivide] -> CometIntegralDivide,
     classOf[Remainder] -> CometRemainder,
+    classOf[Round] -> CometRound,
     classOf[ArrayAppend] -> CometArrayAppend,
     classOf[ArrayContains] -> CometArrayContains,
     classOf[ArrayDistinct] -> CometArrayDistinct,
@@ -1159,45 +1160,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val rightExpr = exprToProtoInternal(right, inputs, binding)
         val optExpr = scalarFunctionExprToProto("pow", leftExpr, rightExpr)
         optExprWithInfo(optExpr, expr, left, right)
-
-      case r: Round =>
-        // _scale s a constant, copied from Spark's RoundBase because it is a protected val
-        val scaleV: Any = r.scale.eval(EmptyRow)
-        val _scale: Int = scaleV.asInstanceOf[Int]
-
-        lazy val childExpr = exprToProtoInternal(r.child, inputs, binding)
-        r.child.dataType match {
-          case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
-            withInfo(r, "Decimal type has negative scale")
-            None
-          case _ if scaleV == null =>
-            exprToProtoInternal(Literal(null), inputs, binding)
-          case _: ByteType | ShortType | IntegerType | LongType if _scale >= 0 =>
-            childExpr // _scale(I.e. decimal place) >= 0 is a no-op for integer types in Spark
-          case _: FloatType | DoubleType =>
-            // We cannot properly match with the Spark behavior for floating-point numbers.
-            // Spark uses BigDecimal for rounding float/double, and BigDecimal fist converts a
-            // double to string internally in order to create its own internal representation.
-            // The problem is BigDecimal uses java.lang.Double.toString() and it has complicated
-            // rounding algorithm. E.g. -5.81855622136895E8 is actually
-            // -581855622.13689494132995605468750. Note the 5th fractional digit is 4 instead of
-            // 5. Java(Scala)'s toString() rounds it up to -581855622.136895. This makes a
-            // difference when rounding at 5th digit, I.e. round(-5.81855622136895E8, 5) should be
-            // -5.818556221369E8, instead of -5.8185562213689E8. There is also an example that
-            // toString() does NOT round up. 6.1317116247283497E18 is 6131711624728349696. It can
-            // be rounded up to 6.13171162472835E18 that still represents the same double number.
-            // I.e. 6.13171162472835E18 == 6.1317116247283497E18. However, toString() does not.
-            // That results in round(6.1317116247283497E18, -5) == 6.1317116247282995E18 instead
-            // of 6.1317116247283999E18.
-            withInfo(r, "Comet does not support Spark's BigDecimal rounding")
-            None
-          case _ =>
-            // `scale` must be Int64 type in DataFusion
-            val scaleExpr = exprToProtoInternal(Literal(_scale.toLong, LongType), inputs, binding)
-            val optExpr =
-              scalarFunctionExprToProtoWithReturnType("round", r.dataType, childExpr, scaleExpr)
-            optExprWithInfo(optExpr, expr, r.child)
-        }
 
       case RegExpReplace(subject, pattern, replacement, startPosition) =>
         if (!RegExp.isSupportedPattern(pattern.toString) &&
