@@ -303,7 +303,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
               session.sparkContext.hadoopConfiguration,
               URI.create(filePath.get)))
         try {
-          Native.validateObjectStoreConfig(filePath, objectStoreOptions)
+          Native.validateObjectStoreConfig(filePath.get, objectStoreOptions)
         } catch {
           case e: Exception =>
             fallbackReasons += "Object store config not supported by " +
