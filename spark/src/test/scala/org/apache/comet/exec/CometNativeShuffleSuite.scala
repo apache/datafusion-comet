@@ -85,6 +85,36 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
+  test("native shuffle on nested array") {
+    Seq("false", "true").foreach { _ =>
+      Seq(10, 201).foreach { numPartitions =>
+        Seq("1.0", "10.0").foreach { ratio =>
+          withSQLConf(
+            CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio,
+            CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion") {
+            withParquetTable(
+              (0 until 50).map(i => (i, Seq(Seq(i + 1), Seq(i + 2), Seq(i + 3)), i + 1)),
+              "tbl") {
+              var df = sql("SELECT * FROM tbl")
+                .filter($"_3" > 10)
+                .repartition(numPartitions, $"_2")
+
+              // Partitioning on nested array falls back to Spark
+              checkShuffleAnswer(df, 0)
+
+              df = sql("SELECT * FROM tbl")
+                .filter($"_3" > 10)
+                .repartition(numPartitions, $"_1")
+
+              // Partitioning on primitive type, with nested array in other cols works with native.
+              checkShuffleAnswer(df, 1)
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("hash-based native shuffle") {
     withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
       val df = sql("SELECT * FROM tbl").sortWithinPartitions($"_1".desc)
