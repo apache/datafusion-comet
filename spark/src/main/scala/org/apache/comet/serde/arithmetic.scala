@@ -86,6 +86,15 @@ trait MathBase {
 }
 
 object CometAdd extends CometExpressionSerde[Add] with MathBase {
+
+  override def getSupportLevel(expr: Add): SupportLevel = {
+    if (expr.evalMode == EvalMode.ANSI) {
+      Incompatible(Some("ANSI mode is not supported"))
+    } else {
+      Compatible(None)
+    }
+  }
+
   override def convert(
       expr: Add,
       inputs: Seq[Attribute],
@@ -107,6 +116,15 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
 }
 
 object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
+
+  override def getSupportLevel(expr: Subtract): SupportLevel = {
+    if (expr.evalMode == EvalMode.ANSI) {
+      Incompatible(Some("ANSI mode is not supported"))
+    } else {
+      Compatible(None)
+    }
+  }
+
   override def convert(
       expr: Subtract,
       inputs: Seq[Attribute],
@@ -128,6 +146,15 @@ object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
 }
 
 object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
+
+  override def getSupportLevel(expr: Multiply): SupportLevel = {
+    if (expr.evalMode == EvalMode.ANSI) {
+      Incompatible(Some("ANSI mode is not supported"))
+    } else {
+      Compatible(None)
+    }
+  }
+
   override def convert(
       expr: Multiply,
       inputs: Seq[Attribute],
@@ -149,6 +176,15 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
 }
 
 object CometDivide extends CometExpressionSerde[Divide] with MathBase {
+
+  override def getSupportLevel(expr: Divide): SupportLevel = {
+    if (expr.evalMode == EvalMode.ANSI) {
+      Incompatible(Some("ANSI mode is not supported"))
+    } else {
+      Compatible(None)
+    }
+  }
+
   override def convert(
       expr: Divide,
       inputs: Seq[Attribute],
@@ -174,6 +210,15 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 }
 
 object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with MathBase {
+
+  override def getSupportLevel(expr: IntegralDivide): SupportLevel = {
+    if (expr.evalMode == EvalMode.ANSI) {
+      Incompatible(Some("ANSI mode is not supported"))
+    } else {
+      Compatible(None)
+    }
+  }
+
   override def convert(
       expr: IntegralDivide,
       inputs: Seq[Attribute],
@@ -237,6 +282,15 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
 }
 
 object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
+
+  override def getSupportLevel(expr: Remainder): SupportLevel = {
+    if (expr.evalMode == EvalMode.ANSI) {
+      Incompatible(Some("ANSI mode is not supported"))
+    } else {
+      Compatible(None)
+    }
+  }
+
   override def convert(
       expr: Remainder,
       inputs: Seq[Attribute],
@@ -263,6 +317,14 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
 }
 
 object CometRound extends CometExpressionSerde[Round] {
+
+  override def getSupportLevel(expr: Round): SupportLevel = {
+    if (expr.ansiEnabled) {
+      Incompatible(Some("ANSI mode is not supported"))
+    } else {
+      Compatible(None)
+    }
+  }
 
   override def convert(
       r: Round,

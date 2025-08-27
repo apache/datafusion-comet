@@ -139,9 +139,18 @@ object CometAverage extends CometAggregateExpressionSerde {
       return None
     }
 
-    if (avg.evalMode != EvalMode.LEGACY) {
-      withInfo(aggExpr, "Average is only supported in legacy mode")
-      return None
+    avg.evalMode match {
+      case EvalMode.ANSI if !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() =>
+        withInfo(
+          aggExpr,
+          "ANSI mode is not supported. Set " +
+            s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true to allow it anyway")
+        return None
+      case EvalMode.TRY =>
+        withInfo(aggExpr, "TRY mode is not supported")
+        return None
+      case _ =>
+      // supported
     }
 
     val child = avg.child
@@ -194,9 +203,18 @@ object CometSum extends CometAggregateExpressionSerde {
       return None
     }
 
-    if (sum.evalMode != EvalMode.LEGACY) {
-      withInfo(aggExpr, "Sum is only supported in legacy mode")
-      return None
+    sum.evalMode match {
+      case EvalMode.ANSI if !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() =>
+        withInfo(
+          aggExpr,
+          "ANSI mode is not supported. Set " +
+            s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true to allow it anyway")
+        return None
+      case EvalMode.TRY =>
+        withInfo(aggExpr, "TRY mode is not supported")
+        return None
+      case _ =>
+      // supported
     }
 
     val childExpr = exprToProto(sum.child, inputs, binding)
