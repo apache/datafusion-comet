@@ -477,10 +477,20 @@ types (regardless of the logical type). This behavior can be disabled by setting
 </section>
 <section id="ansi-mode">
 <h2>ANSI Mode<a class="headerlink" href="#ansi-mode" title="Link to this heading">¶</a></h2>
-<p>Comet currently ignores ANSI mode in most cases, and therefore can produce different results than Spark. By default,
-Comet will fall back to Spark if ANSI mode is enabled. To enable Comet to accelerate queries when ANSI mode is enabled,
-specify <code class="docutils literal notranslate"><span class="pre">spark.comet.ansi.enabled=true</span></code> in the Spark configuration. Comet’s ANSI support is experimental and should not
-be used in production.</p>
+<p>Comet will fall back to Spark for the following expressions when ANSI mode is enabled, unless
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.allowIncompatible=true</span></code>.</p>
+<ul class="simple">
+<li><p>Add</p></li>
+<li><p>Subtract</p></li>
+<li><p>Multiply</p></li>
+<li><p>Divide</p></li>
+<li><p>IntegralDivide</p></li>
+<li><p>Remainder</p></li>
+<li><p>Round</p></li>
+<li><p>Average</p></li>
+<li><p>Sum</p></li>
+<li><p>Cast (in some cases)</p></li>
+</ul>
 <p>There is an <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/313">epic</a> where we are tracking the work to fully implement ANSI support.</p>
 </section>
 <section id="floating-point-number-comparison">
