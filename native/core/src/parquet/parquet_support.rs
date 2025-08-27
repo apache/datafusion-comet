@@ -38,13 +38,8 @@ use datafusion_comet_spark_expr::EvalMode;
 use object_store::path::Path;
 use object_store::{parse_url, ObjectStore};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::time::Duration;
-use std::{
-    fmt::{Debug, Write},
-    hash::Hash,
-    sync::Arc,
-};
+use std::{fmt::Debug, hash::Hash, sync::Arc};
 use url::Url;
 
 use super::objectstore;
@@ -373,7 +368,9 @@ fn parse_hdfs_url(url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_stor
     Ok((Box::new(store), path))
 }
 
+#[cfg(feature = "hdfs-opendal")]
 fn get_name_node_uri(url: &Url) -> Result<String, object_store::Error> {
+    use std::fmt::Write;
     if let Some(host) = url.host() {
         let schema = url.scheme();
         let mut uri_builder = String::new();
@@ -386,7 +383,7 @@ fn get_name_node_uri(url: &Url) -> Result<String, object_store::Error> {
     } else {
         Err(object_store::Error::InvalidPath {
             source: object_store::path::Error::InvalidPath {
-                path: PathBuf::from(url.as_str()),
+                path: std::path::PathBuf::from(url.as_str()),
             },
         })
     }
