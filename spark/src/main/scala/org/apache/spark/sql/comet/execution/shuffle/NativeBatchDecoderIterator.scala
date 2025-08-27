@@ -49,7 +49,7 @@ case class NativeBatchDecoderIterator(
   private var currentBatch: ColumnarBatch = null
   private var batch = fetchNext()
 
-  import NativeBatchDecoderIterator.threadLocalDataBuf
+  import NativeBatchDecoderIterator._
 
   if (taskContext != null) {
     taskContext.addTaskCompletionListener[Unit](_ => {
@@ -184,6 +184,7 @@ case class NativeBatchDecoderIterator(
         }
         in.close()
         nativeUtil.close()
+        resetDataBuf()
         isClosed = true
       }
     }
@@ -191,7 +192,16 @@ case class NativeBatchDecoderIterator(
 }
 
 object NativeBatchDecoderIterator {
+
+  private val INITIAL_BUFFER_SIZE = 128 * 1024
+
   private val threadLocalDataBuf: ThreadLocal[ByteBuffer] = ThreadLocal.withInitial(() => {
-    ByteBuffer.allocateDirect(128 * 1024)
+    ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE)
   })
+
+  private def resetDataBuf(): Unit = {
+    if (threadLocalDataBuf.get().capacity() > INITIAL_BUFFER_SIZE) {
+      threadLocalDataBuf.set(ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE))
+    }
+  }
 }
