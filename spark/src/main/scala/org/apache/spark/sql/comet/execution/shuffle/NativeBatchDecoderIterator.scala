@@ -198,6 +198,8 @@ object NativeBatchDecoderIterator {
   })
 
   private def resetDataBuf(): Unit = {
-    threadLocalDataBuf.set(ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE))
+    if (threadLocalDataBuf.get().capacity() > INITIAL_BUFFER_SIZE) {
+      threadLocalDataBuf.set(ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE))
+    }
   }
 }
