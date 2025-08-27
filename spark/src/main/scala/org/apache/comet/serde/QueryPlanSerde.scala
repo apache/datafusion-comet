@@ -800,19 +800,19 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val child = expr.asInstanceOf[UnaryExpression].child
         val timezoneId = expr.asInstanceOf[TimeZoneAwareExpression].timeZoneId
 
-        // TODO this is duplicating logic in the `convert` method
         val castSupported = CometCast.isSupported(
           child.dataType,
           DataTypes.StringType,
           timezoneId,
           CometEvalMode.TRY)
-        val x = castSupported match {
+
+        val isCastSupported = castSupported match {
           case Compatible(_) => true
-          case Incompatible(notes) => true
+          case Incompatible(_) => true
           case _ => false
         }
 
-        if (x) {
+        if (isCastSupported) {
           exprToProtoInternal(child, inputs, binding) match {
             case Some(p) =>
               val toPrettyString = ExprOuterClass.ToPrettyString
