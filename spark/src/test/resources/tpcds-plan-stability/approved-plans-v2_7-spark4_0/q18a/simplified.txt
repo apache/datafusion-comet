@@ -22,7 +22,7 @@ TakeOrderedAndProject [ca_country,ca_state,ca_county,i_item_id,agg1,agg2,agg3,ag
                                           CometProject [cs_bill_customer_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk,cd_dep_count]
                                             CometBroadcastHashJoin [cs_bill_customer_sk,cs_bill_cdemo_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk,cd_demo_sk,cd_dep_count]
                                               CometFilter [cs_bill_customer_sk,cs_bill_cdemo_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk]
-                                                CometScan [native_comet] parquet spark_catalog.default.catalog_sales [cs_bill_customer_sk,cs_bill_cdemo_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk]
+                                                CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales [cs_bill_customer_sk,cs_bill_cdemo_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk]
                                                   SubqueryBroadcast [d_date_sk] #1
                                                     BroadcastExchange #2
                                                       WholeStageCodegen (1)
@@ -30,30 +30,30 @@ TakeOrderedAndProject [ca_country,ca_state,ca_county,i_item_id,agg1,agg2,agg3,ag
                                                           InputAdapter
                                                             CometProject [d_date_sk]
                                                               CometFilter [d_date_sk,d_year]
-                                                                CometScan [native_comet] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                                                CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                                               CometBroadcastExchange [cd_demo_sk,cd_dep_count] #3
                                                 CometProject [cd_demo_sk,cd_dep_count]
                                                   CometFilter [cd_demo_sk,cd_gender,cd_education_status,cd_dep_count]
-                                                    CometScan [native_comet] parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_gender,cd_education_status,cd_dep_count]
+                                                    CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_gender,cd_education_status,cd_dep_count]
                                           CometBroadcastExchange [c_customer_sk,c_current_cdemo_sk,c_current_addr_sk,c_birth_year] #4
                                             CometProject [c_customer_sk,c_current_cdemo_sk,c_current_addr_sk,c_birth_year]
                                               CometFilter [c_customer_sk,c_current_cdemo_sk,c_current_addr_sk,c_birth_month,c_birth_year]
-                                                CometScan [native_comet] parquet spark_catalog.default.customer [c_customer_sk,c_current_cdemo_sk,c_current_addr_sk,c_birth_month,c_birth_year]
+                                                CometScan [native_iceberg_compat] parquet spark_catalog.default.customer [c_customer_sk,c_current_cdemo_sk,c_current_addr_sk,c_birth_month,c_birth_year]
                                       CometBroadcastExchange [cd_demo_sk] #5
                                         CometFilter [cd_demo_sk]
-                                          CometScan [native_comet] parquet spark_catalog.default.customer_demographics [cd_demo_sk]
+                                          CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_demographics [cd_demo_sk]
                                   CometBroadcastExchange [ca_address_sk,ca_county,ca_state,ca_country] #6
                                     CometProject [ca_state] [ca_address_sk,ca_county,ca_state,ca_country]
                                       CometFilter [ca_address_sk,ca_county,ca_state,ca_country]
-                                        CometScan [native_comet] parquet spark_catalog.default.customer_address [ca_address_sk,ca_county,ca_state,ca_country]
+                                        CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address [ca_address_sk,ca_county,ca_state,ca_country]
                               CometBroadcastExchange [d_date_sk] #7
                                 CometProject [d_date_sk]
                                   CometFilter [d_date_sk,d_year]
-                                    CometScan [native_comet] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                    CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                           CometBroadcastExchange [i_item_sk,i_item_id] #8
                             CometProject [i_item_id] [i_item_sk,i_item_id]
                               CometFilter [i_item_sk,i_item_id]
-                                CometScan [native_comet] parquet spark_catalog.default.item [i_item_sk,i_item_id]
+                                CometScan [native_iceberg_compat] parquet spark_catalog.default.item [i_item_sk,i_item_id]
     WholeStageCodegen (4)
       HashAggregate [i_item_id,ca_country,ca_state,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count] [avg(agg1),avg(agg2),avg(agg3),avg(agg4),avg(agg5),avg(agg6),avg(agg7),county,agg1,agg2,agg3,agg4,agg5,agg6,agg7,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count]
         CometColumnarToRow
@@ -76,7 +76,7 @@ TakeOrderedAndProject [ca_country,ca_state,ca_county,i_item_id,agg1,agg2,agg3,ag
                                           CometProject [cs_bill_customer_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk,cd_dep_count]
                                             CometBroadcastHashJoin [cs_bill_customer_sk,cs_bill_cdemo_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk,cd_demo_sk,cd_dep_count]
                                               CometFilter [cs_bill_customer_sk,cs_bill_cdemo_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk]
-                                                CometScan [native_comet] parquet spark_catalog.default.catalog_sales [cs_bill_customer_sk,cs_bill_cdemo_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk]
+                                                CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales [cs_bill_customer_sk,cs_bill_cdemo_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk]
                                                   ReusedSubquery [d_date_sk] #1
                                               ReusedExchange [cd_demo_sk,cd_dep_count] #3
                                           ReusedExchange [c_customer_sk,c_current_cdemo_sk,c_current_addr_sk,c_birth_year] #4
@@ -84,7 +84,7 @@ TakeOrderedAndProject [ca_country,ca_state,ca_county,i_item_id,agg1,agg2,agg3,ag
                                   CometBroadcastExchange [ca_address_sk,ca_state,ca_country] #10
                                     CometProject [ca_state] [ca_address_sk,ca_state,ca_country]
                                       CometFilter [ca_address_sk,ca_state,ca_country]
-                                        CometScan [native_comet] parquet spark_catalog.default.customer_address [ca_address_sk,ca_state,ca_country]
+                                        CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address [ca_address_sk,ca_state,ca_country]
                               ReusedExchange [d_date_sk] #7
                           ReusedExchange [i_item_sk,i_item_id] #8
     WholeStageCodegen (6)
@@ -109,7 +109,7 @@ TakeOrderedAndProject [ca_country,ca_state,ca_county,i_item_id,agg1,agg2,agg3,ag
                                           CometProject [cs_bill_customer_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk,cd_dep_count]
                                             CometBroadcastHashJoin [cs_bill_customer_sk,cs_bill_cdemo_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk,cd_demo_sk,cd_dep_count]
                                               CometFilter [cs_bill_customer_sk,cs_bill_cdemo_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk]
-                                                CometScan [native_comet] parquet spark_catalog.default.catalog_sales [cs_bill_customer_sk,cs_bill_cdemo_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk]
+                                                CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales [cs_bill_customer_sk,cs_bill_cdemo_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk]
                                                   ReusedSubquery [d_date_sk] #1
                                               ReusedExchange [cd_demo_sk,cd_dep_count] #3
                                           ReusedExchange [c_customer_sk,c_current_cdemo_sk,c_current_addr_sk,c_birth_year] #4
@@ -117,7 +117,7 @@ TakeOrderedAndProject [ca_country,ca_state,ca_county,i_item_id,agg1,agg2,agg3,ag
                                   CometBroadcastExchange [ca_address_sk,ca_country] #12
                                     CometProject [ca_address_sk,ca_country]
                                       CometFilter [ca_address_sk,ca_state,ca_country]
-                                        CometScan [native_comet] parquet spark_catalog.default.customer_address [ca_address_sk,ca_state,ca_country]
+                                        CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address [ca_address_sk,ca_state,ca_country]
                               ReusedExchange [d_date_sk] #7
                           ReusedExchange [i_item_sk,i_item_id] #8
     WholeStageCodegen (8)
@@ -142,7 +142,7 @@ TakeOrderedAndProject [ca_country,ca_state,ca_county,i_item_id,agg1,agg2,agg3,ag
                                           CometProject [cs_bill_customer_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk,cd_dep_count]
                                             CometBroadcastHashJoin [cs_bill_customer_sk,cs_bill_cdemo_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk,cd_demo_sk,cd_dep_count]
                                               CometFilter [cs_bill_customer_sk,cs_bill_cdemo_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk]
-                                                CometScan [native_comet] parquet spark_catalog.default.catalog_sales [cs_bill_customer_sk,cs_bill_cdemo_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk]
+                                                CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales [cs_bill_customer_sk,cs_bill_cdemo_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk]
                                                   ReusedSubquery [d_date_sk] #1
                                               ReusedExchange [cd_demo_sk,cd_dep_count] #3
                                           ReusedExchange [c_customer_sk,c_current_cdemo_sk,c_current_addr_sk,c_birth_year] #4
@@ -150,7 +150,7 @@ TakeOrderedAndProject [ca_country,ca_state,ca_county,i_item_id,agg1,agg2,agg3,ag
                                   CometBroadcastExchange [ca_address_sk] #14
                                     CometProject [ca_address_sk]
                                       CometFilter [ca_address_sk,ca_state]
-                                        CometScan [native_comet] parquet spark_catalog.default.customer_address [ca_address_sk,ca_state]
+                                        CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address [ca_address_sk,ca_state]
                               ReusedExchange [d_date_sk] #7
                           ReusedExchange [i_item_sk,i_item_id] #8
     WholeStageCodegen (10)
@@ -175,7 +175,7 @@ TakeOrderedAndProject [ca_country,ca_state,ca_county,i_item_id,agg1,agg2,agg3,ag
                                           CometProject [cs_bill_customer_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk,cd_dep_count]
                                             CometBroadcastHashJoin [cs_bill_customer_sk,cs_bill_cdemo_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk,cd_demo_sk,cd_dep_count]
                                               CometFilter [cs_bill_customer_sk,cs_bill_cdemo_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk]
-                                                CometScan [native_comet] parquet spark_catalog.default.catalog_sales [cs_bill_customer_sk,cs_bill_cdemo_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk]
+                                                CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales [cs_bill_customer_sk,cs_bill_cdemo_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk]
                                                   ReusedSubquery [d_date_sk] #1
                                               ReusedExchange [cd_demo_sk,cd_dep_count] #3
                                           ReusedExchange [c_customer_sk,c_current_cdemo_sk,c_current_addr_sk,c_birth_year] #4
@@ -184,4 +184,4 @@ TakeOrderedAndProject [ca_country,ca_state,ca_county,i_item_id,agg1,agg2,agg3,ag
                               ReusedExchange [d_date_sk] #7
                           CometBroadcastExchange [i_item_sk] #16
                             CometFilter [i_item_sk]
-                              CometScan [native_comet] parquet spark_catalog.default.item [i_item_sk]
+                              CometScan [native_iceberg_compat] parquet spark_catalog.default.item [i_item_sk]
