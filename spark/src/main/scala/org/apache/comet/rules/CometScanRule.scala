@@ -300,11 +300,9 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
     val filePath = scanExec.relation.inputFiles.head
 
-    // TODO how to get Hadoop config from driver?
-    val conf = new Configuration()
     val objectStoreOptions =
       JavaConverters.mapAsJavaMap(
-        NativeConfig.extractObjectStoreOptions(conf, URI.create(filePath)));
+        NativeConfig.extractObjectStoreOptions(session.sparkContext.hadoopConfiguration, URI.create(filePath)));
 
     if (!Native.isValidObjectStore(filePath, objectStoreOptions)) {
       fallbackReasons += s"Object store config not supported by $SCAN_NATIVE_ICEBERG_COMPAT"
