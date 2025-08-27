@@ -308,7 +308,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           Native.validateObjectStoreConfig(filePath, objectStoreOptions)
         } catch {
           case e: Exception =>
-            fallbackReasons += s"Object store config not supported by " +
+            fallbackReasons += "Object store config not supported by " +
               s"$SCAN_NATIVE_ICEBERG_COMPAT: ${e.getMessage}"
         }
       }

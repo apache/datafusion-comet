@@ -78,13 +78,17 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
 
   test("validate object store config - no provider") {
     val config: Map[String, String] = Map.empty
-    Native.validateObjectStoreConfig("s3a://path/to/file.parquet", JavaConverters.mapAsJavaMap(config))
+    Native.validateObjectStoreConfig(
+      "s3a://path/to/file.parquet",
+      JavaConverters.mapAsJavaMap(config))
   }
 
   test("validate object store config - invalid provider") {
     val config = Map("fs.s3a.aws.credentials.provider" -> "invalid")
     val e = intercept[CometNativeException] {
-      Native.validateObjectStoreConfig("s3a://path/to/file.parquet", JavaConverters.mapAsJavaMap(config))
+      Native.validateObjectStoreConfig(
+        "s3a://path/to/file.parquet",
+        JavaConverters.mapAsJavaMap(config))
     }
     assert(e.getMessage != null && e.getMessage.contains("Unsupported credential provider"))
   }
