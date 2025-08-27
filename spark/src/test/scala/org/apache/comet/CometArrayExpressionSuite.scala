@@ -429,24 +429,16 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_intersect") {
-    // TODO test fails if scan is auto
-    // https://github.com/apache/datafusion-comet/issues/2174
-    withSQLConf(
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
-      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
-
-      Seq(true, false).foreach { dictionaryEnabled =>
-        withTempDir { dir =>
-          val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
-          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
-          checkSparkAnswerAndOperator(
-            sql("SELECT array_intersect(array(_2, _3, _4), array(_3, _4)) from t1"))
-          checkSparkAnswerAndOperator(
-            sql("SELECT array_intersect(array(_2 * -1), array(_9, _10)) from t1"))
-          checkSparkAnswerAndOperator(
-            sql("SELECT array_intersect(array(_18), array(_19)) from t1"))
-        }
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_intersect(array(_2, _3, _4), array(_3, _4)) from t1"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_intersect(array(_4 * -1), array(_5, _5)) from t1"))
+        checkSparkAnswerAndOperator(sql("SELECT array_intersect(array(_18), array(_19)) from t1"))
       }
     }
   }
