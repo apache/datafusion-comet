@@ -295,6 +295,22 @@ index 84639f7c87e..d10c5ddf043 100644
          }.size === 1)
          checkAnswer(shjCodegenDF, Seq.empty)
  
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
+index 8a3e7457618..2cc1791ba54 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
+@@ -4468,7 +4468,10 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+           val msg = intercept[SparkException] {
+             sql(query).collect()
+           }.getMessage
+-          assert(msg.contains(query))
++          if (!isCometEnabled) {
++            // Comet's error message does not include the original SQL query
++            // https://github.com/apache/datafusion-comet/issues/2215
++            assert(msg.contains(query))
+         }
+       }
+     }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
 index 18123a4d6ec..fbe4c766eee 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
@@ -848,7 +864,7 @@ index 3415a1efde7..23b47b305aa 100644
      }
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-index 3a1cd75bd62..4c2aae0fe53 100644
+index 3a1cd75bd62..9573947f020 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 @@ -79,6 +79,7 @@ trait SharedSparkSessionBase
@@ -859,6 +875,14 @@ index 3a1cd75bd62..4c2aae0fe53 100644
  
        if (!isCometScanOnly) {
          conf
+@@ -96,7 +97,6 @@ trait SharedSparkSessionBase
+       if (enableCometAnsiMode) {
+         conf
+           .set("spark.sql.ansi.enabled", "true")
+-          .set("spark.comet.ansi.enabled", "true")
+       }
+     }
+
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
 index de3b1ffccf0..2a76d127093 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
@@ -922,3 +946,15 @@ index a902cb3a69e..83e8d8e7e93 100644
    }
  
    test("SPARK-4963 DataFrame sample on mutable row return wrong result") {
+diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
+index 816785ccc0f..adcae61cf50 100644
+--- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
++++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
+@@ -97,7 +97,6 @@ object TestHive
+           if (a != null && a.toBoolean) {
+             conf
+               .set("spark.sql.ansi.enabled", "true")
+-              .set("spark.comet.ansi.enabled", "true")
+           }
+         }
+

@@ -602,15 +602,6 @@ object CometConf extends ShimCometConf {
       .toSequence
       .createWithDefault(Seq("Range,InMemoryTableScan"))
 
-  val COMET_ANSI_MODE_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.ansi.enabled")
-    .internal()
-    .doc(
-      "Comet does not respect ANSI mode in most cases and by default will not accelerate " +
-        "queries when ansi mode is enabled. Enable this setting to test Comet's experimental " +
-        "support for ANSI mode. This should not be used in production.")
-    .booleanConf
-    .createWithDefault(COMET_ANSI_MODE_ENABLED_DEFAULT)
-
   val COMET_CASE_CONVERSION_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.caseConversion.enabled")
       .doc(

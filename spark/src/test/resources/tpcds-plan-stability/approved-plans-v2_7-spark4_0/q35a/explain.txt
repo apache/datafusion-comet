@@ -1,45 +1,44 @@
 == Physical Plan ==
-TakeOrderedAndProject (41)
-+- * HashAggregate (40)
-   +- * CometColumnarToRow (39)
-      +- CometColumnarExchange (38)
-         +- * HashAggregate (37)
-            +- * CometColumnarToRow (36)
-               +- CometProject (35)
-                  +- CometBroadcastHashJoin (34)
-                     :- CometProject (29)
-                     :  +- CometBroadcastHashJoin (28)
-                     :     :- CometProject (23)
-                     :     :  +- CometBroadcastHashJoin (22)
-                     :     :     :- CometBroadcastHashJoin (11)
-                     :     :     :  :- CometFilter (2)
-                     :     :     :  :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer (1)
-                     :     :     :  +- CometBroadcastExchange (10)
-                     :     :     :     +- CometProject (9)
-                     :     :     :        +- CometBroadcastHashJoin (8)
-                     :     :     :           :- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales (3)
-                     :     :     :           +- CometBroadcastExchange (7)
-                     :     :     :              +- CometProject (6)
-                     :     :     :                 +- CometFilter (5)
-                     :     :     :                    +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (4)
-                     :     :     +- CometBroadcastExchange (21)
-                     :     :        +- CometUnion (20)
-                     :     :           :- CometProject (15)
-                     :     :           :  +- CometBroadcastHashJoin (14)
-                     :     :           :     :- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales (12)
-                     :     :           :     +- ReusedExchange (13)
-                     :     :           +- CometProject (19)
-                     :     :              +- CometBroadcastHashJoin (18)
-                     :     :                 :- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales (16)
-                     :     :                 +- ReusedExchange (17)
-                     :     +- CometBroadcastExchange (27)
-                     :        +- CometProject (26)
-                     :           +- CometFilter (25)
-                     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address (24)
-                     +- CometBroadcastExchange (33)
-                        +- CometProject (32)
-                           +- CometFilter (31)
-                              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_demographics (30)
+* CometColumnarToRow (40)
++- CometTakeOrderedAndProject (39)
+   +- CometHashAggregate (38)
+      +- CometExchange (37)
+         +- CometHashAggregate (36)
+            +- CometProject (35)
+               +- CometBroadcastHashJoin (34)
+                  :- CometProject (29)
+                  :  +- CometBroadcastHashJoin (28)
+                  :     :- CometProject (23)
+                  :     :  +- CometBroadcastHashJoin (22)
+                  :     :     :- CometBroadcastHashJoin (11)
+                  :     :     :  :- CometFilter (2)
+                  :     :     :  :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer (1)
+                  :     :     :  +- CometBroadcastExchange (10)
+                  :     :     :     +- CometProject (9)
+                  :     :     :        +- CometBroadcastHashJoin (8)
+                  :     :     :           :- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales (3)
+                  :     :     :           +- CometBroadcastExchange (7)
+                  :     :     :              +- CometProject (6)
+                  :     :     :                 +- CometFilter (5)
+                  :     :     :                    +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (4)
+                  :     :     +- CometBroadcastExchange (21)
+                  :     :        +- CometUnion (20)
+                  :     :           :- CometProject (15)
+                  :     :           :  +- CometBroadcastHashJoin (14)
+                  :     :           :     :- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales (12)
+                  :     :           :     +- ReusedExchange (13)
+                  :     :           +- CometProject (19)
+                  :     :              +- CometBroadcastHashJoin (18)
+                  :     :                 :- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales (16)
+                  :     :                 +- ReusedExchange (17)
+                  :     +- CometBroadcastExchange (27)
+                  :        +- CometProject (26)
+                  :           +- CometFilter (25)
+                  :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address (24)
+                  +- CometBroadcastExchange (33)
+                     +- CometProject (32)
+                        +- CometFilter (31)
+                           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_demographics (30)
 
 
 (1) CometScan [native_iceberg_compat] parquet spark_catalog.default.customer
@@ -208,63 +207,56 @@ Arguments: [c_current_cdemo_sk#2], [cd_demo_sk#23], Inner, BuildRight
 Input [8]: [c_current_cdemo_sk#2, ca_state#22, cd_demo_sk#23, cd_gender#29, cd_marital_status#30, cd_dep_count#26, cd_dep_employed_count#27, cd_dep_college_count#28]
 Arguments: [ca_state#22, cd_gender#29, cd_marital_status#30, cd_dep_count#26, cd_dep_employed_count#27, cd_dep_college_count#28], [ca_state#22, cd_gender#29, cd_marital_status#30, cd_dep_count#26, cd_dep_employed_count#27, cd_dep_college_count#28]
 
-(36) CometColumnarToRow [codegen id : 1]
-Input [6]: [ca_state#22, cd_gender#29, cd_marital_status#30, cd_dep_count#26, cd_dep_employed_count#27, cd_dep_college_count#28]
-
-(37) HashAggregate [codegen id : 1]
+(36) CometHashAggregate
 Input [6]: [ca_state#22, cd_gender#29, cd_marital_status#30, cd_dep_count#26, cd_dep_employed_count#27, cd_dep_college_count#28]
 Keys [6]: [ca_state#22, cd_gender#29, cd_marital_status#30, cd_dep_count#26, cd_dep_employed_count#27, cd_dep_college_count#28]
 Functions [10]: [partial_count(1), partial_avg(cd_dep_count#26), partial_max(cd_dep_count#26), partial_sum(cd_dep_count#26), partial_avg(cd_dep_employed_count#27), partial_max(cd_dep_employed_count#27), partial_sum(cd_dep_employed_count#27), partial_avg(cd_dep_college_count#28), partial_max(cd_dep_college_count#28), partial_sum(cd_dep_college_count#28)]
-Aggregate Attributes [13]: [count#31, sum#32, count#33, max#34, sum#35, sum#36, count#37, max#38, sum#39, sum#40, count#41, max#42, sum#43]
-Results [19]: [ca_state#22, cd_gender#29, cd_marital_status#30, cd_dep_count#26, cd_dep_employed_count#27, cd_dep_college_count#28, count#44, sum#45, count#46, max#47, sum#48, sum#49, count#50, max#51, sum#52, sum#53, count#54, max#55, sum#56]
 
-(38) CometColumnarExchange
-Input [19]: [ca_state#22, cd_gender#29, cd_marital_status#30, cd_dep_count#26, cd_dep_employed_count#27, cd_dep_college_count#28, count#44, sum#45, count#46, max#47, sum#48, sum#49, count#50, max#51, sum#52, sum#53, count#54, max#55, sum#56]
-Arguments: hashpartitioning(ca_state#22, cd_gender#29, cd_marital_status#30, cd_dep_count#26, cd_dep_employed_count#27, cd_dep_college_count#28, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+(37) CometExchange
+Input [19]: [ca_state#22, cd_gender#29, cd_marital_status#30, cd_dep_count#26, cd_dep_employed_count#27, cd_dep_college_count#28, count#31, sum#32, count#33, max#34, sum#35, sum#36, count#37, max#38, sum#39, sum#40, count#41, max#42, sum#43]
+Arguments: hashpartitioning(ca_state#22, cd_gender#29, cd_marital_status#30, cd_dep_count#26, cd_dep_employed_count#27, cd_dep_college_count#28, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(39) CometColumnarToRow [codegen id : 2]
-Input [19]: [ca_state#22, cd_gender#29, cd_marital_status#30, cd_dep_count#26, cd_dep_employed_count#27, cd_dep_college_count#28, count#44, sum#45, count#46, max#47, sum#48, sum#49, count#50, max#51, sum#52, sum#53, count#54, max#55, sum#56]
-
-(40) HashAggregate [codegen id : 2]
-Input [19]: [ca_state#22, cd_gender#29, cd_marital_status#30, cd_dep_count#26, cd_dep_employed_count#27, cd_dep_college_count#28, count#44, sum#45, count#46, max#47, sum#48, sum#49, count#50, max#51, sum#52, sum#53, count#54, max#55, sum#56]
+(38) CometHashAggregate
+Input [19]: [ca_state#22, cd_gender#29, cd_marital_status#30, cd_dep_count#26, cd_dep_employed_count#27, cd_dep_college_count#28, count#31, sum#32, count#33, max#34, sum#35, sum#36, count#37, max#38, sum#39, sum#40, count#41, max#42, sum#43]
 Keys [6]: [ca_state#22, cd_gender#29, cd_marital_status#30, cd_dep_count#26, cd_dep_employed_count#27, cd_dep_college_count#28]
 Functions [10]: [count(1), avg(cd_dep_count#26), max(cd_dep_count#26), sum(cd_dep_count#26), avg(cd_dep_employed_count#27), max(cd_dep_employed_count#27), sum(cd_dep_employed_count#27), avg(cd_dep_college_count#28), max(cd_dep_college_count#28), sum(cd_dep_college_count#28)]
-Aggregate Attributes [10]: [count(1)#57, avg(cd_dep_count#26)#58, max(cd_dep_count#26)#59, sum(cd_dep_count#26)#60, avg(cd_dep_employed_count#27)#61, max(cd_dep_employed_count#27)#62, sum(cd_dep_employed_count#27)#63, avg(cd_dep_college_count#28)#64, max(cd_dep_college_count#28)#65, sum(cd_dep_college_count#28)#66]
-Results [18]: [ca_state#22, cd_gender#29, cd_marital_status#30, cd_dep_count#26, count(1)#57 AS cnt1#67, avg(cd_dep_count#26)#58 AS avg(cd_dep_count)#68, max(cd_dep_count#26)#59 AS max(cd_dep_count)#69, sum(cd_dep_count#26)#60 AS sum(cd_dep_count)#70, cd_dep_employed_count#27, count(1)#57 AS cnt2#71, avg(cd_dep_employed_count#27)#61 AS avg(cd_dep_employed_count)#72, max(cd_dep_employed_count#27)#62 AS max(cd_dep_employed_count)#73, sum(cd_dep_employed_count#27)#63 AS sum(cd_dep_employed_count)#74, cd_dep_college_count#28, count(1)#57 AS cnt3#75, avg(cd_dep_college_count#28)#64 AS avg(cd_dep_college_count)#76, max(cd_dep_college_count#28)#65 AS max(cd_dep_college_count)#77, sum(cd_dep_college_count#28)#66 AS sum(cd_dep_college_count)#78]
 
-(41) TakeOrderedAndProject
-Input [18]: [ca_state#22, cd_gender#29, cd_marital_status#30, cd_dep_count#26, cnt1#67, avg(cd_dep_count)#68, max(cd_dep_count)#69, sum(cd_dep_count)#70, cd_dep_employed_count#27, cnt2#71, avg(cd_dep_employed_count)#72, max(cd_dep_employed_count)#73, sum(cd_dep_employed_count)#74, cd_dep_college_count#28, cnt3#75, avg(cd_dep_college_count)#76, max(cd_dep_college_count)#77, sum(cd_dep_college_count)#78]
-Arguments: 100, [ca_state#22 ASC NULLS FIRST, cd_gender#29 ASC NULLS FIRST, cd_marital_status#30 ASC NULLS FIRST, cd_dep_count#26 ASC NULLS FIRST, cd_dep_employed_count#27 ASC NULLS FIRST, cd_dep_college_count#28 ASC NULLS FIRST], [ca_state#22, cd_gender#29, cd_marital_status#30, cd_dep_count#26, cnt1#67, avg(cd_dep_count)#68, max(cd_dep_count)#69, sum(cd_dep_count)#70, cd_dep_employed_count#27, cnt2#71, avg(cd_dep_employed_count)#72, max(cd_dep_employed_count)#73, sum(cd_dep_employed_count)#74, cd_dep_college_count#28, cnt3#75, avg(cd_dep_college_count)#76, max(cd_dep_college_count)#77, sum(cd_dep_college_count)#78]
+(39) CometTakeOrderedAndProject
+Input [18]: [ca_state#22, cd_gender#29, cd_marital_status#30, cd_dep_count#26, cnt1#44, avg(cd_dep_count)#45, max(cd_dep_count)#46, sum(cd_dep_count)#47, cd_dep_employed_count#27, cnt2#48, avg(cd_dep_employed_count)#49, max(cd_dep_employed_count)#50, sum(cd_dep_employed_count)#51, cd_dep_college_count#28, cnt3#52, avg(cd_dep_college_count)#53, max(cd_dep_college_count)#54, sum(cd_dep_college_count)#55]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[ca_state#22 ASC NULLS FIRST,cd_gender#29 ASC NULLS FIRST,cd_marital_status#30 ASC NULLS FIRST,cd_dep_count#26 ASC NULLS FIRST,cd_dep_employed_count#27 ASC NULLS FIRST,cd_dep_college_count#28 ASC NULLS FIRST], output=[ca_state#22,cd_gender#29,cd_marital_status#30,cd_dep_count#26,cnt1#44,avg(cd_dep_count)#45,max(cd_dep_count)#46,sum(cd_dep_count)#47,cd_dep_employed_count#27,cnt2#48,avg(cd_dep_employed_count)#49,max(cd_dep_employed_count)#50,sum(cd_dep_employed_count)#51,cd_dep_college_count#28,cnt3#52,avg(cd_dep_college_count)#53,max(cd_dep_college_count)#54,sum(cd_dep_college_count)#55]), [ca_state#22, cd_gender#29, cd_marital_status#30, cd_dep_count#26, cnt1#44, avg(cd_dep_count)#45, max(cd_dep_count)#46, sum(cd_dep_count)#47, cd_dep_employed_count#27, cnt2#48, avg(cd_dep_employed_count)#49, max(cd_dep_employed_count)#50, sum(cd_dep_employed_count)#51, cd_dep_college_count#28, cnt3#52, avg(cd_dep_college_count)#53, max(cd_dep_college_count)#54, sum(cd_dep_college_count)#55], 100, 0, [ca_state#22 ASC NULLS FIRST, cd_gender#29 ASC NULLS FIRST, cd_marital_status#30 ASC NULLS FIRST, cd_dep_count#26 ASC NULLS FIRST, cd_dep_employed_count#27 ASC NULLS FIRST, cd_dep_college_count#28 ASC NULLS FIRST], [ca_state#22, cd_gender#29, cd_marital_status#30, cd_dep_count#26, cnt1#44, avg(cd_dep_count)#45, max(cd_dep_count)#46, sum(cd_dep_count)#47, cd_dep_employed_count#27, cnt2#48, avg(cd_dep_employed_count)#49, max(cd_dep_employed_count)#50, sum(cd_dep_employed_count)#51, cd_dep_college_count#28, cnt3#52, avg(cd_dep_college_count)#53, max(cd_dep_college_count)#54, sum(cd_dep_college_count)#55]
+
+(40) CometColumnarToRow [codegen id : 1]
+Input [18]: [ca_state#22, cd_gender#29, cd_marital_status#30, cd_dep_count#26, cnt1#44, avg(cd_dep_count)#45, max(cd_dep_count)#46, sum(cd_dep_count)#47, cd_dep_employed_count#27, cnt2#48, avg(cd_dep_employed_count)#49, max(cd_dep_employed_count)#50, sum(cd_dep_employed_count)#51, cd_dep_college_count#28, cnt3#52, avg(cd_dep_college_count)#53, max(cd_dep_college_count)#54, sum(cd_dep_college_count)#55]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 3 Hosting Expression = ss_sold_date_sk#5 IN dynamicpruning#6
-BroadcastExchange (46)
-+- * CometColumnarToRow (45)
-   +- CometProject (44)
-      +- CometFilter (43)
-         +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (42)
+BroadcastExchange (45)
++- * CometColumnarToRow (44)
+   +- CometProject (43)
+      +- CometFilter (42)
+         +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (41)
 
 
-(42) CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+(41) CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#7, d_year#8, d_qoy#9]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), IsNotNull(d_qoy), EqualTo(d_year,1999), LessThan(d_qoy,4), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_qoy:int>
 
-(43) CometFilter
+(42) CometFilter
 Input [3]: [d_date_sk#7, d_year#8, d_qoy#9]
 Condition : ((((isnotnull(d_year#8) AND isnotnull(d_qoy#9)) AND (d_year#8 = 1999)) AND (d_qoy#9 < 4)) AND isnotnull(d_date_sk#7))
 
-(44) CometProject
+(43) CometProject
 Input [3]: [d_date_sk#7, d_year#8, d_qoy#9]
 Arguments: [d_date_sk#7], [d_date_sk#7]
 
-(45) CometColumnarToRow [codegen id : 1]
+(44) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#7]
 
-(46) BroadcastExchange
+(45) BroadcastExchange
 Input [1]: [d_date_sk#7]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=2]
 

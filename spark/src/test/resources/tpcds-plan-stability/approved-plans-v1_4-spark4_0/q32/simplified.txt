@@ -1,52 +1,41 @@
-WholeStageCodegen (5)
+WholeStageCodegen (1)
   HashAggregate [sum] [sum(UnscaledValue(cs_ext_discount_amt)),excess discount amount,sum]
     CometColumnarToRow
       InputAdapter
-        CometColumnarExchange #1
-          WholeStageCodegen (4)
-            HashAggregate [cs_ext_discount_amt] [sum,sum]
-              Project [cs_ext_discount_amt]
-                BroadcastHashJoin [cs_sold_date_sk,d_date_sk]
-                  Project [cs_ext_discount_amt,cs_sold_date_sk]
-                    BroadcastHashJoin [i_item_sk,cs_item_sk,cs_ext_discount_amt,(1.3 * avg(cs_ext_discount_amt))]
-                      CometColumnarToRow
-                        InputAdapter
-                          CometProject [cs_ext_discount_amt,cs_sold_date_sk,i_item_sk]
-                            CometBroadcastHashJoin [cs_item_sk,cs_ext_discount_amt,cs_sold_date_sk,i_item_sk]
-                              CometFilter [cs_item_sk,cs_ext_discount_amt,cs_sold_date_sk]
-                                CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales [cs_item_sk,cs_ext_discount_amt,cs_sold_date_sk]
-                                  SubqueryBroadcast [d_date_sk] #1
-                                    BroadcastExchange #2
-                                      WholeStageCodegen (1)
-                                        CometColumnarToRow
-                                          InputAdapter
-                                            CometProject [d_date_sk]
-                                              CometFilter [d_date_sk,d_date]
-                                                CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_date]
-                              CometBroadcastExchange [i_item_sk] #3
-                                CometProject [i_item_sk]
-                                  CometFilter [i_item_sk,i_manufact_id]
-                                    CometScan [native_iceberg_compat] parquet spark_catalog.default.item [i_item_sk,i_manufact_id]
-                      InputAdapter
-                        BroadcastExchange #4
-                          WholeStageCodegen (2)
-                            Filter [(1.3 * avg(cs_ext_discount_amt))]
-                              HashAggregate [cs_item_sk,sum,count] [avg(UnscaledValue(cs_ext_discount_amt)),(1.3 * avg(cs_ext_discount_amt)),sum,count]
-                                CometColumnarToRow
-                                  InputAdapter
-                                    CometColumnarExchange [cs_item_sk] #5
-                                      WholeStageCodegen (1)
-                                        HashAggregate [cs_item_sk,cs_ext_discount_amt] [sum,count,sum,count]
-                                          CometColumnarToRow
-                                            InputAdapter
-                                              CometProject [cs_item_sk,cs_ext_discount_amt]
-                                                CometBroadcastHashJoin [cs_item_sk,cs_ext_discount_amt,cs_sold_date_sk,d_date_sk]
-                                                  CometFilter [cs_item_sk,cs_ext_discount_amt,cs_sold_date_sk]
-                                                    CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales [cs_item_sk,cs_ext_discount_amt,cs_sold_date_sk]
-                                                      ReusedSubquery [d_date_sk] #1
-                                                  CometBroadcastExchange [d_date_sk] #6
-                                                    CometProject [d_date_sk]
-                                                      CometFilter [d_date_sk,d_date]
-                                                        CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_date]
-                  InputAdapter
-                    ReusedExchange [d_date_sk] #2
+        CometExchange #1
+          CometHashAggregate [sum,cs_ext_discount_amt]
+            CometProject [cs_ext_discount_amt]
+              CometBroadcastHashJoin [cs_ext_discount_amt,cs_sold_date_sk,d_date_sk]
+                CometProject [cs_ext_discount_amt,cs_sold_date_sk]
+                  CometBroadcastHashJoin [cs_ext_discount_amt,cs_sold_date_sk,i_item_sk,(1.3 * avg(cs_ext_discount_amt)),cs_item_sk]
+                    CometProject [cs_ext_discount_amt,cs_sold_date_sk,i_item_sk]
+                      CometBroadcastHashJoin [cs_item_sk,cs_ext_discount_amt,cs_sold_date_sk,i_item_sk]
+                        CometFilter [cs_item_sk,cs_ext_discount_amt,cs_sold_date_sk]
+                          CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales [cs_item_sk,cs_ext_discount_amt,cs_sold_date_sk]
+                            SubqueryBroadcast [d_date_sk] #1
+                              BroadcastExchange #2
+                                WholeStageCodegen (1)
+                                  CometColumnarToRow
+                                    InputAdapter
+                                      CometProject [d_date_sk]
+                                        CometFilter [d_date_sk,d_date]
+                                          CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_date]
+                        CometBroadcastExchange [i_item_sk] #3
+                          CometProject [i_item_sk]
+                            CometFilter [i_item_sk,i_manufact_id]
+                              CometScan [native_iceberg_compat] parquet spark_catalog.default.item [i_item_sk,i_manufact_id]
+                    CometBroadcastExchange [(1.3 * avg(cs_ext_discount_amt)),cs_item_sk] #4
+                      CometFilter [(1.3 * avg(cs_ext_discount_amt)),cs_item_sk]
+                        CometHashAggregate [(1.3 * avg(cs_ext_discount_amt)),cs_item_sk,sum,count,avg(UnscaledValue(cs_ext_discount_amt))]
+                          CometExchange [cs_item_sk] #5
+                            CometHashAggregate [cs_item_sk,sum,count,cs_ext_discount_amt]
+                              CometProject [cs_item_sk,cs_ext_discount_amt]
+                                CometBroadcastHashJoin [cs_item_sk,cs_ext_discount_amt,cs_sold_date_sk,d_date_sk]
+                                  CometFilter [cs_item_sk,cs_ext_discount_amt,cs_sold_date_sk]
+                                    CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales [cs_item_sk,cs_ext_discount_amt,cs_sold_date_sk]
+                                      ReusedSubquery [d_date_sk] #1
+                                  CometBroadcastExchange [d_date_sk] #6
+                                    CometProject [d_date_sk]
+                                      CometFilter [d_date_sk,d_date]
+                                        CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_date]
+                ReusedExchange [d_date_sk] #6
